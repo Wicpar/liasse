@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Modules · Liasse</title>
+  <link rel="stylesheet" href="../assets/liasse.css">
+</head>
+<body data-search-index="../assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="../index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="../index.html">Home</a>
+<a href="../getting-started.html">Getting started</a>
+<a href="../mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a href="../tutorials/tasks.html">Task app</a>
+<a href="../tutorials/modules.html">Module boundary</a>
+<a href="../examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="../reference/feature-map.html">Feature map</a>
+<a href="../features/format.html">Authoring format</a>
+<a href="../features/types.html">Types</a>
+<a href="../features/collections.html">Collections and structs</a>
+<a href="../features/views.html">Views</a>
+<a href="../features/refs.html">Refs</a>
+<a href="../features/mutations.html">Mutations</a>
+<a href="../features/checks-transforms.html">Checks and transforms</a>
+<a href="../features/permissions.html">Permissions and sessions</a>
+<a class="active" href="../features/modules.html">Modules</a>
+<a href="../features/limits.html">Limits and sources</a>
+<a href="../features/storage.html">Blobs and storage</a>
+<a href="../features/history.html">History and extraction</a>
+<a href="../features/client.html">Client protocol</a>
+<a href="../features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="../spec/README.html">README</a>
+<a href="../spec/SYNTAX.html">Syntax</a>
+<a href="../spec/COLLECTIONS.html">Collections</a>
+<a href="../spec/MUTATIONS.html">Mutations</a>
+<a href="../spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="../spec/MODULES.html">Modules</a>
+<a href="../spec/PERMISSIONS.html">Permissions</a>
+<a href="../spec/LIMITS.html">Limits</a>
+<a href="../spec/STORAGE.html">Storage</a>
+<a href="../spec/CLIENT.html">Client</a>
+<a href="../spec/HISTORY.html">History</a>
+<a href="../spec/RESOLUTIONS.html">Resolutions</a>
+<a href="../spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="modules">Modules</h1>
+<p>Modules are packages installed into module spaces.</p>
+<h2 id="parent-provided-surfaces">Parent-provided surfaces</h2>
+<p>A host can expose a narrow surface to installed modules. The module imports it by name and type-checks against it.</p>
+<h2 id="dependencies">Dependencies</h2>
+<p><code>$deps</code> declare required dependencies. Optional imports can be absent; absence removes dependent declarations from the active surface but does not archive or migrate private stored data.</p>
+<h2 id="conditional-declarations">Conditional declarations</h2>
+<p><code>$if</code> gates declarations. When a declaration block becomes inactive, data owned by that inactive block is archived and can be restored if it becomes active again.</p>
+<h2 id="updates">Updates</h2>
+<p>Update proposals are checked before commit admission. Breaking updates are rejected; they do not create empty commits.</p></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#parent-provided-surfaces">Parent-provided surfaces</a>
+<a class="toc-l2" href="#dependencies">Dependencies</a>
+<a class="toc-l2" href="#conditional-declarations">Conditional declarations</a>
+<a class="toc-l2" href="#updates">Updates</a>
+</aside>
+  <script src="../assets/search.js"></script>
+</body>
+</html>

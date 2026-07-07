@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>The client protocol · Liasse</title>
+  <link rel="stylesheet" href="../assets/liasse.css">
+</head>
+<body data-search-index="../assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="../index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="../index.html">Home</a>
+<a href="../getting-started.html">Getting started</a>
+<a href="../mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a href="../tutorials/tasks.html">Task app</a>
+<a href="../tutorials/modules.html">Module boundary</a>
+<a href="../examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="../reference/feature-map.html">Feature map</a>
+<a href="../features/format.html">Authoring format</a>
+<a href="../features/types.html">Types</a>
+<a href="../features/collections.html">Collections and structs</a>
+<a href="../features/views.html">Views</a>
+<a href="../features/refs.html">Refs</a>
+<a href="../features/mutations.html">Mutations</a>
+<a href="../features/checks-transforms.html">Checks and transforms</a>
+<a href="../features/permissions.html">Permissions and sessions</a>
+<a href="../features/modules.html">Modules</a>
+<a href="../features/limits.html">Limits and sources</a>
+<a href="../features/storage.html">Blobs and storage</a>
+<a href="../features/history.html">History and extraction</a>
+<a href="../features/client.html">Client protocol</a>
+<a href="../features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="../spec/README.html">README</a>
+<a href="../spec/SYNTAX.html">Syntax</a>
+<a href="../spec/COLLECTIONS.html">Collections</a>
+<a href="../spec/MUTATIONS.html">Mutations</a>
+<a href="../spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="../spec/MODULES.html">Modules</a>
+<a href="../spec/PERMISSIONS.html">Permissions</a>
+<a href="../spec/LIMITS.html">Limits</a>
+<a href="../spec/STORAGE.html">Storage</a>
+<a class="active" href="../spec/CLIENT.html">Client</a>
+<a href="../spec/HISTORY.html">History</a>
+<a href="../spec/RESOLUTIONS.html">Resolutions</a>
+<a href="../spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="the-client-protocol">The client protocol</h1>
+<p>Status: standard. How frontends talk to a Liasse engine: engine-served client, names-only requests, the untrusted pipeline, and the transactional live API.</p>
+<h2 id="1-the-client-is-served-by-the-engine">1. The client is served by the engine</h2>
+<pre><code class="language-html">&lt;script type=&quot;module&quot; src=&quot;/.liasse/client.js&quot;&gt;&lt;/script&gt;</code></pre>
+<p>The client library is an artifact of the engine — versioned with it, served by it. Protocol, serialization, and hash routines ship together; there is no independently-installed client to drift. (The JS library is the reference embodiment; any client implementing this protocol behaves identically.)</p>
+<h2 id="2-the-surface-manifest-the-api-is-the-grants">2. The surface manifest: the API is the grants</h2>
+<p>On connect, a session receives its <strong>surface manifest</strong>: the named views and mutations the actor&#x27;s grants expose, each with its declared parameter shape. That manifest *is* the entire client API — the permission system does not filter the client&#x27;s power, it constitutes it. Typed bindings can be generated from the manifest; even untyped, nothing outside it is speakable.</p>
+<h2 id="3-names-only-declared-entries-untrusted-values">3. Names only: declared entries, untrusted values</h2>
+<p>Expressions live in the model and execute with definer authority. The wire carries names and values, never expressions:</p>
+<pre><code class="language-hjson">&quot;my_shifts&quot;: {
+  &quot;$params&quot;: { &quot;month&quot;: &quot;month_t&quot; },
+  &quot;$view&quot;: &quot;.shifts[:s | s.member == actor &amp;&amp; s.month == @month] { date, minutes, note }&quot;
+},
+&quot;add_justificatif({ label: label_t, file: pdf_t })&quot;: &quot;.uploads + { label: @label, file: @file }&quot;</code></pre>
+<p>Surface views take <code>$params</code> like mutations do, so filtering runs server-side under the definer&#x27;s expression.</p>
+<p>The untrusted pipeline, normative, in order:</p>
+<pre><code class="language-text">1  name        must exist in the session&#x27;s manifest — unknown: reject
+2  shape       params parsed against declared types under wire rules;
+               unknown fields reject; missing non-optional reject;
+               numbers arrive as strings or reject
+3  normalize   $normalize per param, then $check per param — reject
+               with the declared message
+4  blobs       streamed; size-capped at $max_bytes as bytes arrive;
+               media validated; sha512 computed; on success the param
+               binds to the descriptor — the body never sees raw bytes
+5  bind        params bound as typed values into definer expressions;
+               client input is never evaluated or spliced
+6  authorize   actor membership re-verified before admission
+7  invariants  meters, checks, guards — reject before admission on failure</code></pre>
+<h2 id="4-four-wire-verbs">4. Four wire verbs</h2>
+<pre><code class="language-text">connect      token -&gt; session -&gt; surface manifest
+view         name + params -&gt; init(frontier) + patches + call reports
+call         name + params (+ blob streams) -&gt; committed | unchanged | rejected
+fetch plan   descriptor -&gt; permitted holders + access, in $serve order</code></pre>
+<p>Nothing else is speakable from the outside.</p>
+<h2 id="5-views-are-live-by-default">5. Views are live by default</h2>
+<pre><code class="language-text">view &quot;my_shifts&quot; { month: &quot;2026-06&quot; }
+  &lt;- init   full result at a frontier
+  &lt;- patch  ops keyed by row identity, each tagged with its commit id
+  &lt;- report committed/unchanged/rejected notices for this session&#x27;s calls</code></pre>
+<p>The client maintains local state defined as the fold at the tracked frontier and resumes from it on reconnect — client and server cannot structurally disagree about which version is displayed. Coherence is not a best effort; it is the definition of the local copy.</p>
+<h2 id="5b-windows-client-policy-engine-delivery">5b. Windows: client policy, engine delivery</h2>
+<p>The split is strict. <strong>Window policy is a frontend concern</strong>: what size, where the anchor sits, how scroll and resize behave. <strong>Window delivery is the engine&#x27;s</strong>: given the declared window, the back→front stream carries only the necessary rows — never the whole view.</p>
+<p>A window is a parameter set on a view subscription:</p>
+<pre><code class="language-text">{ $size: n }                                    fixed slice by position
+{ $size: n, $anchor: &lt;row-key&gt; }                slice containing the anchor
+{ $size: n, $anchor: &lt;row-key&gt;, $slide: true }  anchor kept centered
+{ $size: n, $anchor: $first | $last }           edge-pinned (live tail)</code></pre>
+<p>The engine evaluates the slice at each frontier and emits diffs for the slice only — <code>enter(row, pos)</code>, <code>exit(key)</code>, <code>shift</code>, <code>re-anchor(key)</code>, <code>range-update { page? | center, of_total }</code> — each tagged with its commit id, resumable by frontier. Positional windows are <code>$skip</code>/<code>$limit</code> under the hood; anchored windows the engine keeps glued to the row, not the position: inserts above a centered anchor push the top edge out, symmetric below; a deleted or filtered-out anchor re-anchors to the nearest survivor with a notice.</p>
+<p>The client library translates UX into re-parameterization, incrementally:</p>
+<pre><code class="language-text">scroll            window.anchor(key)  or adjust $skip
+resize            window.resize(n&#x27;) — the focal row (anchor, else first
+                  visible) stays in the window: sliding grows/shrinks
+                  symmetrically (spilling at view ends), edge-pinned
+                  moves only the far edge, fixed keeps the page
+                  containing the focal row</code></pre>
+<p>Both are frontier-atomic with that frontier&#x27;s data diff, and emit only edge enters/exits plus one range update — existing rows never re-render, nothing refetches, no mechanism disagrees with another about positions. Permissions compose (a window scopes an already surface-gated view); counts and ranges come from the same fold as the rows, so they are never mutually stale. Surface-declared <code>$limit</code> caps <code>$size</code>; an invalid anchor at subscribe degrades to edge-pinned with a notice.</p>
+<h2 id="6-every-call-is-a-transaction-live-first">6. Every call is a transaction, live-first</h2>
+<p>One operation per call: it resolves when the whole effect is committed or known unchanged, rejects with the reason before admission, and cancellation — explicit or by disconnect — means nothing happened.</p>
+<pre><code class="language-text">op = call &quot;add_justificatif&quot; { label, file: &lt;stream&gt; }
+op.progress -&gt; { phase: hashing | uploading | replicating | committing,
+                 sent, total }
+op.cancel()
+await op    -&gt; committed, unchanged, or rejected — never a half-state</code></pre>
+<p>For calls with blob parameters: the client hashes while streaming to the placement plan&#x27;s first store (presigned where the connector allows); the engine verifies sha512 + size against the landed object; only then does the mutation apply. Bytes and rows are one atomic outcome; disconnect mid-stream leaves no descriptor and no commit.</p>
+<h2 id="7-downloading-plan-race-verify">7. Downloading: plan, race, verify</h2>
+<pre><code class="language-text">op = fetch(descriptor)</code></pre>
+<p>The engine returns the fetch plan — verified holders the session may access, in <code>$serve</code> order, presigned or proxied per connector. The client then does the transport work:</p>
+<pre><code class="language-text">probe        ranged reads against candidates -&gt; latency/throughput
+choose       best holder wins; slower ones remain as spares
+stream       ranged, resumable, progress events
+dual-wield   when ranges are supported and one pipe underdelivers,
+             split the byte range across holders and interleave
+             (default on; client-config kill switch)
+verify       sha512 computed incrementally; a mismatching source is
+             dropped mid-stream, its ranges refetched from a spare —
+             the result is certified to hash to $sha512 or the op fails</code></pre>
+<p>Application servers proxy bytes only when a connector cannot presign; the API shape is identical either way.</p>
+<h2 id="8-trusted-and-untrusted-clients">8. Trusted and untrusted clients</h2>
+<p>There are exactly two client classes:</p>
+<pre><code class="language-text">trusted     the embedder and operator tooling: full expression access —
+            its own views, its own mutations, the system session or
+            expression-capable actor sessions it opens
+untrusted   frontends: constituted entirely by the surface manifest —
+            names and typed values only, no custom requests, ever</code></pre>
+<p>There is no third tier. Admin consoles and BI are trusted clients; anything reachable by end users is untrusted and speaks the four verbs of §4.</p>
+<h2 id="9-boundaries">9. Boundaries</h2>
+<pre><code class="language-text">uploads/downloads outside a call/fetch op do not exist — there is no
+  raw byte endpoint
+the manifest is per session: role changes take effect on the next
+  manifest refresh; authorization is re-verified before admission
+  regardless
+offline mutation queues are an application choice built on the same
+  ops: queued calls settle as committed, unchanged, or rejected when
+  connectivity returns, with reports on the view stream</code></pre></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#1-the-client-is-served-by-the-engine">1. The client is served by the engine</a>
+<a class="toc-l2" href="#2-the-surface-manifest-the-api-is-the-grants">2. The surface manifest: the API is the grants</a>
+<a class="toc-l2" href="#3-names-only-declared-entries-untrusted-values">3. Names only: declared entries, untrusted values</a>
+<a class="toc-l2" href="#4-four-wire-verbs">4. Four wire verbs</a>
+<a class="toc-l2" href="#5-views-are-live-by-default">5. Views are live by default</a>
+<a class="toc-l2" href="#5b-windows-client-policy-engine-delivery">5b. Windows: client policy, engine delivery</a>
+<a class="toc-l2" href="#6-every-call-is-a-transaction-live-first">6. Every call is a transaction, live-first</a>
+<a class="toc-l2" href="#7-downloading-plan-race-verify">7. Downloading: plan, race, verify</a>
+<a class="toc-l2" href="#8-trusted-and-untrusted-clients">8. Trusted and untrusted clients</a>
+<a class="toc-l2" href="#9-boundaries">9. Boundaries</a>
+</aside>
+  <script src="../assets/search.js"></script>
+</body>
+</html>

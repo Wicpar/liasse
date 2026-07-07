@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Types · Liasse</title>
+  <link rel="stylesheet" href="../assets/liasse.css">
+</head>
+<body data-search-index="../assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="../index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="../index.html">Home</a>
+<a href="../getting-started.html">Getting started</a>
+<a href="../mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a href="../tutorials/tasks.html">Task app</a>
+<a href="../tutorials/modules.html">Module boundary</a>
+<a href="../examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="../reference/feature-map.html">Feature map</a>
+<a href="../features/format.html">Authoring format</a>
+<a class="active" href="../features/types.html">Types</a>
+<a href="../features/collections.html">Collections and structs</a>
+<a href="../features/views.html">Views</a>
+<a href="../features/refs.html">Refs</a>
+<a href="../features/mutations.html">Mutations</a>
+<a href="../features/checks-transforms.html">Checks and transforms</a>
+<a href="../features/permissions.html">Permissions and sessions</a>
+<a href="../features/modules.html">Modules</a>
+<a href="../features/limits.html">Limits and sources</a>
+<a href="../features/storage.html">Blobs and storage</a>
+<a href="../features/history.html">History and extraction</a>
+<a href="../features/client.html">Client protocol</a>
+<a href="../features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="../spec/README.html">README</a>
+<a href="../spec/SYNTAX.html">Syntax</a>
+<a href="../spec/COLLECTIONS.html">Collections</a>
+<a href="../spec/MUTATIONS.html">Mutations</a>
+<a href="../spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="../spec/MODULES.html">Modules</a>
+<a href="../spec/PERMISSIONS.html">Permissions</a>
+<a href="../spec/LIMITS.html">Limits</a>
+<a href="../spec/STORAGE.html">Storage</a>
+<a href="../spec/CLIENT.html">Client</a>
+<a href="../spec/HISTORY.html">History</a>
+<a href="../spec/RESOLUTIONS.html">Resolutions</a>
+<a href="../spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="types">Types</h1>
+<p>Types describe both stored values and expression values.</p>
+<h2 id="primitive-types">Primitive types</h2>
+<p><code>text</code>, <code>bool</code>, <code>int</code>, <code>decimal</code>, <code>uuid</code>, <code>date</code>, <code>timestamp</code>, <code>duration</code>, <code>json</code>, <code>blob</code>, and enum labels have canonical wire forms. Integers and decimals are encoded canonically as strings to keep hashing and database behavior stable.</p>
+<h2 id="containers">Containers</h2>
+<ul>
+<li><code>$set</code> stores unique unordered values.</li>
+<li><code>set&lt;T&gt;</code> describes expression-level unique membership.</li>
+<li><code>list&lt;T&gt;</code> is available for parameters and expression results.</li>
+<li><code>view&lt;T&gt;</code> is a row stream with identity.</li>
+<li><code>optional&lt;T&gt;</code> appears when a value can be <code>none</code>.</li>
+</ul>
+<h2 id="shapes-as-types">Shapes as types</h2>
+<p>Named shapes, collection keys, refs, and structural objects are all part of the type system. This is what lets module interfaces and client surfaces be checked structurally.</p></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#primitive-types">Primitive types</a>
+<a class="toc-l2" href="#containers">Containers</a>
+<a class="toc-l2" href="#shapes-as-types">Shapes as types</a>
+</aside>
+  <script src="../assets/search.js"></script>
+</body>
+</html>

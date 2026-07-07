@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Getting started · Liasse</title>
+  <link rel="stylesheet" href="assets/liasse.css">
+</head>
+<body data-search-index="assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="index.html">Home</a>
+<a class="active" href="getting-started.html">Getting started</a>
+<a href="mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a href="tutorials/tasks.html">Task app</a>
+<a href="tutorials/modules.html">Module boundary</a>
+<a href="examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="reference/feature-map.html">Feature map</a>
+<a href="features/format.html">Authoring format</a>
+<a href="features/types.html">Types</a>
+<a href="features/collections.html">Collections and structs</a>
+<a href="features/views.html">Views</a>
+<a href="features/refs.html">Refs</a>
+<a href="features/mutations.html">Mutations</a>
+<a href="features/checks-transforms.html">Checks and transforms</a>
+<a href="features/permissions.html">Permissions and sessions</a>
+<a href="features/modules.html">Modules</a>
+<a href="features/limits.html">Limits and sources</a>
+<a href="features/storage.html">Blobs and storage</a>
+<a href="features/history.html">History and extraction</a>
+<a href="features/client.html">Client protocol</a>
+<a href="features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="spec/README.html">README</a>
+<a href="spec/SYNTAX.html">Syntax</a>
+<a href="spec/COLLECTIONS.html">Collections</a>
+<a href="spec/MUTATIONS.html">Mutations</a>
+<a href="spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="spec/MODULES.html">Modules</a>
+<a href="spec/PERMISSIONS.html">Permissions</a>
+<a href="spec/LIMITS.html">Limits</a>
+<a href="spec/STORAGE.html">Storage</a>
+<a href="spec/CLIENT.html">Client</a>
+<a href="spec/HISTORY.html">History</a>
+<a href="spec/RESOLUTIONS.html">Resolutions</a>
+<a href="spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="getting-started">Getting started</h1>
+<p>This page builds a tiny task app and introduces the core authoring shape.</p>
+<h2 id="1-pick-an-authoring-format">1. Pick an authoring format</h2>
+<p>Canonical Liasse packages are strict JSON. Humans usually write Hjson because comments, unquoted keys, optional commas, and multiline strings make the source easier to read.</p>
+<pre><code class="language-hjson">$liasse: 1
+$app: acme.tasks@0.1.0
+$model: {}
+$data: {}</code></pre>
+<p>Before loading, the engine or tooling parses the Hjson source to canonical JSON. Hjson never changes language semantics.</p>
+<h2 id="2-declare-rows">2. Declare rows</h2>
+<p>A keyed collection stores rows. The <code>$key</code> names the local identity field.</p>
+<pre><code class="language-hjson">$model: {
+  tasks: {
+    $key: id
+    id: { $type: uuid, $default: &quot;= uuid()&quot; }
+    title: { $type: text, $check: [&quot;size(trim(.)) &gt; 0&quot;, &quot;title required&quot;] }
+    done: { $type: bool, $default: false }
+  }
+}</code></pre>
+<p><code>$default</code> is a literal-or-expression position. A string beginning with <code>=</code> is evaluated as an expression. A literal string that must begin with <code>=</code> is escaped with a leading apostrophe: <code>&quot;&#x27;= total&quot;</code>.</p>
+<h2 id="3-add-data">3. Add data</h2>
+<p><code>$data</code> uses the same literal-or-expression rule recursively.</p>
+<pre><code class="language-hjson">$data: {
+  tasks: [
+    { id: &quot;8b707e1e-1aa8-4e19-a391-2d8f9fc2b7e5&quot;, title: &quot;Read the spec&quot;, done: false }
+  ]
+}</code></pre>
+<h2 id="4-add-a-view">4. Add a view</h2>
+<p>A view is a typed row stream derived by the engine.</p>
+<pre><code class="language-hjson">$model: {
+  tasks: { ... }
+  open_tasks: {
+    $view: &quot;.tasks[!done] { id, title }&quot;
+  }
+}</code></pre>
+<p>In a projection block, <code>.</code> is the source row. Output fields become bindings as the block is built.</p>
+<h2 id="5-add-mutations">5. Add mutations</h2>
+<p>Mutations are declared on the shape whose data they are allowed to change.</p>
+<pre><code class="language-hjson">tasks: {
+  $key: id
+  id: { $type: uuid, $default: &quot;= uuid()&quot; }
+  title: text
+  done: { $type: bool, $default: false }
+
+  $mut: {
+    &quot;rename({ title: text })&quot;: [&quot;{ title = @title }&quot;]
+    &quot;complete()&quot;: [&quot;{ done = true }&quot;]
+  }
+}</code></pre>
+<p>Each call is atomic. If the derived read basis is stale, or a check fails, the proposal is rejected and no empty commit is recorded.</p>
+<h2 id="6-expose-the-client-surface">6. Expose the client surface</h2>
+<p>A role grants views and callable mutation names. Clients send names and parameters; the engine resolves the granted declarations.</p>
+<pre><code class="language-hjson">$model: {
+  users: {
+    $key: id
+    id: { $type: uuid, $default: &quot;= uuid()&quot; }
+    email: text
+  }
+
+  tasks: { ... }
+
+  $roles: {
+    member: {
+      $members: &quot;/users::&quot;
+      tasks: {
+        $view: &quot;/tasks { id, title, done }&quot;
+        $mut: [rename, complete]
+      }
+    }
+  }
+}</code></pre>
+<p>The surface is the API. Anything not granted by a role is invisible to that client.</p>
+<h2 id="7-next-step">7. Next step</h2>
+<p>Continue with the Tasks tutorial, then use the feature explanations when a construct appears for the first time.</p></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#1-pick-an-authoring-format">1. Pick an authoring format</a>
+<a class="toc-l2" href="#2-declare-rows">2. Declare rows</a>
+<a class="toc-l2" href="#3-add-data">3. Add data</a>
+<a class="toc-l2" href="#4-add-a-view">4. Add a view</a>
+<a class="toc-l2" href="#5-add-mutations">5. Add mutations</a>
+<a class="toc-l2" href="#6-expose-the-client-surface">6. Expose the client surface</a>
+<a class="toc-l2" href="#7-next-step">7. Next step</a>
+</aside>
+  <script src="assets/search.js"></script>
+</body>
+</html>

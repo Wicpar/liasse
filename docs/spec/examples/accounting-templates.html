@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Example: company-local accounting template modules · Liasse</title>
+  <link rel="stylesheet" href="../../assets/liasse.css">
+</head>
+<body data-search-index="../../assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="../../index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="../../index.html">Home</a>
+<a href="../../getting-started.html">Getting started</a>
+<a href="../../mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a href="../../tutorials/tasks.html">Task app</a>
+<a href="../../tutorials/modules.html">Module boundary</a>
+<a href="../../examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="../../reference/feature-map.html">Feature map</a>
+<a href="../../features/format.html">Authoring format</a>
+<a href="../../features/types.html">Types</a>
+<a href="../../features/collections.html">Collections and structs</a>
+<a href="../../features/views.html">Views</a>
+<a href="../../features/refs.html">Refs</a>
+<a href="../../features/mutations.html">Mutations</a>
+<a href="../../features/checks-transforms.html">Checks and transforms</a>
+<a href="../../features/permissions.html">Permissions and sessions</a>
+<a href="../../features/modules.html">Modules</a>
+<a href="../../features/limits.html">Limits and sources</a>
+<a href="../../features/storage.html">Blobs and storage</a>
+<a href="../../features/history.html">History and extraction</a>
+<a href="../../features/client.html">Client protocol</a>
+<a href="../../features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="../../spec/README.html">README</a>
+<a href="../../spec/SYNTAX.html">Syntax</a>
+<a href="../../spec/COLLECTIONS.html">Collections</a>
+<a href="../../spec/MUTATIONS.html">Mutations</a>
+<a href="../../spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="../../spec/MODULES.html">Modules</a>
+<a href="../../spec/PERMISSIONS.html">Permissions</a>
+<a href="../../spec/LIMITS.html">Limits</a>
+<a href="../../spec/STORAGE.html">Storage</a>
+<a href="../../spec/CLIENT.html">Client</a>
+<a href="../../spec/HISTORY.html">History</a>
+<a href="../../spec/RESOLUTIONS.html">Resolutions</a>
+<a class="active" href="../../spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="example-company-local-accounting-template-modules">Example: company-local accounting template modules</h1>
+<p>This example shows a company row with its own module space. Installed modules import a parent-provided <code>company</code> surface and expose checked template rows back as <code>ecriture_templates</code>.</p>
+<h2 id="1-host-app-package">1. Host app package</h2>
+<pre><code class="language-json">{
+  &quot;$liasse&quot;: 1,
+  &quot;$app&quot;: &quot;acme.accounting@1.0.0&quot;,
+  &quot;$model&quot;: {
+    &quot;companies&quot;: {
+      &quot;$key&quot;: &quot;id&quot;,
+      &quot;$sort&quot;: [&quot;name&quot;, &quot;id&quot;],
+      &quot;id&quot;: &quot;text&quot;,
+      &quot;name&quot;: &quot;text&quot;,
+      &quot;plan&quot;: &quot;text&quot;,
+      &quot;internal_notes&quot;: &quot;text&quot;,
+
+      &quot;templates&quot;: {
+        &quot;$key&quot;: [&quot;module&quot;, &quot;template&quot;],
+        &quot;module&quot;: &quot;text&quot;,
+        &quot;template&quot;: &quot;text&quot;,
+        &quot;label&quot;: &quot;text&quot;,
+        &quot;journal&quot;: &quot;text&quot;,
+        &quot;lines&quot;: &quot;json&quot;
+      },
+
+      &quot;$mut&quot;: {
+        &quot;import_template({ module: text, template: text })&quot;: &quot;.templates + .modules[:m | m.$key == @module].ecriture_templates[:t | t.$key == @template] { module: m.$key, template: t.$key, label, journal, lines }&quot;
+      },
+
+      &quot;modules&quot;: {
+        &quot;$modules&quot;: {
+          &quot;$expose&quot;: {
+            &quot;company&quot;: { &quot;$view&quot;: &quot;. { id, name, plan }&quot; }
+          },
+          &quot;$interfaces&quot;: {
+            &quot;ecriture_templates&quot;: {
+              &quot;$key&quot;: &quot;id&quot;,
+              &quot;$sort&quot;: [&quot;label&quot;, &quot;id&quot;],
+              &quot;id&quot;: &quot;text&quot;,
+              &quot;label&quot;: &quot;text&quot;,
+              &quot;journal&quot;: &quot;text&quot;,
+              &quot;lines&quot;: &quot;json&quot;
+            }
+          }
+        }
+      },
+
+      &quot;available_ecriture_templates&quot;: {
+        &quot;$view&quot;: &quot;.modules::ecriture_templates { module: modules.$key, template: ecriture_templates.$key, id, label, journal, lines, $sort: [label, module, template] }&quot;
+      }
+    }
+  },
+  &quot;$data&quot;: {
+    &quot;companies&quot;: {
+      &quot;acme&quot;: {
+        &quot;id&quot;: &quot;acme&quot;,
+        &quot;name&quot;: &quot;Acme SAS&quot;,
+        &quot;plan&quot;: &quot;fr-pcg&quot;,
+        &quot;internal_notes&quot;: &quot;private host data&quot;
+      }
+    }
+  }
+}</code></pre>
+<p>The <code>modules</code> field is inside each <code>companies</code> row, so each company owns one module space such as <code>/companies/acme/modules</code>. The host exposes only the <code>company</code> view to installed modules; <code>internal_notes</code> stays private.</p>
+<h2 id="2-installed-data-pack-module">2. Installed data-pack module</h2>
+<pre><code class="language-json">{
+  &quot;$liasse&quot;: 1,
+  &quot;$module&quot;: &quot;acme.fr_sales_templates@1.0.0&quot;,
+  &quot;$use&quot;: {
+    &quot;company&quot;: &quot;$parent&quot;
+  },
+  &quot;$model&quot;: {
+    &quot;templates&quot;: {
+      &quot;$key&quot;: &quot;id&quot;,
+      &quot;$sort&quot;: [&quot;label&quot;, &quot;id&quot;],
+      &quot;id&quot;: &quot;text&quot;,
+      &quot;label&quot;: &quot;text&quot;,
+      &quot;journal&quot;: &quot;text&quot;,
+      &quot;enabled&quot;: &quot;bool&quot;,
+      &quot;lines&quot;: &quot;json&quot;
+    }
+  },
+  &quot;$data&quot;: {
+    &quot;templates&quot;: {
+      &quot;sale_invoice&quot;: {
+        &quot;id&quot;: &quot;sale_invoice&quot;,
+        &quot;label&quot;: &quot;Facture de vente&quot;,
+        &quot;journal&quot;: &quot;VE&quot;,
+        &quot;enabled&quot;: &quot;= #company.plan == &#x27;fr-pcg&#x27;&quot;,
+        &quot;lines&quot;: [
+          { &quot;account&quot;: &quot;411&quot;, &quot;side&quot;: &quot;debit&quot;, &quot;amount&quot;: &quot;&#x27;= total_ttc&quot; },
+          { &quot;account&quot;: &quot;707&quot;, &quot;side&quot;: &quot;credit&quot;, &quot;amount&quot;: &quot;&#x27;= total_ht&quot; },
+          { &quot;account&quot;: &quot;44571&quot;, &quot;side&quot;: &quot;credit&quot;, &quot;amount&quot;: &quot;&#x27;= tva&quot; }
+        ]
+      }
+    }
+  },
+  &quot;$expose&quot;: {
+    &quot;ecriture_templates&quot;: &quot;.templates[:t | t.enabled] { id, label, journal, lines }&quot;
+  }
+}</code></pre>
+<p>Install it at <code>/companies/acme/modules/fr_sales</code>. Inside that instance, <code>#company.plan</code> is Acme&#x27;s plan. Installing the same package at another company binds <code>#company</code> to that other row.</p>
+<p>The <code>enabled</code> value in <code>$data</code> is a write-time expression evaluated once when the seed row is applied. The formula-looking strings inside <code>lines</code> are literal JSON strings: the leading <code>&#x27;</code> is the escape that stores <code>= total_ttc</code> instead of evaluating it.</p>
+<h2 id="3-aggregate-view-behavior">3. Aggregate view behavior</h2>
+<p>The host reads all exposed rows through:</p>
+<pre><code class="language-text">.companies[&quot;acme&quot;].modules::ecriture_templates</code></pre>
+<p>The aggregate binds installed modules as <code>modules</code> and exposed template rows as <code>ecriture_templates</code>. Its inferred identity is:</p>
+<pre><code class="language-text">modules.$key + ecriture_templates.$key</code></pre>
+<p>So <code>fr_sales/sale_invoice</code> and another module&#x27;s <code>sale_invoice</code> are distinct rows in <code>available_ecriture_templates</code>.</p>
+<h2 id="4-importing-one-exposed-template">4. Importing one exposed template</h2>
+<p>The host mutation declared in §1 imports a selected exposed row into the company-local <code>templates</code> collection:</p>
+<pre><code class="language-text">.companies[&quot;acme&quot;].import_template({ module: &quot;fr_sales&quot;, template: &quot;sale_invoice&quot; })</code></pre></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#1-host-app-package">1. Host app package</a>
+<a class="toc-l2" href="#2-installed-data-pack-module">2. Installed data-pack module</a>
+<a class="toc-l2" href="#3-aggregate-view-behavior">3. Aggregate view behavior</a>
+<a class="toc-l2" href="#4-importing-one-exposed-template">4. Importing one exposed template</a>
+</aside>
+  <script src="../../assets/search.js"></script>
+</body>
+</html>

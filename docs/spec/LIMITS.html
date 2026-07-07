@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Limits and sources · Liasse</title>
+  <link rel="stylesheet" href="../assets/liasse.css">
+</head>
+<body data-search-index="../assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="../index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="../index.html">Home</a>
+<a href="../getting-started.html">Getting started</a>
+<a href="../mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a href="../tutorials/tasks.html">Task app</a>
+<a href="../tutorials/modules.html">Module boundary</a>
+<a href="../examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="../reference/feature-map.html">Feature map</a>
+<a href="../features/format.html">Authoring format</a>
+<a href="../features/types.html">Types</a>
+<a href="../features/collections.html">Collections and structs</a>
+<a href="../features/views.html">Views</a>
+<a href="../features/refs.html">Refs</a>
+<a href="../features/mutations.html">Mutations</a>
+<a href="../features/checks-transforms.html">Checks and transforms</a>
+<a href="../features/permissions.html">Permissions and sessions</a>
+<a href="../features/modules.html">Modules</a>
+<a href="../features/limits.html">Limits and sources</a>
+<a href="../features/storage.html">Blobs and storage</a>
+<a href="../features/history.html">History and extraction</a>
+<a href="../features/client.html">Client protocol</a>
+<a href="../features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="../spec/README.html">README</a>
+<a href="../spec/SYNTAX.html">Syntax</a>
+<a href="../spec/COLLECTIONS.html">Collections</a>
+<a href="../spec/MUTATIONS.html">Mutations</a>
+<a href="../spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="../spec/MODULES.html">Modules</a>
+<a href="../spec/PERMISSIONS.html">Permissions</a>
+<a class="active" href="../spec/LIMITS.html">Limits</a>
+<a href="../spec/STORAGE.html">Storage</a>
+<a href="../spec/CLIENT.html">Client</a>
+<a href="../spec/HISTORY.html">History</a>
+<a href="../spec/RESOLUTIONS.html">Resolutions</a>
+<a href="../spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="limits-and-sources">Limits and sources</h1>
+<p>Status: standard. Meters, capacity sources, drain order, hierarchy, and cross-module contracts.</p>
+<p>Liasse meters quantities — credits, quotas, seats, accounting periods — with three declarations that wire together by name:</p>
+<pre><code class="language-text">$consumes   on a collection: &quot;rows here spend from meter X&quot;
+$limits     on any ancestor row: &quot;I hold budget for meter X&quot;
+$sources    inside a limit: the views that provide capacity</code></pre>
+<p>Two rules underneath everything:</p>
+<pre><code class="language-text">You never mutate a bucket. You insert spend rows; capacity, remaining,
+and who-funded-what are derived.
+
+Every meter defaults to zero. Capacity exists only where a source
+explicitly provides it; consuming anything not explicitly set is
+consuming from zero — and rejects the insert.</code></pre>
+<p>And one convention that answers &quot;which column is what&quot;: <strong><code>$</code>-prefixed fields are structural — the engine reads them. Bare fields are yours — only your <code>$order</code> and <code>$eligible</code> read them.</strong> You see the roles at the projection site, always.</p>
+<h2 id="1-the-simplest-meter">1. The simplest meter</h2>
+<p>A user has top-ups and spends:</p>
+<pre><code class="language-hjson">&quot;users&quot;: {
+  &quot;$key&quot;: &quot;id&quot;,
+
+  &quot;topups&quot;: {
+    &quot;$key&quot;: &quot;id&quot;,
+    &quot;id&quot;: { &quot;$type&quot;: &quot;uuid&quot;, &quot;$default&quot;: &quot;= uuid()&quot; },
+    &quot;amount&quot;: &quot;decimal&quot;
+  },
+
+  &quot;spends&quot;: {
+    &quot;$consumes&quot;: &quot;credits&quot;,
+    &quot;$key&quot;: &quot;id&quot;,
+    &quot;id&quot;: { &quot;$type&quot;: &quot;uuid&quot;, &quot;$default&quot;: &quot;= uuid()&quot; },
+    &quot;amount&quot;: &quot;decimal&quot;,
+    &quot;occurred_at&quot;: { &quot;$type&quot;: &quot;timestamp&quot;, &quot;$default&quot;: &quot;= now()&quot; }
+  },
+
+  &quot;$limits&quot;: {
+    &quot;credits&quot;: {
+      &quot;$sources&quot;: {
+        &quot;topup&quot;: &quot;.topups { $quantity: .amount }&quot;
+      }
+    }
+  }
+}</code></pre>
+<p>Read the source projection: <code>.topups { $quantity: .amount }</code> says *my <code>amount</code> column plays the structural role <code>$quantity</code>*. That mapping is the whole answer to &quot;how do you know which columns are what&quot; — it&#x27;s written where the rows enter the meter, and it&#x27;s checked at model load.</p>
+<p>Use it:</p>
+<pre><code class="language-text">.topups + { amount: &quot;1000&quot; }        give capacity
+.spends + { amount: &quot;250&quot; }         consume it</code></pre>
+<p>Read the answers — derived, never stored:</p>
+<pre><code class="language-text">.credits.balance                     -&gt; 750
+.credits.pools                       -&gt; live pool instances with .remaining
+.spends[x].funding                   -&gt; [{ pool: topup/&lt;id&gt;, amount: 250 }]</code></pre>
+<p>The spend insert reads nothing but its parameters, so spends never conflict with each other. There is no <code>balance = balance - x</code> anywhere.</p>
+<h2 id="2-insufficient-funds">2. Insufficient funds</h2>
+<pre><code class="language-text">.spends + { amount: &quot;2000&quot; }</code></pre>
+<p>Capacity is an invariant checked before the proposed commit is admitted. Here it fails, so the insert is rejected deterministically and the caller is told. You never check-then-spend; you spend, and the meter answers. The same holds at the extreme: a <code>$consumes</code> whose meter has no sources anywhere is a meter at its default — zero — so every insert is rejected. Nothing is ever implicitly unlimited.</p>
+<h2 id="3-several-sources-drain-order-and-overflow">3. Several sources: drain order and overflow</h2>
+<p>Add expiry to top-ups, and a second source. <code>$until</code> is the structural role for &quot;valid before&quot;:</p>
+<pre><code class="language-hjson">&quot;$limits&quot;: {
+  &quot;credits&quot;: {
+    &quot;$sources&quot;: {
+      &quot;topup&quot;: &quot;.topups { $quantity: .amount, $until: .expires, price: 0 }&quot;,
+      &quot;promo&quot;: &quot;.promos { $quantity: .amount, $until: .ends, price: .unit_price }&quot;
+    },
+    &quot;$order&quot;: [&quot;$until&quot;, &quot;price&quot;]
+  }
+}</code></pre>
+<p><code>$order</code> is a plain sort over pool fields — structural (<code>$until</code>) and yours (<code>price</code>) mixing freely. Absent values sort last, so pools without an expiry come after expiring pools; identity is the silent final tiebreak.</p>
+<p>State: topup <strong>A</strong> 300 expiring June 30; promo <strong>B</strong> 1000, never expires. Spend 500:</p>
+<pre><code class="language-text">A: take min(500, 300) = 300      exhausted, 200 still needed
+B: take min(200, 1000) = 200     done
+
+spend.funding -&gt; [ topup/A: 300, promo/B: 200 ]</code></pre>
+<p>That walk is the overflow mechanism: a spend spills across as many pools as needed, in policy order, chunk by chunk — and never chose a bucket.</p>
+<h2 id="4-subscriptions-a-table-you-already-have-becomes-a-source">4. Subscriptions: a table you already have becomes a source</h2>
+<p>No copying rows into the meter — project your subscriptions table in:</p>
+<pre><code class="language-hjson">&quot;$sources&quot;: {
+  &quot;topup&quot;: &quot;.topups { $quantity: .amount, $until: .expires, price: 0 }&quot;,
+  &quot;subscription&quot;: &quot;/subscriptions[:s | s.account == .] { $quantity: /plans[s.plan].monthly_credits, $from: s.starts, $until: s.ends, $repeat: /plans[s.plan].period, price: /plans[s.plan].unit_price }&quot;
+}</code></pre>
+<p><code>$repeat</code> makes one subscription row an *infinite family* of monthly pool instances, each with window <code>[$from + n·P, $from + (n+1)·P)</code> — half-open, so months tile exactly. The instance for June exists because arithmetic says so: no refill job, no scheduler, nothing to miss during downtime. Unused May credit is gone because May&#x27;s window is — expiry *is* the window end. Extend the subscription&#x27;s <code>ends</code> and future instances appear; cancel it and they stop.</p>
+<p>Two subscriptions at once? Two rows match the view, so two families of instances sit in the same pool set, each anchored to its own start date. A 600-credit spend on June 20 might fund as <code>[pro/June: 180, team/June: 420]</code> — mid-month offsets respected, nothing declared.</p>
+<h2 id="5-hierarchy-companies-meter-their-subtree">5. Hierarchy: companies meter their subtree</h2>
+<p>Declare the same meter name at more than one level:</p>
+<pre><code class="language-hjson">&quot;companies&quot;: {
+  &quot;$key&quot;: &quot;id&quot;,
+  &quot;quota&quot;: { &quot;$key&quot;: &quot;id&quot;, &quot;amount&quot;: &quot;decimal&quot;,
+             &quot;starts&quot;: &quot;timestamp&quot;, &quot;period&quot;: &quot;duration&quot; },
+
+  &quot;$limits&quot;: {
+    &quot;credits&quot;: {
+      &quot;$sources&quot;: {
+        &quot;quota&quot;: &quot;.quota { $quantity: .amount, $from: .starts, $repeat: .period }&quot;
+      }
+    }
+  },
+
+  &quot;users&quot;: { &quot;…&quot;: &quot;as in §4, with their own $limits.credits and spends&quot; },
+  &quot;subcompanies&quot;: { &quot;$like&quot;: &quot;^&quot; }
+}</code></pre>
+<p>The rule: <strong>a spend must clear the meter at every ancestor level that declares it.</strong> Fred&#x27;s 600-credit spend is funded three times over — his own pools, acme-fr&#x27;s June quota, acme&#x27;s June quota — and attribution is kept per level:</p>
+<pre><code class="language-text">spend.funding -&gt; {
+  &quot;users/fred&quot;:        [ topup: 180, subscription: 420 ],
+  &quot;companies/acme-fr&quot;: [ quota(2026-06): 600 ],
+  &quot;companies/acme&quot;:    [ quota(2026-06): 600 ]
+}</code></pre>
+<p>If any level can&#x27;t cover it — Fred has funds but acme-fr&#x27;s month is exhausted — the whole insert is rejected. A level that doesn&#x27;t declare the meter passes through. And because <code>subcompanies</code> is <code>$like: &quot;^&quot;</code>, the declaration repeats with the shape: recursive companies get recursive limits with zero extra words.</p>
+<p>Levels compose fail-closed: a level that declares the meter enforces its capacity; a level that doesn&#x27;t declare it has no opinion and passes through; and if *no* level declares it, the meter is at its default — zero — and every insert is rejected. Unlimited never happens by omission; it would have to be written as a source with infinite quantity, on purpose. (Linters should still flag a <code>$consumes</code> with no limit in sight — legal, but usually a mistake.)</p>
+<h2 id="6-concurrency-two-devices-one-budget">6. Concurrency: two devices, one budget</h2>
+<p>Two offline devices each spend against June&#x27;s 300 remaining:</p>
+<pre><code class="language-text">device 1: .spends + { amount: &quot;200&quot; }
+device 2: .spends + { amount: &quot;250&quot; }</code></pre>
+<p>On merge, spends fold in <code>(time, id)</code> order — the same on every replica. If total capacity across eligible pools covers both, <strong>both apply</strong> (the later one overflows into the next pool). If the meter truly can&#x27;t cover the later one, exactly that proposal is rejected, identically everywhere, and the device learns it from its watch feed. No lock, no hot row, no read-then-write race — because no spend ever read a balance.</p>
+<h2 id="7-earmarked-capacity-eligibility">7. Earmarked capacity: eligibility</h2>
+<p>Restrict which pools a spend may touch — still never targeting:</p>
+<pre><code class="language-hjson">&quot;$sources&quot;: {
+  &quot;topup&quot;: &quot;.topups { $quantity: .amount, feature: .feature }&quot;
+},
+&quot;$eligible&quot;: &quot;!has(pool.feature) || pool.feature == spend.feature&quot;</code></pre>
+<p><code>$eligible</code> is a predicate over the <code>(pool, spend)</code> pair; both sides&#x27; *bare* fields are yours, declared in the projections, so a typo is a load-time error, not a silently-empty filter. Selection in one sentence: <strong>$eligible filters, $order ranks, the walk overflows, the invariant rejects.</strong></p>
+<h2 id="8-windows-without-quantity-accounting-periods">8. Windows without quantity: accounting periods</h2>
+<p>Leave <code>$quantity</code> out and the meter partitions instead of budgeting:</p>
+<pre><code class="language-hjson">&quot;$limits&quot;: {
+  &quot;ledger&quot;: {
+    &quot;$sources&quot;: {
+      &quot;exercise&quot;: &quot;.exercises { $from: .starts, $until: .ends }&quot;
+    }
+  }
+},
+&quot;entries&quot;: { &quot;$consumes&quot;: &quot;ledger&quot;, &quot;…&quot;: &quot;…&quot; }</code></pre>
+<p>Each entry is assigned to the period whose window contains its spend <code>$time</code> — allocation without capacity. Then:</p>
+<pre><code class="language-text">.ledger.close({ until: @jan_1 })</code></pre>
+<p><code>close</code> materializes the allocation up to the boundary as ordinary rows and thereafter rejects any proposal whose spend <code>$time</code> falls before the boundary. Late entries must book in the open period — contre-passation, built in. Before close, attribution is fluid: fix a mistyped source row and the fold reassigns; after close, a pre-boundary edit is rejected by the close gate.</p>
+<p>The same spectrum, by which roles you use:</p>
+<pre><code class="language-text">$quantity only            a ceiling (constant cap, no windows)
+$quantity + windows       a budget (credits, quotas)
+windows only              a partition (exercises, periods)</code></pre>
+<p>No &quot;kind&quot; enum — the roles you project are the kind.</p>
+<h2 id="9-crossing-module-boundaries-nothing-implicit">9. Crossing module boundaries: nothing implicit</h2>
+<p>One rule closes every hole:</p>
+<pre><code class="language-text">Meter names are package-local. A bare name in $consumes resolves only
+inside the declaring package, and the ancestor walk for $limits stops at
+the package boundary. Crossing is always an explicit expose + import,
+marked with #.</code></pre>
+<p>So a module installed inside a company row does <strong>not</strong> draw on the host&#x27;s <code>credits</code> because of where it sits — installation location grants nothing. A module&#x27;s internal meter named <code>credits</code> and the host&#x27;s meter named <code>credits</code> never capture each other. Every cross-module case below is an explicit contract, checked at install.</p>
+<h3 id="9a-a-module-spends-against-a-host-meter">9a. A module spends against a host meter</h3>
+<p>The host exposes the meter to its module space — a surface like any other:</p>
+<pre><code class="language-hjson">&quot;modules&quot;: {
+  &quot;$modules&quot;: {
+    &quot;$expose&quot;: {
+      &quot;credits&quot;: {
+        &quot;$meter&quot;: &quot;credits&quot;,
+        &quot;$spend&quot;: { &quot;feature&quot;: { &quot;$enum&quot;: [&quot;export&quot;, &quot;api&quot;], &quot;$optional&quot;: true } },
+        &quot;$views&quot;: [&quot;balance&quot;]
+      }
+    }
+  }
+}</code></pre>
+<p>Read it as the contract it is: *modules here may spend meter <code>credits</code>; a spend carries these declared fields; they may read the balance.* The <code>$spend</code> block is the spend-side interface — exactly the fields the host&#x27;s <code>$eligible</code> may reference — so the host can never depend on module-private columns, and the module knows precisely what a spend looks like.</p>
+<p>The module imports and consumes through its handle:</p>
+<pre><code class="language-hjson">&quot;$use&quot;: { &quot;credits&quot;: &quot;$parent&quot; },
+
+&quot;exports&quot;: {
+  &quot;$consumes&quot;: { &quot;#credits&quot;: { &quot;$amount&quot;: &quot;= .size_mb&quot;, &quot;feature&quot;: &quot;export&quot; } },
+  &quot;$key&quot;: &quot;id&quot;,
+  &quot;size_mb&quot;: &quot;decimal&quot;,
+  &quot;occurred_at&quot;: { &quot;$type&quot;: &quot;timestamp&quot;, &quot;$default&quot;: &quot;= now()&quot; }
+}</code></pre>
+<p><code>#credits</code> makes the crossing visible at the point of use. The module&#x27;s spends then clear the host&#x27;s limit at every host level above the exposure point — Fred&#x27;s company, its parent, recursively — and attribution shows the module instance as the actor. If the host can&#x27;t cover it, the insert is rejected and the module handles the rejection like any writer. What the module does *not* see: the host&#x27;s sources, pools, or other spenders — only what the surface names (<code>balance</code> here).</p>
+<p>A collection can consume internal and imported meters at once — the multi-meter map takes bare names and handles side by side:</p>
+<pre><code class="language-hjson">&quot;$consumes&quot;: {
+  &quot;internal_quota&quot;: &quot;= 1&quot;,
+  &quot;#credits&quot;: &quot;= .size_mb&quot;
+}</code></pre>
+<h3 id="9b-a-module-provides-capacity-to-a-host-meter">9b. A module provides capacity to a host meter</h3>
+<p>The reverse direction uses the machinery modules already have — the host declares the pool shape as a module-space interface, modules expose rows into it, and the host *explicitly* lists the aggregate as a source:</p>
+<pre><code class="language-hjson">&quot;$modules&quot;: {
+  &quot;$interfaces&quot;: {
+    &quot;credit_pool&quot;: { &quot;$key&quot;: &quot;id&quot;, &quot;id&quot;: &quot;text&quot;,
+                     &quot;amount&quot;: &quot;decimal&quot;, &quot;expires&quot;: &quot;timestamp&quot; }
+  }
+},
+
+&quot;$limits&quot;: {
+  &quot;credits&quot;: {
+    &quot;$sources&quot;: {
+      &quot;topup&quot;:   &quot;.topups { $quantity: .amount, $until: .expires }&quot;,
+      &quot;partner&quot;: &quot;.modules::credit_pool { $quantity: .amount, $until: .expires }&quot;
+    }
+  }
+}</code></pre>
+<p>Both sides opted in: the module chose to expose into <code>credit_pool</code>, the host chose to project that aggregate into the meter. The host can narrow it (<code>.modules[.approved_packs]::credit_pool</code>) like any view. Install a partner-credits pack and a new source joins the drain order; uninstall it and its pools vanish — attribution refolds, and spends are rejected only if capacity genuinely no longer covers them.</p>
+<h3 id="9c-module-to-module">9c. Module to module</h3>
+<p>A package exposes a meter publicly the same way it exposes anything:</p>
+<pre><code class="language-hjson">&quot;$expose&quot;: {
+  &quot;pool&quot;: { &quot;$meter&quot;: &quot;credits&quot;, &quot;$spend&quot;: { }, &quot;$views&quot;: [&quot;balance&quot;] }
+}</code></pre>
+<p>Another module imports it directly — <code>&quot;$use&quot;: { &quot;pool&quot;: &quot;vendor.pkg/pool@1&quot; }</code> — and consumes <code>#pool</code>. Same contract shape, same checks; peers never touch each other&#x27;s meters except through what was exposed.</p>
+<h3 id="9d-the-boundary-rules-complete">9d. The boundary rules, complete</h3>
+<pre><code class="language-text">resolution   bare meter names: package-local; ancestor walk stops at the
+             package boundary; #handle: the imported contract, nothing else
+absent       an unbound optional meter import is fail-closed: the consuming
+             declaration is absent if guarded by $if, otherwise inserts are
+             rejected from zero capacity
+close        close is a $mut; a module can call it only if the surface
+             lists it; a host close rejects module spends before the boundary
+             like anyone&#x27;s
+versioning   the exposed meter contract ($spend fields, listed views,
+             eligibility-relevant semantics) is part of the package&#x27;s
+             compatibility surface: narrowing it is a breaking change,
+             majors are never auto-applied
+attribution  host-side funding views show module spends with the instance
+             path as actor ($as carries the human); module-side visibility
+             is exactly the exposed views, no more</code></pre>
+<h2 id="reference-card">Reference card</h2>
+<pre><code class="language-text">wire         $consumes: &quot;name&quot;            spends here draw meter &quot;name&quot;
+             $consumes: { name: &quot;= expr&quot; } several meters, custom amounts
+budget       $limits.name on any ancestor row; AND across all levels
+capacity     $sources: named views projecting into the pool roles
+roles        pools:  $quantity  $from  $until  $repeat     ($ = engine&#x27;s)
+             spends: $amount (default .amount)  $time (default .occurred_at)
+             bare fields = yours, for $order / $eligible / reporting
+policy       $order: sort over pool fields, identity tiebreak appended
+             $eligible: predicate over (pool, spend)
+recurrence   $repeat: analytic instance family, half-open windows,
+             no scheduler, downtime-immune
+the drain    take min(needed, remaining) per pool, in order, per level
+failure      shortfall at any level rejects the whole insert before
+             admission, deterministically
+default      meters are zero until a source provides capacity; consuming
+             the unset consumes from zero and rejects — never unlimited
+derived      .name.balance   .name.pools[..].remaining   spend.funding
+close        .name.close({ until }) freezes allocation, gates the past
+boundaries   meter names are package-local; crossing is explicit:
+             host exposes { $meter, $spend, $views } -&gt; module consumes
+             #handle; module capacity enters via declared $interfaces
+             pools -&gt; host lists the aggregate as a source; unbound
+             optional meters fail closed</code></pre></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#1-the-simplest-meter">1. The simplest meter</a>
+<a class="toc-l2" href="#2-insufficient-funds">2. Insufficient funds</a>
+<a class="toc-l2" href="#3-several-sources-drain-order-and-overflow">3. Several sources: drain order and overflow</a>
+<a class="toc-l2" href="#4-subscriptions-a-table-you-already-have-becomes-a-source">4. Subscriptions: a table you already have becomes a source</a>
+<a class="toc-l2" href="#5-hierarchy-companies-meter-their-subtree">5. Hierarchy: companies meter their subtree</a>
+<a class="toc-l2" href="#6-concurrency-two-devices-one-budget">6. Concurrency: two devices, one budget</a>
+<a class="toc-l2" href="#7-earmarked-capacity-eligibility">7. Earmarked capacity: eligibility</a>
+<a class="toc-l2" href="#8-windows-without-quantity-accounting-periods">8. Windows without quantity: accounting periods</a>
+<a class="toc-l2" href="#9-crossing-module-boundaries-nothing-implicit">9. Crossing module boundaries: nothing implicit</a>
+<a class="toc-l3" href="#9a-a-module-spends-against-a-host-meter">9a. A module spends against a host meter</a>
+<a class="toc-l3" href="#9b-a-module-provides-capacity-to-a-host-meter">9b. A module provides capacity to a host meter</a>
+<a class="toc-l3" href="#9c-module-to-module">9c. Module to module</a>
+<a class="toc-l3" href="#9d-the-boundary-rules-complete">9d. The boundary rules, complete</a>
+<a class="toc-l2" href="#reference-card">Reference card</a>
+</aside>
+  <script src="../assets/search.js"></script>
+</body>
+</html>

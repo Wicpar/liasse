@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Authoring format · Liasse</title>
+  <link rel="stylesheet" href="../assets/liasse.css">
+</head>
+<body data-search-index="../assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="../index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="../index.html">Home</a>
+<a href="../getting-started.html">Getting started</a>
+<a href="../mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a href="../tutorials/tasks.html">Task app</a>
+<a href="../tutorials/modules.html">Module boundary</a>
+<a href="../examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="../reference/feature-map.html">Feature map</a>
+<a class="active" href="../features/format.html">Authoring format</a>
+<a href="../features/types.html">Types</a>
+<a href="../features/collections.html">Collections and structs</a>
+<a href="../features/views.html">Views</a>
+<a href="../features/refs.html">Refs</a>
+<a href="../features/mutations.html">Mutations</a>
+<a href="../features/checks-transforms.html">Checks and transforms</a>
+<a href="../features/permissions.html">Permissions and sessions</a>
+<a href="../features/modules.html">Modules</a>
+<a href="../features/limits.html">Limits and sources</a>
+<a href="../features/storage.html">Blobs and storage</a>
+<a href="../features/history.html">History and extraction</a>
+<a href="../features/client.html">Client protocol</a>
+<a href="../features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="../spec/README.html">README</a>
+<a href="../spec/SYNTAX.html">Syntax</a>
+<a href="../spec/COLLECTIONS.html">Collections</a>
+<a href="../spec/MUTATIONS.html">Mutations</a>
+<a href="../spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="../spec/MODULES.html">Modules</a>
+<a href="../spec/PERMISSIONS.html">Permissions</a>
+<a href="../spec/LIMITS.html">Limits</a>
+<a href="../spec/STORAGE.html">Storage</a>
+<a href="../spec/CLIENT.html">Client</a>
+<a href="../spec/HISTORY.html">History</a>
+<a href="../spec/RESOLUTIONS.html">Resolutions</a>
+<a href="../spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="authoring-format">Authoring format</h1>
+<h2 id="rule">Rule</h2>
+<p>The canonical artifact is strict JSON. Hjson is a source format accepted by tools before validation. After parsing, every Hjson file must produce the same strict JSON package tree that the engine would accept directly.</p>
+<h2 id="why-hjson">Why Hjson</h2>
+<p>Liasse examples contain long view and mutation expressions. Hjson keeps those readable with comments and multiline strings while preserving one canonical engine input.</p>
+<h2 id="escape-rule">Escape rule</h2>
+<p>In literal-or-expression positions, a leading <code>=</code> marks an expression. A leading apostrophe forces a literal.</p>
+<pre><code class="language-hjson">formula: &quot;&#x27;= total_ttc&quot;   # stored text: = total_ttc
+default_id: &quot;= uuid()&quot;    # expression
+text: &quot;&#x27;hello&quot;            # stored text: hello
+quote: &quot;&#x27;&#x27;hello&quot;          # stored text: &#x27;hello</code></pre>
+<h2 id="avoid">Avoid</h2>
+<p>Do not rely on Hjson null. Liasse uses <code>none</code> for absent/no-value. JSON null is only valid inside fields explicitly typed as <code>json</code>.</p></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#rule">Rule</a>
+<a class="toc-l2" href="#why-hjson">Why Hjson</a>
+<a class="toc-l2" href="#escape-rule">Escape rule</a>
+<a class="toc-l2" href="#avoid">Avoid</a>
+</aside>
+  <script src="../assets/search.js"></script>
+</body>
+</html>

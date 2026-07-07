@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Permissions, users, and sessions · Liasse</title>
+  <link rel="stylesheet" href="../assets/liasse.css">
+</head>
+<body data-search-index="../assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="../index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="../index.html">Home</a>
+<a href="../getting-started.html">Getting started</a>
+<a href="../mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a href="../tutorials/tasks.html">Task app</a>
+<a href="../tutorials/modules.html">Module boundary</a>
+<a href="../examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="../reference/feature-map.html">Feature map</a>
+<a href="../features/format.html">Authoring format</a>
+<a href="../features/types.html">Types</a>
+<a href="../features/collections.html">Collections and structs</a>
+<a href="../features/views.html">Views</a>
+<a href="../features/refs.html">Refs</a>
+<a href="../features/mutations.html">Mutations</a>
+<a href="../features/checks-transforms.html">Checks and transforms</a>
+<a href="../features/permissions.html">Permissions and sessions</a>
+<a href="../features/modules.html">Modules</a>
+<a href="../features/limits.html">Limits and sources</a>
+<a href="../features/storage.html">Blobs and storage</a>
+<a href="../features/history.html">History and extraction</a>
+<a href="../features/client.html">Client protocol</a>
+<a href="../features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="../spec/README.html">README</a>
+<a href="../spec/SYNTAX.html">Syntax</a>
+<a href="../spec/COLLECTIONS.html">Collections</a>
+<a href="../spec/MUTATIONS.html">Mutations</a>
+<a href="../spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="../spec/MODULES.html">Modules</a>
+<a class="active" href="../spec/PERMISSIONS.html">Permissions</a>
+<a href="../spec/LIMITS.html">Limits</a>
+<a href="../spec/STORAGE.html">Storage</a>
+<a href="../spec/CLIENT.html">Client</a>
+<a href="../spec/HISTORY.html">History</a>
+<a href="../spec/RESOLUTIONS.html">Resolutions</a>
+<a href="../spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="permissions-users-and-sessions">Permissions, users, and sessions</h1>
+<p>Status: standard. Identity, roles, surfaces, sessions, and the login system — all modeled as ordinary Liasse data, with cryptographic verification kept at the gateway boundary.</p>
+<h2 id="1-identity-is-a-ref-users-are-rows">1. Identity is a ref; users are rows</h2>
+<p>Liasse ships no user table. It ships one rule: a commit&#x27;s <code>$actor</code> must resolve to an existing, non-disabled row before the commit is admitted. Where accounts live is the app&#x27;s model — historized, migratable, exportable, and soft-disabled like anything else. Module actors are instance paths, with <code>$as</code> carrying the human.</p>
+<p>Authentication and authorization are separate rows: an <strong>identity</strong> proves who (an SSO subject); an <strong>account</strong> is who acts. One identity may bind to several accounts; the account is the actor, so switching accounts switches powers.</p>
+<pre><code class="language-hjson">&quot;$types&quot;: { &quot;provider&quot;: { &quot;$enum&quot;: [&quot;google&quot;, &quot;azure&quot;, &quot;franceconnect&quot;] } },
+
+&quot;identities&quot;: {
+  &quot;$key&quot;: [&quot;provider&quot;, &quot;subject&quot;],
+  &quot;provider&quot;: &quot;provider&quot;,
+  &quot;subject&quot;: &quot;text&quot;,
+  &quot;claims&quot;: &quot;json&quot;
+},
+
+&quot;users&quot;: {
+  &quot;$key&quot;: &quot;id&quot;,
+  &quot;id&quot;: { &quot;$type&quot;: &quot;uuid&quot;, &quot;$default&quot;: &quot;= uuid()&quot; },
+  &quot;name&quot;: &quot;text&quot;,
+  &quot;settings&quot;: &quot;json&quot;,
+  &quot;disabled&quot;: { &quot;$type&quot;: &quot;bool&quot;, &quot;$default&quot;: &quot;= false&quot; },
+  &quot;identities&quot;: { &quot;$set&quot;: { &quot;$ref&quot;: &quot;/identities&quot;, &quot;$on_delete&quot;: &quot;restrict&quot; } }
+}</code></pre>
+<p>The reverse question — which accounts bind identity X — rides the engine&#x27;s reverse-reference index: <code>refs_to(identity_path)</code>. No model construct is needed, and the identity is delete-protected by its explicit ref policy.</p>
+<h2 id="2-roles-membership-is-a-view-permission-is-a-surface">2. Roles: membership is a view, permission is a surface</h2>
+<p>A <strong>surface</strong> is a named view plus an optional <code>$mut</code> list. Read permission is projection; write permission is the mutation list. A <strong>role</strong> bundles surfaces and declares its members as a view — so membership is ordinary data, and granting a role is an ordinary, permission-gated mutation.</p>
+<pre><code class="language-hjson">&quot;$types&quot;: { &quot;role&quot;: { &quot;$enum&quot;: [&quot;admin&quot;, &quot;member&quot;] } },
+
+&quot;companies&quot;: {
+  &quot;$key&quot;: &quot;id&quot;,
+  &quot;id&quot;: &quot;text&quot;,
+  &quot;name&quot;: &quot;text&quot;,
+  &quot;plan&quot;: &quot;text&quot;,
+
+  &quot;members&quot;: {
+    &quot;$key&quot;: &quot;user&quot;,
+    &quot;user&quot;: { &quot;$ref&quot;: &quot;/users&quot;, &quot;$on_delete&quot;: &quot;restrict&quot; },
+    &quot;role&quot;: &quot;role&quot;
+  },
+
+  &quot;$mut&quot;: {
+    &quot;rename({ name: text })&quot;: &quot;.name = @name&quot;,
+    &quot;set_role({ user: /users.$key, role: role })&quot;: &quot;.members[@user].role = @role&quot;,
+    &quot;update_own_settings({ settings: json })&quot;: &quot;/users[actor].settings = @settings&quot;
+  },
+
+  &quot;$roles&quot;: {
+    &quot;member&quot;: {
+      &quot;$members&quot;: &quot;.members.user&quot;,
+      &quot;me&quot;: {
+        &quot;$view&quot;: &quot;/users[actor] { id, name, settings }&quot;,
+        &quot;$mut&quot;: [&quot;update_own_settings&quot;]
+      }
+    },
+
+    &quot;admin&quot;: {
+      &quot;$members&quot;: &quot;.members[:m | m.role == &#x27;admin&#x27;].user&quot;,
+      &quot;company&quot;: {
+        &quot;$view&quot;: &quot;. { id, name, plan, members: .members { user, role, user_name: /users[user].name }, subcompanies: }&quot;,
+        &quot;$mut&quot;: [&quot;rename&quot;, &quot;set_role&quot;]
+      }
+    }
+  },
+
+  &quot;subcompanies&quot;: { &quot;$like&quot;: &quot;^&quot; }
+}</code></pre>
+<p>Rules:</p>
+<pre><code class="language-text">actor is a builtin binding in surface views and mutations: the session&#x27;s
+  account row — row-level security is an ordinary filter (d.owner == actor)
+surface entries may declare params; clients invoke names with typed values
+  only — see CLIENT.md for the untrusted pipeline
+roles are declared on rows, so location gives scope lexically
+$members is any view producing account refs; expiry that depends on wall
+  clock is gateway/session policy until a reader-time model is specified
+enum-typed role fields make membership filters typo-proof at load</code></pre>
+<h2 id="3-granularity-project-reads-call-writes">3. Granularity: project reads, call writes</h2>
+<p><strong>Reads are projections.</strong> The admin surface above projects what admin sees; private rows outside the projection are unnameable in that session. A surface can expose an aggregate without the rows: <code>deposit_count: count(.deposits)</code> computes with definer authority and the session sees outputs only.</p>
+<p><strong>Writes are calls, with definer authority.</strong> A session never patches raw data; it calls mutations its surfaces list. The body of <code>set_role</code> or <code>update_own_settings</code> executes with the authority of the row that declares it, not with arbitrary client access. The surface grants the capability to call; the definer scopes what the call touches.</p>
+<p><strong>Recursion.</strong> A pass-through of a <code>$like</code> collection whose shape is the projection&#x27;s own source applies the whole surface — view and <code>$mut</code> — recursively. <code>subcompanies:</code> above makes Acme&#x27;s admin the admin of the subtree, minus whatever the projection excludes, all the way down; exceptions are filters (<code>subcompanies: .subcompanies[:s | s.id != &quot;hr&quot;]:</code>). Each subcompany also carries its own <code>$roles</code>, so local admins coexist with inherited ones.</p>
+<p><strong>The access rule.</strong> A mutation is authorized if some ancestor of its target (or the target itself) declares a role whose <code>$members</code> view contains the actor and whose surface covers the operation. Authorization is re-verified before commit admission — membership reads join the basis — so a revoked admin&#x27;s straggler proposal from an offline device is rejected deterministically.</p>
+<h2 id="4-sessions-and-the-login-system">4. Sessions and the login system</h2>
+<p>Fully modeled; the HTTP layer is thin (routes, OIDC crypto, cookies, random token generation) and every state change is a mutation. At the root: identities, flow state, and the account picker&#x27;s intermediate state. Next to the accounts: sessions — so admins can list and revoke their company&#x27;s sessions through an ordinary surface.</p>
+<p>The gateway generates random <code>state</code>, <code>nonce</code>, PKCE verifier, login token, and session token values. The model stores hashes or public protocol values; it does not need a language-level randomness builtin.</p>
+<pre><code class="language-hjson">&quot;auth&quot;: {
+  &quot;flows&quot;: {
+    &quot;$key&quot;: &quot;state_hash&quot;,
+    &quot;state_hash&quot;: &quot;text&quot;,
+    &quot;nonce_hash&quot;: &quot;text&quot;,
+    &quot;verifier_hash&quot;: &quot;text&quot;,
+    &quot;provider&quot;: &quot;provider&quot;,
+    &quot;redirect&quot;: &quot;text&quot;,
+    &quot;created_at&quot;: { &quot;$type&quot;: &quot;timestamp&quot;, &quot;$default&quot;: &quot;= now()&quot; }
+  },
+
+  &quot;logins&quot;: {
+    &quot;$key&quot;: &quot;id&quot;,
+    &quot;id&quot;: { &quot;$type&quot;: &quot;uuid&quot;, &quot;$default&quot;: &quot;= uuid()&quot; },
+    &quot;token_hash&quot;: &quot;text&quot;,
+    &quot;identities&quot;: { &quot;$set&quot;: { &quot;$ref&quot;: &quot;/identities&quot;, &quot;$on_delete&quot;: &quot;restrict&quot; } },
+    &quot;expires&quot;: &quot;timestamp&quot;
+  }
+}</code></pre>
+<pre><code class="language-hjson">&quot;companies&quot;: {
+  &quot;auth&quot;: {
+    &quot;sessions&quot;: {
+      &quot;$key&quot;: &quot;id&quot;,
+      &quot;id&quot;: { &quot;$type&quot;: &quot;uuid&quot;, &quot;$default&quot;: &quot;= uuid()&quot; },
+      &quot;token_hash&quot;: &quot;text&quot;,
+      &quot;actor&quot;: { &quot;$ref&quot;: &quot;/users&quot;, &quot;$on_delete&quot;: &quot;restrict&quot; },
+      &quot;identities&quot;: { &quot;$set&quot;: { &quot;$ref&quot;: &quot;/identities&quot;, &quot;$on_delete&quot;: &quot;restrict&quot; } },
+      &quot;expires&quot;: &quot;timestamp&quot;
+    }
+  }
+}</code></pre>
+<p>A <strong>login</strong> is proven identities without an actor (the picker state); a <strong>session</strong> is proven identities plus a chosen account. Tokens are never stored — only <code>hash(token)</code> — and the cookie carries <code>&lt;session-path&gt;:&lt;token&gt;</code>, so lookup is one keyed read plus a hash compare.</p>
+<p>The flow:</p>
+<pre><code class="language-text">/login      gateway creates state/nonce/PKCE values, inserts a flow row,
+            redirects to IdP
+/callback   verify OIDC at the gateway, upsert the identity row,
+            refs_to(identity) lists bound accounts:
+              0 -&gt; app policy (invite / JIT-provision)
+              1 -&gt; mint session next to that account
+              n -&gt; insert a login row, render the picker
+/pick       target account&#x27;s identities must intersect the proven set
+            (checked against data via refs_to), then mint the session
+switching   same rule, no re-authentication: re-selection within the
+            proven identity set
+logout      delete the session row; admin revocation is the same delete
+            through a surface</code></pre>
+<p>Per request:</p>
+<pre><code class="language-text">gateway   one keyed read; verify hash and expires — transport validity,
+          wall clock is fine here
+session   open_actor_session(path): resolve grants by the ancestor walk;
+          the environment contains only the granted surfaces — everything
+          else is absent, not forbidden
+commit    actor membership re-verified before commit admission — authority,
+          deterministic</code></pre>
+<p>Revoking an *account* rejects its in-flight proposals everywhere; revoking a *session* stops its transport at the gateway. Deliberately asymmetric — and session-row reads do not join every commit&#x27;s basis, or touching <code>expires</code> would reject unrelated writes. Commits record <code>$actor</code> (account) and <code>$via</code> (session row) for audit.</p>
+<h2 id="5-library-surface">5. Library surface</h2>
+<pre><code class="language-text">store.system()                    embedder-only unrestricted session
+store.open_actor_session(path)    capability-bounded session for an account
+store.refs_to(path)               reverse-reference index lookup
+$via                              commit field: the carrying session</code></pre>
+<h2 id="6-boundaries-v1">6. Boundaries (v1)</h2>
+<pre><code class="language-text">anonymous/public access   no $members representation (a role needs an
+                          actor); the app&#x27;s system session mediates public
+                          reads
+impersonation             a system-session capability with $as attribution,
+                          not a modelable grant
+identity lifecycle        app policy; Liasse supplies rows, refs, history,
+                          and delete policies
+wall-clock expiry         gateway/session policy in v1; reader-time model
+                          expressions are deliberately absent</code></pre></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#1-identity-is-a-ref-users-are-rows">1. Identity is a ref; users are rows</a>
+<a class="toc-l2" href="#2-roles-membership-is-a-view-permission-is-a-surface">2. Roles: membership is a view, permission is a surface</a>
+<a class="toc-l2" href="#3-granularity-project-reads-call-writes">3. Granularity: project reads, call writes</a>
+<a class="toc-l2" href="#4-sessions-and-the-login-system">4. Sessions and the login system</a>
+<a class="toc-l2" href="#5-library-surface">5. Library surface</a>
+<a class="toc-l2" href="#6-boundaries-v1">6. Boundaries (v1)</a>
+</aside>
+  <script src="../assets/search.js"></script>
+</body>
+</html>

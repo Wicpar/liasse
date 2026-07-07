@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Collections and static structures · Liasse</title>
+  <link rel="stylesheet" href="../assets/liasse.css">
+</head>
+<body data-search-index="../assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="../index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="../index.html">Home</a>
+<a href="../getting-started.html">Getting started</a>
+<a href="../mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a href="../tutorials/tasks.html">Task app</a>
+<a href="../tutorials/modules.html">Module boundary</a>
+<a href="../examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="../reference/feature-map.html">Feature map</a>
+<a href="../features/format.html">Authoring format</a>
+<a href="../features/types.html">Types</a>
+<a href="../features/collections.html">Collections and structs</a>
+<a href="../features/views.html">Views</a>
+<a href="../features/refs.html">Refs</a>
+<a href="../features/mutations.html">Mutations</a>
+<a href="../features/checks-transforms.html">Checks and transforms</a>
+<a href="../features/permissions.html">Permissions and sessions</a>
+<a href="../features/modules.html">Modules</a>
+<a href="../features/limits.html">Limits and sources</a>
+<a href="../features/storage.html">Blobs and storage</a>
+<a href="../features/history.html">History and extraction</a>
+<a href="../features/client.html">Client protocol</a>
+<a href="../features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="../spec/README.html">README</a>
+<a href="../spec/SYNTAX.html">Syntax</a>
+<a class="active" href="../spec/COLLECTIONS.html">Collections</a>
+<a href="../spec/MUTATIONS.html">Mutations</a>
+<a href="../spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="../spec/MODULES.html">Modules</a>
+<a href="../spec/PERMISSIONS.html">Permissions</a>
+<a href="../spec/LIMITS.html">Limits</a>
+<a href="../spec/STORAGE.html">Storage</a>
+<a href="../spec/CLIENT.html">Client</a>
+<a href="../spec/HISTORY.html">History</a>
+<a href="../spec/RESOLUTIONS.html">Resolutions</a>
+<a href="../spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="collections-and-static-structures">Collections and static structures</h1>
+<p>Status: working draft.</p>
+<p>This document defines model shape: structs, keyed collections, sets, relations, uniqueness, and sort. Access, view, ref, and mutation syntax lives in <code>SYNTAX.md</code>.</p>
+<p>Backend rule:</p>
+<pre><code class="language-text">The logical model is a tree.
+The backend may flatten keyed collections, sets, and nested structs into relational storage.
+Flattening is invisible to authors.</code></pre>
+<h2 id="1-package-shape">1. Package shape</h2>
+<p>A Liasse package has a model and data.</p>
+<pre><code class="language-json">{
+  &quot;$liasse&quot;: 1,
+  &quot;$app&quot;: &quot;acme.app@1.0.0&quot;,
+  &quot;$model&quot;: {},
+  &quot;$data&quot;: {}
+}</code></pre>
+<p>For modules:</p>
+<pre><code class="language-json">{
+  &quot;$liasse&quot;: 1,
+  &quot;$module&quot;: &quot;acme.pack@1.0.0&quot;,
+  &quot;$model&quot;: {},
+  &quot;$data&quot;: {}
+}</code></pre>
+<p>Rules:</p>
+<pre><code class="language-text">$model declares schema
+$data contains initial/imported data matching $model</code></pre>
+<h2 id="2-shape-kinds">2. Shape kinds</h2>
+<p>Inside <code>$model</code>, a field can be one of these shapes.</p>
+<pre><code class="language-text">&quot;name&quot;: &quot;text&quot;                       primitive field
+&quot;name&quot;: { &quot;$type&quot;: &quot;text&quot; }         expanded field
+&quot;owner&quot;: { &quot;$ref&quot;: &quot;#people&quot;, &quot;$on_delete&quot;: &quot;restrict&quot; } reference field
+&quot;address&quot;: { ... }                   static struct
+&quot;users&quot;: { &quot;$key&quot;: &quot;id&quot;, ... }      keyed collection
+&quot;tags&quot;: { &quot;$set&quot;: &quot;text&quot; }          set of unique scalar values
+&quot;modules&quot;: { &quot;$modules&quot;: {} }       module space
+&quot;open_items&quot;: { &quot;$view&quot;: &quot;...&quot; }    computed/read view
+&quot;kind&quot;: { &quot;$enum&quot;: [&quot;a&quot;, &quot;b&quot;] }      enum field
+&quot;subs&quot;: { &quot;$like&quot;: &quot;^&quot; }             shape alias (recursion)
+&quot;total&quot;: &quot;= .ht + .vat&quot;              computed scalar field (type deduced)</code></pre>
+<p>A plain object is a static struct unless it contains a collection/view/module/set marker such as <code>$key</code>, <code>$set</code>, <code>$modules</code>, or <code>$view</code>.</p>
+<h2 id="3-static-structs">3. Static structs</h2>
+<p>A static struct is a fixed nested shape within its containing row.</p>
+<pre><code class="language-json">{
+  &quot;$model&quot;: {
+    &quot;companies&quot;: {
+      &quot;$key&quot;: &quot;id&quot;,
+      &quot;id&quot;: &quot;text&quot;,
+      &quot;name&quot;: &quot;text&quot;,
+
+      &quot;billing_address&quot;: {
+        &quot;line1&quot;: &quot;text&quot;,
+        &quot;line2&quot;: { &quot;$type&quot;: &quot;text&quot;, &quot;$optional&quot;: true },
+        &quot;city&quot;: &quot;text&quot;,
+        &quot;country&quot;: &quot;text&quot;
+      }
+    }
+  }
+}</code></pre>
+<p>Rules:</p>
+<pre><code class="language-text">struct fields are part of the containing row
+structs can contain fields, structs, sets, views, and nested collections
+optional structs use $optional on the struct object</code></pre>
+<h2 id="3b-computed-scalar-fields">3b. Computed scalar fields</h2>
+<p>A field declared as an <code>=</code> expression is computed: read-only, derived from the containing row, never stored, kept current by the engine.</p>
+<pre><code class="language-hjson">&quot;tasks&quot;: {
+  &quot;$key&quot;: &quot;id&quot;,
+  &quot;id&quot;: &quot;text&quot;,
+  &quot;estimate&quot;: { &quot;$type&quot;: &quot;int&quot;, &quot;$optional&quot;: true },
+  &quot;spent&quot;: { &quot;$type&quot;: &quot;int&quot;, &quot;$default&quot;: &quot;= 0&quot; },
+  &quot;over&quot;: &quot;= has(.estimate) &amp;&amp; .spent &gt; .estimate&quot;
+}</code></pre>
+<p>The type is deduced by the checker; an ill-typed expression rejects the model. Computed fields participate in views, sorts, and checks like stored fields, and are absent when their expression yields absent.</p>
+<h2 id="4-keyed-collections">4. Keyed collections</h2>
+<p>A keyed collection is a set of rows with local identity.</p>
+<pre><code class="language-json">{
+  &quot;$model&quot;: {
+    &quot;companies&quot;: {
+      &quot;$key&quot;: &quot;id&quot;,
+      &quot;id&quot;: &quot;text&quot;,
+      &quot;name&quot;: &quot;text&quot;
+    }
+  }
+}</code></pre>
+<p>Rules:</p>
+<pre><code class="language-text">$key names the row identity field or fields
+keys are unique within the containing collection and containing parent row
+nested collections use the path for ancestry
+backend storage may flatten nested collections into physical tables with hidden parent identity</code></pre>
+<p>Nested collection:</p>
+<pre><code class="language-json">{
+  &quot;$model&quot;: {
+    &quot;companies&quot;: {
+      &quot;$key&quot;: &quot;id&quot;,
+      &quot;id&quot;: &quot;text&quot;,
+      &quot;name&quot;: &quot;text&quot;,
+
+      &quot;offices&quot;: {
+        &quot;$key&quot;: &quot;id&quot;,
+        &quot;id&quot;: &quot;text&quot;,
+        &quot;name&quot;: &quot;text&quot;,
+
+        &quot;rooms&quot;: {
+          &quot;$key&quot;: &quot;id&quot;,
+          &quot;id&quot;: &quot;text&quot;,
+          &quot;label&quot;: &quot;text&quot;,
+          &quot;capacity&quot;: &quot;int&quot;
+        }
+      }
+    }
+  }
+}</code></pre>
+<p>Logical paths:</p>
+<pre><code class="language-text">/companies/acme
+/companies/acme/offices/paris
+/companies/acme/offices/paris/rooms/main</code></pre>
+<h2 id="5-data-for-keyed-collections">5. Data for keyed collections</h2>
+<p>In <code>$data</code>, a keyed collection is authored as a map from key to row.</p>
+<pre><code class="language-json">{
+  &quot;$data&quot;: {
+    &quot;companies&quot;: {
+      &quot;acme&quot;: {
+        &quot;name&quot;: &quot;Acme SAS&quot;
+      }
+    }
+  }
+}</code></pre>
+<p>The map key supplies the key field. A row may repeat its key field for readability, and if it does, it must match the map key.</p>
+<p>Composite-key data uses canonical encoded keys in JSON object member names. Expressions use typed key objects; string encoding belongs to package data and export paths.</p>
+<p>Canonical key encoding: each key field, in <code>$key</code> order, is rendered in its canonical scalar text form (text as-is, int/decimal canonical digits, bool <code>true</code>/<code>false</code>, uuid lowercase hyphenated, date/timestamp ISO-8601); inside text parts the characters <code>%</code> and <code>:</code> are escaped as <code>%25</code> and <code>%3A</code>; parts are joined with <code>:</code>. Deterministic, reversible given the key type, stable across engines, and used identically in path display.</p>
+<h2 id="6-generated-keys">6. Generated keys</h2>
+<p>A collection key may have a default/generator.</p>
+<pre><code class="language-json">{
+  &quot;$model&quot;: {
+    &quot;people&quot;: {
+      &quot;$key&quot;: &quot;id&quot;,
+      &quot;id&quot;: { &quot;$type&quot;: &quot;uuid&quot;, &quot;$default&quot;: &quot;= uuid()&quot; },
+      &quot;name&quot;: &quot;text&quot;
+    }
+  }
+}</code></pre>
+<p>Generated keys support inserts that omit key fields:</p>
+<pre><code class="language-text">.people + { @name }</code></pre>
+<h2 id="7-composite-keys">7. Composite keys</h2>
+<p>A collection may use more than one key field.</p>
+<pre><code class="language-json">{
+  &quot;$model&quot;: {
+    &quot;vat_rates&quot;: {
+      &quot;$key&quot;: [&quot;country&quot;, &quot;code&quot;],
+      &quot;country&quot;: &quot;text&quot;,
+      &quot;code&quot;: &quot;text&quot;,
+      &quot;rate&quot;: &quot;decimal&quot;
+    }
+  }
+}</code></pre>
+<p>Use composite keys when row identity is naturally a tuple at that level.</p>
+<p>Expression selector:</p>
+<pre><code class="language-text">.vat_rates[{ country: @country, code: @code }]</code></pre>
+<p>The key type is available as:</p>
+<pre><code class="language-text">.vat_rates.$key</code></pre>
+<h2 id="8-sets-of-unique-values">8. Sets of unique values</h2>
+<p>A set is a unique collection of scalar values or references used for payload-free membership.</p>
+<pre><code class="language-json">{
+  &quot;$model&quot;: {
+    &quot;companies&quot;: {
+      &quot;$key&quot;: &quot;id&quot;,
+      &quot;id&quot;: &quot;text&quot;,
+      &quot;name&quot;: &quot;text&quot;,
+      &quot;tags&quot;: { &quot;$set&quot;: &quot;text&quot; }
+    }
+  }
+}</code></pre>
+<p>Data:</p>
+<pre><code class="language-json">{
+  &quot;$data&quot;: {
+    &quot;companies&quot;: {
+      &quot;acme&quot;: {
+        &quot;name&quot;: &quot;Acme SAS&quot;,
+        &quot;tags&quot;: [&quot;customer&quot;, &quot;fr&quot;, &quot;priority&quot;]
+      }
+    }
+  }
+}</code></pre>
+<p>Rules:</p>
+<pre><code class="language-text">set values are unique within the containing row
+array order in $data is authoring order
+read order and canonical export order follow canonical value order</code></pre>
+<h2 id="9-relations">9. Relations</h2>
+<p>Pure relation/membership:</p>
+<pre><code class="language-hjson">&quot;reviewers&quot;: {
+  &quot;$set&quot;: {
+    &quot;$ref&quot;: &quot;#people&quot;,
+    &quot;$on_delete&quot;: &quot;restrict&quot;
+  }
+}</code></pre>
+<p>Relation with payload:</p>
+<pre><code class="language-hjson">&quot;assignments&quot;: {
+  &quot;$key&quot;: [&quot;project&quot;, &quot;person&quot;],
+
+  &quot;project&quot;: { &quot;$ref&quot;: &quot;.projects&quot;, &quot;$on_delete&quot;: &quot;restrict&quot; },
+  &quot;person&quot;: { &quot;$ref&quot;: &quot;#people&quot;, &quot;$on_delete&quot;: &quot;restrict&quot; },
+  &quot;role&quot;: &quot;text&quot;
+}</code></pre>
+<p>Rules:</p>
+<pre><code class="language-text">a set of refs is for pure membership
+a keyed collection is for relations with payload
+relation uniqueness is provided by $key and optional $unique constraints</code></pre>
+<h2 id="10-additional-uniqueness">10. Additional uniqueness</h2>
+<p><code>$key</code> defines row identity. <code>$unique</code> defines additional uniqueness constraints.</p>
+<p>Collection-level form:</p>
+<pre><code class="language-json">{
+  &quot;$model&quot;: {
+    &quot;users&quot;: {
+      &quot;$key&quot;: &quot;id&quot;,
+      &quot;$unique&quot;: [&quot;email&quot;, [&quot;country&quot;, &quot;tax_id&quot;]],
+      &quot;id&quot;: &quot;uuid&quot;,
+      &quot;email&quot;: &quot;text&quot;,
+      &quot;country&quot;: &quot;text&quot;,
+      &quot;tax_id&quot;: &quot;text&quot;
+    }
+  }
+}</code></pre>
+<p>Field shorthand:</p>
+<pre><code class="language-hjson">&quot;email&quot;: {
+  &quot;$type&quot;: &quot;text&quot;,
+  &quot;$unique&quot;: true
+}</code></pre>
+<p>Rules:</p>
+<pre><code class="language-text">unique constraints are scoped to their collection
+nested collection uniqueness is also scoped by parent row path
+optional absent values do not participate in uniqueness
+composite unique constraints apply when all fields are present</code></pre>
+<h2 id="11-sort">11. Sort</h2>
+<p><code>$sort</code> declares deterministic read order for collections and views.</p>
+<p>Default sort:</p>
+<pre><code class="language-text">$key ascending</code></pre>
+<p>Collection declaration:</p>
+<pre><code class="language-json">{
+  &quot;$model&quot;: {
+    &quot;people&quot;: {
+      &quot;$key&quot;: &quot;id&quot;,
+      &quot;$sort&quot;: [&quot;name&quot;, &quot;id&quot;],
+      &quot;id&quot;: &quot;uuid&quot;,
+      &quot;name&quot;: &quot;text&quot;,
+      &quot;created_at&quot;: &quot;timestamp&quot;
+    }
+  }
+}</code></pre>
+<p>Descending sort:</p>
+<pre><code class="language-hjson">&quot;$sort&quot;: [&quot;-created_at&quot;, &quot;name&quot;]</code></pre>
+<p>Structured sort form:</p>
+<pre><code class="language-hjson">&quot;$sort&quot;: [
+  { &quot;$by&quot;: &quot;name&quot;, &quot;$dir&quot;: &quot;asc&quot; },
+  { &quot;$by&quot;: &quot;created_at&quot;, &quot;$dir&quot;: &quot;desc&quot; }
+]</code></pre>
+<p>View sort inside projection:</p>
+<pre><code class="language-hjson">&quot;templates&quot;: {
+  &quot;$view&quot;: &quot;.modules::ecriture_templates { id, label, module: modules.$key, $sort: [module, label] }&quot;
+}</code></pre>
+<p>Rules:</p>
+<pre><code class="language-text">$sort defines deterministic read order
+$sort preserves identity
+default order is by key
+sort fields are fields of the row/view output or computable from visible bindings
+nested collection sort is local to each parent row
+composite key default order is lexicographic by canonical key-field order</code></pre>
+<h2 id="12-views-as-collection-shapes">12. Views as collection shapes</h2>
+<p>A view is data. Its row identity is inferred from its source row chain unless it declares a synthetic <code>$key</code>.</p>
+<p>Pass-through view:</p>
+<pre><code class="language-hjson">&quot;active_people&quot;: {
+  &quot;$view&quot;: &quot;.people[:person | person.active]&quot;
+}</code></pre>
+<p>Projected view:</p>
+<pre><code class="language-hjson">&quot;people_index&quot;: {
+  &quot;$view&quot;: &quot;.people { id, name }&quot;
+}</code></pre>
+<p>Synthetic keyed view:</p>
+<pre><code class="language-hjson">&quot;account_totals&quot;: {
+  &quot;$view&quot;: &quot;.entries::lines { $key: account, account, debit: sum(group.debit), credit: sum(group.credit), $sort: [account] }&quot;
+}</code></pre>
+<h2 id="13-types-are-shapes">13. Types are shapes</h2>
+<p>The primitive and container syntax is canonicalized in <code>SYNTAX.md</code> §1a. A <code>$types</code> entry uses the exact declaration grammar of <code>$model</code> — scalars, enums, structs, keyed collections (with <code>$key</code>, <code>$sort</code>, checks), sets, blob types with acceptance parameters. There is no separate model type sublanguage.</p>
+<pre><code class="language-hjson">&quot;$types&quot;: {
+  &quot;role&quot;:       { &quot;$enum&quot;: [&quot;admin&quot;, &quot;member&quot;] },
+  &quot;store_bank&quot;: { &quot;$key&quot;: &quot;id&quot;,
+                  &quot;id&quot;: &quot;text&quot;, &quot;connector&quot;: &quot;text&quot;,
+                  &quot;params&quot;: &quot;json&quot;, &quot;enabled&quot;: &quot;bool&quot; },
+  &quot;company&quot;:    { &quot;$key&quot;: &quot;id&quot;,
+                  &quot;id&quot;: &quot;text&quot;, &quot;name&quot;: &quot;text&quot;,
+                  &quot;members&quot;: { &quot;$key&quot;: &quot;user&quot;,
+                               &quot;user&quot;: { &quot;$ref&quot;: &quot;/users&quot;, &quot;$on_delete&quot;: &quot;restrict&quot; }, &quot;role&quot;: &quot;role&quot; },
+                  &quot;subcompanies&quot;: &quot;company&quot; }
+}</code></pre>
+<p><strong>Using a type name is <code>$like</code> to its declaration.</strong> A string field whose value names a type takes that shape: a collection type makes a keyed collection, a struct type a nested struct, a scalar type a scalar field. Recursion is plain self-reference (<code>&quot;subcompanies&quot;: &quot;company&quot;</code>), mutual recursion included. Declare the shape once; use it at the root and inside every company without inventing donor structures:</p>
+<pre><code class="language-hjson">&quot;stores&quot;: &quot;store_bank&quot;,
+&quot;companies&quot;: { &quot;…&quot;: &quot;…&quot;, &quot;storage&quot;: { &quot;stores&quot;: &quot;store_bank&quot; } }</code></pre>
+<p><strong>Typing is structural.</strong> A name exists for reuse and readability, never identity: anything of the right shape satisfies a contract, named or not. A view satisfies a collection-shaped contract iff its rows satisfy the shape and its identity maps onto the declared <code>$key</code>. Enum comparisons remain load-checked (<code>m.role == &#x27;adnin&#x27;</code> is a diagnostic).</p>
+<p>Contracts throughout the language are types used in contract position — module <code>$interfaces</code>, meter pool interfaces, blob parameter types, and client <code>$params</code>. One grammar, two spellings, one satisfaction rule.</p>
+<h2 id="14-like-the-positional-spelling">14. <code>$like</code>: the positional spelling</h2>
+<p><code>$like</code> remains for anonymous recursion, pointing at an enclosing declaration by position:</p>
+<pre><code class="language-hjson">&quot;subcompanies&quot;: { &quot;$like&quot;: &quot;^&quot; }</code></pre>
+<p>Prefer a named type whenever the shape is used twice or referenced from elsewhere; linters flag absolute-path <code>$like</code> (&quot;name it&quot;) — legal, but a named type says the same thing without coupling to a location.</p></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#1-package-shape">1. Package shape</a>
+<a class="toc-l2" href="#2-shape-kinds">2. Shape kinds</a>
+<a class="toc-l2" href="#3-static-structs">3. Static structs</a>
+<a class="toc-l2" href="#3b-computed-scalar-fields">3b. Computed scalar fields</a>
+<a class="toc-l2" href="#4-keyed-collections">4. Keyed collections</a>
+<a class="toc-l2" href="#5-data-for-keyed-collections">5. Data for keyed collections</a>
+<a class="toc-l2" href="#6-generated-keys">6. Generated keys</a>
+<a class="toc-l2" href="#7-composite-keys">7. Composite keys</a>
+<a class="toc-l2" href="#8-sets-of-unique-values">8. Sets of unique values</a>
+<a class="toc-l2" href="#9-relations">9. Relations</a>
+<a class="toc-l2" href="#10-additional-uniqueness">10. Additional uniqueness</a>
+<a class="toc-l2" href="#11-sort">11. Sort</a>
+<a class="toc-l2" href="#12-views-as-collection-shapes">12. Views as collection shapes</a>
+<a class="toc-l2" href="#13-types-are-shapes">13. Types are shapes</a>
+<a class="toc-l2" href="#14-like-the-positional-spelling">14. $like: the positional spelling</a>
+</aside>
+  <script src="../assets/search.js"></script>
+</body>
+</html>

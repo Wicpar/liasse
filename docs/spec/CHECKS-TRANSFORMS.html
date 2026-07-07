@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Checks and transforms · Liasse</title>
+  <link rel="stylesheet" href="../assets/liasse.css">
+</head>
+<body data-search-index="../assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="../index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="../index.html">Home</a>
+<a href="../getting-started.html">Getting started</a>
+<a href="../mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a href="../tutorials/tasks.html">Task app</a>
+<a href="../tutorials/modules.html">Module boundary</a>
+<a href="../examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="../reference/feature-map.html">Feature map</a>
+<a href="../features/format.html">Authoring format</a>
+<a href="../features/types.html">Types</a>
+<a href="../features/collections.html">Collections and structs</a>
+<a href="../features/views.html">Views</a>
+<a href="../features/refs.html">Refs</a>
+<a href="../features/mutations.html">Mutations</a>
+<a href="../features/checks-transforms.html">Checks and transforms</a>
+<a href="../features/permissions.html">Permissions and sessions</a>
+<a href="../features/modules.html">Modules</a>
+<a href="../features/limits.html">Limits and sources</a>
+<a href="../features/storage.html">Blobs and storage</a>
+<a href="../features/history.html">History and extraction</a>
+<a href="../features/client.html">Client protocol</a>
+<a href="../features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="../spec/README.html">README</a>
+<a href="../spec/SYNTAX.html">Syntax</a>
+<a href="../spec/COLLECTIONS.html">Collections</a>
+<a href="../spec/MUTATIONS.html">Mutations</a>
+<a class="active" href="../spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="../spec/MODULES.html">Modules</a>
+<a href="../spec/PERMISSIONS.html">Permissions</a>
+<a href="../spec/LIMITS.html">Limits</a>
+<a href="../spec/STORAGE.html">Storage</a>
+<a href="../spec/CLIENT.html">Client</a>
+<a href="../spec/HISTORY.html">History</a>
+<a href="../spec/RESOLUTIONS.html">Resolutions</a>
+<a href="../spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="checks-and-transforms">Checks and transforms</h1>
+<p>Status: locked for this draft.</p>
+<p>This document covers checks and value transforms. Access, view, ref, and mutation syntax lives in <code>SYNTAX.md</code>.</p>
+<h2 id="1-current-value">1. Current value</h2>
+<p><code>.</code> means the current scalar value in contexts with one obvious scalar value.</p>
+<p>Examples:</p>
+<pre><code class="language-hjson">&quot;email&quot;: {
+  &quot;$type&quot;: &quot;text&quot;,
+  &quot;$normalize&quot;: &quot;lower(trim(.))&quot;
+}</code></pre>
+<pre><code class="language-hjson">&quot;name&quot;: {
+  &quot;$type&quot;: &quot;text&quot;,
+  &quot;$check&quot;: [&quot;size(trim(.)) &gt; 0&quot;, &quot;Name is required&quot;]
+}</code></pre>
+<pre><code class="language-hjson">&quot;display_name&quot;: {
+  &quot;$type&quot;: &quot;text&quot;,
+  &quot;$from&quot;: &quot;name&quot;,
+  &quot;$as&quot;: &quot;trim(.)&quot;
+}</code></pre>
+<p>Rules:</p>
+<pre><code class="language-text">in $normalize, . is the incoming value being normalized
+in field-level $check, . is the value being checked
+in $as migration transforms, . is the value read from $from</code></pre>
+<p>Named parameters use <code>@name</code>. Imports use <code>#name</code>. Bindings use bare names.</p>
+<h2 id="2-check-semantics">2. Check semantics</h2>
+<p>Checks use CEL assertion semantics.</p>
+<p>Canonical form:</p>
+<pre><code class="language-hjson">&quot;$check&quot;: &quot;assert(size(trim(.)) &gt; 0, &#x27;Name is required&#x27;)&quot;</code></pre>
+<p>Tuple shorthand:</p>
+<pre><code class="language-hjson">&quot;$check&quot;: [&quot;size(trim(.)) &gt; 0&quot;, &quot;Name is required&quot;]</code></pre>
+<p>Multiple checks:</p>
+<pre><code class="language-hjson">&quot;$check&quot;: [
+  [&quot;size(trim(.)) &gt; 0&quot;, &quot;Name is required&quot;],
+  [&quot;size(.) &lt;= 320&quot;, &quot;Value is too long&quot;]
+]</code></pre>
+<p>Tuple form expands to:</p>
+<pre><code class="language-text">assert(condition, message)</code></pre>
+<p>The condition evaluates to <code>bool</code>. The message evaluates to <code>text</code>.</p>
+<h2 id="3-failed-checks">3. Failed checks</h2>
+<p>A failed check rejects the value at validation time or rejects the proposed write before commit admission, depending on where the check runs in the normal write pipeline.</p>
+<p>The diagnostic includes:</p>
+<pre><code class="language-text">path
+check expression
+message
+source span when available</code></pre>
+<p>Example:</p>
+<pre><code class="language-json">{
+  &quot;path&quot;: &quot;/companies/acme/users/fred/name&quot;,
+  &quot;check&quot;: &quot;size(trim(.)) &gt; 0&quot;,
+  &quot;message&quot;: &quot;Name is required&quot;
+}</code></pre>
+<h2 id="4-normalization">4. Normalization</h2>
+<p><code>$normalize</code> is a write-time transform.</p>
+<pre><code class="language-hjson">&quot;email&quot;: {
+  &quot;$type&quot;: &quot;text&quot;,
+  &quot;$optional&quot;: true,
+  &quot;$normalize&quot;: &quot;lower(trim(.))&quot;
+}</code></pre>
+<p>Every write to <code>email</code> stores the normalized value.</p>
+<p>Rules:</p>
+<pre><code class="language-text">normalization is pure
+normalization runs before checks on the normalized field
+normalization reads only the current value and pure functions</code></pre>
+<h2 id="5-migration-transforms">5. Migration transforms</h2>
+<p>A target schema can describe how old data becomes new data.</p>
+<pre><code class="language-hjson">&quot;display_name&quot;: {
+  &quot;$type&quot;: &quot;text&quot;,
+  &quot;$from&quot;: &quot;name&quot;,
+  &quot;$as&quot;: &quot;trim(.)&quot;
+}</code></pre>
+<p>Meaning:</p>
+<pre><code class="language-text">during upgrade, read the old field name, bind it as ., transform it with trim(.), and write display_name</code></pre>
+<p>If <code>$as</code> is omitted, the value is copied as-is.</p>
+<pre><code class="language-hjson">&quot;display_name&quot;: {
+  &quot;$type&quot;: &quot;text&quot;,
+  &quot;$from&quot;: &quot;name&quot;
+}</code></pre>
+<p>Collection rename uses the same key on the collection declaration:</p>
+<pre><code class="language-hjson">&quot;clients&quot;: {
+  &quot;$from&quot;: &quot;customers&quot;,
+  &quot;$key&quot;: &quot;id&quot;,
+  &quot;id&quot;: &quot;text&quot;,
+  &quot;name&quot;: &quot;text&quot;
+}</code></pre>
+<p>Backward direction: mechanical transforms (<code>$from</code> without <code>$as</code>, renames, added fields with defaults) invert automatically. A lossy <code>$as</code> may declare its inverse:</p>
+<pre><code class="language-hjson">&quot;display_name&quot;: {
+  &quot;$type&quot;: &quot;text&quot;,
+  &quot;$from&quot;: &quot;name&quot;,
+  &quot;$as&quot;: &quot;trim(.)&quot;,
+  &quot;$back&quot;: &quot;.&quot;
+}</code></pre>
+<p>Downgrade rule: downgrading installs the older package. Values the older shape can hold are restored — from <code>$back</code> where declared, from history for rows unchanged since the upgrade — and everything unrepresentable is archived, never dropped. History is never rewritten.</p>
+<p>Rules:</p>
+<pre><code class="language-text">$from names the old field or old path relative to the current row/collection shape
+$as is a CEL expression over .
+$back is the optional inverse of $as
+checked transforms are planned before data changes
+failed row transforms are reported with row identity and path</code></pre>
+<h2 id="6-purity-and-generative-functions">6. Purity and generative functions</h2>
+<p>Expressions split into two evaluation moments:</p>
+<pre><code class="language-text">fold-time expressions
+  $check, $normalize, computed fields, $view, $expose
+  must be pure: same inputs, same result, on every engine, at every replay
+
+write-time expressions
+  $default, $data values, mutation expressions and their arguments
+  may call generative functions: uuid(), now()</code></pre>
+<p>Generative results are produced once, when the commit is created, and the produced values are recorded in the commit. Replay and history folds reuse the recorded values, so the fold stays deterministic while authors keep <code>&quot;$default&quot;: &quot;= uuid()&quot;</code> and <code>&quot;created_at&quot;: &quot;= now()&quot;</code>.</p>
+<p>A generative function in a fold-time position is a load-time diagnostic.</p></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#1-current-value">1. Current value</a>
+<a class="toc-l2" href="#2-check-semantics">2. Check semantics</a>
+<a class="toc-l2" href="#3-failed-checks">3. Failed checks</a>
+<a class="toc-l2" href="#4-normalization">4. Normalization</a>
+<a class="toc-l2" href="#5-migration-transforms">5. Migration transforms</a>
+<a class="toc-l2" href="#6-purity-and-generative-functions">6. Purity and generative functions</a>
+</aside>
+  <script src="../assets/search.js"></script>
+</body>
+</html>

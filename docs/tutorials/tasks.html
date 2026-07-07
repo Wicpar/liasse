@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tutorial: task app · Liasse</title>
+  <link rel="stylesheet" href="../assets/liasse.css">
+</head>
+<body data-search-index="../assets/search-index.json">
+  <nav class="nav">
+<a class="brand" href="../index.html">Liasse</a>
+<input id="search" type="search" placeholder="Search docs" autocomplete="off">
+<div id="search-results" class="search-results"></div>
+<section><h2>Start</h2>
+<a href="../index.html">Home</a>
+<a href="../getting-started.html">Getting started</a>
+<a href="../mental-model.html">Mental model</a>
+</section>
+<section><h2>Tutorials</h2>
+<a class="active" href="../tutorials/tasks.html">Task app</a>
+<a href="../tutorials/modules.html">Module boundary</a>
+<a href="../examples/accounting-templates.html">Accounting templates</a>
+</section>
+<section><h2>Features</h2>
+<a href="../reference/feature-map.html">Feature map</a>
+<a href="../features/format.html">Authoring format</a>
+<a href="../features/types.html">Types</a>
+<a href="../features/collections.html">Collections and structs</a>
+<a href="../features/views.html">Views</a>
+<a href="../features/refs.html">Refs</a>
+<a href="../features/mutations.html">Mutations</a>
+<a href="../features/checks-transforms.html">Checks and transforms</a>
+<a href="../features/permissions.html">Permissions and sessions</a>
+<a href="../features/modules.html">Modules</a>
+<a href="../features/limits.html">Limits and sources</a>
+<a href="../features/storage.html">Blobs and storage</a>
+<a href="../features/history.html">History and extraction</a>
+<a href="../features/client.html">Client protocol</a>
+<a href="../features/resolutions.html">Resolved decisions</a>
+</section>
+<section><h2>Normative spec</h2>
+<a href="../spec/README.html">README</a>
+<a href="../spec/SYNTAX.html">Syntax</a>
+<a href="../spec/COLLECTIONS.html">Collections</a>
+<a href="../spec/MUTATIONS.html">Mutations</a>
+<a href="../spec/CHECKS-TRANSFORMS.html">Checks and transforms</a>
+<a href="../spec/MODULES.html">Modules</a>
+<a href="../spec/PERMISSIONS.html">Permissions</a>
+<a href="../spec/LIMITS.html">Limits</a>
+<a href="../spec/STORAGE.html">Storage</a>
+<a href="../spec/CLIENT.html">Client</a>
+<a href="../spec/HISTORY.html">History</a>
+<a href="../spec/RESOLUTIONS.html">Resolutions</a>
+<a href="../spec/examples/accounting-templates.html">Accounting template spec</a>
+</section>
+</nav>
+  <main class="content">
+    <article><h1 id="tutorial-task-app">Tutorial: task app</h1>
+<p>This tutorial shows the minimum useful Liasse app shape.</p>
+<h2 id="complete-source">Complete source</h2>
+<pre><code class="language-hjson">$liasse: 1
+$app: acme.tasks@0.1.0
+
+$model: {
+  users: {
+    $key: id
+    id: { $type: uuid, $default: &quot;= uuid()&quot; }
+    email: { $type: text, $normalize: &quot;lower(trim(.))&quot; }
+    name: text
+  }
+
+  tasks: {
+    $key: id
+    id: { $type: uuid, $default: &quot;= uuid()&quot; }
+    title: { $type: text, $normalize: &quot;trim(.)&quot;, $check: [&quot;size(.) &gt; 0&quot;, &quot;title required&quot;] }
+    done: { $type: bool, $default: false }
+    owner: { $ref: &quot;/users&quot;, $on_delete: restrict }
+    created_at: { $type: timestamp, $default: &quot;= now()&quot; }
+
+    $mut: {
+      &quot;rename({ title: text })&quot;: [&quot;{ title = @title }&quot;]
+      &quot;complete()&quot;: [&quot;{ done = true }&quot;]
+      &quot;reopen()&quot;: [&quot;{ done = false }&quot;]
+    }
+  }
+
+  open_tasks: {
+    $view: &quot;/tasks[!done] { id, title, owner, created_at }&quot;
+  }
+
+  $roles: {
+    member: {
+      $members: &quot;/users::&quot;
+      me: { $view: &quot;/users[actor] { id, email, name }&quot; }
+      tasks: {
+        $view: &quot;/tasks[owner == actor] { id, title, done, created_at }&quot;
+        $mut: [rename, complete, reopen]
+      }
+    }
+  }
+}
+
+$data: {
+  users: []
+  tasks: []
+}</code></pre>
+<h2 id="what-it-demonstrates">What it demonstrates</h2>
+<ul>
+<li><code>users</code> and <code>tasks</code> are keyed collections.</li>
+<li><code>owner</code> is a ref and must declare <code>$on_delete</code>.</li>
+<li><code>title</code> is normalized before checks and storage.</li>
+<li><code>open_tasks</code> is a derived view.</li>
+<li>The <code>member</code> role is the only client API surface.</li>
+<li>Mutations are names exposed through that surface.</li>
+</ul>
+<h2 id="things-this-example-intentionally-omits">Things this example intentionally omits</h2>
+<p>The example does not show module installation, blobs, metered limits, extraction bundles, or cross-module dependencies. Those features are easier to learn after the base model is clear.</p></article>
+  </main>
+  <aside class="toc"><h2>On this page</h2>
+<a class="toc-l2" href="#complete-source">Complete source</a>
+<a class="toc-l2" href="#what-it-demonstrates">What it demonstrates</a>
+<a class="toc-l2" href="#things-this-example-intentionally-omits">Things this example intentionally omits</a>
+</aside>
+  <script src="../assets/search.js"></script>
+</body>
+</html>
