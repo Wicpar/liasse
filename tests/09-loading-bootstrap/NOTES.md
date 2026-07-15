@@ -43,6 +43,12 @@ The harness stores each value as the exact UTF-8 bytes of the entry at the
 given archive path when building the `.liasse` artifact. Entries are only ever
 referenced from the same case's `$resources` declarations.
 
+This is the same concept as §04's `build_artifact.files: { "<path>": "<bytes>" }`
+(`tests/04-package-structure/NOTES.md`) — raw entry bytes at an archive path.
+The two differ only in position: `resources` is a **case-level** member for
+cases that rely on the implicit load, while `build_artifact.files` is a **step**
+parameter for cases that build and load the artifact explicitly.
+
 ## Shape of the `hosts` member
 
 FORMAT.md declares `hosts` ("optional simulated host components") without a

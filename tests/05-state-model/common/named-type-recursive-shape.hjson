@@ -32,9 +32,9 @@
 
   steps: [
     { call: "public.companies.add_root", args: { id: "acme", name: "Acme" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.companies.add_sub", args: { parent: "acme", id: "labs", name: "Acme Labs" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { watch: "public.companies", id: "w1", expect_init: { value: [
       { parent: "acme", sub: "labs", name: "Acme Labs" }
     ] } }

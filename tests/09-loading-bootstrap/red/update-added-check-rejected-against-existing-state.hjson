@@ -19,19 +19,19 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.tighten@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.tighten@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$public": {
-        "companies": {
-          "$view": ".companies { id, name }"
-          "$mut": {
-            "rename": [
+      $public: {
+        companies: {
+          $view: ".companies { id, name }"
+          $mut: {
+            rename: [
               ".companies[@id].name = @name"
               "return .companies[@id] { id, name }"
             ]
@@ -39,9 +39,9 @@
         }
       }
     }
-    "$data": {
-      "companies": {
-        "acme": { "name": "X" }
+    $data: {
+      companies: {
+        acme: { name: "X" }
       }
     }
   }
@@ -51,22 +51,22 @@
       expect_init: { value: [ { id: "acme", name: "X" } ] } }
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.tighten@2.0.0"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": {
-                "$type": "text"
-                "$check": ["size(.) >= 3", "Company names need at least 3 characters"]
+          $liasse: 1
+          $app: "t.tighten@2.0.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: {
+                $type: "text"
+                $check: ["size(.) >= 3", "Company names need at least 3 characters"]
               }
             }
-            "$public": {
-              "companies": {
-                "$view": ".companies { id, name }"
-                "$mut": {
-                  "rename": [
+            $public: {
+              companies: {
+                $view: ".companies { id, name }"
+                $mut: {
+                  rename: [
                     ".companies[@id].name = @name"
                     "return .companies[@id] { id, name }"
                   ]
@@ -83,7 +83,7 @@
       } }
     // prior definition (without the check) must keep accepting its own writes
     { call: "public.companies.rename", args: { id: "acme", name: "Y" },
-      expect: { outcome: "ok", value: { id: "acme", name: "Y" } } }
+      expect: { outcome: ok, value: { id: "acme", name: "Y" } } }
     { expect_view: { watch: "w1", value: [ { id: "acme", name: "Y" } ] } }
   ]
 }

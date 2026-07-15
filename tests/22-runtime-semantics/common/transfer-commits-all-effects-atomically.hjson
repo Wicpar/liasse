@@ -7,7 +7,7 @@
   format: 1
   name: transfer-commits-all-effects-atomically
   suite: scenario
-  spec: ["§22.2", "#runtime", "#mutations"]
+  spec: ["#runtime", "#mutations", "§22.2"]
   tags: ["atomicity"]
 
   package: {

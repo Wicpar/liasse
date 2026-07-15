@@ -20,7 +20,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["§2.5"]
     detail: "unknown reserved ($-prefixed) member in a declaration object"
   }

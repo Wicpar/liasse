@@ -14,25 +14,25 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.optparam@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "uuid = uuid()"
-        "title": "text"
-        "note": "text?"
+    $liasse: 1
+    $app: "t.compat.optparam@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        note: "text?"
       }
-      "$mut": {
-        "add_task": [
+      $mut: {
+        add_task: [
           "t = .tasks + { title: @title }"
           "return t { id, title }"
         ]
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, title }"
-          "$mut": { "add": ".add_task" }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title }"
+          $mut: { add: ".add_task" }
         }
       }
     }
@@ -41,26 +41,26 @@
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.optparam@1.1.0"
-          "$model": {
-            "tasks": {
-              "$key": "id"
-              "id": "uuid = uuid()"
-              "title": "text"
-              "note": "text?"
+          $liasse: 1
+          $app: "t.compat.optparam@1.1.0"
+          $model: {
+            tasks: {
+              $key: "id"
+              id: "uuid = uuid()"
+              title: "text"
+              note: "text?"
             }
-            "$mut": {
+            $mut: {
               // gains @note, an optional parameter (tasks.note is text?)
-              "add_task": [
+              add_task: [
                 "t = .tasks + { title: @title, note: @note }"
                 "return t { id, title }"
               ]
             }
-            "$public": {
-              "tasks": {
-                "$view": ".tasks { id, title }"
-                "$mut": { "add": ".add_task" }
+            $public: {
+              tasks: {
+                $view: ".tasks { id, title }"
+                $mut: { add: ".add_task" }
               }
             }
           }

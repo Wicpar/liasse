@@ -23,7 +23,7 @@ invalid — data keys may be any Unicode text, declaration names may not.'''
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["§2.5"]
     detail: "declaration names are restricted to ASCII letters, digits, and _"
   }

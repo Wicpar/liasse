@@ -2,7 +2,7 @@
   format: 1
   name: w4-host-imports-exposed-template-across-boundary
   suite: scenario
-  spec: ["W4", "#modules", "§13.9", "§1310-stateful-services-across-module-boundaries"]
+  spec: ["#modules", "W4", "§13.8", "§13.9"]
   tags: [modules]
   note: '''
     W4 host fragment import_template reads a single exposed module row across the

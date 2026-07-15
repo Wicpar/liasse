@@ -14,65 +14,65 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "rates": { "$view": { "$key": "id", "id": "text", "pct": "decimal" } }
-                "probe": { "$view": { "$key": "id", "id": "text", "pct": "decimal" } }
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                rates: { $view: { $key: "id", id: "text", pct: "decimal" } }
+                probe: { $view: { $key: "id", id: "text", pct: "decimal" } }
               }
             }
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     checkout: {
-      "$liasse": 1
-      "$module": "t.checkout@1.0.0"
-      "$deps": {
-        "tax": "t.tax@1"
+      $liasse: 1
+      $module: "t.checkout@1.0.0"
+      $deps: {
+        tax: "t.tax@1"
       }
-      "$expose": {
-        "rates": { "$view": "#tax.rates { id, pct }" }
+      $expose: {
+        rates: { $view: "#tax.rates { id, pct }" }
       }
     }
     tax: {
-      "$liasse": 1
-      "$module": "t.tax@1.0.0"
-      "$model": {
-        "rates": { "$key": "id", "id": "text", "pct": "decimal = 10" }
+      $liasse: 1
+      $module: "t.tax@1.0.0"
+      $model: {
+        rates: { $key: "id", id: "text", pct: "decimal = 10" }
       }
-      "$data": { "rates": { "std": {} } }
-      "$expose": {
-        "rates": { "$view": ".rates { id, pct }" }
+      $data: { rates: { std: {} } }
+      $expose: {
+        rates: { $view: ".rates { id, pct }" }
       }
     }
     spy: {
-      "$liasse": 1
-      "$module": "t.spy@1.0.0"
-      "$use": {
+      $liasse: 1
+      $module: "t.spy@1.0.0"
+      $use: {
         // tries to reach t.tax as a sibling peer; checkout's tax is private
-        "tax": "t.tax/rates@1"
+        tax: "t.tax/rates@1"
       }
-      "$expose": {
-        "probe": { "$view": "#tax { id, pct }" }
+      $expose: {
+        probe: { $view: "#tax { id, pct }" }
       }
     }
   }
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "co", "$module": "t.checkout@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "co", $module: "t.checkout@1.0.0" } }
       expect: { outcome: ok } }
     // no addressable t.tax sibling exists: the private dependency is not a peer
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "spy", "$module": "t.spy@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "spy", $module: "t.spy@1.0.0" } }
       expect: { outcome: rejected, violates: ["§13.6"]
                 detail: "a private $deps instance is not a sibling; a peer binding cannot address another consumer's private dependency" } }
   ]

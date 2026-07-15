@@ -47,7 +47,7 @@
 
   expect: {
     outcome: unspecified
-    violates: ["#host-namespaces"]
+    
     detail: "whether a declared, resolvable, but unused namespace requirement loads or is rejected is not pinned by §16.2"
   }
 }

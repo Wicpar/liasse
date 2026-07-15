@@ -14,28 +14,28 @@
   tags: ["ordering"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.deldup@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.deldup@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
       }
-      "$mut": {
-        "remove_pair": [
+      $mut: {
+        remove_pair: [
           "removed = -.tasks[@x, @y, @x]"
           "return removed { id }"
         ]
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id }"
-          "$mut": { "remove_pair": ".remove_pair" }
+      $public: {
+        tasks: {
+          $view: ".tasks { id }"
+          $mut: { remove_pair: ".remove_pair" }
         }
       }
     }
-    "$data": {
-      "tasks": { "t1": {}, "t2": {} }
+    $data: {
+      tasks: { t1: {}, t2: {} }
     }
   }
 

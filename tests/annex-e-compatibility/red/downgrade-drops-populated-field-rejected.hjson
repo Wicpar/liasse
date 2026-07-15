@@ -20,39 +20,39 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.downgrade@1.1.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "region": "text"
+    $liasse: 1
+    $app: "t.compat.downgrade@1.1.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        region: "text"
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, name }" }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
       }
     }
-    "$data": { "companies": { "acme": { "name": "Acme", "region": "EU" } } }
+    $data: { companies: { acme: { name: "Acme", region: "EU" } } }
   }
 
   steps: [
     { host_load: {
         package: {
           // older release: `region` field removed, no downgrade transform
-          "$liasse": 1
-          "$app": "t.compat.downgrade@1.0.0"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
+          $liasse: 1
+          $app: "t.compat.downgrade@1.0.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
             }
-            "$public": {
-              "companies": { "$view": ".companies { id, name }" }
+            $public: {
+              companies: { $view: ".companies { id, name }" }
             }
           }
-          "$data": { "companies": { "acme": { "name": "Acme" } } }
+          $data: { companies: { acme: { name: "Acme" } } }
         }
       }
       expect: {

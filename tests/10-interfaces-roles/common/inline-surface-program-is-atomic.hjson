@@ -10,24 +10,24 @@
   tags: ["atomicity"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.inline_atomic@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": {
-          "$type": "text"
-          "$check": ["size(.) > 0", "A title is required"]
+    $liasse: 1
+    $app: "t.inline_atomic@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: {
+          $type: "text"
+          $check: ["size(.) > 0", "A title is required"]
         }
       }
-      "$public": {
-        "board": {
-          "$view": ".tasks { id, title }"
-          "$mut": {
+      $public: {
+        board: {
+          $view: ".tasks { id, title }"
+          $mut: {
             // Inline program: the first insert is valid, the second always
             // violates the title check, so the whole program must roll back.
-            "add_two": [
+            add_two: [
               ".tasks + { id: @a, title: @title }"
               ".tasks + { id: @b, title: '' }"
             ]

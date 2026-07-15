@@ -9,12 +9,12 @@
   format: 1
   name: confusable-actor-names-provenance-stays-distinct
   suite: scenario
-  spec: ["§22.8", "#runtime", "#authentication"]
+  spec: ["#runtime", "#authentication", "§22.8"]
   tags: ["authz", "provenance", "unicode", "identity"]
 
   package: {
     $liasse: 1
-    $app: "t.confusable@1.0.0"
+    $app: "t.rt.confusable@1.0.0"
     $requires: { token: "test.token@1" }
     $model: {
       accounts: {

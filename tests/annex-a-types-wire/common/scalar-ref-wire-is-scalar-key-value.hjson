@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: scalar-ref-wire-is-scalar-key-value
+  suite: scenario
+  spec: ["§A.9"]
+  tags: ["wire", "ref"]
+  note: "Annex A.9: 'A scalar key uses its scalar wire value.' A ref to a collection keyed by a single scalar (text) field projects to that scalar's wire value directly — the JSON string \"x\" — NOT a one-element array [\"x\"] (that is the composite-key form) and NOT a `{ code }` object selector (that is authoring syntax). The target is keyed by one field, so the ref's visible wire value is the bare scalar. Complements red/ref-composite-wire-is-key-order-array, which fixes the array form for composite keys."
+
+  package: {
+    $liasse: 1
+    $app: "t.refscalar@1.0.0"
+    $model: {
+      regions: {
+        $key: "code"
+        code: "text"
+        label: "text"
+      }
+      holders: {
+        $key: "id"
+        id: "text"
+        loc: { $ref: "/regions" }
+      }
+      $public: {
+        v: { $view: ".holders { id, loc }" }
+      }
+    }
+    $data: {
+      regions: {
+        x: { code: "x", label: "X" }
+      }
+      holders: {
+        h1: { loc: "x" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      // scalar ref wire value is the bare scalar key, not ["x"] and not { code: "x" }
+      expect_init: { value: [ { id: "h1", loc: "x" } ] } }
+  ]
+}

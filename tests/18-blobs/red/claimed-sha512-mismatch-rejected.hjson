@@ -56,7 +56,7 @@
 
   steps: [
     { connect: "c1" }
-    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: 0 } }
+    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: "0" } }
     { blob_put: {
         call: "public.docs.add"
         param: "file"
@@ -69,7 +69,6 @@
       }
       expect: { outcome: rejected, violates: ["#blobs"],
                 detail: "streamed bytes do not hash to the declared $sha512" } }
-    { expect_view: { watch: "w1", value: 0 } }
+    { expect_view: { watch: "w1", value: "0" } }
   ]
 }
-</content>

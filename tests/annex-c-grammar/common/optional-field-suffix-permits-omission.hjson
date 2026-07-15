@@ -7,7 +7,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.optional@1.0.0"
+    $app: "t.ac.optional@1.0.0"
     $model: {
       people: {
         $key: "id"

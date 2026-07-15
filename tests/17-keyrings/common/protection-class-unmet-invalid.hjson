@@ -18,17 +18,17 @@
   }
 
   package: {
-    "$liasse": 1
-    "$app": "t.keyrings@1.0.0"
-    "$model": {
-      "session_keys": {
-        "$keyring": {
-          "$provider": "test-kp"
-          "$algorithm": "ES256"
-          "$usage": ["sign"]
-          "$rotate": { "$every": "P30D", "$overlap": "P2D", "$mode": "automatic" }
-          "$retain": "P45D"
-          "$protection": "hardware"
+    $liasse: 1
+    $app: "t.keyrings@1.0.0"
+    $model: {
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $algorithm: "ES256"
+          $usage: ["sign"]
+          $rotate: { $every: "P30D", $overlap: "P2D", $mode: "automatic" }
+          $retain: "P45D"
+          $protection: "hardware"
         }
       }
     }

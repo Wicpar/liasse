@@ -177,11 +177,9 @@ later step observes the resulting placement state.
 
 ## Other conventions
 
-- All non-`ok` step outcomes carry `violates`, including `unspecified`, where
-  `violates` names the interacting rules whose gap leaves the behavior unpinned
-  and `note` explains it.
+- All non-`ok` step outcomes carry `violates`, except `unspecified`, which
+  carries no `violates` (per `tests/FORMAT.md`) and instead names the
+  interacting rules whose gap leaves the behavior unpinned in a `note`/`detail`.
 - A malformed *declared descriptor* (bad hex case, negative byte count) is a
   hostile client payload placed in `claim`, not malformed case syntax (FORMAT.md
   rule 5).
-</content>
-</invoke>

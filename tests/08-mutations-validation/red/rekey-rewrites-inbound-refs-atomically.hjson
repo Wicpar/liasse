@@ -7,31 +7,31 @@
   format: 1
   name: rekey-rewrites-inbound-refs-atomically
   suite: scenario
-  spec: ["§5.4", "§5.6", "§A.9", "#mutations"]
+  spec: ["#mutations", "§5.4", "§5.6", "§A.9"]
   tags: ["identity", "atomicity"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.rekeyrefs@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "$mut": { "rekey": ".id = @new" }
+    $liasse: 1
+    $app: "t.rekeyrefs@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        $mut: { rekey: ".id = @new" }
       }
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "owner": { "$ref": "/companies" }
+      tasks: {
+        $key: "id"
+        id: "text"
+        owner: { $ref: "/companies" }
       }
-      "$public": {
-        "tasks": { "$view": ".tasks { id, owner }" }
-        "companies": { "$mut": { "rekey": ".companies[@id].rekey" } }
+      $public: {
+        tasks: { $view: ".tasks { id, owner }" }
+        companies: { $mut: { rekey: ".companies[@id].rekey" } }
       }
     }
-    "$data": {
-      "companies": { "acme": {} }
-      "tasks": { "t1": { "owner": "acme" } }
+    $data: {
+      companies: { acme: {} }
+      tasks: { t1: { owner: "acme" } }
     }
   }
 

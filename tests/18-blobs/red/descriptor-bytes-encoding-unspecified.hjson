@@ -62,8 +62,7 @@
         claim: { $bytes: "5" }
         on: "c1"
       }
-      expect: { outcome: unspecified, violates: ["#blobs"],
+      expect: { outcome: unspecified,
                 detail: "§18.1 example (string) contradicts §18.1 prose (integer) for $bytes" } }
   ]
 }
-</content>

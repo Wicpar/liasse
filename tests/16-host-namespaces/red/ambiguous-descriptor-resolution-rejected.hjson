@@ -19,7 +19,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.ambiguous@1.0.0"
+    $app: "t.ns.ambiguous@1.0.0"
     $requires: {
       cbor: "liasse.cbor@1"
     }

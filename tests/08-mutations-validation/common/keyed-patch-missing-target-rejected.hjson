@@ -7,23 +7,23 @@
   spec: ["#mutations", "§8.9"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.misstarget@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
+    $liasse: 1
+    $app: "t.misstarget@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
       }
-      "$mut": {
-        "retitle": ".tasks[@id] { title = @title }"
+      $mut: {
+        retitle: ".tasks[@id] { title = @title }"
       }
-      "$public": {
-        "tasks": { "$mut": { "retitle": ".retitle" } }
+      $public: {
+        tasks: { $mut: { retitle: ".retitle" } }
       }
     }
-    "$data": {
-      "tasks": { "t1": { "title": "first" } }
+    $data: {
+      tasks: { t1: { title: "first" } }
     }
   }
 

@@ -11,29 +11,29 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.seednested@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "offices": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
+    $liasse: 1
+    $app: "t.seednested@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        offices: {
+          $key: "id"
+          id: "text"
+          name: "text"
         }
       }
-      "$public": {
-        "acme_offices": { "$view": ".companies['acme'].offices { id, name }" }
+      $public: {
+        acme_offices: { $view: ".companies['acme'].offices { id, name }" }
       }
     }
-    "$data": {
-      "companies": {
-        "acme": {
-          "name": "Acme SAS"
-          "offices": {
-            "paris": { "name": "Paris" }
+    $data: {
+      companies: {
+        acme: {
+          name: "Acme SAS"
+          offices: {
+            paris: { name: "Paris" }
           }
         }
       }

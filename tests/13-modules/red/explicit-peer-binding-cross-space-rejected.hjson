@@ -13,48 +13,48 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "people": { "$view": { "$key": "id", "id": "text", "name": "text" } }
-                "roster": { "$view": { "$key": "id", "id": "text", "name": "text" } }
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                people: { $view: { $key: "id", id: "text", name: "text" } }
+                roster: { $view: { $key: "id", id: "text", name: "text" } }
               }
             }
           }
         }
       }
-      "$data": {
-        "companies": {
-          "acme": { "name": "Acme" }
-          "globex": { "name": "Globex" }
+      $data: {
+        companies: {
+          acme: { name: "Acme" }
+          globex: { name: "Globex" }
         }
       }
     }
     people: {
-      "$liasse": 1
-      "$module": "t.people@1.0.0"
-      "$model": {
-        "members": { "$key": "id", "id": "text", "name": "text" }
+      $liasse: 1
+      $module: "t.people@1.0.0"
+      $model: {
+        members: { $key: "id", id: "text", name: "text" }
       }
-      "$expose": {
-        "people": { "$view": ".members { id, name }" }
+      $expose: {
+        people: { $view: ".members { id, name }" }
       }
     }
     sales: {
-      "$liasse": 1
-      "$module": "t.sales@1.0.0"
-      "$use": {
-        "people": "t.people/people@1"
+      $liasse: 1
+      $module: "t.sales@1.0.0"
+      $use: {
+        people: "t.people/people@1"
       }
-      "$expose": {
-        "roster": { "$view": "#people { id, name }" }
+      $expose: {
+        roster: { $view: "#people { id, name }" }
       }
     }
   }
@@ -62,13 +62,13 @@
 
   steps: [
     { module_install: { space: "/companies/globex/modules"
-        request: { "$name": "peopleG", "$module": "t.people@1.0.0"
-                   "$data": { "members": { "p1": { "name": "Alice" } } } } }
+        request: { $name: "peopleG", $module: "t.people@1.0.0"
+                   $data: { members: { p1: { name: "Alice" } } } } }
       expect: { outcome: ok } }
     // explicit binding names a cross-space instance, not a sibling of Acme's space
     { module_install: { space: "/companies/acme/modules"
-        request: { "$name": "sales", "$module": "t.sales@1.0.0"
-                   "$use": { "people": "/companies/globex/modules/peopleG" } } }
+        request: { $name: "sales", $module: "t.sales@1.0.0"
+                   $use: { people: "/companies/globex/modules/peopleG" } } }
       expect: { outcome: rejected, violates: ["§13.5"]
                 detail: "an explicit peer binding must name a sibling instance in the same module space" } }
   ]

@@ -9,15 +9,15 @@
   spec: ["#mutations", "§8.8", "§16.3"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.effectclass@1.0.0"
-    "$model": {
-      "until": {
-        "$type": "timestamp"
+    $liasse: 1
+    $app: "t.effectclass@1.0.0"
+    $model: {
+      until: {
+        $type: "timestamp"
         // Defaults MAY use generated functions (§8.8), so this default is
         // legal; the $check below is the package's only defect.
-        "$default": "= now()"
-        "$check": [". > now()", "must lie in the future"]
+        $default: "= now()"
+        $check: [". > now()", "must lie in the future"]
       }
     }
   }

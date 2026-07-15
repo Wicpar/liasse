@@ -19,33 +19,33 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.fixed_arg@1.0.0"
-    "$model": {
-      "projects": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "$mut": {
-          "rename": [
+    $liasse: 1
+    $app: "t.fixed_arg@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        $mut: {
+          rename: [
             ".name = @name"
             "return . { id, name }"
           ]
         }
       }
-      "$public": {
-        "projects": {
-          "$view": ".projects { id, name }"
-          "$mut": {
+      $public: {
+        projects: {
+          $view: ".projects { id, name }"
+          $mut: {
             // Explicit call: the mutation argument is derived, not passed
             // through.
-            "rename": ".projects[@project].rename({ name: string.trim(@new_name) })"
+            rename: ".projects[@project].rename({ name: string.trim(@new_name) })"
           }
         }
       }
     }
-    "$data": {
-      "projects": { "p1": { "name": "Original" } }
+    $data: {
+      projects: { p1: { name: "Original" } }
     }
   }
 

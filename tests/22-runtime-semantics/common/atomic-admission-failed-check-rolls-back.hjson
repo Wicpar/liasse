@@ -7,7 +7,7 @@
   format: 1
   name: atomic-admission-failed-check-rolls-back
   suite: scenario
-  spec: ["§22.2", "#runtime", "#mutations"]
+  spec: ["#runtime", "#mutations", "§22.2", "§8.8"]
   tags: ["atomicity"]
 
   package: {
@@ -46,7 +46,9 @@
       call: "public.account.charge"
       args: { id: "a1", amount: "150" }
       on: "c1"
-      expect: { outcome: rejected, violates: ["§22.2"] }
+      // §8.8: a failed assertion rejects the complete transition before any
+      // partial effect becomes visible; §22.2: the prior state stays intact.
+      expect: { outcome: rejected, violates: ["§8.8", "§22.2"] }
     }
     {
       // Prior committed state intact: neither the decrement nor the

@@ -42,17 +42,17 @@ leave everything unchanged.'''
 
   steps: [
     { call: "public.members.add_team", args: { id: "good", name: "Good" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.members.add_member", args: { id: "m1", team: "good" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // the rewritten ref would violate the member's row check -> complete rejection
     { call: "public.members.rekey_team", args: { old: "good", new: "banned" },
-      expect: { outcome: "rejected", violates: ["§5.4", "§5.10"], detail: "resulting constraint failure on a referencing row rejects the rekey" } }
+      expect: { outcome: rejected, violates: ["§5.4", "§5.10"], detail: "resulting constraint failure on a referencing row rejects the rekey" } }
     { watch: "public.members", id: "w1",
       expect_init: { value: [ { id: "m1", team: "good" } ] } }
     // a harmless rekey still works and rewrites the ref
     { call: "public.members.rekey_team", args: { old: "good", new: "fine" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { expect_view: { watch: "w1", value: [ { id: "m1", team: "fine" } ] } }
   ]
 }

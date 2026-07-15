@@ -12,19 +12,19 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.rejectupd@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.rejectupd@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$public": {
-        "companies": {
-          "$view": ".companies { id, name }"
-          "$mut": {
-            "rename": [
+      $public: {
+        companies: {
+          $view: ".companies { id, name }"
+          $mut: {
+            rename: [
               ".companies[@id].name = @name"
               "return .companies[@id] { id, name }"
             ]
@@ -32,9 +32,9 @@
         }
       }
     }
-    "$data": {
-      "companies": {
-        "acme": { "name": "Acme SAS" }
+    $data: {
+      companies: {
+        acme: { name: "Acme SAS" }
       }
     }
   }
@@ -44,22 +44,22 @@
       expect_init: { value: [ { id: "acme", name: "Acme SAS" } ] } }
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.rejectupd@1.0.1"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
+          $liasse: 1
+          $app: "t.rejectupd@1.0.1"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
             }
-            "$public": {
+            $public: {
               // type error: 'missing_field' is not declared on companies
-              "companies": { "$view": ".companies { id, name, missing_field }" }
+              companies: { $view: ".companies { id, name, missing_field }" }
             }
           }
-          "$data": {
-            "companies": {
-              "acme": { "name": "Acme SAS" }
+          $data: {
+            companies: {
+              acme: { name: "Acme SAS" }
             }
           }
         }
@@ -71,7 +71,7 @@
       } }
     // the prior composition must still serve both reads and writes
     { call: "public.companies.rename", args: { id: "acme", name: "Acme 2" },
-      expect: { outcome: "ok", value: { id: "acme", name: "Acme 2" } } }
+      expect: { outcome: ok, value: { id: "acme", name: "Acme 2" } } }
     { expect_view: { watch: "w1", value: [ { id: "acme", name: "Acme 2" } ] } }
   ]
 }

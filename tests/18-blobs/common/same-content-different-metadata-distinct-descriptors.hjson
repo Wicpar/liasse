@@ -73,4 +73,3 @@
       expect: { outcome: ok, value: { id: "d2", sha: "$ref:h", name: "second.txt" } } }
   ]
 }
-</content>

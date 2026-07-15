@@ -8,8 +8,9 @@
 different-yet-equivalent base64 flavour — the URL-safe alphabet (`-`/`_` instead of
 `+`/`/`) or padding stripped. That breaks byte-for-byte descriptor identity and any
 consumer that expects the canonical form. The seed "/++/" is 4 base64 characters (3
-bytes: 0xFF 0xDF 0xBF) that exercise BOTH alphabet-sensitive symbols `/` and `+`; the
-URL-safe re-encoding of the same bytes would be "_--_". Annex A.1 requires
+bytes: 0xFF 0xEF 0xBF) that exercise BOTH alphabet-sensitive symbols `/` and `+`; the
+URL-safe re-encoding of the same bytes would be "_--_" (the same 3 bytes 0xFF 0xEF 0xBF).
+Annex A.1 requires
 `{ "$bytes": "<canonical base64>" }` and Annex D.2 requires canonical *padded* standard
 base64, so the value MUST round-trip byte-identically as "/++/".'''
 
@@ -23,7 +24,7 @@ base64, so the value MUST round-trip byte-identically as "/++/".'''
       }
     }
     $data: {
-      // 3 bytes 0xFF 0xDF 0xBF; standard-alphabet base64 uses both '/' and '+'
+      // 3 bytes 0xFF 0xEF 0xBF; standard-alphabet base64 uses both '/' and '+'
       b: { $bytes: "/++/" }
     }
   }

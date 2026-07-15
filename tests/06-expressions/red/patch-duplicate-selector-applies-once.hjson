@@ -34,7 +34,7 @@
 
   steps: [
     { call: "public.counters.bump_two", args: { a: "c1", b: "c1" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { watch: "public.counters", id: "w1",
       expect_init: { value: [ { id: "c1", n: "1" } ] } }
   ]

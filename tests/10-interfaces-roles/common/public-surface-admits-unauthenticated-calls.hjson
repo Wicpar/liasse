@@ -9,30 +9,30 @@
   tags: ["public"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.pub_open@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
-        "done": "bool = false"
+    $liasse: 1
+    $app: "t.pub_open@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
+        done: "bool = false"
       }
-      "$mut": {
-        "add_task": [
+      $mut: {
+        add_task: [
           "task = .tasks + { id: @id, title: @title }"
           "return task { id, title, done }"
         ]
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks[:t | !t.done] { id, title }"
-          "$mut": { "add": ".add_task" }
+      $public: {
+        tasks: {
+          $view: ".tasks[:t | !t.done] { id, title }"
+          $mut: { add: ".add_task" }
         }
       }
     }
-    "$data": {
-      "tasks": { "t0": { "title": "Seeded" } }
+    $data: {
+      tasks: { t0: { title: "Seeded" } }
     }
   }
 

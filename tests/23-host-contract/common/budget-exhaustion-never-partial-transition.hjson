@@ -1,0 +1,81 @@
+{
+  // §23.6: "Budget exhaustion produces operational backpressure or a rejected
+  // request according to the declared API contract. It never permits a partial
+  // state transition." §23.6 lists "query and mutation time" as a budget. A
+  // provider operation that hangs (never returns) exceeds any finite
+  // mutation-time budget; the enclosing mutation is resolved by budget
+  // exhaustion. This case pins the ONE invariant clause of §23.6 that is a MUST:
+  // whatever the API contract surfaces to the caller, NO partial state
+  // transition is admitted. Which of the two outcome CLASSES (backpressure vs a
+  // rejected request) a client observes is NOT pinned by SPEC.md for a package
+  // that declares no such policy (see red/budget-backpressure-or-reject-choice-
+  // unspecified), so the operator step's outcome class is left unspecified here;
+  // the trailing watch asserts the deducible MUST. `issue` writes a `tokens` row
+  // then signs; with the signer hung under a finite mutation-time budget, the
+  // atomic transition cannot be admitted, so no `tokens` row may be left behind.
+  // (budget_set / provider_set hang: see NOTES.md.)
+  format: 1
+  name: budget-exhaustion-never-partial-transition
+  suite: scenario
+  spec: ["#rust-host", "§23.6", "#keyrings", "§17.9", "#runtime", "§22.2"]
+  tags: ["budget", "atomicity", "provider"]
+  note: "§23.6 leaves the surfaced outcome CLASS on budget exhaustion (operational backpressure vs a rejected request) to the declared API contract, which this minimal package does not pin — so the operator step is outcome: unspecified. The clause §23.6 states as an absolute MUST — exhaustion 'never permits a partial state transition' — is what this case asserts, via the trailing watch showing the `tokens` collection empty: the atomic `issue` (write-then-sign, §22.2) left no partial row. The pure class-ambiguity is documented separately by red/budget-backpressure-or-reject-choice-unspecified."
+
+  package: {
+    $liasse: 1
+    $app: "t.budgetnopartial@1.0.0"
+    $requires: { cose: "liasse.cose@1" }
+    $model: {
+      tokens: {
+        $key: "id"
+        id: "uuid = uuid()"
+        note: "text"
+      }
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $algorithm: "Ed25519"
+          $rotate: "P30D"
+          $retain: "P45D"
+        }
+      }
+      $mut: {
+        issue: [
+          "t = .tokens + { note: @note }"
+          "sig = cose.sign(/session_keys, { id: t.id })"
+          "return t { id, note }"
+        ]
+      }
+      $public: {
+        tokens: { $view: ".tokens { id, note, $sort: [note] }" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { budget_set: { mutation_time: "PT1S" } }
+    // Signer hangs; the mutation-time budget is exhausted.
+    { provider_set: { provider: "test-kp", hang: ["sign"] } }
+    // Budget exhaustion resolves the request. Whether the caller sees
+    // backpressure or a rejection is not pinned (§23.6 "according to the declared
+    // API contract"); either way §23.6 forbids a partial transition.
+    { operator: { call: "issue", args: { note: "never" } },
+      expect: { outcome: unspecified } }
+    // The MUST: no partial `tokens` row exists under either outcome class.
+    { watch: "public.tokens", on: "c1", id: "w1", expect_init: { value: [] } }
+  ]
+}

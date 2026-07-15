@@ -11,32 +11,32 @@
   tags: ["atomicity"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.nestedfail@1.0.0"
-    "$model": {
-      "locked": "bool = true"
-      "flags": {
-        "$key": "id"
-        "id": "text"
-        "armed": "bool = false"
+    $liasse: 1
+    $app: "t.nestedfail@1.0.0"
+    $model: {
+      locked: "bool = true"
+      flags: {
+        $key: "id"
+        id: "text"
+        armed: "bool = false"
       }
-      "$mut": {
-        "fail_now": "assert(!.locked, 'locked')"
-        "outer": [
+      $mut: {
+        fail_now: "assert(!.locked, 'locked')"
+        outer: [
           ".flags['f1'] { armed = true }"
           ".fail_now()"
         ]
       }
-      "$public": {
-        "flags": {
-          "$view": ".flags { id, armed }"
-          "$mut": { "outer": ".outer" }
+      $public: {
+        flags: {
+          $view: ".flags { id, armed }"
+          $mut: { outer: ".outer" }
         }
       }
     }
-    "$data": {
-      "locked": true
-      "flags": { "f1": {} }
+    $data: {
+      locked: true
+      flags: { f1: {} }
     }
   }
 

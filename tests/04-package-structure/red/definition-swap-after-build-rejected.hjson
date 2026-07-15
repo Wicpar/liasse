@@ -20,7 +20,7 @@
 
   steps: [
     { build_artifact: { as: "a1" } }
-    { tamper_artifact: { artifact: "a1", set: {
+    { repack_artifact: { artifact: "a1", set: {
         "liasse.json": "{\"$app\":\"t.swapdef@1.0.0\",\"$liasse\":1,\"$model\":{\"$public\":{\"secrets\":{\"$view\":\".secrets_view\"}},\"secrets\":{\"$key\":\"id\",\"id\":\"int\",\"value\":\"text\"},\"secrets_view\":{\"$view\":\".secrets { id, value }\"}}}"
     } } }
     { load_artifact: { from: "a1", expect: {

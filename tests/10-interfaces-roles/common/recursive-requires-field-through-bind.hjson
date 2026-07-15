@@ -9,43 +9,43 @@
   tags: []
 
   package: {
-    "$liasse": 1
-    "$app": "t.rec_required@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.rec_required@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
       }
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "subcompanies": { "$like": "^" }
-        "members": {
-          "$key": "account"
-          "account": { "$ref": "/accounts" }
-          "admin": "bool = false"
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        subcompanies: { $like: "^" }
+        members: {
+          $key: "account"
+          account: { $ref: "/accounts" }
+          admin: "bool = false"
         }
-        "$roles": {
-          "admin": {
-            "$auth": "token"
-            "$members": ".members[:m | m.admin].account"
-            "company": {
-              "$view": ". { id, name }"
-              "$recursive": {
-                "$field": "subcompanies"
-                "$through": ".subcompanies"
+        $roles: {
+          admin: {
+            $auth: "token"
+            $members: ".members[:m | m.admin].account"
+            company: {
+              $view: ". { id, name }"
+              $recursive: {
+                $field: "subcompanies"
+                $through: ".subcompanies"
                 // Invalid: $bind is required but missing.
               }
             }
           }
         }
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
     }

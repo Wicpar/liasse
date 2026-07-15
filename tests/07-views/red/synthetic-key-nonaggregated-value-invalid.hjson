@@ -23,7 +23,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#views"]
     detail: "grouped output 'debit' is a non-key source value that is neither aggregated nor derived from key values"
   }

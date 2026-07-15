@@ -1,0 +1,26 @@
+{
+  format: 1
+  name: optional-type-excluded-from-row-key
+  suite: static
+  spec: ["§A.8"]
+  tags: ["key"]
+  note: "Annex A.8: 'Optional values, JSON, blobs, sets, maps, and views are excluded from row keys.' A collection whose $key names an optional field (`text?`) is statically invalid: a row key must be a present, total identity, so an optional base type is not key-eligible even though its underlying base type (text) is. A.8 separately permits *candidate-key* components to be optional ('the candidate-key fields themselves MAY be optional') — that is a different constraint on uniqueness constraints, not on the row key, so it does not rescue this definition."
+
+  package: {
+    $liasse: 1
+    $app: "t.aa.optkey@1.0.0"
+    $model: {
+      items: {
+        $key: "code"
+        code: "text?"
+        label: "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§A.8"]
+    detail: "row key 'code' is optional (text?); optional values are excluded from row keys"
+  }
+}

@@ -13,62 +13,62 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "people": { "$view": { "$key": "id", "id": "text", "name": "text" } }
-                "orders": { "$view": { "$key": "id", "id": "text", "owner": "text" } }
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                people: { $view: { $key: "id", id: "text", name: "text" } }
+                orders: { $view: { $key: "id", id: "text", owner: "text" } }
               }
             }
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     people: {
-      "$liasse": 1
-      "$module": "t.people@1.0.0"
-      "$model": {
-        "members": { "$key": "id", "id": "text", "name": "text" }
+      $liasse: 1
+      $module: "t.people@1.0.0"
+      $model: {
+        members: { $key: "id", id: "text", name: "text" }
       }
-      "$expose": {
-        "people": { "$view": ".members { id, name }" }
+      $expose: {
+        people: { $view: ".members { id, name }" }
       }
     }
     orders: {
-      "$liasse": 1
-      "$module": "t.orders@1.0.0"
-      "$use": {
-        "people": "t.people/people@1"
+      $liasse: 1
+      $module: "t.orders@1.0.0"
+      $use: {
+        people: "t.people/people@1"
       }
-      "$model": {
-        "orders": {
-          "$key": "id"
-          "id": "text"
+      $model: {
+        orders: {
+          $key: "id"
+          id: "text"
           // ref targets the imported peer interface: crosses a module boundary,
           // so $on_delete is REQUIRED at the ref site — it is omitted here.
-          "owner": { "$ref": "#people" }
+          owner: { $ref: "#people" }
         }
       }
-      "$expose": {
-        "orders": { "$view": ".orders { id, owner }" }
+      $expose: {
+        orders: { $view: ".orders { id, owner }" }
       }
     }
   }
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "people", "$module": "t.people@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "people", $module: "t.people@1.0.0" } }
       expect: { outcome: ok } }
     // the peer handle resolves, but the cross-boundary ref lacks $on_delete
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "shop", "$module": "t.orders@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "shop", $module: "t.orders@1.0.0" } }
       expect: { outcome: invalid, violates: ["§13.12"]
                 detail: "a ref crossing a module boundary must declare $on_delete at the ref site" } }
   ]

@@ -13,7 +13,7 @@
     failed and the prior application remains active"; §E.9 "A rejected load
     or update leaves the current package, bindings, and state active." The
     counter keeps its state (second bump returns 2) and its surfaces across
-    the failed update. Extension step `load` is defined in NOTES.md;
+    the failed update. Extension step `host_load` is defined in FORMAT.md;
     FORMAT.md outcome `invalid` maps to the §9.4 `rejected` load outcome.
   '''
 
@@ -69,14 +69,14 @@
 
   steps: [
     { call: "public.counter.bump", args: {},
-      expect: { outcome: "ok", value: 1 } }
-    { load: { package: "v2" },
+      expect: { outcome: ok, value: "1" } }
+    { host_load: { package: "v2" },
       expect: {
         outcome: invalid
         violates: ["#host-namespaces", "#loading"]
       } }
     // prior definition, bindings, and state remain active and intact
     { call: "public.counter.bump", args: {},
-      expect: { outcome: "ok", value: 2 } }
+      expect: { outcome: ok, value: "2" } }
   ]
 }

@@ -8,29 +8,29 @@
   spec: ["#mutations", "§8.8", "§22.2"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.assertrej@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
-        "balance": "int"
-        "$mut": {
-          "withdraw": [
+    $liasse: 1
+    $app: "t.assertrej@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        balance: "int"
+        $mut: {
+          withdraw: [
             "assert(.balance >= @amount, 'Insufficient funds')"
             ".balance = .balance - @amount"
           ]
         }
       }
-      "$public": {
-        "account": {
-          "$view": ".accounts { id, balance }"
-          "$mut": { "withdraw": ".accounts[@id].withdraw" }
+      $public: {
+        account: {
+          $view: ".accounts { id, balance }"
+          $mut: { withdraw: ".accounts[@id].withdraw" }
         }
       }
     }
-    "$data": {
-      "accounts": { "a1": { "balance": "100" } }
+    $data: {
+      accounts: { a1: { balance: "100" } }
     }
   }
 

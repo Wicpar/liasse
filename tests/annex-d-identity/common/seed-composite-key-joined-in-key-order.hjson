@@ -2,7 +2,7 @@
   format: 1
   name: seed-composite-key-joined-in-key-order
   suite: scenario
-  spec: ["§D.2", "§9.1", "§5.4"]
+  spec: ["§D.2", "§9.1", "§6.3"]
   tags: ["identity"]
   note: '''§D.2: "Composite components are joined by `:` in `$key` order." The seed
 map member name is this joined canonical text (§9.1). The member "eu:std" for
@@ -31,20 +31,20 @@ join order is significant and fixed by `$key`.'''
     $data: {
       rates: {
         // joined canonical key text in $key order: region "eu", code "std"
-        "eu:std": { pct: 20 }
+        "eu:std": { pct: "20" }
       }
     }
   }
 
   steps: [
     { call: "public.rates.pct_of", args: { region: "eu", code: "std" },
-      expect: { outcome: "ok", value: 20 } }
+      expect: { outcome: ok, value: "20" } }
     // swapped components address a non-existent composite key
     { call: "public.rates.pct_of", args: { region: "std", code: "eu" },
-      expect: { outcome: "rejected", violates: ["§6.3"],
+      expect: { outcome: rejected, violates: ["§6.3"],
                 detail: "no row at composite key (std, eu); join order is fixed by $key" } }
     { watch: "public.rates", id: "w1", expect_init: { value: [
-      { region: "eu", code: "std", pct: 20 }
+      { region: "eu", code: "std", pct: "20" }
     ] } }
   ]
 }

@@ -8,7 +8,7 @@
 and never executes the mutation twice." §12: reusing the same scoped identifier
 with an equivalent request provides at-most-once execution. The mutation allocates
 a fresh uuid key on every execution, so a second execution would produce a second,
-distinct row. Submitting the same op_id with an equivalent request must leave
+distinct row. Submitting the same operation_id with an equivalent request must leave
 exactly one row. Mutation return values are ephemeral (§D.8), so only the committed
 state is asserted; the retry result object is matched loosely.'''
 
@@ -36,10 +36,10 @@ state is asserted; the retry result object is matched loosely.'''
   }
 
   steps: [
-    { call: "public.notes.add", args: { body: "once" }, op_id: "op-A",
+    { call: "public.notes.add", args: { body: "once" }, operation_id: "op-A",
       expect: { outcome: ok, value: { id: "$any:uuid", body: "once" } } }
-    // equivalent retry: same op_id, same surface, same args -> no second execution
-    { call: "public.notes.add", args: { body: "once" }, op_id: "op-A",
+    // equivalent retry: same operation_id, same surface, same args -> no second execution
+    { call: "public.notes.add", args: { body: "once" }, operation_id: "op-A",
       expect: { outcome: ok, "...": true } }
     // exactly one row exists: the retry did not execute a second insert
     { watch: "public.notes", id: "w1", expect_init: { value: [

@@ -11,19 +11,19 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.seedcomputed@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "upper": "= string.upper(.name)"
+    $liasse: 1
+    $app: "t.seedcomputed@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        upper: "= string.upper(.name)"
       }
     }
-    "$data": {
-      "companies": {
-        "acme": { "name": "acme", "upper": "OVERRIDDEN" }
+    $data: {
+      companies: {
+        acme: { name: "acme", upper: "OVERRIDDEN" }
       }
     }
   }

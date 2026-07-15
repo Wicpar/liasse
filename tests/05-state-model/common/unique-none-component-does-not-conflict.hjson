@@ -30,13 +30,13 @@
 
   steps: [
     // two rows with none in one component never conflict through this candidate key
-    { call: "public.taxpayers.add", args: { id: "t1", country: "FR" }, expect: { outcome: "ok" } }
-    { call: "public.taxpayers.add", args: { id: "t2", country: "FR" }, expect: { outcome: "ok" } }
+    { call: "public.taxpayers.add", args: { id: "t1", country: "FR" }, expect: { outcome: ok } }
+    { call: "public.taxpayers.add", args: { id: "t2", country: "FR" }, expect: { outcome: ok } }
     // all components present -> uniqueness enforced
     { call: "public.taxpayers.add_with_tax_id", args: { id: "t3", country: "FR", tax_id: "123" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.taxpayers.add_with_tax_id", args: { id: "t4", country: "FR", tax_id: "123" },
-      expect: { outcome: "rejected", violates: ["§5.7"] } }
+      expect: { outcome: rejected, violates: ["§5.7"] } }
     { watch: "public.taxpayers", id: "w1", expect_init: { value: [
       { id: "t1", country: "FR", tax_id: "$absent" }
       { id: "t2", country: "FR", tax_id: "$absent" }

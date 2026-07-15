@@ -37,16 +37,16 @@ two different parents and rejected within one parent.'''
   }
 
   steps: [
-    { call: "public.members.add_company", args: { id: "acme" }, expect: { outcome: "ok" } }
-    { call: "public.members.add_company", args: { id: "globex" }, expect: { outcome: "ok" } }
+    { call: "public.members.add_company", args: { id: "acme" }, expect: { outcome: ok } }
+    { call: "public.members.add_company", args: { id: "globex" }, expect: { outcome: ok } }
     { call: "public.members.add_member", args: { company: "acme", id: "m1", email: "bob@x.example" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // same candidate value under a different parent row -> no conflict
     { call: "public.members.add_member", args: { company: "globex", id: "m1", email: "bob@x.example" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // same candidate value under the same parent row -> rejected
     { call: "public.members.add_member", args: { company: "acme", id: "m2", email: "bob@x.example" },
-      expect: { outcome: "rejected", violates: ["§5.7"] } }
+      expect: { outcome: rejected, violates: ["§5.7"] } }
     { watch: "public.members", id: "w1", expect_init: { value: [
       { company: "acme", member: "m1", email: "bob@x.example" }
       { company: "globex", member: "m1", email: "bob@x.example" }

@@ -11,23 +11,23 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.newname@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "uuid = uuid()"
-        "title": "text"
-        "done": "bool = false"
-        "$mut": { "complete": [".done = true", "return . { id, done }"] }
+    $liasse: 1
+    $app: "t.compat.newname@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        done: "bool = false"
+        $mut: { complete: [".done = true", "return . { id, done }"] }
       }
-      "$mut": {
-        "add_task": ["t = .tasks + { title: @title }", "return t { id, title }"]
+      $mut: {
+        add_task: ["t = .tasks + { title: @title }", "return t { id, title }"]
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, title, done }"
-          "$mut": { "add": ".add_task" }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title, done }"
+          $mut: { add: ".add_task" }
         }
       }
     }
@@ -36,26 +36,26 @@
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.newname@1.1.0"
-          "$model": {
-            "tasks": {
-              "$key": "id"
-              "id": "uuid = uuid()"
-              "title": "text"
-              "done": "bool = false"
-              "$mut": { "complete": [".done = true", "return . { id, done }"] }
+          $liasse: 1
+          $app: "t.compat.newname@1.1.0"
+          $model: {
+            tasks: {
+              $key: "id"
+              id: "uuid = uuid()"
+              title: "text"
+              done: "bool = false"
+              $mut: { complete: [".done = true", "return . { id, done }"] }
             }
-            "$mut": {
-              "add_task": ["t = .tasks + { title: @title }", "return t { id, title }"]
+            $mut: {
+              add_task: ["t = .tasks + { title: @title }", "return t { id, title }"]
             }
-            "$public": {
-              "tasks": {
-                "$view": ".tasks { id, title, done }"
-                "$mut": {
-                  "add": ".add_task"
+            $public: {
+              tasks: {
+                $view: ".tasks { id, title, done }"
+                $mut: {
+                  add: ".add_task"
                   // new mutation name added; `add` retained
-                  "complete": ".tasks[@id].complete()"
+                  complete: ".tasks[@id].complete()"
                 }
               }
             }

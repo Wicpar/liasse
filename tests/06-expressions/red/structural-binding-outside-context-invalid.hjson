@@ -19,7 +19,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#expressions"]
     detail: "$actor referenced outside the authentication feature context that defines it"
   }

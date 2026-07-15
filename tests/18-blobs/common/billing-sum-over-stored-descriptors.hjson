@@ -74,7 +74,6 @@
         on: "c1"
       }
       expect: { outcome: ok, value: { id: "u2" } } }
-    { watch: "public.uploads", on: "c1", id: "w1", expect_init: { value: 7 } }
+    { watch: "public.uploads", on: "c1", id: "w1", expect_init: { value: "7" } }
   ]
 }
-</content>

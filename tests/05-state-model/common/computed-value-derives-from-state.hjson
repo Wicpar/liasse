@@ -7,7 +7,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.computed@1.0.0"
+    $app: "t.st.computed@1.0.0"
     $model: {
       people: {
         $key: "id"
@@ -36,8 +36,8 @@
 
   steps: [
     { call: "public.people.add", args: { id: "p1", first: "Ada", last: "Byron" },
-      expect: { outcome: "ok", value: { id: "p1", full: "Ada Byron" } } }
+      expect: { outcome: ok, value: { id: "p1", full: "Ada Byron" } } }
     { call: "public.people.set_last", args: { id: "p1", last: "Lovelace" },
-      expect: { outcome: "ok", value: "Ada Lovelace" } }
+      expect: { outcome: ok, value: "Ada Lovelace" } }
   ]
 }

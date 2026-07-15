@@ -57,7 +57,7 @@
 
   steps: [
     { connect: "c1" }
-    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: 0 } }
+    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: "0" } }
     { blob_put: {
         call: "public.docs.add"
         param: "file"
@@ -79,7 +79,7 @@
         on: "c1"
       }
       expect: { outcome: ok, value: { id: "$ref:d1" } } }
-    { expect_view: { watch: "w1", value: 1 } }
+    { expect_view: { watch: "w1", value: "1" } }
     // Same operation id, different bytes -> different metadata -> rejected.
     { blob_put: {
         call: "public.docs.add"
@@ -92,7 +92,6 @@
       }
       expect: { outcome: rejected, violates: ["#clients"],
                 detail: "operation id reused with a different blob descriptor" } }
-    { expect_view: { watch: "w1", value: 1 } }
+    { expect_view: { watch: "w1", value: "1" } }
   ]
 }
-</content>

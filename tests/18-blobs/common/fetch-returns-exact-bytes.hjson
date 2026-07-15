@@ -76,4 +76,3 @@
       expect: { outcome: ok, holders: ["primary"], bytes: "the exact bytes" } }
   ]
 }
-</content>

@@ -5,27 +5,27 @@
   format: 1
   name: rekey-collision-rejects-transition
   suite: scenario
-  spec: ["§5.4", "§22.2", "#mutations"]
+  spec: ["#mutations", "§5.4", "§22.2"]
   tags: ["identity"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.rekeycollide@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "$mut": { "rekey": ".id = @new" }
+    $liasse: 1
+    $app: "t.rekeycollide@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        $mut: { rekey: ".id = @new" }
       }
-      "$public": {
-        "companies": {
-          "$view": ".companies { id }"
-          "$mut": { "rekey": ".companies[@id].rekey" }
+      $public: {
+        companies: {
+          $view: ".companies { id }"
+          $mut: { rekey: ".companies[@id].rekey" }
         }
       }
     }
-    "$data": {
-      "companies": { "a": {}, "b": {} }
+    $data: {
+      companies: { a: {}, b: {} }
     }
   }
 

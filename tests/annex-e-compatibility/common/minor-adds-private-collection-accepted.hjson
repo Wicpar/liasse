@@ -14,43 +14,43 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.privcoll@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.compat.privcoll@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, name }" }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
       }
     }
-    "$data": { "companies": { "acme": { "name": "Acme" } } }
+    $data: { companies: { acme: { name: "Acme" } } }
   }
 
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.privcoll@1.1.0"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
+          $liasse: 1
+          $app: "t.compat.privcoll@1.1.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
             }
             // new private collection, not exposed by any boundary
-            "audit": {
-              "$key": "id"
-              "id": "uuid = uuid()"
-              "at": "timestamp = now()"
+            audit: {
+              $key: "id"
+              id: "uuid = uuid()"
+              at: "timestamp = now()"
             }
-            "$public": {
-              "companies": { "$view": ".companies { id, name }" }
+            $public: {
+              companies: { $view: ".companies { id, name }" }
             }
           }
-          "$data": { "companies": { "acme": { "name": "Acme" } } }
+          $data: { companies: { acme: { name: "Acme" } } }
         }
       }
       expect: { outcome: ok, result: committed } }

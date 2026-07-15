@@ -1,0 +1,84 @@
+{
+  format: 1
+  name: minor-narrows-input-enum-domain-rejected
+  suite: scenario
+  spec: ["#annex-e", "#state-model"]
+  note: '''
+    E.4 breaking input change: "narrowing a parameter check or accepted enum
+    domain declared by the boundary." The exposed mutation `add` reads
+    @priority, whose accepted domain is inferred from the field
+    `priority: {$enum:[low,med,high]}` (§8.3; §5.9). Version 1.1.0 removes the
+    label `med`, narrowing the accepted domain to [low,high]. A caller that sent
+    priority=med — accepted by 1.0.0 — would now be rejected, so the release does
+    not accept every request the earlier contract accepted. E.1/E.3 require the
+    same-major minor to be rejected; 1.0.0 stays active (E.9). No row holds
+    `med`, so the only defect is the boundary input narrowing, not a failed
+    migration.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.compat.inenumnarrow@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        priority: { $enum: ["low", "med", "high"] }
+      }
+      $mut: {
+        add_task: [
+          "t = .tasks + { title: @title, priority: @priority }"
+          "return t { id, title }"
+        ]
+      }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title }"
+          $mut: { add: ".add_task" }
+        }
+      }
+    }
+    // seed only `low`, so no live row depends on the label being dropped
+    $data: { tasks: { "00000000-0000-0000-0000-000000000001": { title: "seed", priority: "low" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.compat.inenumnarrow@1.1.0"
+          $model: {
+            tasks: {
+              $key: "id"
+              id: "uuid = uuid()"
+              title: "text"
+              // accepted enum domain narrowed: `med` removed
+              priority: { $enum: ["low", "high"] }
+            }
+            $mut: {
+              add_task: [
+                "t = .tasks + { title: @title, priority: @priority }"
+                "return t { id, title }"
+              ]
+            }
+            $public: {
+              tasks: {
+                $view: ".tasks { id, title }"
+                $mut: { add: ".add_task" }
+              }
+            }
+          }
+          $data: { tasks: { "00000000-0000-0000-0000-000000000001": { title: "seed", priority: "low" } } }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#annex-e"]
+        detail: "minor narrows the accepted input enum domain of exposed mutation `add` (drops label `med`); narrowing rejected"
+      } }
+    // prior release still accepts the dropped label (E.9)
+    { call: "public.tasks.add", args: { title: "keep", priority: "med" },
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "keep" } } }
+  ]
+}

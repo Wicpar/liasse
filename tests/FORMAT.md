@@ -67,9 +67,17 @@ expect: {
   outcome: invalid                   // see outcome vocabulary below
   violates: ["#refs"]                // spec anchor(s) of the violated rule —
                                      // required for every non-ok outcome
+                                     // EXCEPT unspecified (see policy below)
   detail: "field references a collection that does not exist"
 }
 ```
+
+**`unspecified` carries no `violates`.** Every other non-`ok` outcome names the
+violated rule in `violates`; `unspecified` asserts that *no* rule pins the
+behavior, so there is nothing to cite. An `unspecified` outcome MUST instead
+carry an explanation of the gap — a case-level `note`, or a `detail` on the
+`unspecified` `expect` block — naming the interacting rules whose combination
+leaves the behavior unpinned.
 
 ### `suite: scenario`
 
@@ -85,7 +93,7 @@ The package loads successfully (an implicit `outcome: ok` on load), then
 | `denied`      | rejected by authentication, roles, or permissions              |
 | `rejected`    | admission-time rejection (checks, keys, refs, uniqueness, meters, limits) |
 | `error`       | other runtime failure the spec mandates                        |
-| `unspecified` | the spec does not pin the behavior — `note` must explain the gap |
+| `unspecified` | the spec does not pin the behavior — carries **no** `violates`; `note`/`detail` must explain the gap |
 
 `unspecified` cases are valuable: they document spec ambiguities discovered
 while writing the corpus. The harness records them without judging.
@@ -123,10 +131,110 @@ while writing the corpus. The harness records them without judging.
 - `on` defaults to the single connection when only one exists; `connect` is
   implicit for single-client cases that never authenticate.
 - Step `expect` uses the same outcome vocabulary; non-ok outcomes carry
-  `violates`.
+  `violates`, except `unspecified` (no `violates`; explained by `note`/`detail`).
 - A chapter may need an action this vocabulary lacks. Use a new, descriptive
   step key, and document its semantics in `tests/<chapter>/NOTES.md`. The
-  harness treats undocumented step keys as corpus errors.
+  harness treats undocumented step keys as corpus errors. Steps reused by three
+  or more chapters are promoted to the **Extended step registry** below; a
+  chapter that uses a registry step references the registry instead of
+  redefining it, and `tests/<chapter>/NOTES.md` documents only steps local to
+  that chapter.
+
+## Extended step registry
+
+Steps and step-members reused across three or more chapters. Each has a single
+canonical name, schema, and owning chapter; other chapters reference this
+registry rather than redefining the step. Chapter `NOTES.md` files keep only
+their chapter-local extensions.
+
+### `host_load` — owning chapter §9/§16
+
+```hjson
+{ host_load: { package: "v2" }, expect: { outcome: invalid, violates: [...] } }
+```
+
+Applies the §9.2 host lifecycle load of a definition (an inline package object
+or a label from the case's `packages` map) against the active root instance
+(load / update path). Outcome mapping per §9.4: `ok` = committed;
+`invalid` = the §9.4 `rejected` load outcome (validation failed, prior
+application remains active). Distinct from `load_artifact` (§04), whose input
+is a prebuilt `.liasse` artifact rather than a definition.
+
+### `module_install` — owning chapter §13
+
+```hjson
+{ module_install: { space: "<display path of the module space>",
+    request: { $name, $module, $config?, $data?, $use? } },
+  expect: { outcome: ok } }
+```
+
+Performs the §13.3 `modules.install` into the named module space. `$module`
+names a package `name@version`, resolved against the case's `packages` map by
+each entry's declared `$module` value. `$use` bindings are display paths of
+sibling instances (§13.3). A successful install is a composition change and
+therefore a commit (§2.4).
+
+### `tamper_artifact` — owning chapter §19
+
+```hjson
+{ tamper_artifact: { from: "a1", as: "a1x", ops: [ ... ] } }
+```
+
+Derives a **new** labeled artifact by applying deterministic edits to a copy;
+the source label is left untouched. Op vocabulary (applied in order):
+`corrupt_entry`, `set_entry`, `remove_entry`, `duplicate_entry`, `add_entry`,
+`copy_entry_from`, `edit_json`, `duplicate_json_member`, `edit_cbor`,
+`rewrite_identifier`, `fix_checksums`, `add_manifest_entry`. Full op semantics
+are in `tests/19-history-artifacts/NOTES.md`. (§04's byte-surgery-with-repack
+step, which mutates one label in place, is the distinct chapter-local
+`repack_artifact`.)
+
+### `operation_id` — member on `call` / `blob_put`, owning chapter §12
+
+```hjson
+{ call: "public.tasks.add", args: { title: "x" }, operation_id: "op-7",
+  expect: { outcome: ok, "...": true } }
+```
+
+Attaches the §12.3 / §D.8 external high-entropy operation identifier. Two
+submissions carrying the **same** `operation_id`, the same target surface, the
+same selected authenticator, and an equivalent request model are one operation
+(a retry); §12.3 requires at-most-once execution for that pair. A call with no
+`operation_id` is a new operation on every submission. (Spelled
+`operation_id`, never `op_id`.)
+
+### `expect.completion` — member on a `call`/mutation `expect`, owning chapter §12
+
+```hjson
+{ call: "public.docs.tag", args: { ... }, expect: { outcome: ok, completion: unchanged } }
+```
+
+`completion` is `committed | unchanged`; it asserts which §12.3 / §8.9 success
+completion an `outcome: ok` response reported. Distinct from the
+`operation_status` step's `status` member (`pending | committed | unchanged |
+rejected | unknown`), which reports a queried operation record (§12.3).
+
+### `expect_close` — owning chapter §12
+
+```hjson
+{ expect_close: { watch: "w1", reason: "$any" } }
+```
+
+Asserts that the named subscription received `close(frontier, reason)` (§12.2)
+once all prior commits on its connection are reflected. `reason` contents are
+opaque; `"$any"` is recommended.
+
+### `expect_one_of` inside `expect_init` — owning chapter §12/§23
+
+```hjson
+{ watch: "public.notes", id: "w1", expect_init: { expect_one_of: [ [...], [...] ] } }
+```
+
+Like `expect_init`, but the initial value matches any one of the listed
+spec-allowed results. Used after a `concurrently` race where the spec admits
+several serializations, mirroring FORMAT.md's `expect_one_of` on `expect_view`.
+(This is the single canonical form; the earlier `expect_init_one_of` spelling
+is retired.)
 
 ## Determinism and matchers
 
@@ -147,6 +255,30 @@ values are matched, bound, and reused:
 `$ref:NAME` may also appear in `args` to send a previously bound value.
 Expected objects match exactly: members not listed must not be present,
 unless the object contains `"...": true`, which allows extra members.
+
+## Style and wire conventions
+
+These are corpus-wide conventions the harness does not enforce but authors keep
+consistent, so simple tooling and grep work across every file.
+
+- **Bare outcome tokens.** Write outcome and completion/status values unquoted:
+  `outcome: ok`, `completion: unchanged`, not `outcome: "ok"`.
+- **Bare package member keys.** Use Hjson quoteless keys for simple
+  identifiers and `$`-names (`$app:`, `$model:`, `$key:`, `n:`), not
+  JSON-style quoted member names (`"$app":`). Quote a key only when it is not a
+  simple identifier — display paths, media/signature keys, UUIDs, numeric
+  strings, and the `"..."` extra-members matcher stay quoted.
+- **`operation_id`, not `op_id`**, for the §12.3 operation identifier.
+- **Spec anchors: chapter anchor before section.** Within a `spec:`/`violates:`
+  array, a chapter `#anchor` precedes the `§section` ref(s) it introduces
+  (`["#history", "§19.7"]`); for several rules the array pairs each `#anchor`
+  with its own section(s). Never lead with a `§section` ahead of its anchor.
+- **`int` wire values are JSON strings.** Annex A.1 pins the canonical
+  strict-JSON value of `int` as a "JSON string with canonical base-10 digits".
+  An `int` value in `args`, `$data` seeds, and asserted results is therefore
+  the quoted string `"20"`, never the bare number `20`. (`decimal`, `uuid`,
+  `date`, `timestamp`, `duration` are likewise JSON strings per Annex A.1;
+  `bool` and `json` numbers/booleans stay bare.)
 
 ## Rules for authors
 

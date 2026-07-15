@@ -14,22 +14,22 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.reqparam@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "uuid = uuid()"
-        "title": "text"
-        "priority": "int = 0"
+    $liasse: 1
+    $app: "t.compat.reqparam@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        priority: "int = 0"
       }
-      "$mut": {
-        "add_task": ["t = .tasks + { title: @title }", "return t { id, title }"]
+      $mut: {
+        add_task: ["t = .tasks + { title: @title }", "return t { id, title }"]
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, title }"
-          "$mut": { "add": ".add_task" }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title }"
+          $mut: { add: ".add_task" }
         }
       }
     }
@@ -38,23 +38,23 @@
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.reqparam@1.1.0"
-          "$model": {
-            "tasks": {
-              "$key": "id"
-              "id": "uuid = uuid()"
-              "title": "text"
-              "priority": "int"
+          $liasse: 1
+          $app: "t.compat.reqparam@1.1.0"
+          $model: {
+            tasks: {
+              $key: "id"
+              id: "uuid = uuid()"
+              title: "text"
+              priority: "int"
             }
-            "$mut": {
+            $mut: {
               // @priority inferred required from non-optional `priority`
-              "add_task": ["t = .tasks + { title: @title, priority: @priority }", "return t { id, title }"]
+              add_task: ["t = .tasks + { title: @title, priority: @priority }", "return t { id, title }"]
             }
-            "$public": {
-              "tasks": {
-                "$view": ".tasks { id, title }"
-                "$mut": { "add": ".add_task" }
+            $public: {
+              tasks: {
+                $view: ".tasks { id, title }"
+                $mut: { add: ".add_task" }
               }
             }
           }

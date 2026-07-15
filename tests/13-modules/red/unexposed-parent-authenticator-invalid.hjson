@@ -13,49 +13,49 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
               // no $auth map: no parent authenticator is exposed to children
-              "$interfaces": {
-                "notes": { "$view": { "$key": "id", "id": "text" } }
+              $interfaces: {
+                notes: { $view: { $key: "id", id: "text" } }
               }
             }
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     mem: {
-      "$liasse": 1
-      "$module": "t.mem@1.0.0"
-      "$auth": {
+      $liasse: 1
+      $module: "t.mem@1.0.0"
+      $auth: {
         // references a parent authenticator the module space never exposed
-        "session": "$parent.host_session"
+        session: "$parent.host_session"
       }
-      "$roles": {
-        "member": {
-          "$auth": "session"
+      $roles: {
+        member: {
+          $auth: "session"
         }
       }
-      "$model": {
-        "notes": { "$key": "id", "id": "text" }
+      $model: {
+        notes: { $key: "id", id: "text" }
       }
-      "$expose": {
-        "notes": { "$view": ".notes { id }" }
+      $expose: {
+        notes: { $view: ".notes { id }" }
       }
     }
   }
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "mem", "$module": "t.mem@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "mem", $module: "t.mem@1.0.0" } }
       expect: { outcome: invalid, violates: ["§13.11"]
                 detail: "child aliases a parent authenticator that the module space does not expose" } }
   ]

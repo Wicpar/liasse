@@ -11,22 +11,22 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.seedcheck@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": {
-          "$type": "text"
-          "$check": ["size(.) > 0", "A title is required"]
+    $liasse: 1
+    $app: "t.seedcheck@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: {
+          $type: "text"
+          $check: ["size(.) > 0", "A title is required"]
         }
       }
     }
-    "$data": {
-      "tasks": {
-        "t1": { "title": "valid" }
-        "t2": { "title": "" }
+    $data: {
+      tasks: {
+        t1: { title: "valid" }
+        t2: { title: "" }
       }
     }
   }

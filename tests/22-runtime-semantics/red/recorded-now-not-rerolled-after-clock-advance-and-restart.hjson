@@ -8,7 +8,7 @@
   format: 1
   name: recorded-now-not-rerolled-after-clock-advance-and-restart
   suite: scenario
-  spec: ["§22.1", "§22.5", "§22.6", "#runtime"]
+  spec: ["#runtime", "§22.1", "§22.5", "§22.6"]
   tags: ["time", "replay", "tampering"]
 
   package: {

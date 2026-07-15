@@ -11,55 +11,55 @@
   tags: ["authz", "escalation"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.escalation@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
-        "is_admin": "bool = false"
+    $liasse: 1
+    $app: "t.escalation@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        is_admin: "bool = false"
       }
-      "notes": {
-        "$key": "id"
-        "id": "text"
-        "body": "text"
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
       }
-      "$mut": {
-        "add_note": [
+      $mut: {
+        add_note: [
           "n = .notes + { id: @id, body: @body }"
           "return n { id, body }"
         ]
-        "wipe_notes": "-.notes[:n]"
+        wipe_notes: "-.notes[:n]"
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
-      "$roles": {
-        "member": {
-          "$auth": "token"
-          "$members": ".accounts"
-          "notes": {
-            "$view": ".notes { id, body }"
-            "$mut": { "add": ".add_note" }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts"
+          notes: {
+            $view: ".notes { id, body }"
+            $mut: { add: ".add_note" }
           }
         }
-        "admin": {
-          "$auth": "token"
-          "$members": ".accounts[:a | a.is_admin]"
-          "control": {
-            "$mut": { "wipe": ".wipe_notes" }
+        admin: {
+          $auth: "token"
+          $members: ".accounts[:a | a.is_admin]"
+          control: {
+            $mut: { wipe: ".wipe_notes" }
           }
         }
       }
     }
-    "$data": {
-      "accounts": {
-        "alice": {}
-        "bob": { "is_admin": true }
+    $data: {
+      accounts: {
+        alice: {}
+        bob: { is_admin: true }
       }
     }
   }

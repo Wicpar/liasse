@@ -10,24 +10,24 @@
   tags: ["exposure"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.exposure@1.0.0"
-    "$model": {
-      "products": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.exposure@1.0.0"
+    $model: {
+      products: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "pings": "int = 0"
-      "$public": {
+      pings: "int = 0"
+      $public: {
         // View-only surface: no callable names exist under it.
-        "catalog": {
-          "$view": ".products { id, name }"
+        catalog: {
+          $view: ".products { id, name }"
         }
         // Mutation-only surface: it has no read result to watch.
-        "actions": {
-          "$mut": {
-            "ping": [
+        actions: {
+          $mut: {
+            ping: [
               ".pings = .pings + 1"
               "return .pings"
             ]
@@ -35,8 +35,8 @@
         }
       }
     }
-    "$data": {
-      "products": { "p1": { "name": "Widget" } }
+    $data: {
+      products: { p1: { name: "Widget" } }
     }
   }
 
@@ -53,6 +53,6 @@
     { watch: "public.catalog", id: "w1",
       expect_init: { value: [ { id: "p1", name: "Widget" } ] } }
     { call: "public.actions.ping", args: {},
-      expect: { outcome: ok, value: 1 } }
+      expect: { outcome: ok, value: "1" } }
   ]
 }

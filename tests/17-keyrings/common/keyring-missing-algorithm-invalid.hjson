@@ -18,13 +18,13 @@
   }
 
   package: {
-    "$liasse": 1
-    "$app": "t.keyrings@1.0.0"
-    "$model": {
-      "session_keys": {
-        "$keyring": {
-          "$provider": "test-kp"
-          "$rotate": "P30D"
+    $liasse: 1
+    $app: "t.keyrings@1.0.0"
+    $model: {
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $rotate: "P30D"
         }
       }
     }

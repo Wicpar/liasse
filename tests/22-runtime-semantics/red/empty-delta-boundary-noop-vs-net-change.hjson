@@ -14,7 +14,7 @@
   format: 1
   name: empty-delta-boundary-noop-vs-net-change
   suite: scenario
-  spec: ["§22.2", "§8.9", "§2.4", "#runtime"]
+  spec: ["#runtime", "§22.2", "§8.9", "§2.4"]
   tags: ["empty-delta", "completion"]
 
   package: {

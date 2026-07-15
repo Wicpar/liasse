@@ -58,4 +58,3 @@
       expect: { outcome: ok, value: { id: "d1" } } }
   ]
 }
-</content>

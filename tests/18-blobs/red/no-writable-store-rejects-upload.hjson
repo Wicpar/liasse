@@ -58,7 +58,7 @@
 
   steps: [
     { connect: "c1" }
-    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: 0 } }
+    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: "0" } }
     { connector_set: { connector: "fs-a", available: false } }
     { blob_put: {
         call: "public.docs.add"
@@ -71,7 +71,6 @@
       expect: { outcome: rejected, violates: ["#blobs"],
                 detail: "no verified copy can land; the only placement branch is unsatisfiable" } }
     // Committed application state is preserved across the rejected upload.
-    { expect_view: { watch: "w1", value: 0 } }
+    { expect_view: { watch: "w1", value: "0" } }
   ]
 }
-</content>

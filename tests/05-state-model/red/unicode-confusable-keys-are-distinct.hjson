@@ -39,21 +39,21 @@ Literals used:
 
   steps: [
     { call: "public.accounts.add", args: { id: "paypal", marker: "latin" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // Cyrillic а: different scalar sequence -> different key -> no collision
     { call: "public.accounts.add", args: { id: "pаypal", marker: "cyrillic" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // NFC vs NFD: also distinct scalar sequences
     { call: "public.accounts.add", args: { id: "café", marker: "nfc" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.accounts.add", args: { id: "café", marker: "nfd" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // exact lookups must not alias across the confusable pairs
     { call: "public.accounts.get", args: { id: "paypal" },
-      expect: { outcome: "ok", value: "latin" } }
+      expect: { outcome: ok, value: "latin" } }
     { call: "public.accounts.get", args: { id: "pаypal" },
-      expect: { outcome: "ok", value: "cyrillic" } }
+      expect: { outcome: ok, value: "cyrillic" } }
     { call: "public.accounts.get", args: { id: "café" },
-      expect: { outcome: "ok", value: "nfd" } }
+      expect: { outcome: ok, value: "nfd" } }
   ]
 }

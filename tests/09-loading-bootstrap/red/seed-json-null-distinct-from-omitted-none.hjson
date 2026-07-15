@@ -15,22 +15,22 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.jsonnull@1.0.0"
-    "$model": {
-      "docs": {
-        "$key": "id"
-        "id": "text"
-        "payload": "json?"
+    $liasse: 1
+    $app: "t.ld.jsonnull@1.0.0"
+    $model: {
+      docs: {
+        $key: "id"
+        id: "text"
+        payload: "json?"
       }
-      "$public": {
-        "docs": { "$view": ".docs { id, payload }" }
+      $public: {
+        docs: { $view: ".docs { id, payload }" }
       }
     }
-    "$data": {
-      "docs": {
-        "a": { "payload": null }
-        "b": {}
+    $data: {
+      docs: {
+        a: { payload: null }
+        b: {}
       }
     }
   }

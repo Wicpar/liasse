@@ -16,7 +16,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#expressions", "#host-namespaces"]
     detail: "expression uses namespace cbor which is neither core nor declared in $requires"
   }

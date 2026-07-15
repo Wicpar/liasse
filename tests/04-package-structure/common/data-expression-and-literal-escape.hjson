@@ -7,7 +7,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.escape@1.0.0"
+    $app: "t.pkg.escape@1.0.0"
     $model: {
       doc: {
         formula: "text"

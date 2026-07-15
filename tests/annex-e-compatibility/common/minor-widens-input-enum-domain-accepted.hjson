@@ -1,0 +1,82 @@
+{
+  format: 1
+  name: minor-widens-input-enum-domain-accepted
+  suite: scenario
+  spec: ["#annex-e", "#state-model"]
+  note: '''
+    E.4 compatible input change: "widening an explicitly declared numeric range
+    or accepted enum domain." The exposed mutation `add` reads @priority, whose
+    type is inferred from the field `priority: {$enum:[low,high]}` (§8.3: a
+    parameter inherits its target field's type — an enum is a type, §5.9 — and
+    §8.3 states "The resulting parameter shape is part of the external surface
+    contract"). Version 1.1.0 widens the enum to [low,med,high]. Every value
+    accepted by 1.0.0 (low, high) is still accepted, so the input contract is
+    only widened — E.2 substitutability holds — and the update commits. The enum
+    field is NOT projected by the public view, so this isolates the INPUT side
+    of the enum asymmetry (widening an OUTPUT enum is breaking, E.5). No row
+    holds a value outside the narrower domain, so migration is trivial.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.compat.inenumwiden@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        priority: { $enum: ["low", "high"] }
+      }
+      $mut: {
+        add_task: [
+          "t = .tasks + { title: @title, priority: @priority }"
+          "return t { id, title }"
+        ]
+      }
+      $public: {
+        tasks: {
+          // priority not projected -> isolates the input-side enum contract
+          $view: ".tasks { id, title }"
+          $mut: { add: ".add_task" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.compat.inenumwiden@1.1.0"
+          $model: {
+            tasks: {
+              $key: "id"
+              id: "uuid = uuid()"
+              title: "text"
+              // accepted enum domain widened with a new label `med`
+              priority: { $enum: ["low", "med", "high"] }
+            }
+            $mut: {
+              add_task: [
+                "t = .tasks + { title: @title, priority: @priority }"
+                "return t { id, title }"
+              ]
+            }
+            $public: {
+              tasks: {
+                $view: ".tasks { id, title }"
+                $mut: { add: ".add_task" }
+              }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    // a previously accepted input value is still accepted
+    { call: "public.tasks.add", args: { title: "A", priority: "high" },
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "A" } } }
+    // the newly widened label is now accepted too
+    { call: "public.tasks.add", args: { title: "B", priority: "med" },
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "B" } } }
+  ]
+}

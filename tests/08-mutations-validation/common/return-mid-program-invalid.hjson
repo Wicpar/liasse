@@ -7,12 +7,12 @@
   spec: ["#mutations", "§8.10"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.midreturn@1.0.0"
-    "$model": {
-      "count": "int = 0"
-      "$mut": {
-        "bad": [
+    $liasse: 1
+    $app: "t.midreturn@1.0.0"
+    $model: {
+      count: "int = 0"
+      $mut: {
+        bad: [
           "return .count"
           ".count = .count + 1"
         ]

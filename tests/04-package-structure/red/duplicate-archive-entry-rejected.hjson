@@ -8,7 +8,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.dupentry@1.0.0"
+    $app: "t.pkg.dupentry@1.0.0"
     $model: {
       note: "text"
     }
@@ -17,7 +17,7 @@
   steps: [
     { build_artifact: { as: "a1", files: {} } }
     // append a SECOND liasse.json entry alongside the builder's
-    { tamper_artifact: { artifact: "a1",
+    { repack_artifact: { artifact: "a1",
         add: { "liasse.json": "{\"$liasse\":1,\"$app\":\"t.evil@9.9.9\",\"$model\":{}}" } } }
     { load_artifact: { from: "a1",
         expect: { outcome: invalid, violates: ["#annex-d", "§D.5"] } } }

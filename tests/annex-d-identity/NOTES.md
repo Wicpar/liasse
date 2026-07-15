@@ -39,23 +39,27 @@ same everywhere. They are listed here only so this chapter is self-describing:
 
 ## Steps added by this chapter
 
-### `op_id` member on `call`
+### `operation_id` member on `call`
+
+Registry member (canonical name `operation_id`, owned by §12); see the
+**Extended step registry** in `tests/FORMAT.md`.
 
 ```hjson
-{ call: "public.tasks.add", args: { title: "x" }, op_id: "op-7",
+{ call: "public.tasks.add", args: { title: "x" }, operation_id: "op-7",
   expect: { outcome: ok, "...": true } }
 ```
 
-`op_id` attaches the external high-entropy operation identifier of §12 / §D.8
-to the call. Two `call` steps that carry the **same** `op_id`, target the
-**same** public-or-scoped-role surface, use the same selected authenticator,
-and send an **equivalent** request model one operation submitted twice (a
-transport re-delivery / retry); §12 and §D.8 require at-most-once execution
-for that pair. A `call` with no `op_id` is a new operation on every
-submission (§12: "A call without an identifier is a new operation on every
-submission"). Because mutation return values are ephemeral (§D.8), retry
-steps assert the observable committed state, not a pinned return value; the
-retry's own result object is matched with `"...": true`.
+`operation_id` attaches the external high-entropy operation identifier of
+§12 / §D.8 to the call. Two `call` steps that carry the **same**
+`operation_id`, target the **same** public-or-scoped-role surface, use the
+same selected authenticator, and send an **equivalent** request model are one
+operation submitted twice (a transport re-delivery / retry); §12 and §D.8
+require at-most-once execution for that pair. A `call` with no `operation_id`
+is a new operation on every submission (§12: "A call without an identifier is
+a new operation on every submission"). Because mutation return values are
+ephemeral (§D.8), retry steps assert the observable committed state, not a
+pinned return value; the retry's own result object is matched with
+`"...": true`.
 
 ### `erase` and `reinsert`
 
@@ -76,9 +80,10 @@ and restores bytes only where the exact expected stub remains (§21.3, §D.7).
 
 ## Conventions
 
-- All non-`ok` step outcomes carry `violates`, including `unspecified`, where
-  `violates` names the interacting rules whose combination leaves the
-  behavior unpinned and `note` explains the gap.
+- All non-`ok` step outcomes carry `violates`, except `unspecified`, which
+  carries no `violates` (per `tests/FORMAT.md`) and instead names the
+  interacting rules whose combination leaves the behavior unpinned in a
+  `note`/`detail`.
 - Artifact / extract verification failures use `outcome: invalid` (statically
   rejected at verification time), consistent with the §19 chapter.
 - Typed key values sent in `args` and returned in view rows use their typed

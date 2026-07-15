@@ -9,26 +9,26 @@
   tags: []
 
   package: {
-    "$liasse": 1
-    "$app": "t.surf_params@1.0.0"
-    "$model": {
-      "projects": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "archived": "bool = false"
+    $liasse: 1
+    $app: "t.surf_params@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        archived: "bool = false"
       }
-      "$public": {
-        "projects": {
-          "$params": { "archived": "bool = false" }
-          "$view": ".projects[:p | p.archived == @archived] { id, name }"
+      $public: {
+        projects: {
+          $params: { archived: "bool = false" }
+          $view: ".projects[:p | p.archived == @archived] { id, name }"
         }
       }
     }
-    "$data": {
-      "projects": {
-        "p1": { "name": "Live" }
-        "p2": { "name": "Old", "archived": true }
+    $data: {
+      projects: {
+        p1: { name: "Live" }
+        p2: { name: "Old", archived: true }
       }
     }
   }

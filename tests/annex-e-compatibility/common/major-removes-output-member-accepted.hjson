@@ -17,38 +17,38 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.majorrm@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.compat.majorrm@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, name }" }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
       }
     }
-    "$data": { "companies": { "acme": { "name": "Acme" } } }
+    $data: { companies: { acme: { name: "Acme" } } }
   }
 
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.majorrm@2.0.0"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
+          $liasse: 1
+          $app: "t.compat.majorrm@2.0.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
             }
-            "$public": {
+            $public: {
               // `name` removed from the boundary output — permitted across a major
-              "companies": { "$view": ".companies { id }" }
+              companies: { $view: ".companies { id }" }
             }
           }
-          "$data": { "companies": { "acme": { "name": "Acme" } } }
+          $data: { companies: { acme: { name: "Acme" } } }
         }
       }
       expect: { outcome: ok, result: committed } }

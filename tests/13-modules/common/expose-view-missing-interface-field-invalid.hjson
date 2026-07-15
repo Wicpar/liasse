@@ -1,0 +1,55 @@
+{
+  format: 1
+  name: expose-view-missing-interface-field-invalid
+  suite: scenario
+  spec: ["#modules", "§13.8"]
+  note: '''
+    §13.8: view satisfaction is structural. A module-space interface declares
+    a $view shape the exposing module MUST provide. Here the "templates"
+    interface requires { id, label }, but the module's bound $expose view
+    projects { id } only — it does not structurally satisfy the interface
+    contract, so the install fails validation. This is the missing-field
+    direction of structural satisfaction (the over-projection direction is
+    covered by red/private-child-field-not-exposed-invalid).
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text", label: "text" } }
+              }
+            }
+          }
+        }
+      }
+      $data: { companies: { acme: { name: "Acme" } } }
+    }
+    tplthin: {
+      $liasse: 1
+      $module: "t.tplthin@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+      }
+      $expose: {
+        // narrower than the interface contract: "label" is required but absent
+        templates: { $view: ".templates { id }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.tplthin@1.0.0" } }
+      expect: { outcome: invalid, violates: ["§13.8"]
+                detail: "the exposed view omits a field required by the interface $view contract; view satisfaction is structural" } }
+  ]
+}

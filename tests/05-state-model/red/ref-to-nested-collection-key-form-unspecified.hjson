@@ -35,8 +35,8 @@ type links.office would carry, is unspecified.'''
   }
 
   expect: {
-    outcome: "unspecified"
-    violates: ["§5.6", "§A.9"]
+    outcome: unspecified
+    
     detail: "the spec presupposes refs to descendants (§5.4) but never defines the declaration or key form of a ref targeting a nested collection"
   }
 }

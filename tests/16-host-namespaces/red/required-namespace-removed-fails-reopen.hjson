@@ -54,7 +54,7 @@
 
   steps: [
     // application is genuinely live before the dependency is stripped
-    { watch: "public.stats", id: "w1", expect_init: { value: 14 } }
+    { watch: "public.stats", id: "w1", expect_init: { value: "14" } }
     { unwatch: "w1" }
     // reopen the durable store against a context missing the required namespace
     { reopen: { hosts: { namespaces: [] } }

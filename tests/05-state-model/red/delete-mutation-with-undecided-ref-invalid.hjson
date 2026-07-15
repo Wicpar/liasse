@@ -32,7 +32,7 @@ fail validation, not defer the decision to runtime.'''
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["§5.6"]
     detail: "a mutation MAY delete /accounts rows, so the inbound ref posts.author must declare $on_delete before the declaration can become active"
   }

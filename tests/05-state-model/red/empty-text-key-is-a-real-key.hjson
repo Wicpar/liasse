@@ -13,7 +13,7 @@ is a real key rather than a sentinel for "missing".'''
 
   package: {
     $liasse: 1
-    $app: "t.emptykey@1.0.0"
+    $app: "t.st.emptykey@1.0.0"
     $model: {
       codes: {
         $key: "id"
@@ -34,12 +34,12 @@ is a real key rather than a sentinel for "missing".'''
 
   steps: [
     { call: "public.codes.add", args: { id: "", label: "empty" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.codes.get", args: { id: "" },
-      expect: { outcome: "ok", value: "empty" } }
+      expect: { outcome: ok, value: "empty" } }
     // "" collides with "" like any other key value
     { call: "public.codes.add", args: { id: "", label: "again" },
-      expect: { outcome: "rejected", violates: ["§5.4"] } }
+      expect: { outcome: rejected, violates: ["§5.4"] } }
     { watch: "public.codes", id: "w1",
       expect_init: { value: [ { id: "", label: "empty" } ] } }
   ]

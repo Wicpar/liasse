@@ -12,7 +12,7 @@ commit). The cases in this chapter use:
 
 | step | semantics |
 |---|---|
-| `module_install` | `{ module_install: { space: "<display path of the module space>", request: { $name, $module, $config?, $data?, $use? } }, expect: {...} }`. Performs the §13.3 install into the named space. `$module` names a package `name@version`; it resolves against the case's `packages` map by each entry's declared `$module` value. Explicit `$use` bindings are display paths of sibling instances (§13.3). |
+| `module_install` | `{ module_install: { space: "<display path of the module space>", request: { $name, $module, $config?, $data?, $use? } }, expect: {...} }`. Performs the §13.3 install into the named space. `$module` names a package `name@version`; it resolves against the case's `packages` map by each entry's declared `$module` value. Explicit `$use` bindings are display paths of sibling instances (§13.3). **Canonical registry step owned by this chapter** (see the Extended step registry in `tests/FORMAT.md`); other chapters (e.g. §19 child-module cases) reference it. |
 | `module_uninstall` | `{ module_uninstall: { instance: "<display path>" }, expect }` — §13.3/§13.12 uninstall through the ordinary cross-module deletion plan. |
 | `module_disable` | `{ module_disable: { instance: "<path>" }, expect }` — §13.3/§13.12 disable. |
 | `module_enable` | `{ module_enable: { instance: "<path>" }, expect }` — §13.3 enable (revalidate and restore). |
@@ -48,6 +48,18 @@ the instance becomes active"). Cases use:
 The spec does not itself classify these failures beyond "fails validation /
 is rejected"; the split above follows the FORMAT.md vocabulary definitions.
 
+A compatibility-narrowing update (§13.14) is classified `invalid`, not
+`rejected`: §13.14 states a narrowing release is rejected by "package
+loading" and that "a failing recheck blocks the update before admission".
+FORMAT.md maps a pre-admission load/validation refusal to `invalid`
+(admission-time refusals are `rejected`). This is a purely definitional
+comparison of the old and new exposed compatibility surfaces, independent of
+application/composition state, so it falls under "contract satisfaction /
+static validation" like the interface-contract cases. Applies to
+`common/minor-update-narrowing-rejected` and
+`red/update-narrowing-view-field-rejected` (filenames keep "rejected" in the
+plain-English sense of "the release is refused").
+
 ## Authoring-form assumptions
 
 - A ref whose target is an imported peer interface is written
@@ -71,3 +83,14 @@ is rejected"; the split above follows the FORMAT.md vocabulary definitions.
   `.modules["<name>"]::<interface>.<mutation>` (grounded in §13.9, §13.10
   `#credits.consume`, §13.11 `#billing.invoices.create`, and the W4 worked
   example `.modules[@module]::templates[@template]`).
+- An `$expose` (or `$modules.$expose`) `$mut` binding value MAY be an inline
+  single-statement mutation expression, not only a named-`$mut` reference.
+  §13.8 says a module "binds that contract to private views and mutations",
+  and §3.2 / §8 show a bare insert such as `.tasks + { title: @title }` as a
+  valid mutation statement; the spec's own bindings show both a named ref
+  (`.create_template`) and a mutation-call expression
+  (`.templates[@template].disable()`). `common/if-module-guarded-state-preserved`
+  binds the response-free `add` contract to `.notes + { id: @id, note: @note }`
+  inside the `$if_module`-guarded `$expose` block, so the binding activates and
+  deactivates together with the guarded interface (a named model `$mut` cannot
+  be guarded this way without dangling when the guard is off).

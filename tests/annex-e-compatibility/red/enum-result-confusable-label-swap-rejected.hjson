@@ -21,38 +21,38 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.enum@1.0.0"
-    "$model": {
-      "tickets": {
-        "$key": "id"
-        "id": "text"
-        "status": { "$enum": ["draft", "active", "closed"] }
+    $liasse: 1
+    $app: "t.compat.enum@1.0.0"
+    $model: {
+      tickets: {
+        $key: "id"
+        id: "text"
+        status: { $enum: ["draft", "active", "closed"] }
       }
-      "$public": {
-        "tickets": { "$view": ".tickets { id, status }" }
+      $public: {
+        tickets: { $view: ".tickets { id, status }" }
       }
     }
-    "$data": { "tickets": { "t1": { "status": "draft" } } }
+    $data: { tickets: { t1: { status: "draft" } } }
   }
 
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.enum@1.1.0"
-          "$model": {
-            "tickets": {
-              "$key": "id"
-              "id": "text"
+          $liasse: 1
+          $app: "t.compat.enum@1.1.0"
+          $model: {
+            tickets: {
+              $key: "id"
+              id: "text"
               // "closed" replaced by homoglyph "cIosed" (capital I, U+0049)
-              "status": { "$enum": ["draft", "active", "cIosed"] }
+              status: { $enum: ["draft", "active", "cIosed"] }
             }
-            "$public": {
-              "tickets": { "$view": ".tickets { id, status }" }
+            $public: {
+              tickets: { $view: ".tickets { id, status }" }
             }
           }
-          "$data": { "tickets": { "t1": { "status": "draft" } } }
+          $data: { tickets: { t1: { status: "draft" } } }
         }
       }
       expect: {

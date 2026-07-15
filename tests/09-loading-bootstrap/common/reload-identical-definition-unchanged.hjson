@@ -12,21 +12,21 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.reload@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.reload@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, name }" }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
       }
     }
-    "$data": {
-      "companies": {
-        "acme": { "name": "Acme SAS" }
+    $data: {
+      companies: {
+        acme: { name: "Acme SAS" }
       }
     }
   }
@@ -34,25 +34,25 @@
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.reload@1.0.0"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
+          $liasse: 1
+          $app: "t.reload@1.0.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
             }
-            "$public": {
-              "companies": { "$view": ".companies { id, name }" }
+            $public: {
+              companies: { $view: ".companies { id, name }" }
             }
           }
-          "$data": {
-            "companies": {
-              "acme": { "name": "Acme SAS" }
+          $data: {
+            companies: {
+              acme: { name: "Acme SAS" }
             }
           }
         }
       }
-      expect: { outcome: "ok", result: "unchanged" } }
+      expect: { outcome: ok, result: "unchanged" } }
   ]
 }

@@ -11,24 +11,24 @@
   format: 1
   name: unicode-confusable-keys-are-distinct
   suite: scenario
-  spec: ["§A.1", "§B.1", "§5.4", "#mutations"]
+  spec: ["#mutations", "§A.1", "§B.1", "§5.4"]
   tags: ["unicode", "identity"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.confusable@1.0.0"
-    "$model": {
-      "handles": {
-        "$key": "name"
-        "name": "text"
+    $liasse: 1
+    $app: "t.mut.confusable@1.0.0"
+    $model: {
+      handles: {
+        $key: "name"
+        name: "text"
       }
-      "$mut": {
-        "claim": ".handles + { name: @name }"
+      $mut: {
+        claim: ".handles + { name: @name }"
       }
-      "$public": {
-        "handles": {
-          "$view": ".handles { name }"
-          "$mut": { "claim": ".claim" }
+      $public: {
+        handles: {
+          $view: ".handles { name }"
+          $mut: { claim: ".claim" }
         }
       }
     }

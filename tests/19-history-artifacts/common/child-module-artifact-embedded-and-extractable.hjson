@@ -35,7 +35,7 @@
   root: parent
 
   steps: [
-    { install_module: { space: "mods", name: "m1", module: "t.childnotes@1.0.0" },
+    { module_install: { space: "mods", request: { "$name": "m1", "$module": "t.childnotes@1.0.0" } },
       expect: { outcome: ok } }
     { export: { as: "a1" }, expect: { outcome: ok } }
     { inspect_artifact: { artifact: "a1", expect: {

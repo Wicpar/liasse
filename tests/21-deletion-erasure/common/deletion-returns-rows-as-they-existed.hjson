@@ -40,9 +40,12 @@
   steps: [
     { call: "public.notes.put", args: { id: "n1", body: "before" },
       expect: { outcome: ok, value: { id: "n1", body: "before" } } }
-    // the delete returns the row's values as they existed immediately before removal
+    // the delete returns the deleted rows (a view, per §8.4 "the deleted rows
+    // ... in selector order") as they existed immediately before removal.
+    // A single-key delete still yields a one-element view, not a bare row:
+    // §8.4 grants the singular-return carve-out to insertion only.
     { call: "public.notes.remove", args: { id: "n1" },
-      expect: { outcome: ok, value: { id: "n1", body: "before" } } }
+      expect: { outcome: ok, value: [ { id: "n1", body: "before" } ] } }
     { watch: "public.notes", id: "w1", expect_init: { value: [] } }
   ]
 }

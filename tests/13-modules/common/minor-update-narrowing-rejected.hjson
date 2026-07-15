@@ -12,21 +12,21 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "templates": {
-                  "$view": { "$key": "id", "id": "text", "label": "text" }
-                  "$mut": {
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: {
+                  $view: { $key: "id", id: "text", label: "text" }
+                  $mut: {
                     "create({ id: text, label: text })": {
-                      "$return": { "id": "text", "label": "text" }
+                      $return: { id: "text", label: "text" }
                     }
                   }
                 }
@@ -34,53 +34,53 @@
             }
           }
         }
-        "$public": {
-          "admin": {
-            "$mut": { "create": '/companies["acme"].modules["kit"]::templates.create' }
+        $public: {
+          admin: {
+            $mut: { create: '/companies["acme"].modules["kit"]::templates.create' }
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     tpln1: {
-      "$liasse": 1
-      "$module": "t.tpln@1.0.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
-        "$mut": {
-          "create_template": [
+      $liasse: 1
+      $module: "t.tpln@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+        $mut: {
+          create_template: [
             "t = .templates + { id: @id, label: @label }"
             "return t { id, label }"
           ]
         }
       }
-      "$expose": {
-        "templates": {
-          "$view": ".templates { id, label }"
-          "$mut": { "create": ".create_template" }
+      $expose: {
+        templates: {
+          $view: ".templates { id, label }"
+          $mut: { create: ".create_template" }
         }
       }
     }
     tpln2: {
-      "$liasse": 1
-      "$module": "t.tpln@1.1.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
+      $liasse: 1
+      $module: "t.tpln@1.1.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
       }
-      "$expose": {
+      $expose: {
         // narrowing: the create binding is gone in a minor release
-        "templates": { "$view": ".templates { id, label }" }
+        templates: { $view: ".templates { id, label }" }
       }
     }
   }
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.tpln@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.tpln@1.0.0" } }
       expect: { outcome: ok } }
     { module_update: { instance: "/companies/acme/modules/kit", to: "t.tpln@1.1.0" }
-      expect: { outcome: rejected, violates: ["§13.14"]
-                detail: "a minor release narrowing the exposed compatibility surface is rejected" } }
+      expect: { outcome: invalid, violates: ["§13.14"]
+                detail: "a minor release narrowing the exposed compatibility surface is rejected by package loading before admission" } }
     // the prior instance remains active and fully functional
     { call: "public.admin.create", args: { id: "t1", label: "Alpha" }
       expect: { outcome: ok, value: { id: "t1", label: "Alpha" } } }

@@ -1,0 +1,107 @@
+{
+  format: 1
+  name: w2-one-connection-multiplexes-two-account-sessions
+  suite: scenario
+  spec: ["W2", "#authentication", "§11.8", "§11.3", "#clients", "§12.2"]
+  tags: [authz, session, multiplex]
+  note: '''
+    W2 "One client can retain several tokens for different accounts or devices."
+    §11.8: "A single network connection MAY multiplex subscriptions from several
+    sessions ... each subscription continues to apply its own authorization and
+    projection." Two different accounts (alice, bob) each log in, and one logical
+    connection carries a subscription per token. The per-watch auth override (see
+    NOTES: auth field on watch) selects each subscription's authentication
+    context independently. §11.3 resolves a distinct $actor per context, so
+    alice's profile subscription projects alice and bob's projects bob on the
+    very same connection; neither leaks the other's actor. §12.2 re-evaluates
+    each subscription's authorization and projection independently.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.accounts@1.0.0"
+    $requires: { webauthn: "test.webauthn@1", token: "test.token@1" }
+    $model: {
+      accounts: { $key: "id", id: "uuid = uuid()", name: "text", enabled: "bool = true" }
+      logins: { $key: ["kind", "issuer", "subject"], kind: "text", issuer: "text", subject: "text" }
+      account_logins: { $key: ["account", "login"], account: { $ref: "/accounts" }, login: { $ref: "/logins" } }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        login: { $ref: "/logins" }
+        device: "text?"
+        expires_at: "timestamp"
+        revoked: "bool = false"
+        $mut: { revoke: [".revoked = true", "return . { id, revoked }"] }
+      }
+      $mut: {
+        bootstrap: [
+          "acct = /accounts + { name: @name }"
+          "lg = /logins + { kind: 'passkey', issuer: @rp, subject: @credential }"
+          "/account_logins + { account: acct.$key, login: lg.$key }"
+          "return { account: acct.$key }"
+        ]
+        passkey_login: [
+          "identity = webauthn.verify(@response)"
+          "login = /logins[{ kind: 'passkey', issuer: identity.rp, subject: identity.credential }]"
+          "mapping = /account_logins[{ account: @account, login: login.$key }]"
+          '''session = /sessions + {
+            account: mapping.account,
+            login: mapping.login,
+            device: @device,
+            expires_at: now() + time.duration('P30D')
+          }'''
+          "token = token.sign({ auth: 'session', session: session.$key })"
+          "return { auth: 'session', token, expires_at: session.$until }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: ["$proof.auth == $auth_name", "!$session.revoked", "$actor.enabled"]
+        }
+      }
+      $public: {
+        setup: { $mut: { bootstrap: ".bootstrap" } }
+        login: { $mut: { passkey: ".passkey_login" } }
+      }
+      $roles: {
+        account: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          profile: { $view: "$actor { id, name }" }
+        }
+      }
+    }
+  }
+
+  hosts: {
+    webauthn: { $namespace: "test.webauthn@1", responses: {
+      "resp-alice": { rp: "example.com", credential: "cred-alice" }
+      "resp-bob": { rp: "example.com", credential: "cred-bob" }
+    } }
+    token: { $namespace: "test.token@1", tokens: {} }
+  }
+
+  steps: [
+    { call: "public.setup.bootstrap", args: { name: "alice", rp: "example.com", credential: "cred-alice" }
+      expect: { outcome: ok, value: { account: "$bind:alice" } } }
+    { call: "public.setup.bootstrap", args: { name: "bob", rp: "example.com", credential: "cred-bob" }
+      expect: { outcome: ok, value: { account: "$bind:bob" } } }
+    { call: "public.login.passkey", args: { response: "resp-alice", account: "$ref:alice", device: "a" }
+      expect: { outcome: ok, value: { token: "$bind:tokA", "...": true } } }
+    { call: "public.login.passkey", args: { response: "resp-bob", account: "$ref:bob", device: "b" }
+      expect: { outcome: ok, value: { token: "$bind:tokB", "...": true } } }
+    // one logical connection carries both sessions' subscriptions
+    { connect: "c1" }
+    { watch: "account.profile", on: "c1", id: "wa", auth: { auth: "session", credential: "$ref:tokA" }
+      expect_init: { value: { id: "$ref:alice", name: "alice" } } }
+    { watch: "account.profile", on: "c1", id: "wb", auth: { auth: "session", credential: "$ref:tokB" }
+      expect_init: { value: { id: "$ref:bob", name: "bob" } } }
+  ]
+}

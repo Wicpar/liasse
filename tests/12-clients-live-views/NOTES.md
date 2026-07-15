@@ -65,6 +65,9 @@ data flows); `unspecified` documents a spec gap as usual.
 
 ### `expect_close`
 
+Canonical registry step owned by this chapter (see the **Extended step
+registry** in `tests/FORMAT.md`); other chapters reference the registry.
+
 ```hjson
 { expect_close: { watch: "w1", reason: "$any" } }
 ```
@@ -89,14 +92,17 @@ Asserts that the named subscription received `close(frontier, reason)`
   several authentication contexts on a multiplexed connection (see
   standalone `authenticate`). Defaults to the connection's only context.
 - **`call.operation_id`** — attaches the §12.3 operation identifier to the
-  call.
+  call. Canonical registry member owned by this chapter (see the **Extended
+  step registry** in `tests/FORMAT.md`); spelled `operation_id`, never `op_id`.
 - **`call.abort_delivery: true`** — the transport exchange is dropped after
   the request is submitted and before any response is delivered. The step
   carries no `expect`: per §12.3 the outcome is unknowable to that client
   (the runtime MAY have canceled the request before admission, or committed
   it).
 - **`expect.completion`** — `committed | unchanged`; asserts which §12.3
-  completion a successful (`outcome: ok`) response reported.
+  completion a successful (`outcome: ok`) response reported. Canonical registry
+  member owned by this chapter (see the **Extended step registry** in
+  `tests/FORMAT.md`); distinct from the `operation_status` step's `status`.
 - **`expect_one_of` alongside `expect_view`** — the view assertion admits
   several spec-allowed results (used under `concurrently`, where several
   serializations are valid).

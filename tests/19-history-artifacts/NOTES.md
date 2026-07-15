@@ -116,6 +116,9 @@ a glob; it must match exactly one entry or the step is a corpus error.
 
 ### `tamper_artifact`
 
+Canonical registry step owned by this chapter (see the **Extended step
+registry** in `tests/FORMAT.md`); the full op vocabulary is defined here.
+
 ```hjson
 { tamper_artifact: { from: "a1", as: "a1x", ops: [ ... ] } }
 ```
@@ -154,19 +157,12 @@ source label is left untouched. Ops, applied in order:
 In `path`/`pointer`, `*` selects the canonically first member when several
 match; a glob that matches nothing is a corpus error.
 
-### `install_module`
+### `module_install`
 
-```hjson
-{ install_module: { space: "mods", name: "m1", module: "t.childnotes@1.0.0",
-                    config: { ... }, data: { ... } },
-  expect: { outcome: ok } }
-```
-
-Performs the `modules.install` operation of §13.3 against the named module
-space with the given instance name, package requirement, and optional
-configuration/data overlay. The module definition resolves from the case's
-`packages` map. A successful install is a composition change and therefore a
-commit (§2.4).
+Registry step (canonical name `module_install`, owned by §13); see the
+**Extended step registry** in `tests/FORMAT.md`. This chapter's child-module
+cases install into a module space with
+`{ module_install: { space: "mods", request: { $name, $module } } }`.
 
 ### `apply_correction`
 
@@ -180,21 +176,19 @@ plan. `choose` maps a display path (Annex D.3) to `"local"`, `"incoming"`, or
 `{ value: <typed-value> }`. The corrected composition is validated and
 activated atomically per §19.9.
 
-### `expect_init_one_of` (member extension of `watch`)
+### `expect_one_of` inside `expect_init`
 
-```hjson
-{ watch: "public.notes", id: "w1", expect_init_one_of: [ [ ... ], [ ... ] ] }
-```
-
-Like `expect_init`, but accepts any one of the listed values. Used only after
-a `concurrently` race where the spec admits several serializations, mirroring
-FORMAT.md's `expect_one_of`.
+Registry member (owned by §12/§23); see the **Extended step registry** in
+`tests/FORMAT.md`. A `watch`'s `expect_init` may carry an `expect_one_of`
+listing the spec-allowed initial results after a `concurrently` race:
+`{ watch: "public.notes", id: "w1", expect_init: { expect_one_of: [ [ ... ], [ ... ] ] } }`.
 
 ## Other conventions
 
-- All non-`ok` step outcomes carry `violates`, including `unspecified`, where
-  `violates` names the rules whose interaction leaves the behavior unpinned
-  and `note` explains the gap.
+- All non-`ok` step outcomes carry `violates`, except `unspecified`, which
+  carries no `violates` (per `tests/FORMAT.md`) and instead names the
+  interacting rules whose combination leaves the behavior unpinned in a
+  `note`/`detail`.
 - Artifact-verification failures on `restore`/`import` use
   `outcome: invalid` (statically rejected at validation time, before any
   movement is classified or applied).

@@ -2,7 +2,7 @@
   format: 1
   name: w4-import-disabled-template-across-boundary-rejected
   suite: scenario
-  spec: ["W4", "#modules", "§13.8", "#interfaces", "§10.1"]
+  spec: ["W4", "#modules", "§13.8", "#expressions", "§6.3"]
   tags: [modules, escalation]
   note: '''
     Attempt to reach a module row the boundary does not expose. Installed under
@@ -10,8 +10,14 @@
     $expose filters ".templates[:t | t.enabled]". §13.8: "The boundary grants
     access only to those bound members." So the host's import_template step
     "source = .modules[@module]::templates[@template]" resolves zero rows through
-    the interface and the receiver rejects (§10.1). The parent cannot pull a
-    private/unexposed template across the module boundary by naming its key.
+    the interface. The next statement uses source.label / source.journal /
+    source.lines as scalar insert values, a single-row context; §6.3: "A context
+    requiring one row ... conversion to a scalar row value MUST receive exactly
+    one occurrence. Zero or several occurrences reject that evaluation." The
+    parent cannot pull a private/unexposed template across the module boundary by
+    naming its key. (The surface row-mutation reference /companies[@company].
+    import_template itself resolves the existing company; the rejection is inside
+    the program, not at the §10.1 receiver.)
   '''
 
   packages: {
@@ -84,6 +90,6 @@
       expect: { outcome: ok } }
     // the disabled template is not exposed; addressing it through the interface selects zero
     { call: "public.imported.import", args: { company: "globex", module: "fr_sales", template: "sale_invoice" }
-      expect: { outcome: rejected, violates: ["§13.8"], detail: "unexposed (disabled) template not reachable through ::templates" } }
+      expect: { outcome: rejected, violates: ["§13.8", "§6.3"], detail: "unexposed (disabled) template selects zero through ::templates; source.label is a single-row context" } }
   ]
 }

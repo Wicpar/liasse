@@ -78,8 +78,7 @@
         at: ".file"
         on: "c1"
       }
-      expect: { outcome: unspecified, violates: ["#blobs"],
+      expect: { outcome: unspecified,
                 detail: "no verified holder can deliver a hash-clean result; §18 pins no failure outcome" } }
   ]
 }
-</content>

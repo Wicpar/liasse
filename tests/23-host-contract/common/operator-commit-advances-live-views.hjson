@@ -1,0 +1,49 @@
+{
+  // §23.5: "An operator transition that changes the active application creates
+  // an ordinary commit with host provenance recorded separately from the
+  // application actor field." An ordinary commit advances live views like any
+  // other: §12.2 states a live subscription's frontier "covers committed
+  // application changes" and that after applying patches "the client result
+  // MUST equal the authorized declared view at the new frontier"; §12.3 adds
+  // that live results advance through each commit. A client watching a public
+  // view before the operator transition must observe the operator's committed
+  // row afterward. This isolates the "ordinary commit" clause.
+  format: 1
+  name: operator-commit-advances-live-views
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "#clients", "§12.2", "§12.3"]
+  tags: ["operator", "live-view"]
+
+  package: {
+    $liasse: 1
+    $app: "t.opcommit@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        add: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      $public: {
+        notes: {
+          $view: ".notes { id, body, $sort: [id] }"
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.notes", on: "c1", id: "w1", expect_init: { value: [] } }
+    // Trusted host operator commits a row while the client is subscribed.
+    { operator: { call: "add", args: { id: "n1", body: "from operator" } },
+      expect: { outcome: ok, value: { id: "n1", body: "from operator" } } }
+    // The subscribed view advances through the operator's ordinary commit.
+    { expect_view: { watch: "w1", value: [ { id: "n1", body: "from operator" } ] } }
+  ]
+}

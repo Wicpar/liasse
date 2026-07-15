@@ -14,43 +14,43 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.patch@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "active": "bool = true"
+    $liasse: 1
+    $app: "t.compat.patch@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        active: "bool = true"
       }
       // private computed value, not projected by any boundary surface
-      "active_count": "= count(.companies[:c | c.active])"
-      "$public": {
-        "companies": { "$view": ".companies { id, name }" }
+      active_count: "= count(.companies[:c | c.active])"
+      $public: {
+        companies: { $view: ".companies { id, name }" }
       }
     }
-    "$data": { "companies": { "acme": { "name": "Acme" } } }
+    $data: { companies: { acme: { name: "Acme" } } }
   }
 
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.patch@1.0.1"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
-              "active": "bool = true"
+          $liasse: 1
+          $app: "t.compat.patch@1.0.1"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
+              active: "bool = true"
             }
             // private computation rewritten; boundary output unchanged
-            "active_count": "= count(.companies) - count(.companies[:c | !c.active])"
-            "$public": {
-              "companies": { "$view": ".companies { id, name }" }
+            active_count: "= count(.companies) - count(.companies[:c | !c.active])"
+            $public: {
+              companies: { $view: ".companies { id, name }" }
             }
           }
-          "$data": { "companies": { "acme": { "name": "Acme" } } }
+          $data: { companies: { acme: { name: "Acme" } } }
         }
       }
       expect: { outcome: ok, result: committed } }

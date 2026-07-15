@@ -34,8 +34,8 @@
 
   steps: [
     { call: "public.notes.read", args: { id: "caf\u00e9" },
-      expect: { outcome: "ok", value: [ { title: "nfc" } ] } }
+      expect: { outcome: ok, value: [ { title: "nfc" } ] } }
     { call: "public.notes.read", args: { id: "cafe\u0301" },
-      expect: { outcome: "ok", value: [ { title: "nfd" } ] } }
+      expect: { outcome: ok, value: [ { title: "nfd" } ] } }
   ]
 }

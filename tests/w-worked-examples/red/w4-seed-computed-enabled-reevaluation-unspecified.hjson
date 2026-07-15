@@ -1,0 +1,124 @@
+{
+  format: 1
+  name: w4-seed-computed-enabled-reevaluation-unspecified
+  suite: scenario
+  spec: ["W4", "#modules", "§13.13", "§13.4", "#state-model", "§5.2", "#loading", "§9.1"]
+  tags: [modules, ambiguity]
+  note: '''
+    Genuine spec gap. W4's module seed sets the STORED field
+    "enabled": "= #company.plan == 'fr-pcg'" for a field declared
+    "enabled": "bool = true". §13.13: on first installation "$data applies as
+    ordinary inserts", and §9.1 evaluates a seeded "= expr" value once at
+    insertion (with #company bound to the parent surface per §13.4). Under Acme
+    (plan fr-pcg) the template is inserted enabled = true and is exposed by
+    "$expose templates = .templates[:t | t.enabled] { ... }".
+
+    The parent then changes its own plan to "us-gaap". Nothing in the spec pins
+    whether the module's stored enabled field is RE-EVALUATED against the new
+    #company.plan. §9.1 says computed values cannot be seeded directly and
+    enabled is declared as a stored bool, which argues the seeded value is frozen
+    at insert (template stays exposed, import still succeeds); but the "= expr"
+    seed syntax is the same marker §5.2 uses for live computed values, and
+    §13.13/§9.1 never state that a seed expression is one-shot (then it would
+    re-evaluate to false, drop from the $expose filter, and the import would find
+    zero exposed rows and reject per §6.3). The two readings give opposite
+    outcomes for the same import call, so its result is NOT externally deducible.
+    Captured as an ambiguity; the earlier common cases rely only on the value AT
+    install time, which is deducible and asserted here as the first watch.
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.company.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          plan: "text"
+          templates: {
+            $key: ["module", "template"]
+            module: "text", template: "text", label: "text", journal: "text", lines: "json"
+          }
+          $mut: {
+            rename: ".name = @name"
+            set_plan: [".plan = @plan", "return . { id, plan }"]
+            import_template: [
+              "source = .modules[@module]::templates[@template]"
+              '''.templates + {
+                module: @module, template: @template,
+                label: source.label, journal: source.journal, lines: source.lines
+              }'''
+            ]
+          }
+          modules: {
+            $modules: {
+              $expose: {
+                company: {
+                  $view: ". { id, name, plan }"
+                  $mut: { rename: ".rename", set_plan: ".set_plan" }
+                }
+              }
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
+              }
+            }
+          }
+          available_templates: {
+            $view: ".modules::templates { module: modules.$key, template: templates.$key, id, $sort: [module, template] }"
+          }
+        }
+        $public: {
+          companies: {
+            $params: { company: "text" }
+            $view: "/companies[@company].available_templates"
+            $mut: {
+              set_plan: "/companies[@company].set_plan"
+              import: "/companies[@company].import_template"
+            }
+          }
+        }
+      }
+      $data: { companies: { acme: { name: "Acme", plan: "fr-pcg" } } }
+    }
+
+    frsales: {
+      $liasse: 1
+      $module: "acme.fr_sales_templates@1.0.0"
+      $use: { company: "$parent" }
+      $model: {
+        templates: { $key: "id", id: "text", label: "text", journal: "text", enabled: "bool = true", lines: "json" }
+      }
+      $data: {
+        templates: {
+          sale_invoice: {
+            label: "Facture de vente", journal: "VE"
+            enabled: "= #company.plan == 'fr-pcg'"
+            lines: [ { account: "411", side: "debit", amount: "'= total_ttc" } ]
+          }
+        }
+      }
+      $expose: { templates: { $view: ".templates[:t | t.enabled] { id, label, journal, lines }" } }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: { $name: "fr_sales", $module: "acme.fr_sales_templates@1.0.0" } }
+      expect: { outcome: ok } }
+    // AT install time enabled = (plan == fr-pcg) = true -> exposed (deducible)
+    { watch: "public.companies", args: { company: "acme" }, id: "w1"
+      expect_init: { value: [ { module: "fr_sales", template: "sale_invoice", id: "sale_invoice" } ] } }
+    // parent flips its own plan so #company.plan no longer equals 'fr-pcg'
+    { call: "public.companies.set_plan", args: { company: "acme", plan: "us-gaap" }
+      expect: { outcome: ok, value: { id: "acme", plan: "us-gaap" } } }
+    // Import across the boundary now. Whether the module's stored enabled was
+    // re-evaluated by the plan change decides whether the template is still
+    // exposed, and therefore whether this import succeeds or rejects.
+    { call: "public.companies.import", args: { company: "acme", module: "fr_sales", template: "sale_invoice" }
+      expect: { outcome: unspecified }
+      note: "ok if seeded enabled is frozen true (§9.1 stored bool, still exposed); rejected via §6.3 if the '= expr' seed re-evaluates live to false (§5.2) and drops from the $expose filter. SPEC pins neither." }
+  ]
+}

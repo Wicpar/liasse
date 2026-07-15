@@ -9,7 +9,7 @@
   format: 1
   name: sequential-order-preserved-in-trace
   suite: scenario
-  spec: ["§22.3", "§22.4", "§22.7", "#runtime"]
+  spec: ["#runtime", "§22.3", "§22.4", "§22.7"]
   tags: ["ordering"]
 
   package: {

@@ -53,7 +53,7 @@
       expect: {
         outcome: ok
         completion: unchanged
-        value: 0
+        value: "0"
       }
     }
     // No commit was created; the live result is unchanged.

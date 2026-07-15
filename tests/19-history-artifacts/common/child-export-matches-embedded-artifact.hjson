@@ -34,7 +34,7 @@
   root: parent
 
   steps: [
-    { install_module: { space: "mods", name: "m1", module: "t.childnotes@1.0.0" },
+    { module_install: { space: "mods", request: { "$name": "m1", "$module": "t.childnotes@1.0.0" } },
       expect: { outcome: ok } }
     { export: { as: "a1" }, expect: { outcome: ok } }
     { extract_artifact: { from: "a1", entry: "modules/*.liasse", as: "a_embedded" } }

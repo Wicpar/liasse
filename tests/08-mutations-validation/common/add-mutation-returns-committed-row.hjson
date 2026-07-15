@@ -8,25 +8,25 @@
   spec: ["#mutations", "§8.1", "§8.4", "§8.10"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.addreturn@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "uuid = uuid()"
-        "title": "text"
-        "done": "bool = false"
+    $liasse: 1
+    $app: "t.addreturn@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        done: "bool = false"
       }
-      "$mut": {
-        "add_task": [
+      $mut: {
+        add_task: [
           "t = .tasks + { title: @title }"
           "return t { id, title, done }"
         ]
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, title, done }"
-          "$mut": { "add": ".add_task" }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title, done }"
+          $mut: { add: ".add_task" }
         }
       }
     }

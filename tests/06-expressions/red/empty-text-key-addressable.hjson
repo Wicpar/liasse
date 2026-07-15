@@ -8,7 +8,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.emptykey@1.0.0"
+    $app: "t.ex.emptykey@1.0.0"
     $model: {
       rows: {
         $key: "id"
@@ -37,6 +37,6 @@
     { watch: "public.all", id: "w1",
       expect_init: { value: [ { id: "", v: "1" }, { id: "x", v: "2" } ] } }
     { call: "public.rows.read", args: { id: "" },
-      expect: { outcome: "ok", value: [ { v: "1" } ] } }
+      expect: { outcome: ok, value: [ { v: "1" } ] } }
   ]
 }

@@ -49,14 +49,14 @@ rows and gets pos = 3.'''
   }
 
   steps: [
-    { call: "public.items.bulk", args: {}, expect: { outcome: "ok" } }
+    { call: "public.items.bulk", args: {}, expect: { outcome: ok } }
     // one statement: neither inserted row may observe its sibling
     { watch: "public.items", id: "w1", expect_init: { value: [
       { name: "x", pos: 1 }
       { name: "y", pos: 1 }
     ] } }
     // separate statement in a later request observes both prior rows
-    { call: "public.items.add_one", args: { id: "z", name: "z" }, expect: { outcome: "ok" } }
+    { call: "public.items.add_one", args: { id: "z", name: "z" }, expect: { outcome: ok } }
     { expect_view: { watch: "w1", value: [
       { name: "x", pos: 1 }
       { name: "y", pos: 1 }

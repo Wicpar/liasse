@@ -14,26 +14,26 @@
   tags: ["boundary"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.omitclears@1.0.0"
-    "$model": {
-      "profiles": {
-        "$key": "id"
-        "id": "text"
-        "email": "text?"
+    $liasse: 1
+    $app: "t.omitclears@1.0.0"
+    $model: {
+      profiles: {
+        $key: "id"
+        id: "text"
+        email: "text?"
       }
-      "$mut": {
-        "set_email": ".profiles[@id] { email = @email }"
+      $mut: {
+        set_email: ".profiles[@id] { email = @email }"
       }
-      "$public": {
-        "profiles": {
-          "$view": ".profiles { id, email }"
-          "$mut": { "set_email": ".set_email" }
+      $public: {
+        profiles: {
+          $view: ".profiles { id, email }"
+          $mut: { set_email: ".set_email" }
         }
       }
     }
-    "$data": {
-      "profiles": { "p1": { "email": "a@x" } }
+    $data: {
+      profiles: { p1: { email: "a@x" } }
     }
   }
 
@@ -47,7 +47,7 @@
       // email omitted -> none -> field cleared.
       call: "public.profiles.set_email"
       args: { id: "p1" }
-      expect: { outcome: ok, status: committed }
+      expect: { outcome: ok, completion: committed }
     }
     {
       expect_view: { watch: "w1", value: [ { id: "p1", email: "$absent" } ] }

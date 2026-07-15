@@ -23,7 +23,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#expressions"]
     detail: "composite-key selector object names only 'country' and omits key component 'code'"
   }

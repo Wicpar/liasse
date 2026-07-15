@@ -13,19 +13,19 @@
   tags: ["authz"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.pub_actor@1.0.0"
-    "$model": {
-      "entries": {
-        "$key": "id"
-        "id": "text"
-        "who": "text"
+    $liasse: 1
+    $app: "t.pub_actor@1.0.0"
+    $model: {
+      entries: {
+        $key: "id"
+        id: "text"
+        who: "text"
       }
-      "$public": {
-        "log": {
-          "$mut": {
+      $public: {
+        log: {
+          $mut: {
             // Invalid: $actor is not bound in a public operation.
-            "grab": ".entries + { id: @id, who: $actor.id }"
+            grab: ".entries + { id: @id, who: $actor.id }"
           }
         }
       }

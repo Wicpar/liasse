@@ -1,0 +1,48 @@
+{
+  // §23.5: host access retains "the package's type rules ... constraints ...
+  // serial admission, and atomicity." §22.1 lists "collection keys and additional
+  // uniqueness" among the state constraints that "hold in every committed state."
+  // The attack: a trusted host operator inserts two rows with the same `$key`,
+  // assuming operator power lets it overwrite/duplicate identity. It cannot — key
+  // uniqueness is a state constraint the operator path still enforces. The second
+  // insert of the same key is rejected, and the first row is left exactly as it
+  // was (its `body` is not overwritten by the colliding insert's value).
+  format: 1
+  name: operator-retains-key-uniqueness
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "#runtime", "§22.1", "#state-model"]
+  tags: ["operator", "keys", "uniqueness", "escalation"]
+
+  package: {
+    $liasse: 1
+    $app: "t.opkey@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        insert: [
+          "i = .items + { id: @id, body: @body }"
+          "return i { id, body }"
+        ]
+      }
+      $public: {
+        items: { $view: ".items { id, body, $sort: [id] }" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { operator: { call: "insert", args: { id: "k1", body: "original" } },
+      expect: { outcome: ok, value: { id: "k1", body: "original" } } }
+    // Operator re-insert of the SAME key collides on $key uniqueness -> rejected.
+    { operator: { call: "insert", args: { id: "k1", body: "overwrite" } },
+      expect: { outcome: rejected, violates: ["§22.1", "§23.5"] } }
+    // The first row is intact: the colliding insert wrote nothing.
+    { watch: "public.items", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "k1", body: "original" } ] } }
+  ]
+}

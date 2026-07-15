@@ -2,7 +2,7 @@
   format: 1
   name: w1-blank-title-fails-check-after-trim
   suite: scenario
-  spec: ["W1", "#mutations", "§8.8"]
+  spec: ["#mutations", "W1", "§8.8"]
   tags: [normalize, checks]
   note: '''
     Ordinary error path of W1. §8.8: normalization runs before checks. A title

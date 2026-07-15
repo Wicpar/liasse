@@ -18,39 +18,39 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.confuse@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.compat.confuse@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, name }" }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
       }
     }
-    "$data": { "companies": { "acme": { "name": "Acme" } } }
+    $data: { companies: { acme: { name: "Acme" } } }
   }
 
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.confuse@1.1.0"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
+          $liasse: 1
+          $app: "t.compat.confuse@1.1.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
             }
-            "$public": {
+            $public: {
               // "companiеs": the 6th codepoint is Cyrillic е (U+0435) — an
               // illegal non-ASCII declaration name (§2.5)
-              "companiеs": { "$view": ".companies { id, name }" }
+              "companiеs": { $view: ".companies { id, name }" }
             }
           }
-          "$data": { "companies": { "acme": { "name": "Acme" } } }
+          $data: { companies: { acme: { name: "Acme" } } }
         }
       }
       expect: {

@@ -1,0 +1,99 @@
+{
+  // §2.4: "A commit is final once admitted, including a package-only transition
+  // whose writable state delta is empty." §9.3: "A definition-only update
+  // creates a commit even when writable state remains unchanged." §9.4: the
+  // lifecycle result is `committed` (not `unchanged`) because the requested
+  // definition is NOT one that "already applies".
+  //
+  // The updated definition only ADDS a second public view; the writable state
+  // (the one `items` row) is byte-identical before and after. The load must
+  // still report `committed`, not `unchanged`. This is the empty-writable-delta
+  // side that §22.2's mutation rule ("no state change returns `unchanged` and
+  // creates no commit") deliberately does NOT cover: an empty writable delta is
+  // a commit for a package/definition transition, whereas an ordinary mutation
+  // with no net change is `unchanged`.
+  //
+  // Contrast tests/09-loading-bootstrap/common/reload-identical-definition-
+  // unchanged.hjson: a BYTE-IDENTICAL reload reports `unchanged`. Here the
+  // definition genuinely changed, so the result flips to `committed` even
+  // though no writable row changed.
+  //
+  // The update bumps the version 1.0.0 -> 1.1.0 and only ADDS a public surface,
+  // which Annex E.4 lists as a compatible change ("adding a new surface …") and
+  // Annex E.1 admits as a minor release ("minor may add or widen compatible
+  // boundary contracts"), so the update is a valid definition-only change that
+  // requires no migration and touches no writable state.
+  format: 1
+  name: definition-only-update-commits-with-empty-writable-delta
+  suite: scenario
+  spec: ["#runtime", "#loading", "§2.4", "§9.3", "§9.4", "§E.1", "§E.4"]
+  tags: ["empty-delta", "durability"]
+  note: '''
+    Uses the `host_load` extension step reused from
+    tests/09-loading-bootstrap/NOTES.md (see this chapter's NOTES.md). The
+    genesis instance holds one `items` row. The update (a minor release, 1.0.0
+    -> 1.1.0) adds only a second public view (`named`), a compatible additive
+    surface (Annex E.4) requiring no migration; the writable `items` state is
+    unchanged. §9.3 mandates a commit for a definition-only update, so the §9.4
+    result is `committed`, not `unchanged`. Mirrors the version-bump convention
+    of tests/09-loading-bootstrap/common/definition-only-update-creates-commit.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.defupdate@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        items: { $view: ".items { id, name, $sort: [id] }" }
+      }
+    }
+    $data: {
+      items: { "i1": { name: "one" } }
+    }
+  }
+
+  steps: [
+    {
+      // Definition-only change: add a second public view. Writable state (the
+      // items rows) is byte-identical to genesis. host_load is a host operation
+      // and runs with no client connection (§9.3).
+      host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.defupdate@1.1.0"
+          $model: {
+            items: {
+              $key: "id"
+              id: "text"
+              name: "text"
+            }
+            $public: {
+              items: { $view: ".items { id, name, $sort: [id] }" }
+              // Newly added, definition-only:
+              named: { $view: ".items { name, $sort: [name] }" }
+            }
+          }
+          $data: {
+            items: { "i1": { name: "one" } }
+          }
+        }
+      }
+      // §9.3/§2.4: committed despite an empty writable-state delta.
+      expect: { outcome: ok, result: committed }
+    }
+    { connect: "c1" }
+    {
+      // The writable state is unchanged; the pre-existing row is intact and the
+      // newly added view is now live under the updated composition.
+      watch: "public.named"
+      on: "c1"
+      id: "w1"
+      expect_init: { value: [ { name: "one" } ] }
+    }
+  ]
+}

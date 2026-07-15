@@ -18,7 +18,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["§5.4"]
     detail: "$key names `id`, which is not a declared field of the collection"
   }

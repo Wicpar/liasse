@@ -35,7 +35,7 @@
     { watch: "public.tasks", id: "w1",
       expect_init: { value: [ { id: "t1", done: false } ] } }
     { call: "public.tasks.complete", args: { id: "zz" },
-      expect: { outcome: "rejected", violates: ["#expressions"] } }
+      expect: { outcome: rejected, violates: ["#expressions"] } }
     { expect_view: { watch: "w1", value: [ { id: "t1", done: false } ] } }
   ]
 }

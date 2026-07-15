@@ -13,18 +13,18 @@
   tags: ["aliasing"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.dollar_name@1.0.0"
-    "$model": {
-      "products": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.dollar_name@1.0.0"
+    $model: {
+      products: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$public": {
+      $public: {
         // Invalid: "$view" is not a legal external surface name, and $public
         // does not accept a $view member of its own.
-        "$view": ".products { id, name }"
+        $view: ".products { id, name }"
       }
     }
   }

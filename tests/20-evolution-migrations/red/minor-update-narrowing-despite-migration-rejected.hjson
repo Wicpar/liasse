@@ -15,8 +15,13 @@
 
     Classified `invalid`: the narrowing is decidable from the two definitions
     alone with no state (ch. 9 mapping in NOTES.md). Neighboring chapter 13
-    records the analogous §13.14 case as `rejected`; both collapse to the §9.4
-    `rejected` lifecycle result.
+    classifies its analogous §13.14 interface narrowings `invalid` too; both
+    still collapse to the single §9.4 `rejected` lifecycle result.
+
+    Note this 1.1.0 also renames the view output member `name` -> `label`
+    without a boundary alias, itself an E.5 output narrowing; the mutation
+    removal and the field rename are each independently sufficient to reject the
+    minor, and neither is laundered by the internal `$from` mapping.
   '''
 
   package: {

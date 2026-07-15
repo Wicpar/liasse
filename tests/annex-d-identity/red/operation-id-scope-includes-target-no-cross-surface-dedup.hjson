@@ -49,10 +49,10 @@ execute, producing two rows. De-duplication is per scope, never global.'''
   }
 
   steps: [
-    { call: "public.surface_a.add", args: { id: "n1" }, op_id: "op-SHARED",
+    { call: "public.surface_a.add", args: { id: "n1" }, operation_id: "op-SHARED",
       expect: { outcome: ok, value: { id: "n1", via: "a" } } }
-    // same op_id, DIFFERENT target -> different scope -> not deduplicated
-    { call: "public.surface_b.add", args: { id: "n2" }, op_id: "op-SHARED",
+    // same operation_id, DIFFERENT target -> different scope -> not deduplicated
+    { call: "public.surface_b.add", args: { id: "n2" }, operation_id: "op-SHARED",
       expect: { outcome: ok, value: { id: "n2", via: "b" } } }
     // both executed
     { watch: "public.surface_a", id: "w1", expect_init: { value: [

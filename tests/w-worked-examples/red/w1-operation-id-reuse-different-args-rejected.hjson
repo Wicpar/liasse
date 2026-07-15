@@ -2,7 +2,7 @@
   format: 1
   name: w1-operation-id-reuse-different-args-rejected
   suite: scenario
-  spec: ["W1", "#clients", "§12.3"]
+  spec: ["#clients", "W1", "§12.3"]
   tags: [replay, tampering]
   note: '''
     Tampering on a deduplicated call. §12.3: "Reusing it with different request

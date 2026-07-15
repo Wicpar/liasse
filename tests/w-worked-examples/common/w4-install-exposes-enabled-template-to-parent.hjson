@@ -2,7 +2,7 @@
   format: 1
   name: w4-install-exposes-enabled-template-to-parent
   suite: scenario
-  spec: ["W4", "#modules", "§13.4", "§13.8", "§13.9"]
+  spec: ["#modules", "W4", "§13.4", "§13.8", "§13.9"]
   tags: [modules]
   note: '''
     W4 end-to-end install path. Installing acme.fr_sales_templates under a

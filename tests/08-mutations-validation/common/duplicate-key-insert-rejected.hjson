@@ -8,26 +8,26 @@
   spec: ["#mutations", "§8.7", "§5.4", "§22.1"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.dupkey@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
+    $liasse: 1
+    $app: "t.mut.dupkey@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
       }
-      "$mut": {
-        "add": ".tasks + { id: @id, title: @title }"
+      $mut: {
+        add: ".tasks + { id: @id, title: @title }"
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, title }"
-          "$mut": { "add": ".add" }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title }"
+          $mut: { add: ".add" }
         }
       }
     }
-    "$data": {
-      "tasks": { "t1": { "title": "first" } }
+    $data: {
+      tasks: { t1: { title: "first" } }
     }
   }
 

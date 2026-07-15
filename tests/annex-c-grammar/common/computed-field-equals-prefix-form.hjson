@@ -7,7 +7,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.computed@1.0.0"
+    $app: "t.ac.computed@1.0.0"
     $model: {
       invoice: {
         subtotal: "int"

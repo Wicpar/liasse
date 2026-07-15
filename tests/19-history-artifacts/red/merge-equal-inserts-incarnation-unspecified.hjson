@@ -54,6 +54,6 @@ merge outcome is unspecified.'''
     { call: "public.notes.put", args: { id: "k", body: "same" },
       expect: { outcome: ok, value: { id: "k", body: "same" } } }
     { reconcile: { from: "a2", policy: ["merge"] },
-      expect: { outcome: unspecified, violates: ["§19.9", "Annex D.1"] } }
+      expect: { outcome: unspecified } }
   ]
 }

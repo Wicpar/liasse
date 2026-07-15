@@ -15,19 +15,19 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.escape@1.0.0"
-    "$resources": {
-      "evil": {
-        "$path": "../../outside.txt"
-        "$media": "text/plain"
-        "$sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    $liasse: 1
+    $app: "t.ld.escape@1.0.0"
+    $resources: {
+      evil: {
+        $path: "../../outside.txt"
+        $media: "text/plain"
+        $sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
       }
     }
-    "$model": {
-      "items": {
-        "$key": "id"
-        "id": "text"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
       }
     }
   }

@@ -40,12 +40,12 @@ view row shows the raw "a/b:c" — never the encoded form.'''
   steps: [
     // expressions use the typed key value, not the encoded seed text
     { call: "public.items.get", args: { id: "a/b:c" },
-      expect: { outcome: "ok", value: "escaped" } }
+      expect: { outcome: ok, value: "escaped" } }
     // the encoded string is NOT itself a key
     { call: "public.items.get", args: { id: "a%2Fb%3Ac" },
-      expect: { outcome: "rejected", violates: ["§6.3"],
+      expect: { outcome: rejected, violates: ["§6.3"],
                 detail: "no row has the literal encoded string as its typed key; a one-row context selecting zero occurrences rejects" } }
-    // view rows carry the decoded typed key; '/' (0x2F) sorts before 'p'
+    // view rows carry the decoded typed key; 'a' (0x61) sorts before 'p' (0x70)
     { watch: "public.items", id: "w1", expect_init: { value: [
       { id: "a/b:c", label: "escaped" }
       { id: "plain", label: "plain" }

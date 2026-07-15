@@ -21,7 +21,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#expressions"]
     detail: "check references unknown function string.trimm"
   }

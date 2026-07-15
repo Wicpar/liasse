@@ -34,10 +34,10 @@ pin explicitly.'''
 
   steps: [
     { call: "public.prices.add", args: { amount: "1.50", label: "first" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // numerically equal -> same key -> collision
     { call: "public.prices.add", args: { amount: "1.5", label: "second" },
-      expect: { outcome: "rejected", violates: ["§5.4", "§B.1"] } }
+      expect: { outcome: rejected, violates: ["§5.4", "§B.1"] } }
     { watch: "public.prices", id: "w1",
       expect_init: { value: [ { label: "first" } ] } }
   ]

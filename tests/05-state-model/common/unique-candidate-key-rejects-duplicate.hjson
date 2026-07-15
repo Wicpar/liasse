@@ -27,11 +27,11 @@
   }
 
   steps: [
-    { call: "public.users.add", args: { email: "a@x.example" }, expect: { outcome: "ok" } }
+    { call: "public.users.add", args: { email: "a@x.example" }, expect: { outcome: ok } }
     // distinct generated primary key, same candidate-key value -> rejected
     { call: "public.users.add", args: { email: "a@x.example" },
-      expect: { outcome: "rejected", violates: ["§5.7"] } }
-    { call: "public.users.add", args: { email: "b@x.example" }, expect: { outcome: "ok" } }
+      expect: { outcome: rejected, violates: ["§5.7"] } }
+    { call: "public.users.add", args: { email: "b@x.example" }, expect: { outcome: ok } }
     { watch: "public.users", id: "w1", expect_init: { value: { $unordered: [
       { email: "a@x.example" }
       { email: "b@x.example" }

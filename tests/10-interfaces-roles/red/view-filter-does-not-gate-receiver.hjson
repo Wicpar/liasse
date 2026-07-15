@@ -13,49 +13,49 @@
   tags: ["authz", "footgun"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.view_gate@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.view_gate@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
       }
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
-        "owner": { "$ref": "/accounts" }
-        "done": "bool = false"
-        "$mut": {
-          "complete": [
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
+        owner: { $ref: "/accounts" }
+        done: "bool = false"
+        $mut: {
+          complete: [
             ".done = true"
             "return . { id, done }"
           ]
         }
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
-      "$roles": {
-        "member": {
-          "$auth": "token"
-          "$members": ".accounts"
-          "tasks": {
-            "$view": ".tasks[:t | t.owner == $actor] { id, title }"
-            "$mut": { "complete": ".tasks[@task].complete" }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts"
+          tasks: {
+            $view: ".tasks[:t | t.owner == $actor] { id, title }"
+            $mut: { complete: ".tasks[@task].complete" }
           }
         }
       }
     }
-    "$data": {
-      "accounts": { "alice": {}, "bob": {} }
-      "tasks": {
-        "t1": { "title": "Alice's", "owner": "alice" }
-        "t2": { "title": "Bob's", "owner": "bob" }
+    $data: {
+      accounts: { alice: {}, bob: {} }
+      tasks: {
+        t1: { title: "Alice's", owner: "alice" }
+        t2: { title: "Bob's", owner: "bob" }
       }
     }
   }

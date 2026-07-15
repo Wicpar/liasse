@@ -82,7 +82,7 @@ Timestamps (s precision): 2026-01-01=1767225600, +7d=1767830400, +28d=1769644800
         weekly:    { credits: "30",   period: "P7D",  price: "9" }
         monthly:   { credits: "100",  period: "P28D", price: "20" }
         quarterly: { credits: "400",  period: "P84D", price: "50" }
-        lifetime:  { credits: "1000", price: "200" }
+        lifetime:  { credits: "1000", period: "= none", price: "200" }
       }
       accounts: { a1: {} }
       subscriptions: {

@@ -54,7 +54,7 @@
 
   expect: {
     outcome: unspecified
-    violates: ["#host-namespaces", "#expressions"]
+    
     detail: "no precedence or collision rule exists between a $requires expression namespace and a same-named model declaration"
   }
 }

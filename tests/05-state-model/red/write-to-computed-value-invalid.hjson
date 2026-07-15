@@ -36,7 +36,7 @@ override.'''
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["§5.2"]
     detail: "the mutation forge_total assigns to the read-only computed value `total`"
   }

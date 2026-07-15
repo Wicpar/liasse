@@ -40,7 +40,7 @@ equality.'''
   steps: [
     { call: "public.notes.add", args: { body: "dup" },
       expect: { outcome: ok, value: { id: "$bind:id1", body: "dup" } } }
-    // identical payload, no op_id -> a brand new operation, executes again
+    // identical payload, no operation_id -> a brand new operation, executes again
     { call: "public.notes.add", args: { body: "dup" },
       expect: { outcome: ok, value: { id: "$bind:id2", body: "dup" } } }
     // two distinct rows exist

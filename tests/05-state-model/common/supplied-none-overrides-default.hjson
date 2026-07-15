@@ -36,9 +36,9 @@
   steps: [
     // omitted -> default applies
     { call: "public.people.add_defaulted", args: { name: "a" },
-      expect: { outcome: "ok", value: { name: "a", nickname: "anon" } } }
+      expect: { outcome: ok, value: { name: "a", nickname: "anon" } } }
     // supplied none -> takes precedence over the default; field stays absent
     { call: "public.people.add_explicit_none", args: { name: "b" },
-      expect: { outcome: "ok", value: { name: "b", nickname: "$absent" } } }
+      expect: { outcome: ok, value: { name: "b", nickname: "$absent" } } }
   ]
 }

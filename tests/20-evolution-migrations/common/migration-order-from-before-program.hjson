@@ -8,10 +8,10 @@
     `$from` mappings in dependency order, then the selected package-level
     statements in array order." The `$migrations` program reads `cleaned`
     through `.` — i.e. the prospective target "after compatible declarations
-    and local `$from` mappings have been copied." So `cleaned` is already the
-    trimmed "x" when the program runs, and `length = size(cleaned)` is 1
+    and local `$from` mappings have been copied." So `.cleaned` is already the
+    trimmed "x" when the program runs, and `length = size(.cleaned)` is 1
     (int wire form "1"). Had the program run before the `$from` mapping,
-    `cleaned` would be absent and `size(cleaned)` would have nothing to read.
+    `.cleaned` would be absent and `size(.cleaned)` would have nothing to read.
   '''
 
   package: {
@@ -46,7 +46,7 @@
             }
             $migrations: {
               "1.0.0": [
-                ".items = .items { id, cleaned, length: size(cleaned) }"
+                ".items = .items { id, cleaned, length: size(.cleaned) }"
               ]
             }
             $public: {

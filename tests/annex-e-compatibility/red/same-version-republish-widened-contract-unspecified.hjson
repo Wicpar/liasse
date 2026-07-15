@@ -20,40 +20,40 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.reissue@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "region": "text?"
+    $liasse: 1
+    $app: "t.compat.reissue@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        region: "text?"
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, name }" }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
       }
     }
-    "$data": { "companies": { "acme": { "name": "Acme" } } }
+    $data: { companies: { acme: { name: "Acme" } } }
   }
 
   steps: [
     { host_load: {
         package: {
           // same version string, widened boundary, different definition identity
-          "$liasse": 1
-          "$app": "t.compat.reissue@1.0.0"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
-              "region": "text?"
+          $liasse: 1
+          $app: "t.compat.reissue@1.0.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
+              region: "text?"
             }
-            "$public": {
-              "companies": { "$view": ".companies { id, name, region }" }
+            $public: {
+              companies: { $view: ".companies { id, name, region }" }
             }
           }
-          "$data": { "companies": { "acme": { "name": "Acme" } } }
+          $data: { companies: { acme: { name: "Acme" } } }
         }
       }
       expect: {

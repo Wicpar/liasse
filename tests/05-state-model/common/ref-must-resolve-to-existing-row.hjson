@@ -33,11 +33,11 @@
 
   steps: [
     { call: "public.contacts.add_contact", args: { id: "c1", company: "ghost" },
-      expect: { outcome: "rejected", violates: ["§5.6"], detail: "ref does not resolve to an existing row" } }
+      expect: { outcome: rejected, violates: ["§5.6"], detail: "ref does not resolve to an existing row" } }
     { call: "public.contacts.add_company", args: { id: "acme", name: "Acme" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.contacts.add_contact", args: { id: "c1", company: "acme" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { watch: "public.contacts", id: "w1",
       expect_init: { value: [ { id: "c1", company: "acme" } ] } }
   ]

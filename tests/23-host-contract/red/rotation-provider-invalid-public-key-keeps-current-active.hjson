@@ -1,0 +1,77 @@
+{
+  // A misbehaving registered key provider that RETURNS garbage (rather than
+  // failing) at a scheduled rotation. §17.4 automatic rotation step 2 is "read
+  // and validate its public key and provider metadata"; §17.9: "When scheduled
+  // rotation cannot create or validate a replacement, the current version
+  // remains active and the runtime reports the overdue rotation." §23.5 keeps
+  // "provider contracts" enforced under host access. The attack: the provider's
+  // `generate` returns a structurally invalid / wrong-type public key at the due
+  // rotation, hoping to slip an unvalidated key into the active slot. Validation
+  // rejects the replacement; the prior version stays active; signing and
+  // verification continue on it. This isolates the "cannot validate a
+  // replacement -> current stays active" rule for a wrong-type provider result
+  // (contrast §17's rotation-failure-keeps-current-active, where the provider
+  // cleanly *fails* rather than returning an invalid value).
+  format: 1
+  name: rotation-provider-invalid-public-key-keeps-current-active
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "#keyrings", "§17.4", "§17.9"]
+  tags: ["provider", "rotation", "wrong-type"]
+
+  package: {
+    $liasse: 1
+    $app: "t.rotinvalidpk@1.0.0"
+    $requires: { cose: "liasse.cose@1" }
+    $model: {
+      tokens: { $key: "id", id: "uuid = uuid()", note: "text" }
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $algorithm: "Ed25519"
+          $rotate: "P30D"
+          $retain: "P45D"
+        }
+      }
+      $mut: {
+        issue: [
+          "t = .tokens + { note: @note }"
+          "sig = cose.sign(/session_keys, { id: t.id })"
+          "return t { id, note }"
+        ]
+      }
+      $public: {
+        current: { $view: ".session_keys.$current { id }" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Bootstrap generated and activated the first version (§17.3).
+    { watch: "public.current", on: "c1", id: "w1",
+      expect_init: { value: { id: "$bind:v1" } } }
+    // The provider will return an invalid public key on its next generate.
+    { provider_set: { provider: "test-kp", invalid_public_key: ["generate"] } }
+    // Cadence elapses; the next operation triggers the due rotation attempt.
+    { advance_time: "P31D" }
+    // Rotation cannot validate the replacement, so the current version signs
+    // this mutation: it commits on the still-active v1 (§17.9).
+    { operator: { call: "issue", args: { note: "still-signs" } },
+      expect: { outcome: ok, value: { id: "$any:uuid", note: "still-signs" } } }
+    // The active version is unchanged: no unvalidated key was promoted.
+    { expect_view: { watch: "w1", value: { id: "$ref:v1" } } }
+  ]
+}

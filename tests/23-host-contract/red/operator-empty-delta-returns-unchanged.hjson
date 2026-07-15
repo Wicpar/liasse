@@ -1,0 +1,46 @@
+{
+  // §23.5: "An operator transition that changes the active application creates an
+  // ordinary commit." §22.2: "A program producing no state change returns
+  // `unchanged` and creates no commit." §12.3: `unchanged` proves evaluation at
+  // the returned frontier, and "Unaffected views MAY receive only a frontier
+  // advancement." The boundary attack: a trusted host operator writes a field the
+  // value it ALREADY holds — an empty delta. Operator power does not manufacture a
+  // commit from nothing: the transition returns `unchanged`, creates no commit,
+  // and the subscribed view keeps its value (no insert/update/remove patch). This
+  // pins that the §23.5 "changes the active application" precondition binds the
+  // operator path to the same §22.2 empty-delta rule as an application mutation.
+  format: 1
+  name: operator-empty-delta-returns-unchanged
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "#runtime", "§22.2", "#clients", "§12.3"]
+  tags: ["operator", "empty-delta", "unchanged"]
+
+  package: {
+    $liasse: 1
+    $app: "t.opnoop@1.0.0"
+    $model: {
+      config: { $key: "id", id: "text", name: "text" }
+      $mut: {
+        rename: [
+          ".config[@id].name = @name"
+          "return .config[@id] { id, name }"
+        ]
+      }
+      $public: {
+        config: { $view: ".config { id, name, $sort: [id] }" }
+      }
+    }
+    $data: { config: { c1: { name: "same" } } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.config", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "c1", name: "same" } ] } }
+    // Operator writes the identical value: empty delta -> unchanged, no commit.
+    { operator: { call: "rename", args: { id: "c1", name: "same" } },
+      expect: { outcome: ok, completion: unchanged } }
+    // The subscribed view is not disturbed by the no-op operator transition.
+    { expect_view: { watch: "w1", value: [ { id: "c1", name: "same" } ] } }
+  ]
+}

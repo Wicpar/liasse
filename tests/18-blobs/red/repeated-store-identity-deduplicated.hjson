@@ -88,4 +88,3 @@
       expect: { outcome: ok, holders: ["a", "b"], bytes: "deduped" } }
   ]
 }
-</content>

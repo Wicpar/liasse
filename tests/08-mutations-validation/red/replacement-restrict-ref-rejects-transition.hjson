@@ -11,39 +11,39 @@
   tags: ["atomicity"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.replacerestrict@1.0.0"
-    "$model": {
-      "users": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.replacerestrict@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
       }
-      "imports": {
-        "$key": "id"
-        "id": "text"
+      imports: {
+        $key: "id"
+        id: "text"
       }
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "owner": {
-          "$ref": "/users"
-          "$on_delete": "restrict"
+      tasks: {
+        $key: "id"
+        id: "text"
+        owner: {
+          $ref: "/users"
+          $on_delete: "restrict"
         }
       }
-      "$mut": {
-        "replace_users": ".users = .imports { id }"
+      $mut: {
+        replace_users: ".users = .imports { id }"
       }
-      "$public": {
-        "users": {
-          "$view": ".users { id }"
-          "$mut": { "replace": ".replace_users" }
+      $public: {
+        users: {
+          $view: ".users { id }"
+          $mut: { replace: ".replace_users" }
         }
       }
     }
-    "$data": {
-      "users": { "a": {}, "b": {} }
-      "imports": { "a": {} }
-      "tasks": { "t1": { "owner": "b" } }
+    $data: {
+      users: { a: {}, b: {} }
+      imports: { a: {} }
+      tasks: { t1: { owner: "b" } }
     }
   }
 

@@ -70,11 +70,11 @@
   steps: [
     { connect: "c1"
       authenticate: { role: "member", auth: "token", credential: "good-credential" }
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { watch: "member.me", on: "c1", id: "w1",
       expect_init: { value: { id: "a1", name: "Ada" } } }
     { connect: "c2"
       authenticate: { role: "member", auth: "token", credential: "forged-credential" }
-      expect: { outcome: "denied", violates: ["#authentication", "#host-namespaces"] } }
+      expect: { outcome: denied, violates: ["#authentication", "#host-namespaces"] } }
   ]
 }

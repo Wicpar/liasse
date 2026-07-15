@@ -56,7 +56,7 @@
     { in_sandbox: "s1", steps: [
       { restore: { from: "a1" }, expect: { outcome: ok } }
       // Either serialization is valid; a torn pair is not.
-      { watch: "public.notes", id: "w1", expect_init_one_of: [
+      { watch: "public.notes", id: "w1", expect_init: { expect_one_of: [
         [
           { id: "n0", body: "pre" }
         ]
@@ -65,7 +65,7 @@
           { id: "pa", body: "pair" }
           { id: "pb", body: "pair" }
         ]
-      ] }
+      ] } }
     ] }
   ]
 }

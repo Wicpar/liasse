@@ -1,0 +1,59 @@
+{
+  // §23.5: host access retains "serial admission." §23.6: a runtime maps
+  // workloads to isolated processes "while preserving one logical application
+  // state and serial admission order." §22.3: "Every admitted request occupies
+  // one position in a serial execution order"; when no precedence relation is
+  // established between two concurrent requests, "either relative order is valid,"
+  // and §22.4 "Two concurrent renames MAY both commit; the later serial position
+  // determines the resulting name." The attack: a trusted host operator write and
+  // an ordinary client write target the SAME field with no established precedence.
+  // The operator is NOT privileged into a fixed winner — it occupies one serial
+  // position like any request. Both commit atomically; the final value is that of
+  // whichever landed last, and only those two values are admissible. This pins
+  // that operator transitions share the one serial order rather than pre-empting
+  // or side-stepping it.
+  format: 1
+  name: operator-application-race-either-serial-order
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "#runtime", "§22.3", "§22.4"]
+  tags: ["operator", "ordering", "race"]
+
+  package: {
+    $liasse: 1
+    $app: "t.oprace@1.0.0"
+    $model: {
+      config: { $key: "id", id: "text", name: "text" }
+      $mut: {
+        rename: [
+          ".config[@id].name = @name"
+          "return .config[@id] { id, name }"
+        ]
+      }
+      $public: {
+        config: {
+          $view: ".config { id, name, $sort: [id] }"
+          $mut: { rename: ".rename" }
+        }
+      }
+    }
+    $data: { config: { c1: { name: "start" } } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Operator rename and client rename race on config.c1.name with no
+    // established precedence: either serial order is valid, both commit.
+    { concurrently: [
+        [ { operator: { call: "rename", args: { id: "c1", name: "by-operator" } },
+            expect: { outcome: ok } } ]
+        [ { call: "public.config.rename", args: { id: "c1", name: "by-client" }, on: "c1",
+            expect: { outcome: ok } } ]
+      ] }
+    // The last serial position wins; only the two proposed values are admissible.
+    { watch: "public.config", on: "c1", id: "w1",
+      expect_init: { expect_one_of: [
+        { value: [ { id: "c1", name: "by-operator" } ] }
+        { value: [ { id: "c1", name: "by-client" } ] }
+      ] } }
+  ]
+}

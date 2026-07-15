@@ -39,15 +39,15 @@ while an inbound restrict ref exists and succeed once the referencing row is gon
   }
 
   steps: [
-    { call: "public.registry.add_account", args: { id: "alice" }, expect: { outcome: "ok" } }
-    { call: "public.registry.add_asset", args: { id: "a1", owner: "alice" }, expect: { outcome: "ok" } }
+    { call: "public.registry.add_account", args: { id: "alice" }, expect: { outcome: ok } }
+    { call: "public.registry.add_asset", args: { id: "a1", owner: "alice" }, expect: { outcome: ok } }
     // inbound restrict ref exists -> the target must be preserved
     { call: "public.registry.del_account", args: { id: "alice" },
-      expect: { outcome: "rejected", violates: ["§5.6"], detail: "restrict ref preserves the target while it exists" } }
+      expect: { outcome: rejected, violates: ["§5.6"], detail: "restrict ref preserves the target while it exists" } }
     { watch: "public.registry", id: "w1", expect_init: { value: [ { id: "alice" } ] } }
     // remove the referencing row, then the delete goes through
-    { call: "public.registry.del_asset", args: { id: "a1" }, expect: { outcome: "ok" } }
-    { call: "public.registry.del_account", args: { id: "alice" }, expect: { outcome: "ok" } }
+    { call: "public.registry.del_asset", args: { id: "a1" }, expect: { outcome: ok } }
+    { call: "public.registry.del_account", args: { id: "alice" }, expect: { outcome: ok } }
     { expect_view: { watch: "w1", value: [] } }
   ]
 }

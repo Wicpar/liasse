@@ -2,7 +2,7 @@
   format: 1
   name: backdated-spend-consumes-expired-pool
   suite: scenario
-  spec: ["#meters", "§15.1", "#state-model", "§5.1"]
+  spec: ["#meters", "§15.1", "§15.2", "#state-model", "§5.1"]
   tags: [temporal]
   note: '''Attack: resurrect expired credits by backdating a spend. Spend $time defaults
 to .occurred_at, and a supplied field value takes precedence over its default (§5.1).
@@ -73,7 +73,7 @@ the meter model does not.'''
     { advance_time: "P10D" }
     // a current-time spend finds no active pool
     { call: "public.wallet.consume", args: { user: "u1", amount: "50" },
-      expect: { outcome: rejected, violates: ["#meters", "§15.1"] } }
+      expect: { outcome: rejected, violates: ["#meters", "§15.1", "§15.2"] } }
     // backdated to 2026-01-03, inside the pool's interval: the spec admits it
     { call: "public.wallet.consume_at", args: { user: "u1", amount: "50", at: "1767398400" },
       expect: { outcome: ok, value: { id: "$any:uuid" } } }

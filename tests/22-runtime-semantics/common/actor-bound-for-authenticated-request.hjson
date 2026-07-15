@@ -6,7 +6,7 @@
   format: 1
   name: actor-bound-for-authenticated-request
   suite: scenario
-  spec: ["§22.8", "#runtime", "#authentication"]
+  spec: ["#runtime", "#authentication", "§22.8"]
   tags: ["authz", "provenance"]
 
   package: {

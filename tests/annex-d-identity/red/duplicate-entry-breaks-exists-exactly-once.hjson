@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: duplicate-entry-breaks-exists-exactly-once
+  suite: scenario
+  spec: ["§D.5", "§19.5"]
+  tags: ["integrity", "tampering"]
+  note: '''Attack: smuggle a second `liasse.json` entry into the ZIP with bytes
+IDENTICAL to the original, so every recorded manifest checksum still matches the
+bytes it names. The bet is that a verifier only checks "does a matching entry
+exist?" and stops at the first hit, never noticing the collision — which would let
+an attacker later stage a second, DIFFERENT copy that a lenient ZIP reader might
+prefer.
+
+§D.5 pins more than checksum matching: "Verification succeeds only when every
+referenced entry exists exactly once and every checksum matches." §19.5: the
+manifest `entries` map member name "is the exact archive path", so a referenced
+path denoting two archive entries is not "exactly once". The duplicate therefore
+fails verification independently of the checksums, and restore-time verification
+(§19.8, §D.5) MUST reject the artifact. Identical bytes and a matching checksum do
+not rescue it; existence-exactly-once is a separate conjunct.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.ad.dupentry@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "hi" },
+      expect: { outcome: ok, value: { id: "n1", body: "hi" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    // add a second archive entry named liasse.json with identical bytes: all
+    // checksums still match, but the referenced entry now exists twice.
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      { duplicate_entry: { path: "liasse.json" } }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: invalid, violates: ["§D.5", "§19.5"],
+                  detail: "liasse.json is referenced once but exists twice in the archive; verification requires every referenced entry to exist exactly once" } }
+    ] }
+  ]
+}

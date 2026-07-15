@@ -15,7 +15,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#mutations", "#expressions"]
     detail: "generated function now() used in a pure-only computed-value position"
   }

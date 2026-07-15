@@ -1,25 +1,32 @@
 {
-  // Probe on §22.8: "Public requests and engine maintenance run without an
-  // actor." The spec says a public request has no `$actor`, but does NOT pin
-  // what happens when a public mutation *references* `$actor`. Three readings
-  // are each defensible and SPEC.md chooses none:
-  //   (a) static rejection at load — `$actor` is unavailable in a public
-  //       lexical scope, so the reference is an invalid package;
-  //   (b) runtime rejection at admission — the reference resolves to an unbound
-  //       actor and the request fails;
-  //   (c) a null/absent binding written through to the (optional) field.
+  // Probe on §22.8 / §10.2: "Public requests and engine maintenance run without
+  // an actor" and "A public operation has no `$actor` or `$session`." The spec
+  // says a public request has no `$actor`, but does NOT pin what happens when a
+  // public mutation *references* `$actor`. Three readings are each grounded in
+  // spec text, and SPEC.md chooses none:
+  //   (a) static rejection at load — §6.2: structural bindings (incl. `$actor`)
+  //       "exist only in the feature context that defines them" (authentication),
+  //       so referencing it from a public mutation could be an invalid package;
+  //   (b) runtime rejection at admission — §6.3: a `$actor` context "MUST
+  //       receive exactly one occurrence. Zero … reject that evaluation"; with
+  //       no actor bound the reference has zero occurrences and the request
+  //       fails at admission;
+  //   (c) a null/absent binding written through to the optional field.
   // The behavior is unspecified; the corpus records the gap.
   format: 1
   name: public-request-references-actor-unspecified
   suite: scenario
-  spec: ["§22.8", "#runtime"]
+  spec: ["#runtime", "§22.8", "§10.2", "§6.2", "§6.3"]
   tags: ["authz", "provenance", "boundary"]
   note: '''
-    §22.8 states only that public requests run without an actor. It does not
-    define the result of a public mutation reading `$actor`: whether the
-    package is statically invalid (actor out of scope), the request is rejected
-    at admission (unbound actor), or `$actor` binds to null. Left unpinned by
-    SPEC.md, so `outcome: unspecified` with the plausible readings enumerated.
+    §22.8 and §10.2 state only that public requests run without an actor. They
+    do not define the result of a public mutation reading `$actor`. §6.2
+    ("Structural bindings exist only in the feature context that defines them")
+    supports static invalidity — `$actor` is out of scope on a public surface.
+    §6.3 ("a $actor context MUST receive exactly one occurrence; zero … reject
+    that evaluation") supports admission-time rejection — an unbound actor is
+    zero occurrences. A null/absent binding is a third reading. SPEC.md pins
+    none of the three, so `outcome: unspecified` with the readings enumerated.
   '''
 
   package: {

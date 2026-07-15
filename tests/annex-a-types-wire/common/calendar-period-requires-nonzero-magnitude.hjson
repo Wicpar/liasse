@@ -1,6 +1,6 @@
 {
   format: 1
-  name: calendar-period-all-zero-magnitude-rejected
+  name: calendar-period-requires-nonzero-magnitude
   suite: static
   spec: ["§A.4"]
   tags: ["period"]

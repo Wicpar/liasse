@@ -11,19 +11,19 @@
   tags: []
 
   package: {
-    "$liasse": 1
-    "$app": "t.unknown_mut@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
+    $liasse: 1
+    $app: "t.unknown_mut@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, title }"
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title }"
           // Invalid: no mutation named add_task is declared anywhere.
-          "$mut": { "add": ".add_task" }
+          $mut: { add: ".add_task" }
         }
       }
     }

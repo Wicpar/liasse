@@ -21,27 +21,27 @@
         bind: true
         protection: "software"
         external_keys: {
-          "ext1": { algorithm: "Ed25519" }
-          "ext2": { algorithm: "Ed25519" }
+          ext1: { algorithm: "Ed25519" }
+          ext2: { algorithm: "Ed25519" }
         }
       }
     }
   }
 
   package: {
-    "$liasse": 1
-    "$app": "t.keyrings@1.0.0"
-    "$model": {
-      "session_keys": {
-        "$keyring": {
-          "$provider": "test-kp"
-          "$algorithm": "Ed25519"
-          "$retain": "P45D"
+    $liasse: 1
+    $app: "t.keyrings@1.0.0"
+    $model: {
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $algorithm: "Ed25519"
+          $retain: "P45D"
         }
       }
-      "$public": {
-        "ring_current": { "$view": "/session_keys.$current" }
-        "ring_versions": { "$view": "/session_keys.$versions" }
+      $public: {
+        ring_current: { $view: "/session_keys.$current" }
+        ring_versions: { $view: "/session_keys.$versions" }
       }
     }
   }

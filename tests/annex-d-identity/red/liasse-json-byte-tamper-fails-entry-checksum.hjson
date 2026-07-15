@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: liasse-json-byte-tamper-fails-entry-checksum
+  suite: scenario
+  spec: ["§D.5", "§19.5"]
+  tags: ["integrity", "tampering"]
+  note: '''Attack: edit `liasse.json` inside an exported artifact (loosen a `$check`
+bound so a longer body would later be accepted) WITHOUT recomputing the manifest
+checksums, betting the definition entry is not byte-verified.
+
+§19.5: the manifest `entries` map "covers every required direct archive entry other
+than `manifest.json`"; `liasse.json` is a required direct archive entry, so its exact
+bytes carry a recorded `sha256`. §D.5: `manifest.json` "records a SHA-256 checksum ...
+for every required non-manifest entry", and "Verification succeeds only when every
+referenced entry exists exactly once and every checksum matches." Editing the
+`liasse.json` bytes changes them out from under the recorded checksum, so the entry
+checksum no longer matches and restore-time verification (§19.8, §D.5) MUST reject the
+artifact. This is the decided byte-integrity case; the semantic-swap-with-fixed-
+checksums variant (stale definition.identity only) is separately unspecified.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.deftamper@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: { $type: "text", $check: ["size(.) <= 100", "too long"] }
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "hi" },
+      expect: { outcome: ok, value: { id: "n1", body: "hi" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    // edit liasse.json but do NOT recompute checksums: the entries[liasse.json]
+    // sha256 now disagrees with the stored bytes.
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      { edit_json: { path: "liasse.json",
+                     pointer: "/$model/notes/body/$check/0", value: "size(.) <= 100000" } }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: invalid, violates: ["§D.5", "§19.5"],
+                  detail: "liasse.json bytes no longer match the recorded manifest entry checksum" } }
+    ] }
+  ]
+}

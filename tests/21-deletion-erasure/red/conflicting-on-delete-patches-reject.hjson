@@ -3,39 +3,41 @@
   name: conflicting-on-delete-patches-reject
   suite: scenario
   tags: [deletion, patch, conflict]
-  // Attack: two independent deletions patch the SAME field of one surviving row
-  // to different values in one transition. §21.1: "Patches to a surviving row
-  // combine when they touch disjoint fields or assign the same resulting value;
-  // conflicting assignments reject the transition." Deleting both a and b patches
-  // task.label to 'AA' and 'BB' respectively -> conflict -> reject.
+  // Attack: make one deletion plan drive two $on_delete patches that assign the
+  // SAME field of one surviving row to different values. §21.1: "Patches to a
+  // surviving row combine when they touch disjoint fields or assign the same
+  // resulting value; conflicting assignments reject the transition." One delete
+  // statement removes th1 AND th2 in a single plan; t1's two refs (a->th1,
+  // b->th2) both patch t1.label, to 'AA' and 'BB' -> conflict -> reject.
+  //
+  // Both removed rows must leave in ONE plan (one statement) so the patches
+  // arise together: two separate sequential delete statements would instead
+  // apply in order (§8.6) and the second would simply overwrite the first.
   spec: ["§21.1"]
 
   package: {
     $liasse: 1
     $app: "t.del@1.0.0"
     $model: {
-      alphas: { $key: "id", id: "text" }
-      betas: { $key: "id", id: "text" }
+      things: { $key: "id", id: "text" }
       tasks: {
         $key: "id"
         id: "text"
         label: "text = 'none'"
         a: {
-          $ref: "/alphas"
+          $ref: "/things"
           $optional: true
           $on_delete: "= { a: none, label: 'AA' }"
         }
         b: {
-          $ref: "/betas"
+          $ref: "/things"
           $optional: true
           $on_delete: "= { b: none, label: 'BB' }"
         }
       }
       $mut: {
-        purge: [
-          ".alphas - @a"
-          ".betas - @b"
-        ]
+        // one statement, one delete plan, removes both referenced things
+        purge: "-.things[:x | x.id == @a || x.id == @b]"
       }
       tasks_view: { $view: ".tasks { id, label, a, b }" }
       $public: {
@@ -43,20 +45,19 @@
       }
     }
     $data: {
-      alphas: { a1: {} }
-      betas: { b1: {} }
-      tasks: { t1: { a: "a1", b: "b1" } }
+      things: { th1: {}, th2: {} }
+      tasks: { t1: { a: "th1", b: "th2" } }
     }
   }
 
   steps: [
     { watch: "public.tasks", id: "w1", expect_init: { value: [
-      { id: "t1", label: "none", a: "a1", b: "b1" }
+      { id: "t1", label: "none", a: "th1", b: "th2" }
     ] } }
-    // both deletions in one transition patch t1.label to conflicting values
-    { call: "public.tasks.purge", args: { a: "a1", b: "b1" },
+    // both cascade->patch effects land on t1.label in one plan: AA vs BB conflict
+    { call: "public.tasks.purge", args: { a: "th1", b: "th2" },
       expect: { outcome: rejected, violates: ["§21.1"],
-                detail: "on_delete patches assign task.label = AA and BB in one transition" } }
-    { expect_view: { watch: "w1", value: [ { id: "t1", label: "none", a: "a1", b: "b1" } ] } }
+                detail: "on_delete patches assign task.label = AA and BB in one plan" } }
+    { expect_view: { watch: "w1", value: [ { id: "t1", label: "none", a: "th1", b: "th2" } ] } }
   ]
 }

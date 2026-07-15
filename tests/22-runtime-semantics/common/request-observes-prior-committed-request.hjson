@@ -6,7 +6,7 @@
   format: 1
   name: request-observes-prior-committed-request
   suite: scenario
-  spec: ["§22.4", "#runtime"]
+  spec: ["#runtime", "§22.4"]
   tags: ["ordering", "visibility"]
 
   package: {
@@ -40,7 +40,8 @@
   steps: [
     { connect: "c1" }
     { call: "public.items.total", args: {}, on: "c1",
-      expect: { outcome: ok, completion: unchanged, value: 0 } }
+      // count(.items) is int; Annex A.1 wire form is a canonical base-10 string.
+      expect: { outcome: ok, completion: unchanged, value: "0" } }
     { call: "public.items.add", args: { label: "x" }, on: "c1",
       expect: { outcome: ok, value: { id: "$any:uuid" } } }
     {
@@ -49,7 +50,7 @@
       call: "public.items.total"
       args: {}
       on: "c1"
-      expect: { outcome: ok, completion: unchanged, value: 1 }
+      expect: { outcome: ok, completion: unchanged, value: "1" }
     }
   ]
 }

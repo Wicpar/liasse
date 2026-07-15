@@ -11,62 +11,62 @@
   tags: ["recursive", "authz"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.rec_prune@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.rec_prune@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
       }
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "plan": "text = 'active'"
-        "subcompanies": { "$like": "^" }
-        "members": {
-          "$key": "account"
-          "account": { "$ref": "/accounts" }
-          "admin": "bool = false"
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        plan: "text = 'active'"
+        subcompanies: { $like: "^" }
+        members: {
+          $key: "account"
+          account: { $ref: "/accounts" }
+          admin: "bool = false"
         }
-        "$roles": {
-          "admin": {
-            "$auth": "token"
-            "$members": ".members[:m | m.admin].account"
-            "company": {
-              "$view": ". { id, name }"
-              "$recursive": {
-                "$field": "subcompanies"
-                "$through": ".subcompanies"
-                "$bind": "child"
-                "$where": "child.plan != 'closed'"
-                "$except": "child.id == 'hr'"
+        $roles: {
+          admin: {
+            $auth: "token"
+            $members: ".members[:m | m.admin].account"
+            company: {
+              $view: ". { id, name }"
+              $recursive: {
+                $field: "subcompanies"
+                $through: ".subcompanies"
+                $bind: "child"
+                $where: "child.plan != 'closed'"
+                $except: "child.id == 'hr'"
               }
             }
           }
         }
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
     }
-    "$data": {
-      "accounts": { "alice": {} }
-      "companies": {
-        "root": {
-          "name": "Root"
-          "members": { "alice": { "admin": true } }
-          "subcompanies": {
-            "a": { "name": "Branch A" }
-            "hr": {
-              "name": "HR"
-              "subcompanies": {
+    $data: {
+      accounts: { alice: {} }
+      companies: {
+        root: {
+          name: "Root"
+          members: { alice: { admin: true } }
+          subcompanies: {
+            a: { name: "Branch A" }
+            hr: {
+              name: "HR"
+              subcompanies: {
                 // Active and $where-satisfying, but inside the pruned branch.
-                "hr1": { "name": "HR Payroll" }
+                hr1: { name: "HR Payroll" }
               }
             }
           }

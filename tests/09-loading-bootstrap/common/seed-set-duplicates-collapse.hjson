@@ -13,22 +13,22 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.seedsets@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "tags": { "$set": "text" }
+    $liasse: 1
+    $app: "t.seedsets@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        tags: { $set: "text" }
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, tags }" }
+      $public: {
+        companies: { $view: ".companies { id, tags }" }
       }
     }
-    "$data": {
-      "companies": {
-        "acme": { "tags": ["priority", "customer", "priority"] }
-        "beta": {}
+    $data: {
+      companies: {
+        acme: { tags: ["priority", "customer", "priority"] }
+        beta: {}
       }
     }
   }

@@ -1,0 +1,57 @@
+{
+  // §2.1: "A host component conforms to the typed contract it registers."
+  // §16.2: the load-time descriptor pins "function names and typed signatures";
+  // §16.4: a namespace "receives typed Liasse values". Loading validates the
+  // call site against the DESCRIPTOR, so a package calling `u.f(int) -> int`
+  // type-checks and activates. The attack: at evaluation time the registered
+  // component returns a `text` instead of the `int` its descriptor promised — a
+  // component that violates the very contract §2.1 says it conforms to. SPEC.md
+  // pins the component's obligation but does NOT pin what the runtime must do
+  // when a registered component breaks it at call time (surface a provider-phase
+  // error, coerce, panic). The call outcome is therefore unspecified.
+  format: 1
+  name: namespace-returns-off-contract-type-unspecified
+  suite: scenario
+  spec: ["#conformance", "§2.1", "#host-namespaces", "§16.2", "§16.4"]
+  tags: ["namespace", "off-contract", "nonconforming-host"]
+  note: "The descriptor pins signature (int) -> int and the package type-checks against it, but the registered component returns text at evaluation time. §2.1/§16.2 define the component's obligation to conform; SPEC.md does not pin the runtime's handling of a component that returns an off-contract value at call time. The call outcome is unspecified."
+
+  package: {
+    $liasse: 1
+    $app: "t.offtype@1.0.0"
+    $requires: { u: "test.util@1" }
+    $model: {
+      results: { $key: "id", id: "text", v: "int" }
+      $mut: {
+        // @n : int and u.f : (int) -> int per the descriptor, so this type-checks.
+        compute: [
+          "r = .results + { id: @id, v: u.f(@n) }"
+          "return r { id, v }"
+        ]
+      }
+      $public: {
+        api: { $mut: { compute: ".compute" } }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.0.0"
+        interface_hash: "ih-util-offtype"
+        functions: {
+          // Descriptor promises (int) -> int; op `off_type` returns text (§23 NOTES).
+          f: { signature: "(int) -> int", effect: "pure", op: "off_type" }
+        }
+      }
+    ]
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "public.api.compute", args: { id: "r1", n: 21 }, on: "c1",
+      expect: { outcome: unspecified } }
+  ]
+}

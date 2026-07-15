@@ -8,7 +8,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.optional@1.0.0"
+    $app: "t.ex.optional@1.0.0"
     $model: {
       items: {
         $key: "id"
@@ -21,8 +21,8 @@
   }
 
   expect: {
-    outcome: "unspecified"
-    violates: ["#expressions"]
+    outcome: unspecified
+    
     detail: "arithmetic over an optional operand: neither static rejection nor none-propagation is mandated"
   }
 }

@@ -22,8 +22,8 @@
   }
 
   expect: {
-    outcome: "unspecified"
-    violates: ["#views"]
+    outcome: unspecified
+    
     detail: "synthetic $key equal to the per-row source key: whether the 'aggregated or key-derived' rule applies when no rows share the key is not pinned"
   }
 }

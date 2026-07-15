@@ -24,6 +24,36 @@ descriptive key here with its semantics.
   `common/unbucketed-source-defaults-to-unbounded-interval`,
   `common/w3-overlapping-heterogeneous-credits`).
 
+## Anchor conventions
+
+- A spend that finds **no eligible capacity because every candidate pool is temporally
+  inactive** (`expired-pool-does-not-fund-current-spend`, `spend-time-in-gap-between-periods-unfunded`,
+  `spend-at-pool-until-boundary-excluded`, and the current-time step of
+  `backdated-spend-consumes-expired-pool`) cites BOTH the temporal rule that empties the
+  meter (§15.1 spend-time source evaluation, or §14.1 half-open activity) AND §15.2 step 6,
+  the operative rule that "rejects the complete transition when eligible capacity is
+  insufficient". The temporal rule is the cause; §15.2 is the rejection.
+
+## MUST rules intentionally left uncovered
+
+- SPEC §15.2 "A source view that repeats the same full pool identity contributes one pool …
+  Repeated occurrences MUST agree on quantity, interval, and projected funding metadata;
+  disagreement rejects the admission." This duplicate-pool coalescing rule is not exercised:
+  producing the *same full pool identity twice from one source view* requires a projection
+  that emits duplicate identities, which ordinary keyed-collection and source-backed-bucket
+  projections (each row a distinct key/`$source` identity, §14.6) do not do. A minimal,
+  spec-clear construction that forces a genuine duplicate could not be built without relying
+  on unstated expression-grammar behavior, so no shaky case was added. The "one pool, never
+  a multiple" half of the rule is still checked indirectly by
+  `red/ineligible-pool-does-not-fund-spend` (a single-topup source contributes exactly its
+  100, not a doubled 200).
+
+## Static validation cases
+
+- `red/parameterless-balance-requires-eligibility-metadata` covers the SPEC §15.6 MUST that a
+  parameterless accessor is invalid when `$eligible` references spend metadata; it is the one
+  `suite: static` case in the area (outcome `invalid`).
+
 ## Spec gaps recorded as `outcome: unspecified`
 
 - `red/negative-pool-quantity-enforcement-unspecified` — SPEC §15.1 requires pool

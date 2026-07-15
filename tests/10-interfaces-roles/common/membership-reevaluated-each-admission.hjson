@@ -10,45 +10,45 @@
   tags: ["authz", "ordering"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.member_readm@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
-        "enabled": "bool = true"
+    $liasse: 1
+    $app: "t.member_readm@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        enabled: "bool = true"
       }
-      "notes": {
-        "$key": "id"
-        "id": "text"
-        "body": "text"
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
       }
-      "$mut": {
-        "add_note": [
+      $mut: {
+        add_note: [
           "n = .notes + { id: @id, body: @body }"
           "return n { id, body }"
         ]
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
-      "$roles": {
-        "member": {
-          "$auth": "token"
-          "$members": ".accounts[:a | a.enabled]"
-          "notes": {
-            "$view": ".notes { id, body }"
-            "$mut": { "add": ".add_note" }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes { id, body }"
+            $mut: { add: ".add_note" }
           }
-          "self": {
-            "$mut": {
+          self: {
+            $mut: {
               // Inline program on the role surface: the actor disables its
               // own account, removing itself from $members.
-              "quit": [
+              quit: [
                 "/accounts[$actor.$key].enabled = false"
                 "return $actor { id, enabled }"
               ]
@@ -57,8 +57,8 @@
         }
       }
     }
-    "$data": {
-      "accounts": { "alice": {} }
+    $data: {
+      accounts: { alice: {} }
     }
   }
 

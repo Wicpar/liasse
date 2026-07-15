@@ -18,19 +18,19 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.diverge@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
+    $liasse: 1
+    $app: "t.diverge@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, title }"
-          "$mut": {
-            "retitle": [
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title }"
+          $mut: {
+            retitle: [
               ".tasks[@id].title = @title"
               "return .tasks[@id] { id, title }"
             ]
@@ -38,31 +38,31 @@
         }
       }
     }
-    "$data": {
-      "tasks": {
-        "t1": { "title": "seeded" }
+    $data: {
+      tasks: {
+        t1: { title: "seeded" }
       }
     }
   }
 
   steps: [
     { call: "public.tasks.retitle", args: { id: "t1", title: "changed" },
-      expect: { outcome: "ok", value: { id: "t1", title: "changed" } } }
+      expect: { outcome: ok, value: { id: "t1", title: "changed" } } }
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.diverge@1.0.0"
-          "$model": {
-            "tasks": {
-              "$key": "id"
-              "id": "text"
-              "title": "text"
+          $liasse: 1
+          $app: "t.diverge@1.0.0"
+          $model: {
+            tasks: {
+              $key: "id"
+              id: "text"
+              title: "text"
             }
-            "$public": {
-              "tasks": {
-                "$view": ".tasks { id, title }"
-                "$mut": {
-                  "retitle": [
+            $public: {
+              tasks: {
+                $view: ".tasks { id, title }"
+                $mut: {
+                  retitle: [
                     ".tasks[@id].title = @title"
                     "return .tasks[@id] { id, title }"
                   ]
@@ -70,13 +70,13 @@
               }
             }
           }
-          "$data": {
-            "tasks": {
-              "t1": { "title": "seeded" }
+          $data: {
+            tasks: {
+              t1: { title: "seeded" }
             }
           }
         }
       }
-      expect: { outcome: "unspecified" } }
+      expect: { outcome: unspecified } }
   ]
 }

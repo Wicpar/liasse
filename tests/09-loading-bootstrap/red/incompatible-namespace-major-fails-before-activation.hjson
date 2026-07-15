@@ -16,22 +16,22 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.nsmajor@1.0.0"
-    "$requires": {
-      "password": "liasse.password@1"
+    $liasse: 1
+    $app: "t.nsmajor@1.0.0"
+    $requires: {
+      password: "liasse.password@1"
     }
-    "$model": {
-      "items": {
-        "$key": "id"
-        "id": "text"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
       }
     }
   }
 
   hosts: {
     namespaces: {
-      "password": "liasse.password@2.0.0"
+      password: "liasse.password@2.0.0"
     }
   }
 

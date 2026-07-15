@@ -8,26 +8,26 @@
   spec: ["#mutations", "§8.8"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.normcheck@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "uuid = uuid()"
-        "title": {
-          "$type": "text"
-          "$normalize": "string.trim(.)"
-          "$check": ["size(.) > 0", "A title is required"]
+    $liasse: 1
+    $app: "t.normcheck@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: {
+          $type: "text"
+          $normalize: "string.trim(.)"
+          $check: ["size(.) > 0", "A title is required"]
         }
       }
-      "$mut": {
-        "add_task": [
+      $mut: {
+        add_task: [
           "t = .tasks + { title: @title }"
           "return t { title }"
         ]
       }
-      "$public": {
-        "tasks": { "$mut": { "add": ".add_task" } }
+      $public: {
+        tasks: { $mut: { add: ".add_task" } }
       }
     }
   }

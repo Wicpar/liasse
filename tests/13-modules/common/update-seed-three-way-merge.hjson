@@ -16,92 +16,92 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "templates": {
-                  "$view": { "$key": "id", "id": "text", "label": "text" }
-                  "$mut": {
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: {
+                  $view: { $key: "id", id: "text", label: "text" }
+                  $mut: {
                     "set_label({ id: text, label: text })": {
-                      "$return": { "id": "text", "label": "text" }
+                      $return: { id: "text", label: "text" }
                     }
                   }
                 }
               }
             }
           }
-          "catalog": {
-            "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
+          catalog: {
+            $view: ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
           }
         }
-        "$public": {
-          "catalog": {
-            "$params": { "company": "text" }
-            "$view": "/companies[@company].catalog"
+        $public: {
+          catalog: {
+            $params: { company: "text" }
+            $view: "/companies[@company].catalog"
           }
-          "admin": {
-            "$mut": { "set_label": '/companies["acme"].modules["kit"]::templates.set_label' }
+          admin: {
+            $mut: { set_label: '/companies["acme"].modules["kit"]::templates.set_label' }
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     tplm1: {
-      "$liasse": 1
-      "$module": "t.tplm@1.0.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
-        "$mut": {
-          "set_label": [
+      $liasse: 1
+      $module: "t.tplm@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+        $mut: {
+          set_label: [
             "t = .templates[@id]"
             "t.label = @label"
             "return t { id, label }"
           ]
         }
       }
-      "$data": {
-        "templates": {
-          "std": { "label": "Standard" }
-          "old": { "label": "Old" }
+      $data: {
+        templates: {
+          std: { label: "Standard" }
+          old: { label: "Old" }
         }
       }
-      "$expose": {
-        "templates": {
-          "$view": ".templates { id, label }"
-          "$mut": { "set_label": ".set_label" }
+      $expose: {
+        templates: {
+          $view: ".templates { id, label }"
+          $mut: { set_label: ".set_label" }
         }
       }
     }
     tplm2: {
-      "$liasse": 1
-      "$module": "t.tplm@1.1.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
-        "$mut": {
-          "set_label": [
+      $liasse: 1
+      $module: "t.tplm@1.1.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+        $mut: {
+          set_label: [
             "t = .templates[@id]"
             "t.label = @label"
             "return t { id, label }"
           ]
         }
       }
-      "$data": {
-        "templates": {
-          "std": { "label": "Standard v2" }
-          "fresh": { "label": "Fresh" }
+      $data: {
+        templates: {
+          std: { label: "Standard v2" }
+          fresh: { label: "Fresh" }
         }
       }
-      "$expose": {
-        "templates": {
-          "$view": ".templates { id, label }"
-          "$mut": { "set_label": ".set_label" }
+      $expose: {
+        templates: {
+          $view: ".templates { id, label }"
+          $mut: { set_label: ".set_label" }
         }
       }
     }
@@ -109,7 +109,7 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.tplm@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.tplm@1.0.0" } }
       expect: { outcome: ok } }
     // local modification of a seeded row
     { call: "public.admin.set_label", args: { id: "old", label: "Mine" }

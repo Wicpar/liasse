@@ -34,7 +34,7 @@
 
   steps: [
     { call: "public.tasks.complete", args: { id: "t1" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { watch: "public.tasks", id: "w1",
       expect_init: { value: [
         { id: "t1", done: true }

@@ -11,7 +11,7 @@ insert-time failures.'''
 
   package: {
     $liasse: 1
-    $app: "t.optkey@1.0.0"
+    $app: "t.st.optkey@1.0.0"
     $model: {
       items: {
         $key: "id"
@@ -22,7 +22,7 @@ insert-time failures.'''
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["§A.8", "§5.4"]
     detail: "optional types are excluded from row keys"
   }

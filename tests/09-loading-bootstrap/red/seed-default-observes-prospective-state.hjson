@@ -17,30 +17,30 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.prospective@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.prospective@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "audits": {
-        "$key": "id"
-        "id": "text"
-        "companies_seen": "int = count(/companies)"
+      audits: {
+        $key: "id"
+        id: "text"
+        companies_seen: "int = count(/companies)"
       }
-      "$public": {
-        "audits": { "$view": ".audits { id, companies_seen }" }
+      $public: {
+        audits: { $view: ".audits { id, companies_seen }" }
       }
     }
-    "$data": {
-      "audits": {
-        "boot": {}
+    $data: {
+      audits: {
+        boot: {}
       }
-      "companies": {
-        "a": { "name": "Alpha" }
-        "b": { "name": "Beta" }
+      companies: {
+        a: { name: "Alpha" }
+        b: { name: "Beta" }
       }
     }
   }

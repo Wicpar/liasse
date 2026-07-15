@@ -31,16 +31,16 @@
   }
 
   steps: [
-    { call: "public.offices.add_company", args: { id: "acme" }, expect: { outcome: "ok" } }
-    { call: "public.offices.add_company", args: { id: "globex" }, expect: { outcome: "ok" } }
+    { call: "public.offices.add_company", args: { id: "acme" }, expect: { outcome: ok } }
+    { call: "public.offices.add_company", args: { id: "globex" }, expect: { outcome: ok } }
     { call: "public.offices.add_office", args: { company: "acme", id: "hq", name: "Acme HQ" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // same local key "hq", different parent -> distinct full identity -> accepted
     { call: "public.offices.add_office", args: { company: "globex", id: "hq", name: "Globex HQ" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // same local key under the same parent -> rejected
     { call: "public.offices.add_office", args: { company: "acme", id: "hq", name: "Again" },
-      expect: { outcome: "rejected", violates: ["§5.4"] } }
+      expect: { outcome: rejected, violates: ["§5.4"] } }
     { watch: "public.offices", id: "w1", expect_init: { value: [
       { company: "acme", office: "hq" }
       { company: "globex", office: "hq" }

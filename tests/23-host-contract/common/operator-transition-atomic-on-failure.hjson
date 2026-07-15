@@ -1,0 +1,52 @@
+{
+  // §23.5: host access retains "serial admission, and atomicity." §23.3: every
+  // implementation choice "MUST preserve declared identity, values, order,
+  // atomicity, ...". §8.8/§22.2: a failed assertion "rejects the complete
+  // proposed transition ... A failure leaves the prior committed state intact."
+  // A trusted operator multi-statement mutation whose LATER assertion fails must
+  // not leave the earlier statement's write. Proof: after the failure, once the
+  // gate is opened the SAME program commits with key e1 — which is only possible
+  // if the earlier `log + { id: e1 }` never partially landed (a leaked row would
+  // have taken key e1 and made the successful run collide on $key).
+  format: 1
+  name: operator-transition-atomic-on-failure
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "§23.3", "§8.8", "§22.2"]
+  tags: ["operator", "atomicity"]
+
+  package: {
+    $liasse: 1
+    $app: "t.opatomic@1.0.0"
+    $model: {
+      log: { $key: "id", id: "text", note: "text" }
+      gate: { $key: "id", id: "text", open: "bool" }
+      $mut: {
+        try_write: [
+          ".log + { id: @id, note: @note }"
+          "assert(.gate[@gate].open, 'gate closed')"
+          "return { id: @id }"
+        ]
+        open_gate: [
+          ".gate[@gate].open = true"
+          "return { id: @gate }"
+        ]
+      }
+    }
+    $data: {
+      gate: { g1: { open: false } }
+    }
+  }
+
+  steps: [
+    // The assert on the closed gate fails after the log write is proposed.
+    { operator: { call: "try_write", args: { id: "e1", note: "hi", gate: "g1" } },
+      expect: { outcome: rejected, violates: ["§8.8", "§23.5"] } }
+    // Open the gate through a separate operator transition.
+    { operator: { call: "open_gate", args: { gate: "g1" } },
+      expect: { outcome: ok, value: { id: "g1" } } }
+    // The same program now commits with key e1 -> the earlier failed run left no
+    // partial `log` row.
+    { operator: { call: "try_write", args: { id: "e1", note: "final", gate: "g1" } },
+      expect: { outcome: ok, value: { id: "e1" } } }
+  ]
+}

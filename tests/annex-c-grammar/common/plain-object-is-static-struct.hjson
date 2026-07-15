@@ -7,7 +7,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.struct@1.0.0"
+    $app: "t.ac.struct@1.0.0"
     $model: {
       company: {
         name: "text"

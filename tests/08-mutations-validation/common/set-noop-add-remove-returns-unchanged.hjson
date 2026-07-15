@@ -9,30 +9,30 @@
   spec: ["#mutations", "§8.5", "§8.9", "§5.5"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.setnoop@1.0.0"
-    "$model": {
-      "docs": {
-        "$key": "id"
-        "id": "text"
-        "tags": { "$set": "text" }
-        "$mut": {
-          "tag": ".tags + @tag"
-          "untag": ".tags - @tag"
+    $liasse: 1
+    $app: "t.setnoop@1.0.0"
+    $model: {
+      docs: {
+        $key: "id"
+        id: "text"
+        tags: { $set: "text" }
+        $mut: {
+          tag: ".tags + @tag"
+          untag: ".tags - @tag"
         }
       }
-      "$public": {
-        "docs": {
-          "$view": ".docs { id, tags }"
-          "$mut": {
-            "tag": ".docs[@id].tag"
-            "untag": ".docs[@id].untag"
+      $public: {
+        docs: {
+          $view: ".docs { id, tags }"
+          $mut: {
+            tag: ".docs[@id].tag"
+            untag: ".docs[@id].untag"
           }
         }
       }
     }
-    "$data": {
-      "docs": { "d1": { "tags": ["a"] } }
+    $data: {
+      docs: { d1: { tags: ["a"] } }
     }
   }
 
@@ -41,18 +41,18 @@
       call: "public.docs.tag"
       args: { id: "d1", tag: "a" }
       // Union with an existing member: success, but no state change.
-      expect: { outcome: ok, status: unchanged }
+      expect: { outcome: ok, completion: unchanged }
     }
     {
       call: "public.docs.untag"
       args: { id: "d1", tag: "z" }
       // Difference with an absent member: success, but no state change.
-      expect: { outcome: ok, status: unchanged }
+      expect: { outcome: ok, completion: unchanged }
     }
     {
       call: "public.docs.tag"
       args: { id: "d1", tag: "b" }
-      expect: { outcome: ok, status: committed }
+      expect: { outcome: ok, completion: committed }
     }
     {
       // Canonical member order for text: "a" < "b" (§B.1).

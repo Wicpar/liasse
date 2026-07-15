@@ -2,7 +2,7 @@
   format: 1
   name: w3-plan-credit-increase-affects-future-not-recorded-funding
   suite: scenario
-  spec: ["W3", "#meters", "§15.2", "§15.3"]
+  spec: ["#meters", "W3", "§15.2", "§15.3"]
   tags: [meters, temporal]
   note: '''
     W3: "applications that keep plan references intentionally let later plan

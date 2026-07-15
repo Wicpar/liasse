@@ -1,0 +1,100 @@
+{
+  format: 1
+  name: module-removes-interface-binding-rejected
+  suite: scenario
+  spec: ["#annex-e", "#modules"]
+  tags: [modules, version]
+  note: '''
+    Attack: silently withdraw a mutation the parent interface depends on, under
+    a compatible-looking minor. The host module space declares an interface
+    `templates` that requires the mutation create({id,label}) -> {id,label}.
+    Module 1.0.0 binds it via $expose. Module 1.1.0 drops `create` from
+    $expose.templates (keeping the view), so the accepted interface binding is
+    removed. E.4 breaking: "removing a previously accepted module-interface
+    binding"; E.5 breaking: "removing a view or mutation bound by a module
+    interface"; E.7: "Removing the binding ... is breaking." §13.14 rechecks
+    parent usage sites and module-space exposures before admission, so the
+    single-instance update is rejected and the 1.0.0 binding stays active (E.9;
+    §13.15 "A rejected update returns the same planning context ... and no
+    commit"). The candidate module is well-formed on its own — the defect is
+    purely the removed boundary binding — so this is a narrowing `rejected`, not
+    a static `invalid` (see NOTES.md).
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.ae.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: {
+                  $view: { $key: "id", id: "text", label: "text" }
+                  $mut: {
+                    "create({ id: text, label: text })": { $return: { id: "text", label: "text" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      $data: { companies: { acme: { name: "Acme" } } }
+    }
+    kit1: {
+      $liasse: 1
+      $module: "t.kit@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+        $mut: {
+          create_impl: [
+            "t = .templates + { id: @id, label: @label }"
+            "return t { id, label }"
+          ]
+        }
+      }
+      $expose: {
+        templates: {
+          $view: ".templates { id, label }"
+          $mut: { create: ".create_impl" }
+        }
+      }
+    }
+    kit2: {
+      $liasse: 1
+      $module: "t.kit@1.1.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+        $mut: {
+          create_impl: [
+            "t = .templates + { id: @id, label: @label }"
+            "return t { id, label }"
+          ]
+        }
+      }
+      $expose: {
+        templates: {
+          // `create` binding removed from the interface — breaking withdrawal
+          $view: ".templates { id, label }"
+        }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.kit@1.0.0" } }
+      expect: { outcome: ok } }
+    { module_update: { instance: "/companies/acme/modules/kit", to: "t.kit@1.1.0" }
+      expect: {
+        outcome: rejected
+        violates: ["#annex-e"]
+        detail: "minor removes the interface-bound mutation `templates.create`; narrowing rejected, 1.0.0 binding stays active"
+      } }
+  ]
+}

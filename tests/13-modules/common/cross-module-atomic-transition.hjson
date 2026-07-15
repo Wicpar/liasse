@@ -13,29 +13,29 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "credits": {
-                  "$view": { "$key": "id", "id": "text", "balance": "decimal" }
-                  "$mut": {
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                credits: {
+                  $view: { $key: "id", id: "text", balance: "decimal" }
+                  $mut: {
                     "consume({ amount: decimal })": {
-                      "$return": { "remaining": "decimal" }
+                      $return: { remaining: "decimal" }
                     }
                   }
                 }
-                "orders": {
-                  "$view": { "$key": "id", "id": "text", "cost": "decimal" }
-                  "$mut": {
+                orders: {
+                  $view: { $key: "id", id: "text", cost: "decimal" }
+                  $mut: {
                     "place({ id: text, cost: decimal })": {
-                      "$return": { "id": "text" }
+                      $return: { id: "text" }
                     }
                   }
                 }
@@ -43,57 +43,57 @@
             }
           }
         }
-        "$public": {
-          "orders": { "$view": '/companies["acme"].modules["shop"]::orders' }
-          "pools": { "$view": '/companies["acme"].modules["bank"]::credits' }
-          "shop": {
-            "$mut": { "place": '/companies["acme"].modules["shop"]::orders.place' }
+        $public: {
+          orders: { $view: '/companies["acme"].modules["shop"]::orders' }
+          pools: { $view: '/companies["acme"].modules["bank"]::credits' }
+          shop: {
+            $mut: { place: '/companies["acme"].modules["shop"]::orders.place' }
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     bank: {
-      "$liasse": 1
-      "$module": "t.bank@1.0.0"
-      "$model": {
-        "pools": { "$key": "id", "id": "text", "balance": "decimal" }
-        "$mut": {
-          "consume": [
+      $liasse: 1
+      $module: "t.bank@1.0.0"
+      $model: {
+        pools: { $key: "id", id: "text", balance: "decimal" }
+        $mut: {
+          consume: [
             'assert(.pools["main"].balance >= @amount, "insufficient credits")'
             '.pools["main"].balance = .pools["main"].balance - @amount'
             'return { remaining: .pools["main"].balance }'
           ]
         }
       }
-      "$data": { "pools": { "main": { "balance": "10" } } }
-      "$expose": {
-        "credits": {
-          "$view": ".pools { id, balance }"
-          "$mut": { "consume": ".consume" }
+      $data: { pools: { main: { balance: "10" } } }
+      $expose: {
+        credits: {
+          $view: ".pools { id, balance }"
+          $mut: { consume: ".consume" }
         }
       }
     }
     shop: {
-      "$liasse": 1
-      "$module": "t.shop@1.0.0"
-      "$use": {
-        "credits": "t.bank/credits@1"
+      $liasse: 1
+      $module: "t.shop@1.0.0"
+      $use: {
+        credits: "t.bank/credits@1"
       }
-      "$model": {
-        "orders": { "$key": "id", "id": "text", "cost": "decimal" }
-        "$mut": {
-          "place": [
+      $model: {
+        orders: { $key: "id", id: "text", cost: "decimal" }
+        $mut: {
+          place: [
             "o = .orders + { id: @id, cost: @cost }"
             "r = #credits.consume({ amount: @cost })"
             "return o { id }"
           ]
         }
       }
-      "$expose": {
-        "orders": {
-          "$view": ".orders { id, cost }"
-          "$mut": { "place": ".place" }
+      $expose: {
+        orders: {
+          $view: ".orders { id, cost }"
+          $mut: { place: ".place" }
         }
       }
     }
@@ -101,9 +101,9 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "bank", "$module": "t.bank@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "bank", $module: "t.bank@1.0.0" } }
       expect: { outcome: ok } }
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "shop", "$module": "t.shop@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "shop", $module: "t.shop@1.0.0" } }
       expect: { outcome: ok } }
     { watch: "public.orders", id: "wo", expect_init: { value: [] } }
     { watch: "public.pools", id: "wp", expect_init: { value: [ { id: "main", balance: "10" } ] } }

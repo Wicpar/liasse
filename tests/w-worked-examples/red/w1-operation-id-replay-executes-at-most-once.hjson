@@ -2,7 +2,7 @@
   format: 1
   name: w1-operation-id-replay-executes-at-most-once
   suite: scenario
-  spec: ["W1", "#clients", "§12.3"]
+  spec: ["#clients", "W1", "§12.3"]
   tags: [replay, dedup]
   note: '''
     Replay attack on the create path. §12.3: an external call MAY carry a

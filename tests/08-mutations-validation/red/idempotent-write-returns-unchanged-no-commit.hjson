@@ -11,23 +11,23 @@
   tags: ["replay"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.idempotent@1.0.0"
-    "$model": {
-      "profiles": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.idempotent@1.0.0"
+    $model: {
+      profiles: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$mut": {
-        "rename": ".profiles[@id] { name = @name }"
+      $mut: {
+        rename: ".profiles[@id] { name = @name }"
       }
-      "$public": {
-        "profiles": { "$mut": { "rename": ".rename" } }
+      $public: {
+        profiles: { $mut: { rename: ".rename" } }
       }
     }
-    "$data": {
-      "profiles": { "p1": { "name": "old" } }
+    $data: {
+      profiles: { p1: { name: "old" } }
     }
   }
 
@@ -35,13 +35,13 @@
     {
       call: "public.profiles.rename"
       args: { id: "p1", name: "new" }
-      expect: { outcome: ok, status: committed }
+      expect: { outcome: ok, completion: committed }
     }
     {
       // Identical write: no state change, no commit.
       call: "public.profiles.rename"
       args: { id: "p1", name: "new" }
-      expect: { outcome: ok, status: unchanged }
+      expect: { outcome: ok, completion: unchanged }
     }
   ]
 }

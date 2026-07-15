@@ -2,7 +2,7 @@
   format: 1
   name: spend-at-pool-until-boundary-excluded
   suite: scenario
-  spec: ["#meters", "§15.1", "#buckets", "§14.1"]
+  spec: ["#meters", "§15.1", "§15.2", "#buckets", "§14.1"]
   tags: [temporal, boundary]
   note: '''Half-open interval pedantry: bucket intervals are [$from, $until) and at the
 upper bound the row is no longer active (§14.1). A spend timed exactly at $until must
@@ -60,8 +60,8 @@ precision: $until = 2026-01-08T00:00:00Z = 1767830400.'''
   steps: [
     // exactly at $until: the pool is no longer active at that instant
     { call: "public.wallet.consume_at", args: { user: "u1", amount: "10", at: "1767830400" },
-      expect: { outcome: rejected, violates: ["#buckets", "§14.1", "#meters", "§15.1"],
-                detail: "the interval is half-open; the pool is inactive at $until" } }
+      expect: { outcome: rejected, violates: ["#buckets", "§14.1", "#meters", "§15.1", "§15.2"],
+                detail: "the interval is half-open; the pool is inactive at $until, so eligible capacity is zero" } }
     // one second before $until: funded
     { call: "public.wallet.consume_at", args: { user: "u1", amount: "10", at: "1767830399" },
       expect: { outcome: ok, value: { id: "$any:uuid" } } }

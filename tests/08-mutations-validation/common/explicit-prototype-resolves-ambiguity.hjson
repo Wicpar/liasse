@@ -9,11 +9,11 @@
   spec: ["#mutations", "§8.3"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.prototype@1.0.0"
-    "$model": {
-      "metadata": "map<text, json>?"
-      "$mut": {
+    $liasse: 1
+    $app: "t.mut.prototype@1.0.0"
+    $model: {
+      metadata: "map<text, json>?"
+      $mut: {
         "set_metadata({ metadata: optional<map<text, json>> })": ".metadata = @metadata"
       }
     }

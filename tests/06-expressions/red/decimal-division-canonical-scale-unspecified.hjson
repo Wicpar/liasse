@@ -29,6 +29,6 @@
 
   steps: [
     { call: "public.math.read", args: {},
-      expect: { outcome: "unspecified", violates: ["§A.6", "§A.1"] } }
+      expect: { outcome: unspecified } }
   ]
 }

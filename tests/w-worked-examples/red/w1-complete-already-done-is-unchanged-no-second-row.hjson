@@ -2,7 +2,7 @@
   format: 1
   name: w1-complete-already-done-is-unchanged-no-second-row
   suite: scenario
-  spec: ["W1", "#mutations", "§8.9"]
+  spec: ["#mutations", "W1", "§8.9"]
   tags: [idempotency, replay]
   note: '''
     Pedantic double-submit. A client (or a retrying network layer) fires

@@ -71,4 +71,3 @@
                 detail: "fewer than n=2 writable stores; $copies plan rejected" } }
   ]
 }
-</content>

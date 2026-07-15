@@ -1,0 +1,43 @@
+{
+  // §2.1: "Host components remain explicit dependencies: a package requiring an
+  // unavailable or incompatible component fails validation before activation."
+  // §9.2 orders resolution of required namespaces/providers (step 4) strictly
+  // before atomic activation (step 9), so a single missing component fails the
+  // WHOLE load even when every other required component is available. Here the
+  // `cose` namespace IS registered and the model is otherwise valid, but the
+  // keyring's `$provider` names an unregistered key provider: activation fails.
+  format: 1
+  name: unavailable-component-fails-before-activation
+  suite: static
+  spec: ["#conformance", "§2.1", "#loading", "§9.2", "#keyrings", "§17.6"]
+  tags: ["host-component", "activation"]
+
+  package: {
+    $liasse: 1
+    $app: "t.unavail@1.0.0"
+    $requires: { cose: "liasse.cose@1" }
+    $model: {
+      session_keys: {
+        $keyring: {
+          $provider: "missing-hsm"
+          $algorithm: "Ed25519"
+          $rotate: "P30D"
+          $retain: "P45D"
+        }
+      }
+      tokens: { $key: "id", id: "text" }
+    }
+  }
+
+  hosts: {
+    // The namespace dependency is satisfied; the key provider is NOT registered.
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {}
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§2.1", "§17.6"]
+    detail: "keyring $provider 'missing-hsm' is not registered in the host context; the package fails validation before activation despite the satisfied cose namespace"
+  }
+}

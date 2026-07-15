@@ -17,7 +17,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.confusable@1.0.0"
+    $app: "t.ns.confusable@1.0.0"
     $requires: {
       "сbor": "liasse.cbor@1"   // first letter is U+0441, not ASCII "c"
     }

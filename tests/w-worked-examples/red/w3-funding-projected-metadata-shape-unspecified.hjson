@@ -2,7 +2,7 @@
   format: 1
   name: w3-funding-projected-metadata-shape-unspecified
   suite: scenario
-  spec: ["W3", "#meters", "§15.3"]
+  spec: ["#meters", "W3", "§15.3"]
   tags: [meters, ambiguity]
   note: '''
     Ambiguity in the returned funding shape. W3's source projects a `price`

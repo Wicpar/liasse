@@ -19,61 +19,61 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.rec_where_gap@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.rec_where_gap@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
       }
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "plan": "text = 'active'"
-        "subcompanies": { "$like": "^" }
-        "members": {
-          "$key": "account"
-          "account": { "$ref": "/accounts" }
-          "admin": "bool = false"
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        plan: "text = 'active'"
+        subcompanies: { $like: "^" }
+        members: {
+          $key: "account"
+          account: { $ref: "/accounts" }
+          admin: "bool = false"
         }
-        "$roles": {
-          "admin": {
-            "$auth": "token"
-            "$members": ".members[:m | m.admin].account"
-            "company": {
-              "$view": ". { id, name, plan }"
-              "$recursive": {
-                "$field": "subcompanies"
-                "$through": ".subcompanies"
-                "$bind": "child"
-                "$where": "child.plan != 'closed'"
+        $roles: {
+          admin: {
+            $auth: "token"
+            $members: ".members[:m | m.admin].account"
+            company: {
+              $view: ". { id, name, plan }"
+              $recursive: {
+                $field: "subcompanies"
+                $through: ".subcompanies"
+                $bind: "child"
+                $where: "child.plan != 'closed'"
               }
             }
           }
         }
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
     }
-    "$data": {
-      "accounts": { "alice": {} }
-      "companies": {
-        "root": {
-          "name": "Root"
-          "members": { "alice": { "admin": true } }
-          "subcompanies": {
-            "b": {
-              "name": "Closed Branch"
-              "plan": "closed"
-              "subcompanies": {
+    $data: {
+      accounts: { alice: {} }
+      companies: {
+        root: {
+          name: "Root"
+          members: { alice: { admin: true } }
+          subcompanies: {
+            b: {
+              name: "Closed Branch"
+              plan: "closed"
+              subcompanies: {
                 // Satisfies $where but sits under a $where-excluded child.
-                "b1": { "name": "Active under closed" }
+                b1: { name: "Active under closed" }
               }
             }
           }

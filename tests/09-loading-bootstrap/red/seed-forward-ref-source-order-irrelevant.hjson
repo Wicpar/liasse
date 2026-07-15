@@ -16,29 +16,29 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.seedorder@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.seedorder@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "members": {
-        "$key": "id"
-        "id": "text"
-        "owner": { "$ref": "/companies" }
+      members: {
+        $key: "id"
+        id: "text"
+        owner: { $ref: "/companies" }
       }
-      "$public": {
-        "members": { "$view": ".members { id, owner }" }
+      $public: {
+        members: { $view: ".members { id, owner }" }
       }
     }
-    "$data": {
-      "members": {
-        "m1": { "owner": "acme" }
+    $data: {
+      members: {
+        m1: { owner: "acme" }
       }
-      "companies": {
-        "acme": { "name": "Acme SAS" }
+      companies: {
+        acme: { name: "Acme SAS" }
       }
     }
   }

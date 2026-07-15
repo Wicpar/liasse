@@ -6,7 +6,7 @@
   format: 1
   name: unchanged-noop-does-not-advance-frontier
   suite: scenario
-  spec: ["§22.2", "§8.9", "#runtime"]
+  spec: ["#runtime", "§22.2", "§8.9"]
   tags: ["completion", "empty-delta"]
 
   package: {

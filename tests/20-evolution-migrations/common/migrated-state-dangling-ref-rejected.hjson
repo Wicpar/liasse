@@ -1,0 +1,84 @@
+{
+  format: 1
+  name: migrated-state-dangling-ref-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#state-model", "§5.6"]
+  note: '''
+    §20.1: "The complete prospective target is checked under ordinary keys,
+    refs, uniqueness, checks ... before the package update commits." §5.6: a
+    reference "MUST resolve to an existing row." The migration program rebuilds
+    `players` and sets every player's `team` ref to the literal key "ghost",
+    which is not a key present in the target `teams` collection (that collection
+    is copied unchanged and holds only t1). The prospective target therefore
+    contains a dangling ref, fails the refs check, and the update is rejected;
+    version 1.0.0 stays active. Well-formed definition, state-level failure ->
+    `rejected` (see NOTES.md).
+
+    The ref is pointed at a never-existing key (not a dropped row), so this
+    isolates ref-resolution and does not engage §5.6 deletion planning.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.ref@1.0.0"
+    $model: {
+      teams: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      players: {
+        $key: "id"
+        id: "text"
+        team: { $ref: "/teams" }
+      }
+      $public: {
+        teams: { $view: ".teams { id, name }" }
+        players: { $view: ".players { id, team }" }
+      }
+    }
+    $data: {
+      teams: { t1: { name: "Red" } }
+      players: { p1: { team: "t1" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.ref@2.0.0"
+          $model: {
+            teams: {
+              $key: "id"
+              id: "text"
+              name: "text"
+            }
+            players: {
+              $key: "id"
+              id: "text"
+              team: { $ref: "/teams" }
+            }
+            $migrations: {
+              "1.0.0": [
+                ".teams = $old.teams { id, name }"
+                ".players = $old.players { id, team: \"ghost\" }"
+              ]
+            }
+            $public: {
+              teams: { $view: ".teams { id, name }" }
+              players: { $view: ".players { id, team }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.1", "§5.6"]
+        detail: "player p1.team = 'ghost' resolves to no /teams row; prospective target fails the refs check before commit"
+      } }
+    // 1.0.0 remains active with the original resolving ref
+    { watch: "public.players", id: "w1",
+      expect_init: { value: [ { id: "p1", team: "t1" } ] } }
+  ]
+}

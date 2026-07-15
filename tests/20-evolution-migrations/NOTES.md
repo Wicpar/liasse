@@ -42,11 +42,14 @@ FORMAT.md's finer vocabulary is applied exactly as ch. 9 does:
 
 Both map to §9.4 `rejected`; the split is only FORMAT.md's vocabulary. Where a
 case's classification could be argued, its `note` says so — the non-ok outcome
-itself is never in doubt. Neighboring chapter 13 records §13.14 narrowing as
-`rejected`; this chapter classifies a definition-only compatibility narrowing
-as `invalid` because it is decidable from the two definitions with no state,
-per the ch. 9 mapping. The observable lifecycle result is `rejected` either
-way.
+itself is never in doubt. This chapter classifies a definition-only
+compatibility narrowing as `invalid` because it is decidable from the two
+definitions with no state, per the ch. 9 mapping. Neighboring chapter 13
+classifies its analogous §13.14 interface narrowings the same way (both
+`common/minor-update-narrowing-rejected` and
+`red/update-narrowing-view-field-rejected` there assert `outcome: invalid`), so
+the two chapters agree. The observable §9.4 lifecycle result is `rejected`
+either way.
 
 ## Reused steps from chapter 19
 

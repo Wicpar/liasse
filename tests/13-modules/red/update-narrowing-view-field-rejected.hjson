@@ -15,68 +15,68 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
                 // permissive contract: only "id" is required, so the drop of
                 // "label" is not a contract-satisfaction failure — it is a
                 // narrowing of the module's own exposed surface (§13.14).
-                "templates": { "$view": { "$key": "id", "id": "text" } }
+                templates: { $view: { $key: "id", id: "text" } }
               }
             }
           }
-          "catalog": {
-            "$view": ".modules::templates { module: modules.$key, id, $sort: [module, id] }"
+          catalog: {
+            $view: ".modules::templates { module: modules.$key, id, $sort: [module, id] }"
           }
         }
-        "$public": {
-          "catalog": {
-            "$params": { "company": "text" }
-            "$view": "/companies[@company].catalog"
+        $public: {
+          catalog: {
+            $params: { company: "text" }
+            $view: "/companies[@company].catalog"
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     tplw1: {
-      "$liasse": 1
-      "$module": "t.tplw@1.0.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
+      $liasse: 1
+      $module: "t.tplw@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
       }
-      "$data": { "templates": { "std": { "label": "Standard" } } }
-      "$expose": {
-        "templates": { "$view": ".templates { id, label }" }
+      $data: { templates: { std: { label: "Standard" } } }
+      $expose: {
+        templates: { $view: ".templates { id, label }" }
       }
     }
     tplw2: {
-      "$liasse": 1
-      "$module": "t.tplw@1.1.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
+      $liasse: 1
+      $module: "t.tplw@1.1.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
       }
-      "$data": { "templates": { "std": { "label": "Standard" } } }
-      "$expose": {
+      $data: { templates: { std: { label: "Standard" } } }
+      $expose: {
         // narrowing: the exposed view drops "label" in a minor release
-        "templates": { "$view": ".templates { id }" }
+        templates: { $view: ".templates { id }" }
       }
     }
   }
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.tplw@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.tplw@1.0.0" } }
       expect: { outcome: ok } }
     { module_update: { instance: "/companies/acme/modules/kit", to: "t.tplw@1.1.0" }
-      expect: { outcome: rejected, violates: ["§13.14"]
-                detail: "a minor release that removes an exposed view field narrows the compatibility surface and is rejected" } }
+      expect: { outcome: invalid, violates: ["§13.14"]
+                detail: "a minor release that removes an exposed view field narrows the compatibility surface; package loading rejects it before admission" } }
     // the instance still runs at 1.0.0
     { watch: "public.catalog", args: { company: "acme" }, id: "w1"
       expect_init: { value: [ { module: "kit", id: "std" } ] } }

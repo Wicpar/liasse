@@ -16,15 +16,15 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.missingns@1.0.0"
-    "$requires": {
-      "password": "liasse.password@1"
+    $liasse: 1
+    $app: "t.ld.missingns@1.0.0"
+    $requires: {
+      password: "liasse.password@1"
     }
-    "$model": {
-      "items": {
-        "$key": "id"
-        "id": "text"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
       }
     }
   }

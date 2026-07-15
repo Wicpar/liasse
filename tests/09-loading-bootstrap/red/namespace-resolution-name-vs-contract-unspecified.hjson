@@ -20,22 +20,22 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.nsmatch@1.0.0"
-    "$requires": {
-      "cbor": "liasse.cbor@1"
+    $liasse: 1
+    $app: "t.nsmatch@1.0.0"
+    $requires: {
+      cbor: "liasse.cbor@1"
     }
-    "$model": {
-      "items": {
-        "$key": "id"
-        "id": "text"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
       }
     }
   }
 
   hosts: {
     namespaces: {
-      "encoder": "liasse.cbor@1.0.0"
+      encoder: "liasse.cbor@1.0.0"
     }
   }
 

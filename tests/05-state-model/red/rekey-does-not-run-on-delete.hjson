@@ -42,11 +42,11 @@ rewritten to the new key.'''
 
   steps: [
     { call: "public.contacts.add_company", args: { id: "acme", name: "Acme" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.contacts.add_contact", args: { id: "c1", company: "acme" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.contacts.rekey_company", args: { old: "acme", new: "newco" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // the cascade must NOT have fired; the ref shows the new key
     { watch: "public.contacts", id: "w1",
       expect_init: { value: [ { id: "c1", company: "newco" } ] } }

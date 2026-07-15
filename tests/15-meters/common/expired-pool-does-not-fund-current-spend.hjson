@@ -2,7 +2,7 @@
   format: 1
   name: expired-pool-does-not-fund-current-spend
   suite: scenario
-  spec: ["#meters", "§15.1", "#buckets", "§14.1"]
+  spec: ["#meters", "§15.1", "§15.2", "#buckets", "§14.1"]
   tags: [temporal]
   note: "Meter sources are evaluated in the temporal context of the spend ($time defaults to .occurred_at = now()). A bare bucketed source yields only the pool rows active at that instant, so a pool past its $until no longer funds new spends."
 
@@ -65,7 +65,7 @@
     { advance_time: "P8D" }
     // the remaining 90 expired with the pool; no eligible capacity at the spend time
     { call: "public.wallet.consume", args: { user: "u1", amount: "10" },
-      expect: { outcome: rejected, violates: ["#meters", "§15.1"],
-                detail: "no pool is active at the spend $time" } }
+      expect: { outcome: rejected, violates: ["#meters", "§15.1", "§15.2"],
+                detail: "no pool is active at the spend $time; eligible capacity is zero" } }
   ]
 }

@@ -21,7 +21,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#views"]
     detail: "projection members a and b form a dependency cycle; no valid evaluation order exists"
   }

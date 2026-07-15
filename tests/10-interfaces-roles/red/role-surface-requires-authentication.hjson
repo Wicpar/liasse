@@ -14,44 +14,44 @@
   tags: ["authz", "escalation"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.role_needs_auth@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.role_needs_auth@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
       }
-      "notes": {
-        "$key": "id"
-        "id": "text"
-        "body": "text"
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
       }
-      "$mut": {
-        "add_note": [
+      $mut: {
+        add_note: [
           "n = .notes + { id: @id, body: @body }"
           "return n { id, body }"
         ]
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
-      "$roles": {
-        "member": {
-          "$auth": "token"
-          "$members": ".accounts"
-          "notes": {
-            "$view": ".notes { id, body }"
-            "$mut": { "add": ".add_note" }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts"
+          notes: {
+            $view: ".notes { id, body }"
+            $mut: { add: ".add_note" }
           }
         }
       }
     }
-    "$data": {
-      "accounts": { "alice": {} }
+    $data: {
+      accounts: { alice: {} }
     }
   }
 

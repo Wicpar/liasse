@@ -17,20 +17,20 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "templates": {
-                  "$view": { "$key": "id", "id": "text", "label": "text" }
-                  "$mut": {
-                    "create({ id: text, label: text })": { "$return": { "id": "text", "label": "text" } }
+      $liasse: 1
+      $app: "t.ae.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: {
+                  $view: { $key: "id", id: "text", label: "text" }
+                  $mut: {
+                    "create({ id: text, label: text })": { $return: { id: "text", label: "text" } }
                   }
                 }
               }
@@ -38,44 +38,44 @@
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     kit1: {
-      "$liasse": 1
-      "$module": "t.kit@1.0.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
-        "$mut": {
-          "create_a": [
+      $liasse: 1
+      $module: "t.kit@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+        $mut: {
+          create_a: [
             "t = .templates + { id: @id, label: @label }"
             "return t { id, label }"
           ]
         }
       }
-      "$expose": {
-        "templates": {
-          "$view": ".templates { id, label }"
-          "$mut": { "create": ".create_a" }
+      $expose: {
+        templates: {
+          $view: ".templates { id, label }"
+          $mut: { create: ".create_a" }
         }
       }
     }
     kit2: {
-      "$liasse": 1
-      "$module": "t.kit@1.1.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
-        "$mut": {
+      $liasse: 1
+      $module: "t.kit@1.1.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+        $mut: {
           // different private implementation, same declared contract
-          "create_b": [
+          create_b: [
             "row = .templates + { id: @id, label: @label }"
             "return row { id, label }"
           ]
         }
       }
-      "$expose": {
-        "templates": {
-          "$view": ".templates { id, label }"
-          "$mut": { "create": ".create_b" }
+      $expose: {
+        templates: {
+          $view: ".templates { id, label }"
+          $mut: { create: ".create_b" }
         }
       }
     }
@@ -83,20 +83,20 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.kit@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.kit@1.0.0" } }
       expect: { outcome: ok } }
     { module_update: { instance: "/companies/acme/modules/kit", to: "t.kit@1.1.0" }
       expect: {
         outcome: ok
         value: {
-          "$instance": "/companies/acme/modules/kit"
-          "$from": "1.0.0"
-          "$to": "1.1.0"
-          "$migrated": []
-          "$seeded": "$any"
-          "$exposed": { "$unchanged": ["templates"], "$changed": [], "$removed": [] }
-          "$imports": { "$rebound": [], "$broken": [] }
-          "$commit": "$any"
+          $instance: "/companies/acme/modules/kit"
+          $from: "1.0.0"
+          $to: "1.1.0"
+          $migrated: []
+          $seeded: "$any"
+          $exposed: { $unchanged: ["templates"], $changed: [], $removed: [] }
+          $imports: { $rebound: [], $broken: [] }
+          $commit: "$any"
         }
       } }
   ]

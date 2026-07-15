@@ -70,10 +70,14 @@ defined and documented by the topic chapters, repeated here for locality:
 - `watch … args: { … }` (from §13/§14 NOTES): typed `$params` values for the
   subscribed surface (§10.1, §12.1).
 - `module_install` / `module_uninstall` / `module_disable` / `module_enable`
-  (from §13 NOTES): host-level module lifecycle. `$module` resolves against
-  the case's `packages` map by declared `$module` value; `space` is the
-  display path of a module space. Each admitted lifecycle operation is one
-  atomic commit that creates no actor (§11.1, §13.3).
+  (from §13 NOTES): host-level module lifecycle. `module_install` carries
+  `space` (the display path of the target module space) and a `request`
+  object holding the §13.3 install request (`$name`, `$module`, optional
+  `$config`/`$data`/`$use`). `module_uninstall` / `module_disable` /
+  `module_enable` carry `instance`: the display path of an existing installed
+  instance (`<space>/<name>`). `$module` resolves against the case's
+  `packages` map by declared `$module` value. Each admitted lifecycle
+  operation is one atomic commit that creates no actor (§11.1, §13.3).
 
 ## Outcome conventions
 

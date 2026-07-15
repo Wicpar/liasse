@@ -22,7 +22,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#mutations", "#expressions"]
     detail: "@x infers int from one use and text from another; no single compatible parameter type exists"
   }

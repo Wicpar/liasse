@@ -16,7 +16,7 @@ either way, but the spec does not pin (1, 1) versus (3, 3). Recorded as unspecif
 
   package: {
     $liasse: 1
-    $app: "t.seeddefaults@1.0.0"
+    $app: "t.st.seeddefaults@1.0.0"
     $model: {
       items: {
         $key: "id"
@@ -39,6 +39,6 @@ either way, but the spec does not pin (1, 1) versus (3, 3). Recorded as unspecif
 
   steps: [
     // the load succeeds; the pos values it produced are not pinned by the spec
-    { watch: "public.items", id: "w1", expect_init: { outcome: "unspecified" } }
+    { watch: "public.items", id: "w1", expect_init: { outcome: unspecified } }
   ]
 }

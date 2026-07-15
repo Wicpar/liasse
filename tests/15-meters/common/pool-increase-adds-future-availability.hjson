@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: pool-increase-adds-future-availability
+  suite: scenario
+  spec: ["#meters", "§15.2"]
+  note: '''Symmetric counterpart to pool reduction. SPEC §15.2: "Increasing it adds future
+availability." After a spend of 60 drains a 100 pool to 40 remaining, raising the pool
+quantity to 200 makes current remaining capacity the non-negative remainder of the
+pool's current quantity after allocations held by extant spends: 200 - 60 = 140. The
+already-admitted spend is untouched; only future availability grows. Pinned by the
+exact 140-vs-141 boundary.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.increase@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+          set_topup: ".topups[@topup] { amount = @amount }"
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: {
+            consume: ".users[@user].consume"
+            set_topup: ".users[@user].set_topup"
+          }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { user: "u1", amount: "60" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    // only 40 remain before the increase: 41 rejects
+    { call: "public.wallet.consume", args: { user: "u1", amount: "41" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+    // raise the pool 100 -> 200; the earlier 60 allocation is unchanged
+    { call: "public.wallet.set_topup", args: { user: "u1", topup: "t1", amount: "200" },
+      expect: { outcome: ok } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "140" } ] } }
+    // the added availability admits exactly 140, not one more
+    { call: "public.wallet.consume", args: { user: "u1", amount: "140" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { call: "public.wallet.consume", args: { user: "u1", amount: "1" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+  ]
+}

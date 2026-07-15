@@ -33,10 +33,10 @@ composite lookup must resolve exactly its own row.'''
   }
 
   steps: [
-    { call: "public.pairs.add", args: { a: "x", b: "y", tag: "xy" }, expect: { outcome: "ok" } }
+    { call: "public.pairs.add", args: { a: "x", b: "y", tag: "xy" }, expect: { outcome: ok } }
     // swapped components -> distinct key, must not collide
-    { call: "public.pairs.add", args: { a: "y", b: "x", tag: "yx" }, expect: { outcome: "ok" } }
-    { call: "public.pairs.get", args: { a: "x", b: "y" }, expect: { outcome: "ok", value: "xy" } }
-    { call: "public.pairs.get", args: { a: "y", b: "x" }, expect: { outcome: "ok", value: "yx" } }
+    { call: "public.pairs.add", args: { a: "y", b: "x", tag: "yx" }, expect: { outcome: ok } }
+    { call: "public.pairs.get", args: { a: "x", b: "y" }, expect: { outcome: ok, value: "xy" } }
+    { call: "public.pairs.get", args: { a: "y", b: "x" }, expect: { outcome: ok, value: "yx" } }
   ]
 }

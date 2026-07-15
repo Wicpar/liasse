@@ -17,19 +17,19 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.canonkey@1.0.0"
-    "$model": {
-      "numbers": {
-        "$key": "n"
-        "n": "int"
-        "label": "text"
+    $liasse: 1
+    $app: "t.canonkey@1.0.0"
+    $model: {
+      numbers: {
+        $key: "n"
+        n: "int"
+        label: "text"
       }
     }
-    "$data": {
-      "numbers": {
-        "7": { "label": "seven" }
-        "007": { "label": "impostor" }
+    $data: {
+      numbers: {
+        "7": { label: "seven" }
+        "007": { label: "impostor" }
       }
     }
   }

@@ -2,7 +2,7 @@
   format: 1
   name: w4-uninstall-removes-aggregated-templates
   suite: scenario
-  spec: ["W4", "#modules", "§13.3", "§13.12"]
+  spec: ["#modules", "W4", "§13.3", "§13.12"]
   tags: [modules]
   note: '''
     Lifecycle: an exposed template must disappear from the parent aggregation

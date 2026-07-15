@@ -16,7 +16,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#expressions"]
     detail: "computed expression adds int and text; no static type exists for the operator"
   }

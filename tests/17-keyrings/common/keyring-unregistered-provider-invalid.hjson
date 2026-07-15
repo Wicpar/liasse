@@ -10,14 +10,14 @@
   }
 
   package: {
-    "$liasse": 1
-    "$app": "t.keyrings@1.0.0"
-    "$model": {
-      "session_keys": {
-        "$keyring": {
-          "$provider": "test-kp"
-          "$algorithm": "Ed25519"
-          "$rotate": "P30D"
+    $liasse: 1
+    $app: "t.keyrings@1.0.0"
+    $model: {
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $algorithm: "Ed25519"
+          $rotate: "P30D"
         }
       }
     }

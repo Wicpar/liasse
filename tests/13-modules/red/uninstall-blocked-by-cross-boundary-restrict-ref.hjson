@@ -16,66 +16,66 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "people": { "$view": { "$key": "id", "id": "text", "name": "text" } }
-                "orders": { "$view": { "$key": "id", "id": "text", "owner": "text" } }
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                people: { $view: { $key: "id", id: "text", name: "text" } }
+                orders: { $view: { $key: "id", id: "text", owner: "text" } }
               }
             }
           }
         }
-        "$public": {
-          "people": { "$view": '/companies["acme"].modules["people"]::people' }
-          "orders": { "$view": '/companies["acme"].modules["shop"]::orders' }
+        $public: {
+          people: { $view: '/companies["acme"].modules["people"]::people' }
+          orders: { $view: '/companies["acme"].modules["shop"]::orders' }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     people: {
-      "$liasse": 1
-      "$module": "t.people@1.0.0"
-      "$model": {
-        "members": { "$key": "id", "id": "text", "name": "text" }
+      $liasse: 1
+      $module: "t.people@1.0.0"
+      $model: {
+        members: { $key: "id", id: "text", name: "text" }
       }
-      "$data": { "members": { "p1": { "name": "Alice" } } }
-      "$expose": {
-        "people": { "$view": ".members { id, name }" }
+      $data: { members: { p1: { name: "Alice" } } }
+      $expose: {
+        people: { $view: ".members { id, name }" }
       }
     }
     orders: {
-      "$liasse": 1
-      "$module": "t.orders@1.0.0"
-      "$use": {
-        "people": "t.people/people@1"
+      $liasse: 1
+      $module: "t.orders@1.0.0"
+      $use: {
+        people: "t.people/people@1"
       }
-      "$model": {
-        "orders": {
-          "$key": "id"
-          "id": "text"
+      $model: {
+        orders: {
+          $key: "id"
+          id: "text"
           // cross-boundary ref with an explicit restrict policy
-          "owner": { "$ref": "#people", "$on_delete": "restrict" }
+          owner: { $ref: "#people", $on_delete: "restrict" }
         }
       }
-      "$data": { "orders": { "o1": { "owner": "p1" } } }
-      "$expose": {
-        "orders": { "$view": ".orders { id, owner }" }
+      $data: { orders: { o1: { owner: "p1" } } }
+      $expose: {
+        orders: { $view: ".orders { id, owner }" }
       }
     }
   }
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "people", "$module": "t.people@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "people", $module: "t.people@1.0.0" } }
       expect: { outcome: ok } }
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "shop", "$module": "t.orders@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "shop", $module: "t.orders@1.0.0" } }
       expect: { outcome: ok } }
     { watch: "public.orders", id: "wo", expect_init: { value: [ { id: "o1", owner: "p1" } ] } }
     { watch: "public.people", id: "wp", expect_init: { value: [ { id: "p1", name: "Alice" } ] } }

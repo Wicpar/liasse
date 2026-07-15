@@ -60,7 +60,7 @@
 
   expect: {
     outcome: unspecified
-    violates: ["#host-namespaces"]
+    
     detail: "no $model syntax exists for namespace-defined value types, so the implied rejection of a non-key-eligible namespace type used as $key cannot be pinned"
   }
 }

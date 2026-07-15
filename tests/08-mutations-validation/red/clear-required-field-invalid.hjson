@@ -9,12 +9,12 @@
   spec: ["#mutations", "§8.5", "#expressions"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.clearreq@1.0.0"
-    "$model": {
-      "name": "text = 'seed'"
-      "$mut": {
-        "wipe": ".name -"
+    $liasse: 1
+    $app: "t.clearreq@1.0.0"
+    $model: {
+      name: "text = 'seed'"
+      $mut: {
+        wipe: ".name -"
       }
     }
   }

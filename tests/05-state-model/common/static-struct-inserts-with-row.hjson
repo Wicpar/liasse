@@ -7,7 +7,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.struct@1.0.0"
+    $app: "t.st.struct@1.0.0"
     $model: {
       orders: {
         $key: "id"
@@ -35,7 +35,7 @@
 
   steps: [
     { call: "public.orders.add", args: { id: "o1", line1: "1 Main St", city: "Paris" },
-      expect: { outcome: "ok", value: {
+      expect: { outcome: ok, value: {
         id: "o1"
         // line2 was omitted and optional -> absent; country default resolved with the insertion
         address: { line1: "1 Main St", city: "Paris", country: "FR" }

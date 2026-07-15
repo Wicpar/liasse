@@ -7,7 +7,7 @@
   format: 1
   name: committed-state-durable-across-restart
   suite: scenario
-  spec: ["§22.7", "§22.2", "#runtime"]
+  spec: ["#runtime", "§22.7", "§22.2"]
   tags: ["durability", "replay"]
 
   package: {

@@ -12,52 +12,52 @@
   tags: ["authz", "ordering", "race"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.revoke_race@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
-        "enabled": "bool = true"
+    $liasse: 1
+    $app: "t.revoke_race@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        enabled: "bool = true"
       }
-      "notes": {
-        "$key": "id"
-        "id": "text"
-        "body": "text"
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
       }
-      "$mut": {
-        "add_note": [
+      $mut: {
+        add_note: [
           "n = .notes + { id: @id, body: @body }"
           "return n { id, body }"
         ]
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
-      "$roles": {
-        "member": {
-          "$auth": "token"
-          "$members": ".accounts[:a | a.enabled]"
-          "notes": {
-            "$view": ".notes { id, body }"
-            "$mut": { "add": ".add_note" }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes { id, body }"
+            $mut: { add: ".add_note" }
           }
         }
       }
-      "$public": {
-        "control": {
-          "$mut": {
-            "disable": "/accounts[@id].enabled = false"
+      $public: {
+        control: {
+          $mut: {
+            disable: "/accounts[@id].enabled = false"
           }
         }
       }
     }
-    "$data": {
-      "accounts": { "alice": {} }
+    $data: {
+      accounts: { alice: {} }
     }
   }
 

@@ -18,42 +18,42 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.ident@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "code": "text"
-        "name": "text"
-        "$unique": ["code"]
+    $liasse: 1
+    $app: "t.compat.ident@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        code: "text"
+        name: "text"
+        $unique: ["code"]
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, code, name }" }
+      $public: {
+        companies: { $view: ".companies { id, code, name }" }
       }
     }
-    "$data": { "companies": { "acme": { "code": "AC", "name": "Acme" } } }
+    $data: { companies: { acme: { code: "AC", name: "Acme" } } }
   }
 
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.ident@1.1.0"
-          "$model": {
-            "companies": {
+          $liasse: 1
+          $app: "t.compat.ident@1.1.0"
+          $model: {
+            companies: {
               // exposed row identity changed from `id` to `code`
-              "$key": "code"
-              "id": "text"
-              "code": "text"
-              "name": "text"
-              "$unique": ["id"]
+              $key: "code"
+              id: "text"
+              code: "text"
+              name: "text"
+              $unique: ["id"]
             }
-            "$public": {
-              "companies": { "$view": ".companies { id, code, name }" }
+            $public: {
+              companies: { $view: ".companies { id, code, name }" }
             }
           }
-          "$data": { "companies": { "AC": { "id": "acme", "name": "Acme" } } }
+          $data: { companies: { AC: { id: "acme", name: "Acme" } } }
         }
       }
       expect: {

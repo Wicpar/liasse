@@ -9,28 +9,28 @@
   spec: ["#mutations", "§8.1", "§8.6"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.seqstmt@1.0.0"
-    "$model": {
-      "pairs": {
-        "$key": "id"
-        "id": "text"
-        "a": "text"
-        "b": "text"
-        "$mut": {
-          "copy_over": [
+    $liasse: 1
+    $app: "t.seqstmt@1.0.0"
+    $model: {
+      pairs: {
+        $key: "id"
+        id: "text"
+        a: "text"
+        b: "text"
+        $mut: {
+          copy_over: [
             ".a = .b"
             ".b = .a"
             "return . { a, b }"
           ]
         }
       }
-      "$public": {
-        "pairs": { "$mut": { "copy_over": ".pairs[@id].copy_over" } }
+      $public: {
+        pairs: { $mut: { copy_over: ".pairs[@id].copy_over" } }
       }
     }
-    "$data": {
-      "pairs": { "p1": { "a": "x", "b": "y" } }
+    $data: {
+      pairs: { p1: { a: "x", b: "y" } }
     }
   }
 

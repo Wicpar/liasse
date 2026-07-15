@@ -98,4 +98,3 @@
       expect: { outcome: ok, bytes: "durable original" } }
   ]
 }
-</content>

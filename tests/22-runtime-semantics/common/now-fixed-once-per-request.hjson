@@ -7,7 +7,7 @@
   format: 1
   name: now-fixed-once-per-request
   suite: scenario
-  spec: ["§22.5", "#runtime"]
+  spec: ["#runtime", "§22.5"]
   tags: ["time"]
 
   package: {

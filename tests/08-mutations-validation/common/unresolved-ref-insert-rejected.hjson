@@ -8,27 +8,27 @@
   spec: ["#mutations", "§8.7", "§5.6", "§22.1"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.badref@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.badref@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
       }
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "owner": { "$ref": "/accounts" }
+      tasks: {
+        $key: "id"
+        id: "text"
+        owner: { $ref: "/accounts" }
       }
-      "$mut": {
-        "add_task": ".tasks + { id: @id, owner: @owner }"
+      $mut: {
+        add_task: ".tasks + { id: @id, owner: @owner }"
       }
-      "$public": {
-        "tasks": { "$mut": { "add": ".add_task" } }
+      $public: {
+        tasks: { $mut: { add: ".add_task" } }
       }
     }
-    "$data": {
-      "accounts": { "a1": {} }
+    $data: {
+      accounts: { a1: {} }
     }
   }
 

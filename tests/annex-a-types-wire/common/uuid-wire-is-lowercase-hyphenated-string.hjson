@@ -1,0 +1,27 @@
+{
+  format: 1
+  name: uuid-wire-is-lowercase-hyphenated-string
+  suite: scenario
+  spec: ["§A.1"]
+  tags: ["wire", "uuid"]
+  note: "Annex A.1: the canonical strict-JSON value of `uuid` is a 'lowercase hyphenated JSON string'. A uuid field projects to exactly that 36-character 8-4-4-4-12 hyphenated lowercase string — not a JSON array of the 16 bytes, not a `{ $bytes: ... }` wrapper, not a compact 32-hex form. The seed is already in canonical lowercase hyphenated form, so the case fixes the wire *type and shape* without depending on any input-canonicalization rule for non-canonical (e.g. uppercase) literals, which the annex leaves unspecified (see red/uuid-uppercase-input-canonicalization-unspecified)."
+
+  package: {
+    $liasse: 1
+    $app: "t.uuidwire@1.0.0"
+    $model: {
+      id: "uuid"
+      $public: {
+        v: { $view: ". { id }" }
+      }
+    }
+    $data: {
+      id: "550e8400-e29b-41d4-a716-446655440000"
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { id: "550e8400-e29b-41d4-a716-446655440000" } } }
+  ]
+}

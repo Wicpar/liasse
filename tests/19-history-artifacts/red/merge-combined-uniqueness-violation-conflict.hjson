@@ -9,7 +9,7 @@
   // conflicts for "any combined result that fails ordinary Liasse
   // validation", and Liasse then validates the prospective composition
   // "under the ordinary type, ref, deletion, uniqueness ... rules".
-  spec: ["§19.9", "#state-model"]
+  spec: ["#state-model", "§19.9"]
 
   package: {
     $liasse: 1

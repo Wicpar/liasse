@@ -51,7 +51,7 @@
 
   steps: [
     // the application is genuinely live before the swap
-    { watch: "public.stats", id: "w1", expect_init: { value: 14 } }
+    { watch: "public.stats", id: "w1", expect_init: { value: "14" } }
     { unwatch: "w1" }
     // same id, same version, different typed interface
     { reopen: {

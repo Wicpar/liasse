@@ -16,7 +16,7 @@
 
   steps: [
     { build_artifact: { as: "a1", files: {} } }
-    { tamper_artifact: { artifact: "a1",
+    { repack_artifact: { artifact: "a1",
         merge_json: { path: "manifest.json", set: { overrides: { definition: { path: "evil.json" } } } },
         rehash: true } }
     { load_artifact: { from: "a1",

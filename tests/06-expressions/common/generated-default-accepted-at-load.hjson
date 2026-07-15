@@ -19,6 +19,6 @@
   }
 
   expect: {
-    outcome: "ok"
+    outcome: ok
   }
 }

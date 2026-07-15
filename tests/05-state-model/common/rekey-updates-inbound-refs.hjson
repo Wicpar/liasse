@@ -34,13 +34,13 @@
 
   steps: [
     { call: "public.contacts.add_company", args: { id: "acme", name: "Acme" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.contacts.add_contact", args: { id: "c1", company: "acme" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { watch: "public.contacts", id: "w1",
       expect_init: { value: [ { id: "c1", company: "acme" } ] } }
     { call: "public.contacts.rekey_company", args: { old: "acme", new: "newco" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // the ref's application-visible value is the target's *current* typed key
     { expect_view: { watch: "w1", value: [ { id: "c1", company: "newco" } ] } }
   ]

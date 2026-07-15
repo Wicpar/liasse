@@ -10,21 +10,21 @@
   tags: []
 
   package: {
-    "$liasse": 1
-    "$app": "t.bare_recv@1.0.0"
-    "$model": {
-      "projects": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "$mut": {
-          "rename": ".name = @name"
+    $liasse: 1
+    $app: "t.bare_recv@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        $mut: {
+          rename: ".name = @name"
         }
       }
-      "$public": {
-        "projects": {
+      $public: {
+        projects: {
           // Invalid: the row mutation is referenced without selecting a row.
-          "$mut": { "rename": ".projects.rename" }
+          $mut: { rename: ".projects.rename" }
         }
       }
     }

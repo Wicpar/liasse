@@ -10,31 +10,31 @@
   tags: ["atomicity"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.bulkatomic@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "prio": {
-          "$type": "int"
-          "$check": [". <= 3", "priority capped at 3"]
+    $liasse: 1
+    $app: "t.bulkatomic@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        prio: {
+          $type: "int"
+          $check: [". <= 3", "priority capped at 3"]
         }
       }
-      "$mut": {
-        "bump_all": ".tasks[:t] { prio = t.prio + 1 }"
+      $mut: {
+        bump_all: ".tasks[:t] { prio = t.prio + 1 }"
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, prio }"
-          "$mut": { "bump_all": ".bump_all" }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, prio }"
+          $mut: { bump_all: ".bump_all" }
         }
       }
     }
-    "$data": {
-      "tasks": {
-        "t1": { "prio": "1" }
-        "t2": { "prio": "3" }
+    $data: {
+      tasks: {
+        t1: { prio: "1" }
+        t2: { prio: "3" }
       }
     }
   }

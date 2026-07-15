@@ -12,41 +12,41 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text", label: "text" } }
               }
             }
           }
-          "catalog": {
-            "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
+          catalog: {
+            $view: ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
           }
         }
-        "$public": {
-          "catalog": {
-            "$params": { "company": "text" }
-            "$view": "/companies[@company].catalog"
+        $public: {
+          catalog: {
+            $params: { company: "text" }
+            $view: "/companies[@company].catalog"
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     tpl: {
-      "$liasse": 1
-      "$module": "t.tpl@1.0.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
+      $liasse: 1
+      $module: "t.tpl@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
       }
-      "$expose": {
-        "templates": { "$view": ".templates { id, label }" }
+      $expose: {
+        templates: { $view: ".templates { id, label }" }
       }
     }
   }
@@ -54,12 +54,12 @@
 
   steps: [
     { module_install: { space: "/companies/acme/modules"
-        request: { "$name": "kit_a", "$module": "t.tpl@1.0.0"
-                   "$data": { "templates": { "a2": { "label": "Zeta" }, "z1": { "label": "Alpha" } } } } }
+        request: { $name: "kit_a", $module: "t.tpl@1.0.0"
+                   $data: { templates: { a2: { label: "Zeta" }, z1: { label: "Alpha" } } } } }
       expect: { outcome: ok } }
     { module_install: { space: "/companies/acme/modules"
-        request: { "$name": "kit_b", "$module": "t.tpl@1.0.0"
-                   "$data": { "templates": { "a1": { "label": "Mid" } } } } }
+        request: { $name: "kit_b", $module: "t.tpl@1.0.0"
+                   $data: { templates: { a1: { label: "Mid" } } } } }
       expect: { outcome: ok } }
     { watch: "public.catalog", args: { company: "acme" }, id: "w1"
       expect_init: { value: [

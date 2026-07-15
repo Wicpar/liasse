@@ -7,7 +7,7 @@
   format: 1
   name: rejected-partial-write-leaves-no-trace-after-restart
   suite: scenario
-  spec: ["§22.2", "§22.7", "#runtime"]
+  spec: ["#runtime", "§22.2", "§22.7", "§8.8"]
   tags: ["atomicity", "durability", "replay"]
 
   package: {
@@ -48,7 +48,7 @@
       call: "public.vault.drain"
       args: { id: "v1", mark: "999" }
       on: "c1"
-      expect: { outcome: rejected, violates: ["§22.2"] }
+      expect: { outcome: rejected, violates: ["§8.8", "§22.2"] }
     }
     { restart: {} }
     {

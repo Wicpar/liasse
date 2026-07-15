@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: minor-makes-required-output-optional-rejected
+  suite: scenario
+  spec: ["#annex-e", "#evolution"]
+  note: '''
+    E.5 breaking output change: "making a required output optional." The public
+    view `.companies { id, name }` projects `name` from the non-optional field
+    `name: text`, so the boundary output member `name` is required (always
+    present). Version 1.1.0 changes the field to `name: text?`, which makes the
+    projected member optional — a consumer that relied on `name` always being
+    present is no longer guaranteed it. The declared output guarantee narrows
+    even though every current row still holds a value: E.5 is stated over the
+    declared contract, not the current data. E.1/E.3 and §20.3 require the
+    same-major minor to be rejected; 1.0.0 stays active (E.9).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.compat.reqopt@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
+      }
+    }
+    $data: { companies: { acme: { name: "Acme" } } }
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "Acme" } ] } }
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.compat.reqopt@1.1.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              // required output member becomes optional
+              name: "text?"
+            }
+            $public: {
+              companies: { $view: ".companies { id, name }" }
+            }
+          }
+          $data: { companies: { acme: { name: "Acme" } } }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#annex-e"]
+        detail: "minor makes required boundary output member `name` optional; narrowing rejected"
+      } }
+    // prior release still promises a required `name` (E.9)
+    { expect_view: { watch: "w1", value: [ { id: "acme", name: "Acme" } ] } }
+  ]
+}

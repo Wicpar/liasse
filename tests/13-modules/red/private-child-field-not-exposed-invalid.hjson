@@ -14,37 +14,37 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text", label: "text" } }
               }
             }
           }
-          "catalog": {
+          catalog: {
             // "secret" is not part of the interface $view contract
-            "$view": ".modules::templates { module: modules.$key, id, label, secret, $sort: [module, id] }"
+            $view: ".modules::templates { module: modules.$key, id, label, secret, $sort: [module, id] }"
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     tpl: {
-      "$liasse": 1
-      "$module": "t.tpl@1.0.0"
-      "$model": {
+      $liasse: 1
+      $module: "t.tpl@1.0.0"
+      $model: {
         // "secret" exists privately but is never exposed through the interface
-        "templates": { "$key": "id", "id": "text", "label": "text", "secret": "text = ''" }
+        templates: { $key: "id", id: "text", label: "text", secret: "text = ''" }
       }
-      "$expose": {
-        "templates": { "$view": ".templates { id, label }" }
+      $expose: {
+        templates: { $view: ".templates { id, label }" }
       }
     }
   }

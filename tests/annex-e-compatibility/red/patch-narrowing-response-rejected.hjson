@@ -17,46 +17,46 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.patchnarrow@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "$mut": { "rename": [".name = @name", "return . { id, name }"] }
+    $liasse: 1
+    $app: "t.compat.patchnarrow@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        $mut: { rename: [".name = @name", "return . { id, name }"] }
       }
-      "$public": {
-        "companies": {
-          "$view": ".companies { id, name }"
-          "$mut": { "rename": ".companies[@id].rename()" }
+      $public: {
+        companies: {
+          $view: ".companies { id, name }"
+          $mut: { rename: ".companies[@id].rename()" }
         }
       }
     }
-    "$data": { "companies": { "acme": { "name": "Acme" } } }
+    $data: { companies: { acme: { name: "Acme" } } }
   }
 
   steps: [
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.patchnarrow@1.0.1"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
+          $liasse: 1
+          $app: "t.compat.patchnarrow@1.0.1"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
               // response narrowed: `name` dropped from the returned shape
-              "$mut": { "rename": [".name = @name", "return . { id }"] }
+              $mut: { rename: [".name = @name", "return . { id }"] }
             }
-            "$public": {
-              "companies": {
-                "$view": ".companies { id, name }"
-                "$mut": { "rename": ".companies[@id].rename()" }
+            $public: {
+              companies: {
+                $view: ".companies { id, name }"
+                $mut: { rename: ".companies[@id].rename()" }
               }
             }
           }
-          "$data": { "companies": { "acme": { "name": "Acme" } } }
+          $data: { companies: { acme: { name: "Acme" } } }
         }
       }
       expect: {

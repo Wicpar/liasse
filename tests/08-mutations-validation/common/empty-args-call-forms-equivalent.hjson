@@ -8,31 +8,31 @@
   spec: ["#mutations", "§8.3", "§8.5", "§8.11"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.emptyargs@1.0.0"
-    "$model": {
-      "count": "int = 0"
-      "$mut": {
-        "bump": ".count = .count + 1"
-        "via_paren": [
+    $liasse: 1
+    $app: "t.emptyargs@1.0.0"
+    $model: {
+      count: "int = 0"
+      $mut: {
+        bump: ".count = .count + 1"
+        via_paren: [
           ".bump()"
           "return .count"
         ]
-        "via_empty": [
+        via_empty: [
           ".bump({})"
           "return .count"
         ]
       }
-      "$public": {
-        "counter": {
-          "$mut": {
-            "via_paren": ".via_paren"
-            "via_empty": ".via_empty"
+      $public: {
+        counter: {
+          $mut: {
+            via_paren: ".via_paren"
+            via_empty: ".via_empty"
           }
         }
       }
     }
-    "$data": { "count": "0" }
+    $data: { count: "0" }
   }
 
   steps: [

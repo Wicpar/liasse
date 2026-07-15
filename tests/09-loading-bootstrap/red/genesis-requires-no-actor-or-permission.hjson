@@ -17,33 +17,33 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.chicken@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "enabled": "bool = false"
+    $liasse: 1
+    $app: "t.chicken@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        enabled: "bool = false"
       }
-      "$auth": {
-        "basic": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        basic: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
-      "$roles": {
-        "member": {
-          "$auth": "basic"
-          "$members": ".accounts[:a | a.enabled]"
-          "accounts": { "$view": ".accounts { id, name }" }
+      $roles: {
+        member: {
+          $auth: "basic"
+          $members: ".accounts[:a | a.enabled]"
+          accounts: { $view: ".accounts { id, name }" }
         }
       }
     }
-    "$data": {
-      "accounts": {
-        "root": { "name": "Root" }
+    $data: {
+      accounts: {
+        root: { name: "Root" }
       }
     }
   }

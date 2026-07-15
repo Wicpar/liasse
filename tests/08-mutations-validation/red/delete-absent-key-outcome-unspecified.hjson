@@ -15,22 +15,22 @@
   note: "§8.9 rejects a keyed row PATCH with a missing target and lets zero-match FILTERED bulk operations succeed as unchanged, but never states which rule governs delete-by-key (collection - key) when the key is absent. §6.3 gives the selector reading (zero rows, no change, unchanged), yet delete-by-key addresses one specific identity just like a keyed patch. An implementation could defensibly reject or return unchanged."
 
   package: {
-    "$liasse": 1
-    "$app": "t.delabsent@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.delabsent@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
       }
-      "$mut": {
-        "remove": ".tasks - @id"
+      $mut: {
+        remove: ".tasks - @id"
       }
-      "$public": {
-        "tasks": { "$mut": { "remove": ".remove" } }
+      $public: {
+        tasks: { $mut: { remove: ".remove" } }
       }
     }
-    "$data": {
-      "tasks": { "t1": {} }
+    $data: {
+      tasks: { t1: {} }
     }
   }
 

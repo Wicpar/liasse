@@ -80,6 +80,6 @@ identity is forgeable by construction.'''
       { fix_checksums: true }
     ] } }
     { import: { from: "axx", policy: ["fast_forward", "rollback", "merge"] },
-      expect: { outcome: unspecified, violates: ["§19.8", "§19.6"] } }
+      expect: { outcome: unspecified } }
   ]
 }

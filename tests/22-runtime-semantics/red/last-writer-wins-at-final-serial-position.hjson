@@ -9,7 +9,7 @@
   format: 1
   name: last-writer-wins-at-final-serial-position
   suite: scenario
-  spec: ["§22.4", "§22.2", "§22.3", "#runtime"]
+  spec: ["#runtime", "§22.4", "§22.2", "§22.3"]
   tags: ["ordering", "concurrency"]
 
   package: {

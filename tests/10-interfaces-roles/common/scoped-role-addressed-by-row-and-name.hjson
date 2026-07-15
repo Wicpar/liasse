@@ -12,57 +12,57 @@
   tags: ["authz", "scope"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.scoped_role@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.scoped_role@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
       }
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "members": {
-          "$key": "account"
-          "account": { "$ref": "/accounts" }
-          "admin": "bool = false"
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        members: {
+          $key: "account"
+          account: { $ref: "/accounts" }
+          admin: "bool = false"
         }
-        "$mut": {
-          "rename": [
+        $mut: {
+          rename: [
             ".name = @name"
             "return . { id, name }"
           ]
         }
-        "$roles": {
-          "admin": {
-            "$auth": "token"
-            "$members": ".members[:m | m.admin].account"
-            "company": {
-              "$view": ". { id, name }"
-              "$mut": { "rename": ".rename" }
+        $roles: {
+          admin: {
+            $auth: "token"
+            $members: ".members[:m | m.admin].account"
+            company: {
+              $view: ". { id, name }"
+              $mut: { rename: ".rename" }
             }
           }
         }
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
     }
-    "$data": {
-      "accounts": { "alice": {} }
-      "companies": {
-        "acme": {
-          "name": "Acme"
-          "members": { "alice": { "admin": true } }
+    $data: {
+      accounts: { alice: {} }
+      companies: {
+        acme: {
+          name: "Acme"
+          members: { alice: { admin: true } }
         }
-        "globex": {
-          "name": "Globex"
-          "members": { "alice": { "admin": false } }
+        globex: {
+          name: "Globex"
+          members: { alice: { admin: false } }
         }
       }
     }

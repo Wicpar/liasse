@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: on-delete-patch-reads-target-row
+  suite: scenario
+  // §21.1: "A patch expression binds `.` to the referencing row as it existed
+  // at planning time and `$target` to the target row being removed." Here the
+  // patch clears the optional ref AND copies the deleted project's name into the
+  // surviving task, proving `$target` reads the row being removed. The task
+  // survives with `archived_name` set to the deleted project's `name`.
+  spec: ["§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        archived_name: "text = ''"
+        project: {
+          $ref: "/projects"
+          $optional: true
+          // patch reads $target (the deleted project) and clears the ref
+          $on_delete: "= { project: none, archived_name: $target.name }"
+        }
+      }
+      $mut: {
+        delete_project: ".projects - @id"
+      }
+      tasks_view: { $view: ".tasks { id, archived_name, project, $sort: [id] }" }
+      $public: {
+        tasks: { $view: ".tasks_view" }
+        projects: {
+          $view: ".projects { id }"
+          $mut: { delete: ".delete_project" }
+        }
+      }
+    }
+    $data: {
+      projects: { p1: { name: "Apollo" } }
+      tasks: { t1: { project: "p1" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [
+      { id: "t1", archived_name: "", project: "p1" }
+    ] } }
+    { call: "public.projects.delete", args: { id: "p1" }, expect: { outcome: ok, "...": true } }
+    // task survives; $target.name of the removed project copied in, ref cleared
+    { expect_view: { watch: "w1", value: [
+      { id: "t1", archived_name: "Apollo", project: "$absent" }
+    ] } }
+  ]
+}

@@ -32,6 +32,6 @@
 
   steps: [
     { call: "public.rows.add_two", args: {},
-      expect: { outcome: "unspecified", violates: ["#state-model", "#mutations"] } }
+      expect: { outcome: unspecified } }
   ]
 }

@@ -1,0 +1,109 @@
+{
+  // A misbehaving registered blob connector on the READ path. §18.8: a client
+  // "MAY probe holders, use ranged and resumable reads, combine ranges, compute
+  // SHA-512 while streaming, and replace ranges received from a mismatching
+  // source. A successful fetch returns exactly the bytes identified by $sha512."
+  // §18.9: at fetch, hash verification occurs "before delivering a successful
+  // result." §23.3 requires every implementation choice to "preserve declared
+  // ... values." The attack: the serve-preferred connector `fs-a` is a lying
+  // transport — it returns bytes that do not match the descriptor's $sha512 (a
+  // compromised or buggy host component) without the copy being marked corrupt,
+  // while a second verified holder `fs-b` still holds the true bytes.
+  //
+  // What SPEC.md PINS (asserted, negative guarantee): the runtime MUST NOT
+  // deliver the tampered bytes as a successful fetch — §18.9 verifies the hash
+  // "before delivering a successful result" and §18.8 says a successful fetch
+  // returns EXACTLY the $sha512 bytes. So the one thing forbidden is
+  // `{ outcome: ok, bytes: <tampered> }`.
+  //
+  // What SPEC.md does NOT pin (hence unspecified): whether THIS single fetch
+  // recovers. §18.8 makes probing other holders and "replac[ing] ranges received
+  // from a mismatching source" a client MAY, not a MUST. A minimal conforming
+  // runtime may fetch only the $serve-preferred holder, detect the mismatch, and
+  // refuse to deliver without falling back to fs-b. So even WITH a clean verified
+  // holder present, the admissible outcomes are {ok + true bytes} OR {a fetch
+  // failure}; the spec compels neither. This parallels the sibling
+  // tests/18-blobs/red/all-holders-corrupt-fetch-outcome-unspecified, where §18
+  // names no failure outcome and only the negative guarantee is normative — here
+  // sharpened to the case where an honest holder exists yet fallback stays a MAY.
+  // (Contrast tests/18-blobs/red/corrupt-copy-demoted-and-repaired, whose firm
+  // `ok` fetch is asserted only AFTER the reconciler has repaired both copies to
+  // verified; a `corrupt` observation, absent here, is what triggers that repair.)
+  format: 1
+  name: connector-tampered-read-refetched-from-verified-holder
+  suite: scenario
+  spec: ["#rust-host", "§23.3", "#blobs", "§18.8", "§18.9"]
+  tags: ["connector", "integrity", "tampering", "blob", "nonconforming-host"]
+  note: "A registered read connector lies (returns bytes that do not match $sha512) while a second verified holder is honest, and the tampered copy is not observed corrupt. §18.9 forbids delivering the tampered bytes as a successful fetch (verification precedes a successful result) — that negative guarantee is normative. But §18.8 makes probing other holders and replacing ranges from a mismatching source a client MAY, so whether this single fetch recovers from the honest holder (ok + true bytes) or fails is not pinned even though a clean holder exists. The fetch outcome is therefore unspecified; only the no-tampered-success invariant is deducible. Parallels tests/18-blobs/red/all-holders-corrupt-fetch-outcome-unspecified."
+
+  package: {
+    $liasse: 1
+    $app: "t.readtamper@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        params: "json = {}"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        // Two required verified copies; $serve defaults to flattened order [a, b].
+        $blob_storage: { $in: { $all: ["/stores['a']", "/stores['b']"] } }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id, satisfied: .file.$satisfied }"
+        ]
+      }
+      $public: {
+        docs: {
+          $view: ".docs { id, file }"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: {
+      stores: {
+        a: { connector: "fs-a" }
+        b: { connector: "fs-b" }
+      }
+    }
+  }
+
+  hosts: {
+    connectors: {
+      "fs-a": { capabilities: ["stream_upload", "stream_download", "checksum", "delete"] }
+      "fs-b": { capabilities: ["stream_upload", "stream_download", "checksum", "delete"] }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Upload lands two verified copies.
+    { blob_put: {
+        call: "public.docs.add", param: "file", args: { id: "d1" }
+        content: "the-true-bytes", media: "text/plain", on: "c1"
+      },
+      expect: { outcome: ok, value: { id: "d1", satisfied: true } } }
+    // The serve-preferred connector now lies on downloads (returns wrong bytes),
+    // without the copy being marked corrupt.
+    { connector_set: { connector: "fs-a", tamper_download: true } }
+    // The runtime MUST NOT deliver the tampered bytes as a successful fetch
+    // (§18.9). Whether it recovers from the honest holder (ok + true bytes) or
+    // fails is a §18.8 MAY, so the fetch outcome itself is unspecified; the sole
+    // deducible constraint is that a successful result never carries tampered
+    // bytes.
+    { blob_get: { surface: "public.docs", args: { id: "d1" }, at: ".file", on: "c1" },
+      expect: { outcome: unspecified,
+                detail: "a successful fetch MUST NOT return bytes other than the-true-bytes; recovery from the honest holder fs-b vs a fetch failure is a §18.8 client MAY and is not pinned" } }
+  ]
+}

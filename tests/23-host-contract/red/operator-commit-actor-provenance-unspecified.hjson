@@ -1,0 +1,50 @@
+{
+  // §23.5: "an operator transition ... creates an ordinary commit with host
+  // provenance recorded separately from the application actor field." §22.8:
+  // "Only authenticated external interface requests bind $actor. Public requests
+  // and engine maintenance run without an actor." A host operator transition
+  // runs without an actor, and its provenance is kept SEPARATE from the actor
+  // field. But the spec never pins what a model mutation that *reads* `$actor`
+  // observes under a host operator transition. Three readings each rest on spec
+  // text and SPEC.md chooses none: (a) static rejection at load — §6.2:
+  // structural bindings incl. `$actor` "exist only in the feature context that
+  // defines them" (authentication), so reading it from an actorless operator
+  // mutation could be an invalid package; (b) admission-time rejection — §6.3
+  // (line 702): a `$actor` context "MUST receive exactly one occurrence. Zero
+  // ... reject that evaluation," and an operator transition binds no actor;
+  // (c) a null/absent binding written through to the optional field. This
+  // exactly parallels tests/22-runtime-semantics/red/public-request-references-
+  // actor-unspecified for the operator path, and additionally leaves unpinned
+  // whether the separately-recorded host provenance is application-readable.
+  format: 1
+  name: operator-commit-actor-provenance-unspecified
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "#runtime", "§22.8", "#expressions", "§6.2", "§6.3"]
+  tags: ["operator", "provenance", "actor"]
+  note: "§23.5 records host provenance separately from the application actor field and §22.8 runs engine maintenance without an actor, but neither pins what a mutation reading $actor observes under a host operator transition. §6.2 (structural bindings exist only in their defining feature context) supports static invalidity; §6.3 (a $actor context MUST receive exactly one occurrence; zero rejects that evaluation) supports admission-time rejection; a null/absent binding is a third reading. SPEC.md pins none, nor whether the host provenance is application-readable. The outcome of the operator call is therefore unspecified."
+
+  package: {
+    $liasse: 1
+    $app: "t.opprovenance@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+        by: "text? = none"
+      }
+      $mut: {
+        // Reads $actor while running with no actor bound (operator path).
+        stamp: [
+          "n = .notes + { id: @id, body: @body, by: $actor.id }"
+          "return n { id, body, by }"
+        ]
+      }
+    }
+  }
+
+  steps: [
+    { operator: { call: "stamp", args: { id: "n1", body: "hi" } },
+      expect: { outcome: unspecified } }
+  ]
+}

@@ -35,11 +35,11 @@ identifier. The first commit stands and the conflicting call has no state effect
   }
 
   steps: [
-    { call: "public.notes.put", args: { id: "n1", body: "first" }, op_id: "op-X",
+    { call: "public.notes.put", args: { id: "n1", body: "first" }, operation_id: "op-X",
       expect: { outcome: ok, value: { id: "n1", body: "first" } } }
-    // same op_id, different request metadata -> operation-identity conflict
-    { call: "public.notes.put", args: { id: "n2", body: "second" }, op_id: "op-X",
-      expect: { outcome: "rejected", violates: ["§D.8", "§12"],
+    // same operation_id, different request metadata -> operation-identity conflict
+    { call: "public.notes.put", args: { id: "n2", body: "second" }, operation_id: "op-X",
+      expect: { outcome: rejected, violates: ["§D.8", "§12"],
                 detail: "reused operation identifier with a different request" } }
     // the conflicting call had no effect; only the first row exists
     { watch: "public.notes", id: "w1", expect_init: { value: [

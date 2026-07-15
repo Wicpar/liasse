@@ -9,27 +9,27 @@
   tags: ["public", "validation"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.pub_check@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": {
-          "$type": "text"
-          "$check": ["size(.) > 0", "A title is required"]
+    $liasse: 1
+    $app: "t.pub_check@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: {
+          $type: "text"
+          $check: ["size(.) > 0", "A title is required"]
         }
       }
-      "$mut": {
-        "add_task": [
+      $mut: {
+        add_task: [
           "task = .tasks + { id: @id, title: @title }"
           "return task { id, title }"
         ]
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, title }"
-          "$mut": { "add": ".add_task" }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title }"
+          $mut: { add: ".add_task" }
         }
       }
     }

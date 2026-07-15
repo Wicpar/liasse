@@ -33,6 +33,6 @@
 
   steps: [
     { call: "public.events.add", args: { label: "x" },
-      expect: { outcome: "ok", value: { at: "$bind:T", at2: "$ref:T" } } }
+      expect: { outcome: ok, value: { at: "$bind:T", at2: "$ref:T" } } }
   ]
 }

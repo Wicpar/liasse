@@ -25,7 +25,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#views"]
     detail: "union operands .tasks and .users do not share an identity domain"
   }

@@ -49,7 +49,7 @@
     { watch: "public.owner_of_t1", id: "w3",
       expect_init: { value: [ { owner: "a" } ] } }
     { call: "public.admin.rename_account", args: { from: "a", to: "b" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { expect_view: { watch: "w1", value: [] } }
     { expect_view: { watch: "w2", value: [ { id: "t1" } ] } }
     { expect_view: { watch: "w3", value: [ { owner: "b" } ] } }

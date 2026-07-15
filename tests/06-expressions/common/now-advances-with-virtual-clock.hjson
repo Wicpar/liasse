@@ -32,9 +32,9 @@
 
   steps: [
     { call: "public.events.add", args: { label: "x1" },
-      expect: { outcome: "ok", value: { at: "1767225600000000" } } }
+      expect: { outcome: ok, value: { at: "1767225600000000" } } }
     { advance_time: "PT1H" }
     { call: "public.events.add", args: { label: "x2" },
-      expect: { outcome: "ok", value: { at: "1767229200000000" } } }
+      expect: { outcome: ok, value: { at: "1767229200000000" } } }
   ]
 }

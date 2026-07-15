@@ -8,7 +8,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.dupkey@1.0.0"
+    $app: "t.pkg.dupkey@1.0.0"
     $model: {
       secrets: {
         $key: "id"
@@ -20,10 +20,10 @@
 
   steps: [
     { build_artifact: { as: "a1" } }
-    { tamper_artifact: {
+    { repack_artifact: {
         artifact: "a1"
         set: {
-          "liasse.json": "{\"$app\":\"t.dupkey@1.0.0\",\"$liasse\":1,\"$model\":{\"secrets\":{\"$key\":\"id\",\"id\":\"int\",\"value\":\"text\"}},\"$model\":{\"$public\":{\"secrets\":{\"$view\":\".secrets_view\"}},\"secrets\":{\"$key\":\"id\",\"id\":\"int\",\"value\":\"text\"},\"secrets_view\":{\"$view\":\".secrets { id, value }\"}}}"
+          "liasse.json": "{\"$app\":\"t.pkg.dupkey@1.0.0\",\"$liasse\":1,\"$model\":{\"secrets\":{\"$key\":\"id\",\"id\":\"int\",\"value\":\"text\"}},\"$model\":{\"$public\":{\"secrets\":{\"$view\":\".secrets_view\"}},\"secrets\":{\"$key\":\"id\",\"id\":\"int\",\"value\":\"text\"},\"secrets_view\":{\"$view\":\".secrets { id, value }\"}}}"
         }
         rehash: true
     } }

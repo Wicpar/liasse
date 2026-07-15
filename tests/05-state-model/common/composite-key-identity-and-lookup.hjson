@@ -28,15 +28,15 @@
   }
 
   steps: [
-    { call: "public.vat.add", args: { country: "FR", code: "STD", rate: 20 },
-      expect: { outcome: "ok" } }
+    { call: "public.vat.add", args: { country: "FR", code: "STD", rate: "20" },
+      expect: { outcome: ok } }
     // same country, different code -> different composite key -> accepted
-    { call: "public.vat.add", args: { country: "FR", code: "RED", rate: 5 },
-      expect: { outcome: "ok" } }
+    { call: "public.vat.add", args: { country: "FR", code: "RED", rate: "5" },
+      expect: { outcome: ok } }
     // complete composite key repeated -> rejected
-    { call: "public.vat.add", args: { country: "FR", code: "STD", rate: 21 },
-      expect: { outcome: "rejected", violates: ["§5.4"] } }
+    { call: "public.vat.add", args: { country: "FR", code: "STD", rate: "21" },
+      expect: { outcome: rejected, violates: ["§5.4"] } }
     { call: "public.vat.rate_of", args: { country: "FR", code: "STD" },
-      expect: { outcome: "ok", value: 20 } }
+      expect: { outcome: ok, value: "20" } }
   ]
 }

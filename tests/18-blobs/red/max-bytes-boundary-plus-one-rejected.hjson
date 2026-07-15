@@ -60,4 +60,3 @@
                 detail: "content is one byte over the inclusive $max_bytes limit" } }
   ]
 }
-</content>

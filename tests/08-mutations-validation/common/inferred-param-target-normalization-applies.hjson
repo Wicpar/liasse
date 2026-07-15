@@ -9,24 +9,24 @@
   spec: ["#mutations", "§8.3", "§8.10"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.infernorm@1.0.0"
-    "$model": {
-      "name": {
-        "$type": "text"
-        "$normalize": "string.lower(string.trim(.))"
+    $liasse: 1
+    $app: "t.infernorm@1.0.0"
+    $model: {
+      name: {
+        $type: "text"
+        $normalize: "string.lower(string.trim(.))"
       }
-      "$mut": {
-        "rename": [
+      $mut: {
+        rename: [
           ".name = @name"
           "return .name"
         ]
       }
-      "$public": {
-        "profile": { "$mut": { "rename": ".rename" } }
+      $public: {
+        profile: { $mut: { rename: ".rename" } }
       }
     }
-    "$data": { "name": "bob" }
+    $data: { name: "bob" }
   }
 
   steps: [

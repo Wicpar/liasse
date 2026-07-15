@@ -1,0 +1,78 @@
+{
+  // §23.5: "Host access bypasses external role authentication while retaining
+  // the package's type rules, ... serial admission, and atomicity." `purge` is
+  // exposed only on the `admin` role surface, so an unauthenticated external
+  // client is denied (§10.3 role surfaces require an accepted authenticator).
+  // The trusted host operator invokes the underlying model mutation directly
+  // and succeeds WITHOUT presenting any credential; the committed effect is then
+  // observed through an authenticated admin watch. This isolates the "bypasses
+  // external role authentication" clause while showing the commit is real.
+  format: 1
+  name: operator-bypasses-role-authentication
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "#interfaces", "§10.3"]
+  tags: ["authz", "operator"]
+
+  package: {
+    $liasse: 1
+    $app: "t.opbypass@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: { $key: "id", id: "text", name: "text" }
+      sessions: { $key: "id", id: "text", account: { $ref: "/accounts" } }
+      tasks: { $key: "id", id: "text", title: "text" }
+      $mut: {
+        purge: [
+          ".tasks - @id"
+          "return { removed: @id }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+        }
+      }
+      $roles: {
+        admin: {
+          $auth: "session"
+          $members: "/accounts"
+          tasks: {
+            $view: ".tasks { id, title, $sort: [id] }"
+            $mut: { purge: ".purge" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: { a1: { name: "root" } }
+      sessions: { s1: { account: "a1" } }
+      tasks: { t1: { title: "delete me" } }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-root": { auth: "session", session: "s1" }
+      }
+    }
+  }
+
+  steps: [
+    // An unauthenticated external client cannot reach the role surface.
+    { connect: "c1" }
+    { call: "admin.tasks.purge", args: { id: "t1" }, on: "c1",
+      expect: { outcome: denied, violates: ["#interfaces", "#authentication"] } }
+    // The trusted host operator invokes the model mutation directly, no credential.
+    { operator: { call: "purge", args: { id: "t1" } },
+      expect: { outcome: ok, value: { removed: "t1" } } }
+    // The commit is real: an authenticated admin observes the collection empty.
+    { connect: "c2", authenticate: { role: "admin", auth: "session", credential: "tok-root" },
+      expect: { outcome: ok } }
+    { watch: "admin.tasks", on: "c2", id: "w1", expect_init: { value: [] } }
+  ]
+}

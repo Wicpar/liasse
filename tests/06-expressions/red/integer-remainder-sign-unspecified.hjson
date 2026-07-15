@@ -21,8 +21,8 @@
   }
 
   expect: {
-    outcome: "unspecified"
-    violates: ["#expressions"]
+    outcome: unspecified
+    
     detail: "remainder operator has CEL syntax but no Liasse-defined semantics; neither load acceptance nor the sign of a negative-operand result is pinned"
   }
 }

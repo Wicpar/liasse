@@ -42,6 +42,6 @@
   }
 
   steps: [
-    { watch: "public.stats", id: "w1", expect_init: { value: 14 } }
+    { watch: "public.stats", id: "w1", expect_init: { value: "14" } }
   ]
 }

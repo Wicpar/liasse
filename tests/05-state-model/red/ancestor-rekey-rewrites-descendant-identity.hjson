@@ -39,17 +39,17 @@ or copying rows would leave a reachable ghost subtree under "acme".'''
   }
 
   steps: [
-    { call: "public.offices.add_company", args: { id: "acme" }, expect: { outcome: "ok" } }
+    { call: "public.offices.add_company", args: { id: "acme" }, expect: { outcome: ok } }
     { call: "public.offices.add_office", args: { company: "acme", id: "hq", name: "HQ" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.offices.rekey_company", args: { old: "acme", new: "newco" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // reachable under the new ancestor key, data intact
     { call: "public.offices.office_name", args: { company: "newco", office: "hq" },
-      expect: { outcome: "ok", value: "HQ" } }
+      expect: { outcome: ok, value: "HQ" } }
     // the stale ancestor address selects zero rows -> one-row context rejects
     { call: "public.offices.office_name", args: { company: "acme", office: "hq" },
-      expect: { outcome: "rejected", violates: ["§6.3"], detail: "no row exists at the old ancestor key" } }
+      expect: { outcome: rejected, violates: ["§6.3"], detail: "no row exists at the old ancestor key" } }
     { watch: "public.offices", id: "w1", expect_init: { value: [
       { company: "newco", office: "hq", name: "HQ" }
     ] } }

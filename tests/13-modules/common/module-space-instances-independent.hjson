@@ -13,64 +13,64 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "templates": {
-                  "$view": { "$key": "id", "id": "text", "label": "text" }
-                  "$mut": {
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: {
+                  $view: { $key: "id", id: "text", label: "text" }
+                  $mut: {
                     "create({ id: text, label: text })": {
-                      "$return": { "id": "text", "label": "text" }
+                      $return: { id: "text", label: "text" }
                     }
                   }
                 }
               }
             }
           }
-          "catalog": {
-            "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
+          catalog: {
+            $view: ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
           }
         }
-        "$public": {
-          "catalog": {
-            "$params": { "company": "text" }
-            "$view": "/companies[@company].catalog"
+        $public: {
+          catalog: {
+            $params: { company: "text" }
+            $view: "/companies[@company].catalog"
           }
-          "admin": {
-            "$mut": { "create": "/companies[@company].modules[@module]::templates.create" }
+          admin: {
+            $mut: { create: "/companies[@company].modules[@module]::templates.create" }
           }
         }
       }
-      "$data": {
-        "companies": {
-          "acme": { "name": "Acme" }
-          "globex": { "name": "Globex" }
+      $data: {
+        companies: {
+          acme: { name: "Acme" }
+          globex: { name: "Globex" }
         }
       }
     }
     tpl: {
-      "$liasse": 1
-      "$module": "t.tpl@1.0.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
-        "$mut": {
-          "create_template": [
+      $liasse: 1
+      $module: "t.tpl@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+        $mut: {
+          create_template: [
             "t = .templates + { id: @id, label: @label }"
             "return t { id, label }"
           ]
         }
       }
-      "$expose": {
-        "templates": {
-          "$view": ".templates { id, label }"
-          "$mut": { "create": ".create_template" }
+      $expose: {
+        templates: {
+          $view: ".templates { id, label }"
+          $mut: { create: ".create_template" }
         }
       }
     }
@@ -78,9 +78,9 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.tpl@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.tpl@1.0.0" } }
       expect: { outcome: ok } }
-    { module_install: { space: "/companies/globex/modules", request: { "$name": "kit", "$module": "t.tpl@1.0.0" } }
+    { module_install: { space: "/companies/globex/modules", request: { $name: "kit", $module: "t.tpl@1.0.0" } }
       expect: { outcome: ok } }
     // write through Acme's instance only
     { call: "public.admin.create", args: { company: "acme", module: "kit", id: "t1", label: "Alpha" }

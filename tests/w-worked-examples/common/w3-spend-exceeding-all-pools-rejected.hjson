@@ -2,7 +2,7 @@
   format: 1
   name: w3-spend-exceeding-all-pools-rejected
   suite: scenario
-  spec: ["W3", "#meters", "§15.2"]
+  spec: ["#meters", "W3", "§15.2"]
   tags: [meters]
   note: '''
     Ordinary error path of W3. §15.2 step 6: the engine "rejects the complete

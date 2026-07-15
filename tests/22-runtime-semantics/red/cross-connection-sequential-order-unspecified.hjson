@@ -13,7 +13,7 @@
   format: 1
   name: cross-connection-sequential-order-unspecified
   suite: scenario
-  spec: ["§22.3", "§22.4", "#runtime"]
+  spec: ["#runtime", "§22.3", "§22.4"]
   tags: ["ordering", "concurrency", "boundary"]
   note: '''
     §22.3 makes the precedence relation implementation-defined and lists causal

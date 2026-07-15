@@ -40,15 +40,15 @@ commit. No row is ever written under this identifier.'''
 
   steps: [
     // first use of op-Q: rejected by the body check
-    { call: "public.notes.put", args: { id: "n1", body: "way-too-long" }, op_id: "op-Q",
-      expect: { outcome: "rejected", violates: ["§8.8"],
+    { call: "public.notes.put", args: { id: "n1", body: "way-too-long" }, operation_id: "op-Q",
+      expect: { outcome: rejected, violates: ["§8.8"],
                 detail: "body fails the size check" } }
     // equivalent retry: re-observes the retained rejection, no execution
-    { call: "public.notes.put", args: { id: "n1", body: "way-too-long" }, op_id: "op-Q",
-      expect: { outcome: "rejected", "...": true } }
+    { call: "public.notes.put", args: { id: "n1", body: "way-too-long" }, operation_id: "op-Q",
+      expect: { outcome: rejected, "...": true } }
     // corrected, DIFFERENT request under the burned identifier -> conflict
-    { call: "public.notes.put", args: { id: "n1", body: "ok" }, op_id: "op-Q",
-      expect: { outcome: "rejected", violates: ["§D.8", "§12"],
+    { call: "public.notes.put", args: { id: "n1", body: "ok" }, operation_id: "op-Q",
+      expect: { outcome: rejected, violates: ["§D.8", "§12"],
                 detail: "reused operation identifier with a different request" } }
     // nothing was ever committed under this identifier
     { watch: "public.notes", id: "w1", expect_init: { value: [] } }

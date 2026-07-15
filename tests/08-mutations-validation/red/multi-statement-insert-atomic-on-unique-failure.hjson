@@ -11,25 +11,25 @@
   tags: ["atomicity"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.atomunique@1.0.0"
-    "$model": {
-      "users": {
-        "$key": "id"
-        "$unique": ["email"]
-        "id": "text"
-        "email": "text"
+    $liasse: 1
+    $app: "t.atomunique@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        $unique: ["email"]
+        id: "text"
+        email: "text"
       }
-      "$mut": {
-        "add_two": [
+      $mut: {
+        add_two: [
           ".users + { id: @id1, email: @e1 }"
           ".users + { id: @id2, email: @e2 }"
         ]
       }
-      "$public": {
-        "users": {
-          "$view": ".users { id, email }"
-          "$mut": { "add_two": ".add_two" }
+      $public: {
+        users: {
+          $view: ".users { id, email }"
+          $mut: { add_two: ".add_two" }
         }
       }
     }

@@ -24,7 +24,7 @@
   steps: [
     { build_artifact: { as: "a1", files: { "resources/invoice.html": "<h1>Invoice</h1>" } } }
     // replace bytes but leave manifest.json checksums untouched
-    { tamper_artifact: { artifact: "a1",
+    { repack_artifact: { artifact: "a1",
         set: { "resources/invoice.html": "<h1>swapped</h1>" } } }
     { load_artifact: { from: "a1",
         expect: { outcome: invalid, violates: ["#annex-d", "§D.5"] } } }

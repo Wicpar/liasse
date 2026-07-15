@@ -19,58 +19,58 @@
   }
 
   package: {
-    "$liasse": 1
-    "$app": "t.keyrings@1.0.0"
-    "$requires": { "cose": "liasse.cose@1" }
-    "$model": {
-      "session_keys": {
-        "$keyring": {
-          "$provider": "test-kp"
-          "$algorithm": "Ed25519"
-          "$rotate": "P30D"
-          "$retain": "P45D"
+    $liasse: 1
+    $app: "t.keyrings@1.0.0"
+    $requires: { cose: "liasse.cose@1" }
+    $model: {
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $algorithm: "Ed25519"
+          $rotate: "P30D"
+          $retain: "P45D"
         }
       }
-      "accounts": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "enabled": "bool = true"
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        enabled: "bool = true"
       }
-      "sessions": {
-        "$key": "id"
-        "id": "uuid = uuid()"
-        "account": { "$ref": "/accounts" }
-        "revoked": "bool = false"
+      sessions: {
+        $key: "id"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        revoked: "bool = false"
       }
-      "$mut": {
-        "login": [
+      $mut: {
+        login: [
           "session = /sessions + { account: @account }"
           "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
           "return { token }"
         ]
       }
-      "$auth": {
-        "session": {
-          "$credential": "bytes"
-          "$verify": "cose.verify(/session_keys, $credential)"
-          "$session": "/sessions[$proof.session]"
-          "$actor": "/accounts[$session.account]"
-          "$check": ["$proof.auth == $auth_name", "!$session.revoked"]
+      $auth: {
+        session: {
+          $credential: "bytes"
+          $verify: "cose.verify(/session_keys, $credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: ["$proof.auth == $auth_name", "!$session.revoked"]
         }
       }
-      "$public": {
-        "login": { "$mut": { "login": ".login" } }
+      $public: {
+        login: { $mut: { login: ".login" } }
       }
-      "$roles": {
-        "member": {
-          "$auth": "session"
-          "$members": ".accounts[:a | a.enabled]"
-          "mysessions": { "$view": "/sessions[:s | s.account == $actor] { revoked }" }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          mysessions: { $view: "/sessions[:s | s.account == $actor] { revoked }" }
         }
       }
     }
-    "$data": { "accounts": { "alice": { "name": "Alice" } } }
+    $data: { accounts: { alice: { name: "Alice" } } }
   }
 
   steps: [

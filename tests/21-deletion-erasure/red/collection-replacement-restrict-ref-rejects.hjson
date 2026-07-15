@@ -18,6 +18,11 @@
         $key: "id"
         id: "text"
       }
+      // source of the replacement view (holds only the survivor p2)
+      staging: {
+        $key: "id"
+        id: "text"
+      }
       tasks: {
         $key: "id"
         id: "text"
@@ -27,8 +32,9 @@
         }
       }
       $mut: {
-        // replace the whole projects collection with just p2 (drops p1)
-        replace_projects: ".projects = [{ id: 'p2' }]"
+        // replace the whole projects collection from the staging view (§8.7
+        // `collection = view`); staging holds only p2, so p1 is dropped
+        replace_projects: ".projects = .staging { id }"
       }
       projects_view: { $view: ".projects { id, $sort: [id] }" }
       $public: {
@@ -37,6 +43,7 @@
     }
     $data: {
       projects: { p1: {}, p2: {} }
+      staging: { p2: {} }
       tasks: { t1: { project: "p1" } }
     }
   }

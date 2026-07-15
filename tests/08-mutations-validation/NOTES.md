@@ -6,7 +6,7 @@ supporting citations into §5 (state model), §6 (expressions), §10 (surfaces),
 
 ## Extensions beyond FORMAT.md
 
-### `status` member in a step `expect` (expectation extension, not a step key)
+### `completion` member in a step `expect` (expectation extension, not a step key)
 
 §8.9 and §12.3 distinguish two *success* completions of a call:
 
@@ -16,15 +16,17 @@ supporting citations into §5 (state model), §6 (expressions), §10 (surfaces),
   evaluated against the unchanged state.
 
 FORMAT.md's outcome vocabulary folds both into `ok`. Cases in this chapter
-that must discriminate them add a `status` member next to `outcome`:
+that must discriminate them add the canonical `completion` member (registry
+member owned by §12; see the **Extended step registry** in `tests/FORMAT.md`)
+next to `outcome`:
 
 ```hjson
-expect: { outcome: ok, status: unchanged, value: [] }
+expect: { outcome: ok, completion: unchanged, value: [] }
 ```
 
-`status` is only ever `committed` or `unchanged`, only appears together with
-`outcome: ok`, and is omitted when the distinction is irrelevant to the rule
-under test. Used by:
+`completion` is only ever `committed` or `unchanged`, only appears together
+with `outcome: ok`, and is omitted when the distinction is irrelevant to the
+rule under test. Used by:
 
 - `common/zero-match-bulk-patch-returns-unchanged`
 - `common/set-noop-add-remove-returns-unchanged`

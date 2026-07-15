@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: struct-fields-compared-in-field-name-text-order
+  suite: scenario
+  spec: ["#annex-b", "§B.4", "§D.2", "§5.1", "§5.3", "§A.7", "§D.4"]
+  tags: ["ordering"]
+  note: '''
+    §B.4 struct: "lexicographic fields in canonical field-name order". This is
+    fully determined by SPEC.md, NOT ambiguous:
+      - §5.1 ("Fields and object members ... their source order has no semantic
+        effect") and §5.3 ("Struct members are unordered named fields") forbid
+        any dependence on DECLARATION order. Two packages that declare the same
+        struct with its fields written in different orders must sort identically,
+        so the field comparison order cannot be declaration order.
+      - The only name-derived canonical order Liasse defines is text order: §A.7
+        canonical JSON "sorts object keys by the Liasse text order" and §D.4
+        sorts object member names "by Unicode scalar order".
+    Therefore "canonical field-name order" = the struct's field names in text
+    order. The names are `a` (U+0061) and `b` (U+0062), so the fields compare in
+    the order a, then b — regardless of how they were declared.
+
+    Attack: a comparator that walks struct fields in DECLARATION order. `pt` is
+    deliberately declared (b, a) — the reverse of text order — to expose it.
+    Rows:
+      p1: { b: 1, a: 2 }
+      p2: { b: 2, a: 1 }
+    Correct (text order, compare `a` first): p2.a = 1 < p1.a = 2, so p2 < p1.
+    A declaration-order comparator would compare `b` first (1 < 2) and wrongly
+    emit p1, p2. Only `id` is projected, so no canonical struct wire spelling is
+    asserted — only the row order the rule determines.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.struct@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        pt: {
+          b: "int"
+          a: "int"
+        }
+      }
+      $public: {
+        by_pt: { $view: ".rows { id, $sort: [pt] }" }
+      }
+    }
+    $data: {
+      rows: {
+        p1: { pt: { b: 1, a: 2 } }
+        p2: { pt: { b: 2, a: 1 } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_pt", id: "w1",
+      expect_init: { value: [
+        { id: "p2" }
+        { id: "p1" }
+      ] } }
+  ]
+}

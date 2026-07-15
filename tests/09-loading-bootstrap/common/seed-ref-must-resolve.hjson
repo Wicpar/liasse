@@ -11,26 +11,26 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.seedref@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.seedref@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "members": {
-        "$key": "id"
-        "id": "text"
-        "owner": { "$ref": "/companies" }
+      members: {
+        $key: "id"
+        id: "text"
+        owner: { $ref: "/companies" }
       }
     }
-    "$data": {
-      "companies": {
-        "acme": { "name": "Acme SAS" }
+    $data: {
+      companies: {
+        acme: { name: "Acme SAS" }
       }
-      "members": {
-        "m1": { "owner": "ghost" }
+      members: {
+        m1: { owner: "ghost" }
       }
     }
   }

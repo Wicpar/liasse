@@ -46,16 +46,20 @@ hosts: {
 
 ## Extension steps
 
-### `load`
+### `host_load`
+
+Registry step (canonical name `host_load`, owned by §9/§16); see the
+**Extended step registry** in `tests/FORMAT.md`.
 
 ```hjson
-{ load: { package: "v2" }, expect: { outcome: invalid, violates: [...] } }
+{ host_load: { package: "v2" }, expect: { outcome: invalid, violates: [...] } }
 ```
 
 Applies the host lifecycle operation `load(target, artifact)` of §9.2 to the
-root package instance, using the case's `packages` entry named by `package`.
-`expect.outcome: ok` maps to §9.4 `committed`/`unchanged`; `invalid` maps to
-§9.4 `rejected` (validation failed; the prior application remains active).
+root package instance, using the case's `packages` entry named by `package`
+(or an inline package object). `expect.outcome: ok` maps to §9.4
+`committed`/`unchanged`; `invalid` maps to §9.4 `rejected` (validation failed;
+the prior application remains active).
 
 ### `reopen`
 

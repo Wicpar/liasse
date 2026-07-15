@@ -4,13 +4,16 @@
   suite: scenario
   spec: ["#evolution", "§20.1", "#loading", "§9.4"]
   note: '''
-    §20.1: a migration program "MUST use deterministic pure functions." The
-    same requirement governs the transform expressions it composes. An attacker
-    tries to stamp fresh identity during migration by making `$as` call
-    `uuid()`, which ignores the bound old value and produces a different result
-    every run — not a deterministic pure function of `.`. The migration
-    transform is statically ill-formed, so the update is `invalid` (definition
-    is bad on its own terms; see NOTES.md) and 1.0.0 stays active.
+    §20.1: the migration program array "MUST use deterministic pure functions."
+    An attacker tries to stamp fresh identity during migration by writing the
+    target `token` from `uuid()`, which ignores the bound old value and produces
+    a different result on every run — not a deterministic pure function. The
+    program is statically ill-formed on its own terms, so the update is
+    `invalid` (definition-only defect; see NOTES.md) and 1.0.0 stays active.
+
+    uuid() sits inside the `$migrations` array so the MUST that forbids it
+    applies to the literal text of the clause, not merely by analogy to a local
+    `$as` transform.
   '''
 
   package: {
@@ -40,7 +43,12 @@
             rows: {
               $key: "id"
               id: "text"
-              token: { $type: "text", $from: "name", $as: "uuid()" }
+              token: "text"
+            }
+            $migrations: {
+              "1.0.0": [
+                ".rows = $old.rows { id, token: uuid() }"
+              ]
             }
             $public: {
               rows: { $view: ".rows { id, token }" }
@@ -51,7 +59,7 @@
       expect: {
         outcome: invalid
         violates: ["§20.1"]
-        detail: "migration transform $as: uuid() is not a deterministic pure function of the bound old value"
+        detail: "migration program writes token from uuid(); §20.1 requires deterministic pure functions"
       } }
     { watch: "public.rows", id: "w1",
       expect_init: { value: [ { id: "r1", name: "keep" } ] } }

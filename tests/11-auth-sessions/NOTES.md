@@ -42,11 +42,10 @@ under `hosts.token`. Its deterministic contract:
   An `auth` object that omits the `auth` member while carrying a credential models a
   request that fails to name its authenticator (§11.4). A step with no `auth` field
   on a connection that never authenticated models a fully unauthenticated request.
-- `expect_close: { watch: "<id>" }` — extension **step**: asserts that the named
-  subscription has received `close` (§12.2) once all prior steps' commits are
-  reflected on its connection.
-- `operation_id` — extension **field** on `call`: the optional high-entropy operation
-  identifier of §12.3, used by replay/deduplication cases.
+- `expect_close` and `operation_id` — registry step / member owned by §12; see
+  the **Extended step registry** in `tests/FORMAT.md`. This chapter's cases use
+  `operation_id` (on `call`, for replay/deduplication); `expect_close` is
+  documented in the registry and used by §12.
 
 ## Outcome conventions
 

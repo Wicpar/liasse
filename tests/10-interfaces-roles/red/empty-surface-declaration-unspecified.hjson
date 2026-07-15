@@ -15,16 +15,16 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.empty_surface@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
+    $liasse: 1
+    $app: "t.empty_surface@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
       }
-      "$public": {
-        "void": {}
+      $public: {
+        void: {}
       }
     }
   }

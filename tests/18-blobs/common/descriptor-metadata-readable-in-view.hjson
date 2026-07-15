@@ -70,4 +70,3 @@
       expect_init: { value: { id: "d1", bytes: 5, media: "text/plain", name: "a.txt" } } }
   ]
 }
-</content>

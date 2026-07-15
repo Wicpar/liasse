@@ -20,7 +20,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#expressions"]
     detail: "state-changing operator used in a value-class check position"
   }

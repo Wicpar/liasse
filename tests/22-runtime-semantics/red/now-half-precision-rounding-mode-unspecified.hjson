@@ -1,24 +1,30 @@
 {
-  // Boundary probe on §22.5: "Precision conversion rounds to the requested
-  // fractional-second precision." The spec fixes THAT rounding happens but not
-  // the rounding MODE. A now() instant landing exactly on a half-unit boundary
-  // of the target precision therefore has an unspecified recorded value: an
-  // engine rounding half-up records 1767225601 s, half-down / truncation
-  // records 1767225600 s, and half-to-even could pick either. The operation
+  // Boundary probe on §22.5 / Annex A.5. §22.5 says precision conversion
+  // "rounds to the requested fractional-second precision"; Annex A.5 delegates
+  // it to "the PostgreSQL timestamp precision rule". Neither reproduces the
+  // half-way TIE-BREAK in SPEC.md's own text. Contrast Annex A.6, which for
+  // decimals explicitly resolves a halfway value "away from zero" — the
+  // timestamp annex states no such tie-break. A now() instant landing exactly
+  // on a half-unit boundary of the target precision therefore has a recorded
+  // value that is not deducible from SPEC.md text alone. The operation
   // succeeds; only the recorded second value is unpinned.
   format: 1
   name: now-half-precision-rounding-mode-unspecified
   suite: scenario
-  spec: ["§22.5", "#runtime"]
+  spec: ["#runtime", "§22.5", "§A.5"]
   tags: ["time", "boundary"]
   note: '''
     §22.5 says precision conversion "rounds to the requested fractional-second
-    precision" without naming a rounding mode. The virtual clock is advanced by
-    exactly half a second (PT0.5S) from genesis, so now() = 1767225600.500000 s.
-    Rounding that to whole-second precision is exactly half-way, and SPEC.md
-    does not choose between round-half-up (1767225601), truncate/round-down
-    (1767225600), or round-half-to-even. The recorded `at` value is therefore
-    unspecified; the corpus records the gap rather than guessing a mode.
+    precision"; Annex A.5 says it "follows the PostgreSQL timestamp precision
+    rule". Neither writes the half-way tie-break into SPEC.md's own text — unlike
+    decimals, where Annex A.6 explicitly resolves a halfway value "away from
+    zero". The virtual clock is advanced by exactly half a second (PT0.5S) from
+    genesis, so now() = 1767225600.500000 s. Reducing that to whole-second
+    precision lands exactly half-way, and SPEC.md text does not, on its own,
+    fix whether the recorded value is 1767225601 (round-half-up / away-from-zero)
+    or 1767225600 (round-half-to-even, which is even here). A self-contained
+    corpus cannot assert the concrete value without importing external
+    PostgreSQL semantics, so the gap is recorded rather than guessed.
   '''
 
   package: {
@@ -46,8 +52,8 @@
     { connect: "c1" }
     { advance_time: "PT0.5S" }
     {
-      // now() = 1767225600.5 s exactly; the rounded whole-second value is
-      // unspecified because the rounding mode is not fixed by SPEC.md.
+      // now() = 1767225600.5 s exactly; the recorded whole-second value is not
+      // deducible from SPEC.md text alone (tie-break unwritten). See note.
       call: "public.events.mark"
       args: { id: "e" }
       on: "c1"

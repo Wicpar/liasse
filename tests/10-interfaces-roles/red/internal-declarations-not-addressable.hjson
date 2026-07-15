@@ -13,24 +13,24 @@
   tags: ["exposure", "authz"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.internal_addr@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
-        "done": "bool = false"
+    $liasse: 1
+    $app: "t.internal_addr@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
+        done: "bool = false"
       }
-      "open_tasks": {
-        "$view": ".tasks[:t | !t.done] { id, title }"
+      open_tasks: {
+        $view: ".tasks[:t | !t.done] { id, title }"
       }
-      "$mut": {
-        "add_task": ".tasks + { id: @id, title: @title }"
+      $mut: {
+        add_task: ".tasks + { id: @id, title: @title }"
       }
-      "$public": {
+      $public: {
         // View-only exposure. add_task and open_tasks stay internal names.
-        "tasks": { "$view": ".open_tasks" }
+        tasks: { $view: ".open_tasks" }
       }
     }
   }

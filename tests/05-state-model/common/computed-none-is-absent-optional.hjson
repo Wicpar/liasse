@@ -37,9 +37,9 @@
   steps: [
     // email omitted -> none -> computed value is absent
     { call: "public.people.add", args: { id: "p1", name: "a" },
-      expect: { outcome: "ok", value: { name: "a", contact: "$absent" } } }
+      expect: { outcome: ok, value: { name: "a", contact: "$absent" } } }
     // email present -> computed value mirrors it
     { call: "public.people.add_with_email", args: { id: "p2", name: "b", email: "b@x.example" },
-      expect: { outcome: "ok", value: { name: "b", contact: "b@x.example" } } }
+      expect: { outcome: ok, value: { name: "b", contact: "b@x.example" } } }
   ]
 }

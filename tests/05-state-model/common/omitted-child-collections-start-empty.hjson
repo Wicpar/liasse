@@ -35,6 +35,6 @@
 
   steps: [
     { call: "public.projects.add", args: { id: "p1" },
-      expect: { outcome: "ok", value: { id: "p1", tags: [], tasks: [] } } }
+      expect: { outcome: ok, value: { id: "p1", tags: [], tasks: [] } } }
   ]
 }

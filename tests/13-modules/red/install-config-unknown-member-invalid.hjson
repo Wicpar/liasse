@@ -14,33 +14,33 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text", label: "text" } }
               }
             }
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     tplc: {
-      "$liasse": 1
-      "$module": "t.tplc@1.0.0"
-      "$config": { "currency": "text = 'USD'" }
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
+      $liasse: 1
+      $module: "t.tplc@1.0.0"
+      $config: { currency: "text = 'USD'" }
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
       }
-      "$expose": {
-        "templates": { "$view": ".templates { id, label }" }
+      $expose: {
+        templates: { $view: ".templates { id, label }" }
       }
     }
   }
@@ -49,10 +49,10 @@
   steps: [
     { module_install: { space: "/companies/acme/modules"
         request: {
-          "$name": "kit"
-          "$module": "t.tplc@1.0.0"
+          $name: "kit"
+          $module: "t.tplc@1.0.0"
           // "tax_id" is not a declared $config field
-          "$config": { "currency": "EUR", "tax_id": "X1" }
+          $config: { currency: "EUR", tax_id: "X1" }
         } }
       expect: { outcome: invalid, violates: ["§13.1"]
                 detail: "installation $config carries a member not declared by the module's typed $config struct" } }

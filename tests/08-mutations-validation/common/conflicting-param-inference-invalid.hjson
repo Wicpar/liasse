@@ -8,13 +8,13 @@
   spec: ["#mutations", "§8.3"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.paramconflict@1.0.0"
-    "$model": {
-      "n": "int = 0"
-      "s": "text = ''"
-      "$mut": {
-        "both": [
+    $liasse: 1
+    $app: "t.paramconflict@1.0.0"
+    $model: {
+      n: "int = 0"
+      s: "text = ''"
+      $mut: {
+        both: [
           ".n = @x"
           ".s = @x"
         ]

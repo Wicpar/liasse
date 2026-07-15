@@ -11,44 +11,44 @@
   tags: ["recursive", "boundary"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.rec_cycle@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.rec_cycle@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
       }
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "members": {
-          "$key": "account"
-          "account": { "$ref": "/accounts" }
-          "admin": "bool = false"
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        members: {
+          $key: "account"
+          account: { $ref: "/accounts" }
+          admin: "bool = false"
         }
-        "$roles": {
-          "admin": {
-            "$auth": "token"
-            "$members": ".members[:m | m.admin].account"
-            "company": {
-              "$view": ". { id, name }"
-              "$recursive": {
-                "$field": "subcompanies"
+        $roles: {
+          admin: {
+            $auth: "token"
+            $members: ".members[:m | m.admin].account"
+            company: {
+              $view: ". { id, name }"
+              $recursive: {
+                $field: "subcompanies"
                 // Invalid: the whole top-level collection is not a strict
                 // descendant relation of the current row.
-                "$through": "/companies[:c]"
-                "$bind": "child"
+                $through: "/companies[:c]"
+                $bind: "child"
               }
             }
           }
         }
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
     }

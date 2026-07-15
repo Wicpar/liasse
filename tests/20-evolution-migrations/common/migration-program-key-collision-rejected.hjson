@@ -28,8 +28,8 @@
     }
     $data: {
       items: {
-        a: { value: 1 }
-        b: { value: 2 }
+        a: { value: "1" }
+        b: { value: "2" }
       }
     }
   }

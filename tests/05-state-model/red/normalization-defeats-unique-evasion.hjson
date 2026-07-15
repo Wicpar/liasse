@@ -36,10 +36,10 @@ the second insert must reject through the candidate key (§5.7).'''
 
   steps: [
     { call: "public.users.add", args: { email: "admin@x.example" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // padded, upper-cased spelling of the same address normalizes to the stored value
     { call: "public.users.add", args: { email: "  ADMIN@X.EXAMPLE  " },
-      expect: { outcome: "rejected", violates: ["§5.7"], detail: "normalized email collides with an existing candidate-key value" } }
+      expect: { outcome: rejected, violates: ["§5.7"], detail: "normalized email collides with an existing candidate-key value" } }
     { watch: "public.users", id: "w1",
       expect_init: { value: [ { email: "admin@x.example" } ] } }
   ]

@@ -1,0 +1,59 @@
+{
+  // §22.7: for a successful call the runtime MUST (4) "advance every still-
+  // authorized subscription through the commit" and (5) "deliver the committed
+  // response" — in that order. §12.3: "Before returning `committed`, the runtime
+  // advances every still-authorized active subscription on the same logical
+  // client connection through the commit." So by the time the mutating call has
+  // returned `committed`, an existing live view on the SAME connection already
+  // reflects the new commit; no separate poll is needed.
+  //
+  // This is the positive companion to unchanged-noop-does-not-advance-frontier:
+  // there a no-op did NOT advance the subscription; here a real commit MUST.
+  format: 1
+  name: commit-advances-same-connection-subscription
+  suite: scenario
+  spec: ["#runtime", "§22.7", "§12.3"]
+  tags: ["coherence", "completion"]
+
+  package: {
+    $liasse: 1
+    $app: "t.advance@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "t = .tasks + { title: @title }"
+          "return t { id, title }"
+        ]
+      }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title, $sort: [title] }"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // A live view is open on c1 before the mutation; it starts empty.
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    {
+      call: "public.tasks.add"
+      args: { title: "new" }
+      on: "c1"
+      expect: { outcome: ok, completion: committed, value: { id: "$bind:t1", title: "new" } }
+    }
+    {
+      // The subscription on the same connection was advanced through the commit
+      // BEFORE `committed` was returned above (§22.7(4), §12.3): the view now
+      // shows the new row without any further action.
+      expect_view: { watch: "w1", value: [ { id: "$ref:t1", title: "new" } ] }
+    }
+  ]
+}

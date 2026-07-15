@@ -31,6 +31,6 @@
 
   steps: [
     { call: "public.items.add", args: { title: "x" },
-      expect: { outcome: "ok", value: { id: "$any:uuid", title: "x", done: false } } }
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "x", done: false } } }
   ]
 }

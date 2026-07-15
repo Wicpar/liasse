@@ -12,18 +12,18 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.seedkeyagree@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.seedkeyagree@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
     }
-    "$data": {
-      "companies": {
-        "acme": { "id": "acmeinc", "name": "Acme SAS" }
+    $data: {
+      companies: {
+        acme: { id: "acmeinc", name: "Acme SAS" }
       }
     }
   }

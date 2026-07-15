@@ -57,11 +57,11 @@ would leak the parent (or the good child).'''
     { watch: "public.orders", id: "w1", expect_init: { value: [] } }
     // one bad child row (qty 0) -> the complete insertion, parent included, rejects
     { call: "public.orders.add_all", args: { id: "o1" },
-      expect: { outcome: "rejected", violates: ["§5.5", "§5.10"], detail: "child row check failed: Quantity must be positive" } }
+      expect: { outcome: rejected, violates: ["§5.5", "§5.10"], detail: "child row check failed: Quantity must be positive" } }
     { expect_view: { watch: "w1", value: [] } }
     // filtered initializer passes; parent and its one valid line appear together
     { call: "public.orders.add_good", args: { id: "o2" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { expect_view: { watch: "w1", value: [
       { id: "o2", lines: [ { id: "l2", qty: 2 } ] }
     ] } }

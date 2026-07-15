@@ -8,7 +8,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.dupentry@1.0.0"
+    $app: "t.pkg.dupentry@1.0.0"
     $resources: {
       logo: {
         $path: "resources/logo.txt"
@@ -26,7 +26,7 @@
     { build_artifact: { as: "a1", files: { "resources/logo.txt": "logo-bytes-v1" } } }
     // append a SECOND entry with the same name and different bytes;
     // manifest checksums are not recomputed
-    { tamper_artifact: { artifact: "a1", add: { "resources/logo.txt": "logo-bytes-v2" } } }
+    { repack_artifact: { artifact: "a1", add: { "resources/logo.txt": "logo-bytes-v2" } } }
     { load_artifact: { from: "a1", expect: {
         outcome: invalid
         violates: ["#annex-d", "§D.5", "#package-structure", "§4.1"]

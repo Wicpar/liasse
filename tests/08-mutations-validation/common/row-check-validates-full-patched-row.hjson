@@ -8,28 +8,28 @@
   spec: ["#mutations", "§8.6", "§5.10", "§8.8"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.rowcheck@1.0.0"
-    "$model": {
-      "ranges": {
-        "$key": "id"
-        "id": "text"
-        "lo": "int"
-        "hi": "int"
-        "$check": [".lo <= .hi", "lo must not exceed hi"]
+    $liasse: 1
+    $app: "t.mut.rowcheck@1.0.0"
+    $model: {
+      ranges: {
+        $key: "id"
+        id: "text"
+        lo: "int"
+        hi: "int"
+        $check: [".lo <= .hi", "lo must not exceed hi"]
       }
-      "$mut": {
-        "set_lo": ".ranges[@id] { lo = @lo }"
+      $mut: {
+        set_lo: ".ranges[@id] { lo = @lo }"
       }
-      "$public": {
-        "ranges": {
-          "$view": ".ranges { id, lo, hi }"
-          "$mut": { "set_lo": ".set_lo" }
+      $public: {
+        ranges: {
+          $view: ".ranges { id, lo, hi }"
+          $mut: { set_lo: ".set_lo" }
         }
       }
     }
-    "$data": {
-      "ranges": { "r1": { "lo": "1", "hi": "3" } }
+    $data: {
+      ranges: { r1: { lo: "1", hi: "3" } }
     }
   }
 

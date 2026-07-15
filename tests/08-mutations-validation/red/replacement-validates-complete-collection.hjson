@@ -12,38 +12,38 @@
   tags: ["atomicity"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.replaceswap@1.0.0"
-    "$model": {
-      "users": {
-        "$key": "id"
-        "$unique": ["email"]
-        "id": "text"
-        "email": "text"
+    $liasse: 1
+    $app: "t.replaceswap@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        $unique: ["email"]
+        id: "text"
+        email: "text"
       }
-      "imports": {
-        "$key": "id"
-        "id": "text"
-        "email": "text"
+      imports: {
+        $key: "id"
+        id: "text"
+        email: "text"
       }
-      "$mut": {
-        "swap_all": [
+      $mut: {
+        swap_all: [
           ".users = .imports { id, email }"
           "return .users { id, email }"
         ]
       }
-      "$public": {
-        "users": { "$mut": { "swap_all": ".swap_all" } }
+      $public: {
+        users: { $mut: { swap_all: ".swap_all" } }
       }
     }
-    "$data": {
-      "users": {
-        "a": { "email": "a@x" }
-        "b": { "email": "b@x" }
+    $data: {
+      users: {
+        a: { email: "a@x" }
+        b: { email: "b@x" }
       }
-      "imports": {
-        "a": { "email": "b@x" }
-        "b": { "email": "a@x" }
+      imports: {
+        a: { email: "b@x" }
+        b: { email: "a@x" }
       }
     }
   }

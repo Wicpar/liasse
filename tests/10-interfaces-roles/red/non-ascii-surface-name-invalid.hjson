@@ -11,18 +11,18 @@
   tags: ["unicode"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.confusable_decl@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
+    $liasse: 1
+    $app: "t.confusable_decl@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
       }
-      "$public": {
+      $public: {
         // Invalid: surface name contains U+0430.
         "tаsks": {
-          "$view": ".tasks { id, title }"
+          $view: ".tasks { id, title }"
         }
       }
     }

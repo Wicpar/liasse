@@ -27,9 +27,9 @@
 
   steps: [
     { call: "public.things.add", args: { id: "t1", status: "archived" },
-      expect: { outcome: "rejected", violates: ["§5.9"], detail: "label is not in the declared enum" } }
+      expect: { outcome: rejected, violates: ["§5.9"], detail: "label is not in the declared enum" } }
     { call: "public.things.add", args: { id: "t1", status: "draft" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { watch: "public.things", id: "w1",
       expect_init: { value: [ { id: "t1", status: "draft" } ] } }
   ]

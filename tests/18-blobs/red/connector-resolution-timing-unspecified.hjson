@@ -2,20 +2,27 @@
   format: 1
   name: connector-resolution-timing-unspecified
   suite: scenario
-  spec: ["#blobs", "§18.3", "§18.12"]
+  spec: ["#blobs", "§18.3", "§18.12", "§2.1"]
   tags: ["blob", "loading", "unspecified"]
   note: '''
-    §18.3: "Store rows MAY be scoped to companies, users, or modules like
-    ordinary data" — so a store row, and the connector name it carries, can be
-    inserted at runtime. §18.12: "Loading validates connector capabilities
-    required by declared placement", but a connector named only by a
-    later-inserted store row is not knowable at load. The spec does not pin WHEN
-    an unregistered/ incapable connector named by runtime data is caught: at the
-    store-row insertion, at the first upload that routes to it, or never as a
-    load check. Here a store row naming an unregistered connector "ghost" is
-    inserted and then an upload targets it; §18 leaves the failure point open.
-    The insert is a plain data write (§18.3), so this case marks the *upload* as
-    unspecified while noting a runtime MAY instead reject the insert.
+    Genuine ambiguity in WHEN a connector named by *runtime* store data is
+    validated. §18.3: a store row carries the connector as an ordinary `text`
+    field and store rows "MAY be scoped to companies, users, or modules like
+    ordinary data" — which reads as: inserting a store row is a plain data
+    write, so a row naming an unregistered connector "ghost" is accepted
+    (`ok`). §18.12/§2.1, by contrast, tie connector validation to load
+    ("Loading validates connector capabilities required by declared placement";
+    "a package requiring an unavailable ... component fails validation before
+    activation"), and this store row IS routed to by a declared placement
+    (`$in: /stores['dynamic']`); a runtime MAY therefore extend that check to
+    the store-row write and reject the insert eagerly. §18 pins neither: it
+    names load-time validation but never says a store-row write that feeds a
+    declared placement must, or must not, revalidate its connector. So the
+    observable outcome of the INSERT is unspecified. (The downstream safety
+    floor — that no blob can land in a store whose connector is unregistered —
+    is covered deterministically by red/no-writable-store-rejects-upload; the
+    seeded/genesis form is covered by common/unregistered-connector-fails-load.
+    Only the runtime-write timing is open here.)
   '''
 
   package: {
@@ -43,41 +50,28 @@
           "s = .stores + { id: @id, connector: @connector }"
           "return s { id }"
         ]
-        add: [
-          "doc = .docs + { id: @id, file: @file }"
-          "return doc { id }"
-        ]
       }
       $public: {
         stores: { $mut: { add: ".add_store" } }
-        docs: { $mut: { add: ".add" } }
       }
     }
-    // No stores seeded; `primary`/`dynamic` created at runtime.
+    // No stores seeded; at load the placement view `/stores['dynamic']` yields
+    // nothing, so load-time connector validation (§18.12) has nothing to bind.
     $data: {}
   }
 
   hosts: {
-    // Only fs-a exists; the store row below will name "ghost".
+    // Only fs-a exists; the store row inserted below names "ghost".
     connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
   }
 
   steps: [
     { connect: "c1" }
-    // Ordinary data write of a store row that names an unregistered connector.
+    // Insert a store row whose connector "ghost" is unregistered and to which a
+    // declared placement routes. Ordinary-data reading -> ok; eager
+    // connector-validation reading -> rejected. §18 pins neither.
     { call: "public.stores.add", args: { id: "dynamic", connector: "ghost" }, on: "c1",
-      expect: { outcome: ok, value: { id: "dynamic" } } }
-    // Upload routed to that store: the spec pins no timing for the connector check.
-    { blob_put: {
-        call: "public.docs.add"
-        param: "file"
-        args: { id: "d1" }
-        content: "routed to ghost"
-        media: "text/plain"
-        on: "c1"
-      }
-      expect: { outcome: unspecified, violates: ["#blobs"],
-                detail: "§18 does not pin when a connector named by runtime store data is validated" } }
+      expect: { outcome: unspecified,
+                detail: "§18 pins load-time connector validation but not whether a runtime store-row write feeding a declared placement revalidates its connector" } }
   ]
 }
-</content>

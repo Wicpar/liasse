@@ -24,7 +24,7 @@ static validation rather than pick one of the two positions.'''
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["§5.9"]
     detail: "the $enum label list is not distinct: 'draft' is repeated"
   }

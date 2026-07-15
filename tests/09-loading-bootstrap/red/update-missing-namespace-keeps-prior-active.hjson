@@ -17,19 +17,19 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.needsns@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.needsns@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$public": {
-        "companies": {
-          "$view": ".companies { id, name }"
-          "$mut": {
-            "rename": [
+      $public: {
+        companies: {
+          $view: ".companies { id, name }"
+          $mut: {
+            rename: [
               ".companies[@id].name = @name"
               "return .companies[@id] { id, name }"
             ]
@@ -37,9 +37,9 @@
         }
       }
     }
-    "$data": {
-      "companies": {
-        "acme": { "name": "Acme SAS" }
+    $data: {
+      companies: {
+        acme: { name: "Acme SAS" }
       }
     }
   }
@@ -53,22 +53,22 @@
       expect_init: { value: [ { id: "acme", name: "Acme SAS" } ] } }
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.needsns@1.1.0"
-          "$requires": {
-            "password": "liasse.password@1"
+          $liasse: 1
+          $app: "t.needsns@1.1.0"
+          $requires: {
+            password: "liasse.password@1"
           }
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
             }
-            "$public": {
-              "companies": {
-                "$view": ".companies { id, name }"
-                "$mut": {
-                  "rename": [
+            $public: {
+              companies: {
+                $view: ".companies { id, name }"
+                $mut: {
+                  rename: [
                     ".companies[@id].name = @name"
                     "return .companies[@id] { id, name }"
                   ]
@@ -76,9 +76,9 @@
               }
             }
           }
-          "$data": {
-            "companies": {
-              "acme": { "name": "Acme SAS" }
+          $data: {
+            companies: {
+              acme: { name: "Acme SAS" }
             }
           }
         }
@@ -89,7 +89,7 @@
         detail: "required namespace contract liasse.password@1 is not registered; prior composition stays active"
       } }
     { call: "public.companies.rename", args: { id: "acme", name: "Acme 2" },
-      expect: { outcome: "ok", value: { id: "acme", name: "Acme 2" } } }
+      expect: { outcome: ok, value: { id: "acme", name: "Acme 2" } } }
     { expect_view: { watch: "w1", value: [ { id: "acme", name: "Acme 2" } ] } }
   ]
 }

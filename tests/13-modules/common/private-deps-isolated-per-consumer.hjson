@@ -12,74 +12,74 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "taxes": {
-                  "$view": { "$key": "id", "id": "text", "pct": "decimal" }
-                  "$mut": {
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                taxes: {
+                  $view: { $key: "id", id: "text", pct: "decimal" }
+                  $mut: {
                     "set({ id: text, pct: decimal })": {
-                      "$return": { "id": "text", "pct": "decimal" }
+                      $return: { id: "text", pct: "decimal" }
                     }
                   }
                 }
               }
             }
           }
-          "taxes_all": {
-            "$view": ".modules::taxes { module: modules.$key, id, pct, $sort: [module, id] }"
+          taxes_all: {
+            $view: ".modules::taxes { module: modules.$key, id, pct, $sort: [module, id] }"
           }
         }
-        "$public": {
-          "taxes": {
-            "$params": { "company": "text" }
-            "$view": "/companies[@company].taxes_all"
+        $public: {
+          taxes: {
+            $params: { company: "text" }
+            $view: "/companies[@company].taxes_all"
           }
-          "admin": {
-            "$mut": { "set": "/companies[@company].modules[@module]::taxes.set" }
+          admin: {
+            $mut: { set: "/companies[@company].modules[@module]::taxes.set" }
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     checkout: {
-      "$liasse": 1
-      "$module": "t.checkout@1.0.0"
-      "$deps": {
-        "tax": "t.tax@1"
+      $liasse: 1
+      $module: "t.checkout@1.0.0"
+      $deps: {
+        tax: "t.tax@1"
       }
-      "$expose": {
-        "taxes": {
-          "$view": "#tax.rates { id, pct }"
-          "$mut": { "set": "#tax.rates.set" }
+      $expose: {
+        taxes: {
+          $view: "#tax.rates { id, pct }"
+          $mut: { set: "#tax.rates.set" }
         }
       }
     }
     tax: {
-      "$liasse": 1
-      "$module": "t.tax@1.0.0"
-      "$model": {
-        "rates": { "$key": "id", "id": "text", "pct": "decimal = 10" }
-        "$mut": {
-          "set_rate": [
+      $liasse: 1
+      $module: "t.tax@1.0.0"
+      $model: {
+        rates: { $key: "id", id: "text", pct: "decimal = 10" }
+        $mut: {
+          set_rate: [
             "r = .rates[@id]"
             "r.pct = @pct"
             "return r { id, pct }"
           ]
         }
       }
-      "$data": { "rates": { "std": {} } }
-      "$expose": {
-        "rates": {
-          "$view": ".rates { id, pct }"
-          "$mut": { "set": ".set_rate" }
+      $data: { rates: { std: {} } }
+      $expose: {
+        rates: {
+          $view: ".rates { id, pct }"
+          $mut: { set: ".set_rate" }
         }
       }
     }
@@ -87,9 +87,9 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "co1", "$module": "t.checkout@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "co1", $module: "t.checkout@1.0.0" } }
       expect: { outcome: ok } }
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "co2", "$module": "t.checkout@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "co2", $module: "t.checkout@1.0.0" } }
       expect: { outcome: ok } }
     // change the rate through co1's boundary only
     { call: "public.admin.set", args: { company: "acme", module: "co1", id: "std", pct: "20" }

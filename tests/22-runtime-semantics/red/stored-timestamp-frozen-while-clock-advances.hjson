@@ -8,7 +8,7 @@
   format: 1
   name: stored-timestamp-frozen-while-clock-advances
   suite: scenario
-  spec: ["§22.5", "§22.6", "#runtime"]
+  spec: ["#runtime", "§22.5", "§22.6"]
   tags: ["time"]
 
   package: {

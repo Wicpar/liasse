@@ -8,33 +8,33 @@
   format: 1
   name: concurrent-withdrawals-serialize
   suite: scenario
-  spec: ["§22.3", "§22.4", "§8.8", "#mutations"]
+  spec: ["#mutations", "§22.3", "§22.4", "§8.8"]
   tags: ["ordering", "atomicity"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.race@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
-        "balance": "int"
-        "$mut": {
-          "withdraw": [
+    $liasse: 1
+    $app: "t.race@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        balance: "int"
+        $mut: {
+          withdraw: [
             "assert(.balance >= @amount, 'Insufficient funds')"
             ".balance = .balance - @amount"
           ]
         }
       }
-      "$public": {
-        "account": {
-          "$view": ".accounts { id, balance }"
-          "$mut": { "withdraw": ".accounts[@id].withdraw" }
+      $public: {
+        account: {
+          $view: ".accounts { id, balance }"
+          $mut: { withdraw: ".accounts[@id].withdraw" }
         }
       }
     }
-    "$data": {
-      "accounts": { "a1": { "balance": "100" } }
+    $data: {
+      accounts: { a1: { balance: "100" } }
     }
   }
 

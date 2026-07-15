@@ -2,7 +2,7 @@
   format: 1
   name: w4-plan-gates-template-disabled-not-exposed
   suite: scenario
-  spec: ["W4", "#modules", "§13.4", "§13.8"]
+  spec: ["#modules", "W4", "§13.4", "§13.8"]
   tags: [modules]
   note: '''
     The complement of the enabled case. Installed under Globex, whose plan is not

@@ -43,14 +43,14 @@ key fields.'''
   steps: [
     // the seeded member name decoded to the intended components
     { call: "public.routes.get", args: { ns: "a:b", name: "c" },
-      expect: { outcome: "ok", value: "seeded" } }
+      expect: { outcome: ok, value: "seeded" } }
     // ("a", "b:c") is a different composite key -> must not collide with the seeded row
     { call: "public.routes.add", args: { ns: "a", name: "b:c", target: "mutated" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.routes.get", args: { ns: "a", name: "b:c" },
-      expect: { outcome: "ok", value: "mutated" } }
+      expect: { outcome: ok, value: "mutated" } }
     { call: "public.routes.get", args: { ns: "a:b", name: "c" },
-      expect: { outcome: "ok", value: "seeded" } }
+      expect: { outcome: ok, value: "seeded" } }
     // composite order: ("a","b:c") sorts before ("a:b","c")
     { watch: "public.routes", id: "w1", expect_init: { value: [
       { ns: "a", name: "b:c", target: "mutated" }

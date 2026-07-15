@@ -41,10 +41,10 @@ non-canonical inputs.'''
   steps: [
     { call: "public.keys.add",
       args: { id: "0191c1a0-0000-7000-8000-000000000000", marker: "lower" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // same UUID, uppercased hex digits: acceptance/normalization is not pinned
     { call: "public.keys.add",
       args: { id: "0191C1A0-0000-7000-8000-000000000000", marker: "upper" },
-      expect: { outcome: "unspecified" } }
+      expect: { outcome: unspecified } }
   ]
 }

@@ -7,7 +7,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.rowcheck@1.0.0"
+    $app: "t.st.rowcheck@1.0.0"
     $model: {
       bookings: {
         $key: "id"
@@ -29,9 +29,9 @@
 
   steps: [
     { call: "public.bookings.add", args: { id: "b1", starts: 10, ends: 10 },
-      expect: { outcome: "rejected", violates: ["§5.10"], detail: "row check failed: The booking must end after it starts" } }
+      expect: { outcome: rejected, violates: ["§5.10"], detail: "row check failed: The booking must end after it starts" } }
     { call: "public.bookings.add", args: { id: "b1", starts: 10, ends: 20 },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { watch: "public.bookings", id: "w1",
       expect_init: { value: [ { id: "b1", starts: 10, ends: 20 } ] } }
   ]

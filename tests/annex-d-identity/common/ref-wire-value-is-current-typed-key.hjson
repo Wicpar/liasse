@@ -41,9 +41,9 @@ incarnation.'''
 
   steps: [
     { call: "public.posts.add_user", args: { id: "alice", name: "Alice" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.posts.add_post", args: { id: "p1", author: "alice" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // wire value is the target's current typed key
     { watch: "public.posts", id: "w1", expect_init: { value: [
       { id: "p1", author: "alice", author_name: "Alice" }
@@ -51,7 +51,7 @@ incarnation.'''
     // atomic rekey: the relationship (incarnation) is preserved, the visible
     // wire value now shows the new key
     { call: "public.posts.rekey_user", args: { old: "alice", new: "alice2" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { expect_view: { watch: "w1", value: [
       { id: "p1", author: "alice2", author_name: "Alice" }
     ] } }

@@ -12,48 +12,48 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text", label: "text" } }
               }
             }
           }
-          "catalog": {
-            "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
+          catalog: {
+            $view: ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
           }
         }
-        "$public": {
-          "catalog": {
-            "$params": { "company": "text" }
-            "$view": "/companies[@company].catalog"
+        $public: {
+          catalog: {
+            $params: { company: "text" }
+            $view: "/companies[@company].catalog"
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     tplk: {
-      "$liasse": 1
-      "$module": "t.tplk@1.0.0"
-      "$model": {
-        "templates": {
-          "$key": "id"
-          "id": "text"
-          "label": {
-            "$type": "text"
-            "$check": ["size(.) > 0", "A label is required"]
+      $liasse: 1
+      $module: "t.tplk@1.0.0"
+      $model: {
+        templates: {
+          $key: "id"
+          id: "text"
+          label: {
+            $type: "text"
+            $check: ["size(.) > 0", "A label is required"]
           }
         }
       }
-      "$expose": {
-        "templates": { "$view": ".templates { id, label }" }
+      $expose: {
+        templates: { $view: ".templates { id, label }" }
       }
     }
   }
@@ -62,9 +62,9 @@
   steps: [
     { module_install: { space: "/companies/acme/modules"
         request: {
-          "$name": "kit"
-          "$module": "t.tplk@1.0.0"
-          "$data": { "templates": { "bad": { "label": "" } } }
+          $name: "kit"
+          $module: "t.tplk@1.0.0"
+          $data: { templates: { bad: { label: "" } } }
         } }
       expect: { outcome: rejected, violates: ["§13.3"]
                 detail: "installation $data row fails the field $check during ordinary insertion validation" } }

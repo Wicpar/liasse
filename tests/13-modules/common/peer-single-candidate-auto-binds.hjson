@@ -12,48 +12,48 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "people": { "$view": { "$key": "id", "id": "text", "name": "text" } }
-                "roster": { "$view": { "$key": "id", "id": "text", "name": "text" } }
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                people: { $view: { $key: "id", id: "text", name: "text" } }
+                roster: { $view: { $key: "id", id: "text", name: "text" } }
               }
             }
           }
         }
-        "$public": {
-          "roster": {
-            "$view": '/companies["acme"].modules["sales"]::roster'
+        $public: {
+          roster: {
+            $view: '/companies["acme"].modules["sales"]::roster'
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     people: {
-      "$liasse": 1
-      "$module": "t.people@1.0.0"
-      "$model": {
-        "members": { "$key": "id", "id": "text", "name": "text" }
+      $liasse: 1
+      $module: "t.people@1.0.0"
+      $model: {
+        members: { $key: "id", id: "text", name: "text" }
       }
-      "$expose": {
-        "people": { "$view": ".members { id, name }" }
+      $expose: {
+        people: { $view: ".members { id, name }" }
       }
     }
     sales: {
-      "$liasse": 1
-      "$module": "t.sales@1.0.0"
-      "$use": {
-        "people": "t.people/people@1"
+      $liasse: 1
+      $module: "t.sales@1.0.0"
+      $use: {
+        people: "t.people/people@1"
       }
-      "$expose": {
-        "roster": { "$view": "#people { id, name }" }
+      $expose: {
+        roster: { $view: "#people { id, name }" }
       }
     }
   }
@@ -62,13 +62,13 @@
   steps: [
     { module_install: { space: "/companies/acme/modules"
         request: {
-          "$name": "people"
-          "$module": "t.people@1.0.0"
-          "$data": { "members": { "p1": { "name": "Alice" } } }
+          $name: "people"
+          $module: "t.people@1.0.0"
+          $data: { members: { p1: { name: "Alice" } } }
         } }
       expect: { outcome: ok } }
     // exactly one compatible sibling: no explicit $use binding required
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "sales", "$module": "t.sales@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "sales", $module: "t.sales@1.0.0" } }
       expect: { outcome: ok } }
     { watch: "public.roster", id: "w1"
       expect_init: { value: [ { id: "p1", name: "Alice" } ] } }

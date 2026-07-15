@@ -2,7 +2,7 @@
   format: 1
   name: w2-revoked-session-denies-future-requests
   suite: scenario
-  spec: ["W2", "#authentication", "§11.7", "§11.3"]
+  spec: ["#authentication", "W2", "§11.7", "§11.3"]
   tags: [authz, session, revocation]
   note: '''
     W2 revocation (§11.7): the session authenticator checks "!$session.revoked".

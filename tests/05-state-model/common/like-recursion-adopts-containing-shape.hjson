@@ -29,9 +29,9 @@
 
   steps: [
     { call: "public.categories.add_root", args: { id: "root", name: "Root" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.categories.add_child", args: { parent: "root", id: "leaf", name: "Leaf" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { watch: "public.categories", id: "w1", expect_init: { value: [
       { parent: "root", child: "leaf", name: "Leaf" }
     ] } }

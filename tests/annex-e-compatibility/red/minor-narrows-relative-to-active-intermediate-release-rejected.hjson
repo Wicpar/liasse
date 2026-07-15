@@ -17,60 +17,60 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.chain@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "region": "text?"
+    $liasse: 1
+    $app: "t.compat.chain@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        region: "text?"
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, name }" }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
       }
     }
-    "$data": { "companies": { "acme": { "name": "Acme" } } }
+    $data: { companies: { acme: { name: "Acme" } } }
   }
 
   steps: [
     // hop 1: widen genesis with an optional output field -> committed
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.chain@1.1.0"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
-              "region": "text?"
+          $liasse: 1
+          $app: "t.compat.chain@1.1.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
+              region: "text?"
             }
-            "$public": {
-              "companies": { "$view": ".companies { id, name, region }" }
+            $public: {
+              companies: { $view: ".companies { id, name, region }" }
             }
           }
-          "$data": { "companies": { "acme": { "name": "Acme" } } }
+          $data: { companies: { acme: { name: "Acme" } } }
         }
       }
       expect: { outcome: ok, result: committed } }
     // hop 2: drop `region` again -> narrows relative to the active 1.1.0
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.chain@1.2.0"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
-              "region": "text?"
+          $liasse: 1
+          $app: "t.compat.chain@1.2.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
+              region: "text?"
             }
-            "$public": {
-              "companies": { "$view": ".companies { id, name }" }
+            $public: {
+              companies: { $view: ".companies { id, name }" }
             }
           }
-          "$data": { "companies": { "acme": { "name": "Acme" } } }
+          $data: { companies: { acme: { name: "Acme" } } }
         }
       }
       expect: {

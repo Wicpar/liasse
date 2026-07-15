@@ -1,0 +1,73 @@
+{
+  // §23.5: host access bypasses external role authentication "while retaining the
+  // package's type rules, module boundaries, refs, deletion planning,
+  // constraints, meters, provider contracts, serial admission, and atomicity."
+  // A meter capacity limit is a §22.1 admission condition ("available meter
+  // capacity for new or changed spends") and §15.2 step 6 "rejects the complete
+  // transition when eligible capacity is insufficient." The attack: a trusted
+  // host operator tries to spend past the pool capacity, betting that operator
+  // power means unlimited resources. It does not — the operator bypasses AUTH,
+  // not meters. The over-cap operator spend is rejected exactly as an application
+  // spend would be, and leaves no partial spend row (proved by the subsequent
+  // exact-remaining spend succeeding, which is only possible if the rejected
+  // over-cap spend consumed nothing).
+  format: 1
+  name: operator-retains-meter-capacity
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "#meters", "§15.2", "#runtime", "§22.1"]
+  tags: ["operator", "meters", "escalation"]
+
+  package: {
+    $liasse: 1
+    $app: "t.opmeter@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          spend: [
+            "s = .spends + { amount: @amount }"
+            "return s { id, amount }"
+          ]
+        }
+      }
+      $public: {
+        wallet: { $view: ".users { id, balance: .credits.balance }" }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "10" } } } } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Operator spend beyond the 10-credit pool: meters are retained -> rejected.
+    { operator: { call: "users.u1.spend", args: { amount: "15" } },
+      expect: { outcome: rejected, violates: ["§15.2", "§23.5"] } }
+    // The pool is untouched: an operator spend of exactly the full balance admits.
+    { operator: { call: "users.u1.spend", args: { amount: "10" } },
+      expect: { outcome: ok, value: { id: "$any:uuid", amount: "10" } } }
+    // Now exhausted for everyone, operator included.
+    { operator: { call: "users.u1.spend", args: { amount: "1" } },
+      expect: { outcome: rejected, violates: ["§15.2", "§23.5"] } }
+    { watch: "public.wallet", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "0" } ] } }
+  ]
+}

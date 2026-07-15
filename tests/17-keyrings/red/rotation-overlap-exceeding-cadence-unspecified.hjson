@@ -25,15 +25,15 @@
   }
 
   package: {
-    "$liasse": 1
-    "$app": "t.keyrings@1.0.0"
-    "$model": {
-      "session_keys": {
-        "$keyring": {
-          "$provider": "test-kp"
-          "$algorithm": "Ed25519"
-          "$rotate": { "$every": "P30D", "$overlap": "P40D" }
-          "$retain": "P45D"
+    $liasse: 1
+    $app: "t.keyrings@1.0.0"
+    $model: {
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $algorithm: "Ed25519"
+          $rotate: { $every: "P30D", $overlap: "P40D" }
+          $retain: "P45D"
         }
       }
     }
@@ -41,7 +41,7 @@
 
   expect: {
     outcome: unspecified
-    violates: ["§17.1", "§17.4"]
+    
     detail: "$overlap P40D exceeds $every P30D; the spec neither rejects this statically nor defines the resulting schedule"
   }
 }

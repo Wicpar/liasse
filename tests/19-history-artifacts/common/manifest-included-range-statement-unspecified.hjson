@@ -45,7 +45,7 @@ archive coverage but has no restorability statement either.'''
     // Where does this artifact state its included range and restorability?
     { inspect_artifact: { artifact: "a1", expect: {
         outcome: unspecified
-        violates: ["§19.7", "§19.5"]
+        
     } } }
   ]
 }

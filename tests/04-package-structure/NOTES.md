@@ -39,10 +39,16 @@ steps.
   through `load_artifact`. This is required because such packages may
   declare `$resources` whose bytes exist only inside the built artifact.
 
-### `tamper_artifact`
+### `repack_artifact`
+
+This chapter's byte-surgery step operates **in place** on one built artifact
+label and can rebuild the ZIP container (`repack`) — a workflow the canonical
+`tamper_artifact` (derive-a-new-label, owned by §19; see the **Extended step
+registry** in `tests/FORMAT.md`) does not cover. It therefore has its own key,
+`repack_artifact`.
 
 ```hjson
-{ tamper_artifact: {
+{ repack_artifact: {
     artifact: "a1"
     set: { "<path>": "<content>" }        // replace bytes of an existing entry
     add: { "<path>": "<content>" }        // append a NEW entry, even when the

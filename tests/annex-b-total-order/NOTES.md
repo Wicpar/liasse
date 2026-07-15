@@ -15,17 +15,11 @@ observation (`restart`). Order is a pure function of values and identities
 ## Step vocabulary
 
 No new step keys are introduced. Cases use only `watch` / `expect_init`,
-`unwatch`, and `restart`, all defined in [FORMAT.md](../FORMAT.md).
-
-One **expectation-shape extension** is reused from the §5 corpus:
-
-- `expect_init: { outcome: unspecified }` — on a `watch` step, marks a read
-  whose ordering the spec does not pin, while package load and the watch
-  itself succeed. The harness records the observed order without judging, as
-  it does for a case-level `outcome: unspecified`. Used only by
-  `red/struct-field-name-order-unspecified.hjson`; its `note` explains the gap
-  (§B.4 / §D.2 use the term "canonical field-name order" without defining it
-  when it diverges from declaration order).
+`unwatch`, and `restart`, all defined in [FORMAT.md](../FORMAT.md). No
+expectation-shape extension is used: every `expect_init` asserts an ordered
+`value` array, and no case carries an `unspecified` outcome (§B.4's "canonical
+field-name order" was initially read as a spec gap but is in fact pinned — see
+the struct note below).
 
 ## Authoring conventions
 
@@ -71,11 +65,26 @@ One **expectation-shape extension** is reused from the §5 corpus:
   keys component-wise in `$key` order, each in its own §B.1 type order, so the
   `int` second component uses numeric (2 < 10), not the text order of the
   D.2-joined key string.
-- `red/struct-field-name-order-unspecified` — genuine ambiguity: "canonical
-  field-name order" (§B.4, §D.2) is undefined when declaration order differs
-  from field-name text order. The struct is declared `(b, a)`, the reverse of
-  text order, so the two readings disagree on the row order; recorded as
-  `unspecified`.
+- `red/struct-fields-compared-in-field-name-text-order` — §B.4's "canonical
+  field-name order" is NOT ambiguous once §5.1/§5.3 are applied: struct member
+  source order "has no semantic effect" and members are "unordered", so the
+  comparison order cannot be declaration order. The only name-derived canonical
+  order in Liasse is text order (§A.7 object keys "by the Liasse text order",
+  §D.4 member names "by Unicode scalar order"). So a struct compares its fields
+  in field-name text order (`a` before `b`). The struct is declared `(b, a)` to
+  defeat a declaration-order comparator; the correct order is a fixed assertion
+  (p2 before p1), not `unspecified`.
+- `red/mixed-direction-keys-apply-per-key-direction` — §7.3 (line "A leading
+  `-` reverses one key") and the §B.5 example `["-$until", "price"]` pin that a
+  `-` prefix reverses only its own key; the tiebreaker key stays ascending. The
+  case sorts `["-score", "name"]`, ties two rows on `score`, and asserts the
+  tie is broken by `name` ascending (`Ana` before `Zoe`), not descending. A
+  whole-comparison reversal is the bug it isolates.
+- `red/duration-exact-elapsed-order-not-text` — §B.1 orders `duration` by exact
+  elapsed time, while its wire form is an ISO-8601 string (A.1). A lexicographic
+  string sorter misorders (PT9M, the smallest, sorts last), so the case proves
+  the comparison is numeric-elapsed, not textual. Only `id` is projected so no
+  canonical duration spelling is asserted.
 
 ## Sorting by non-scalar fields
 

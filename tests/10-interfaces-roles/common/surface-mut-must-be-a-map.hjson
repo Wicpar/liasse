@@ -10,26 +10,26 @@
   tags: []
 
   package: {
-    "$liasse": 1
-    "$app": "t.mut_map@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
+    $liasse: 1
+    $app: "t.mut_map@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
       }
-      "$mut": {
-        "add_task": [
+      $mut: {
+        add_task: [
           "task = .tasks + { id: @id, title: @title }"
           "return task { id, title }"
         ]
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, title }"
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title }"
           // Invalid: $mut must be a map of external call names, not a bare
           // mutation reference.
-          "$mut": ".add_task"
+          $mut: ".add_task"
         }
       }
     }

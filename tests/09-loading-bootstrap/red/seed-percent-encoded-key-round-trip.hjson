@@ -15,21 +15,21 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.enckey@1.0.0"
-    "$model": {
-      "entries": {
-        "$key": "id"
-        "id": "text"
-        "label": "text"
+    $liasse: 1
+    $app: "t.enckey@1.0.0"
+    $model: {
+      entries: {
+        $key: "id"
+        id: "text"
+        label: "text"
       }
-      "$public": {
-        "entries": { "$view": ".entries { id, label }" }
+      $public: {
+        entries: { $view: ".entries { id, label }" }
       }
     }
-    "$data": {
-      "entries": {
-        "a%2Fb%3Ac%25d": { "label": "reserved characters" }
+    $data: {
+      entries: {
+        "a%2Fb%3Ac%25d": { label: "reserved characters" }
       }
     }
   }

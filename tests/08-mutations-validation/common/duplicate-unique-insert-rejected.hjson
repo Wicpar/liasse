@@ -8,23 +8,23 @@
   spec: ["#mutations", "§8.7", "§5.7", "§22.1"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.dupunique@1.0.0"
-    "$model": {
-      "users": {
-        "$key": "id"
-        "$unique": ["email"]
-        "id": "uuid = uuid()"
-        "email": "text"
+    $liasse: 1
+    $app: "t.dupunique@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        $unique: ["email"]
+        id: "uuid = uuid()"
+        email: "text"
       }
-      "$mut": {
-        "register": [
+      $mut: {
+        register: [
           "u = .users + { email: @email }"
           "return u { email }"
         ]
       }
-      "$public": {
-        "users": { "$mut": { "register": ".register" } }
+      $public: {
+        users: { $mut: { register: ".register" } }
       }
     }
   }

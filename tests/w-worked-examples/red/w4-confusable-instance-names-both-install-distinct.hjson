@@ -2,7 +2,7 @@
   format: 1
   name: w4-confusable-instance-names-both-install-distinct
   suite: scenario
-  spec: ["W4", "#modules", "§13.3", "§13.9"]
+  spec: ["#modules", "W4", "§13.3", "§13.9"]
   tags: [modules, unicode, identity]
   note: '''
     Identity-aliasing probe on instance names. §13.3: an instance name "is unique

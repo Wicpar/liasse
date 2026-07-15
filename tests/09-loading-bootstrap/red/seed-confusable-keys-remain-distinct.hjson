@@ -16,22 +16,22 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.confusable@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "script": "text"
+    $liasse: 1
+    $app: "t.ld.confusable@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        script: "text"
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, script }" }
+      $public: {
+        companies: { $view: ".companies { id, script }" }
       }
     }
-    "$data": {
-      "companies": {
-        "acme": { "script": "latin" }
-        "аcme": { "script": "cyrillic" }
+    $data: {
+      companies: {
+        acme: { script: "latin" }
+        "аcme": { script: "cyrillic" }
       }
     }
   }

@@ -10,7 +10,7 @@
   format: 1
   name: speculative-revalidation-three-way-withdraw
   suite: scenario
-  spec: ["§22.4", "§22.2", "#runtime"]
+  spec: ["#runtime", "§22.4", "§22.2", "§8.8"]
   tags: ["ordering", "concurrency", "atomicity"]
 
   package: {
@@ -47,11 +47,11 @@
     {
       concurrently: [
         [ { call: "public.account.withdraw", args: { id: "a1", amount: "60" }, on: "c1",
-            expect_one_of: [ { outcome: ok }, { outcome: rejected, violates: ["§22.4"] } ] } ]
+            expect_one_of: [ { outcome: ok }, { outcome: rejected, violates: ["§8.8", "§22.4"] } ] } ]
         [ { call: "public.account.withdraw", args: { id: "a1", amount: "60" }, on: "c2",
-            expect_one_of: [ { outcome: ok }, { outcome: rejected, violates: ["§22.4"] } ] } ]
+            expect_one_of: [ { outcome: ok }, { outcome: rejected, violates: ["§8.8", "§22.4"] } ] } ]
         [ { call: "public.account.withdraw", args: { id: "a1", amount: "60" }, on: "c3",
-            expect_one_of: [ { outcome: ok }, { outcome: rejected, violates: ["§22.4"] } ] } ]
+            expect_one_of: [ { outcome: ok }, { outcome: rejected, violates: ["§8.8", "§22.4"] } ] } ]
       ]
     }
     {

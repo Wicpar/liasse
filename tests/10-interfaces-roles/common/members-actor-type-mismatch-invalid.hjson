@@ -10,33 +10,33 @@
   tags: []
 
   package: {
-    "$liasse": 1
-    "$app": "t.members_type@1.0.0"
-    "$model": {
-      "accounts": {
-        "$key": "id"
-        "id": "text"
+    $liasse: 1
+    $app: "t.members_type@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
       }
-      "projects": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+      projects: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$auth": {
-        "token": {
-          "$credential": "text"
-          "$verify": "$credential"
-          "$actor": "/accounts[$proof]"
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
         }
       }
-      "$roles": {
-        "member": {
-          "$auth": "token"
+      $roles: {
+        member: {
+          $auth: "token"
           // Invalid: membership rows are projects, but the authenticator
           // resolves accounts.
-          "$members": ".projects"
-          "workspace": {
-            "$view": ".projects { id, name }"
+          $members: ".projects"
+          workspace: {
+            $view: ".projects { id, name }"
           }
         }
       }

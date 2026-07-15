@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: mixed-direction-keys-apply-per-key-direction
+  suite: scenario
+  spec: ["#annex-b", "§B.5", "§B.1"]
+  tags: ["ordering"]
+  note: '''
+    §7.3 / §B.5: "A leading `-` reverses ONE key" — the direction is per-key,
+    not per-sort. The §B.5 worked example is exactly this shape:
+    `$sort: ["-$until", "price"]` reverses only the first key and keeps the
+    second ascending. Sort keys still compare left-to-right (§B.5).
+
+    Attack: a comparator that applies the leading `-` to the WHOLE comparison
+    (reversing every key, or negating the final result) instead of to just the
+    first key. `$sort: ["-score", "name"]` means score DESCENDING, then, among
+    rows tied on score, name ASCENDING.
+
+    Rows:
+      c: score 9, name "Max"
+      a: score 5, name "Zoe"
+      b: score 5, name "Ana"
+      d: score 1, name "Bob"
+    Score descending groups the rows 9 > 5 > 1. Within the score-5 tie, name
+    ascending orders "Ana" (b) before "Zoe" (a). Correct order: c, b, a, d.
+    A whole-comparison reversal would order the score-5 tie by name DESCENDING
+    ("Zoe" before "Ana") and emit c, a, b, d — the exact bug this isolates.
+    Seed order is scrambled relative to the output.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.mixeddir@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        score: "int"
+        name: "text"
+      }
+      $public: {
+        ranked: { $view: ".rows { id, score, name, $sort: [-score, name] }" }
+      }
+    }
+    $data: {
+      rows: {
+        a: { score: 5, name: "Zoe" }
+        c: { score: 9, name: "Max" }
+        d: { score: 1, name: "Bob" }
+        b: { score: 5, name: "Ana" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.ranked", id: "w1",
+      expect_init: { value: [
+        { id: "c", score: 9, name: "Max" }
+        { id: "b", score: 5, name: "Ana" }
+        { id: "a", score: 5, name: "Zoe" }
+        { id: "d", score: 1, name: "Bob" }
+      ] } }
+  ]
+}

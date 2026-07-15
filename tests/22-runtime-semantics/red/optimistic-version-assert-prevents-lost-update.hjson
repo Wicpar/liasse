@@ -9,7 +9,7 @@
   format: 1
   name: optimistic-version-assert-prevents-lost-update
   suite: scenario
-  spec: ["§22.3", "§22.4", "#runtime"]
+  spec: ["#runtime", "§22.3", "§22.4", "§8.8"]
   tags: ["ordering", "concurrency"]
 
   package: {
@@ -49,12 +49,12 @@
         [ { call: "public.docs.accept", args: { id: "d1", expected_version: "0" }, on: "c1",
             expect_one_of: [
               { outcome: ok }
-              { outcome: rejected, violates: ["§22.4"] }
+              { outcome: rejected, violates: ["§8.8", "§22.4"] }
             ] } ]
         [ { call: "public.docs.accept", args: { id: "d1", expected_version: "0" }, on: "c2",
             expect_one_of: [
               { outcome: ok }
-              { outcome: rejected, violates: ["§22.4"] }
+              { outcome: rejected, violates: ["§8.8", "§22.4"] }
             ] } ]
       ]
     }

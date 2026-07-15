@@ -27,10 +27,10 @@
   }
 
   steps: [
-    { call: "public.companies.add", args: { id: "a", name: "Alpha" }, expect: { outcome: "ok" } }
-    { call: "public.companies.add", args: { id: "b", name: "Beta" }, expect: { outcome: "ok" } }
+    { call: "public.companies.add", args: { id: "a", name: "Alpha" }, expect: { outcome: ok } }
+    { call: "public.companies.add", args: { id: "b", name: "Beta" }, expect: { outcome: ok } }
     { call: "public.companies.rekey", args: { old: "a", new: "b" },
-      expect: { outcome: "rejected", violates: ["§5.4"], detail: "rekey collides with an existing key in the same parent" } }
+      expect: { outcome: rejected, violates: ["§5.4"], detail: "rekey collides with an existing key in the same parent" } }
     { watch: "public.companies", id: "w1", expect_init: { value: [
       { id: "a", name: "Alpha" }
       { id: "b", name: "Beta" }

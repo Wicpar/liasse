@@ -5,38 +5,42 @@
   tags: [deletion, patch, cascade]
   // Attack: plant an $on_delete patch that would violate a check, expecting it to
   // veto an unwanted deletion. §21.1: "Patches targeting a row that is itself
-  // deleted are ignored." Task t1 is cascade-deleted with its project; the patch
-  // its `sponsor` ref would apply (setting flag=true, which its own check forbids)
-  // is ignored because t1 is in the delete set, so the transition still succeeds.
+  // deleted are ignored." t1 references thc (cascade -> deletes t1) and thp
+  // (= patch setting flag=true, which its own $check forbids). Both referenced
+  // things are removed in ONE delete statement, so within that single plan the
+  // cascade puts t1 in the delete set AND thp's patch targets t1 simultaneously.
+  // Because t1 is itself deleted, the flag=true patch is ignored, the check never
+  // trips, and the transition succeeds with t1 gone.
+  //
+  // The two removals MUST occur in one plan (one statement). Two sequential
+  // delete statements would apply in order (§8.6): t1 would already be gone before
+  // thp's deletion, so its patch would never arise and the rule under test would
+  // not be exercised at all.
   spec: ["§21.1"]
 
   package: {
     $liasse: 1
     $app: "t.del@1.0.0"
     $model: {
-      projects: { $key: "id", id: "text" }
-      sponsors: { $key: "id", id: "text" }
+      things: { $key: "id", id: "text" }
       tasks: {
         $key: "id"
         id: "text"
         flag: "bool = false"
         $check: ["!.flag", "flag must stay false"]
-        project: {
-          $ref: "/projects"
-          $on_delete: "cascade"        // deleting the project deletes t1
+        c: {
+          $ref: "/things"
+          $on_delete: "cascade"        // deleting thc deletes t1
         }
-        sponsor: {
-          $ref: "/sponsors"
+        p: {
+          $ref: "/things"
           $optional: true
-          $on_delete: "= { sponsor: none, flag: true }"   // would break the check
+          $on_delete: "= { p: none, flag: true }"   // would break t1's check
         }
       }
       $mut: {
-        // delete the project AND the sponsor in one transition
-        purge: [
-          ".projects - @p"
-          ".sponsors - @s"
-        ]
+        // one statement, one delete plan, removes both referenced things
+        purge: "-.things[:x | x.id == @c || x.id == @p]"
       }
       tasks_view: { $view: ".tasks { id }" }
       $public: {
@@ -44,17 +48,16 @@
       }
     }
     $data: {
-      projects: { p1: {} }
-      sponsors: { s1: {} }
-      tasks: { t1: { project: "p1", sponsor: "s1" } }
+      things: { thc: {}, thp: {} }
+      tasks: { t1: { c: "thc", p: "thp" } }
     }
   }
 
   steps: [
     { watch: "public.tasks", id: "w1", expect_init: { value: [ { id: "t1" } ] } }
-    // t1 is deleted (cascade from p1); the flag=true patch from deleting s1 is
-    // ignored, so no check failure blocks the transition
-    { call: "public.tasks.purge", args: { p: "p1", s: "s1" }, expect: { outcome: ok, "...": true } }
+    // in one plan: thc cascades t1 into the delete set; thp's flag=true patch to
+    // t1 is ignored because t1 is itself deleted, so the check never trips
+    { call: "public.tasks.purge", args: { c: "thc", p: "thp" }, expect: { outcome: ok, "...": true } }
     { expect_view: { watch: "w1", value: [] } }
   ]
 }

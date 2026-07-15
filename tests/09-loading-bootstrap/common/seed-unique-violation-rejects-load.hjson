@@ -10,20 +10,20 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.seedunique@1.0.0"
-    "$model": {
-      "users": {
-        "$key": "id"
-        "$unique": ["email"]
-        "id": "text"
-        "email": "text"
+    $liasse: 1
+    $app: "t.seedunique@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        $unique: ["email"]
+        id: "text"
+        email: "text"
       }
     }
-    "$data": {
-      "users": {
-        "u1": { "email": "dup@example.org" }
-        "u2": { "email": "dup@example.org" }
+    $data: {
+      users: {
+        u1: { email: "dup@example.org" }
+        u2: { email: "dup@example.org" }
       }
     }
   }

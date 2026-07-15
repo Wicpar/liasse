@@ -68,9 +68,8 @@
     // Whether the blob's bytes appear under blobs/ is not pinned by §18/§19.
     { inspect_artifact: { artifact: "a1", expect: {
         outcome: unspecified
-        violates: ["#blobs", "#history"]
+        
         detail: "no normative rule defines which owned blob bytes a default export includes under blobs/"
     } } }
   ]
 }
-</content>

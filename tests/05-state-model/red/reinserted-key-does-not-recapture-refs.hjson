@@ -43,17 +43,17 @@ and it must remain cleared after the key is reinserted.'''
 
   steps: [
     { call: "public.posts.add_account", args: { id: "alice", name: "Alice" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { call: "public.posts.add_post", args: { id: "p1", author: "alice" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     // deletion clears the optional ref per its declared policy ($on_delete: none)
     { call: "public.posts.del_account", args: { id: "alice" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { watch: "public.posts", id: "w1",
       expect_init: { value: [ { id: "p1", author: "$absent" } ] } }
     // reinsert the same key: new incarnation (§D.1); the old ref must NOT re-attach
     { call: "public.posts.add_account", args: { id: "alice", name: "Mallory" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { expect_view: { watch: "w1", value: [ { id: "p1", author: "$absent" } ] } }
   ]
 }

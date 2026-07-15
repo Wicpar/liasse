@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: on-delete-patches-combine-disjoint-fields
+  suite: scenario
+  // §21.1: "Patches to a surviving row combine when they touch disjoint fields
+  // or assign the same resulting value." One delete plan removes th1 AND th2 in
+  // a single statement; the surviving task's two refs (a->th1, b->th2) each
+  // patch a DIFFERENT field. Because the touched fields are disjoint, both
+  // patches combine and the transition succeeds. (The conflicting-field variant
+  // is the red counterpart; both use one plan so the patches truly co-occur.)
+  spec: ["§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      things: { $key: "id", id: "text" }
+      tasks: {
+        $key: "id"
+        id: "text"
+        af: "text = 'x'"
+        bf: "text = 'y'"
+        a: {
+          $ref: "/things"
+          $optional: true
+          $on_delete: "= { a: none, af: 'A' }"
+        }
+        b: {
+          $ref: "/things"
+          $optional: true
+          $on_delete: "= { b: none, bf: 'B' }"
+        }
+      }
+      $mut: {
+        // one statement, one delete plan, removes both referenced things
+        purge: "-.things[:x | x.id == @a || x.id == @b]"
+      }
+      tasks_view: { $view: ".tasks { id, af, bf, a, b }" }
+      $public: {
+        tasks: { $view: ".tasks_view", $mut: { purge: ".purge" } }
+      }
+    }
+    $data: {
+      things: { th1: {}, th2: {} }
+      tasks: { t1: { a: "th1", b: "th2" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [
+      { id: "t1", af: "x", bf: "y", a: "th1", b: "th2" }
+    ] } }
+    // both patches land on t1 in one plan but touch disjoint fields -> combine
+    { call: "public.tasks.purge", args: { a: "th1", b: "th2" },
+      expect: { outcome: ok, "...": true } }
+    { expect_view: { watch: "w1", value: [
+      { id: "t1", af: "A", bf: "B", a: "$absent", b: "$absent" }
+    ] } }
+  ]
+}

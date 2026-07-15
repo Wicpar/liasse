@@ -13,62 +13,62 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "summary": { "$view": { "$key": "id", "id": "text" } }
-                "flags": { "$view": { "$key": "id", "id": "text", "billed": "bool" } }
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                summary: { $view: { $key: "id", id: "text" } }
+                flags: { $view: { $key: "id", id: "text", billed: "bool" } }
               }
             }
           }
         }
-        "$public": {
-          "flags": { "$view": '/companies["acme"].modules["report"]::flags' }
+        $public: {
+          flags: { $view: '/companies["acme"].modules["report"]::flags' }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     billing: {
-      "$liasse": 1
-      "$module": "t.billing@1.0.0"
-      "$model": {
-        "bills": { "$key": "id", "id": "text" }
+      $liasse: 1
+      $module: "t.billing@1.0.0"
+      $model: {
+        bills: { $key: "id", id: "text" }
       }
-      "$expose": {
-        "summary": { "$view": ".bills { id }" }
+      $expose: {
+        summary: { $view: ".bills { id }" }
       }
     }
     report: {
-      "$liasse": 1
-      "$module": "t.report@1.0.0"
-      "$use": {
-        "$optional": {
-          "billing": "t.billing/summary@1"
+      $liasse: 1
+      $module: "t.report@1.0.0"
+      $use: {
+        $optional: {
+          billing: "t.billing/summary@1"
         }
       }
-      "$model": {
-        "flags": { "$key": "id", "id": "text" }
+      $model: {
+        flags: { $key: "id", id: "text" }
       }
-      "$data": { "flags": { "f1": {} } }
-      "$expose": {
-        "flags": { "$view": ".flags { id, billed: has(#billing) }" }
+      $data: { flags: { f1: {} } }
+      $expose: {
+        flags: { $view: ".flags { id, billed: has(#billing) }" }
       }
     }
   }
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "billing", "$module": "t.billing@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "billing", $module: "t.billing@1.0.0" } }
       expect: { outcome: ok } }
     // single candidate: the optional handle binds at install
-    { module_install: { space: "/companies/acme/modules", request: { "$name": "report", "$module": "t.report@1.0.0" } }
+    { module_install: { space: "/companies/acme/modules", request: { $name: "report", $module: "t.report@1.0.0" } }
       expect: { outcome: ok } }
     { watch: "public.flags", id: "w1"
       expect_init: { value: [ { id: "f1", billed: true } ] } }

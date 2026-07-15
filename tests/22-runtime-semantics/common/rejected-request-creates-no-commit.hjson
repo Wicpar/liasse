@@ -6,7 +6,7 @@
   format: 1
   name: rejected-request-creates-no-commit
   suite: scenario
-  spec: ["§22.2", "§8.9", "#runtime"]
+  spec: ["#runtime", "§22.2", "§8.9"]
   tags: ["atomicity"]
 
   package: {
@@ -50,7 +50,8 @@
     }
     // Prior state intact; the rejection created no row and no commit.
     { call: "public.tasks.total", args: {}, on: "c1",
-      expect: { outcome: ok, completion: unchanged, value: 1 } }
+      // count(.tasks) is int; Annex A.1 wire form is a canonical base-10 string.
+      expect: { outcome: ok, completion: unchanged, value: "1" } }
     { watch: "public.tasks", on: "c1", id: "w1",
       expect_init: { value: [ { id: "t1", done: false } ] } }
   ]

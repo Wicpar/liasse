@@ -74,6 +74,27 @@ statically rejected as unsupported (§4.1). That deducible outcome is the
 no separate unspecified `$liasse` case exists because the concrete outcome is
 pinned.
 
+## Enum domain: input vs output asymmetry
+
+An enum is a *type* (§5.9), not a `$check`, so a mutation parameter inferred
+from an enum field inherits the enum's accepted-label set as part of its type
+(§8.3: "The resulting parameter shape is part of the external surface
+contract"). Annex E therefore treats the same structural change oppositely on
+each side of a boundary:
+
+- Input (parameter) domain — widening is compatible (E.4 "widening an ...
+  accepted enum domain"), narrowing is breaking (E.4 "narrowing a parameter
+  check or accepted enum domain"). Cases:
+  `minor-widens-input-enum-domain-accepted`,
+  `minor-narrows-input-enum-domain-rejected`.
+- Output (result) domain — narrowing/removal is breaking (E.5 "removing or
+  renaming an output member") and *widening an exhaustively declared enum
+  result* is also breaking (E.5). The red case
+  `enum-result-confusable-label-swap-rejected` exercises the output side.
+
+The input cases keep the enum field out of the projected view so the change
+touches only the input contract; the output case keeps it out of any parameter.
+
 ## Identity: declaration names vs label values
 
 The §2.5 ASCII-only rule constrains *declaration names* (surface addresses,

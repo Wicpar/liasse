@@ -29,7 +29,7 @@
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["#expressions"]
     detail: "equality between refs targeting different relations is statically incomparable"
   }

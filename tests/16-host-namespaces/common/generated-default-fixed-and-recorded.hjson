@@ -16,7 +16,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.genrecord@1.0.0"
+    $app: "t.ns.genrecord@1.0.0"
     $requires: {
       util: "test.util@1"
     }
@@ -57,7 +57,7 @@
 
   steps: [
     { call: "public.rows.add", args: {},
-      expect: { outcome: "ok", value: { id: "$bind:id1", token: "$bind:t1" } } }
+      expect: { outcome: ok, value: { id: "$bind:id1", token: "$bind:t1" } } }
     { restart: {} }
     { watch: "public.rows", id: "w1",
       expect_init: { value: [ { id: "$ref:id1", token: "$ref:t1" } ] } }

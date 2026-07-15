@@ -54,7 +54,7 @@ a portable capability to write arbitrary bytes into any instance.'''
       // replaying the foreign extract must be rejected: no referenced erasure
       // history point here, and no matching stub at the coordinate
       { reinsert: { extract: "e1" },
-        expect: { outcome: "invalid", violates: ["§21.3", "§D.7"],
+        expect: { outcome: invalid, violates: ["§21.3", "§D.7"],
                   detail: "extract references an erasure history point and stubs that do not exist in this instance" } }
       // the local row is untouched by the failed replay
       { watch: "public.notes", id: "w1", expect_init: { value: [

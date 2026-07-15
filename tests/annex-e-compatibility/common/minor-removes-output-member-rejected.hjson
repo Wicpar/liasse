@@ -14,19 +14,19 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.compat.rmout@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.compat.rmout@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, name }" }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
       }
     }
-    "$data": { "companies": { "acme": { "name": "Acme" } } }
+    $data: { companies: { acme: { name: "Acme" } } }
   }
 
   steps: [
@@ -34,20 +34,20 @@
       expect_init: { value: [ { id: "acme", name: "Acme" } ] } }
     { host_load: {
         package: {
-          "$liasse": 1
-          "$app": "t.compat.rmout@1.1.0"
-          "$model": {
-            "companies": {
-              "$key": "id"
-              "id": "text"
-              "name": "text"
+          $liasse: 1
+          $app: "t.compat.rmout@1.1.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
             }
-            "$public": {
+            $public: {
               // `name` removed from the boundary output — narrowing
-              "companies": { "$view": ".companies { id }" }
+              companies: { $view: ".companies { id }" }
             }
           }
-          "$data": { "companies": { "acme": { "name": "Acme" } } }
+          $data: { companies: { acme: { name: "Acme" } } }
         }
       }
       expect: {

@@ -1,0 +1,86 @@
+{
+  // §23.3: every implementation choice "MUST preserve declared ... values, ...
+  // atomicity, admission, ...". The reject is firm (not the softer §18.12
+  // "rejects or delays"): §18.4 says a new write "chooses the first branch whose
+  // complete requirements can currently be fulfilled, and rejects when none
+  // can"; §18.7 says the mutation "commits only after one complete policy branch
+  // is satisfied by verified landed copies." The single required store's
+  // connector is unavailable, so no verified copy can land, the only branch
+  // cannot be satisfied, and the upload is rejected while §18.12 preserves the
+  // already-committed blob. This exercises the §23 "misbehaving registered
+  // component" contract for a blob connector, matching the sibling authority
+  // tests/18-blobs/red/no-writable-store-rejects-upload. (Blob step vocabulary
+  // reused from tests/18-blobs/NOTES.md.)
+  format: 1
+  name: connector-failure-preserves-committed-state
+  suite: scenario
+  spec: ["#rust-host", "§23.3", "#blobs", "§18.4", "§18.7", "§18.12"]
+  tags: ["connector", "atomicity", "blob"]
+
+  package: {
+    $liasse: 1
+    $app: "t.connfail@1.0.0"
+    $requires: {}
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        params: "json = {}"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id, satisfied: .file.$satisfied }"
+        ]
+      }
+      $public: {
+        docs: {
+          $view: ".docs { id }"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: {
+      stores: { primary: { connector: "fs-a" } }
+    }
+  }
+
+  hosts: {
+    connectors: {
+      "fs-a": { capabilities: ["stream_upload", "stream_download", "checksum", "delete"] }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Healthy connector: first upload commits.
+    { blob_put: {
+        call: "public.docs.add", param: "file", args: { id: "d1" }
+        content: "alpha", media: "text/plain", on: "c1"
+      },
+      expect: { outcome: ok, value: { id: "d1", satisfied: true } } }
+    // Connector becomes unavailable.
+    { connector_set: { connector: "fs-a", available: false } }
+    // Second upload cannot land a verified copy -> rejected, no docs row.
+    { blob_put: {
+        call: "public.docs.add", param: "file", args: { id: "d2" }
+        content: "beta", media: "text/plain", on: "c1"
+      },
+      expect: { outcome: rejected, violates: ["§18.4", "§23.3"] } }
+    // Committed state preserved: only d1 exists.
+    { watch: "public.docs", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "d1" } ] } }
+  ]
+}

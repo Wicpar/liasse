@@ -41,12 +41,12 @@
     // Incoming host installs its own child instance at mount m1.
     { in_sandbox: "s1", steps: [
       { restore: { from: "a0" }, expect: { outcome: ok } }
-      { install_module: { space: "mods", name: "m1", module: "t.childnotes@1.0.0" },
+      { module_install: { space: "mods", request: { "$name": "m1", "$module": "t.childnotes@1.0.0" } },
         expect: { outcome: ok } }
       { export: { as: "a2" }, expect: { outcome: ok } }
     ] }
     // Local host installs an independent child instance at the same mount m1.
-    { install_module: { space: "mods", name: "m1", module: "t.childnotes@1.0.0" },
+    { module_install: { space: "mods", request: { "$name": "m1", "$module": "t.childnotes@1.0.0" } },
       expect: { outcome: ok } }
     { export: { as: "a_loc" }, expect: { outcome: ok } }
     { inspect_artifact: { artifact: "a_loc", expect: {

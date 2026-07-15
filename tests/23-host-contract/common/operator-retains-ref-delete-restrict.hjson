@@ -1,0 +1,50 @@
+{
+  // §23.5: host access retains "refs, deletion planning, ... atomicity." A ref
+  // with $on_delete: restrict (§5.6) "preserve[s] the target while this ref
+  // exists." A trusted host operator delete of a still-referenced target is NOT
+  // exempt: deletion planning rejects it exactly as for an application mutation.
+  // The operator bypasses AUTH, not referential integrity.
+  format: 1
+  name: operator-retains-ref-delete-restrict
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "#state-model", "§5.6", "#deletion"]
+  tags: ["operator", "refs", "deletion"]
+
+  package: {
+    $liasse: 1
+    $app: "t.opref@1.0.0"
+    $model: {
+      teams: { $key: "id", id: "text", name: "text" }
+      people: {
+        $key: "id"
+        id: "text"
+        team: { $ref: "/teams", $on_delete: "restrict" }
+      }
+      $mut: {
+        drop_team: [
+          ".teams - @id"
+          "return { removed: @id }"
+        ]
+        drop_person: [
+          ".people - @id"
+          "return { removed: @id }"
+        ]
+      }
+    }
+    $data: {
+      teams: { t1: { name: "Core" } }
+      people: { p1: { team: "t1" } }
+    }
+  }
+
+  steps: [
+    // Operator delete of the referenced team is blocked by restrict planning.
+    { operator: { call: "drop_team", args: { id: "t1" } },
+      expect: { outcome: rejected, violates: ["§5.6", "§23.5"] } }
+    // Remove the referencing person first, then the team delete is admissible.
+    { operator: { call: "drop_person", args: { id: "p1" } },
+      expect: { outcome: ok, value: { removed: "p1" } } }
+    { operator: { call: "drop_team", args: { id: "t1" } },
+      expect: { outcome: ok, value: { removed: "t1" } } }
+  ]
+}

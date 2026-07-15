@@ -7,24 +7,24 @@
   spec: ["#mutations", "§8.2", "§10.1"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.rowmut@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "done": "bool = false"
-        "$mut": { "complete": ".done = true" }
+    $liasse: 1
+    $app: "t.rowmut@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool = false"
+        $mut: { complete: ".done = true" }
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, done }"
-          "$mut": { "complete": ".tasks[@id].complete" }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, done }"
+          $mut: { complete: ".tasks[@id].complete" }
         }
       }
     }
-    "$data": {
-      "tasks": { "t1": {} }
+    $data: {
+      tasks: { t1: {} }
     }
   }
 

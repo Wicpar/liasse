@@ -57,7 +57,7 @@
           }
         }
       }
-      expect: { outcome: ok } }
+      expect: { outcome: ok, result: committed } }
     { watch: "public.items", id: "w1",
       expect_init: { outcome: unspecified } }
   ]

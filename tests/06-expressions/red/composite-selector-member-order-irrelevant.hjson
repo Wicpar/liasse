@@ -38,6 +38,6 @@
     // a positional binding would find the decoy row (rate 99); named
     // binding must find fr/std (rate 20)
     { call: "public.rates.read", args: { country: "fr", code: "std" },
-      expect: { outcome: "ok", value: [ { rate: "20" } ] } }
+      expect: { outcome: ok, value: [ { rate: "20" } ] } }
   ]
 }

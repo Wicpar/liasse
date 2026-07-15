@@ -11,29 +11,29 @@
   tags: []
 
   package: {
-    "$liasse": 1
-    "$app": "t.row_recv@1.0.0"
-    "$model": {
-      "projects": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
-        "$mut": {
-          "rename": [
+    $liasse: 1
+    $app: "t.row_recv@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        $mut: {
+          rename: [
             ".name = @name"
             "return . { id, name }"
           ]
         }
       }
-      "$public": {
-        "projects": {
-          "$view": ".projects { id, name }"
-          "$mut": { "rename": ".projects[@project].rename" }
+      $public: {
+        projects: {
+          $view: ".projects { id, name }"
+          $mut: { rename: ".projects[@project].rename" }
         }
       }
     }
-    "$data": {
-      "projects": { "p1": { "name": "Original" } }
+    $data: {
+      projects: { p1: { name: "Original" } }
     }
   }
 

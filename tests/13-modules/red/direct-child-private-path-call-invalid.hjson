@@ -15,21 +15,21 @@
 
   packages: {
     host: {
-      "$liasse": 1
-      "$app": "t.host@1.0.0"
-      "$model": {
-        "companies": {
-          "$key": "id"
-          "id": "text"
-          "name": "text"
-          "modules": {
-            "$modules": {
-              "$interfaces": {
-                "templates": {
-                  "$view": { "$key": "id", "id": "text", "label": "text" }
-                  "$mut": {
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: {
+                  $view: { $key: "id", id: "text", label: "text" }
+                  $mut: {
                     "create({ id: text, label: text })": {
-                      "$return": { "id": "text", "label": "text" }
+                      $return: { id: "text", label: "text" }
                     }
                   }
                 }
@@ -37,33 +37,33 @@
             }
           }
         }
-        "$public": {
-          "admin": {
-            "$mut": {
+        $public: {
+          admin: {
+            $mut: {
               // illegal: reaches a private $mut through "." instead of "::templates.create"
-              "create": '/companies["acme"].modules["kit"].create_template'
+              create: '/companies["acme"].modules["kit"].create_template'
             }
           }
         }
       }
-      "$data": { "companies": { "acme": { "name": "Acme" } } }
+      $data: { companies: { acme: { name: "Acme" } } }
     }
     tpl: {
-      "$liasse": 1
-      "$module": "t.tpl@1.0.0"
-      "$model": {
-        "templates": { "$key": "id", "id": "text", "label": "text" }
-        "$mut": {
-          "create_template": [
+      $liasse: 1
+      $module: "t.tpl@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+        $mut: {
+          create_template: [
             "t = .templates + { id: @id, label: @label }"
             "return t { id, label }"
           ]
         }
       }
-      "$expose": {
-        "templates": {
-          "$view": ".templates { id, label }"
-          "$mut": { "create": ".create_template" }
+      $expose: {
+        templates: {
+          $view: ".templates { id, label }"
+          $mut: { create: ".create_template" }
         }
       }
     }

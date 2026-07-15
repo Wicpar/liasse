@@ -39,9 +39,9 @@ emit ["high", "low", "medium"], and one preserving insertion order would emit
   steps: [
     // inserted as [high, low]; canonical read order is declaration order
     { call: "public.tickets.add", args: { id: "t1", levels: ["high", "low"] },
-      expect: { outcome: "ok", value: { id: "t1", levels: ["low", "high"] } } }
+      expect: { outcome: ok, value: { id: "t1", levels: ["low", "high"] } } }
     // added last, but "medium" reads in the middle
-    { call: "public.tickets.add_medium", args: { id: "t1" }, expect: { outcome: "ok" } }
+    { call: "public.tickets.add_medium", args: { id: "t1" }, expect: { outcome: ok } }
     { watch: "public.tickets", id: "w1",
       expect_init: { value: [ { id: "t1", levels: ["low", "medium", "high"] } ] } }
   ]

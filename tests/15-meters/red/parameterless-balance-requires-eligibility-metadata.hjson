@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: parameterless-balance-requires-eligibility-metadata
+  suite: static
+  spec: ["#meters", "§15.6"]
+  note: '''SPEC §15.6: the parameterless forms of a meter accessor are valid only when
+$eligible and source selection require no spend-specific member beyond the meter's
+default current time; when eligibility references $amount, $time, or named spend
+metadata, the accessor call MUST supply every referenced value. Here $eligible reads
+spend.feature, yet the public view calls .credits.balance with no context, so it cannot
+supply the required feature. The package fails validation. (Contrast the runtime red
+case ineligible-pool-does-not-fund-spend, which supplies feature through actual spends.)'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.balancenoctx@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+          feature: "text"
+        }
+        spends: {
+          $key: "id"
+          $consumes: { credits: { feature: ".feature" } }
+          id: "uuid = uuid()"
+          amount: "decimal"
+          feature: "text"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount, feature }" }
+            $eligible: "!has(pool.feature) || pool.feature == spend.feature"
+          }
+        }
+      }
+      $public: {
+        // .credits.balance is parameterless, but $eligible references spend.feature:
+        // the accessor cannot supply the required member, so the model is invalid.
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100", feature: "gpu" } } } } }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#meters", "§15.6"]
+    detail: "a parameterless .credits.balance cannot satisfy an $eligible that references spend.feature; every referenced spend value must be supplied"
+  }
+}

@@ -1,0 +1,61 @@
+{
+  // §16.3: a `pure` function is one where "same logical inputs produce the same
+  // output," and "Pure functions MAY run during views, checks, and replay."
+  // §23.3 requires an implementation to "materialize or compute views" while
+  // preserving declared values across strategies, and §22.1 says "Replay uses
+  // those recorded values." A pure function's result is therefore NOT required
+  // to be recorded — the runtime may recompute it, including on replay. The
+  // attack: a component declares effect `pure` but in fact returns a different
+  // value on each evaluation for identical inputs (op `drifting`, §23 NOTES).
+  // A view over it is computed once live and again after a restart-driven
+  // recompute; the two MAY diverge. SPEC.md assumes the component's declared
+  // effect class is truthful and does not pin the behavior when it is not, so
+  // the value observed after replay is unspecified.
+  format: 1
+  name: impure-pure-function-replay-divergence-unspecified
+  suite: scenario
+  spec: ["#host-namespaces", "§16.3", "#rust-host", "§23.3", "#runtime", "§22.1"]
+  tags: ["namespace", "effect-class", "replay", "nonconforming-host"]
+  note: "The component declares effect `pure` (§16.3) but returns a different value on each evaluation for the same input. §16.3 lets a pure result be recomputed rather than recorded, and §23.3/§22.1 let the runtime recompute a view on replay. The spec does not pin what happens when the declared purity is false, so the post-restart recomputed view value is unspecified (it may or may not equal the pre-restart value)."
+
+  package: {
+    $liasse: 1
+    $app: "t.driftpure@1.0.0"
+    $requires: { u: "test.util@1" }
+    $model: {
+      seed: { $key: "id", id: "text", n: "int" }
+      // Declared pure -> the runtime MAY recompute this view at any time.
+      drifted: { $view: "= u.g(/seed['only'].n)" }
+      $public: {
+        out: { $view: ".drifted" }
+      }
+    }
+    $data: { seed: { only: { n: 7 } } }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.0.0"
+        interface_hash: "ih-util-drift"
+        functions: {
+          // Declared pure, but op `drifting` returns a different value each call.
+          g: { signature: "(int) -> int", effect: "pure", op: "drifting" }
+        }
+      }
+    ]
+  }
+
+  steps: [
+    { connect: "c1" }
+    // First evaluation binds whatever the (falsely-pure) component returned.
+    { watch: "public.out", on: "c1", id: "w1",
+      expect_init: { value: "$bind:live" } }
+    { restart: {} }
+    // After replay the runtime MAY recompute; whether it equals $live is not
+    // pinned, because §16.3 purity was violated by the component.
+    { watch: "public.out", on: "c1", id: "w2",
+      expect_init: { outcome: unspecified } }
+  ]
+}

@@ -50,7 +50,7 @@ smuggling channel that survives inside an otherwise verified artifact.'''
     ] } }
     { in_sandbox: "s1", steps: [
       { restore: { from: "a1x" },
-        expect: { outcome: unspecified, violates: ["§19.5", "Annex D.5"] } }
+        expect: { outcome: unspecified } }
     ] }
   ]
 }

@@ -15,21 +15,21 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.stabletoken@1.0.0"
-    "$model": {
-      "items": {
-        "$key": "id"
-        "id": "text"
-        "token": "uuid = uuid()"
+    $liasse: 1
+    $app: "t.stabletoken@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        token: "uuid = uuid()"
       }
-      "$public": {
-        "items": { "$view": ".items { id, token }" }
+      $public: {
+        items: { $view: ".items { id, token }" }
       }
     }
-    "$data": {
-      "items": {
-        "a": {}
+    $data: {
+      items: {
+        a: {}
       }
     }
   }

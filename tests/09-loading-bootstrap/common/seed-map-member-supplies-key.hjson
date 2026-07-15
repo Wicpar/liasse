@@ -11,21 +11,21 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.seedkey@1.0.0"
-    "$model": {
-      "companies": {
-        "$key": "id"
-        "id": "text"
-        "name": "text"
+    $liasse: 1
+    $app: "t.seedkey@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
       }
-      "$public": {
-        "companies": { "$view": ".companies { id, name }" }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
       }
     }
-    "$data": {
-      "companies": {
-        "acme": { "name": "Acme SAS" }
+    $data: {
+      companies: {
+        acme: { name: "Acme SAS" }
       }
     }
   }

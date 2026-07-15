@@ -12,25 +12,25 @@
   tags: ["replay"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.genrecord@1.0.0"
-    "$model": {
-      "events": {
-        "$key": "id"
-        "id": "uuid = uuid()"
-        "at": "timestamp = now()"
-        "note": "text"
+    $liasse: 1
+    $app: "t.mut.genrecord@1.0.0"
+    $model: {
+      events: {
+        $key: "id"
+        id: "uuid = uuid()"
+        at: "timestamp = now()"
+        note: "text"
       }
-      "$mut": {
-        "log": [
+      $mut: {
+        log: [
           "e = .events + { note: @note }"
           "return e { id, at, note }"
         ]
       }
-      "$public": {
-        "events": {
-          "$view": ".events { id, at, note }"
-          "$mut": { "log": ".log" }
+      $public: {
+        events: {
+          $view: ".events { id, at, note }"
+          $mut: { log: ".log" }
         }
       }
     }

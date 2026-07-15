@@ -35,7 +35,7 @@
     { watch: "public.items", id: "w1",
       expect_init: { value: [ { id: "a", name: "old" } ] } }
     { call: "public.items.set_name", args: { id: "a", name: "Zed" },
-      expect: { outcome: "ok" } }
+      expect: { outcome: ok } }
     { expect_view: { watch: "w1", value: [ { id: "a", name: "Zed" } ] } }
   ]
 }

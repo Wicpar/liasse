@@ -42,10 +42,10 @@
     { call: "public.users.add", args: { id: "u1", secret: "s1" },
       expect: { outcome: ok, value: { id: "u1", secret: "s1" } } }
     { watch: "public.users", id: "wd", expect_init: { value: [ { id: "u1", secret: "s1" } ] } }
-    { watch: "public.stats", id: "wc", expect_init: { value: 1 } }
+    { watch: "public.stats", id: "wc", expect_init: { value: "1" } }
     { call: "public.users.erase", args: { id: "u1" }, expect: { outcome: ok, value: "$bind:extract" } }
     // gone from the raw view AND from the count-derived view
     { expect_view: { watch: "wd", value: [] } }
-    { expect_view: { watch: "wc", value: 0 } }
+    { expect_view: { watch: "wc", value: "0" } }
   ]
 }

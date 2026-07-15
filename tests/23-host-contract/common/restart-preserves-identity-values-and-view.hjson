@@ -1,0 +1,58 @@
+{
+  // §23.3: an implementation MAY "flatten or preserve the logical tree;
+  // materialize or compute views ...; encode history and indexes in any internal
+  // form." "Every choice MUST preserve declared identity, values, order,
+  // atomicity, admission, history, live-view, and completion behavior." This
+  // pins the §23.3 preservation clause across a stop-and-replay: a stored row's
+  // generated identity and values, AND a computed view derived from them, must be
+  // identical after restart regardless of whether the runtime materialized or
+  // recomputed either. §22.1 grounds the identity half: generated identifiers
+  // are "recorded with the commit" and "Replay uses those recorded values," so
+  // the generated `$key` uuids survive the restart unchanged.
+  format: 1
+  name: restart-preserves-identity-values-and-view
+  suite: scenario
+  spec: ["#rust-host", "§23.3", "#runtime", "§22.1"]
+  tags: ["durability", "replay", "view"]
+
+  package: {
+    $liasse: 1
+    $app: "t.freedom.replay@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "uuid = uuid()"
+        price: "int"
+        label: "text"
+      }
+      total: { $view: "= sum(.items[:i | true].price)" }
+      $mut: {
+        add: [
+          "i = .items + { price: @price, label: @label }"
+          "return i { id, price, label }"
+        ]
+      }
+      $public: {
+        items: { $view: ".items { id, price, label, $sort: [label] }" }
+        summary: { $view: ".total" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "public.items.add", args: { price: 30, label: "a" }, on: "c1",
+      expect: { outcome: ok, value: { id: "$bind:a", price: 30, label: "a" } } }
+    { call: "public.items.add", args: { price: 12, label: "b" }, on: "c1",
+      expect: { outcome: ok, value: { id: "$bind:b", price: 12, label: "b" } } }
+    { restart: {} }
+    // Identity and values of both rows survive with the exact generated keys.
+    { watch: "public.items", on: "c1", id: "w1",
+      expect_init: { value: [
+        { id: "$ref:a", price: 30, label: "a" }
+        { id: "$ref:b", price: 12, label: "b" }
+      ] } }
+    // The computed view is identical after replay (materialized or recomputed).
+    { watch: "public.summary", on: "c1", id: "w2", expect_init: { value: "42" } }
+  ]
+}

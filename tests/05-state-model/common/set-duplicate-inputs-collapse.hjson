@@ -34,11 +34,11 @@
   steps: [
     // duplicate inputs collapse to one member; canonical read order is ascending text
     { call: "public.items.add", args: { id: "i1", tags: ["b", "a", "b"] },
-      expect: { outcome: "ok", value: { id: "i1", tags: ["a", "b"] } } }
+      expect: { outcome: ok, value: { id: "i1", tags: ["a", "b"] } } }
     // adding an existing member succeeds and changes nothing
-    { call: "public.items.add_tag_a", args: { id: "i1" }, expect: { outcome: "ok" } }
+    { call: "public.items.add_tag_a", args: { id: "i1" }, expect: { outcome: ok } }
     // removing an absent member succeeds and changes nothing
-    { call: "public.items.remove_tag_z", args: { id: "i1" }, expect: { outcome: "ok" } }
+    { call: "public.items.remove_tag_z", args: { id: "i1" }, expect: { outcome: ok } }
     { watch: "public.items", id: "w1",
       expect_init: { value: [ { id: "i1", tags: ["a", "b"] } ] } }
   ]

@@ -24,7 +24,7 @@ load, never a runtime hang.'''
   }
 
   expect: {
-    outcome: "invalid"
+    outcome: invalid
     violates: ["§5.1"]
     detail: "the default dependency graph of a and b is cyclic"
   }

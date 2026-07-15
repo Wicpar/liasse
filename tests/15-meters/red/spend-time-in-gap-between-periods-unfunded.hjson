@@ -2,7 +2,7 @@
   format: 1
   name: spend-time-in-gap-between-periods-unfunded
   suite: scenario
-  spec: ["#meters", "§15.1", "#buckets", "§14.4"]
+  spec: ["#meters", "§15.1", "§15.2", "#buckets", "§14.4"]
   tags: [temporal]
   note: '''Two non-contiguous subscription periods for one account leave a coverage gap.
 Meter sources are evaluated at spend.$time (SPEC §15.1), and a source-backed bucket
@@ -91,8 +91,8 @@ at 2026-01-10 (gap) finds no active pool and rejects; the same amount at 2026-01
       expect: { outcome: ok, value: { id: "$any:uuid" } } }
     // 2026-01-10: in the gap, no pool active at the spend time
     { call: "public.wallet.consume_at", args: { account: "a1", amount: "10", at: "1768003200" },
-      expect: { outcome: rejected, violates: ["#meters", "§15.1"],
-                detail: "no credit period is active at the spend $time" } }
+      expect: { outcome: rejected, violates: ["#meters", "§15.1", "§15.2"],
+                detail: "no credit period is active at the spend $time; eligible capacity is zero" } }
     // 2026-01-18: inside sub2
     { call: "public.wallet.consume_at", args: { account: "a1", amount: "10", at: "1768694400" },
       expect: { outcome: ok, value: { id: "$any:uuid" } } }

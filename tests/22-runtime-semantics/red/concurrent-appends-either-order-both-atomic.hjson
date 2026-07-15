@@ -2,13 +2,23 @@
   // Attack: exploit an unordered concurrent race to make one append clobber
   // or drop the other. §22.3: "When the relation contains no path between two
   // concurrent requests, either relative order is valid." §22.4: "Two requests
-  // with no established precedence MAY appear in either order." But each is
-  // still one atomic admission at one serial position, so BOTH commit and the
-  // append accumulates: the result is "ab" or "ba" — never "a", "b", or "aa".
+  // with no established precedence MAY appear in either order." But each append
+  // is still ONE atomic admission at ONE serial position (§22.2: "A commit is
+  // final once admitted"), and the later serial position observes the earlier
+  // committed one (§22.4). So BOTH commit and the write accumulates: the final
+  // trace is "ab" or "ba" — never a lost update ("a", "b"), never a torn or
+  // duplicated write ("aa", "bb"). The order is free; losing either append is
+  // not.
+  //
+  // (No cross-connection "observer" step is used: the relative serial order of
+  // a c1 request and a c2 request that share no established precedence is not
+  // pinned — see cross-connection-sequential-order-unspecified — so a third
+  // append could interleave. The two committed writes alone determine the final
+  // trace up to their free order.)
   format: 1
   name: concurrent-appends-either-order-both-atomic
   suite: scenario
-  spec: ["§22.3", "§22.4", "#runtime"]
+  spec: ["#runtime", "§22.2", "§22.3", "§22.4"]
   tags: ["ordering", "concurrency", "atomicity"]
 
   package: {
@@ -46,20 +56,17 @@
             expect: { outcome: ok } } ]
       ]
     }
-    {
-      // A third request is serialized after both, so it observes both commits.
-      // Both serializations are valid; losing either append is not.
-      call: "public.board.append"
-      args: { id: "b1", c: "!" }
-      on: "c1"
-      expect: { outcome: ok }
-    }
+    // Both admissions are complete; the watch init reflects both commits on its
+    // frontier (FORMAT.md: value after all prior commits). Each append was
+    // atomic at its own serial position, so the trace carries BOTH characters;
+    // only their order is free. "a", "b", "aa", "bb" all indicate a lost or
+    // torn update and are forbidden.
     { watch: "public.board", on: "c1", id: "w1", expect_init: { value: "$any" } }
     {
       expect_view: { watch: "w1" }
       expect_one_of: [
-        { value: [ { id: "b1", trace: "ab!" } ] }
-        { value: [ { id: "b1", trace: "ba!" } ] }
+        { value: [ { id: "b1", trace: "ab" } ] }
+        { value: [ { id: "b1", trace: "ba" } ] }
       ]
     }
   ]

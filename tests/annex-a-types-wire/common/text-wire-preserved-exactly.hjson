@@ -1,0 +1,27 @@
+{
+  format: 1
+  name: text-wire-preserved-exactly
+  suite: scenario
+  spec: ["§A.1"]
+  tags: ["wire", "text"]
+  note: "Annex A.1: the canonical strict-JSON value of `text` is a 'JSON string, preserved exactly'. The field declares no $normalize, so no implicit trimming, case folding, or Unicode normalization applies (normalization in Liasse is the opt-in $normalize mechanism, e.g. string.trim in the §3.2 example). The seeded value carries significant leading and trailing spaces and an internal double space; the projection MUST return the identical JSON string, byte for byte — an implementation that auto-trims or collapses whitespace fails."
+
+  package: {
+    $liasse: 1
+    $app: "t.textwire@1.0.0"
+    $model: {
+      t: "text"
+      $public: {
+        v: { $view: ". { t }" }
+      }
+    }
+    $data: {
+      t: "  Read  the spec  "
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { t: "  Read  the spec  " } } }
+  ]
+}

@@ -16,19 +16,19 @@
   '''
 
   package: {
-    "$liasse": 1
-    "$app": "t.digest@1.0.0"
-    "$resources": {
-      "logo": {
-        "$path": "resources/logo.txt"
-        "$media": "text/plain"
-        "$sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    $liasse: 1
+    $app: "t.digest@1.0.0"
+    $resources: {
+      logo: {
+        $path: "resources/logo.txt"
+        $media: "text/plain"
+        $sha256: "0000000000000000000000000000000000000000000000000000000000000000"
       }
     }
-    "$model": {
-      "items": {
-        "$key": "id"
-        "id": "text"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
       }
     }
   }

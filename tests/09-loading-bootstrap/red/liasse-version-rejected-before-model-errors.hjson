@@ -16,13 +16,13 @@
   '''
 
   package: {
-    "$liasse": 99
-    "$app": "t.futurelang@1.0.0"
-    "$frobnicate": true
-    "$model": {
-      "bogus": {
-        "$key": "id"
-        "name": "text"
+    $liasse: 99
+    $app: "t.futurelang@1.0.0"
+    $frobnicate: true
+    $model: {
+      bogus: {
+        $key: "id"
+        name: "text"
       }
     }
   }

@@ -8,7 +8,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.jsonnull@1.0.0"
+    $app: "t.aa.jsonnull@1.0.0"
     $model: {
       j: "json"
       $public: {

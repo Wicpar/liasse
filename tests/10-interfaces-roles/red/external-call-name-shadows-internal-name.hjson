@@ -10,24 +10,24 @@
   tags: ["exposure"]
 
   package: {
-    "$liasse": 1
-    "$app": "t.name_shadow@1.0.0"
-    "$model": {
-      "tasks": {
-        "$key": "id"
-        "id": "text"
-        "title": "text"
+    $liasse: 1
+    $app: "t.name_shadow@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
       }
-      "$mut": {
-        "add_task": [
+      $mut: {
+        add_task: [
           "task = .tasks + { id: @id, title: @title }"
           "return task { id, title }"
         ]
       }
-      "$public": {
-        "tasks": {
-          "$view": ".tasks { id, title }"
-          "$mut": { "add": ".add_task" }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title }"
+          $mut: { add: ".add_task" }
         }
       }
     }

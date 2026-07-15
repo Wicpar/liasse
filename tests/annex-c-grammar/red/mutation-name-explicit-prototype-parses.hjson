@@ -14,7 +14,7 @@
 
   package: {
     $liasse: 1
-    $app: "t.prototype@1.0.0"
+    $app: "t.ac.prototype@1.0.0"
     $model: {
       doc: {
         note: "text = ''"

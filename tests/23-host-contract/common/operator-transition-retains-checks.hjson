@@ -1,0 +1,48 @@
+{
+  // §23.5: host access bypasses external role authentication "while retaining
+  // the package's type rules, ... constraints, ... serial admission, and
+  // atomicity." A field `$check` (§8.8) is a state constraint (§22.1). A trusted
+  // host operator transition is NOT exempt from it: an operator insert whose
+  // value fails the check is rejected exactly as an application mutation would
+  // be, and leaves no row. The isolating contrast is that the operator bypasses
+  // AUTH but not CONSTRAINTS.
+  format: 1
+  name: operator-transition-retains-checks
+  suite: scenario
+  spec: ["#rust-host", "§23.5", "#mutations", "§8.8", "§22.1"]
+  tags: ["operator", "constraints"]
+
+  package: {
+    $liasse: 1
+    $app: "t.opcheck@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        qty: {
+          $type: "int"
+          $check: [". > 0", "qty must be positive"]
+        }
+      }
+      $mut: {
+        add: [
+          "i = .items + { id: @id, qty: @qty }"
+          "return i { id, qty }"
+        ]
+      }
+    }
+  }
+
+  steps: [
+    // Operator insert violating the field check is rejected, no row created.
+    { operator: { call: "add", args: { id: "x", qty: 0 } },
+      expect: { outcome: rejected, violates: ["§8.8", "§23.5"] } }
+    // A valid operator insert then succeeds, proving only the check blocked it.
+    { operator: { call: "add", args: { id: "x", qty: 3 } },
+      expect: { outcome: ok, value: { id: "x", qty: 3 } } }
+    // The rejected insert left no trace: re-inserting the same key would collide
+    // if it had committed; instead only the valid row exists.
+    { operator: { call: "add", args: { id: "y", qty: 5 } },
+      expect: { outcome: ok, value: { id: "y", qty: 5 } } }
+  ]
+}

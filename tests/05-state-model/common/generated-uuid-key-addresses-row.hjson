@@ -31,9 +31,9 @@
 
   steps: [
     { call: "public.tasks.add", args: { title: "a" },
-      expect: { outcome: "ok", value: { id: "$bind:t1", title: "a" } } }
+      expect: { outcome: ok, value: { id: "$bind:t1", title: "a" } } }
     { call: "public.tasks.add", args: { title: "b" },
-      expect: { outcome: "ok", value: { id: "$bind:t2", title: "b" } } }
+      expect: { outcome: ok, value: { id: "$bind:t2", title: "b" } } }
     { watch: "public.tasks", id: "w1", expect_init: { value: [
       // sorted by title; the stored keys are exactly the returned generated keys
       { id: "$ref:t1", title: "a" }

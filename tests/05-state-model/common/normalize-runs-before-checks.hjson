@@ -35,9 +35,9 @@
   steps: [
     // normalized before the check, and the normalized value is the stored value
     { call: "public.notes.add", args: { id: "n1", title: "  hi  " },
-      expect: { outcome: "ok", value: { id: "n1", title: "hi" } } }
+      expect: { outcome: ok, value: { id: "n1", title: "hi" } } }
     // whitespace-only -> trims to "" -> check fails -> rejected
     { call: "public.notes.add", args: { id: "n2", title: "   " },
-      expect: { outcome: "rejected", violates: ["§5.1", "§8.8"], detail: "check failed after normalization: A title is required" } }
+      expect: { outcome: rejected, violates: ["§5.1", "§8.8"], detail: "check failed after normalization: A title is required" } }
   ]
 }

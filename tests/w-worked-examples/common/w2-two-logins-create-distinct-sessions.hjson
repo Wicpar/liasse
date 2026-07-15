@@ -2,7 +2,7 @@
   format: 1
   name: w2-two-logins-create-distinct-sessions
   suite: scenario
-  spec: ["W2", "#authentication", "§11.8", "§11.5"]
+  spec: ["#authentication", "W2", "§11.8", "§11.5"]
   tags: [authz, session]
   note: '''
     W2: "Each login call creates a distinct session row and returns a distinct

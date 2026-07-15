@@ -2,14 +2,14 @@
   format: 1
   name: w1-add-normalizes-title-and-applies-defaults
   suite: scenario
-  spec: ["W1", "#mutations", "§8.8", "#state-model", "§5.2"]
+  spec: ["W1", "#mutations", "§8.8", "#state-model", "§5.1", "§8.12"]
   tags: [normalize, defaults]
   note: '''
     End-to-end entry point of W1: public.tasks.add runs add_task, which inserts
     { title: @title }. §8.8 "Normalization runs before checks": the field
     $normalize "string.trim(.)" trims the surrounding ASCII whitespace before
     the size>0 check, so "  Write docs  " is stored as "Write docs". The
-    omitted fields take their declared defaults/generators: done = false (§5.2
+    omitted fields take their declared defaults/generators: done = false (§5.1
     field default), id = uuid() and created_at = now() (§8.12 generated once
     per admitted request). The add_task return projection { id, title, done,
     created_at } is evaluated from committed state.
