@@ -1,0 +1,12 @@
+[package]
+name = "liasse-testkit"
+description = "File-based conformance harness for the tests/ corpus"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

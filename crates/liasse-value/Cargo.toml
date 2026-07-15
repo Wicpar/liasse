@@ -1,0 +1,12 @@
+[package]
+name = "liasse-value"
+description = "Canonical Liasse types, wire values, and deterministic total order"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

@@ -1,0 +1,12 @@
+[package]
+name = "liasse-host"
+description = "Rust host component contract"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

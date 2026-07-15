@@ -1,0 +1,12 @@
+[package]
+name = "liasse-artifact"
+description = ".liasse artifact packing, manifests, and compatibility"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
