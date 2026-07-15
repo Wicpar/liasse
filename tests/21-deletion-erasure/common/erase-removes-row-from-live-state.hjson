@@ -1,0 +1,46 @@
+{
+  format: 1
+  name: erase-removes-row-from-live-state
+  suite: scenario
+  // §21.2: erase(row) plans the same live removal as ordinary deletion (step 1),
+  // then scrubs retained payload and returns the extract (step 6). This case
+  // asserts the deducible live-state effect: after an explicitly exposed erasure
+  // call, the row is gone from live views. (Extract shape is not pinned by the
+  // spec; see NOTES.md.)
+  spec: ["§21.2"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        secret: "text"
+      }
+      $mut: {
+        add: [
+          "u = .users + { id: @id, secret: @secret }"
+          "return u { id, secret }"
+        ]
+        erase_user: "return erase(.users[@id])"
+      }
+      all: { $view: ".users { id, secret, $sort: [id] }" }
+      $public: {
+        users: {
+          $view: ".all"
+          $mut: { add: ".add", erase: ".erase_user" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.users.add", args: { id: "u1", secret: "hunter2" },
+      expect: { outcome: ok, value: { id: "u1", secret: "hunter2" } } }
+    { watch: "public.users", id: "w1", expect_init: { value: [ { id: "u1", secret: "hunter2" } ] } }
+    { call: "public.users.erase", args: { id: "u1" }, expect: { outcome: ok, value: "$bind:extract" } }
+    // erased row is gone from live state
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

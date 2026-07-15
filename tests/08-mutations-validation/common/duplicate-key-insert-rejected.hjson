@@ -1,0 +1,54 @@
+{
+  // §5.4 keys are state constraints (§22.1) and §8.7: "The engine validates
+  // the complete resulting collection before admission." Inserting a row
+  // whose key already exists rejects the transition.
+  format: 1
+  name: duplicate-key-insert-rejected
+  suite: scenario
+  spec: ["#mutations", "§8.7", "§5.4", "§22.1"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.dupkey@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+      }
+      "$mut": {
+        "add": ".tasks + { id: @id, title: @title }"
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          "$mut": { "add": ".add" }
+        }
+      }
+    }
+    "$data": {
+      "tasks": { "t1": { "title": "first" } }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.tasks"
+      id: "w1"
+      expect_init: { value: [ { id: "t1", title: "first" } ] }
+    }
+    {
+      call: "public.tasks.add"
+      args: { id: "t1", title: "second" }
+      expect: {
+        outcome: rejected
+        violates: ["§5.4", "§22.1"]
+        detail: "inserted row collides with an existing collection key"
+      }
+    }
+    {
+      // All-or-nothing: the existing row is untouched.
+      expect_view: { watch: "w1", value: [ { id: "t1", title: "first" } ] }
+    }
+  ]
+}

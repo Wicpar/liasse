@@ -1,0 +1,37 @@
+{
+  format: 1
+  name: surface-mut-unknown-mutation-invalid
+  suite: static
+  // §10.1: "a value naming a declared mutation exposes that mutation" — the
+  // named mutation must exist. §9.2 load validation step 5 type-checks
+  // "state, expressions, surfaces, auth, ..."; §6: expression names are
+  // checked when the package is loaded. A surface referencing an undeclared
+  // mutation cannot validate.
+  spec: ["#interfaces", "§10.1", "#loading", "#expressions"]
+  tags: []
+
+  package: {
+    "$liasse": 1
+    "$app": "t.unknown_mut@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          // Invalid: no mutation named add_task is declared anywhere.
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces", "#loading"]
+    detail: "surface $mut references a mutation that does not exist"
+  }
+}

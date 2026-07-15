@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: decimal-numeric-equality-tiebroken-by-identity
+  suite: scenario
+  spec: ["#annex-b", "§B.1", "§B.5"]
+  tags: ["ordering"]
+  note: '''
+    §B.1 decimal: "mathematical decimal order; numerically equal canonical
+    values compare equal". Two attacks:
+      - Scale-as-value: "1.0" and "1.00" are numerically equal, so they compare
+        EQUAL for sorting; an implementation that ordered by scale or by text
+        would separate them. Being equal on the sort key, they fall to the
+        final row-identity tiebreaker (§B.5), which is key ascending: key
+        "k_a" precedes key "k_b".
+      - Magnitude vs text: "2" < "10" numerically, but a text sorter gives
+        "10" < "2". The value order must be numeric.
+    The view projects only `id`, so the case never asserts a canonical
+    trailing-zero spelling of decimal (Annex A does not pin that spelling for
+    this corpus). It asserts only ROW ORDER, which the two rules above fully
+    determine. decimal values are authored as strings per the corpus
+    convention.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.decimal@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        v: "decimal"
+      }
+      $public: {
+        by_v: { $view: ".rows { id, $sort: [v, id] }" }
+      }
+    }
+    $data: {
+      rows: {
+        k_d: { v: "10" }
+        k_b: { v: "1.0" }
+        k_c: { v: "2" }
+        k_a: { v: "1.00" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_v", id: "w1",
+      expect_init: { value: [
+        { id: "k_a" }
+        { id: "k_b" }
+        { id: "k_c" }
+        { id: "k_d" }
+      ] } }
+  ]
+}

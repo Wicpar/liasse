@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: inline-surface-program-is-atomic
+  suite: scenario
+  // §10.1: "a value containing a mutation expression or array defines an
+  // inline program for that surface" and "Mutation arrays remain atomic
+  // programs in every context." When the second statement fails admission,
+  // the first statement's insert must not survive.
+  spec: ["#interfaces", "§10.1", "#mutations", "#state-model"]
+  tags: ["atomicity"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.inline_atomic@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": {
+          "$type": "text"
+          "$check": ["size(.) > 0", "A title is required"]
+        }
+      }
+      "$public": {
+        "board": {
+          "$view": ".tasks { id, title }"
+          "$mut": {
+            // Inline program: the first insert is valid, the second always
+            // violates the title check, so the whole program must roll back.
+            "add_two": [
+              ".tasks + { id: @a, title: @title }"
+              ".tasks + { id: @b, title: '' }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.board", id: "w1", expect_init: { value: [] } }
+    { call: "public.board.add_two", args: { a: "t1", b: "t2", title: "First" },
+      expect: { outcome: rejected, violates: ["#state-model", "#interfaces"],
+                detail: "second statement fails its field check" } }
+    // The first insert must not be visible: the program is one atomic unit.
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

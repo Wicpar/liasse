@@ -1,0 +1,56 @@
+{
+  // Happy path of §8: a root mutation inserts one constructed row, binds it
+  // locally, and returns a projection evaluated from the committed state.
+  // The watch confirms the returned generated values are the committed ones.
+  format: 1
+  name: add-mutation-returns-committed-row
+  suite: scenario
+  spec: ["#mutations", "§8.1", "§8.4", "§8.10"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.addreturn@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "title": "text"
+        "done": "bool = false"
+      }
+      "$mut": {
+        "add_task": [
+          "t = .tasks + { title: @title }"
+          "return t { id, title, done }"
+        ]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title, done }"
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.tasks.add"
+      args: { title: "Ship the spec" }
+      // §8.4: an insertion constructing exactly one row returns that row.
+      // §8.10: the response is evaluated from the committed resulting state.
+      expect: {
+        outcome: ok
+        value: { id: "$bind:t1", title: "Ship the spec", done: false }
+      }
+    }
+    {
+      // The committed collection holds exactly the row the call returned,
+      // including its generated id (§8.12: produced once for the request).
+      watch: "public.tasks"
+      id: "w1"
+      expect_init: {
+        value: [ { id: "$ref:t1", title: "Ship the spec", done: false } ]
+      }
+    }
+  ]
+}

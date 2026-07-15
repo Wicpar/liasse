@@ -1,0 +1,27 @@
+{
+  format: 1
+  name: json-null-preserved-as-value
+  suite: scenario
+  spec: ["§A.1", "§A.7"]
+  tags: ["wire", "json"]
+  note: "Annex A.1: 'JSON null is a value of json.' Annex A.7: canonical JSON 'preserves JSON null'. A non-optional `json` field seeded with null projects to JSON null — it is a genuine present value, not absence, and must not be dropped from the projection."
+
+  package: {
+    $liasse: 1
+    $app: "t.jsonnull@1.0.0"
+    $model: {
+      j: "json"
+      $public: {
+        v: { $view: ". { j }" }
+      }
+    }
+    $data: {
+      j: null
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { j: null } } }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: check-on-struct-shape-checks-whole-row
+  suite: scenario
+  spec: ["#annex-c", "§C.3", "#state-model", "§5.10"]
+  note: "Annex C.3: 'A $check on an expanded field checks that field; on a struct or collection shape it checks the complete prospective struct or row.' §5.10: a $check on a struct shape sees '.' as the prospective struct after defaults/normalization, so it may reference several members. The insert that violates the cross-field predicate is rejected at admission."
+
+  package: {
+    $liasse: 1
+    $app: "t.structcheck@1.0.0"
+    $model: {
+      periods: {
+        $key: "id"
+        id: "uuid = uuid()"
+        starts_at: "timestamp"
+        ends_at: "timestamp"
+        $check: [".ends_at > .starts_at", "The period must advance"]
+      }
+      $mut: {
+        add: [
+          "p = .periods + { starts_at: @starts_at, ends_at: @ends_at }"
+          "return p { id }"
+        ]
+      }
+      all: { $view: ".periods { id }" }
+      $public: {
+        periods: {
+          $view: ".all"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.periods.add",
+      args: { starts_at: "2026-02-01T00:00:00Z", ends_at: "2026-01-01T00:00:00Z" },
+      expect: { outcome: rejected, violates: ["#state-model", "§5.10"] } }
+    { call: "public.periods.add",
+      args: { starts_at: "2026-01-01T00:00:00Z", ends_at: "2026-02-01T00:00:00Z" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+  ]
+}

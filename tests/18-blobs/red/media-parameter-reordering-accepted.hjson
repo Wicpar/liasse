@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: media-parameter-reordering-accepted
+  suite: scenario
+  spec: ["#blobs", "§18.2"]
+  tags: ["blob", "canonicalization", "ordering"]
+  note: '''
+    Adversarial reordering that must NOT change the outcome. §18.2: "parameters
+    are sorted by lowercase parameter name and compared exactly." The
+    declaration lists two parameters in one order; the upload supplies the same
+    two parameters in the reverse order and with upper-case parameter *names*.
+    After canonical lowercasing and name-sorting the parameter sets are equal,
+    so the upload must be accepted.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.paramorder@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain; charset=utf-8; boundary=abc"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      $public: { docs: { $mut: { add: ".add" } } }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "body"
+        media: "text/plain; BOUNDARY=abc; CHARSET=utf-8"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: { id: "d1" } } }
+  ]
+}
+</content>

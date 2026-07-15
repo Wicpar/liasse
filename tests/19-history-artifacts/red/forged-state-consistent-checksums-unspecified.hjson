@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: forged-state-consistent-checksums-unspecified
+  suite: scenario
+  tags: [tampering, integrity]
+  // Attack: edit one field value INSIDE the canonical state CBOR (leaving
+  // the embedded selection untouched) and recompute every manifest
+  // checksum. The artifact is now fully self-consistent: structure valid,
+  // every checksum matches, selection coherent.
+  note: '''§19.6 and Annex D.5 make checksums verify represented artifact
+CONTENT only, and state explicitly that "History points and ancestry use
+explicit identifiers ... Checksums protect represented artifact bytes."
+Nothing in §19 binds a point identifier cryptographically to the state it
+claims to represent, and no rule requires a restoring host to detect that
+the state bytes disagree with what the exporting host committed at that
+point. Whether a conforming implementation accepts this forged artifact
+(restoring silently wrong state under a genuine point id) or rejects it via
+some out-of-spec mechanism is unspecified. This is a real trust gap for
+artifacts exchanged between hosts: integrity is covered, authenticity is
+not.'''
+  spec: ["§19.6", "Annex D.5", "§19.8"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "true-value" },
+      expect: { outcome: ok, value: { id: "n1", body: "true-value" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      { edit_cbor: { path: "state/current.cbor.zst",
+                     pointer: "/state/notes/n1/body", value: "forged-value" } }
+      { fix_checksums: true }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: unspecified, violates: ["§19.6", "Annex D.5"] } }
+    ] }
+  ]
+}

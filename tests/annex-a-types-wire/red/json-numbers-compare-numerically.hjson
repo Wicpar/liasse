@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: json-numbers-compare-numerically
+  suite: scenario
+  spec: ["§A.7", "§B.3"]
+  tags: ["json", "identity", "boundary"]
+  note: '''Attack: respell a json number to forge a distinct value — 1 vs 1.0 vs 1.00 vs
+1e0. Annex A.7: canonical JSON 'emits numbers in the canonical JSON-number spelling', so
+all four collapse to one spelling; Annex B.3: json numbers use 'mathematical numeric
+order', under which they are equal. The engine-evaluated equality `.x == .y` must be
+true. An implementation that compares the raw lexical token would see them as different
+and wrongly report false.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.jsonnum@1.0.0"
+    $model: {
+      x: "json"
+      y: "json"
+      equal: "= .x == .y"
+      $public: {
+        v: { $view: ". { equal }" }
+      }
+    }
+    $data: {
+      x: 1
+      y: 1.0
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { equal: true } } }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  format: 1
+  name: undeclared-namespace-rejected-at-load
+  suite: static
+  spec: ["#expressions", "§6.5", "#host-namespaces", "§16.2"]
+  tags: ["escalation"]
+  note: "Attack: call into a host namespace the package never declared, reaching host functionality without a pinned contract. §6.5: only hex, base64, sha, string, convert, and time are built in; 'Packages MAY require additional typed namespaces' via $requires, and 'Package loading validates every function name, type, determinism class, and namespace contract.' §16.2: cbor is an external namespace. With no $requires entry the load must reject."
+
+  package: {
+    $liasse: 1
+    $app: "t.namespaces@1.0.0"
+    $model: {
+      name: "text"
+      digest: "= cbor.encode(.name)"
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#expressions", "#host-namespaces"]
+    detail: "expression uses namespace cbor which is neither core nor declared in $requires"
+  }
+}

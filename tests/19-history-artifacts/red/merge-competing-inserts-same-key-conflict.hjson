@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: merge-competing-inserts-same-key-conflict
+  suite: scenario
+  tags: [identity]
+  // Both sides insert a row with the SAME application key but different
+  // content. The keys collide but the incarnations are distinct (Annex D.1:
+  // insertion allocates an opaque immutable incarnation on each side).
+  // §19.9: the merge reports conflicts for "competing rekeys or
+  // identities" — it must not silently pick one row or fuse the two.
+  spec: ["§19.9", "Annex D.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // Shared base: empty collection at genesis + one unrelated row so the
+    // base point is a committed boundary.
+    { call: "public.notes.put", args: { id: "base", body: "anchor" },
+      expect: { outcome: ok, value: { id: "base", body: "anchor" } } }
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a0" }, expect: { outcome: ok } }
+      { call: "public.notes.put", args: { id: "k", body: "from-incoming" },
+        expect: { outcome: ok, value: { id: "k", body: "from-incoming" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    { call: "public.notes.put", args: { id: "k", body: "from-local" },
+      expect: { outcome: ok, value: { id: "k", body: "from-local" } } }
+    { reconcile: { from: "a2", policy: ["merge"] },
+      expect: { outcome: ok, value: {
+        relation: "merge", applied: false, conflicts: "$any", "...": true } } }
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "base", body: "anchor" }
+      { id: "k", body: "from-local" }
+    ] } }
+  ]
+}

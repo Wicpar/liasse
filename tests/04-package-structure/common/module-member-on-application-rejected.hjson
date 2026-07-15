@@ -1,0 +1,22 @@
+{
+  format: 1
+  name: module-member-on-application-rejected
+  suite: static
+  spec: ["#package-structure", "§4.1", "#annex-c", "§C.1"]
+  note: "§4.1: only a module definition 'MAY also declare $config, $use, $deps, $expose'. The Annex C.1 app-package grammar has no $config production, and §2.5 makes unknown members invalid."
+
+  package: {
+    $liasse: 1
+    $app: "t.notamodule@1.0.0"
+    $config: {}
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "§4.1", "#annex-c", "§C.1"]
+    detail: "$config is a module-definition member and is invalid on an application definition"
+  }
+}

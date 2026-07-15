@@ -1,0 +1,55 @@
+{
+  format: 1
+  name: nested-unique-scoped-per-parent
+  suite: scenario
+  spec: ["#state-model", "§5.7", "§B.5"]
+  tags: ["identity"]
+  note: '''Two opposite failure modes hunted at once: an implementation enforcing nested
+$unique globally would let one tenant block another tenant's member email (cross-tenant
+denial), and one not scoping correctly per row would miss real duplicates. §5.7:
+'Nested uniqueness is scoped to the parent row.' The same email must be accepted under
+two different parents and rejected within one parent.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.nesteduniq@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        members: {
+          $key: "id"
+          $unique: ["email"]
+          id: "text"
+          email: "text"
+        }
+      }
+      $public: {
+        members: {
+          $view: ".companies[:c].members[:m] { company: c.id, member: m.id, email: m.email }"
+          $mut: {
+            add_company: ".companies + { id: @id }"
+            add_member: ".companies[@company].members + { id: @id, email: @email }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.members.add_company", args: { id: "acme" }, expect: { outcome: "ok" } }
+    { call: "public.members.add_company", args: { id: "globex" }, expect: { outcome: "ok" } }
+    { call: "public.members.add_member", args: { company: "acme", id: "m1", email: "bob@x.example" },
+      expect: { outcome: "ok" } }
+    // same candidate value under a different parent row -> no conflict
+    { call: "public.members.add_member", args: { company: "globex", id: "m1", email: "bob@x.example" },
+      expect: { outcome: "ok" } }
+    // same candidate value under the same parent row -> rejected
+    { call: "public.members.add_member", args: { company: "acme", id: "m2", email: "bob@x.example" },
+      expect: { outcome: "rejected", violates: ["§5.7"] } }
+    { watch: "public.members", id: "w1", expect_init: { value: [
+      { company: "acme", member: "m1", email: "bob@x.example" }
+      { company: "globex", member: "m1", email: "bob@x.example" }
+    ] } }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: duplicate-key-insert-rejected
+  suite: scenario
+  spec: ["#state-model", "§5.4"]
+  note: "§5.4: 'A collection key is unique within its parent row.' Inserting a second row with the same key must reject the complete transition and leave the first row unchanged."
+
+  package: {
+    $liasse: 1
+    $app: "t.dupkey@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        companies: {
+          $view: ".companies { id, name }"
+          $mut: {
+            add: ".companies + { id: @id, name: @name }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1", expect_init: { value: [] } }
+    { call: "public.companies.add", args: { id: "acme", name: "First" },
+      expect: { outcome: "ok" } }
+    { call: "public.companies.add", args: { id: "acme", name: "Second" },
+      expect: { outcome: "rejected", violates: ["§5.4"], detail: "key already exists within the parent row" } }
+    { expect_view: { watch: "w1", value: [ { id: "acme", name: "First" } ] } }
+  ]
+}

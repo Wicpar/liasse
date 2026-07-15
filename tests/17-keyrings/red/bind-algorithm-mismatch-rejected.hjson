@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: bind-algorithm-mismatch-rejected
+  suite: scenario
+  tags: ["keys", "tampering"]
+  spec: ["#keyrings", "§17.4", "§17.6", "§17.3"]
+  // Attack: an operator (or a compromised automation) binds an externally
+  // created Ed25519 key into a keyring declared ES256. §17.4: the manual
+  // operation "binds an externally created provider handle, validates its
+  // public metadata, and activates it through the same transition" — the
+  // validation must reject metadata that contradicts the declared algorithm
+  // (§17.6 requires the algorithm/key type to match, and §17.6 rejects
+  // keyring activation with a capability diagnostic). No version may be
+  // activated by the failed attempt.
+  note: "The provider itself supports both algorithms, so the only defect is the key/declaration mismatch. The control bind proves the ring accepts a conforming ES256 key afterwards."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["ES256", "Ed25519"]
+        operations: ["sign"]
+        generate: false
+        bind: true
+        protection: "software"
+        external_keys: {
+          "good-es256": { algorithm: "ES256" }
+          "bad-ed25519": { algorithm: "Ed25519" }
+        }
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "ES256"
+          "$retain": "P45D"
+        }
+      }
+      "$public": {
+        "ring_current": { "$view": "/session_keys.$current" }
+      }
+    }
+  }
+
+  steps: [
+    { keyring_admin: { ring: "/session_keys", op: "bind_activate", external: "bad-ed25519" },
+      expect: { outcome: rejected, violates: ["§17.4", "§17.6"] } }
+    // Control: a matching external key binds and activates.
+    { keyring_admin: { ring: "/session_keys", op: "bind_activate", external: "good-es256" },
+      expect: { outcome: ok } }
+    { watch: "public.ring_current", id: "w1",
+      expect_init: { value: { id: "$any", algorithm: "ES256", activated_at: "$any:timestamp", "...": true } } }
+  ]
+}

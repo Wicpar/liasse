@@ -1,0 +1,82 @@
+{
+  format: 1
+  name: operation-id-unicode-confusable-distinct
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["unicode", "dedup"]
+  note: '''
+    Attack: use two operation identifiers that render identically ("op-cafe
+    with acute accent") but differ in code points: NFC U+00E9 vs NFD
+    U+0065 U+0301. §12.3 keys deduplication on "the same scoped identifier";
+    the identifier is an opaque value and nothing in the specification
+    licenses Unicode normalization of it. Distinct code-point sequences are
+    therefore distinct identifiers: the second call is a new operation (not a
+    dedup hit, and not a mismatched-reuse rejection), and both commits exist.
+    An implementation that normalizes identifiers would conflate the two and
+    fail this case. The identifiers are spelled with explicit \\u escapes so
+    the byte-level difference survives any file-level normalization.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    // NFC: "op-caf<U+00E9>-..." (precomposed e-acute)
+    {
+      call: "public.tasks.add"
+      args: { title: "x" }
+      on: "c1"
+      operation_id: "op-caf\u00e9-8a41d27c90e5f3b6"
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "x" } }
+    }
+    // NFD: "op-cafe<U+0301>-..." (e + combining acute) - same rendering,
+    // different identifier. The arguments differ too ("y"): if an
+    // implementation wrongly normalized and conflated the identifiers, this
+    // would be a mismatched reuse and reject; correct behavior is a fresh,
+    // independent operation.
+    {
+      call: "public.tasks.add"
+      args: { title: "y" }
+      on: "c1"
+      operation_id: "op-cafe\u0301-8a41d27c90e5f3b6"
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "y" } }
+    }
+    {
+      expect_view: {
+        watch: "w1"
+        value: [
+          { id: "$any:uuid", title: "x" }
+          { id: "$any:uuid", title: "y" }
+        ]
+      }
+    }
+  ]
+}

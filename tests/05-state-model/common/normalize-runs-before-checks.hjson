@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: normalize-runs-before-checks
+  suite: scenario
+  spec: ["#state-model", "§5.1", "§8.8"]
+  note: "§8.8: 'Normalization runs before checks.' A padded title passes the non-empty check because it is trimmed first, and the stored value is the normalized one; a whitespace-only title normalizes to the empty string and the check must then reject it."
+
+  package: {
+    $liasse: 1
+    $app: "t.normalize@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        title: {
+          $type: "text"
+          $normalize: "string.trim(.)"
+          $check: ["size(.) > 0", "A title is required"]
+        }
+      }
+      $public: {
+        notes: {
+          $view: ".notes { id, title }"
+          $mut: {
+            add: [
+              "row = .notes + { id: @id, title: @title }"
+              "return row { id, title }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // normalized before the check, and the normalized value is the stored value
+    { call: "public.notes.add", args: { id: "n1", title: "  hi  " },
+      expect: { outcome: "ok", value: { id: "n1", title: "hi" } } }
+    // whitespace-only -> trims to "" -> check fails -> rejected
+    { call: "public.notes.add", args: { id: "n2", title: "   " },
+      expect: { outcome: "rejected", violates: ["§5.1", "§8.8"], detail: "check failed after normalization: A title is required" } }
+  ]
+}

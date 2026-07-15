@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: pass-through-view-returns-source-rows
+  suite: scenario
+  spec: ["#views", "§7.1", "§B.5"]
+  note: "§7.1: a pass-through view (\"$view\": \".projects\") selects its source with no projection block, so every source field is visible. §B.5: a collection defaults to key ascending, so the two rows appear in key order p1, p2."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewpass@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        index: { $view: ".projects" }
+      }
+    }
+    $data: {
+      projects: {
+        p1: { name: "Alpha" }
+        p2: { name: "Beta" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.index", id: "w1",
+      expect_init: { value: [ { id: "p1", name: "Alpha" }, { id: "p2", name: "Beta" } ] } }
+  ]
+}

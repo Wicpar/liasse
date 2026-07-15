@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: no-operation-id-is-not-deduplicated
+  suite: scenario
+  spec: ["§D.8", "§12"]
+  tags: ["idempotency"]
+  note: '''Attack (negative space): assume the runtime silently deduplicates
+identical-looking calls even without an operation identifier, so a double-submit is
+harmless. §12: "A call without an identifier is a new operation on every
+submission." §D.8 scopes at-most-once behaviour to a "client-supplied high-entropy
+identifier"; with no identifier there is no retained request digest to match. Two
+identical submissions of an insert that allocates a fresh uuid key therefore each
+execute and produce a distinct row. At-most-once requires the client to actually
+supply the identifier; the runtime does not infer idempotency from payload
+equality.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.noopid@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        body: "text"
+      }
+      $public: {
+        notes: {
+          $view: ".notes { id, body, $sort: [id] }"
+          $mut: {
+            add: [
+              "n = .notes + { body: @body }"
+              "return n { id, body }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.add", args: { body: "dup" },
+      expect: { outcome: ok, value: { id: "$bind:id1", body: "dup" } } }
+    // identical payload, no op_id -> a brand new operation, executes again
+    { call: "public.notes.add", args: { body: "dup" },
+      expect: { outcome: ok, value: { id: "$bind:id2", body: "dup" } } }
+    // two distinct rows exist
+    { watch: "public.notes", id: "w1", expect_init: { value: { $unordered: [
+      { id: "$ref:id1", body: "dup" }
+      { id: "$ref:id2", body: "dup" }
+    ] } } }
+  ]
+}

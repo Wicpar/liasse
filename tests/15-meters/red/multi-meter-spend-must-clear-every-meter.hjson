@@ -1,0 +1,82 @@
+{
+  format: 1
+  name: multi-meter-spend-must-clear-every-meter
+  suite: scenario
+  spec: ["#meters", "§15.1", "§15.2", "#runtime", "§22.2"]
+  note: '''The object form of $consumes maps one spend to several meters (§15.1). A spend
+that fits the credits meter but exceeds the tokens meter must reject as one atomic
+transition — the credits meter must show no partial drain afterwards. Attack angle:
+using a well-funded meter to smuggle consumption past a scarcer one.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.multi@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups_c: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        topups_t: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: { credits: ".amount", tokens: ".amount" }
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups_c { $quantity: .amount }" }
+          }
+          tokens: {
+            $sources: { topup: ".topups_t { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, credits: .credits.balance, tokens: .tokens.balance }"
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: {
+      users: {
+        u1: {
+          topups_c: { c1: { amount: "100" } }
+          topups_t: { t1: { amount: "15" } }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // credits would fit (100), tokens do not (15 < 50): the whole spend rejects
+    { call: "public.wallet.consume", args: { user: "u1", amount: "50" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"],
+                detail: "the tokens meter lacks eligible capacity" } }
+    // neither meter was partially drained
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", credits: "100", tokens: "15" } ] } }
+    // a spend clearing both meters drains both
+    { call: "public.wallet.consume", args: { user: "u1", amount: "10" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { expect_view: { watch: "w1",
+      value: [ { id: "u1", credits: "90", tokens: "5" } ] } }
+  ]
+}

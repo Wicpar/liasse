@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: field-default-applies-when-omitted
+  suite: scenario
+  spec: ["#state-model", "§5.1"]
+  note: "A default supplies the insertion-time value when the caller omits the field (§5.1). `done` is omitted and must come back false; the generated `id` default must produce a well-formed uuid."
+
+  package: {
+    $liasse: 1
+    $app: "t.defaults@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        done: "bool = false"
+      }
+      $public: {
+        items: {
+          $view: ".items { id, title, done }"
+          $mut: {
+            add: [
+              "row = .items + { title: @title }"
+              "return row { id, title, done }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.items.add", args: { title: "x" },
+      expect: { outcome: "ok", value: { id: "$any:uuid", title: "x", done: false } } }
+  ]
+}

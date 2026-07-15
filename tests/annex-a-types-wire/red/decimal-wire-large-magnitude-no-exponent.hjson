@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: decimal-wire-large-magnitude-no-exponent
+  suite: scenario
+  spec: ["§A.1", "§A.6"]
+  tags: ["wire", "decimal", "boundary"]
+  note: '''Attack: a large-magnitude exact decimal. A float-backed implementation renders
+10^20 in scientific notation ("1E+20") or loses precision. Annex A.6: decimal
+multiplication is exact, so 10000000000 * 10000000000 = 100000000000000000000 exactly;
+Annex A.1: the decimal wire form is a 'JSON string, no exponent'. The value MUST be the
+plain-notation string of twenty-one characters, never an exponent form and never a JSON
+number. Computed via arithmetic, not echoed.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.decbig@1.0.0"
+    $model: {
+      a: "decimal"
+      sq: "= .a * .a"
+      $public: {
+        v: { $view: ". { sq }" }
+      }
+    }
+    $data: {
+      a: "10000000000"
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { sq: "100000000000000000000" } } }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: computed-none-is-absent-optional
+  suite: scenario
+  spec: ["#state-model", "§5.2"]
+  note: "§5.2: 'A computed expression yielding none produces an absent optional value.' The computed member must be absent from the result, not null or empty."
+
+  package: {
+    $liasse: 1
+    $app: "t.computed_none@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        email: "text?"
+        contact: "= .email"
+      }
+      $public: {
+        people: {
+          $view: ".people { name, contact }"
+          $mut: {
+            add: [
+              "row = .people + { id: @id, name: @name }"
+              "return row { name, contact }"
+            ]
+            add_with_email: [
+              "row = .people + { id: @id, name: @name, email: @email }"
+              "return row { name, contact }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // email omitted -> none -> computed value is absent
+    { call: "public.people.add", args: { id: "p1", name: "a" },
+      expect: { outcome: "ok", value: { name: "a", contact: "$absent" } } }
+    // email present -> computed value mirrors it
+    { call: "public.people.add_with_email", args: { id: "p2", name: "b", email: "b@x.example" },
+      expect: { outcome: "ok", value: { name: "b", contact: "b@x.example" } } }
+  ]
+}

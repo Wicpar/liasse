@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: namespace-type-key-eligibility-unspecified
+  suite: static
+  spec: ["#host-namespaces"]
+  tags: ["types", "identity"]
+  note: '''
+    Attack probe on identity: use a namespace-defined value type as a row
+    $key when its descriptor grants NO key eligibility. §16.2: the
+    descriptor supplies "equality, ordering, and key eligibility for
+    namespace types when provided" — the "when provided" implies a
+    namespace type without key eligibility must not serve as
+    application-defined row identity, otherwise row addressing would rest
+    on undefined equality. §16.4 allows a namespace to define additional
+    named value types when their canonical codec and semantics are part of
+    the pinned descriptor. UNSPECIFIED twice over: (1) SPEC.md defines no
+    syntax for referencing a namespace-defined type from $model (this case
+    assumes "$type": "util.opaque"); (2) consequently neither the
+    acceptance of such a field nor the exact rejection of its use as $key
+    can be pinned to spec text. Recorded as a documented gap rather than an
+    expectation.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.nstypekey@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      items: {
+        $key: "tag"
+        // assumed syntax for a namespace-defined value type; SPEC.md
+        // provides none
+        tag: { $type: "util.opaque" }
+        label: "text = ''"
+      }
+      $public: {
+        items: { $view: ".items { label }" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-types"
+        types: {
+          // canonical codec provided, key eligibility NOT provided
+          opaque: { codec: "bytes", key_eligible: false }
+        }
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: unspecified
+    violates: ["#host-namespaces"]
+    detail: "no $model syntax exists for namespace-defined value types, so the implied rejection of a non-key-eligible namespace type used as $key cannot be pinned"
+  }
+}

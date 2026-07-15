@@ -1,0 +1,47 @@
+{
+  // Replay-shaped probe: submit the same rename twice. The second submission
+  // writes the value the field already holds, so the complete program
+  // produces no state change. §8.9/§22.2: the call returns `unchanged` and
+  // creates no commit; the client frontier does not advance.
+  // The `status` expectation member is documented in ../NOTES.md.
+  format: 1
+  name: idempotent-write-returns-unchanged-no-commit
+  suite: scenario
+  spec: ["#mutations", "§8.9", "§22.2"]
+  tags: ["replay"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.idempotent@1.0.0"
+    "$model": {
+      "profiles": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$mut": {
+        "rename": ".profiles[@id] { name = @name }"
+      }
+      "$public": {
+        "profiles": { "$mut": { "rename": ".rename" } }
+      }
+    }
+    "$data": {
+      "profiles": { "p1": { "name": "old" } }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.profiles.rename"
+      args: { id: "p1", name: "new" }
+      expect: { outcome: ok, status: committed }
+    }
+    {
+      // Identical write: no state change, no commit.
+      call: "public.profiles.rename"
+      args: { id: "p1", name: "new" }
+      expect: { outcome: ok, status: unchanged }
+    }
+  ]
+}

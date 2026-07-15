@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: fallback-empty-source-returns-other
+  suite: scenario
+  spec: ["#views", "§7.4"]
+  note: "§7.4: 'view ?? other  fallback when the first view is empty.' No task is archived, so the left view is empty and the result is the right view (the non-archived tasks a, b in key order)."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewfallback@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        archived: "bool"
+      }
+      $public: {
+        shown: { $view: ".tasks[:t | t.archived] { id } ?? .tasks[:t | !t.archived] { id }" }
+      }
+    }
+    $data: {
+      tasks: {
+        a: { archived: false }
+        b: { archived: false }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.shown", id: "w1",
+      expect_init: { value: [ { id: "a" }, { id: "b" } ] } }
+  ]
+}

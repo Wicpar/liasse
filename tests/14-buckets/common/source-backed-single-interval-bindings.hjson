@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: source-backed-single-interval-bindings
+  suite: scenario
+  spec: ["#buckets", "§14.4"]
+  tags: ["temporal"]
+  note: "A non-repeating source-backed bucket produces exactly one interval row per source row and exposes $source, $from, $until, and $index (zero) as structural bindings usable in projections and computed fields."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.sourcebacked@1.0.0"
+    $model: {
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: "text"
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      access_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+        }
+        plan: "= $source.plan"
+      }
+      $data: {
+        subscriptions: {
+          // [2026-01-01T01:00Z, 2026-01-01T02:00Z)
+          s1: { plan: "gold", starts_at: "1767229200000000", ends_at: "1767232800000000" }
+        }
+      }
+      $public: {
+        periods: {
+          $params: { a: "timestamp", b: "timestamp" }
+          $view: ".access_periods.$between(@a, @b) { index: $index, from: $from, until: $until, plan }"
+        }
+      }
+    }
+  }
+
+  steps: [
+    // window [2026-01-01T00:00Z, 2026-01-02T00:00Z)
+    { watch: "public.periods"
+      args: { a: "1767225600000000", b: "1767312000000000" }
+      id: "w1"
+      expect_init: {
+        value: [
+          {
+            index: "0"                    // $index is zero for a non-repeating source
+            from: "1767229200000000"      // $from = $source.starts_at
+            until: "1767232800000000"     // $until = $source.ends_at
+            plan: "gold"                  // computed from $source without redeclaring
+          }
+        ]
+      } }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  format: 1
+  name: static-type-mismatch-rejected-at-load
+  suite: static
+  spec: ["#expressions", "§6.1"]
+  note: "§6 intro: 'Their static type and effect class are checked when the package is loaded.' §6.1: 'Liasse scalar expressions use CEL syntax, operator precedence, and static typing.' Adding an int field to a text field has no valid static type, so the package must be rejected at load."
+
+  package: {
+    $liasse: 1
+    $app: "t.typing@1.0.0"
+    $model: {
+      qty: "int"
+      label: "text"
+      broken: "= .qty + .label"
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#expressions"]
+    detail: "computed expression adds int and text; no static type exists for the operator"
+  }
+}

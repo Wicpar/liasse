@@ -1,0 +1,75 @@
+{
+  format: 1
+  name: install-data-check-failure-rejected
+  suite: scenario
+  spec: ["#modules", "§13.3"]
+  note: '''
+    §13.3: every value resulting from the seed-plus-installation-$data
+    overlay passes ordinary insertion and load validation. A row whose field
+    fails its declared $check rejects the install; the space stays without
+    the instance.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+              }
+            }
+          }
+          "catalog": {
+            "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
+          }
+        }
+        "$public": {
+          "catalog": {
+            "$params": { "company": "text" }
+            "$view": "/companies[@company].catalog"
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tplk: {
+      "$liasse": 1
+      "$module": "t.tplk@1.0.0"
+      "$model": {
+        "templates": {
+          "$key": "id"
+          "id": "text"
+          "label": {
+            "$type": "text"
+            "$check": ["size(.) > 0", "A label is required"]
+          }
+        }
+      }
+      "$expose": {
+        "templates": { "$view": ".templates { id, label }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: {
+          "$name": "kit"
+          "$module": "t.tplk@1.0.0"
+          "$data": { "templates": { "bad": { "label": "" } } }
+        } }
+      expect: { outcome: rejected, violates: ["§13.3"]
+                detail: "installation $data row fails the field $check during ordinary insertion validation" } }
+    // nothing was installed
+    { watch: "public.catalog", args: { company: "acme" }, id: "w1"
+      expect_init: { value: [] } }
+  ]
+}

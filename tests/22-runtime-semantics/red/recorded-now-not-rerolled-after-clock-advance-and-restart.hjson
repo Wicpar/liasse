@@ -1,0 +1,59 @@
+{
+  // Attack: advance the wall clock, then restart, hoping replay re-samples
+  // now() and stamps the committed row with the NEW clock (rewriting history).
+  // §22.1 Recorded observations: now() is "recorded with the commit … Replay
+  // uses those recorded values." §22.6: now() values "used in admitted
+  // transitions are recorded once." The committed timestamp must remain the
+  // genesis instant, NOT the advanced clock, after the restart.
+  format: 1
+  name: recorded-now-not-rerolled-after-clock-advance-and-restart
+  suite: scenario
+  spec: ["§22.1", "§22.5", "§22.6", "#runtime"]
+  tags: ["time", "replay", "tampering"]
+
+  package: {
+    $liasse: 1
+    $app: "t.nowreroll@1.0.0"
+    $model: {
+      events: {
+        $key: "id"
+        id: "uuid = uuid()"
+        at: "timestamp = now()"
+        note: "text"
+      }
+      $mut: {
+        log: [
+          "e = .events + { note: @note }"
+          "return e { id, at }"
+        ]
+      }
+      $public: {
+        events: {
+          $view: ".events { id, at, note }"
+          $mut: { log: ".log" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      call: "public.events.log"
+      args: { note: "x" }
+      on: "c1"
+      // Genesis: 2026-01-01T00:00:00Z = 1767225600000000 us.
+      expect: { outcome: ok, value: { id: "$bind:eid", at: "1767225600000000" } }
+    }
+    // Move the clock ten hours forward before replaying.
+    { advance_time: "PT10H" }
+    { restart: {} }
+    {
+      // The recorded instant is unchanged; it is NOT the post-advance clock
+      // (1767261600000000). An engine that re-rolls now() on replay fails here.
+      watch: "public.events"
+      id: "w1"
+      expect_init: { value: [ { id: "$ref:eid", at: "1767225600000000", note: "x" } ] }
+    }
+  ]
+}

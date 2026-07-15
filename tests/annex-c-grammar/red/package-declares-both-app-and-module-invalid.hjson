@@ -1,0 +1,29 @@
+{
+  format: 1
+  name: package-declares-both-app-and-module-invalid
+  suite: static
+  tags: [grammar, package-identity, adversarial]
+  // Identity attack: declare BOTH $app and $module on one package, hoping the
+  // loader picks one and ignores the other (letting a module masquerade as an
+  // application or vice versa). Annex C.1: "Exactly one of $app and $module
+  // identifies a package." §4.3: "$app identifies an application definition;
+  // $module identifies a reusable module definition" — they are the two
+  // distinct package-kind identities. A package carrying both violates the
+  // exactly-one rule and must fail static validation, not resolve to either.
+  spec: ["#annex-c", "§C.1", "#package-structure", "§4.3"]
+
+  package: {
+    $liasse: 1
+    $app: "t.bothids@1.0.0"
+    $module: "t.bothids_mod@1.0.0"
+    $model: {
+      doc: { label: "text" }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.1"]
+    detail: "package declares both $app and $module; Annex C.1 requires exactly one"
+  }
+}

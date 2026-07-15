@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: required-namespace-removed-fails-reopen
+  suite: scenario
+  spec: ["#host-namespaces", "#conformance", "#loading"]
+  tags: ["availability", "supply-chain"]
+  note: '''
+    Attack: strip a running application's declared dependency from the host
+    to force it to reactivate against an incomplete context — an
+    availability/denial vector distinct from interface drift. The package is
+    installed and live against test.util@1. The host context is then rebuilt
+    with NO namespaces registered and the store reopened. §2.1: "a package
+    requiring an unavailable or incompatible component fails validation
+    before activation." §16.2: "Missing ... requirements reject loading
+    before the package becomes active." §9.2: open "validates the recorded
+    active composition and required definitions before making the
+    application available. A diagnostic leaves the prior active composition
+    unchanged." So open MUST produce a diagnostic and MUST NOT bring the
+    application up in a state where util.double is unresolved; durable state
+    is left intact. Extension step `reopen` is defined in NOTES.md; FORMAT.md
+    outcome `invalid` maps to the open-time validation diagnostic.
+    This differs from pinned-descriptor-drift-fails-reopen: there the
+    namespace is present but incompatible; here it is absent (unavailable).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.nsremoved@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      n: "int = 0"
+      doubled: { $view: "util.double(.n)" }
+      $public: {
+        stats: { $view: ".doubled" }
+      }
+    }
+    $data: { n: 7 }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  steps: [
+    // application is genuinely live before the dependency is stripped
+    { watch: "public.stats", id: "w1", expect_init: { value: 14 } }
+    { unwatch: "w1" }
+    // reopen the durable store against a context missing the required namespace
+    { reopen: { hosts: { namespaces: [] } }
+      expect: {
+        outcome: invalid
+        violates: ["#host-namespaces", "#conformance"]
+      } }
+  ]
+}

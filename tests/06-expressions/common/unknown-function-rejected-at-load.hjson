@@ -1,0 +1,28 @@
+{
+  format: 1
+  name: unknown-function-rejected-at-load
+  suite: static
+  spec: ["#expressions", "§6.5"]
+  note: "§6.5: 'Package loading validates every function name, type, determinism class, and namespace contract.' 'string.trimm' is not a function of the core 'string' namespace, so loading must reject the package."
+
+  package: {
+    $liasse: 1
+    $app: "t.functions@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        name: {
+          $type: "text"
+          $check: ["string.trimm(.) != ''", "A name is required"]
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#expressions"]
+    detail: "check references unknown function string.trimm"
+  }
+}

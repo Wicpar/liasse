@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: undeclared-namespace-call-rejects-load
+  suite: static
+  spec: ["#host-namespaces", "#expressions"]
+  note: '''
+    §16.2: the local $requires key is the expression namespace, and a package
+    declares the non-core namespaces it uses. §6.5: package loading validates
+    every function name, type, determinism class, and namespace contract.
+    This package calls cbor.encode with NO $requires member, so "cbor" binds
+    no expression namespace and the function name fails validation. The
+    context deliberately DOES register liasse.cbor: availability in the host
+    does not substitute for the explicit package declaration ("This is an
+    explicit host dependency rather than an open language extension").
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.undeclared@1.0.0"
+    $model: {
+      n: "int = 0"
+      encoded: { $view: "cbor.encode(.n)" }
+      $public: {
+        stats: { $view: ".encoded" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "liasse.cbor"
+        version: "1.2.0"
+        interface_hash: "ih-cbor-1"
+        functions: {
+          encode: { signature: "(int) -> bytes", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#expressions", "#host-namespaces"]
+    detail: "cbor.encode names no core namespace and no declared requirement; function-name validation fails at load"
+  }
+}

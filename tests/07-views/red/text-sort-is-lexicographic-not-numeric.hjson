@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: text-sort-is-lexicographic-not-numeric
+  suite: scenario
+  spec: ["#views", "§7.3", "§B.1"]
+  tags: ["boundary"]
+  note: "Attack: numeric-looking text keys ('9', '10', '100') expecting numeric sort (9 < 10 < 100). §7.3: 'Sort expressions compare lexicographically.' §B.1: text is 'lexicographic Unicode scalar-value order.' By scalar order '10' < '100' < '9' (the digit '1' precedes '9'), so the ascending result is 10, 100, 9."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewtextsort@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        code: "text"
+      }
+      $public: {
+        bycode: { $view: ".items { code, $sort: [code] }" }
+      }
+    }
+    $data: {
+      items: {
+        a: { code: "9" }
+        b: { code: "10" }
+        c: { code: "100" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.bycode", id: "w1",
+      expect_init: { value: [ { code: "10" }, { code: "100" }, { code: "9" } ] } }
+  ]
+}

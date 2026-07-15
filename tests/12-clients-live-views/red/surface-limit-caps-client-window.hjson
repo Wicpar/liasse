@@ -1,0 +1,69 @@
+{
+  format: 1
+  name: surface-limit-caps-client-window
+  suite: scenario
+  spec: ["#clients", "#views"]
+  tags: ["window", "boundary", "resource"]
+  note: '''
+    Attack: request a window far larger than the surface exposes, trying to
+    read past the declared bound. §12.2: with no anchor the window is "the
+    first `n` rows after the surface's own `$skip` and `$limit`", and "A
+    surface `$limit` caps the maximum client window." The surface view is
+    limited to 2 rows, so a $size: 10 window holds at most the 2 limited rows
+    and keeps tracking the limited view as state changes.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.items@1.0.0"
+    $data: {
+      items: {
+        a: {}
+        b: {}
+        c: {}
+      }
+    }
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      $mut: {
+        add: ".items + { id: @id }"
+      }
+      top: {
+        $view: ".items { id, $sort: [id], $limit: 2 }"
+      }
+      $public: {
+        items: {
+          $view: ".top"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      watch: "public.items"
+      on: "c1"
+      id: "w1"
+      window: { $size: 10 }
+      expect_init: {
+        value: [ { id: "a" }, { id: "b" } ]
+      }
+    }
+    // A row sorting before "a" changes which rows survive the surface
+    // $limit; the capped window must follow the limited view.
+    {
+      call: "public.items.add"
+      args: { id: "0" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    { expect_view: { watch: "w1", value: [ { id: "0" }, { id: "a" } ] } }
+  ]
+}

@@ -1,0 +1,41 @@
+{
+  format: 1
+  name: patch-duplicate-selector-applies-once
+  suite: scenario
+  spec: ["#expressions", "§6.3", "§8.6"]
+  tags: ["aliasing"]
+  note: "Attack: alias the same row through two selector operands to double-apply a bulk patch. §6.3: 'Mutation writes deduplicate selected target rows by row incarnation before applying one statement, preserving the first occurrence order.' The increment must therefore apply exactly once: n goes 0 -> 1, not 0 -> 2."
+
+  package: {
+    $liasse: 1
+    $app: "t.dedup@1.0.0"
+    $model: {
+      counters: {
+        $key: "id"
+        id: "text"
+        n: "int"
+      }
+      $mut: {
+        bump_two: ".counters[@a, @b] { n = .n + 1 }"
+      }
+      $public: {
+        counters: {
+          $view: ".counters { id, n }"
+          $mut: { bump_two: ".bump_two" }
+        }
+      }
+    }
+    $data: {
+      counters: {
+        c1: { n: "0" }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.counters.bump_two", args: { a: "c1", b: "c1" },
+      expect: { outcome: "ok" } }
+    { watch: "public.counters", id: "w1",
+      expect_init: { value: [ { id: "c1", n: "1" } ] } }
+  ]
+}

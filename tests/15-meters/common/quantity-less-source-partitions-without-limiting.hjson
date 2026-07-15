@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: quantity-less-source-partitions-without-limiting
+  suite: scenario
+  spec: ["#buckets", "§14.8", "#meters", "§15.1"]
+  note: "A source containing intervals and no $quantity partitions spends instead of limiting them (SPEC §14.8): entries are assigned to the active exercise at their $time and no amount is ever rejected for capacity."
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.partition@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      orgs: {
+        $key: "id"
+        id: "text"
+        exercises: {
+          $key: "id"
+          $bucket: { $from: ".starts_at", $until: ".ends_at" }
+          id: "text"
+          starts_at: "timestamp"
+          ends_at: "timestamp"
+        }
+        entries: {
+          $key: "id"
+          $consumes: "ledger"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          ledger: {
+            $sources: { exercise: ".exercises" }
+          }
+        }
+        $mut: {
+          add_entry: [
+            "entry = .entries + { amount: @amount }"
+            "return entry { id, amount }"
+          ]
+        }
+      }
+      $public: {
+        books: {
+          $mut: { add_entry: ".orgs[@org].add_entry" }
+        }
+      }
+    }
+    $data: {
+      orgs: {
+        o1: {
+          // exercise active [2026-01-01, 2026-01-08)
+          exercises: { e1: { starts_at: "1767225600", ends_at: "1767830400" } }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.books.add_entry", args: { org: "o1", amount: "7" },
+      expect: { outcome: ok, value: { id: "$any:uuid", amount: "7" } } }
+    // no $quantity anywhere: arbitrarily large amounts still admit
+    { call: "public.books.add_entry", args: { org: "o1", amount: "999999" },
+      expect: { outcome: ok, value: { id: "$any:uuid", amount: "999999" } } }
+  ]
+}

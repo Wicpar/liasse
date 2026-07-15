@@ -1,0 +1,94 @@
+{
+  format: 1
+  name: recursive-descendant-mutation-addressing-unspecified
+  suite: scenario
+  spec: ["#interfaces", "§10.5", "§10.3"]
+  tags: ["recursive"]
+  note: '''
+    §10.5 states that under recursive coverage "the same surface projection
+    and mutations apply to included children", so a covered descendant must be
+    mutable through the propagated surface. §10.3 defines external addressing
+    only for the scoped role itself ("by its containing row identity and role
+    name"). The spec never defines how an external request names the covered
+    DESCENDANT receiver for such a mutation: whether the scope becomes a row
+    path, whether the child key becomes an implicit selector parameter, or
+    something else. The step below uses a hypothetical `descendant` member
+    (documented in NOTES.md) purely to record the gap; no expectation beyond
+    `unspecified` is externally deducible.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rec_mut_addr@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "plan": "text = 'active'"
+        "subcompanies": { "$like": "^" }
+        "members": {
+          "$key": "account"
+          "account": { "$ref": "/accounts" }
+          "admin": "bool = false"
+        }
+        "$mut": {
+          "rename": [
+            ".name = @name"
+            "return . { id, name }"
+          ]
+        }
+        "$roles": {
+          "admin": {
+            "$auth": "token"
+            "$members": ".members[:m | m.admin].account"
+            "company": {
+              "$view": ". { id, name, plan }"
+              "$mut": { "rename": ".rename" }
+              "$recursive": {
+                "$field": "subcompanies"
+                "$through": ".subcompanies"
+                "$bind": "child"
+              }
+            }
+          }
+        }
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+      "companies": {
+        "root": {
+          "name": "Root"
+          "members": { "alice": { "admin": true } }
+          "subcompanies": {
+            "a": { "name": "Branch A" }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+    // Renaming the root row itself is well-defined scoped-role behavior.
+    { call: "admin.company.rename", scope: "root", args: { name: "Root 2" }, on: "c1",
+      expect: { outcome: ok, value: { id: "root", name: "Root 2" } } }
+    // Renaming the covered descendant "a" must be possible per §10.5, but the
+    // addressing is not defined by the spec.
+    { call: "admin.company.rename", scope: "root", descendant: "a",
+      args: { name: "Branch A 2" }, on: "c1",
+      expect: { outcome: unspecified } }
+  ]
+}

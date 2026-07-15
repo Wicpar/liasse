@@ -1,0 +1,77 @@
+{
+  format: 1
+  name: any-branch-selects-first-fulfillable
+  suite: scenario
+  spec: ["#blobs", "§18.4"]
+  tags: ["blob", "placement", "connector-failure"]
+  note: '''
+    §18.4: for $any, "elements are alternatives in preference order ... a new
+    write chooses the first branch whose complete requirements can currently be
+    fulfilled, and rejects when none can." The preferred store `a` is
+    unavailable, so a correct runtime must NOT reject; it falls through to the
+    next fulfillable alternative `b` and commits with a verified copy there.
+    Guards against a runtime that fixes on the first branch and fails.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.anyfallthrough@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: { $any: ["/stores['a']", "/stores['b']"] } }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id, satisfied: .file.$satisfied, stored: .file.$stored { id } }"
+        ]
+      }
+      $public: { docs: { $mut: { add: ".add" } } }
+    }
+    $data: {
+      stores: {
+        a: { connector: "fs-a" }
+        b: { connector: "fs-b" }
+      }
+    }
+  }
+
+  hosts: {
+    connectors: {
+      "fs-a": { capabilities: ["stream_upload", "checksum"] }
+      "fs-b": { capabilities: ["stream_upload", "checksum"] }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { connector_set: { connector: "fs-a", available: false } }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "fell through"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: {
+        id: "d1"
+        satisfied: true
+        stored: { $unordered: [ { id: "b" } ] }
+      } } }
+  ]
+}
+</content>

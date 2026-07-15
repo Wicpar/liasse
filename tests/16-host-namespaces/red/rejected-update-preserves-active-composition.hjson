@@ -1,0 +1,82 @@
+{
+  format: 1
+  name: rejected-update-preserves-active-composition
+  suite: scenario
+  spec: ["#host-namespaces", "#loading", "#annex-e"]
+  tags: ["availability"]
+  note: '''
+    Attack: use a poisoned update to take down or corrupt a running
+    application. Version 2 of the package requires a namespace the host
+    does not supply, so the update must be rejected (§16.2: missing
+    requirements reject loading before the package becomes active) — and
+    the REJECTION must be perfectly contained: §9.4 "rejected: validation
+    failed and the prior application remains active"; §E.9 "A rejected load
+    or update leaves the current package, bindings, and state active." The
+    counter keeps its state (second bump returns 2) and its surfaces across
+    the failed update. Extension step `load` is defined in NOTES.md;
+    FORMAT.md outcome `invalid` maps to the §9.4 `rejected` load outcome.
+  '''
+
+  packages: {
+    v1: {
+      $liasse: 1
+      $app: "t.updatefail@1.0.0"
+      $model: {
+        n: "int = 0"
+        cur: { $view: ".n" }
+        $mut: {
+          bump: [
+            ".n = .n + 1"
+            "return .n"
+          ]
+        }
+        $public: {
+          counter: {
+            $view: ".cur"
+            $mut: { bump: ".bump" }
+          }
+        }
+      }
+    }
+    v2: {
+      $liasse: 1
+      $app: "t.updatefail@2.0.0"
+      $requires: {
+        cbor: "liasse.cbor@1"   // never registered by this host
+      }
+      $model: {
+        n: "int = 0"
+        cur: { $view: ".n" }
+        encoded: { $view: "cbor.encode(.n)" }
+        $mut: {
+          bump: [
+            ".n = .n + 1"
+            "return .n"
+          ]
+        }
+        $public: {
+          counter: {
+            $view: ".cur"
+            $mut: { bump: ".bump" }
+          }
+        }
+      }
+    }
+  }
+  root: "v1"
+
+  hosts: { namespaces: [] }
+
+  steps: [
+    { call: "public.counter.bump", args: {},
+      expect: { outcome: "ok", value: 1 } }
+    { load: { package: "v2" },
+      expect: {
+        outcome: invalid
+        violates: ["#host-namespaces", "#loading"]
+      } }
+    // prior definition, bindings, and state remain active and intact
+    { call: "public.counter.bump", args: {},
+      expect: { outcome: "ok", value: 2 } }
+  ]
+}

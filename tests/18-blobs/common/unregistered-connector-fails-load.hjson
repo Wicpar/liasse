@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: unregistered-connector-fails-load
+  suite: static
+  spec: ["#blobs", "§18.12", "§2.1"]
+  tags: ["blob", "loading"]
+  note: '''
+    §18.12: "Loading validates connector capabilities required by declared
+    placement and client behavior." The placement `$in` names a connector
+    literal through a store row seeded in $data; §2.1: "a package requiring an
+    unavailable or incompatible component fails validation before activation."
+    Here the seeded store `primary` selects connector "fs-a" and the declared
+    placement routes every write to it, yet the context registers no such
+    connector, so validation fails before activation. (The timing question for
+    connectors bound only through runtime-inserted store rows is explored in
+    red/connector-resolution-timing-unspecified.)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.noconnector@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      $public: { docs: { $mut: { add: ".add" } } }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  // No `hosts.connectors`: "fs-a" is unregistered.
+  hosts: { connectors: {} }
+
+  expect: {
+    outcome: invalid
+    violates: ["#blobs"]
+    detail: "placement selects a store whose connector is not registered"
+  }
+}
+</content>

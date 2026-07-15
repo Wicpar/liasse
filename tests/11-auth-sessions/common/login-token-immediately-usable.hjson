@@ -1,0 +1,104 @@
+{
+  format: 1
+  name: login-token-immediately-usable
+  suite: scenario
+  spec: ["#authentication", "§11.5", "#clients", "§12.3"]
+  note: '''
+    §11.5: a session-opening mutation is an ordinary public mutation; it commits
+    before the response is emitted, so a received successful response carries an
+    immediately usable token. The case opens a session through the public login
+    surface, binds the returned token, and uses it for an authenticated call on
+    the very next step.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.login@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+        login: [
+          "session = /sessions + { account: @account, expires_at: now() + time.duration('P30D') }"
+          "token = token.sign({ auth: 'session', session: session.$key })"
+          "return { token: token, session: session.$key }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes[:n | n.author == $actor] { id, body }"
+            $mut: { add: ".add_note" }
+          }
+        }
+      }
+      $public: {
+        auth: {
+          $mut: { login: ".login" }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+      }
+    }
+  }
+
+  hosts: {
+    token: { $namespace: "test.token@1" }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Public login entry point: no authentication required (§10.2, §11.5).
+    { call: "public.auth.login", args: { account: "aaaaaaaa-0000-4000-8000-000000000001" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$bind:tok", session: "$any:uuid" } } }
+    // The token from the response is immediately usable: the session row is
+    // already committed (§11.5, §12.3 commit-before-response).
+    { call: "member.notes.add", args: { body: "first" }, on: "c1",
+      auth: { auth: "session", credential: "$ref:tok" },
+      expect: { outcome: ok, value: {
+        id: "$any:uuid"
+        author: "aaaaaaaa-0000-4000-8000-000000000001"
+        body: "first"
+      } } }
+  ]
+}

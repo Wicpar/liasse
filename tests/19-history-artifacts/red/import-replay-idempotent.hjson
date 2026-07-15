@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: import-replay-idempotent
+  suite: scenario
+  tags: [replay, ordering]
+  // Attack: replay the same fast-forward artifact. After the first import
+  // the local head IS the incoming point, so the replay classifies as
+  // "same point -> already synchronized" (§19.8) and must not apply any
+  // movement, duplicate rows, or move the head again.
+  spec: ["§19.8"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1" }, expect: { outcome: ok } }
+      { call: "public.notes.put", args: { id: "n2", body: "two" },
+        expect: { outcome: ok, value: { id: "n2", body: "two" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    { import: { from: "a2", policy: ["fast_forward"] },
+      expect: { outcome: ok, value: { relation: "fast_forward", applied: true, "...": true } } }
+    // Replay of the identical artifact.
+    { import: { from: "a2", policy: ["fast_forward"] },
+      expect: { outcome: ok, value: { relation: "same_point", applied: false, "...": true } } }
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "n1", body: "one" }
+      { id: "n2", body: "two" }
+    ] } }
+  ]
+}

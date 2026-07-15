@@ -1,0 +1,30 @@
+{
+  format: 1
+  name: synthetic-key-nonaggregated-value-invalid
+  suite: static
+  spec: ["#views", "§7.2"]
+  tags: ["grouping"]
+  note: "Attack: under a synthetic $key, emit a per-source-row field ('debit') directly, which is ambiguous once rows collapse into one group. §7.2: 'Every non-key source value MUST be aggregated or derived solely from key values.' 'debit' is neither the key nor an aggregate nor derived from key values, so the package is statically invalid."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewgroupbad@1.0.0"
+    $model: {
+      lines: {
+        $key: "id"
+        id: "text"
+        account: "text"
+        debit: "int"
+      }
+      $public: {
+        totals: { $view: ".lines { $key: account, account, debit }" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#views"]
+    detail: "grouped output 'debit' is a non-key source value that is neither aggregated nor derived from key values"
+  }
+}

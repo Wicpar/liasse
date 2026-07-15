@@ -1,0 +1,54 @@
+{
+  // Attack: read a stored timestamp after moving the wall clock, hoping the
+  // engine "helpfully" refreshes recorded now() values to the current clock.
+  // §22.6: now() values "used in admitted transitions are recorded once." A
+  // recorded timestamp is frozen state: advancing the clock between two reads
+  // of the same row must not change its stored `at`, while a *new* commit
+  // records the current (advanced) instant.
+  format: 1
+  name: stored-timestamp-frozen-while-clock-advances
+  suite: scenario
+  spec: ["§22.5", "§22.6", "#runtime"]
+  tags: ["time"]
+
+  package: {
+    $liasse: 1
+    $app: "t.frozen@1.0.0"
+    $model: {
+      events: {
+        $key: "id"
+        id: "text"
+        at: "timestamp = now()"
+      }
+      $mut: {
+        mark: ".events + { id: @id }"
+      }
+      $public: {
+        events: {
+          $view: ".events { id, at, $sort: [id] }"
+          $mut: { mark: ".mark" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Recorded at genesis: 1767225600000000 us.
+    { call: "public.events.mark", args: { id: "first" }, on: "c1", expect: { outcome: ok } }
+    { advance_time: "PT1H" }
+    // Recorded one hour later: 1767229200000000 us.
+    { call: "public.events.mark", args: { id: "second" }, on: "c1", expect: { outcome: ok } }
+    {
+      // "first" still shows its original instant; the clock move did not
+      // rewrite it. Only "second" carries the advanced instant.
+      watch: "public.events"
+      on: "c1"
+      id: "w1"
+      expect_init: { value: [
+        { id: "first", at: "1767225600000000" }
+        { id: "second", at: "1767229200000000" }
+      ] }
+    }
+  ]
+}

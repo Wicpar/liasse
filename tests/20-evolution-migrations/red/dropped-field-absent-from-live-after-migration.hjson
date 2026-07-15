@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: dropped-field-absent-from-live-after-migration
+  suite: scenario
+  spec: ["#evolution", "§20.1"]
+  note: '''
+    §20.1: "Source values absent from the target ... are absent from live
+    target state. A migration that needs to preserve them live must copy them
+    explicitly." Version 2.0.0 drops `secret` (no `$from`, not re-declared).
+    Two adversarial expectations are checked at once:
+      1. the update is NOT rejected just because a field disappears — dropping
+         forward is permitted, values go to history (contrast the downgrade
+         case, which §20.2 rejects);
+      2. `secret` does not linger in live state — the post-update view row is
+         exactly { id, label }, with no `secret` member surviving. The exact
+         object match (FORMAT.md) fails if any `secret` leaks through.
+    The `secret` value remains only in preceding history/exports (§20.1),
+    which is not queryable through the 2.0.0 live surface by construction.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.dropfield@1.0.0"
+    $model: {
+      records: {
+        $key: "id"
+        id: "text"
+        label: "text"
+        secret: "text"
+      }
+      $public: {
+        records: { $view: ".records { id, label, secret }" }
+      }
+    }
+    $data: {
+      records: { r1: { label: "public", secret: "hunter2" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.records", id: "w1",
+      expect_init: { value: [ { id: "r1", label: "public", secret: "hunter2" } ] } }
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.dropfield@2.0.0"
+          $model: {
+            records: {
+              $key: "id"
+              id: "text"
+              label: "text"
+            }
+            $public: {
+              records: { $view: ".records { id, label }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    // exact match: any surviving `secret` member fails this assertion
+    { watch: "public.records", id: "w2",
+      expect_init: { value: [ { id: "r1", label: "public" } ] } }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: enum-field-form-closed-label-set
+  suite: scenario
+  spec: ["#annex-c", "§C.3", "#state-model", "§5.9"]
+  note: "Annex C.3 field form '\"field\": { $enum: [...] }' (Annex C.2 lists no distinct $enum shape marker; §5.9 defines it as a closed set of checked labels). A value equal to a declared label is accepted; a value outside the closed set is not a valid enum value and its insertion is rejected. This isolates that the $enum form constrains the field to exactly its listed labels."
+
+  package: {
+    $liasse: 1
+    $app: "t.enumfield@1.0.0"
+    $model: {
+      tickets: {
+        $key: "id"
+        id: "uuid = uuid()"
+        status: { $enum: ["draft", "active", "closed"] }
+      }
+      $mut: {
+        add: [
+          "r = .tickets + { status: @status }"
+          "return r { id, status }"
+        ]
+      }
+      all: { $view: ".tickets { id, status }" }
+      $public: {
+        tickets: {
+          $view: ".all"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tickets.add", args: { status: "active" },
+      expect: { outcome: ok, value: { id: "$any:uuid", status: "active" } } }
+    { call: "public.tickets.add", args: { status: "archived" },
+      expect: { outcome: rejected, violates: ["#state-model", "§5.9"] } }
+  ]
+}

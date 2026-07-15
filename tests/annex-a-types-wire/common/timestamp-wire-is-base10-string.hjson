@@ -1,0 +1,27 @@
+{
+  format: 1
+  name: timestamp-wire-is-base10-string
+  suite: scenario
+  spec: ["§A.1", "§A.5"]
+  tags: ["wire", "timestamp"]
+  note: "Annex A.1: a `timestamp` is a 'canonical base-10 JSON string'. Annex A.5: a timestamp is a signed count since 1970-01-01T00:00:00Z at declared precision (default us). A seeded count projects to that exact JSON string — not a JSON number, not an RFC-3339 date-time rendering. Precision is left default so the case does not depend on any conversion."
+
+  package: {
+    $liasse: 1
+    $app: "t.tswire@1.0.0"
+    $model: {
+      at: "timestamp"
+      $public: {
+        v: { $view: ". { at }" }
+      }
+    }
+    $data: {
+      at: "1000000"
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { at: "1000000" } } }
+  ]
+}

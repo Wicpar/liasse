@@ -1,0 +1,77 @@
+{
+  format: 1
+  name: migration-program-atomicity-partial-failure-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.1", "annex-e", "§E.9"]
+  note: '''
+    §20.1: the migration array is "one ordered atomic migration program", and
+    the complete prospective target is checked "before the package update
+    commits." Annex E.9: "A rejected load or update leaves the current package,
+    bindings, and state active." The program's first statement populates
+    `people` successfully; the second maps every row to the literal key "same",
+    colliding two rows. The attack hopes the first statement's writes leak
+    through partially. Atomicity forbids it: the whole update is rejected and
+    version 1.0.0 (with its original `users`) stays active — no partial
+    `people` collection exists.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.atomic@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        users: { $view: ".users { id, name, $sort: [id] }" }
+      }
+    }
+    $data: {
+      users: {
+        u1: { name: "Ann" }
+        u2: { name: "Bob" }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.atomic@2.0.0"
+          $model: {
+            people: {
+              $key: "id"
+              id: "text"
+              name: "text"
+            }
+            tags: {
+              $key: "tag"
+              tag: "text"
+              owner: "text"
+            }
+            $migrations: {
+              "1.0.0": [
+                ".people = $old.users { id, name }"
+                ".tags = $old.users { tag: \"same\", owner: .id }"
+              ]
+            }
+            $public: {
+              people: { $view: ".people { id, name }" }
+              tags: { $view: ".tags { tag, owner }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.1", "§E.9"]
+        detail: "second statement collides two rows on tag 'same'; the atomic program is rejected as a whole, no partial 'people' is committed"
+      } }
+    // 1.0.0 fully intact
+    { watch: "public.users", id: "w1",
+      expect_init: { value: [ { id: "u1", name: "Ann" }, { id: "u2", name: "Bob" } ] } }
+  ]
+}

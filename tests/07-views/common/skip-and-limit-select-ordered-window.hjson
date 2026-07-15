@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: skip-and-limit-select-ordered-window
+  suite: scenario
+  spec: ["#views", "§7.3"]
+  note: "§7.3: 'Bounds apply after sorting. $skip discards the first non-negative number of rows; $limit keeps at most the next non-negative number.' Sorted ascending by n: 10, 20, 30, 40; $skip: 1 drops 10; $limit: 2 keeps 20, 30."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewwindow@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        n: "int"
+      }
+      $public: {
+        page: { $view: ".items { id, n, $sort: [n], $skip: 1, $limit: 2 }" }
+      }
+    }
+    $data: {
+      items: {
+        a: { n: "10" }
+        b: { n: "20" }
+        c: { n: "30" }
+        d: { n: "40" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.page", id: "w1",
+      expect_init: { value: [ { id: "b", n: "20" }, { id: "c", n: "30" } ] } }
+  ]
+}

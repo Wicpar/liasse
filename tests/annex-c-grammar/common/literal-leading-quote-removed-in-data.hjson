@@ -1,0 +1,29 @@
+{
+  format: 1
+  name: literal-leading-quote-removed-in-data
+  suite: scenario
+  spec: ["#annex-c", "§C.4", "#package-structure", "§4.2"]
+  note: "Annex C.4, literal-or-expression positions: '\"'text\"  literal text with one leading ' removed'. This is the general escape (§4.2 states only the '=' case). In $data (a literal-or-expression position) the value \"'plain\" must store the literal text 'plain' with the single leading quote stripped — it is NOT parsed as an expression and the quote does not survive."
+
+  package: {
+    $liasse: 1
+    $app: "t.quote@1.0.0"
+    $model: {
+      doc: {
+        label: "text"
+      }
+      view_doc: { $view: ".doc { label }" }
+      $public: {
+        doc: { $view: ".view_doc" }
+      }
+    }
+    $data: {
+      doc: { label: "'plain" }
+    }
+  }
+
+  steps: [
+    { watch: "public.doc", id: "w1",
+      expect_init: { value: { label: "plain" } } }
+  ]
+}

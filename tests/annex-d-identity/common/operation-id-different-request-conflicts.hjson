@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: operation-id-different-request-conflicts
+  suite: scenario
+  spec: ["§D.8", "§12"]
+  tags: ["idempotency"]
+  note: '''§D.8: "Another digest rejects as an operation-identity conflict." §12:
+"Reusing it with different request metadata rejects the call." Reusing one scoped
+operation identifier for a request whose arguments differ is not a retry; it is a
+conflict. The runtime must reject the second call rather than silently returning
+the first operation's status or executing the new request under the taken
+identifier. The first commit stands and the conflicting call has no state effect.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.opidconf@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $public: {
+        notes: {
+          $view: ".notes { id, body, $sort: [id] }"
+          $mut: {
+            put: [
+              "n = .notes + { id: @id, body: @body }"
+              "return n { id, body }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "first" }, op_id: "op-X",
+      expect: { outcome: ok, value: { id: "n1", body: "first" } } }
+    // same op_id, different request metadata -> operation-identity conflict
+    { call: "public.notes.put", args: { id: "n2", body: "second" }, op_id: "op-X",
+      expect: { outcome: "rejected", violates: ["§D.8", "§12"],
+                detail: "reused operation identifier with a different request" } }
+    // the conflicting call had no effect; only the first row exists
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "n1", body: "first" }
+    ] } }
+  ]
+}

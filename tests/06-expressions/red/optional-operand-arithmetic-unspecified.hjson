@@ -1,0 +1,28 @@
+{
+  format: 1
+  name: optional-operand-arithmetic-unspecified
+  suite: static
+  spec: ["#expressions", "§6.1", "§6.2", "§5.2"]
+  tags: ["absence"]
+  note: "Spec gap. §6.2 defines 'none' as the absent optional value and §5.2 says a computed expression yielding none is an absent optional, but no rule states how an arithmetic operator treats an optional operand: the checker could reject 'int - int?' as a static type mismatch (CEL static typing, §6.1), or none could propagate making the computed value optional, or absence could act as a zero/identity. Aggregates explicitly skip absent inputs (§7.5) and ordering explicitly places none (Annex B.2) — operators have no such sentence. Load acceptance itself is therefore unpinned."
+
+  package: {
+    $liasse: 1
+    $app: "t.optional@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        price: "int"
+        discount: "int?"
+        total: "= .price - .discount"
+      }
+    }
+  }
+
+  expect: {
+    outcome: "unspecified"
+    violates: ["#expressions"]
+    detail: "arithmetic over an optional operand: neither static rejection nor none-propagation is mandated"
+  }
+}

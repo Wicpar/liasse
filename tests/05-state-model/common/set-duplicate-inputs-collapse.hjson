@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: set-duplicate-inputs-collapse
+  suite: scenario
+  spec: ["#state-model", "§5.5", "§8.5", "§B.1"]
+  note: "§5.5: membership is mathematical — repeated input values collapse to one member, adding an existing member leaves the set unchanged, removing an absent member leaves it unchanged. Sets read in the element type's canonical order (text ascending)."
+
+  package: {
+    $liasse: 1
+    $app: "t.sets@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        tags: { $set: "text" }
+      }
+      $public: {
+        items: {
+          $view: ".items { id, tags }"
+          $mut: {
+            add: [
+              "row = .items + { id: @id, tags: @tags }"
+              "return row { id, tags }"
+            ]
+            // fixed literals keep the case free of argument-typing concerns
+            add_tag_a: ".items[@id].tags + 'a'"
+            remove_tag_z: ".items[@id].tags - 'z'"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // duplicate inputs collapse to one member; canonical read order is ascending text
+    { call: "public.items.add", args: { id: "i1", tags: ["b", "a", "b"] },
+      expect: { outcome: "ok", value: { id: "i1", tags: ["a", "b"] } } }
+    // adding an existing member succeeds and changes nothing
+    { call: "public.items.add_tag_a", args: { id: "i1" }, expect: { outcome: "ok" } }
+    // removing an absent member succeeds and changes nothing
+    { call: "public.items.remove_tag_z", args: { id: "i1" }, expect: { outcome: "ok" } }
+    { watch: "public.items", id: "w1",
+      expect_init: { value: [ { id: "i1", tags: ["a", "b"] } ] } }
+  ]
+}

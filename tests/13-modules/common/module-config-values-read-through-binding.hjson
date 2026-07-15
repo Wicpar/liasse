@@ -1,0 +1,75 @@
+{
+  format: 1
+  name: module-config-values-read-through-binding
+  suite: scenario
+  spec: ["#modules", "§13.1", "§13.3"]
+  note: '''
+    §13.1: $config declares an immutable typed struct for installation
+    values; defaults use the ordinary field rules and module expressions read
+    it through $config. §13.3: an omitted installation $config uses package
+    defaults. One instance is installed with an explicit value, one without;
+    the exposed view projects $config.currency.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": {
+                  "$view": { "$key": "id", "id": "text", "label": "text", "currency": "text" }
+                }
+              }
+            }
+          }
+          "catalog": {
+            "$view": ".modules::templates { module: modules.$key, id, label, currency, $sort: [module, id] }"
+          }
+        }
+        "$public": {
+          "catalog": {
+            "$params": { "company": "text" }
+            "$view": "/companies[@company].catalog"
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tplc: {
+      "$liasse": 1
+      "$module": "t.tplc@1.0.0"
+      "$config": { "currency": "text = 'USD'" }
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+      }
+      "$data": { "templates": { "std": { "label": "Standard" } } }
+      "$expose": {
+        "templates": {
+          "$view": ".templates { id, label, currency: $config.currency }"
+        }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: { "$name": "kit_def", "$module": "t.tplc@1.0.0" } }
+      expect: { outcome: ok } }
+    { module_install: { space: "/companies/acme/modules"
+        request: { "$name": "kit_eur", "$module": "t.tplc@1.0.0", "$config": { "currency": "EUR" } } }
+      expect: { outcome: ok } }
+    { watch: "public.catalog", args: { company: "acme" }, id: "w1"
+      expect_init: { value: [
+        { module: "kit_def", id: "std", label: "Standard", currency: "USD" }
+        { module: "kit_eur", id: "std", label: "Standard", currency: "EUR" }
+      ] } }
+  ]
+}

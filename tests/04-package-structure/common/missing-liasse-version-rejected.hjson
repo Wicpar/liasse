@@ -1,0 +1,20 @@
+{
+  format: 1
+  name: missing-liasse-version-rejected
+  suite: static
+  spec: ["#package-structure", "§4.1"]
+  note: "§4.1: '$liasse is required and selects the complete language generation used to validate and instantiate the definition.'"
+
+  package: {
+    $app: "t.noversion@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "§4.1"]
+    detail: "definition omits the required $liasse language-generation member"
+  }
+}

@@ -1,0 +1,123 @@
+{
+  format: 1
+  name: stolen-token-survives-rotations-until-session-revoked
+  suite: scenario
+  tags: ["authz", "rotation", "replay"]
+  spec: ["#keyrings", "§17.3", "§17.4", "#authentication", "§11.3", "§11.7"]
+  // Uncomfortable, spec-mandated outcome: rotating keys does NOT invalidate a
+  // stolen token. §17.4 step 5 retains prior public versions while signatures
+  // MAY remain valid, and §17.3 keeps retired versions accepted for $retain.
+  // An attacker holding a day-0 token still authenticates after TWO rotations
+  // (day 61 < retirement(~30) + P45D). The application-level defense is
+  // session revocation (§11.7): after the session row is revoked, the same
+  // token is denied by the authenticator's $check.
+  note: "Alice has exactly one session so the role view pins which session the stolen token uses; bob's logins only drive rotations."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "enabled": "bool = true"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+        "revoked": "bool = false"
+        "$mut": {
+          "revoke": [
+            ".revoked = true"
+            "return . { id, revoked }"
+          ]
+        }
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$auth": {
+        "session": {
+          "$credential": "bytes"
+          "$verify": "cose.verify(/session_keys, $credential)"
+          "$session": "/sessions[$proof.session]"
+          "$actor": "/accounts[$session.account]"
+          "$check": ["$proof.auth == $auth_name", "!$session.revoked"]
+        }
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "session"
+          "$members": ".accounts[:a | a.enabled]"
+          "mysessions": {
+            "$view": "/sessions[:s | s.account == $actor] { id, revoked }"
+            "$mut": { "revoke": "/sessions[@id].revoke" }
+          }
+        }
+      }
+    }
+    "$data": {
+      "accounts": {
+        "alice": { "name": "Alice" }
+        "bob": { "name": "Bob" }
+      }
+    }
+  }
+
+  steps: [
+    // Day 0: the token that will be "stolen".
+    { call: "public.login.login", args: { account: "alice" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$bind:tok1" } } }
+    // Day 31 and day 61: two rotations pass (bob's logins trigger them).
+    { advance_time: "P31D" }
+    { call: "public.login.login", args: { account: "bob" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$any" } } }
+    { advance_time: "P30D" }
+    { call: "public.login.login", args: { account: "bob" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$any" } } }
+    // The stolen token still works: v1 is retired but accepted (~day 30 + P45D).
+    { connect: "c2",
+      authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
+      expect: { outcome: ok } }
+    { watch: "member.mysessions", on: "c2", id: "w1",
+      expect_init: { value: [ { id: "$bind:sid1", revoked: false } ] } }
+    // Application defense: revoke the session row.
+    { call: "member.mysessions.revoke", args: { id: "$ref:sid1" }, on: "c2",
+      expect: { outcome: ok, value: { id: "$ref:sid1", revoked: true } } }
+    // Same token, same accepted key version — now denied by the $check.
+    { connect: "c3",
+      authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
+      expect: { outcome: denied, violates: ["§11.3", "§11.7"] } }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: core-namespaces-load-without-requires
+  suite: static
+  spec: ["#host-namespaces", "#expressions"]
+  note: '''
+    §16.1: the standard core contains language, hex, base64, sha, string,
+    convert, and time. §16.2: a package declares only the NON-core namespaces
+    it uses. Therefore a package whose expressions use only core namespaces
+    and language functions loads with no $requires member and with no
+    namespaces registered in the host context. Only function names attested
+    in SPEC.md examples are used (string.trim, string.lower, string.bytes,
+    base64.encode, time.duration, uuid(), now()); the core rosters are not
+    enumerated by the spec.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.corens@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        body: {
+          $type: "text"
+          $normalize: "string.lower(string.trim(.))"
+        }
+        expires_at: "timestamp = now() + time.duration('PT1H')"
+      }
+      listing: { $view: ".notes { id, body }" }
+      banner: { $view: "base64.encode(string.bytes('liasse'))" }
+      $public: {
+        notes: { $view: ".listing" }
+      }
+    }
+  }
+
+  // deliberately no hosts.namespaces: core is supplied by the language,
+  // not by registration
+  hosts: { namespaces: [] }
+
+  expect: {
+    outcome: ok
+  }
+}

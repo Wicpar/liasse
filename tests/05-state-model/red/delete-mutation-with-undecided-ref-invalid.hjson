@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: delete-mutation-with-undecided-ref-invalid
+  suite: static
+  spec: ["#state-model", "§5.6"]
+  tags: ["integrity"]
+  note: '''Attack via evolution: add a delete-capable mutation to a model whose inbound
+refs never chose a deletion policy, hoping the runtime activates it and improvises
+cascade/clear behavior at delete time. §5.6: 'When the owning module introduces a
+mutation or another lifecycle operation that MAY delete the target, every inbound ref
+MUST choose its behavior before that declaration can become active.' The package must
+fail validation, not defer the decision to runtime.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.undecided@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+      }
+      posts: {
+        $key: "id"
+        id: "text"
+        // inbound ref with NO $on_delete while a delete operation exists below
+        author: { $ref: "/accounts" }
+      }
+      $mut: {
+        remove_account: ".accounts - @id"
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["§5.6"]
+    detail: "a mutation MAY delete /accounts rows, so the inbound ref posts.author must declare $on_delete before the declaration can become active"
+  }
+}

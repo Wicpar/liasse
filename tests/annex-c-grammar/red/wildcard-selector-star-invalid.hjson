@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: wildcard-selector-star-invalid
+  suite: static
+  tags: [grammar, selectors]
+  // Attack: an author tries to smuggle a "select every row" wildcard into a
+  // selector, hoping the runtime accepts an implicit '*'. Annex C.6 enumerates
+  // exactly the selector forms (rows[key], rows[a,b,coll], rows[:b],
+  // rows[:b | cond], rows::) and states outright: "A wildcard selection syntax
+  // is absent; projections name fields explicitly." '.tasks[*]' matches no
+  // enumerated selector form and must fail static validation.
+  spec: ["#annex-c", "§C.6"]
+
+  package: {
+    $liasse: 1
+    $app: "t.wildsel@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
+      }
+      all: { $view: ".tasks[*] { id, title }" }
+      $public: {
+        tasks: { $view: ".all" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.6"]
+    detail: "'.tasks[*]' uses a wildcard selector; Annex C.6 has no wildcard selection form"
+  }
+}

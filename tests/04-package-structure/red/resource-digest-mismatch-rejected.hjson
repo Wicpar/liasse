@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: resource-digest-mismatch-rejected
+  suite: scenario
+  spec: ["#package-structure", "§4.1", "#annex-d", "§D.5"]
+  tags: ["tamper", "artifact"]
+  note: "Content substitution against the definition-declared digest: the archive carries '<h1>TAMPERED</h1>' while $sha256 pins '<h1>Invoice</h1>'. Per NOTES.md, build_artifact computes manifest checksums over the FINAL bytes, so the manifest verifies cleanly and the only violated rule is §4.1: 'Every declared digest is verified before activation.' Catches implementations that verify only the manifest layer and trust $resources descriptors."
+
+  package: {
+    $liasse: 1
+    $app: "t.swapbytes@1.0.0"
+    $resources: {
+      invoice_template: {
+        $path: "resources/invoice.html"
+        $media: "text/html"
+        // sha256("<h1>Invoice</h1>") — NOT the bytes supplied below
+        $sha256: "2163bddf11b2e116332448d10374d504f9508c148b72e5c9d970b88665330490"
+      }
+    }
+    $model: {
+      note: "text"
+    }
+  }
+
+  steps: [
+    { build_artifact: { as: "a1", files: { "resources/invoice.html": "<h1>TAMPERED</h1>" } } }
+    { load_artifact: { from: "a1", expect: {
+        outcome: invalid
+        violates: ["#package-structure", "§4.1"]
+        detail: "resource bytes do not match the declared $sha256 digest"
+    } } }
+  ]
+}

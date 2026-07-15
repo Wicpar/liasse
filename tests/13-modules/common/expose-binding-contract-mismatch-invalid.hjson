@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: expose-binding-contract-mismatch-invalid
+  suite: scenario
+  spec: ["#modules", "§13.8"]
+  note: '''
+    §13.8: mutation bindings MUST satisfy their declared parameter and
+    response contracts. The interface contract requires $return
+    { id, label }; the module's bound mutation returns only { id }, so the
+    install fails validation.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": {
+                  "$view": { "$key": "id", "id": "text", "label": "text" }
+                  "$mut": {
+                    "create({ id: text, label: text })": {
+                      "$return": { "id": "text", "label": "text" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tplbad: {
+      "$liasse": 1
+      "$module": "t.tplbad@1.0.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+        "$mut": {
+          "create_template": [
+            "t = .templates + { id: @id, label: @label }"
+            // returns { id } only: narrower than the declared $return shape
+            "return t { id }"
+          ]
+        }
+      }
+      "$expose": {
+        "templates": {
+          "$view": ".templates { id, label }"
+          "$mut": { "create": ".create_template" }
+        }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.tplbad@1.0.0" } }
+      expect: { outcome: invalid, violates: ["§13.8"]
+                detail: "bound mutation response does not satisfy the interface $return contract" } }
+  ]
+}

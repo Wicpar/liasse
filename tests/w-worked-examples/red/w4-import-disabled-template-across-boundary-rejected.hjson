@@ -1,0 +1,89 @@
+{
+  format: 1
+  name: w4-import-disabled-template-across-boundary-rejected
+  suite: scenario
+  spec: ["W4", "#modules", "§13.8", "#interfaces", "§10.1"]
+  tags: [modules, escalation]
+  note: '''
+    Attempt to reach a module row the boundary does not expose. Installed under
+    Globex (plan not "fr-pcg"), the template is seeded disabled and the module's
+    $expose filters ".templates[:t | t.enabled]". §13.8: "The boundary grants
+    access only to those bound members." So the host's import_template step
+    "source = .modules[@module]::templates[@template]" resolves zero rows through
+    the interface and the receiver rejects (§10.1). The parent cannot pull a
+    private/unexposed template across the module boundary by naming its key.
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.company.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          plan: "text"
+          templates: {
+            $key: ["module", "template"]
+            module: "text", template: "text", label: "text", journal: "text", lines: "json"
+          }
+          $mut: {
+            import_template: [
+              "source = .modules[@module]::templates[@template]"
+              '''.templates + {
+                module: @module, template: @template,
+                label: source.label, journal: source.journal, lines: source.lines
+              }'''
+            ]
+          }
+          modules: {
+            $modules: {
+              $expose: { company: { $view: ". { id, name, plan }" } }
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
+              }
+            }
+          }
+        }
+        $public: {
+          imported: {
+            $params: { company: "text" }
+            $view: ".companies[@company].templates { module, template }"
+            $mut: { import: "/companies[@company].import_template" }
+          }
+        }
+      }
+      $data: { companies: { globex: { name: "Globex", plan: "us-gaap" } } }
+    }
+
+    frsales: {
+      $liasse: 1
+      $module: "acme.fr_sales_templates@1.0.0"
+      $use: { company: "$parent" }
+      $model: {
+        templates: { $key: "id", id: "text", label: "text", journal: "text", enabled: "bool = true", lines: "json" }
+      }
+      $data: {
+        templates: {
+          sale_invoice: {
+            label: "Facture de vente", journal: "VE"
+            enabled: "= #company.plan == 'fr-pcg'"
+            lines: [ { account: "411", side: "debit", amount: "'= total_ttc" } ]
+          }
+        }
+      }
+      $expose: { templates: { $view: ".templates[:t | t.enabled] { id, label, journal, lines }" } }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/globex/modules"
+        request: { $name: "fr_sales", $module: "acme.fr_sales_templates@1.0.0" } }
+      expect: { outcome: ok } }
+    // the disabled template is not exposed; addressing it through the interface selects zero
+    { call: "public.imported.import", args: { company: "globex", module: "fr_sales", template: "sale_invoice" }
+      expect: { outcome: rejected, violates: ["§13.8"], detail: "unexposed (disabled) template not reachable through ::templates" } }
+  ]
+}

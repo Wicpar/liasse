@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: cascade-deletes-referencing-row
+  suite: scenario
+  // §21.1: `cascade` deletes the containing row with the target. Deleting the
+  // project removes every task whose `project` ref cascades, in one atomic
+  // transition. Observable: after deleting p1, both of its tasks are gone from
+  // live state while p2's task remains.
+  spec: ["§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        project: {
+          $ref: "/projects"
+          $on_delete: "cascade"
+        }
+      }
+      $mut: {
+        delete_project: ".projects - @id"
+      }
+      tasks_view: { $view: ".tasks { id, project, $sort: [id] }" }
+      $public: {
+        tasks: { $view: ".tasks_view" }
+        projects: {
+          $view: ".projects { id }"
+          $mut: { delete: ".delete_project" }
+        }
+      }
+    }
+    $data: {
+      projects: { p1: {}, p2: {} }
+      tasks: {
+        t1: { project: "p1" }
+        t2: { project: "p1" }
+        t3: { project: "p2" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [
+      { id: "t1", project: "p1" }
+      { id: "t2", project: "p1" }
+      { id: "t3", project: "p2" }
+    ] } }
+    { call: "public.projects.delete", args: { id: "p1" },
+      expect: { outcome: ok, "...": true } }
+    // t1 and t2 cascaded away with p1; t3 survives.
+    { expect_view: { watch: "w1", value: [
+      { id: "t3", project: "p2" }
+    ] } }
+  ]
+}

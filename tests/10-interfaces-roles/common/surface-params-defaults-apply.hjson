@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: surface-params-defaults-apply
+  suite: scenario
+  // §10.1: "Within a surface, $params maps input names to field declarations
+  // and defaults, $view defines its read result." An omitted parameter takes
+  // its declared default; a supplied parameter overrides it.
+  spec: ["#interfaces", "§10.1", "#clients"]
+  tags: []
+
+  package: {
+    "$liasse": 1
+    "$app": "t.surf_params@1.0.0"
+    "$model": {
+      "projects": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "archived": "bool = false"
+      }
+      "$public": {
+        "projects": {
+          "$params": { "archived": "bool = false" }
+          "$view": ".projects[:p | p.archived == @archived] { id, name }"
+        }
+      }
+    }
+    "$data": {
+      "projects": {
+        "p1": { "name": "Live" }
+        "p2": { "name": "Old", "archived": true }
+      }
+    }
+  }
+
+  steps: [
+    // No args: @archived defaults to false.
+    { watch: "public.projects", id: "w1",
+      expect_init: { value: [ { id: "p1", name: "Live" } ] } }
+    // Explicit args: @archived == true selects the archived row.
+    { watch: "public.projects", args: { archived: true }, id: "w2",
+      expect_init: { value: [ { id: "p2", name: "Old" } ] } }
+  ]
+}

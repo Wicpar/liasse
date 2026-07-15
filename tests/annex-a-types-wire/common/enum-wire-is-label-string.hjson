@@ -1,0 +1,27 @@
+{
+  format: 1
+  name: enum-wire-is-label-string
+  suite: scenario
+  spec: ["§A.1"]
+  tags: ["wire", "enum"]
+  note: "Annex A.1: an `enum` value's canonical strict-JSON value is a JSON string — the declared label. A seeded enum field projects to its label text, not to an ordinal number and not to the declaration index."
+
+  package: {
+    $liasse: 1
+    $app: "t.enumwire@1.0.0"
+    $model: {
+      status: { $enum: ["draft", "sent", "paid"] }
+      $public: {
+        v: { $view: ". { status }" }
+      }
+    }
+    $data: {
+      status: "sent"
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { status: "sent" } } }
+  ]
+}

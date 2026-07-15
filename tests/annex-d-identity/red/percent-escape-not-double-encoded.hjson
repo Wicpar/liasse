@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: percent-escape-not-double-encoded
+  suite: scenario
+  spec: ["§D.2", "§9.1", "§6.3"]
+  tags: ["identity"]
+  note: '''Attack: forge a key whose typed text is the literal escape sequence "%2F",
+hoping it aliases the key whose typed text is "/" (whose canonical encoded form is
+also "%2F"). §D.2: within a scalar key component each original `/` is encoded as
+`%2F`, and "the percent signs introduced by these escape sequences are not encoded
+again." So:
+  typed key "/"     -> encoded seed member "%2F"
+  typed key "%2F"   -> the original `%` is encoded to `%25`, giving "%252F"
+The two encoded member names differ, so the two typed keys are distinct rows. A
+runtime that either double-encodes (encoding the escape's own `%`) or fails to
+encode the original `%` would collapse or swap these keys. Lookups use the typed
+values ("/" and "%2F"), never the encoded strings.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.pctesc@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        label: "text"
+      }
+      $public: {
+        items: {
+          $view: ".items[:i] { id: i.id, label: i.label, $sort: [id] }"
+          $mut: { label_of: "return .items[@id].label" }
+        }
+      }
+    }
+    $data: {
+      items: {
+        // typed key "/" : original slash encoded as %2F
+        "%2F": { label: "slash" }
+        // typed key "%2F" (literal three chars): original % encoded as %25 -> %252F
+        "%252F": { label: "literal-percent-2F" }
+      }
+    }
+  }
+
+  steps: [
+    // typed key "/" resolves the row seeded under member "%2F"
+    { call: "public.items.label_of", args: { id: "/" },
+      expect: { outcome: ok, value: "slash" } }
+    // typed key "%2F" (literal) resolves the row seeded under member "%252F"
+    { call: "public.items.label_of", args: { id: "%2F" },
+      expect: { outcome: ok, value: "literal-percent-2F" } }
+    // the two rows are distinct; '%' (0x25) sorts before '/' (0x2F)
+    { watch: "public.items", id: "w1", expect_init: { value: [
+      { id: "%2F", label: "literal-percent-2F" }
+      { id: "/", label: "slash" }
+    ] } }
+  ]
+}

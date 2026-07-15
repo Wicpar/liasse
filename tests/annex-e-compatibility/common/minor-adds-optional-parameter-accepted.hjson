@@ -1,0 +1,74 @@
+{
+  format: 1
+  name: minor-adds-optional-parameter-accepted
+  suite: scenario
+  spec: ["#annex-e"]
+  note: '''
+    E.4: "adding an optional parameter with a default" is a compatible input
+    change, and a compatible release "accepts every request or binding accepted
+    by the earlier boundary contract." Version 1.0.0 exposes add({title}).
+    Version 1.1.0 also reads @note, an optional parameter inferred from the
+    optional field `note` (§8.3: a parameter inherits its target field's type
+    and optionality). Callers that still send only {title} remain accepted, so
+    the update commits.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.optparam@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "title": "text"
+        "note": "text?"
+      }
+      "$mut": {
+        "add_task": [
+          "t = .tasks + { title: @title }"
+          "return t { id, title }"
+        ]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.optparam@1.1.0"
+          "$model": {
+            "tasks": {
+              "$key": "id"
+              "id": "uuid = uuid()"
+              "title": "text"
+              "note": "text?"
+            }
+            "$mut": {
+              // gains @note, an optional parameter (tasks.note is text?)
+              "add_task": [
+                "t = .tasks + { title: @title, note: @note }"
+                "return t { id, title }"
+              ]
+            }
+            "$public": {
+              "tasks": {
+                "$view": ".tasks { id, title }"
+                "$mut": { "add": ".add_task" }
+              }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    // the pre-existing calling shape {title} is still accepted (E.4)
+    { call: "public.tasks.add", args: { title: "Ship" },
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "Ship" } } }
+  ]
+}

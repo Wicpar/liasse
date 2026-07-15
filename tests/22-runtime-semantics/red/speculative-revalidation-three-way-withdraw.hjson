@@ -1,0 +1,65 @@
+{
+  // Attack: three concurrent withdrawals each individually affordable against
+  // the starting balance, racing so that speculative evaluation lets more than
+  // one through. §22.4: an implementation "MAY evaluate speculatively, provided
+  // final admission revalidates the request at its actual position", and "each
+  // withdrawal checks the balance at its own serial position." With balance
+  // 100 and three withdrawals of 60, only the first serialized position can
+  // afford it (100 -> 40); the two later positions see 40 < 60 and their assert
+  // fails. Exactly one commits; the final balance is exactly 40.
+  format: 1
+  name: speculative-revalidation-three-way-withdraw
+  suite: scenario
+  spec: ["§22.4", "§22.2", "#runtime"]
+  tags: ["ordering", "concurrency", "atomicity"]
+
+  package: {
+    $liasse: 1
+    $app: "t.threeway@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        balance: "int"
+        $mut: {
+          withdraw: [
+            "assert(.balance >= @amount, 'Insufficient funds')"
+            ".balance = .balance - @amount"
+          ]
+        }
+      }
+      $public: {
+        account: {
+          $view: ".accounts { id, balance }"
+          $mut: { withdraw: ".accounts[@id].withdraw" }
+        }
+      }
+    }
+    $data: {
+      accounts: { "a1": { balance: "100" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { connect: "c2" }
+    { connect: "c3" }
+    {
+      concurrently: [
+        [ { call: "public.account.withdraw", args: { id: "a1", amount: "60" }, on: "c1",
+            expect_one_of: [ { outcome: ok }, { outcome: rejected, violates: ["§22.4"] } ] } ]
+        [ { call: "public.account.withdraw", args: { id: "a1", amount: "60" }, on: "c2",
+            expect_one_of: [ { outcome: ok }, { outcome: rejected, violates: ["§22.4"] } ] } ]
+        [ { call: "public.account.withdraw", args: { id: "a1", amount: "60" }, on: "c3",
+            expect_one_of: [ { outcome: ok }, { outcome: rejected, violates: ["§22.4"] } ] } ]
+      ]
+    }
+    {
+      // Exactly one of the three committed regardless of interleaving.
+      watch: "public.account"
+      on: "c1"
+      id: "w1"
+      expect_init: { value: [ { id: "a1", balance: "40" } ] }
+    }
+  ]
+}

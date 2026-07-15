@@ -1,0 +1,73 @@
+{
+  format: 1
+  name: descriptor-metadata-readable-in-view
+  suite: scenario
+  spec: ["#blobs", "§18.1", "§18.5"]
+  tags: ["blob"]
+  note: '''
+    §18.1/§18.5: "Expressions read descriptor metadata and placement state."
+    A view projects the descriptor's $bytes (a non-negative integer byte
+    count, §18.1), $media, and optional $name of a committed blob. The staged
+    content "hello" is 5 UTF-8 bytes, declared media text/plain, name a.txt.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.metaview@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      meta: {
+        $view: ".docs[@id] { id, bytes: .file.$bytes, media: .file.$media, name: .file.$name }"
+      }
+      $public: {
+        docs: {
+          $view: ".meta"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "hello"
+        media: "text/plain"
+        name: "a.txt"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: { id: "d1" } } }
+    { watch: "public.docs", args: { id: "d1" }, on: "c1", id: "w1",
+      expect_init: { value: { id: "d1", bytes: 5, media: "text/plain", name: "a.txt" } } }
+  ]
+}
+</content>

@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: on-delete-restrict-blocks-target-delete
+  suite: scenario
+  spec: ["#state-model", "§5.6"]
+  tags: ["authz", "integrity"]
+  note: '''Attack: destroy a row that other state depends on, orphaning the dependents.
+§5.6: 'restrict — preserve the target while this ref exists.' The delete must reject
+while an inbound restrict ref exists and succeed once the referencing row is gone.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.restrict@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+      }
+      assets: {
+        $key: "id"
+        id: "text"
+        owner: {
+          $ref: "/accounts"
+          $on_delete: "restrict"
+        }
+      }
+      $public: {
+        registry: {
+          $view: ".accounts { id }"
+          $mut: {
+            add_account: ".accounts + { id: @id }"
+            add_asset: ".assets + { id: @id, owner: @owner }"
+            del_account: ".accounts - @id"
+            del_asset: ".assets - @id"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.registry.add_account", args: { id: "alice" }, expect: { outcome: "ok" } }
+    { call: "public.registry.add_asset", args: { id: "a1", owner: "alice" }, expect: { outcome: "ok" } }
+    // inbound restrict ref exists -> the target must be preserved
+    { call: "public.registry.del_account", args: { id: "alice" },
+      expect: { outcome: "rejected", violates: ["§5.6"], detail: "restrict ref preserves the target while it exists" } }
+    { watch: "public.registry", id: "w1", expect_init: { value: [ { id: "alice" } ] } }
+    // remove the referencing row, then the delete goes through
+    { call: "public.registry.del_asset", args: { id: "a1" }, expect: { outcome: "ok" } }
+    { call: "public.registry.del_account", args: { id: "alice" }, expect: { outcome: "ok" } }
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

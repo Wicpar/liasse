@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: unique-field-shorthand-true
+  suite: scenario
+  spec: ["#annex-c", "§C.3", "#state-model", "§5.7"]
+  note: "Annex C.3 lists '$unique' among field-form members; §5.7: 'Field $unique: true adds one single-field candidate key for that field.' Two rows with distinct primary keys but the same 'email' collide on that additional candidate key, so the second insertion is rejected at admission while the first is admitted."
+
+  package: {
+    $liasse: 1
+    $app: "t.uniqueshorthand@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "uuid = uuid()"
+        email: { $type: "text", $unique: true }
+      }
+      $mut: {
+        add: [
+          "u = .users + { email: @email }"
+          "return u { id }"
+        ]
+      }
+      all: { $view: ".users { id }" }
+      $public: {
+        users: {
+          $view: ".all"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.users.add", args: { email: "a@example.com" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { call: "public.users.add", args: { email: "a@example.com" },
+      expect: { outcome: rejected, violates: ["#state-model", "§5.7"] } }
+  ]
+}

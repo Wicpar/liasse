@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: sort-tiebreak-by-row-identity
+  suite: scenario
+  spec: ["#views", "§7.3", "§B.5"]
+  note: "§7.3: 'Occurrence identity is appended as the final tiebreaker.' §B.5: a view follows its $sort, then inherited row identity, then occurrence identity. Rows a and b share grp 'x'; the tie is broken by row identity (key) ascending, so a precedes b, then c(y)."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewtie@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        grp: "text"
+      }
+      $public: {
+        bygrp: { $view: ".items { id, grp, $sort: [grp] }" }
+      }
+    }
+    $data: {
+      items: {
+        b: { grp: "x" }
+        a: { grp: "x" }
+        c: { grp: "y" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.bygrp", id: "w1",
+      expect_init: { value: [
+        { id: "a", grp: "x" }
+        { id: "b", grp: "x" }
+        { id: "c", grp: "y" }
+      ] } }
+  ]
+}

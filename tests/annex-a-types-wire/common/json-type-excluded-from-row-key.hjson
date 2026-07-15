@@ -1,0 +1,25 @@
+{
+  format: 1
+  name: json-type-excluded-from-row-key
+  suite: static
+  spec: ["§A.8"]
+  tags: ["key", "json"]
+  note: "Annex A.8 lists the key-eligible types and states 'Optional values, JSON, blobs, sets, maps, and views are excluded from row keys.' A collection declaring its `$key` on a `json` field is therefore statically invalid."
+
+  package: {
+    $liasse: 1
+    $app: "t.jsonkey@1.0.0"
+    $model: {
+      docs: {
+        $key: "body"
+        body: "json"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§A.8"]
+    detail: "json is not a key-eligible type; a row key MUST NOT be json"
+  }
+}

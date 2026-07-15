@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: exposed-view-identity-change-rejected
+  suite: scenario
+  spec: ["#annex-e"]
+  tags: [identity, version]
+  note: '''
+    Attack: change the identity a boundary view addresses while keeping the same
+    field set, so consumers silently re-key against a different domain. E.2
+    lists "view ... identity ... contracts" as a boundary; E.5 makes "changing
+    exposed row identity" breaking; E.3 lists "row identity" among the
+    mechanically compared contracts. Version 1.0.0 exposes `companies` keyed by
+    `id`; version 1.1.0 re-keys the same collection by `code`, changing the
+    exposed row identity. Both `id` and `code` are present and unique so
+    migration itself could succeed, but the identity change is a boundary
+    narrowing within the major and is rejected regardless. 1.0.0 stays active
+    (E.9).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.ident@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "code": "text"
+        "name": "text"
+        "$unique": ["code"]
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, code, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "code": "AC", "name": "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.ident@1.1.0"
+          "$model": {
+            "companies": {
+              // exposed row identity changed from `id` to `code`
+              "$key": "code"
+              "id": "text"
+              "code": "text"
+              "name": "text"
+              "$unique": ["id"]
+            }
+            "$public": {
+              "companies": { "$view": ".companies { id, code, name }" }
+            }
+          }
+          "$data": { "companies": { "AC": { "id": "acme", "name": "Acme" } } }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#annex-e"]
+        detail: "minor changes exposed row identity of `companies` from `id` to `code`; narrowing rejected"
+      } }
+    // prior identity contract remains active (E.9)
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", code: "AC", name: "Acme" } ] } }
+  ]
+}

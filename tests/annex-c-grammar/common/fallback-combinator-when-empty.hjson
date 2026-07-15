@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: fallback-combinator-when-empty
+  suite: scenario
+  spec: ["#annex-c", "§C.8", "#views", "§7.4"]
+  note: "Annex C.8: 'a ?? b'. §7.4: 'view ?? other  fallback when the first view is empty'. When the left view has no rows the result is the right view. Here the filtered left view is empty (no archived project), so the fallback view (all projects) is produced. This isolates the '??' fallback combinator's empty-triggered selection."
+
+  package: {
+    $liasse: 1
+    $app: "t.fallback@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        archived: "bool"
+      }
+      archived_or_all: {
+        $view: ".projects[:p | p.archived] { id } ?? .projects { id }"
+      }
+      $public: {
+        projects: { $view: ".archived_or_all" }
+      }
+    }
+    $data: {
+      projects: {
+        a: { id: "a", archived: false }
+        b: { id: "b", archived: false }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.projects", id: "w1",
+      expect_init: { value: { $unordered: [ { id: "a" }, { id: "b" } ] } } }
+  ]
+}

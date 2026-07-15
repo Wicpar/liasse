@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: patch-to-row-also-deleted-is-ignored
+  suite: scenario
+  tags: [deletion, patch, cascade]
+  // Attack: plant an $on_delete patch that would violate a check, expecting it to
+  // veto an unwanted deletion. §21.1: "Patches targeting a row that is itself
+  // deleted are ignored." Task t1 is cascade-deleted with its project; the patch
+  // its `sponsor` ref would apply (setting flag=true, which its own check forbids)
+  // is ignored because t1 is in the delete set, so the transition still succeeds.
+  spec: ["§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      projects: { $key: "id", id: "text" }
+      sponsors: { $key: "id", id: "text" }
+      tasks: {
+        $key: "id"
+        id: "text"
+        flag: "bool = false"
+        $check: ["!.flag", "flag must stay false"]
+        project: {
+          $ref: "/projects"
+          $on_delete: "cascade"        // deleting the project deletes t1
+        }
+        sponsor: {
+          $ref: "/sponsors"
+          $optional: true
+          $on_delete: "= { sponsor: none, flag: true }"   // would break the check
+        }
+      }
+      $mut: {
+        // delete the project AND the sponsor in one transition
+        purge: [
+          ".projects - @p"
+          ".sponsors - @s"
+        ]
+      }
+      tasks_view: { $view: ".tasks { id }" }
+      $public: {
+        tasks: { $view: ".tasks_view", $mut: { purge: ".purge" } }
+      }
+    }
+    $data: {
+      projects: { p1: {} }
+      sponsors: { s1: {} }
+      tasks: { t1: { project: "p1", sponsor: "s1" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [ { id: "t1" } ] } }
+    // t1 is deleted (cascade from p1); the flag=true patch from deleting s1 is
+    // ignored, so no check failure blocks the transition
+    { call: "public.tasks.purge", args: { p: "p1", s: "s1" }, expect: { outcome: ok, "...": true } }
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

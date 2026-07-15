@@ -1,0 +1,86 @@
+{
+  format: 1
+  name: window-anchor-gap-and-reappearance
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["window", "ordering"]
+  note: '''
+    §12.2: "The anchor MUST identify exactly one current occurrence when the
+    window opens. If it later leaves the view, the subscription retains its
+    last complete sort tuple plus occurrence identity as an immutable ordered
+    gap. That coordinate determines the window until the occurrence reappears
+    or the subscription is reopened." Anchored at row "b" of the open view
+    sorted by id: completing "b" removes it from the view, so the window is
+    determined by the gap coordinate ("b"), yielding the first rows at or
+    after it; reopening "b" makes the same row re-enter the same selection,
+    the occurrence reappears, and the window anchors on it again.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.items@1.0.0"
+    $data: {
+      items: {
+        a: {}
+        b: {}
+        c: {}
+        d: {}
+      }
+    }
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        done: "bool = false"
+      }
+      $mut: {
+        complete: ".items[@id].done = true"
+        reopen: ".items[@id].done = false"
+      }
+      open: {
+        $view: ".items[:i | !i.done] { id, $sort: [id] }"
+      }
+      $public: {
+        items: {
+          $view: ".open"
+          $mut: {
+            complete: ".complete"
+            reopen: ".reopen"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // "A concrete anchor normally becomes the first row."
+    {
+      watch: "public.items"
+      on: "c1"
+      id: "w1"
+      window: { $size: 2, $anchor: "b" }
+      expect_init: {
+        value: [ { id: "b" }, { id: "c" } ]
+      }
+    }
+    {
+      call: "public.items.complete"
+      args: { id: "b" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    // The anchor occurrence left the view. The retained gap coordinate
+    // (sort tuple "b") still determines the window: first 2 rows at or after
+    // it are "c" and "d".
+    { expect_view: { watch: "w1", value: [ { id: "c" }, { id: "d" } ] } }
+    {
+      call: "public.items.reopen"
+      args: { id: "b" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    // The occurrence reappears; the window anchors on it again.
+    { expect_view: { watch: "w1", value: [ { id: "b" }, { id: "c" } ] } }
+  ]
+}

@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: write-to-computed-value-invalid
+  suite: static
+  spec: ["#state-model", "§5.2", "§8.5"]
+  tags: ["integrity"]
+  note: '''Attack: overwrite a derived value with a forged one so the stored figure disagrees
+with its defining expression (e.g. set a `total` that does not equal subtotal + tax).
+§5.2: 'A computed value is read-only and determined by its expression.' The `field =
+value` operator (§8.5) applies to writable fields only; a mutation assigning to a
+computed value is a static error caught at load, not a runtime rejection or a silent
+override.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.writecomputed@1.0.0"
+    $model: {
+      invoices: {
+        $key: "id"
+        id: "text"
+        subtotal: "int"
+        tax: "int"
+        total: "= .subtotal + .tax"
+      }
+      $public: {
+        invoices: {
+          $view: ".invoices { id, total }"
+          $mut: {
+            add: ".invoices + { id: @id, subtotal: @subtotal, tax: @tax }"
+            // assigning to the read-only computed value `total`
+            forge_total: ".invoices[@id].total = @total"
+          }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["§5.2"]
+    detail: "the mutation forge_total assigns to the read-only computed value `total`"
+  }
+}

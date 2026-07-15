@@ -1,0 +1,29 @@
+{
+  format: 1
+  name: parameter-conflicting-inference-invalid
+  suite: static
+  spec: ["#expressions", "§6.2", "§8.3"]
+  tags: ["typing"]
+  note: "Attack: use one parameter in two incompatibly-typed positions so a lax checker picks one silently and coerces the other at runtime. §8.3: 'All uses of the same parameter MUST infer one compatible type.' @x is assigned to an int field and to a text field; no single compatible type exists, so the package must be rejected at load."
+
+  package: {
+    $liasse: 1
+    $app: "t.params@1.0.0"
+    $model: {
+      n: "int"
+      label: "text"
+      $mut: {
+        set_both: [
+          ".n = @x"
+          ".label = @x"
+        ]
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#mutations", "#expressions"]
+    detail: "@x infers int from one use and text from another; no single compatible parameter type exists"
+  }
+}

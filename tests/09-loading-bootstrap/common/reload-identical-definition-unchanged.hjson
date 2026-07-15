@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: reload-identical-definition-unchanged
+  suite: scenario
+  spec: ["#loading"]
+  note: '''
+    §9.4: "unchanged — the requested definition and data effects already
+    apply." The host loads a byte-identical definition and seed data onto the
+    freshly created instance whose state still equals the seed, so the
+    operation must report unchanged rather than committed. Uses the host_load
+    extension step (see NOTES.md).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.reload@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "name": "Acme SAS" }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.reload@1.0.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+            }
+            "$public": {
+              "companies": { "$view": ".companies { id, name }" }
+            }
+          }
+          "$data": {
+            "companies": {
+              "acme": { "name": "Acme SAS" }
+            }
+          }
+        }
+      }
+      expect: { outcome: "ok", result: "unchanged" } }
+  ]
+}

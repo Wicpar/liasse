@@ -1,0 +1,22 @@
+{
+  format: 1
+  name: liasse-generation-non-integer-rejected
+  suite: static
+  spec: ["#annex-c", "§C.1", "#package-structure", "§4.1"]
+  tags: ["boundary", "identity"]
+  note: "Type-confusion at the version gate: '$liasse' is the string \"1\" rather than the integer 1. Annex C.1: '$liasse is the required supported language-generation integer.' §4.1: 'A runtime MUST reject an unsupported value before interpreting any other declaration.' The string \"1\" is not the integer the generation selector requires; a runtime that coerces \"1\" to 1 would let the version gate be bypassed with a wrong-typed value, and the same coercion could later admit other unsupported spellings. The value is rejected for being an unsupported (non-integer) generation selector, before any body interpretation."
+
+  package: {
+    $liasse: "1"
+    $app: "t.strgen@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.1", "#package-structure", "§4.1"]
+    detail: "$liasse is the string \"1\", not the required language-generation integer; it is not a supported generation value"
+  }
+}

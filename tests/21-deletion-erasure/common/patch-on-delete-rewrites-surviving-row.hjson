@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: patch-on-delete-rewrites-surviving-row
+  suite: scenario
+  // §21.1 / §5.6: the `= patch` form of $on_delete stays available when
+  // deletion must change several fields of a surviving referencing row. Here
+  // deleting the project both clears the optional ref and sets a status field,
+  // in one patch, while the task survives.
+  spec: ["§21.1", "§5.6"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        status: "text = 'active'"
+        project: {
+          $ref: "/projects"
+          $optional: true
+          // patch touching two fields of the surviving task
+          $on_delete: "= { project: none, status: 'orphaned' }"
+        }
+      }
+      $mut: {
+        delete_project: ".projects - @id"
+      }
+      tasks_view: { $view: ".tasks { id, status, project, $sort: [id] }" }
+      $public: {
+        tasks: { $view: ".tasks_view" }
+        projects: {
+          $view: ".projects { id }"
+          $mut: { delete: ".delete_project" }
+        }
+      }
+    }
+    $data: {
+      projects: { p1: {} }
+      tasks: { t1: { project: "p1" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [
+      { id: "t1", status: "active", project: "p1" }
+    ] } }
+    { call: "public.projects.delete", args: { id: "p1" }, expect: { outcome: ok, "...": true } }
+    { expect_view: { watch: "w1", value: [
+      { id: "t1", status: "orphaned", project: "$absent" }
+    ] } }
+  ]
+}

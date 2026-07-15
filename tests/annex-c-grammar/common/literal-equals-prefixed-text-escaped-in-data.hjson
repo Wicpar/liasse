@@ -1,0 +1,29 @@
+{
+  format: 1
+  name: literal-equals-prefixed-text-escaped-in-data
+  suite: scenario
+  spec: ["#annex-c", "§C.4", "#package-structure", "§4.2"]
+  note: "Annex C.4 / §4.2: in $data (a literal-or-expression position) a string beginning with '=' is an expression; prefixing a leading ' stores the literal text beginning with '='. §4.2's own example is \"'= total + tax\". Here \"'= 1 + 1\" must store the literal text '= 1 + 1' — the leading ' is removed and the remainder is NOT evaluated as the expression 1 + 1 (which would yield 2). Storing the literal string (not '2') proves the escape suppresses expression evaluation."
+
+  package: {
+    $liasse: 1
+    $app: "t.eqescape@1.0.0"
+    $model: {
+      doc: {
+        label: "text"
+      }
+      view_doc: { $view: ".doc { label }" }
+      $public: {
+        doc: { $view: ".view_doc" }
+      }
+    }
+    $data: {
+      doc: { label: "'= 1 + 1" }
+    }
+  }
+
+  steps: [
+    { watch: "public.doc", id: "w1",
+      expect_init: { value: { label: "= 1 + 1" } } }
+  ]
+}

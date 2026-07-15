@@ -1,0 +1,85 @@
+{
+  format: 1
+  name: ambiguous-actor-resolution-denied
+  suite: scenario
+  spec: ["#authentication", "§11.3", "#expressions", "§6.3"]
+  tags: ["aliasing"]
+  note: '''
+    §11.3: "$actor MUST resolve exactly one row. Zero or several rows reject
+    authentication." The authenticator resolves the actor by a non-unique
+    display name. Two accounts carry exactly the same name, so $actor
+    resolves two rows and the request must be denied, never bound to an
+    arbitrary one of them.
+  '''
+
+  // Attack: identity aliasing. Mallory registers an account named exactly
+  // like Alice's. A name-resolving authenticator now matches two rows.
+  // Fail-open behaviors (first match, most recent, lowest key) would let
+  // Mallory inherit tokens that name "alice"; the spec requires rejection.
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.byname@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+      }
+      $auth: {
+        byname: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $actor: "/accounts[:a | a.name == $proof.name]"
+          $check: "$proof.auth == $auth_name"
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "byname"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes[:n | n.author == $actor] { id, body }"
+            $mut: { add: ".add_note" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+        "cccccccc-0000-4000-8000-000000000003": { name: "alice" }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice-name": { auth: "byname", name: "alice" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "member.notes.add", args: { body: "x" }, on: "c1",
+      auth: { auth: "byname", credential: "tok-alice-name" },
+      expect: { outcome: denied, violates: ["#authentication"] } }
+  ]
+}

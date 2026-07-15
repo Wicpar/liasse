@@ -1,0 +1,29 @@
+{
+  // §8.3: parameters are inferred "from every use of @name" and the
+  // resulting parameter shape "is part of the external surface contract".
+  // `return @value` constrains @value to no unique type; §8.3 provides the
+  // explicit prototype exactly for the case "inference would leave more than
+  // one valid type" (§3.2). Without a prototype no single contract type
+  // exists, so the package must fail to load.
+  format: 1
+  name: ambiguous-param-without-prototype-invalid
+  suite: static
+  spec: ["#mutations", "§8.3"]
+  note: "Deduction: Liasse has no top type for parameters; the surface contract requires one concrete parameter shape. A body whose only use of @value is 'return @value' leaves every type valid, so no unique shape can be produced and validation cannot succeed. The prototype form exists precisely to resolve this (§3.2: 'A prototype remains available when inference would leave more than one valid type')."
+
+  package: {
+    "$liasse": 1
+    "$app": "t.ambiguous@1.0.0"
+    "$model": {
+      "$mut": {
+        "echo": "return @value"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§8.3"]
+    detail: "@value cannot be inferred to one type and no prototype is declared"
+  }
+}

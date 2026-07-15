@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: series-bound-equal-to-start-rejected
+  suite: scenario
+  spec: ["#buckets", "§14.5"]
+  tags: ["boundary", "recurrence"]
+  note: "A finite series bound MUST be greater than its initial $from. The subscriptions collection itself is not bucketed, so this rejection can only come from the series rule of the derived recurring collection, not from the plain-interval rule of §14.2."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.seriesbound@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          weekly: { credits: "30", period: "P7D" }
+        }
+      }
+      $public: {
+        subs: {
+          $mut: {
+            add: [
+              "s = .subscriptions + { id: @id, plan: @plan, starts_at: @starts_at, ends_at: @ends_at }"
+              "return s { id }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // series bound == series start: rejected
+    { call: "public.subs.add"
+      args: { id: "s1", plan: "weekly", starts_at: "1767229200000000", ends_at: "1767229200000000" }
+      expect: { outcome: rejected, violates: ["§14.5"] } }
+
+    // series bound one microsecond above the start: valid — the single clipped
+    // interval [start, start + 1us) has its start below its end
+    { call: "public.subs.add"
+      args: { id: "s2", plan: "weekly", starts_at: "1767229200000000", ends_at: "1767229200000001" }
+      expect: { outcome: ok, value: { id: "s2" } } }
+  ]
+}

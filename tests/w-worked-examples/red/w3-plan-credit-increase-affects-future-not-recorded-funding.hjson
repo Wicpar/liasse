@@ -1,0 +1,86 @@
+{
+  format: 1
+  name: w3-plan-credit-increase-affects-future-not-recorded-funding
+  suite: scenario
+  spec: ["W3", "#meters", "§15.2", "§15.3"]
+  tags: [meters, temporal]
+  note: '''
+    W3: "applications that keep plan references intentionally let later plan
+    changes affect future periods and admissions" (§15.3), while §15.2 fixes
+    "Current remaining capacity is the non-negative remainder of the pool's
+    current quantity after allocations held by extant spend rows" and "Increasing
+    it adds future availability ... cannot revoke an admitted spend." A spend of
+    30 drains the weekly pool (balance 0; a further 1 rejects). Raising the plan
+    credits to 100 lifts remaining to 100 − 30 = 70: the earlier 30 allocation is
+    untouched, and a fresh spend of 70 now succeeds. The pedantic point is that
+    the increase does not rewrite the recorded funding nor multiply the past
+    spend.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.credits@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      plans: {
+        $key: "id", id: "text", credits: "decimal", period: "period?", price: "decimal"
+        $mut: { set_credits: [ ".credits = @credits", "return . { id, credits }" ] }
+      }
+      subscriptions: {
+        $key: "id", id: "text"
+        account: { $ref: "/accounts" }
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp? = none"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+        price: "= /plans[$source.plan].price"
+      }
+      accounts: {
+        $key: "id", id: "text"
+        $limits: {
+          credits: {
+            $sources: { subscription: "/credit_periods[:p | p.$source.account == .] { $quantity: .credits, price }" }
+            $order: ["$until", "price"]
+          }
+        }
+        spends: {
+          $key: "id", $consumes: "credits"
+          id: "uuid = uuid()", amount: "decimal", occurred_at: "timestamp = now()"
+        }
+        $mut: { consume: [ "spend = .spends + { amount: @amount }", "return spend { id, amount }" ] }
+      }
+      $public: {
+        wallet: {
+          $view: ".accounts { id, balance: .credits.balance }"
+          $mut: { consume: ".accounts[@account].consume" }
+        }
+        admin: { $mut: { set_credits: ".plans[@id].set_credits" } }
+      }
+    }
+    $data: {
+      plans: { weekly: { credits: "30", price: "9" } }
+      accounts: { a1: {} }
+      subscriptions: { sw: { account: "a1", plan: "weekly", starts_at: "1767225600" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.wallet", id: "w1", expect_init: { value: [ { id: "a1", balance: "30" } ] } }
+    { call: "public.wallet.consume", args: { account: "a1", amount: "30" }, expect: { outcome: ok, value: { id: "$any:uuid", amount: "30" } } }
+    { expect_view: { watch: "w1", value: [ { id: "a1", balance: "0" } ] } }
+    { call: "public.wallet.consume", args: { account: "a1", amount: "1" }, expect: { outcome: rejected, violates: ["§15.2"] } }
+    // raise plan credits -> future availability rises, past allocation untouched
+    { call: "public.admin.set_credits", args: { id: "weekly", credits: "100" }, expect: { outcome: ok, value: { id: "weekly", credits: "100" } } }
+    { expect_view: { watch: "w1", value: [ { id: "a1", balance: "70" } ] } }
+    { call: "public.wallet.consume", args: { account: "a1", amount: "70" }, expect: { outcome: ok, value: { id: "$any:uuid", amount: "70" } } }
+    { expect_view: { watch: "w1", value: [ { id: "a1", balance: "0" } ] } }
+  ]
+}

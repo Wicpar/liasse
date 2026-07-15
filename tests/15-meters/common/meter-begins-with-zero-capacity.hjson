@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: meter-begins-with-zero-capacity
+  suite: scenario
+  spec: ["#meters", "§15.1", "§15.2"]
+  note: "A meter begins with zero capacity (SPEC §15.1). With no pool rows at all, any positive spend finds insufficient eligible capacity and the transition is rejected."
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.zero@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: { users: { u1: {} } }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { user: "u1", amount: "1" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"],
+                detail: "eligible capacity is zero; the meter has no pools" } }
+  ]
+}

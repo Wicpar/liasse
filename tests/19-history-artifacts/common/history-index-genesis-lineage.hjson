@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: history-index-genesis-lineage
+  suite: scenario
+  // §19.6: history/index.json has the required format-1 structure; the
+  // selected lineage/point of the index and the manifest describe the same
+  // selection; a lineage that starts at genesis records origin "genesis" and
+  // its head is the selected point when the export selects the lineage head.
+  spec: ["§19.6", "§19.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "hello" },
+      expect: { outcome: ok, value: { id: "n1", body: "hello" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a1", expect: {
+        outcome: ok
+        manifest: {
+          selected: { lineage: "$bind:l1", point: "$bind:p1" }
+          "...": true
+        }
+        history_index: {
+          format: 1
+          selected: { lineage: "$ref:l1", point: "$ref:p1" }
+          lineages: "$any"
+          "...": true
+        }
+        selected_lineage: {
+          origin: "genesis"
+          head: "$ref:p1"
+          ranges: "$any"
+          "...": true
+        }
+    } } }
+  ]
+}

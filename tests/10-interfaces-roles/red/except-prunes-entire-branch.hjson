@@ -1,0 +1,91 @@
+{
+  format: 1
+  name: except-prunes-entire-branch
+  suite: scenario
+  // §10.5 step 4: "$except removes candidates satisfying its predicate and
+  // prunes that branch." The pruned child "hr" has a grandchild "hr1" that
+  // satisfies $where and is a strict descendant of the root — an
+  // implementation that filters per-node instead of pruning per-branch would
+  // wrongly resurface hr1. It must appear nowhere in the result.
+  spec: ["#interfaces", "§10.5"]
+  tags: ["recursive", "authz"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rec_prune@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "plan": "text = 'active'"
+        "subcompanies": { "$like": "^" }
+        "members": {
+          "$key": "account"
+          "account": { "$ref": "/accounts" }
+          "admin": "bool = false"
+        }
+        "$roles": {
+          "admin": {
+            "$auth": "token"
+            "$members": ".members[:m | m.admin].account"
+            "company": {
+              "$view": ". { id, name }"
+              "$recursive": {
+                "$field": "subcompanies"
+                "$through": ".subcompanies"
+                "$bind": "child"
+                "$where": "child.plan != 'closed'"
+                "$except": "child.id == 'hr'"
+              }
+            }
+          }
+        }
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+      "companies": {
+        "root": {
+          "name": "Root"
+          "members": { "alice": { "admin": true } }
+          "subcompanies": {
+            "a": { "name": "Branch A" }
+            "hr": {
+              "name": "HR"
+              "subcompanies": {
+                // Active and $where-satisfying, but inside the pruned branch.
+                "hr1": { "name": "HR Payroll" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+    // Exactly one child: "a". Neither "hr" nor "hr1" may occur anywhere.
+    { watch: "admin.company", scope: "root", id: "w1",
+      expect_init: { value: {
+        id: "root"
+        name: "Root"
+        subcompanies: [
+          { id: "a", name: "Branch A", "...": true }
+        ]
+        "...": true
+      } } }
+  ]
+}

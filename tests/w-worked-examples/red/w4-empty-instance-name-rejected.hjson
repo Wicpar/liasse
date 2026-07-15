@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: w4-empty-instance-name-rejected
+  suite: scenario
+  spec: ["W4", "#modules", "§13.3"]
+  tags: [modules, boundary]
+  note: '''
+    Boundary abuse on the instance name. §13.3: "The instance name is a non-empty
+    text value, is unique within its module space, and forms the local component
+    of instance identity." An install request with $name "" violates that
+    constraint and is rejected before an instance is created (per the §13 corpus
+    convention, a request whose value fails an admission constraint is
+    `rejected`). No module space entry is created.
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.company.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          plan: "text"
+          modules: {
+            $modules: {
+              $expose: { company: { $view: ". { id, name, plan }" } }
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
+              }
+            }
+          }
+        }
+      }
+      $data: { companies: { acme: { name: "Acme", plan: "fr-pcg" } } }
+    }
+
+    frsales: {
+      $liasse: 1
+      $module: "acme.fr_sales_templates@1.0.0"
+      $use: { company: "$parent" }
+      $model: {
+        templates: { $key: "id", id: "text", label: "text", journal: "text", enabled: "bool = true", lines: "json" }
+      }
+      $data: {
+        templates: {
+          sale_invoice: {
+            label: "Facture de vente", journal: "VE"
+            enabled: "= #company.plan == 'fr-pcg'"
+            lines: [ { account: "411", side: "debit", amount: "'= total_ttc" } ]
+          }
+        }
+      }
+      $expose: { templates: { $view: ".templates[:t | t.enabled] { id, label, journal, lines }" } }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: { $name: "", $module: "acme.fr_sales_templates@1.0.0" } }
+      expect: { outcome: rejected, violates: ["§13.3"], detail: "instance name must be a non-empty text value" } }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  format: 1
+  name: keyring-unregistered-provider-invalid
+  suite: static
+  spec: ["#keyrings", "#conformance", "§9.2", "§17.6"]
+  note: "§2.1: a package requiring an unavailable host component fails validation before activation. §9.2 step 4 resolves required providers during load; no provider named test-kp is registered in the context."
+
+  hosts: {
+    key_providers: {}
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance", "§9.2", "§17.6"]
+    detail: "required key provider 'test-kp' is not registered in the context"
+  }
+}

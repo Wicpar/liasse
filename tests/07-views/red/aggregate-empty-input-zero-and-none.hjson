@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: aggregate-empty-input-zero-and-none
+  suite: scenario
+  spec: ["#views", "§7.5", "§A.1"]
+  tags: ["boundary"]
+  note: "Attack: an empty aggregate source crashes, divides by zero, or returns a wrong sentinel. §7.5: 'Empty input yields 0 for count, numeric zero for sum, and none for avg, min, and max.' The 'items' collection is unseeded, so an omitted keyed collection starts empty (§5.4/loading). count -> 0, sum(amount:int) -> int zero 0, and avg/min/max -> none. §A.1: int zero is the base-10 string \"0\"; none is an absent optional value, so av/mn/mx are absent members."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewaggempty@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        amount: "int"
+      }
+      c: "= count(.items)"
+      s: "= sum(.items.amount)"
+      av: "= avg(.items.amount)"
+      mn: "= min(.items.amount)"
+      mx: "= max(.items.amount)"
+      $public: {
+        stat: { $view: ". { c, s, av, mn, mx }" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.stat", id: "w1",
+      expect_init: { value: {
+        c: "0"
+        s: "0"
+        av: "$absent"
+        mn: "$absent"
+        mx: "$absent"
+      } } }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: manual-second-activation-retires-prior
+  suite: scenario
+  tags: ["keys", "rotation"]
+  spec: ["#keyrings", "§17.3", "§17.4"]
+  // Invariant probe: §17.3 allows at most one active signing version per
+  // keyring at one admitted state position, and §17.4 says a manual policy
+  // activates "through the same transition" as automatic rotation — which
+  // atomically activates the new version AND retires the prior active one.
+  // Binding and activating a second external key must therefore never yield
+  // two simultaneously active versions, even transiently across commits.
+  note: "A runtime that models manual activation as a plain insert (activate v2, forget v1) would leave both versions active and fail the final exact-set assertion."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: false
+        bind: true
+        protection: "software"
+        external_keys: {
+          "ext1": { algorithm: "Ed25519" }
+          "ext2": { algorithm: "Ed25519" }
+        }
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$retain": "P45D"
+        }
+      }
+      "$public": {
+        "ring_current": { "$view": "/session_keys.$current" }
+        "ring_versions": { "$view": "/session_keys.$versions" }
+      }
+    }
+  }
+
+  steps: [
+    { keyring_admin: { ring: "/session_keys", op: "bind_activate", external: "ext1" },
+      expect: { outcome: ok } }
+    { watch: "public.ring_current", id: "w1",
+      expect_init: { value: { id: "$bind:v1", activated_at: "$any:timestamp", retired_at: "$absent", "...": true } } }
+    { keyring_admin: { ring: "/session_keys", op: "bind_activate", external: "ext2" },
+      expect: { outcome: ok } }
+    // Exactly one active version; the prior one is retired by the same transition.
+    { watch: "public.ring_versions", id: "w2",
+      expect_init: { value: { $unordered: [
+        { id: "$ref:v1", retired_at: "$any:timestamp", "...": true }
+        { id: "$bind:v2", activated_at: "$any:timestamp", retired_at: "$absent", "...": true }
+      ] } } }
+    { watch: "public.ring_current", id: "w3",
+      expect_init: { value: { id: "$ref:v2", "...": true } } }
+  ]
+}

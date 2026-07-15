@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: w1-operation-id-replay-executes-at-most-once
+  suite: scenario
+  spec: ["W1", "#clients", "§12.3"]
+  tags: [replay, dedup]
+  note: '''
+    Replay attack on the create path. §12.3: an external call MAY carry a
+    high-entropy operation identifier scoped to (application, target,
+    authenticator, identifier); "Reusing the same scoped identifier with an
+    equivalent request provides at-most-once execution." The client submits the
+    identical add twice under one operation_id. The second submission must not
+    create a second task — the collection holds exactly one row afterwards. (The
+    second call's returned status is not pinned by the spec beyond at-most-once,
+    so only the single-row effect is asserted.)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.tasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: {
+          $type: "text"
+          $normalize: "string.trim(.)"
+          $check: ["size(.) > 0", "A title is required"]
+        }
+        done: "bool = false"
+        created_at: "timestamp = now()"
+        $mut: {
+          complete: [
+            ".done = true"
+            "return . { id, title, done, created_at }"
+          ]
+        }
+      }
+      $mut: {
+        add_task: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title, done, created_at }"
+        ]
+      }
+      open_tasks: {
+        $view: ".tasks[:task | !task.done] { id, title, created_at, $sort: [-created_at] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".open_tasks"
+          $mut: {
+            add: ".add_task"
+            complete: ".tasks[@id].complete()"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tasks.add", args: { title: "charge once" }, operation_id: "op-7f3a", expect: { outcome: ok } }
+    // identical request, identical operation id -> at-most-once, no second row
+    { call: "public.tasks.add", args: { title: "charge once" }, operation_id: "op-7f3a", expect: { outcome: ok } }
+    { watch: "public.tasks", id: "w1", expect_init: { value: [ { id: "$any:uuid", title: "charge once", created_at: "$any:timestamp" } ] } }
+  ]
+}

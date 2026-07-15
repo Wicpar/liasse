@@ -1,0 +1,80 @@
+{
+  format: 1
+  name: operation-id-scope-distinct-per-target
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["dedup", "aliasing"]
+  note: '''
+    Attack: poison another surface's deduplication record by reusing a known
+    operation identifier against a different target, hoping either to suppress
+    the second operation (cross-target dedup) or to get it rejected as
+    mismatched reuse. §12.3: "Its scope is the application, public or
+    scoped-role target, selected authenticator when present, and identifier."
+    A different target is a different scope, so the same identifier names two
+    independent operations: both must execute.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+        intake: {
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    {
+      call: "public.tasks.add"
+      args: { title: "x" }
+      on: "c1"
+      operation_id: "op-b62f81d3a90c47e5"
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "x" } }
+    }
+    // Same identifier, same arguments, DIFFERENT public target: independent
+    // operation scope, so this is neither deduplicated nor rejected.
+    {
+      call: "public.intake.add"
+      args: { title: "x" }
+      on: "c1"
+      operation_id: "op-b62f81d3a90c47e5"
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "x" } }
+    }
+    {
+      expect_view: {
+        watch: "w1"
+        value: [
+          { id: "$any:uuid", title: "x" }
+          { id: "$any:uuid", title: "x" }
+        ]
+      }
+    }
+  ]
+}

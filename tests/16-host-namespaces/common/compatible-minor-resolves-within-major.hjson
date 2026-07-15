@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: compatible-minor-resolves-within-major
+  suite: static
+  spec: ["#host-namespaces", "#annex-e"]
+  note: '''
+    §16.2: the $requires value identifies the semantic contract and
+    compatible MAJOR ("test.util@1"). §E.8: a namespace requirement MAY move
+    to a compatible minor or patch descriptor within the same namespace
+    major. A context registering test.util@1.4.2 therefore satisfies the
+    requirement test.util@1 and the package loads.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.minorok@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      n: "int = 0"
+      doubled: { $view: "util.double(.n)" }
+      $public: {
+        stats: { $view: ".doubled" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.4.2"
+        interface_hash: "ih-util-142"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: ok
+  }
+}

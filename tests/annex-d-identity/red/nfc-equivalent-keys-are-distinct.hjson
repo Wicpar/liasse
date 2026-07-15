@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: nfc-equivalent-keys-are-distinct
+  suite: scenario
+  spec: ["§D.2", "§9.1", "§5.4"]
+  tags: ["unicode", "identity"]
+  note: '''Attack: rely on Unicode normalization to make two equal-looking keys collide or alias. D.2 defines the canonical scalar key text of a text key as exact Unicode text and specifies NO normalization (no NFC/NFD folding). The precomposed key (e-acute, U+00E9) and the decomposed key (e + combining acute U+0301) are DISTINCT keys: different code point sequences, though canonically equivalent under NFC and rendered identically. Seeding both must create two independent rows (9.1); a lookup with one sequence must never resolve the other. A runtime that NFC-normalizes keys would wrongly conflate them (a duplicate-key rejection, or a single row) instead of keeping two.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.nfc@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        label: "text"
+      }
+      $public: {
+        items: {
+          $view: ".items[:i] { id: i.id, label: i.label, $sort: [id] }"
+          $mut: { label_of: "return .items[@id].label" }
+        }
+      }
+    }
+    $data: {
+      items: {
+        // precomposed U+00E9
+        "café": { label: "composed" }
+        // decomposed: e + combining acute U+0301
+        "café": { label: "decomposed" }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.items.label_of", args: { id: "café" },
+      expect: { outcome: ok, value: "composed" } }
+    { call: "public.items.label_of", args: { id: "café" },
+      expect: { outcome: ok, value: "decomposed" } }
+    { watch: "public.items", id: "w1", expect_init: { value: { $unordered: [
+      { id: "café", label: "composed" }
+      { id: "café", label: "decomposed" }
+    ] } } }
+  ]
+}

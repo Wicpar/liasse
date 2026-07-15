@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: restrict-allows-deletion-when-referencing-row-also-deleted
+  suite: scenario
+  // §21.1: "A restrict ref blocks deletion only when its referencing row is
+  // outside that final delete set." A link references doc a (cascade) and doc b
+  // (restrict). Deleting a and b together: the cascade from `a` puts the link
+  // into the delete set, so its restrict ref to `b` no longer blocks — the whole
+  // transition succeeds.
+  spec: ["§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      docs: {
+        $key: "id"
+        id: "text"
+      }
+      links: {
+        $key: "id"
+        id: "text"
+        from: {
+          $ref: "/docs"
+          $on_delete: "cascade"    // deleting `from` removes the link
+        }
+        to: {
+          $ref: "/docs"
+          $on_delete: "restrict"   // would block deleting `to`...
+        }
+      }
+      $mut: {
+        // delete both docs in one transition
+        delete_docs: "-.docs[:d | d.id == @a || d.id == @b]"
+      }
+      docs_view: { $view: ".docs { id, $sort: [id] }" }
+      links_view: { $view: ".links { id, $sort: [id] }" }
+      $public: {
+        docs: { $view: ".docs_view", $mut: { purge: ".delete_docs" } }
+        links: { $view: ".links_view" }
+      }
+    }
+    $data: {
+      docs: { a: {}, b: {} }
+      links: { l1: { from: "a", to: "b" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.docs", id: "wd", expect_init: { value: [ { id: "a" }, { id: "b" } ] } }
+    { watch: "public.links", id: "wl", expect_init: { value: [ { id: "l1" } ] } }
+    // ...but the link is itself in the final delete set, so restrict does not block
+    { call: "public.docs.purge", args: { a: "a", b: "b" }, expect: { outcome: ok, "...": true } }
+    { expect_view: { watch: "wd", value: [] } }
+    { expect_view: { watch: "wl", value: [] } }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  format: 1
+  name: unknown-top-level-member-rejected
+  suite: static
+  spec: ["#conformance", "§2.5", "#annex-c", "§C.1"]
+  note: "§2.5: 'Unknown members in a declaration object are invalid unless that declaration explicitly accepts application-defined member names.' The Annex C.1 app-package grammar is closed; the top-level definition object accepts no application-defined members."
+
+  package: {
+    $liasse: 1
+    $app: "t.extras@1.0.0"
+    $model: {
+      note: "text"
+    }
+    // not part of the app-package grammar
+    custom_notes: {
+      author: "mallory"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance", "§2.5", "#annex-c", "§C.1"]
+    detail: "top-level member 'custom_notes' is not part of the app-package grammar"
+  }
+}

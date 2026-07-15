@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: aggregate-min-skips-absent-inputs
+  suite: scenario
+  spec: ["#views", "§7.5", "§A.1"]
+  tags: ["boundary"]
+  note: "Attack: a none input poisons an aggregate (min treats absent as 0 or as smallest). §7.5: 'Absent inputs are skipped.' §A.1: row b's omitted optional amount is none (an absent member). min over amounts { 5, none, 3 } skips the absent value and returns 3, not none and not 0. Because at least one present value exists, min is present (not the empty-input none case)."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewminskip@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        amount: "int?"
+      }
+      lo: "= min(.items.amount)"
+      $public: {
+        stat: { $view: ". { lo }" }
+      }
+    }
+    $data: {
+      items: {
+        a: { amount: "5" }
+        b: {}
+        c: { amount: "3" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.stat", id: "w1",
+      expect_init: { value: { lo: "3" } } }
+  ]
+}

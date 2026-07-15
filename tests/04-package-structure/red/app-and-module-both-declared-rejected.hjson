@@ -1,0 +1,23 @@
+{
+  format: 1
+  name: app-and-module-both-declared-rejected
+  suite: static
+  spec: ["#annex-c", "§C.1", "#package-structure", "§4.1"]
+  tags: ["identity"]
+  note: "Attack: a chameleon package that is simultaneously an application and a module, hoping to be admitted through whichever validation path is weaker (module mounting vs root creation) while presenting the other identity elsewhere. §4.1: 'A module definition uses $module instead of $app'; Annex C.1: 'Exactly one of $app and $module identifies a package.'"
+
+  package: {
+    $liasse: 1
+    $app: "t.chameleon@1.0.0"
+    $module: "t.chameleon@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.1", "#package-structure", "§4.1"]
+    detail: "definition declares both $app and $module"
+  }
+}

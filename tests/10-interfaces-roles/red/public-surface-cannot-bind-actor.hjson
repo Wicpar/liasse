@@ -1,0 +1,40 @@
+{
+  format: 1
+  name: public-surface-cannot-bind-actor
+  suite: static
+  // Escalation-by-construction attempt: a public surface program that reads
+  // $actor. §10.2: "A public operation has no $actor or $session." §11.1:
+  // only an external authenticated operation introduces $actor. §6.2:
+  // structural bindings "exist only in the feature context that defines
+  // them", and §6 checks every expression statically at load. This package
+  // declares no authenticator at all, so no context can ever provide $actor;
+  // the inline public program referencing it must fail validation.
+  spec: ["#interfaces", "§10.2", "#expressions", "#authentication"]
+  tags: ["authz"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.pub_actor@1.0.0"
+    "$model": {
+      "entries": {
+        "$key": "id"
+        "id": "text"
+        "who": "text"
+      }
+      "$public": {
+        "log": {
+          "$mut": {
+            // Invalid: $actor is not bound in a public operation.
+            "grab": ".entries + { id: @id, who: $actor.id }"
+          }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces", "#expressions"]
+    detail: "$actor is not in scope for a public surface program"
+  }
+}

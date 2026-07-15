@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: receiver-dot-is-selected-row
+  suite: scenario
+  spec: ["#expressions", "§6.2", "§8.2"]
+  note: "§6.2: '.' is the current value or row. §8.2: a mutation declared on a keyed collection is a row mutation; calling it requires a selected row and '.' is that row. Only the selected row changes; the sibling row is untouched."
+
+  package: {
+    $liasse: 1
+    $app: "t.receiver@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+        $mut: {
+          complete: ".done = true"
+        }
+      }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, done }"
+          $mut: { complete: ".tasks[@id].complete" }
+        }
+      }
+    }
+    $data: {
+      tasks: {
+        t1: { done: false }
+        t2: { done: false }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tasks.complete", args: { id: "t1" },
+      expect: { outcome: "ok" } }
+    { watch: "public.tasks", id: "w1",
+      expect_init: { value: [
+        { id: "t1", done: true }
+        { id: "t2", done: false }
+      ] } }
+  ]
+}

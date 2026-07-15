@@ -1,0 +1,55 @@
+{
+  format: 1
+  name: window-anchor-without-occurrence-error
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["window", "boundary"]
+  note: '''
+    §12.2: "The anchor MUST identify exactly one current occurrence when the
+    window opens." Anchoring on a key with no current occurrence (never
+    inserted) violates that MUST, so opening the subscription must fail. The
+    corpus maps a malformed-subscription open failure to outcome `error` (see
+    NOTES.md); it is not an authorization failure and no admission is
+    involved.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.items@1.0.0"
+    $data: {
+      items: {
+        a: {}
+        b: {}
+      }
+    }
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      index: {
+        $view: ".items { id, $sort: [id] }"
+      }
+      $public: {
+        items: {
+          $view: ".index"
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      watch: "public.items"
+      on: "c1"
+      id: "w1"
+      window: { $size: 2, $anchor: "zz" }
+      expect: {
+        outcome: error
+        violates: ["#clients"]
+        detail: "anchor identifies zero current occurrences at window open"
+      }
+    }
+  ]
+}

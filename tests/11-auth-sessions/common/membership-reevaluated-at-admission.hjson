@@ -1,0 +1,124 @@
+{
+  format: 1
+  name: membership-reevaluated-at-admission
+  suite: scenario
+  spec: ["#interfaces", "§10.3", "§10.5", "#authentication", "§11.7", "#runtime", "§22.1"]
+  tags: ["authz"]
+  note: '''
+    §10.5: "Membership ... [is] re-evaluated at admission. A role change
+    therefore affects subsequent requests immediately in serial order."
+    §22.1 lists role membership among per-request admission conditions.
+    Alice's session stays valid and unrevoked throughout; only her account's
+    enabled flag changes, and the very next request under the same session is
+    denied.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.admin@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+        admin: "bool = false"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes[:n | n.author == $actor] { id, body }"
+            $mut: { add: ".add_note" }
+          }
+        }
+        admin: {
+          $auth: "session"
+          $members: ".accounts[:a | a.admin]"
+          accounts: {
+            $mut: { disable: ".accounts[@account] { enabled = false }" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+        "bbbbbbbb-0000-4000-8000-000000000002": { name: "bob", admin: true }
+      }
+      sessions: {
+        "5e551000-0000-4000-8000-000000000001": {
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+        "5e551000-0000-4000-8000-000000000002": {
+          account: "bbbbbbbb-0000-4000-8000-000000000002"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "5e551000-0000-4000-8000-000000000001" }
+        "tok-bob": { auth: "session", session: "5e551000-0000-4000-8000-000000000002" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "member.notes.add", args: { body: "while member" }, on: "c1",
+      auth: { auth: "session", credential: "tok-alice" },
+      expect: { outcome: ok, value: {
+        id: "$any:uuid"
+        author: "aaaaaaaa-0000-4000-8000-000000000001"
+        body: "while member"
+      } } }
+    // Bob disables Alice's account.
+    { call: "admin.accounts.disable", args: { account: "aaaaaaaa-0000-4000-8000-000000000001" }, on: "c1",
+      auth: { auth: "session", credential: "tok-bob" },
+      expect: { outcome: ok } }
+    // Same session, same token, next request in serial order: denied.
+    { call: "member.notes.add", args: { body: "after disable" }, on: "c1",
+      auth: { auth: "session", credential: "tok-alice" },
+      expect: { outcome: denied, violates: ["#interfaces", "#authentication"] } }
+  ]
+}

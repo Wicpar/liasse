@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: install-into-nonexistent-space-rejected
+  suite: scenario
+  spec: ["#modules", "§13.2", "§13.3"]
+  note: '''
+    §13.3: modules.install creates one named instance inside an EXISTING
+    module space. §13.2: a $modules space instance exists at the exact
+    location of each containing row. No "ghost" company row exists, so the
+    space /companies/ghost/modules is not present and the install has no
+    space to target; the request is rejected. A subsequent install into the
+    existing /companies/acme/modules succeeds, isolating the missing-space
+    cause.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+              }
+            }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tpl: {
+      "$liasse": 1
+      "$module": "t.tpl@1.0.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+      }
+      "$expose": {
+        "templates": { "$view": ".templates { id, label }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    // no company row "ghost" exists, so its module space does not exist
+    { module_install: { space: "/companies/ghost/modules", request: { "$name": "kit", "$module": "t.tpl@1.0.0" } }
+      expect: { outcome: rejected, violates: ["§13.3"]
+                detail: "install targets a module space whose containing row does not exist" } }
+    // the same package installs into an existing space
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.tpl@1.0.0" } }
+      expect: { outcome: ok } }
+  ]
+}

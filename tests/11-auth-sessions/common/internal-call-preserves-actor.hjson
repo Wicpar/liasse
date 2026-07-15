@@ -1,0 +1,118 @@
+{
+  format: 1
+  name: internal-call-preserves-actor
+  suite: scenario
+  spec: ["#authentication", "§11.1", "#mutations", "§8.11"]
+  note: '''
+    §11.1: "Internal mutation calls ... preserve the external bindings and
+    create no new actor." §8.11: "Internal calls execute inside the same
+    atomic program and preserve the external request's $actor and $session
+    bindings." The surface mutation internally calls log_action, and the audit
+    row written by that inner mutation carries the external request's actor.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.audit@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      audit: {
+        $key: "id"
+        id: "uuid = uuid()"
+        actor: { $ref: "/accounts" }
+        action: "text"
+      }
+      $mut: {
+        log_action: [
+          ".audit + { actor: $actor, action: @action }"
+        ]
+        add_note_logged: [
+          ".log_action({ action: 'add' })"
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes[:n | n.author == $actor] { id, body }"
+            $mut: { add: ".add_note_logged" }
+          }
+          audit: {
+            $view: ".audit { id, actor, action }"
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+      }
+      sessions: {
+        "5e551000-0000-4000-8000-000000000001": {
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "5e551000-0000-4000-8000-000000000001" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { auth: "session", credential: "tok-alice" } }
+    { watch: "member.audit", on: "c1", id: "w1", expect_init: { value: [] } }
+    { call: "member.notes.add", args: { body: "logged" }, on: "c1",
+      expect: { outcome: ok, value: {
+        id: "$any:uuid"
+        author: "aaaaaaaa-0000-4000-8000-000000000001"
+        body: "logged"
+      } } }
+    // The audit row was inserted by the INNER mutation call; its actor is the
+    // external request's actor, not a new or absent one.
+    { expect_view: { watch: "w1", value: [
+      { id: "$any:uuid", actor: "aaaaaaaa-0000-4000-8000-000000000001", action: "add" }
+    ] } }
+  ]
+}

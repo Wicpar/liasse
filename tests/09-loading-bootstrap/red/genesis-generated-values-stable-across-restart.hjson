@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: genesis-generated-values-stable-across-restart
+  suite: scenario
+  spec: ["#loading", "#state-model"]
+  tags: ["replay"]
+  note: '''
+    Replay attack on generated identity. The seeded row's token comes from a
+    uuid() default. §5.1 (applied to seeds by §9.1): "Generative values such
+    as uuid() and now() are produced once for the admitted insertion." §9.3
+    records genesis history and §9.4 makes the successful operation final. A
+    runtime that re-evaluates genesis seed defaults while replaying after a
+    restart would mint a DIFFERENT uuid, silently rewriting durable identity.
+    The token observed before the restart must be the token observed after.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.stabletoken@1.0.0"
+    "$model": {
+      "items": {
+        "$key": "id"
+        "id": "text"
+        "token": "uuid = uuid()"
+      }
+      "$public": {
+        "items": { "$view": ".items { id, token }" }
+      }
+    }
+    "$data": {
+      "items": {
+        "a": {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.items", id: "w1",
+      expect_init: { value: [ { id: "a", token: "$bind:tok" } ] } }
+    { restart: {} }
+    { watch: "public.items", id: "w2",
+      expect_init: { value: [ { id: "a", token: "$ref:tok" } ] } }
+  ]
+}

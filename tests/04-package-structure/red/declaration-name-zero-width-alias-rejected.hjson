@@ -1,0 +1,24 @@
+{
+  format: 1
+  name: declaration-name-zero-width-alias-rejected
+  suite: static
+  spec: ["#conformance", "§2.5"]
+  tags: ["unicode", "identity"]
+  note: "Attack: two declarations that render identically — 'done' and 'done\\u200D' (trailing ZERO WIDTH JOINER) — so a reviewer sees one field while the model carries two, and paths/projections silently pick the wrong one. §2.5 permits only ASCII letters, digits, and _ in declaration names, so the smuggled twin must be rejected outright."
+
+  package: {
+    $liasse: 1
+    $app: "t.zwj@1.0.0"
+    $model: {
+      done: "bool"
+      // visually identical to the member above; trailing U+200D
+      "done‍": "bool"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance", "§2.5"]
+    detail: "declaration name contains U+200D ZERO WIDTH JOINER, outside ASCII letters, digits, and _"
+  }
+}

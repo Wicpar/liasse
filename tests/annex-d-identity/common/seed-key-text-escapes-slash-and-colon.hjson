@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: seed-key-text-escapes-slash-and-colon
+  suite: scenario
+  spec: ["§D.2", "§9.1", "§6.3"]
+  tags: ["identity"]
+  note: '''§D.2: within a scalar key component each original `/` and `:` is encoded
+as `%2F` and `%3A`, and this encoding is used for seed object member names (§9.1
+map form). The seeded member "a%2Fb%3Ac" therefore supplies the single text key
+whose typed value is "a/b:c". §D.2 also states expressions use typed key values
+rather than encoded strings, so the lookup argument is the raw "a/b:c" and the
+view row shows the raw "a/b:c" — never the encoded form.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.keyesc@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        label: "text"
+      }
+      $public: {
+        items: {
+          $view: ".items[:i] { id: i.id, label: i.label, $sort: [id] }"
+          $mut: { get: "return .items[@id].label" }
+        }
+      }
+    }
+    $data: {
+      items: {
+        // encoded key text for the single text key "a/b:c"
+        "a%2Fb%3Ac": { label: "escaped" }
+        // a plain key, for contrast and deterministic sort
+        "plain": { label: "plain" }
+      }
+    }
+  }
+
+  steps: [
+    // expressions use the typed key value, not the encoded seed text
+    { call: "public.items.get", args: { id: "a/b:c" },
+      expect: { outcome: "ok", value: "escaped" } }
+    // the encoded string is NOT itself a key
+    { call: "public.items.get", args: { id: "a%2Fb%3Ac" },
+      expect: { outcome: "rejected", violates: ["§6.3"],
+                detail: "no row has the literal encoded string as its typed key; a one-row context selecting zero occurrences rejects" } }
+    // view rows carry the decoded typed key; '/' (0x2F) sorts before 'p'
+    { watch: "public.items", id: "w1", expect_init: { value: [
+      { id: "a/b:c", label: "escaped" }
+      { id: "plain", label: "plain" }
+    ] } }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: lossy-roundtrip-single-value-rejects-whole
+  suite: scenario
+  spec: ["#evolution", "§20.2", "#loading", "§9.4"]
+  note: '''
+    §20.2: the round trip is verified "For every actual migrated value x", and
+    "A failed round trip rejects the complete migration." The attack: a
+    transform that is lossless for most rows but lossy for one, hoping the good
+    rows migrate and only the bad one is silently dropped. `$as` lowercases and
+    `$back` is the identity. Row a1 "abc" round-trips (abc == abc); row a2
+    "Abc" does NOT (lower="abc", $back="abc" != "Abc"). One failing value
+    rejects the COMPLETE migration — including a1 — and 1.0.0 stays active with
+    both rows intact.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.lossy@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        rows: { $view: ".rows { id, name, $sort: [id] }" }
+      }
+    }
+    $data: {
+      rows: {
+        a1: { name: "abc" }
+        a2: { name: "Abc" }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.lossy@2.0.0"
+          $model: {
+            rows: {
+              $key: "id"
+              id: "text"
+              folded: {
+                $type: "text"
+                $from: "name"
+                $as: "string.lower(.)"
+                $back: "."
+              }
+            }
+            $public: {
+              rows: { $view: ".rows { id, folded, $sort: [id] }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.2"]
+        detail: "a2 fails $back($as('Abc'))=='abc' != 'Abc'; the complete migration is rejected, including the row that round-trips"
+      } }
+    { watch: "public.rows", id: "w1",
+      expect_init: { value: [ { id: "a1", name: "abc" }, { id: "a2", name: "Abc" } ] } }
+  ]
+}

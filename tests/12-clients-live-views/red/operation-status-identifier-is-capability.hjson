@@ -1,0 +1,74 @@
+{
+  format: 1
+  name: operation-status-identifier-is-capability
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["authz", "status", "capability"]
+  note: '''
+    Attack: enumerate operation records without possessing the identifier.
+    §12.3: "For a public call, the high-entropy operation identifier also acts
+    as the capability required to query that record." Possessing the exact
+    identifier grants status access (even from another connection); any other
+    identifier addresses no retained record, so the runtime reports `unknown`
+    and reveals nothing. Record retention is fixed by the simulated host (see
+    NOTES.md).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  hosts: {
+    operation_records: { retention: "unbounded" }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      operation_id: "op-4c19e7a2f58d03b6"
+      expect: { outcome: ok, completion: committed, value: { id: "$any:uuid", title: "a" } }
+    }
+    { connect: "c2" }
+    // Guessed identifier: no retained record is addressed; nothing may leak.
+    {
+      operation_status: { id: "op-4c19e7a2f58d03b7" }
+      on: "c2"
+      expect: { outcome: ok, status: unknown }
+    }
+    // The exact identifier is the capability; a different connection holding
+    // it may query the record.
+    {
+      operation_status: { id: "op-4c19e7a2f58d03b6" }
+      on: "c2"
+      expect: { outcome: ok, status: committed, frontier: "$any", commit: "$any" }
+    }
+  ]
+}

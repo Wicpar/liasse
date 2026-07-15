@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: cascade-cycle-removes-each-row-once
+  suite: scenario
+  // §21.1: "cascade cycles are valid and each row or set member is removed
+  // once." Two rows reference each other with cascade. Deleting one expands the
+  // cascade to a fixed point without error and removes both exactly once.
+  spec: ["§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      lefts: {
+        $key: "id"
+        id: "text"
+        partner: {
+          $ref: "/rights"
+          $on_delete: "cascade"
+        }
+      }
+      rights: {
+        $key: "id"
+        id: "text"
+        partner: {
+          $ref: "/lefts"
+          $on_delete: "cascade"
+        }
+      }
+      $mut: {
+        delete_left: ".lefts - @id"
+      }
+      lefts_view: { $view: ".lefts { id } " }
+      rights_view: { $view: ".rights { id }" }
+      $public: {
+        lefts: { $view: ".lefts_view", $mut: { delete: ".delete_left" } }
+        rights: { $view: ".rights_view" }
+      }
+    }
+    $data: {
+      lefts: { l1: { partner: "r1" } }
+      rights: { r1: { partner: "l1" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.lefts", id: "wl", expect_init: { value: [ { id: "l1" } ] } }
+    { watch: "public.rights", id: "wr", expect_init: { value: [ { id: "r1" } ] } }
+    { call: "public.lefts.delete", args: { id: "l1" }, expect: { outcome: ok, "...": true } }
+    // cascade cycle resolves; both removed once, no double-remove error
+    { expect_view: { watch: "wl", value: [] } }
+    { expect_view: { watch: "wr", value: [] } }
+  ]
+}

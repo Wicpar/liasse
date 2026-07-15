@@ -1,0 +1,75 @@
+{
+  format: 1
+  name: plan-period-escalation-rejected
+  suite: scenario
+  spec: ["#buckets", "§14.5"]
+  tags: ["escalation", "recurrence", "tampering"]
+  note: "Attack through referenced data: the period lives on the plan row, so updating the plan retroactively changes recurrence for every subscription that references it. Setting it to a non-advancing PT0S while a subscription exists must reject the updating transition ('rejects the source row or the transition that produced it'), leaving the previous recurrence intact."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.planescalate@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          weekly: { credits: "30", period: "P7D" }
+        }
+        subscriptions: {
+          // bounded series [2026-01-01, 2026-01-22): three weekly periods
+          s1: { plan: "weekly", starts_at: "1767225600000000", ends_at: "1769040000000000" }
+        }
+      }
+      $public: {
+        plans: {
+          $mut: {
+            set_period: ".plans[@id] { period = @period }"
+          }
+        }
+        periods: {
+          $params: { a: "timestamp", b: "timestamp" }
+          $view: '.credit_periods.$between(@a, @b) { index: $index, from: $from, until: $until, $sort: ["from"] }'
+        }
+      }
+    }
+  }
+
+  steps: [
+    // the transition that would produce a non-advancing recurrence rejects
+    { call: "public.plans.set_period", args: { id: "weekly", period: "PT0S" }
+      expect: { outcome: rejected, violates: ["§14.5"] } }
+
+    // prior committed state is intact: still three weekly periods
+    { watch: "public.periods"
+      args: { a: "1767225600000000", b: "1769904000000000" }
+      id: "w1"
+      expect_init: {
+        value: [
+          { index: "0", from: "1767225600000000", until: "1767830400000000" }
+          { index: "1", from: "1767830400000000", until: "1768435200000000" }
+          { index: "2", from: "1768435200000000", until: "1769040000000000" }
+        ]
+      } }
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  format: 1
+  name: nested-initializer-failure-rejects-parent-insert
+  suite: scenario
+  spec: ["#state-model", "§5.5", "§5.10", "§8.8"]
+  tags: ["atomicity"]
+  note: '''Partial-commit hunt: insert a parent whose supplied child-collection initializer
+contains one row violating a child check. §5.5: 'The complete nested result is
+validated atomically with the containing insertion.' The parent row must not exist
+after the rejection — an implementation inserting the parent first and children second
+would leak the parent (or the good child).'''
+
+  package: {
+    $liasse: 1
+    $app: "t.nestedatomic@1.0.0"
+    $model: {
+      staging: {
+        $key: "id"
+        id: "text"
+        qty: "int"
+      }
+      orders: {
+        $key: "id"
+        id: "text"
+        lines: {
+          $key: "id"
+          id: "text"
+          qty: {
+            $type: "int"
+            $check: [". > 0", "Quantity must be positive"]
+          }
+        }
+      }
+      $mut: {
+        add_all: ".orders + { id: @id, lines: .staging { id, qty } }"
+        add_good: ".orders + { id: @id, lines: .staging[:s | s.qty > 0] { id, qty } }"
+      }
+      $public: {
+        orders: {
+          $view: ".orders { id, lines }"
+          $mut: {
+            add_all: ".add_all"
+            add_good: ".add_good"
+          }
+        }
+      }
+    }
+    $data: {
+      staging: {
+        l1: { qty: 0 }
+        l2: { qty: 2 }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.orders", id: "w1", expect_init: { value: [] } }
+    // one bad child row (qty 0) -> the complete insertion, parent included, rejects
+    { call: "public.orders.add_all", args: { id: "o1" },
+      expect: { outcome: "rejected", violates: ["§5.5", "§5.10"], detail: "child row check failed: Quantity must be positive" } }
+    { expect_view: { watch: "w1", value: [] } }
+    // filtered initializer passes; parent and its one valid line appear together
+    { call: "public.orders.add_good", args: { id: "o2" },
+      expect: { outcome: "ok" } }
+    { expect_view: { watch: "w1", value: [
+      { id: "o2", lines: [ { id: "l2", qty: 2 } ] }
+    ] } }
+  ]
+}

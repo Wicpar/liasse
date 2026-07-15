@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: integer-division-truncates-toward-zero
+  suite: scenario
+  spec: ["#expressions", "§6.5", "§A.6"]
+  tags: ["boundary"]
+  note: "Attack: negative operands distinguish truncating division from flooring division. Annex A.6: 'Integer division truncates toward zero.' -7 / 2 must be -3 (a flooring implementation would produce -4), and 7 / -2 must also be -3."
+
+  package: {
+    $liasse: 1
+    $app: "t.intdiv@1.0.0"
+    $model: {
+      a: "int"
+      b: "int"
+      c: "int"
+      d: "int"
+      q1: "= .a / .b"
+      q2: "= .c / .d"
+      $public: {
+        quotients: { $view: ". { q1, q2 }" }
+      }
+    }
+    $data: {
+      a: "-7"
+      b: "2"
+      c: "7"
+      d: "-2"
+    }
+  }
+
+  steps: [
+    { watch: "public.quotients", id: "w1",
+      expect_init: { value: { q1: "-3", q2: "-3" } } }
+  ]
+}

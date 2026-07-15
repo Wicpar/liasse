@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: expression-string-payload-not-evaluated
+  suite: scenario
+  // Injection attack: send strings that look like Liasse expressions or
+  // structural bindings as typed text values. §10.1: "The wire carries the
+  // surface name, mutation name, and typed values. It carries no executable
+  // expression." §12.1: "Typed values are bound into package expressions;
+  // the wire carries no executable source." The payloads must round-trip as
+  // literal text and must not read the root secret.
+  spec: ["#interfaces", "§10.1", "#clients"]
+  tags: ["injection"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.no_eval@1.0.0"
+    "$model": {
+      "secret": "text = 'letmein'"
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+      }
+      "$mut": {
+        "add_task": [
+          "task = .tasks + { id: @id, title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // A path-shaped payload: must be stored and returned verbatim.
+    { call: "public.tasks.add", args: { id: "t1", title: "/secret" },
+      expect: { outcome: ok, value: { id: "t1", title: "/secret" } } }
+    // A binding/selector-shaped payload: also literal text.
+    { call: "public.tasks.add", args: { id: "t2", title: "$actor.$key ?: .secret" },
+      expect: { outcome: ok, value: { id: "t2", title: "$actor.$key ?: .secret" } } }
+    { watch: "public.tasks", id: "w1",
+      expect_init: { value: { $unordered: [
+        { id: "t1", title: "/secret" }
+        { id: "t2", title: "$actor.$key ?: .secret" }
+      ] } } }
+  ]
+}

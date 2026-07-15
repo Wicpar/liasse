@@ -1,0 +1,41 @@
+{
+  // §8.9: "A keyed row patch targets one existing row; a missing target
+  // rejects the call."
+  format: 1
+  name: keyed-patch-missing-target-rejected
+  suite: scenario
+  spec: ["#mutations", "§8.9"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.misstarget@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+      }
+      "$mut": {
+        "retitle": ".tasks[@id] { title = @title }"
+      }
+      "$public": {
+        "tasks": { "$mut": { "retitle": ".retitle" } }
+      }
+    }
+    "$data": {
+      "tasks": { "t1": { "title": "first" } }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.tasks.retitle"
+      args: { id: "zz", title: "anything" }
+      expect: {
+        outcome: rejected
+        violates: ["§8.9"]
+        detail: "keyed row patch on a missing target rejects the call"
+      }
+    }
+  ]
+}

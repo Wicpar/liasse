@@ -1,0 +1,57 @@
+{
+  // Pedantic ordering corner: delete with a selector that repeats a target.
+  // §6.3: "Mutation writes deduplicate selected target rows by row
+  // incarnation ... preserving the first occurrence order" and selection
+  // preserves operand order. §8.4: "Deletion returns the deleted rows as
+  // they existed immediately before removal, in selector order after
+  // duplicate target identities are removed by first occurrence."
+  // With operands (t2, t1, t2) the result must be [t2, t1] — operand order,
+  // NOT canonical key order, and the duplicate must not appear twice.
+  format: 1
+  name: delete-selector-duplicates-first-occurrence
+  suite: scenario
+  spec: ["#mutations", "§8.4", "§6.3"]
+  tags: ["ordering"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.deldup@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+      }
+      "$mut": {
+        "remove_pair": [
+          "removed = -.tasks[@x, @y, @x]"
+          "return removed { id }"
+        ]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id }"
+          "$mut": { "remove_pair": ".remove_pair" }
+        }
+      }
+    }
+    "$data": {
+      "tasks": { "t1": {}, "t2": {} }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.tasks.remove_pair"
+      args: { x: "t2", y: "t1" }
+      expect: {
+        outcome: ok
+        value: [ { id: "t2" }, { id: "t1" } ]
+      }
+    }
+    {
+      watch: "public.tasks"
+      id: "w1"
+      expect_init: { value: [] }
+    }
+  ]
+}

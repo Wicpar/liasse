@@ -1,0 +1,21 @@
+{
+  format: 1
+  name: unsupported-liasse-generation-rejected
+  suite: static
+  spec: ["#package-structure", "§4.1"]
+  note: "§4.1: 'The value 1 selects the language defined by this specification. A runtime MUST reject an unsupported value before interpreting any other declaration.' The body is otherwise valid v1 syntax, so the only violated rule is the generation itself."
+
+  package: {
+    $liasse: 2
+    $app: "t.future@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "§4.1"]
+    detail: "$liasse: 2 is not a language generation supported by a v0.5 runtime"
+  }
+}

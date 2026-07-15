@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: exact-exhaustion-boundary
+  suite: scenario
+  spec: ["#meters", "§15.1", "§15.2", "Annex A"]
+  note: "Quantities are exact decimals. A spend equal to the complete remaining capacity is sufficient and admits; afterwards even the smallest positive spend is rejected. This pins the boundary at exactly amount <= capacity."
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.boundary@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    // exactly the full capacity: sufficient, admits
+    { call: "public.wallet.consume", args: { user: "u1", amount: "100" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    // exact arithmetic leaves exactly zero: any positive amount now rejects
+    { call: "public.wallet.consume", args: { user: "u1", amount: "0.01" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"],
+                detail: "eligible capacity is exhausted" } }
+  ]
+}

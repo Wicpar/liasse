@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: unicode-confusable-keys-roundtrip-distinct
+  suite: scenario
+  tags: [unicode, identity]
+  // Identity abuse via confusables: four rows whose text keys are visually
+  // indistinguishable but are distinct Unicode scalar sequences — Latin "a"
+  // (U+0061) vs Cyrillic "a" (U+0430), and precomposed e-acute (U+00E9) vs
+  // decomposed e + combining acute (U+0065 U+0301). All non-ASCII keys are
+  // written with \u escapes so the distinction survives every editor/tool.
+  // Annex D.2: canonical key text for text keys is the EXACT Unicode text
+  // (no normalization, no folding). Annex D.5: canonical CBOR "text uses
+  // exact Unicode scalar sequences". §19.10: a restore reproduces the same
+  // owned logical state. Export + restore must keep all four rows distinct
+  // with their exact keys — an implementation that NFC-normalizes,
+  // case-folds, or confusable-maps keys anywhere in the artifact path will
+  // collapse or corrupt them.
+  spec: ["Annex D.2", "Annex D.5", "§19.10"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "a", body: "latin-a" },
+      expect: { outcome: ok, value: { id: "a", body: "latin-a" } } }
+    { call: "public.notes.put", args: { id: "а", body: "cyrillic-a" },
+      expect: { outcome: ok, value: { id: "а", body: "cyrillic-a" } } }
+    { call: "public.notes.put", args: { id: "é", body: "nfc-e-acute" },
+      expect: { outcome: ok, value: { id: "é", body: "nfc-e-acute" } } }
+    { call: "public.notes.put", args: { id: "é", body: "nfd-e-acute" },
+      expect: { outcome: ok, value: { id: "é", body: "nfd-e-acute" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1" }, expect: { outcome: ok } }
+      { watch: "public.notes", id: "w1", expect_init: { value: { $unordered: [
+        { id: "a", body: "latin-a" }
+        { id: "а", body: "cyrillic-a" }
+        { id: "é", body: "nfc-e-acute" }
+        { id: "é", body: "nfd-e-acute" }
+      ] } } }
+    ] }
+  ]
+}

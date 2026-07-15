@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: merge-combined-uniqueness-violation-conflict
+  suite: scenario
+  tags: [uniqueness]
+  // Nasty corner: each side's change is individually valid and they touch
+  // SEPARATE logical coordinates (normally auto-mergeable), but the union
+  // gives two rows the same unique email. §19.9: the merge reports
+  // conflicts for "any combined result that fails ordinary Liasse
+  // validation", and Liasse then validates the prospective composition
+  // "under the ordinary type, ref, deletion, uniqueness ... rules".
+  spec: ["§19.9", "#state-model"]
+
+  package: {
+    $liasse: 1
+    $app: "t.uniq@1.0.0"
+    $model: {
+      contacts: {
+        $key: "id"
+        id: "text"
+        email: { $type: "text", $unique: true }
+      }
+      $mut: {
+        put: [
+          "c = .contacts + { id: @id, email: @email }"
+          "return c { id, email }"
+        ]
+        set_email: [
+          ".contacts[@id].email = @email"
+          "return .contacts[@id] { id, email }"
+        ]
+      }
+      all: { $view: ".contacts { id, email, $sort: [id] }" }
+      $public: {
+        contacts: {
+          $view: ".all"
+          $mut: { put: ".put", set_email: ".set_email" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.contacts.put", args: { id: "c1", email: "a@example.test" },
+      expect: { outcome: ok, value: { id: "c1", email: "a@example.test" } } }
+    { call: "public.contacts.put", args: { id: "c2", email: "b@example.test" },
+      expect: { outcome: ok, value: { id: "c2", email: "b@example.test" } } }
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    // Incoming: c2 takes the contested address.
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a0" }, expect: { outcome: ok } }
+      { call: "public.contacts.set_email", args: { id: "c2", email: "taken@example.test" },
+        expect: { outcome: ok, value: { id: "c2", email: "taken@example.test" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    // Local: c1 takes the same contested address.
+    { call: "public.contacts.set_email", args: { id: "c1", email: "taken@example.test" },
+      expect: { outcome: ok, value: { id: "c1", email: "taken@example.test" } } }
+    { reconcile: { from: "a2", policy: ["merge"] },
+      expect: { outcome: ok, value: {
+        relation: "merge", applied: false, conflicts: "$any", "...": true } } }
+    // Local state unchanged: no partial activation of the invalid union.
+    { watch: "public.contacts", id: "w1", expect_init: { value: [
+      { id: "c1", email: "taken@example.test" }
+      { id: "c2", email: "b@example.test" }
+    ] } }
+  ]
+}

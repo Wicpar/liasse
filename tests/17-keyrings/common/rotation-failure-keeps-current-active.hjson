@@ -1,0 +1,75 @@
+{
+  format: 1
+  name: rotation-failure-keeps-current-active
+  suite: scenario
+  tags: ["rotation", "availability"]
+  spec: ["#keyrings", "§17.9"]
+  note: "§17.9: when scheduled rotation cannot create or validate a replacement, the current version remains active and operations using it continue while the provider can perform them. The generate operation fails, rotation is overdue after 31 days, yet v1 remains the single active version and signing still succeeds. The overdue-rotation health/diagnostics report is not mechanically asserted because the spec does not pin a diagnostics surface shape."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+        "ring_current": { "$view": "/session_keys.$current" }
+      }
+    }
+    "$data": { "accounts": { "alice": { "name": "Alice" } } }
+  }
+
+  steps: [
+    { watch: "public.ring_current", id: "w1",
+      expect_init: { value: { id: "$bind:v1", "...": true } } }
+    { provider_set: { provider: "test-kp", fail: ["generate"] } }
+    { advance_time: "P31D" }
+    // Rotation is overdue and cannot complete; signing must still work.
+    { call: "public.login.login", args: { account: "alice" },
+      expect: { outcome: ok, value: { token: "$any" } } }
+    { expect_view: { watch: "w1", value: {
+      id: "$ref:v1"
+      retired_at: "$absent"
+      revoked_at: "$absent"
+      "...": true
+    } } }
+  ]
+}

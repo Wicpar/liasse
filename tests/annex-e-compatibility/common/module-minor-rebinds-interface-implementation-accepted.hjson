@@ -1,0 +1,103 @@
+{
+  format: 1
+  name: module-minor-rebinds-interface-implementation-accepted
+  suite: scenario
+  spec: ["#annex-e", "#modules"]
+  note: '''
+    E.4: "rebinding an interface mutation to a different private implementation
+    that satisfies the same contract" is compatible; E.7: "Private statements,
+    assertions, algorithms, reads, and writes MAY change within that contract."
+    The interface `templates` requires create({id,label}) -> {id,label}. Module
+    1.0.0 binds it to private mutation `create_a`; module 1.1.0 rebinds the
+    same interface name to a different private mutation `create_b` with an
+    identical declared contract. The exposed contract does not change, so the
+    minor update commits and the §13.15 report groups `templates` under
+    $exposed.$unchanged.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": {
+                  "$view": { "$key": "id", "id": "text", "label": "text" }
+                  "$mut": {
+                    "create({ id: text, label: text })": { "$return": { "id": "text", "label": "text" } }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    kit1: {
+      "$liasse": 1
+      "$module": "t.kit@1.0.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+        "$mut": {
+          "create_a": [
+            "t = .templates + { id: @id, label: @label }"
+            "return t { id, label }"
+          ]
+        }
+      }
+      "$expose": {
+        "templates": {
+          "$view": ".templates { id, label }"
+          "$mut": { "create": ".create_a" }
+        }
+      }
+    }
+    kit2: {
+      "$liasse": 1
+      "$module": "t.kit@1.1.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+        "$mut": {
+          // different private implementation, same declared contract
+          "create_b": [
+            "row = .templates + { id: @id, label: @label }"
+            "return row { id, label }"
+          ]
+        }
+      }
+      "$expose": {
+        "templates": {
+          "$view": ".templates { id, label }"
+          "$mut": { "create": ".create_b" }
+        }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.kit@1.0.0" } }
+      expect: { outcome: ok } }
+    { module_update: { instance: "/companies/acme/modules/kit", to: "t.kit@1.1.0" }
+      expect: {
+        outcome: ok
+        value: {
+          "$instance": "/companies/acme/modules/kit"
+          "$from": "1.0.0"
+          "$to": "1.1.0"
+          "$migrated": []
+          "$seeded": "$any"
+          "$exposed": { "$unchanged": ["templates"], "$changed": [], "$removed": [] }
+          "$imports": { "$rebound": [], "$broken": [] }
+          "$commit": "$any"
+        }
+      } }
+  ]
+}

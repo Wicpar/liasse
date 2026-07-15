@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: optional-field-suffix-permits-omission
+  suite: scenario
+  spec: ["#annex-c", "§C.3", "#state-model", "§5.1"]
+  note: "Annex C.3 field form '\"field\": \"T?\"' declares an optional field. §5.1/§5.7: an optional field carries no value when omitted and no default is declared. Inserting a row that omits 'email' must be admitted; a non-optional 'text' field could not be omitted. This isolates that the '?' suffix makes the value optional."
+
+  package: {
+    $liasse: 1
+    $app: "t.optional@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        email: "text?"
+      }
+      $mut: {
+        add: [
+          "p = .people + { name: @name }"
+          "return p { id }"
+        ]
+      }
+      all: { $view: ".people { id, name }" }
+      $public: {
+        people: {
+          $view: ".all"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.people.add", args: { name: "Ada" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+  ]
+}

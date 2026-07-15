@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: enum-unknown-label-rejected
+  suite: scenario
+  spec: ["#state-model", "§5.9"]
+  note: "§5.9: 'The $enum array lists distinct accepted labels... Enum values are checked labels.' A label outside the declared closed set must reject the transition."
+
+  package: {
+    $liasse: 1
+    $app: "t.enum@1.0.0"
+    $model: {
+      things: {
+        $key: "id"
+        id: "text"
+        status: { $enum: ["draft", "active", "closed"] }
+      }
+      $public: {
+        things: {
+          $view: ".things { id, status }"
+          $mut: {
+            add: ".things + { id: @id, status: @status }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.things.add", args: { id: "t1", status: "archived" },
+      expect: { outcome: "rejected", violates: ["§5.9"], detail: "label is not in the declared enum" } }
+    { call: "public.things.add", args: { id: "t1", status: "draft" },
+      expect: { outcome: "ok" } }
+    { watch: "public.things", id: "w1",
+      expect_init: { value: [ { id: "t1", status: "draft" } ] } }
+  ]
+}

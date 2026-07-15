@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: namespace-signature-type-mismatch-rejected
+  suite: static
+  spec: ["#host-namespaces", "#expressions"]
+  note: '''
+    §16.2: the load-time descriptor supplies "function names and typed
+    signatures" for each namespace function, and "every used function has a
+    known type ... and pinned contract." §6.5 (line 747): "Package loading
+    validates every function name, type, determinism class, and namespace
+    contract." The descriptor declares util.double : (int) -> int, but the
+    package calls util.double(.label) where .label is a text field. The
+    argument type does not match the pinned signature, so the typed
+    namespace contract is violated and loading is rejected — the mismatch is
+    a static type error, not a runtime failure. The signature is stated in
+    this case's hosts descriptor, so the expectation is deducible here
+    rather than from an implementation.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.sigmismatch@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      label: "text = ''"
+      // util.double expects int; .label is text -> typed-signature violation
+      bad: { $view: "util.double(.label)" }
+      $public: {
+        stats: { $view: ".bad" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "#expressions"]
+    detail: "util.double is called with a text argument but its pinned signature is (int) -> int; the typed namespace contract fails validation at load"
+  }
+}

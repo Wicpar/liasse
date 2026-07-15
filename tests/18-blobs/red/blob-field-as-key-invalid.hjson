@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: blob-field-as-key-invalid
+  suite: static
+  spec: ["#blobs", "#state-model", "§A.8"]
+  tags: ["blob", "identity", "loading"]
+  note: '''
+    Identity abuse. Annex A.8: "Optional values, JSON, blobs, sets, maps, and
+    views are excluded from row keys." A collection declaring its $key on a
+    blob field asks the engine to use a binary-content descriptor as row
+    identity, which is not a key-eligible type, so the package fails static
+    validation. (A blob is not addressable identity; §18.1 fixes content
+    identity to $sha512 but the descriptor value as a whole is excluded from
+    keys.)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.blobkey@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "file"
+        $blob_storage: { $in: "/stores['primary']" }
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#state-model"]
+    detail: "a blob field is not a key-eligible type (Annex A.8)"
+  }
+}
+</content>

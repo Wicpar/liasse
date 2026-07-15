@@ -1,0 +1,41 @@
+{
+  format: 1
+  name: param-inherits-target-type-and-binds-argument
+  suite: scenario
+  spec: ["#expressions", "§6.2", "§8.3"]
+  note: "§6.2: '@name' denotes a mutation or view parameter. §8.3: '@name inherits .name's type and optionality. @id inherits .tasks.$key.' The call supplies typed arguments which the mutation binds into state; the resulting state is the supplied values."
+
+  package: {
+    $liasse: 1
+    $app: "t.params@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $mut: {
+        set_name: ".items[@id].name = @name"
+      }
+      $public: {
+        items: {
+          $view: ".items { id, name }"
+          $mut: { set_name: ".set_name" }
+        }
+      }
+    }
+    $data: {
+      items: {
+        a: { name: "old" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.items", id: "w1",
+      expect_init: { value: [ { id: "a", name: "old" } ] } }
+    { call: "public.items.set_name", args: { id: "a", name: "Zed" },
+      expect: { outcome: "ok" } }
+    { expect_view: { watch: "w1", value: [ { id: "a", name: "Zed" } ] } }
+  ]
+}

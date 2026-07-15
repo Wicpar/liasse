@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: seed-forward-ref-source-order-irrelevant
+  suite: scenario
+  spec: ["#loading", "#state-model"]
+  tags: ["ordering"]
+  note: '''
+    Reordering probe. The referencing collection is deliberately listed BEFORE
+    the referenced collection in $data source order. §9.1: "All seeded row
+    identities and supplied values form one prospective state before defaults
+    resolve. ... source-object member order and field order have no semantic
+    effect." A naive implementation inserting collections in source order
+    would spuriously fail the §5.6 ref-resolution rule. The load must succeed
+    and the ref must resolve; its wire value is the target's current typed key
+    (§5.6).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seedorder@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "members": {
+        "$key": "id"
+        "id": "text"
+        "owner": { "$ref": "/companies" }
+      }
+      "$public": {
+        "members": { "$view": ".members { id, owner }" }
+      }
+    }
+    "$data": {
+      "members": {
+        "m1": { "owner": "acme" }
+      }
+      "companies": {
+        "acme": { "name": "Acme SAS" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.members", id: "w1",
+      expect_init: { value: [ { id: "m1", owner: "acme" } ] } }
+  ]
+}

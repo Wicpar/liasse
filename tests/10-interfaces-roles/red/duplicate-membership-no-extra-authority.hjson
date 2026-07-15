@@ -1,0 +1,72 @@
+{
+  format: 1
+  name: duplicate-membership-no-extra-authority
+  suite: scenario
+  // §10.3: "The actor holds the role when its exact row identity occurs at
+  // least once in the resulting view; repeated occurrences grant no
+  // additional authority." alice occurs TWICE in $members (via two groups).
+  // Duplicates must neither deny the role nor multiply any effect: each call
+  // applies its mutation exactly once.
+  spec: ["#interfaces", "§10.3"]
+  tags: ["authz", "boundary"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.dup_members@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "groups": {
+        "$key": "id"
+        "id": "text"
+        "members": {
+          "$key": "account"
+          "account": { "$ref": "/accounts" }
+        }
+      }
+      "counter": "int = 0"
+      "$mut": {
+        "bump": [
+          ".counter = .counter + 1"
+          "return .counter"
+        ]
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "token"
+          // Flattening both groups yields alice twice.
+          "$members": ".groups[:g].members[:m].account"
+          "ops": {
+            "$mut": { "bump": ".bump" }
+          }
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+      "groups": {
+        "g1": { "members": { "alice": {} } }
+        "g2": { "members": { "alice": {} } }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "member", auth: "token", credential: "alice" } }
+    // At-least-once membership grants the role; the double occurrence does
+    // not double the mutation's effect.
+    { call: "member.ops.bump", args: {}, on: "c1",
+      expect: { outcome: ok, value: 1 } }
+    { call: "member.ops.bump", args: {}, on: "c1",
+      expect: { outcome: ok, value: 2 } }
+  ]
+}

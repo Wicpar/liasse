@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: none-clears-optional-ref-on-delete
+  suite: scenario
+  // §21.1 / §5.6: `none` on an optional ref expands to a patch assigning `none`
+  // to the referencing field. Deleting the project clears task.project to none
+  // while the task itself survives.
+  spec: ["§21.1", "§5.6"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
+        project: {
+          $ref: "/projects"
+          $optional: true
+          $on_delete: "none"
+        }
+      }
+      $mut: {
+        delete_project: ".projects - @id"
+      }
+      tasks_view: { $view: ".tasks { id, title, project, $sort: [id] }" }
+      $public: {
+        tasks: { $view: ".tasks_view" }
+        projects: {
+          $view: ".projects { id }"
+          $mut: { delete: ".delete_project" }
+        }
+      }
+    }
+    $data: {
+      projects: { p1: {} }
+      tasks: { t1: { title: "keep me", project: "p1" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [
+      { id: "t1", title: "keep me", project: "p1" }
+    ] } }
+    { call: "public.projects.delete", args: { id: "p1" }, expect: { outcome: ok, "...": true } }
+    // task survives with project cleared to none (absent optional)
+    { expect_view: { watch: "w1", value: [
+      { id: "t1", title: "keep me", project: "$absent" }
+    ] } }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  format: 1
+  name: statement-after-return-invalid
+  suite: static
+  tags: [grammar, mutations]
+  // Attack: hide a state change AFTER the return, hoping it still commits while
+  // the response is already shaped. Annex C.9 marks 'return value_or_view' as
+  // the "final statement", and §8.5: 'return ... define the response; final
+  // statement only'. A statement following 'return' violates the final-only
+  // rule and must fail static validation, not silently run or be ignored.
+  spec: ["#annex-c", "§C.9", "#mutations", "§8.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.afterreturn@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        balance: "int"
+      }
+      $mut: {
+        drain: [
+          "return .accounts[@id] { id, balance }"
+          ".accounts[@id].balance = 0"
+        ]
+      }
+      all: { $view: ".accounts { id, balance }" }
+      $public: {
+        accounts: {
+          $view: ".all"
+          $mut: { drain: ".drain" }
+        }
+      }
+    }
+    $data: {
+      accounts: { a: { id: "a", balance: "100" } }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.9"]
+    detail: "a mutation statement follows 'return'; return must be the final statement"
+  }
+}

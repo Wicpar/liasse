@@ -1,0 +1,19 @@
+{
+  format: 1
+  name: package-name-grammar-accepted
+  suite: static
+  spec: ["#conformance", "§2.5", "#package-structure", "§4.3"]
+  note: "§2.5: package names are dot-separated lowercase identifiers of a-z, 0-9, and _, each component beginning with a letter. This name exercises every permitted character class: underscore inside a component, trailing digit, three components."
+
+  package: {
+    $liasse: 1
+    $app: "acme_co.todo2.core@0.1.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: ok
+  }
+}

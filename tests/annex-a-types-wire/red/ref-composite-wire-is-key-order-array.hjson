@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: ref-composite-wire-is-key-order-array
+  suite: scenario
+  spec: ["§A.9", "§D.2"]
+  tags: ["wire", "ref", "identity"]
+  note: '''Attack: a composite ref exposed on the wire as the D.2 colon-joined key text
+(e.g. "eu:x") instead of the typed tuple invites separator/aliasing confusion between the
+canonical *textual* key and the canonical *structured wire* value. Annex A.9 is explicit:
+'A scalar key uses its scalar wire value. A composite key uses an array of component wire
+values in $key order.' A named object selector at the input (`{ region, code }`) is only
+authoring syntax for that tuple. So the ref's visible wire value MUST be the JSON array
+["eu","x"] in $key order — not the string "eu:x", not the object { region, code }.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.refarr@1.0.0"
+    $model: {
+      regions: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+        label: "text"
+      }
+      holders: {
+        $key: "id"
+        id: "text"
+        loc: { $ref: "/regions" }
+      }
+      $public: {
+        v: { $view: ".holders { id, loc } " }
+      }
+    }
+    $data: {
+      regions: {
+        // seed member name is the D.2 colon-joined composite key text
+        "eu:x": { region: "eu", code: "x", label: "EU-X" }
+      }
+      holders: {
+        h1: { loc: { region: "eu", code: "x" } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      // composite ref wire value is the component array in $key order
+      expect_init: { value: [ { id: "h1", loc: ["eu", "x"] } ] } }
+  ]
+}

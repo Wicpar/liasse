@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: parameter-normalization-and-checks
+  suite: scenario
+  spec: ["#clients", "#interfaces", "#state-model"]
+  tags: ["validation"]
+  note: '''
+    §12.1 pipeline step 4: "apply parameter-declared normalization and checks".
+    The surface declares `$params` (a map of field declarations, §10.1) with
+    `$normalize` and `$check`. A padded title must be trimmed before it is
+    bound into the mutation, and a whitespace-only title must fail the declared
+    check and reject the call without a commit.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $params: {
+            title: {
+              $type: "text"
+              $normalize: "string.trim(.)"
+              $check: ["size(.) > 0", "A title is required"]
+            }
+          }
+          $view: ".index"
+          $mut: {
+            add: ".add({ title: @title })"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    // Normalization applies before the value is bound: stored and returned
+    // title is the trimmed text.
+    {
+      call: "public.tasks.add"
+      args: { title: "  x  " }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$bind:t1", title: "x" } }
+    }
+    // Whitespace-only input trims to "" and fails the declared check.
+    {
+      call: "public.tasks.add"
+      args: { title: "   " }
+      on: "c1"
+      expect: {
+        outcome: rejected
+        violates: ["#clients", "#interfaces"]
+        detail: "parameter-declared check fails after normalization"
+      }
+    }
+    // The rejected call created no commit.
+    { expect_view: { watch: "w1", value: [ { id: "$ref:t1", title: "x" } ] } }
+  ]
+}

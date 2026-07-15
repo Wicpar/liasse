@@ -1,0 +1,56 @@
+{
+  // §22.2: the engine "admits the complete result once every applicable
+  // guarantee succeeds." A multi-statement transfer touching two rows commits
+  // as one atomic unit: on success every write is present. This isolates the
+  // commit-all facet (the rollback facet is covered by
+  // atomic-admission-failed-check-rolls-back).
+  format: 1
+  name: transfer-commits-all-effects-atomically
+  suite: scenario
+  spec: ["§22.2", "#runtime", "#mutations"]
+  tags: ["atomicity"]
+
+  package: {
+    $liasse: 1
+    $app: "t.transfer@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        balance: "int"
+      }
+      $mut: {
+        transfer: [
+          "assert(.accounts[@from].balance >= @amount, 'insufficient')"
+          ".accounts[@from].balance = .accounts[@from].balance - @amount"
+          ".accounts[@to].balance = .accounts[@to].balance + @amount"
+        ]
+      }
+      $public: {
+        accounts: {
+          $view: ".accounts { id, balance, $sort: [id] }"
+          $mut: { transfer: ".transfer" }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "a": { balance: "100" }
+        "b": { balance: "0" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "public.accounts.transfer", args: { from: "a", to: "b", amount: "40" }, on: "c1",
+      expect: { outcome: ok } }
+    {
+      // Both writes committed together: 60 debited, 40 credited.
+      watch: "public.accounts"
+      on: "c1"
+      id: "w1"
+      expect_init: { value: [ { id: "a", balance: "60" }, { id: "b", balance: "40" } ] }
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: now-fixed-for-admitted-operation
+  suite: scenario
+  spec: ["#expressions", "§6.5", "§A.5", "§5.1", "§8.12"]
+  tags: ["time"]
+  note: "Annex A.5: 'now() follows transaction-start semantics: one host wall-clock sample is fixed for the complete admitted operation and every call observes that same instant.' Two now() defaults resolved during the same admitted insertion must therefore be equal; the case binds the first and requires the second to match it exactly."
+
+  package: {
+    $liasse: 1
+    $app: "t.time@1.0.0"
+    $model: {
+      events: {
+        $key: "id"
+        id: "uuid = uuid()"
+        label: "text"
+        at: "timestamp = now()"
+        at2: "timestamp = now()"
+      }
+      $mut: {
+        add: [
+          "e = .events + { label: @label }"
+          "return e { at, at2 }"
+        ]
+      }
+      $public: {
+        events: {
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.events.add", args: { label: "x" },
+      expect: { outcome: "ok", value: { at: "$bind:T", at2: "$ref:T" } } }
+  ]
+}

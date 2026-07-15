@@ -1,0 +1,73 @@
+{
+  format: 1
+  name: watch-init-complete-result
+  suite: scenario
+  spec: ["#clients", "#views"]
+  tags: ["init"]
+  note: '''
+    §12.2: "A live subscription begins with a complete result and a frontier."
+    The init must carry every current authorized row of the declared view, in
+    the declared sort order (§7.3), together with a frontier. Rows are inserted
+    out of sort order to make the init assertion non-trivial.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        done: "bool = false"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title, done }"
+        ]
+      }
+      open: {
+        $view: ".tasks[:t | !t.done] { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".open"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      call: "public.tasks.add"
+      args: { title: "b" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$bind:tb", title: "b", done: false } }
+    }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$bind:ta", title: "a", done: false } }
+    }
+    // init is complete (both rows) and sorted by title, not by insertion order,
+    // and is accompanied by a frontier.
+    {
+      watch: "public.tasks"
+      on: "c1"
+      id: "w1"
+      expect_init: {
+        frontier: "$any"
+        value: [
+          { id: "$ref:ta", title: "a" }
+          { id: "$ref:tb", title: "b" }
+        ]
+      }
+    }
+  ]
+}

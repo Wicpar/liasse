@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: definition-only-update-creates-commit
+  suite: scenario
+  spec: ["#loading"]
+  note: '''
+    §9.3: "A definition-only update creates a commit even when writable state
+    remains unchanged." Version 1.0.1 adds one private computed value — a
+    compatible private change (Annex E.6) — while $data and the writable state
+    are untouched. The lifecycle result must be committed (§9.4), not
+    unchanged, because the requested definition does not already apply.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.defonly@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "name": "Acme SAS" }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.defonly@1.0.1"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+            }
+            "company_count": "= count(.companies)"
+            "$public": {
+              "companies": { "$view": ".companies { id, name }" }
+            }
+          }
+          "$data": {
+            "companies": {
+              "acme": { "name": "Acme SAS" }
+            }
+          }
+        }
+      }
+      expect: { outcome: "ok", result: "committed" } }
+  ]
+}

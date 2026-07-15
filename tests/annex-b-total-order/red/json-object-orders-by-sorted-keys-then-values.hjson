@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: json-object-orders-by-sorted-keys-then-values
+  suite: scenario
+  spec: ["#annex-b", "§B.3", "§A.7"]
+  tags: ["ordering", "json"]
+  note: '''
+    §B.3 object order: "keys sorted by text order, then lexicographic
+    (key, value) pair order". Canonical JSON already sorts object keys by text
+    order (A.7), so member insertion order in the seed is irrelevant. The trap
+    is that the KEY dominates the value: a smaller value under a larger key
+    does not win.
+
+    Seeded objects and their canonical (key,value) pair sequences:
+      {a:1}       -> [(a,1)]
+      {a:1, b:0}  -> [(a,1),(b,0)]
+      {a:2}       -> [(a,2)]
+      {b:1}       -> [(b,1)]
+    Comparisons:
+      {a:1} < {a:1,b:0}   shared prefix (a,1), shorter first
+      {a:1,b:0} < {a:2}   first pair (a,1) vs (a,2): key equal, 1 < 2
+      {a:2} < {b:1}       first pair key a < key b, so {a:2} precedes {b:1}
+                          even though its value 2 is larger than 1
+    The last line is the attack: {b:1} sorts LAST despite holding the smallest
+    value, because key "b" > key "a". `b_first` is seeded with members written
+    b-before-a to also prove key canonicalization ignores authoring order.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.jsonobj@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        o: "json"
+      }
+      $public: {
+        by_o: { $view: ".rows { id, o, $sort: [o] }" }
+      }
+    }
+    $data: {
+      rows: {
+        r_b1: { o: { b: 1 } }
+        r_a2: { o: { a: 2 } }
+        r_a1b0: { o: { b: 0, a: 1 } }
+        r_a1: { o: { a: 1 } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_o", id: "w1",
+      expect_init: { value: [
+        { id: "r_a1", o: { a: 1 } }
+        { id: "r_a1b0", o: { a: 1, b: 0 } }
+        { id: "r_a2", o: { a: 2 } }
+        { id: "r_b1", o: { b: 1 } }
+      ] } }
+  ]
+}

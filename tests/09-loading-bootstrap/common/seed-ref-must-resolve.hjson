@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: seed-ref-must-resolve
+  suite: static
+  spec: ["#loading", "#state-model"]
+  note: '''
+    §9.1: seed rows pass through the same ref rules as mutation inserts, and
+    §5.6 requires a ref to resolve to an existing row. The seeded member
+    references company "ghost" which is not part of the prospective seed
+    state, so the load is rejected.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seedref@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "members": {
+        "$key": "id"
+        "id": "text"
+        "owner": { "$ref": "/companies" }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "name": "Acme SAS" }
+      }
+      "members": {
+        "m1": { "owner": "ghost" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: rejected
+    violates: ["#loading", "#state-model"]
+    detail: "members/m1.owner references companies key 'ghost' which does not exist in the seeded state"
+  }
+}

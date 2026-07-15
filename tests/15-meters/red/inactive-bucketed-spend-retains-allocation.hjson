@@ -1,0 +1,73 @@
+{
+  format: 1
+  name: inactive-bucketed-spend-retains-allocation
+  suite: scenario
+  spec: ["#meters", "§15.2", "#buckets", "§14.2"]
+  tags: [temporal]
+  note: '''Attack: let metered spends silently "expire" out of their bucket to reclaim
+capacity without deleting anything. SPEC §15.2: a bucketed spend keeps its allocation
+while inactive, because inactivity changes view membership rather than row existence;
+only deletion releases it. Bucket expiration does not delete the row (§14.2).'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.inactivespend@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          $bucket: ".expires_at"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+          expires_at: "timestamp"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount, expires_at: @until }"
+            "return spend { id }"
+          ]
+          purge: "-.spends.$all[:s | s.id == @spend]"
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: {
+            consume: ".users[@user].consume"
+            purge: ".users[@user].purge"
+          }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    // spend 60, its bucket ends 2026-01-08
+    { call: "public.wallet.consume", args: { user: "u1", amount: "60", until: "1767830400" },
+      expect: { outcome: ok, value: { id: "$bind:s1" } } }
+    // now = 2026-01-11: the spend row is bucket-inactive but extant
+    { advance_time: "P10D" }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "40" } ] } }
+    // only deletion releases the allocation
+    { call: "public.wallet.purge", args: { user: "u1", spend: "$ref:s1" },
+      expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [ { id: "u1", balance: "100" } ] } }
+  ]
+}

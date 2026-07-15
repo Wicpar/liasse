@@ -1,0 +1,70 @@
+{
+  // Attack: use a bulk collection replacement to sneak out a row that a
+  // `restrict` ref protects. §8.7: "an absent existing key is deleted through
+  // ordinary $on_delete planning". §21.1: restrict rejects deletion while the
+  // ref exists, and "A failing restriction ... rejects the entire transition"
+  // — including the otherwise-legal parts of the replacement.
+  format: 1
+  name: replacement-restrict-ref-rejects-transition
+  suite: scenario
+  spec: ["#mutations", "§8.7", "§5.6", "§21.1", "§22.2"]
+  tags: ["atomicity"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.replacerestrict@1.0.0"
+    "$model": {
+      "users": {
+        "$key": "id"
+        "id": "text"
+      }
+      "imports": {
+        "$key": "id"
+        "id": "text"
+      }
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "owner": {
+          "$ref": "/users"
+          "$on_delete": "restrict"
+        }
+      }
+      "$mut": {
+        "replace_users": ".users = .imports { id }"
+      }
+      "$public": {
+        "users": {
+          "$view": ".users { id }"
+          "$mut": { "replace": ".replace_users" }
+        }
+      }
+    }
+    "$data": {
+      "users": { "a": {}, "b": {} }
+      "imports": { "a": {} }
+      "tasks": { "t1": { "owner": "b" } }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.users"
+      id: "w1"
+      expect_init: { value: [ { id: "a" }, { id: "b" } ] }
+    }
+    {
+      call: "public.users.replace"
+      args: {}
+      // Replacement would delete user "b", still referenced by tasks.t1.
+      expect: {
+        outcome: rejected
+        violates: ["§21.1", "§5.6"]
+        detail: "restrict ref blocks the planned deletion; the whole replacement is rejected"
+      }
+    }
+    {
+      expect_view: { watch: "w1", value: [ { id: "a" }, { id: "b" } ] }
+    }
+  ]
+}

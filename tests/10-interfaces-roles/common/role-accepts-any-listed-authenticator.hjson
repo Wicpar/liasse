@@ -1,0 +1,72 @@
+{
+  format: 1
+  name: role-accepts-any-listed-authenticator
+  suite: scenario
+  // §10.3: a role declares "the authenticator or authenticators accepted by
+  // its surfaces". §11.4: "A sequence accepts any listed authenticator. Every
+  // authenticated request names both the role and one accepted authenticator."
+  // A role with $auth: ["token", "apikey"] must grant its surface under either
+  // one. Complements red/role-rejects-unaccepted-authenticator, which fixes the
+  // negative boundary of the same rule (an unlisted authenticator is refused).
+  spec: ["#interfaces", "§10.3", "#authentication"]
+  tags: ["authz"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.auth_seq@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "notes": {
+        "$key": "id"
+        "id": "text"
+        "body": "text"
+      }
+      "$mut": {
+        "add_note": [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+        "apikey": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          // Sequence: both authenticators are accepted.
+          "$auth": ["token", "apikey"]
+          "$members": ".accounts"
+          "notes": {
+            "$view": ".notes { id, body }"
+            "$mut": { "add": ".add_note" }
+          }
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+    }
+  }
+
+  steps: [
+    // The first listed authenticator grants the surface.
+    { connect: "c1", authenticate: { role: "member", auth: "token", credential: "alice" } }
+    { call: "member.notes.add", args: { id: "n1", body: "via token" }, on: "c1",
+      expect: { outcome: ok, value: { id: "n1", body: "via token" } } }
+    // The second listed authenticator grants the same surface equally.
+    { connect: "c2", authenticate: { role: "member", auth: "apikey", credential: "alice" } }
+    { call: "member.notes.add", args: { id: "n2", body: "via apikey" }, on: "c2",
+      expect: { outcome: ok, value: { id: "n2", body: "via apikey" } } }
+  ]
+}

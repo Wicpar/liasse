@@ -1,0 +1,103 @@
+{
+  format: 1
+  name: recursive-coverage-nests-included-descendants
+  suite: scenario
+  // §10.5: recursive coverage. "$through yields strict descendants of the
+  // current row; $bind names one candidate; $where includes candidates
+  // satisfying its predicate; ... The output appears under $field as a
+  // nested keyed view."
+  // The $where-excluded child ("b") is a leaf, so this case stays clear of
+  // the unspecified where-excluded-branch traversal question (see
+  // red/where-excluded-branch-unspecified).
+  spec: ["#interfaces", "§10.5", "§10.3"]
+  tags: ["recursive"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rec_view@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "plan": "text = 'active'"
+        "subcompanies": { "$like": "^" }
+        "members": {
+          "$key": "account"
+          "account": { "$ref": "/accounts" }
+          "admin": "bool = false"
+        }
+        "$roles": {
+          "admin": {
+            "$auth": "token"
+            "$members": ".members[:m | m.admin].account"
+            "company": {
+              "$view": ". { id, name, plan }"
+              "$recursive": {
+                "$field": "subcompanies"
+                "$through": ".subcompanies"
+                "$bind": "child"
+                "$where": "child.plan != 'closed'"
+              }
+            }
+          }
+        }
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+      "companies": {
+        "root": {
+          "name": "Root"
+          "members": { "alice": { "admin": true } }
+          "subcompanies": {
+            "a": {
+              "name": "Branch A"
+              "subcompanies": {
+                "a1": { "name": "Deep A1" }
+              }
+            }
+            "b": { "name": "Branch B", "plan": "closed" }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+    // The same projection applies at every level; included children appear
+    // under $field as a nested keyed view. "b" (plan == closed) fails $where
+    // and is absent. Node objects allow extra members ("...": true) so the
+    // case does not pin the representation of an empty child view on leaves.
+    { watch: "admin.company", scope: "root", id: "w1",
+      expect_init: { value: {
+        id: "root"
+        name: "Root"
+        plan: "active"
+        subcompanies: [
+          {
+            id: "a"
+            name: "Branch A"
+            plan: "active"
+            subcompanies: [
+              { id: "a1", name: "Deep A1", plan: "active", "...": true }
+            ]
+            "...": true
+          }
+        ]
+        "...": true
+      } } }
+  ]
+}

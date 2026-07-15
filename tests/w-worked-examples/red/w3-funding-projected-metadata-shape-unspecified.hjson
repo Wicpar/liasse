@@ -1,0 +1,73 @@
+{
+  format: 1
+  name: w3-funding-projected-metadata-shape-unspecified
+  suite: scenario
+  spec: ["W3", "#meters", "§15.3"]
+  tags: [meters, ambiguity]
+  note: '''
+    Ambiguity in the returned funding shape. W3's source projects a `price`
+    member alongside $quantity, and §15.3 says "Every funding row records ...
+    any projected funding metadata used by the response" and "any projected
+    funding metadata used by the response." Yet the one normative funding-view
+    example in §15.3 lists only { source, pool, amount } per row, and §15.6 says
+    only that `funding` "is a keyed view identified by meter, enforced level,
+    source, and pool identity." Whether each returned funding row exposes the
+    projected `price` (and under what member name) is therefore NOT externally
+    deducible, so the exact returned value of consume's `funding` cannot be
+    pinned. Recorded as an ambiguity rather than guessing the member set.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.credits@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      plans: { $key: "id", id: "text", credits: "decimal", period: "period?", price: "decimal" }
+      subscriptions: {
+        $key: "id", id: "text"
+        account: { $ref: "/accounts" }
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp? = none"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+        price: "= /plans[$source.plan].price"
+      }
+      accounts: {
+        $key: "id", id: "text"
+        $limits: {
+          credits: {
+            $sources: { subscription: "/credit_periods[:p | p.$source.account == .] { $quantity: .credits, price }" }
+            $order: ["$until", "price"]
+          }
+        }
+        spends: {
+          $key: "id", $consumes: "credits"
+          id: "uuid = uuid()", amount: "decimal", occurred_at: "timestamp = now()"
+        }
+        $mut: { consume: [ "spend = .spends + { amount: @amount }", "return spend { id, amount, funding }" ] }
+      }
+      $public: {
+        wallet: { $mut: { consume: ".accounts[@account].consume" } }
+      }
+    }
+    $data: {
+      plans: { weekly: { credits: "30", price: "9" } }
+      accounts: { a1: {} }
+      subscriptions: { sw: { account: "a1", plan: "weekly", starts_at: "1767225600" } }
+    }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { account: "a1", amount: "10" }
+      expect: { outcome: unspecified }
+      note: "call succeeds (ok), but whether funding[].price is present/how named is not deducible from §15.3/§15.6" }
+  ]
+}

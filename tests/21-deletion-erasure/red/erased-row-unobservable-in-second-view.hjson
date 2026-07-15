@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: erased-row-unobservable-in-second-view
+  suite: scenario
+  tags: [erasure, privacy, views]
+  // Attack: after erasing the target through one surface, read it back through a
+  // DIFFERENT view that projects the same rows (a raw dump surface and an
+  // aggregate count). §19 (intro) fixes that "Application expressions, views,
+  // roles, and mutations observe the selected live state"; §21.2 removed the row
+  // from live state. No live view — however phrased — may still surface it.
+  spec: ["§21.2", "§19"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        secret: "text"
+      }
+      $mut: {
+        add: [
+          "u = .users + { id: @id, secret: @secret }"
+          "return u { id, secret }"
+        ]
+        erase_user: "return erase(.users[@id])"
+      }
+      dump: { $view: ".users { id, secret, $sort: [id] }" }
+      total: { $view: "count(.users)" }
+      $public: {
+        users: {
+          $view: ".dump"
+          $mut: { add: ".add", erase: ".erase_user" }
+        }
+        stats: { $view: ".total" }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.users.add", args: { id: "u1", secret: "s1" },
+      expect: { outcome: ok, value: { id: "u1", secret: "s1" } } }
+    { watch: "public.users", id: "wd", expect_init: { value: [ { id: "u1", secret: "s1" } ] } }
+    { watch: "public.stats", id: "wc", expect_init: { value: 1 } }
+    { call: "public.users.erase", args: { id: "u1" }, expect: { outcome: ok, value: "$bind:extract" } }
+    // gone from the raw view AND from the count-derived view
+    { expect_view: { watch: "wd", value: [] } }
+    { expect_view: { watch: "wc", value: 0 } }
+  ]
+}

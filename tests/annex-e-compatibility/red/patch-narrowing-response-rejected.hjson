@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: patch-narrowing-response-rejected
+  suite: scenario
+  spec: ["#annex-e"]
+  tags: [version]
+  note: '''
+    Attack: hide a breaking change in a patch, on the theory that only minors
+    are checked. E.1 defines a patch as one that "preserves the same boundary
+    contracts while correcting their implementation," and states the narrowing
+    check rejects "a minor OR patch release whose effective boundary contract
+    narrows relative to an earlier release in the same major." Version 1.0.1
+    removes the promised output member `name` from the mutation response — E.5
+    breaking ("removing or renaming an output member"). A patch is held to
+    exactly the same narrowing prohibition as a minor, so the update is rejected
+    and 1.0.0 stays active (E.9).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.patchnarrow@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "$mut": { "rename": [".name = @name", "return . { id, name }"] }
+      }
+      "$public": {
+        "companies": {
+          "$view": ".companies { id, name }"
+          "$mut": { "rename": ".companies[@id].rename()" }
+        }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.patchnarrow@1.0.1"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+              // response narrowed: `name` dropped from the returned shape
+              "$mut": { "rename": [".name = @name", "return . { id }"] }
+            }
+            "$public": {
+              "companies": {
+                "$view": ".companies { id, name }"
+                "$mut": { "rename": ".companies[@id].rename()" }
+              }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#annex-e"]
+        detail: "patch narrows the declared mutation response (removes output member `name`); rejected like a minor"
+      } }
+    // prior release still returns the full response (E.9)
+    { call: "public.companies.rename", args: { id: "acme", name: "Acme 2" },
+      expect: { outcome: ok, value: { id: "acme", name: "Acme 2" } } }
+  ]
+}

@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: seed-noncanonical-key-alias-rejected
+  suite: static
+  spec: ["#loading", "#annex-d"]
+  tags: ["identity"]
+  note: '''
+    Identity-smuggling attack. §9.1: a keyed collection in $data "is a map
+    from canonical encoded key text to row data". Annex D.2: canonical int key
+    text is "canonical decimal digits" — "007" is not the canonical text of
+    any int value. A lenient implementation that decoded "007" as 7 would
+    alias two distinct-looking members onto one row identity, letting the
+    second silently collide with (or shadow) the first. The member text is not
+    canonical encoded key text, so the definition's $data does not conform and
+    the load must fail; even under lenient decoding it could only fail as a
+    duplicate seeded key. Either way the package must not activate.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.canonkey@1.0.0"
+    "$model": {
+      "numbers": {
+        "$key": "n"
+        "n": "int"
+        "label": "text"
+      }
+    }
+    "$data": {
+      "numbers": {
+        "7": { "label": "seven" }
+        "007": { "label": "impostor" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#loading", "#annex-d"]
+    detail: "seed member '007' is not canonical encoded key text for an int key"
+  }
+}

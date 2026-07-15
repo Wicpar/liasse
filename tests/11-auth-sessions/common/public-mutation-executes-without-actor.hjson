@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: public-mutation-executes-without-actor
+  suite: scenario
+  spec: ["#authentication", "§11.1", "#interfaces", "§10.2"]
+  note: '''
+    §11.1: "Public operations and engine maintenance execute with no actor."
+    §10.2: "A public surface is callable without an authenticated actor ...
+    while retaining all ordinary validation." The call carries no credential
+    and no authenticator selection; the mutation still enforces its field
+    check (second call), showing that skipping authentication skips no other
+    validation.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.pub@1.0.0"
+    $model: {
+      feedback: {
+        $key: "id"
+        id: "uuid = uuid()"
+        body: {
+          $type: "text"
+          $check: ["size(.) > 0", "Feedback must not be empty"]
+        }
+      }
+      $mut: {
+        add_feedback: [
+          "row = .feedback + { body: @body }"
+          "return row { id, body }"
+        ]
+      }
+      $public: {
+        feedback: {
+          $mut: { add: ".add_feedback" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // Single unauthenticated client; connect is implicit (FORMAT.md).
+    { call: "public.feedback.add", args: { body: "anonymous works" },
+      expect: { outcome: ok, value: { id: "$any:uuid", body: "anonymous works" } } }
+    // Ordinary validation still applies to public operations (§10.2).
+    { call: "public.feedback.add", args: { body: "" },
+      expect: { outcome: rejected, violates: ["#mutations"] } }
+  ]
+}

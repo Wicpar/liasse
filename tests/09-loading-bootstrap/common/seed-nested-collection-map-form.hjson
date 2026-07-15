@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: seed-nested-collection-map-form
+  suite: scenario
+  spec: ["#loading"]
+  note: '''
+    §9.1: "Nested keyed collections use the same map form." The office row is
+    seeded below its containing company row; its local key comes from the
+    nested map member. The selector .companies['acme'].offices follows §6.2/§6.3
+    key lookup.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seednested@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "offices": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+        }
+      }
+      "$public": {
+        "acme_offices": { "$view": ".companies['acme'].offices { id, name }" }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": {
+          "name": "Acme SAS"
+          "offices": {
+            "paris": { "name": "Paris" }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.acme_offices", id: "w1",
+      expect_init: { value: [ { id: "paris", name: "Paris" } ] } }
+  ]
+}

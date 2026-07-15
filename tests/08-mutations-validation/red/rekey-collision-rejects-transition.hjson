@@ -1,0 +1,52 @@
+{
+  // Identity takeover attempt: rekey a row onto another row's existing key.
+  // §5.4: "A collision, invalid rewritten ref, or resulting constraint
+  // failure rejects the complete transition."
+  format: 1
+  name: rekey-collision-rejects-transition
+  suite: scenario
+  spec: ["§5.4", "§22.2", "#mutations"]
+  tags: ["identity"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rekeycollide@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "$mut": { "rekey": ".id = @new" }
+      }
+      "$public": {
+        "companies": {
+          "$view": ".companies { id }"
+          "$mut": { "rekey": ".companies[@id].rekey" }
+        }
+      }
+    }
+    "$data": {
+      "companies": { "a": {}, "b": {} }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.companies"
+      id: "w1"
+      expect_init: { value: [ { id: "a" }, { id: "b" } ] }
+    }
+    {
+      call: "public.companies.rekey"
+      args: { id: "a", new: "b" }
+      expect: {
+        outcome: rejected
+        violates: ["§5.4"]
+        detail: "rekey target key already exists; complete transition rejected"
+      }
+    }
+    {
+      // Neither row changed; "a" was not silently merged into "b".
+      expect_view: { watch: "w1", value: [ { id: "a" }, { id: "b" } ] }
+    }
+  ]
+}

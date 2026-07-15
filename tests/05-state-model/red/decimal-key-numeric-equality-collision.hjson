@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: decimal-key-numeric-equality-collision
+  suite: scenario
+  spec: ["#state-model", "§5.4", "§B.1", "§D.2"]
+  tags: ["boundary", "identity"]
+  note: '''Attack: mint a "second" identity for the same decimal by spelling it with a
+different scale ("1.5" vs "1.50"). §B.1: for decimal, 'numerically equal canonical
+values compare equal'; §D.2 gives each decimal one canonical key text. So both
+spellings denote the same key value and the second insert must collide (§5.4). An
+implementation keying on the raw input string would accept both. The label projection
+avoids asserting the canonical trailing-zero spelling itself, which Annex A does not
+pin explicitly.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.deckey@1.0.0"
+    $model: {
+      prices: {
+        $key: "amount"
+        amount: "decimal"
+        label: "text"
+      }
+      $public: {
+        prices: {
+          $view: ".prices { label }"
+          $mut: {
+            add: ".prices + { amount: @amount, label: @label }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.prices.add", args: { amount: "1.50", label: "first" },
+      expect: { outcome: "ok" } }
+    // numerically equal -> same key -> collision
+    { call: "public.prices.add", args: { amount: "1.5", label: "second" },
+      expect: { outcome: "rejected", violates: ["§5.4", "§B.1"] } }
+    { watch: "public.prices", id: "w1",
+      expect_init: { value: [ { label: "first" } ] } }
+  ]
+}

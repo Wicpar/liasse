@@ -1,0 +1,67 @@
+{
+  // Pedantic boundary probe on §22.2: "A program producing no state change
+  // returns `unchanged` and creates no commit." The trigger is the NET effect,
+  // not whether statements ran. A two-field write whose values both equal the
+  // current state is `unchanged`; the same program with one field differing
+  // produces a net change and commits. Assigning a field to its current value
+  // inside an otherwise-changing program does not by itself suppress the commit.
+  //
+  // Note the contrast with §2.4: "A commit is final once admitted, including a
+  // package-only transition whose writable state delta is empty." An empty
+  // writable delta is a commit ONLY for a package/composition transition (e.g.
+  // a definition-only update, §9.4); an ordinary mutation with no net state
+  // change is `unchanged`, not a commit. This case exercises the mutation side.
+  format: 1
+  name: empty-delta-boundary-noop-vs-net-change
+  suite: scenario
+  spec: ["§22.2", "§8.9", "§2.4", "#runtime"]
+  tags: ["empty-delta", "completion"]
+
+  package: {
+    $liasse: 1
+    $app: "t.emptydelta@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        x: "int"
+        y: "int"
+        $mut: {
+          set_xy: [
+            ".x = @x"
+            ".y = @y"
+          ]
+        }
+      }
+      $public: {
+        rows: {
+          $view: ".rows { id, x, y }"
+          $mut: { set_xy: ".rows[@id].set_xy" }
+        }
+      }
+    }
+    $data: {
+      rows: { "r1": { x: "1", y: "2" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      // Both assignments equal current state: net-zero delta -> unchanged.
+      call: "public.rows.set_xy"
+      args: { id: "r1", x: "1", y: "2" }
+      on: "c1"
+      expect: { outcome: ok, completion: unchanged }
+    }
+    {
+      // x unchanged but y changes: net delta is non-empty -> a real commit.
+      call: "public.rows.set_xy"
+      args: { id: "r1", x: "1", y: "9" }
+      on: "c1"
+      expect: { outcome: ok, completion: committed }
+    }
+    { watch: "public.rows", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "r1", x: "1", y: "9" } ] } }
+  ]
+}

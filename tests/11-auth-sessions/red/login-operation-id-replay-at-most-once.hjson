@@ -1,0 +1,90 @@
+{
+  format: 1
+  name: login-operation-id-replay-at-most-once
+  suite: scenario
+  spec: ["#authentication", "§11.5", "#clients", "§12.3"]
+  tags: ["replay"]
+  note: '''
+    §12.3: "Reusing the same scoped identifier with an equivalent request
+    provides at-most-once execution." A login mutation creates a session row;
+    replaying the identical request under the same operation identifier must
+    not execute a second time, so exactly one session exists afterwards rather
+    than two. The public login target plus the identifier form the dedup scope.
+  '''
+
+  // Attack: session-multiplication via retransmission. A network retry (or a
+  // deliberate replay) of a session-opening call must not mint a second
+  // session. The public sessions view lets the case observe the row count.
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.login@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      $mut: {
+        login: [
+          "session = /sessions + { account: @account, expires_at: now() + time.duration('P30D') }"
+          "token = token.sign({ auth: 'session', session: session.$key })"
+          "return { token: token, session: session.$key }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $public: {
+        auth: {
+          $mut: { login: ".login" }
+        }
+        sessions: {
+          $view: "/sessions.$all { id }"
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+      }
+    }
+  }
+
+  hosts: {
+    token: { $namespace: "test.token@1" }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "public.auth.login", args: { account: "aaaaaaaa-0000-4000-8000-000000000001" }, on: "c1",
+      operation_id: "op-login-1",
+      expect: { outcome: ok, value: { token: "$any", session: "$bind:s1" } } }
+    // Identical request, same operation id: at-most-once — no second execution.
+    { call: "public.auth.login", args: { account: "aaaaaaaa-0000-4000-8000-000000000001" }, on: "c1",
+      operation_id: "op-login-1",
+      expect: { outcome: ok } }
+    // Exactly one session exists: the replay created nothing new.
+    { watch: "public.sessions", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "$ref:s1" } ] } }
+  ]
+}

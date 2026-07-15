@@ -1,0 +1,90 @@
+{
+  // Race: two clients withdraw 70 from a balance of 100 concurrently.
+  // §22.3/§22.4: every admitted request occupies one serial position and
+  // each assertion is checked at its own position. Whichever request is
+  // serialized first observes 100 and commits; the other observes 30 and its
+  // assert fails (§8.8). Both interleavings are valid; both-commit and
+  // both-reject are not. The final balance must be exactly 30.
+  format: 1
+  name: concurrent-withdrawals-serialize
+  suite: scenario
+  spec: ["§22.3", "§22.4", "§8.8", "#mutations"]
+  tags: ["ordering", "atomicity"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.race@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "balance": "int"
+        "$mut": {
+          "withdraw": [
+            "assert(.balance >= @amount, 'Insufficient funds')"
+            ".balance = .balance - @amount"
+          ]
+        }
+      }
+      "$public": {
+        "account": {
+          "$view": ".accounts { id, balance }"
+          "$mut": { "withdraw": ".accounts[@id].withdraw" }
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "a1": { "balance": "100" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { connect: "c2" }
+    {
+      concurrently: [
+        [
+          {
+            call: "public.account.withdraw"
+            args: { id: "a1", amount: "70" }
+            on: "c1"
+            expect_one_of: [
+              { outcome: ok }
+              { outcome: rejected, violates: ["§8.8", "§22.4"] }
+            ]
+          }
+        ]
+        [
+          {
+            call: "public.account.withdraw"
+            args: { id: "a1", amount: "70" }
+            on: "c2"
+            expect_one_of: [
+              { outcome: ok }
+              { outcome: rejected, violates: ["§8.8", "§22.4"] }
+            ]
+          }
+        ]
+      ]
+    }
+    {
+      // Settling commit: serialized after both racing requests, so its
+      // result (and c1's frontier per §22.7) reflects the race outcome.
+      // Exactly one racing withdrawal committed in every valid
+      // serialization, so the balance here is 30 and this succeeds.
+      call: "public.account.withdraw"
+      args: { id: "a1", amount: "30" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    {
+      // 100 - 70 (one racing commit) - 30 (settling commit) = 0.
+      // Had both racing calls committed or both been rejected, this view
+      // could not read "0".
+      watch: "public.account"
+      on: "c1"
+      id: "w1"
+      expect_init: { value: [ { id: "a1", balance: "0" } ] }
+    }
+  ]
+}

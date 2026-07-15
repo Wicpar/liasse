@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: deferred-ref-omits-on-delete-loads
+  suite: static
+  // §21.1 / §5.6: a ref MAY omit $on_delete while its target cannot be deleted
+  // by any declaration in the target's owning module. Here `projects` has no
+  // deleting mutation or lifecycle at all, so `tasks.project` legitimately
+  // omits $on_delete and the package loads.
+  spec: ["§21.1", "§5.6"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        // No $on_delete: nothing can delete a project, so the decision defers.
+        project: { $ref: "/projects" }
+      }
+      $mut: {
+        add_task: [
+          "t = .tasks + { id: @id, project: @project }"
+          "return t { id, project }"
+        ]
+      }
+      all: { $view: ".tasks { id, project }" }
+      $public: {
+        tasks: {
+          $view: ".all"
+          $mut: { add: ".add_task" }
+        }
+      }
+    }
+  }
+
+  expect: { outcome: ok }
+}

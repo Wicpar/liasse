@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: role-surface-requires-membership
+  suite: scenario
+  // §10.3: "Authentication resolves one application row as $actor; $members
+  // decides whether that row holds the role at the request's admission
+  // position." A resolved actor outside $members must not use the role's
+  // surfaces.
+  spec: ["#interfaces", "§10.3", "#authentication"]
+  tags: ["authz"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.role_member@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "enabled": "bool = true"
+      }
+      "notes": {
+        "$key": "id"
+        "id": "text"
+        "body": "text"
+      }
+      "$mut": {
+        "add_note": [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "token"
+          "$members": ".accounts[:a | a.enabled]"
+          "notes": {
+            "$view": ".notes { id, body }"
+            "$mut": { "add": ".add_note" }
+          }
+        }
+      }
+    }
+    "$data": {
+      "accounts": {
+        "alice": {}
+        "mallory": { "enabled": false }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "member", auth: "token", credential: "alice" } }
+    // alice satisfies $members (enabled): the role surface is available.
+    { call: "member.notes.add", args: { id: "n1", body: "hello" }, on: "c1",
+      expect: { outcome: ok, value: { id: "n1", body: "hello" } } }
+
+    { connect: "c2", authenticate: { role: "member", auth: "token", credential: "mallory" } }
+    // mallory's actor row resolves, but it does not occur in $members
+    // (enabled == false), so the role grants nothing.
+    { call: "member.notes.add", args: { id: "n2", body: "nope" }, on: "c2",
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "actor row is not a member of the targeted role" } }
+  ]
+}

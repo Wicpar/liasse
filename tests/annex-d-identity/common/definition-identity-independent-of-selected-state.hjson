@@ -1,0 +1,55 @@
+{
+  format: 1
+  name: definition-identity-independent-of-selected-state
+  suite: scenario
+  spec: ["§D.4", "§19.5"]
+  tags: ["integrity"]
+  note: '''§D.4: the definition identifier is SHA-256 over the canonical bytes of
+`liasse.json`, and "selected state, instance identity, and history do not
+participate." Two exports of the same installed instance — one before and one
+after a state-changing commit — carry the SAME `manifest.definition.identity`,
+because the inert definition did not change. This isolates the definition
+identity from the state checksum, which does change.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.defid@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a0", expect: {
+        outcome: ok
+        manifest: { definition: { identity: "$bind:defid", "...": true }, "...": true }
+    } } }
+    // a state-changing commit
+    { call: "public.notes.put", args: { id: "n1", body: "hello" },
+      expect: { outcome: ok, value: { id: "n1", body: "hello" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    // definition identity is unchanged; only state participates in the state checksum
+    { inspect_artifact: { artifact: "a1", expect: {
+        outcome: ok
+        manifest: { definition: { identity: "$ref:defid", "...": true }, "...": true }
+    } } }
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  format: 1
+  name: operation-id-duplicate-retry-executes-once
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["dedup", "replay"]
+  note: '''
+    §12.3: "Reusing the same scoped identifier with an equivalent request
+    provides at-most-once execution." The second, identical submission must be
+    accepted (only reuse "with different request metadata rejects the call")
+    and must not execute the mutation again: exactly one row exists afterwards.
+    The response BODY of the deduplicated repeat is deliberately not asserted:
+    "Mutation responses remain ephemeral and are delivered once for each
+    successfully completed transport exchange" reads as per-exchange
+    redelivery, but the spec does not state unambiguously what payload the
+    repeat exchange carries. Only the pinned parts are asserted.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      operation_id: "op-9f31c2d84a6b7e05"
+      expect: {
+        outcome: ok
+        completion: committed
+        value: { id: "$bind:t1", title: "a" }
+      }
+    }
+    // Same application, same public target, same identifier, equivalent
+    // request: at-most-once execution. Accepted, but not executed again.
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      operation_id: "op-9f31c2d84a6b7e05"
+      expect: { outcome: ok }
+    }
+    // Exactly one row exists: the duplicate did not execute.
+    { expect_view: { watch: "w1", value: [ { id: "$ref:t1", title: "a" } ] } }
+  ]
+}

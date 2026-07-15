@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: amount-expression-overrides-default
+  suite: scenario
+  spec: ["#meters", "§15.1", "Annex C", "§C.14"]
+  note: "The object form of $consumes maps a meter to an amount expression that replaces the structural default $amount = .amount (SPEC §15.1, Annex C.14). Here every spend drains .units * 2, verified through the remaining balance and the exact rejection point."
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.amountexpr@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: { credits: ".units * 2" }
+          id: "uuid = uuid()"
+          units: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { units: @units }"
+            "return spend { id, units }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    // 3 units drain 6 credits
+    { call: "public.wallet.consume", args: { user: "u1", units: "3" },
+      expect: { outcome: ok, value: { id: "$any:uuid", units: "3" } } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "94" } ] } }
+    // 50 units would drain 100 > 94 remaining: rejected
+    { call: "public.wallet.consume", args: { user: "u1", units: "50" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+    // 47 units drain exactly the remaining 94
+    { call: "public.wallet.consume", args: { user: "u1", units: "47" },
+      expect: { outcome: ok, value: { id: "$any:uuid", units: "47" } } }
+  ]
+}

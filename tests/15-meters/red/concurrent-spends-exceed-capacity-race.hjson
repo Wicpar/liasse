@@ -1,0 +1,78 @@
+{
+  format: 1
+  name: concurrent-spends-exceed-capacity-race
+  suite: scenario
+  spec: ["#meters", "§15.2", "#runtime", "§22.3", "§22.4"]
+  tags: [concurrency, ordering]
+  note: '''Classic double-spend race: two concurrent spends of 60 against a capacity of
+100. Each request is validated at its own final serial position (§22.4); whichever
+serializes second finds insufficient eligible capacity and rejects (§15.2). Either
+serialization is valid, but exactly one spend commits — pinned by the final balance
+of 40.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.race@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { connect: "c2" }
+    { concurrently: [
+      [
+        { call: "public.wallet.consume", args: { user: "u1", amount: "60" }, on: "c1",
+          expect_one_of: [
+            { outcome: ok }
+            { outcome: rejected, violates: ["#meters", "§15.2"] }
+          ] }
+      ]
+      [
+        { call: "public.wallet.consume", args: { user: "u1", amount: "60" }, on: "c2",
+          expect_one_of: [
+            { outcome: ok }
+            { outcome: rejected, violates: ["#meters", "§15.2"] }
+          ] }
+      ]
+    ] }
+    // exactly one of the two spends was admitted
+    { watch: "public.wallet", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "40" } ] } }
+  ]
+}

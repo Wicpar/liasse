@@ -1,0 +1,55 @@
+{
+  // §22.1 Recorded observations: values obtained at admission "are recorded
+  // with the commit … Replay uses those recorded values." §22.6: "now() … used
+  // in admitted transitions are recorded once." A restart replays the runtime
+  // (FORMAT.md: durable state must survive); the committed timestamp must be
+  // reproduced exactly, not re-sampled from the (unchanged) clock.
+  format: 1
+  name: now-recorded-once-survives-restart
+  suite: scenario
+  spec: ["§22.1", "§22.5", "§22.6", "#runtime"]
+  tags: ["time", "replay"]
+
+  package: {
+    $liasse: 1
+    $app: "t.nowrec@1.0.0"
+    $model: {
+      events: {
+        $key: "id"
+        id: "uuid = uuid()"
+        at: "timestamp = now()"
+        note: "text"
+      }
+      $mut: {
+        log: [
+          "e = .events + { note: @note }"
+          "return e { id, at, note }"
+        ]
+      }
+      $public: {
+        events: {
+          $view: ".events { id, at, note }"
+          $mut: { log: ".log" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      call: "public.events.log"
+      args: { note: "x" }
+      on: "c1"
+      // Genesis virtual clock: 2026-01-01T00:00:00Z = 1767225600000000 us.
+      expect: { outcome: ok, value: { id: "$bind:eid", at: "1767225600000000", note: "x" } }
+    }
+    { restart: {} }
+    {
+      // Replay reproduces the recorded timestamp exactly.
+      watch: "public.events"
+      id: "w1"
+      expect_init: { value: [ { id: "$ref:eid", at: "1767225600000000", note: "x" } ] }
+    }
+  ]
+}

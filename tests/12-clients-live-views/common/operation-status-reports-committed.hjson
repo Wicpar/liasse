@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: operation-status-reports-committed
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["status"]
+  note: '''
+    §12.3: the `operation` client operation queries a submitted call by
+    operation id, and a retained record for a committed operation reports
+    `committed { frontier, commit }`. Record expiry is host policy; the
+    simulated host retains records for the duration of the case (see
+    NOTES.md), so the status of the just-committed operation is `committed`.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  hosts: {
+    operation_records: { retention: "unbounded" }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      operation_id: "op-1d4b9a6e30c7f582"
+      expect: { outcome: ok, completion: committed, value: { id: "$any:uuid", title: "a" } }
+    }
+    {
+      operation_status: { id: "op-1d4b9a6e30c7f582" }
+      on: "c1"
+      expect: {
+        outcome: ok
+        status: committed
+        frontier: "$any"
+        commit: "$any"
+      }
+    }
+  ]
+}

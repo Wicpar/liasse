@@ -1,0 +1,28 @@
+{
+  format: 1
+  name: projection-member-cycle-invalid
+  suite: static
+  spec: ["#views", "§7.1", "§6.1"]
+  tags: ["ordering"]
+  note: "Attack: two projection members reference each other, hoping the runtime picks an arbitrary evaluation order or a default value. §7.1: members 'MAY refer to one another when their dependency graph is acyclic; the implementation evaluates them in any valid dependency order.' A cycle (a depends on b, b depends on a) has no valid dependency order, so no valid evaluation exists and the package is statically invalid (§6 intro: static type/effect checked at load)."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewcycle@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+      }
+      $public: {
+        loop: { $view: ".people { a: b, b: a }" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#views"]
+    detail: "projection members a and b form a dependency cycle; no valid evaluation order exists"
+  }
+}

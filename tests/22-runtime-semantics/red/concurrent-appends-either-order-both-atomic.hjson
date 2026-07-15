@@ -1,0 +1,66 @@
+{
+  // Attack: exploit an unordered concurrent race to make one append clobber
+  // or drop the other. §22.3: "When the relation contains no path between two
+  // concurrent requests, either relative order is valid." §22.4: "Two requests
+  // with no established precedence MAY appear in either order." But each is
+  // still one atomic admission at one serial position, so BOTH commit and the
+  // append accumulates: the result is "ab" or "ba" — never "a", "b", or "aa".
+  format: 1
+  name: concurrent-appends-either-order-both-atomic
+  suite: scenario
+  spec: ["§22.3", "§22.4", "#runtime"]
+  tags: ["ordering", "concurrency", "atomicity"]
+
+  package: {
+    $liasse: 1
+    $app: "t.raceappend@1.0.0"
+    $model: {
+      board: {
+        $key: "id"
+        id: "text"
+        trace: "text"
+        $mut: {
+          append: ".trace = .trace + @c"
+        }
+      }
+      $public: {
+        board: {
+          $view: ".board { id, trace }"
+          $mut: { append: ".board[@id].append" }
+        }
+      }
+    }
+    $data: {
+      board: { "b1": { trace: "" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { connect: "c2" }
+    {
+      concurrently: [
+        [ { call: "public.board.append", args: { id: "b1", c: "a" }, on: "c1",
+            expect: { outcome: ok } } ]
+        [ { call: "public.board.append", args: { id: "b1", c: "b" }, on: "c2",
+            expect: { outcome: ok } } ]
+      ]
+    }
+    {
+      // A third request is serialized after both, so it observes both commits.
+      // Both serializations are valid; losing either append is not.
+      call: "public.board.append"
+      args: { id: "b1", c: "!" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    { watch: "public.board", on: "c1", id: "w1", expect_init: { value: "$any" } }
+    {
+      expect_view: { watch: "w1" }
+      expect_one_of: [
+        { value: [ { id: "b1", trace: "ab!" } ] }
+        { value: [ { id: "b1", trace: "ba!" } ] }
+      ]
+    }
+  ]
+}

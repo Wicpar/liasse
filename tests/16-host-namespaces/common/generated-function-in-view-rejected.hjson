@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: generated-function-in-view-rejected
+  suite: static
+  spec: ["#host-namespaces", "#mutations"]
+  note: '''
+    §16.3: generated functions run in mutation/write-time positions. §8.8
+    (expression effects): computed fields, views, $normalize, and $check use
+    pure functions only, and "The checker rejects an effect class used in
+    the wrong position while loading the package." A view calling a
+    generated namespace function is therefore a load-time rejection, not a
+    runtime error.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.genview@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      fresh: { $view: "util.token()" }
+      $public: {
+        stats: { $view: ".fresh" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          token: { signature: "() -> text", effect: "generated", op: "token" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#mutations", "#host-namespaces"]
+    detail: "generated effect class used in a view position; the load-time checker rejects it"
+  }
+}

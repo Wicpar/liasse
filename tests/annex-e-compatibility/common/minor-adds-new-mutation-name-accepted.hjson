@@ -1,0 +1,73 @@
+{
+  format: 1
+  name: minor-adds-new-mutation-name-accepted
+  suite: scenario
+  spec: ["#annex-e"]
+  note: '''
+    E.4: "adding a new surface, interface, or mutation name" is compatible.
+    Version 1.1.0 adds the public mutation name `complete` while retaining
+    `add` and the exposed view unchanged. Every interaction valid under 1.0.0
+    stays valid (E.2 substitutability), so the update commits.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.newname@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "title": "text"
+        "done": "bool = false"
+        "$mut": { "complete": [".done = true", "return . { id, done }"] }
+      }
+      "$mut": {
+        "add_task": ["t = .tasks + { title: @title }", "return t { id, title }"]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title, done }"
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.newname@1.1.0"
+          "$model": {
+            "tasks": {
+              "$key": "id"
+              "id": "uuid = uuid()"
+              "title": "text"
+              "done": "bool = false"
+              "$mut": { "complete": [".done = true", "return . { id, done }"] }
+            }
+            "$mut": {
+              "add_task": ["t = .tasks + { title: @title }", "return t { id, title }"]
+            }
+            "$public": {
+              "tasks": {
+                "$view": ".tasks { id, title, done }"
+                "$mut": {
+                  "add": ".add_task"
+                  // new mutation name added; `add` retained
+                  "complete": ".tasks[@id].complete()"
+                }
+              }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    // the previously exposed name is still callable
+    { call: "public.tasks.add", args: { title: "A" },
+      expect: { outcome: ok, value: { id: "$bind:tid", title: "A" } } }
+    // the newly added name is now callable too
+    { call: "public.tasks.complete", args: { id: "$ref:tid" },
+      expect: { outcome: ok, value: { id: "$ref:tid", done: true } } }
+  ]
+}

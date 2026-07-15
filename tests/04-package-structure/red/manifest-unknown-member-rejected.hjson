@@ -1,0 +1,25 @@
+{
+  format: 1
+  name: manifest-unknown-member-rejected
+  suite: scenario
+  spec: ["#history", "§19.5"]
+  tags: ["tamper"]
+  note: "§19.5: for the manifest.json entries map, 'Additional members are invalid for format version 1.' Attack: inject an out-of-schema top-level manifest member (e.g. an 'overrides' block a permissive parser might honor to redirect state or definition). merge_json sets the member and rehash keeps every checksum valid, so only the closed-manifest rule can reject it."
+
+  package: {
+    $liasse: 1
+    $app: "t.manifestextra@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  steps: [
+    { build_artifact: { as: "a1", files: {} } }
+    { tamper_artifact: { artifact: "a1",
+        merge_json: { path: "manifest.json", set: { overrides: { definition: { path: "evil.json" } } } },
+        rehash: true } }
+    { load_artifact: { from: "a1",
+        expect: { outcome: invalid, violates: ["#history", "§19.5"] } } }
+  ]
+}

@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: union-concatenates-left-then-new-right
+  suite: scenario
+  spec: ["#views", "§7.4", "§B.5"]
+  note: "§7.4: 'a | b  union, left order then new right identities.' With disjoint operands, the left view's rows (grp L: a, b in key order) precede the right view's rows (grp R: c, d in key order), giving a, b, c, d."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewunion@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        grp: "text"
+      }
+      $public: {
+        both: { $view: ".tasks[:t | t.grp == \"L\"] { id } | .tasks[:t | t.grp == \"R\"] { id }" }
+      }
+    }
+    $data: {
+      tasks: {
+        a: { grp: "L" }
+        b: { grp: "L" }
+        c: { grp: "R" }
+        d: { grp: "R" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.both", id: "w1",
+      expect_init: { value: [ { id: "a" }, { id: "b" }, { id: "c" }, { id: "d" } ] } }
+  ]
+}

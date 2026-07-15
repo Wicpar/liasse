@@ -1,0 +1,53 @@
+{
+  // §8.8: "Normalization runs before checks." A whitespace-only title is
+  // trimmed to "" first, so the size(.) > 0 check fails; a padded title is
+  // trimmed and then passes.
+  format: 1
+  name: normalization-runs-before-checks
+  suite: scenario
+  spec: ["#mutations", "§8.8"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.normcheck@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "title": {
+          "$type": "text"
+          "$normalize": "string.trim(.)"
+          "$check": ["size(.) > 0", "A title is required"]
+        }
+      }
+      "$mut": {
+        "add_task": [
+          "t = .tasks + { title: @title }"
+          "return t { title }"
+        ]
+      }
+      "$public": {
+        "tasks": { "$mut": { "add": ".add_task" } }
+      }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.tasks.add"
+      args: { title: "  padded  " }
+      // Normalization applied before the check and before storage.
+      expect: { outcome: ok, value: { title: "padded" } }
+    }
+    {
+      call: "public.tasks.add"
+      args: { title: "   " }
+      // Trimmed to "", then size(.) > 0 fails: the transition is rejected.
+      expect: {
+        outcome: rejected
+        violates: ["§8.8"]
+        detail: "whitespace-only title normalizes to empty text and fails the field check"
+      }
+    }
+  ]
+}

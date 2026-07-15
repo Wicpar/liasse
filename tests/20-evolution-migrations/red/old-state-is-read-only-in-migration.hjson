@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: old-state-is-read-only-in-migration
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.1: "`$old` is the complete read-only state under the source package."
+    An attacker tries to mutate the source snapshot mid-migration
+    (`$old.users["u1"].name = "tampered"`), e.g. to rewrite history-adjacent
+    values or to smuggle a value the target check would otherwise reject.
+    Writing to `$old` is statically forbidden; the migration program is
+    ill-formed and the update is `invalid`. 1.0.0 stays active.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.readonly@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        users: { $view: ".users { id, name }" }
+      }
+    }
+    $data: {
+      users: { u1: { name: "Ann" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.readonly@2.0.0"
+          $model: {
+            people: {
+              $key: "id"
+              id: "text"
+              name: "text"
+            }
+            $migrations: {
+              "1.0.0": [
+                "$old.users[\"u1\"].name = \"tampered\""
+                ".people = $old.users { id, name }"
+              ]
+            }
+            $public: {
+              people: { $view: ".people { id, name }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: invalid
+        violates: ["§20.1"]
+        detail: "assignment to $old.users[...] writes read-only source state; migration program is ill-formed"
+      } }
+    { watch: "public.users", id: "w1",
+      expect_init: { value: [ { id: "u1", name: "Ann" } ] } }
+  ]
+}

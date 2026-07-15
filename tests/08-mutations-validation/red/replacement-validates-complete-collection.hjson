@@ -1,0 +1,64 @@
+{
+  // Pedantic corner: a collection replacement that swaps two rows' unique
+  // emails. Pairwise this always collides; §8.7 mandates "One insertion or
+  // replacement statement builds its complete prospective row set before
+  // validation" and "The engine validates the complete resulting collection
+  // before admission", so the swap admits. Matching keys keep their
+  // incarnation and receive the replacement values.
+  format: 1
+  name: replacement-validates-complete-collection
+  suite: scenario
+  spec: ["#mutations", "§8.7", "§5.7"]
+  tags: ["atomicity"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.replaceswap@1.0.0"
+    "$model": {
+      "users": {
+        "$key": "id"
+        "$unique": ["email"]
+        "id": "text"
+        "email": "text"
+      }
+      "imports": {
+        "$key": "id"
+        "id": "text"
+        "email": "text"
+      }
+      "$mut": {
+        "swap_all": [
+          ".users = .imports { id, email }"
+          "return .users { id, email }"
+        ]
+      }
+      "$public": {
+        "users": { "$mut": { "swap_all": ".swap_all" } }
+      }
+    }
+    "$data": {
+      "users": {
+        "a": { "email": "a@x" }
+        "b": { "email": "b@x" }
+      }
+      "imports": {
+        "a": { "email": "b@x" }
+        "b": { "email": "a@x" }
+      }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.users.swap_all"
+      args: {}
+      expect: {
+        outcome: ok
+        value: [
+          { id: "a", email: "b@x" }
+          { id: "b", email: "a@x" }
+        ]
+      }
+    }
+  ]
+}

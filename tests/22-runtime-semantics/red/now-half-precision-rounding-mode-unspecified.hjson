@@ -1,0 +1,57 @@
+{
+  // Boundary probe on §22.5: "Precision conversion rounds to the requested
+  // fractional-second precision." The spec fixes THAT rounding happens but not
+  // the rounding MODE. A now() instant landing exactly on a half-unit boundary
+  // of the target precision therefore has an unspecified recorded value: an
+  // engine rounding half-up records 1767225601 s, half-down / truncation
+  // records 1767225600 s, and half-to-even could pick either. The operation
+  // succeeds; only the recorded second value is unpinned.
+  format: 1
+  name: now-half-precision-rounding-mode-unspecified
+  suite: scenario
+  spec: ["§22.5", "#runtime"]
+  tags: ["time", "boundary"]
+  note: '''
+    §22.5 says precision conversion "rounds to the requested fractional-second
+    precision" without naming a rounding mode. The virtual clock is advanced by
+    exactly half a second (PT0.5S) from genesis, so now() = 1767225600.500000 s.
+    Rounding that to whole-second precision is exactly half-way, and SPEC.md
+    does not choose between round-half-up (1767225601), truncate/round-down
+    (1767225600), or round-half-to-even. The recorded `at` value is therefore
+    unspecified; the corpus records the gap rather than guessing a mode.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.rounding@1.0.0"
+    $model: {
+      events: {
+        $key: "id"
+        id: "text"
+        at: { $type: "timestamp", $precision: "s", $default: "= now()" }
+      }
+      $mut: {
+        mark: ".events + { id: @id }"
+      }
+      $public: {
+        events: {
+          $view: ".events { id, at }"
+          $mut: { mark: ".mark" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { advance_time: "PT0.5S" }
+    {
+      // now() = 1767225600.5 s exactly; the rounded whole-second value is
+      // unspecified because the rounding mode is not fixed by SPEC.md.
+      call: "public.events.mark"
+      args: { id: "e" }
+      on: "c1"
+      expect: { outcome: unspecified }
+    }
+  ]
+}

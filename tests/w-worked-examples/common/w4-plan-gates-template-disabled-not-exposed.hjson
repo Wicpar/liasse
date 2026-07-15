@@ -1,0 +1,84 @@
+{
+  format: 1
+  name: w4-plan-gates-template-disabled-not-exposed
+  suite: scenario
+  spec: ["W4", "#modules", "§13.4", "§13.8"]
+  tags: [modules]
+  note: '''
+    The complement of the enabled case. Installed under Globex, whose plan is not
+    "fr-pcg", the seed enabled = "= #company.plan == 'fr-pcg'" resolves false at
+    install time (§13.4 binds #company to Globex; §13.13 resolves the computed
+    seed at insertion). The module's $expose templates filters ".templates[:t |
+    t.enabled]", so the disabled template is not part of the exposed interface;
+    the parent aggregation .modules::templates therefore yields no rows. The
+    install itself still succeeds — a disabled row is ordinary private state.
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.company.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          plan: "text"
+          modules: {
+            $modules: {
+              $expose: {
+                company: { $view: ". { id, name, plan }", $mut: { rename: ".rename" } }
+              }
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
+              }
+            }
+          }
+          $mut: { rename: ".name = @name" }
+          available_templates: {
+            $view: '''.modules::templates {
+              module: modules.$key, template: templates.$key,
+              id, label, journal, lines, $sort: [label, module, template]
+            }'''
+          }
+        }
+        $public: {
+          companies: {
+            $params: { company: "text" }
+            $view: "/companies[@company].available_templates"
+          }
+        }
+      }
+      $data: { companies: { globex: { name: "Globex", plan: "us-gaap" } } }
+    }
+
+    frsales: {
+      $liasse: 1
+      $module: "acme.fr_sales_templates@1.0.0"
+      $use: { company: "$parent" }
+      $model: {
+        templates: { $key: "id", id: "text", label: "text", journal: "text", enabled: "bool = true", lines: "json" }
+      }
+      $data: {
+        templates: {
+          sale_invoice: {
+            label: "Facture de vente"
+            journal: "VE"
+            enabled: "= #company.plan == 'fr-pcg'"
+            lines: [ { account: "411", side: "debit", amount: "'= total_ttc" } ]
+          }
+        }
+      }
+      $expose: { templates: { $view: ".templates[:t | t.enabled] { id, label, journal, lines }" } }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/globex/modules"
+        request: { $name: "fr_sales", $module: "acme.fr_sales_templates@1.0.0" } }
+      expect: { outcome: ok } }
+    // template seeded disabled (plan != fr-pcg) -> not exposed -> aggregation empty
+    { watch: "public.companies", args: { company: "globex" }, id: "w1", expect_init: { value: [] } }
+  ]
+}

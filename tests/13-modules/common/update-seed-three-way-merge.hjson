@@ -1,0 +1,126 @@
+{
+  format: 1
+  name: update-seed-three-way-merge
+  suite: scenario
+  spec: ["#modules", "§13.13"]
+  note: '''
+    §13.13: on update, changed seed data uses a three-way merge among old
+    package seed, new package seed, and current instance state. Expected
+    after updating 1.0.0 -> 1.1.0:
+      - std: current value still equals the old seed, so the new seed
+        replaces it ("Standard v2");
+      - old: locally modified ("Mine"), so removal from the new seed does
+        not delete it and the current value is retained;
+      - fresh: newly present in the new seed, inserted.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": {
+                  "$view": { "$key": "id", "id": "text", "label": "text" }
+                  "$mut": {
+                    "set_label({ id: text, label: text })": {
+                      "$return": { "id": "text", "label": "text" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          "catalog": {
+            "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
+          }
+        }
+        "$public": {
+          "catalog": {
+            "$params": { "company": "text" }
+            "$view": "/companies[@company].catalog"
+          }
+          "admin": {
+            "$mut": { "set_label": '/companies["acme"].modules["kit"]::templates.set_label' }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tplm1: {
+      "$liasse": 1
+      "$module": "t.tplm@1.0.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+        "$mut": {
+          "set_label": [
+            "t = .templates[@id]"
+            "t.label = @label"
+            "return t { id, label }"
+          ]
+        }
+      }
+      "$data": {
+        "templates": {
+          "std": { "label": "Standard" }
+          "old": { "label": "Old" }
+        }
+      }
+      "$expose": {
+        "templates": {
+          "$view": ".templates { id, label }"
+          "$mut": { "set_label": ".set_label" }
+        }
+      }
+    }
+    tplm2: {
+      "$liasse": 1
+      "$module": "t.tplm@1.1.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+        "$mut": {
+          "set_label": [
+            "t = .templates[@id]"
+            "t.label = @label"
+            "return t { id, label }"
+          ]
+        }
+      }
+      "$data": {
+        "templates": {
+          "std": { "label": "Standard v2" }
+          "fresh": { "label": "Fresh" }
+        }
+      }
+      "$expose": {
+        "templates": {
+          "$view": ".templates { id, label }"
+          "$mut": { "set_label": ".set_label" }
+        }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.tplm@1.0.0" } }
+      expect: { outcome: ok } }
+    // local modification of a seeded row
+    { call: "public.admin.set_label", args: { id: "old", label: "Mine" }
+      expect: { outcome: ok, value: { id: "old", label: "Mine" } } }
+    { module_update: { instance: "/companies/acme/modules/kit", to: "t.tplm@1.1.0" }
+      expect: { outcome: ok } }
+    { watch: "public.catalog", args: { company: "acme" }, id: "w1"
+      expect_init: { value: [
+        { module: "kit", id: "fresh", label: "Fresh" }
+        { module: "kit", id: "old", label: "Mine" }
+        { module: "kit", id: "std", label: "Standard v2" }
+      ] } }
+  ]
+}

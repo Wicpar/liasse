@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: unbounded-recurring-requires-bounded-selector
+  suite: static
+  spec: ["#buckets", "§14.5"]
+  tags: ["static"]
+  note: "An unbounded recurring collection MUST be read through a bounded temporal selector such as .$at or .$between; the checker rejects an expression requiring enumeration of an infinite series. Here ends_at is optional and the plan period may be non-none, so a bare view over credit_periods can require infinite enumeration."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.enumerate@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      // full enumeration of a potentially infinite series
+      all_periods: { $view: ".credit_periods { credits }" }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§14.5"]
+    detail: "a view enumerates an unbounded recurring bucket collection without a bounded temporal selector"
+  }
+}

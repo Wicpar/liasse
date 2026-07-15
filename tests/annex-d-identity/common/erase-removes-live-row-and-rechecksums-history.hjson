@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: erase-removes-live-row-and-rechecksums-history
+  suite: scenario
+  spec: ["§D.7", "§21.2", "§19.8"]
+  tags: ["erasure", "integrity"]
+  note: '''§21.2: erase plans the same live removal as ordinary deletion, replaces
+each scrubbed occurrence with a digest stub (§D.7), and verifies the resulting
+retained history and artifact-entry checksums under the stub representation before
+admitting. So after erasing n1: the live row is gone, and an export of the erased
+instance still verifies on restore (§19.8) because the manifest and history were
+rechecksummed over the stub bytes (§D.7 final sentence). The erasure operation is
+reached through an explicitly exposed erasure call (§21.2).'''
+
+  package: {
+    $liasse: 1
+    $app: "t.erase@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: {
+            put: [
+              "n = .notes + { id: @id, body: @body }"
+              "return n { id, body }"
+            ]
+            // explicitly exposed erasure call (§21.2)
+            scrub: "erase(.notes[@id])"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "secret" },
+      expect: { outcome: ok, value: { id: "n1", body: "secret" } } }
+    { call: "public.notes.put", args: { id: "n2", body: "kept" },
+      expect: { outcome: ok, value: { id: "n2", body: "kept" } } }
+    { erase: { call: "public.notes.scrub", args: { id: "n1" }, bind_extract: "e1" },
+      expect: { outcome: ok } }
+    // live row is gone; the sibling survives
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "n2", body: "kept" }
+    ] } }
+    // history/artifact remains verifiable under the stub representation
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1" }, expect: { outcome: ok } }
+    ] }
+  ]
+}

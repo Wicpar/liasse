@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: deleting-capability-requires-inbound-ref-policy
+  suite: static
+  // §21.1: introducing `.projects - @id` gives `projects` a deleting capability,
+  // so every inbound ref MUST declare restrict/cascade/none/=patch before that
+  // declaration can become active. `tasks.project` still omits $on_delete, so
+  // the whole package is rejected; the diagnostic names the deleting
+  // declaration and the unresolved ref.
+  spec: ["§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        project: { $ref: "/projects" }   // undecided while projects are deletable
+      }
+      $mut: {
+        // Deleting capability on the ref target with no inbound policy chosen.
+        delete_project: ".projects - @id"
+      }
+      $public: {
+        projects: {
+          $view: ".projects { id, name }"
+          $mut: { delete: ".delete_project" }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§21.1"]
+    detail: "delete_project makes projects deletable while inbound ref tasks.project leaves $on_delete undecided"
+  }
+}

@@ -1,0 +1,64 @@
+{
+  // §8.6: a patch provides partial updates "while the full resulting row
+  // still passes every constraint". §5.10: a shape $check constrains the
+  // complete row. Patching only `lo` must still satisfy the lo/hi relation.
+  format: 1
+  name: row-check-validates-full-patched-row
+  suite: scenario
+  spec: ["#mutations", "§8.6", "§5.10", "§8.8"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rowcheck@1.0.0"
+    "$model": {
+      "ranges": {
+        "$key": "id"
+        "id": "text"
+        "lo": "int"
+        "hi": "int"
+        "$check": [".lo <= .hi", "lo must not exceed hi"]
+      }
+      "$mut": {
+        "set_lo": ".ranges[@id] { lo = @lo }"
+      }
+      "$public": {
+        "ranges": {
+          "$view": ".ranges { id, lo, hi }"
+          "$mut": { "set_lo": ".set_lo" }
+        }
+      }
+    }
+    "$data": {
+      "ranges": { "r1": { "lo": "1", "hi": "3" } }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.ranges"
+      id: "w1"
+      expect_init: { value: [ { id: "r1", lo: "1", hi: "3" } ] }
+    }
+    {
+      call: "public.ranges.set_lo"
+      args: { id: "r1", lo: "5" }
+      // Resulting row { lo: 5, hi: 3 } violates the row check.
+      expect: {
+        outcome: rejected
+        violates: ["§5.10", "§8.6"]
+        detail: "the full patched row fails the shape $check"
+      }
+    }
+    {
+      expect_view: { watch: "w1", value: [ { id: "r1", lo: "1", hi: "3" } ] }
+    }
+    {
+      call: "public.ranges.set_lo"
+      args: { id: "r1", lo: "2" }
+      expect: { outcome: ok }
+    }
+    {
+      expect_view: { watch: "w1", value: [ { id: "r1", lo: "2", hi: "3" } ] }
+    }
+  ]
+}

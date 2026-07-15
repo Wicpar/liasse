@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: empty-view-literal-combinator
+  suite: scenario
+  spec: ["#annex-c", "§C.8", "#views", "§7.4"]
+  note: "Annex C.8 lists '[]' as the empty-view combinator; §7.4: '[] empty view' and 'cond ? a : b conditional view'. When the condition is false the conditional selects the empty view, so the surface view yields no rows. Both operands share the same row shape/identity domain (§7.4). This isolates the '[]' literal as a valid view operand."
+
+  package: {
+    $liasse: 1
+    $app: "t.emptyview@1.0.0"
+    $model: {
+      flags: {
+        show: "bool"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
+      }
+      maybe_tasks: {
+        $view: ".flags.show ? .tasks { id, title } : []"
+      }
+      $public: {
+        tasks: { $view: ".maybe_tasks" }
+      }
+    }
+    $data: {
+      flags: { show: false }
+      tasks: {
+        t1: { id: "t1", title: "hidden" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1",
+      expect_init: { value: [] } }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  // §8.3/§8.5: "mutation() is the compact spelling of mutation({}); both
+  // forms are exactly equivalent." Two programs call the same no-parameter
+  // mutation, one with each spelling; both execute it identically.
+  format: 1
+  name: empty-args-call-forms-equivalent
+  suite: scenario
+  spec: ["#mutations", "§8.3", "§8.5", "§8.11"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.emptyargs@1.0.0"
+    "$model": {
+      "count": "int = 0"
+      "$mut": {
+        "bump": ".count = .count + 1"
+        "via_paren": [
+          ".bump()"
+          "return .count"
+        ]
+        "via_empty": [
+          ".bump({})"
+          "return .count"
+        ]
+      }
+      "$public": {
+        "counter": {
+          "$mut": {
+            "via_paren": ".via_paren"
+            "via_empty": ".via_empty"
+          }
+        }
+      }
+    }
+    "$data": { "count": "0" }
+  }
+
+  steps: [
+    {
+      call: "public.counter.via_paren"
+      args: {}
+      // int wire value is a canonical base-10 JSON string (§A.1).
+      expect: { outcome: ok, value: "1" }
+    }
+    {
+      call: "public.counter.via_empty"
+      args: {}
+      expect: { outcome: ok, value: "2" }
+    }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  // §8.5 defines `field -` as "clear an OPTIONAL field". Applying it to a
+  // required field has no defined meaning; §6 requires every expression's
+  // static type to be checked at package load, so the program must be
+  // rejected statically rather than producing a row missing a required value.
+  format: 1
+  name: clear-required-field-invalid
+  suite: static
+  spec: ["#mutations", "§8.5", "#expressions"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.clearreq@1.0.0"
+    "$model": {
+      "name": "text = 'seed'"
+      "$mut": {
+        "wipe": ".name -"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§8.5"]
+    detail: "clear operator applied to a non-optional field"
+  }
+}

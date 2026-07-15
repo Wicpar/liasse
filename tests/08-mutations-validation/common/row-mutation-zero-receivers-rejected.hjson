@@ -1,0 +1,44 @@
+{
+  // §8.2: calling a row mutation requires a selected row. §6.3: a context
+  // requiring one row MUST receive exactly one occurrence; zero occurrences
+  // reject that evaluation. §10.1: "Zero or several selected rows reject the
+  // request."
+  format: 1
+  name: row-mutation-zero-receivers-rejected
+  suite: scenario
+  spec: ["#mutations", "§8.2", "§6.3", "§10.1"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.zerorecv@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "done": "bool = false"
+        "$mut": { "complete": ".done = true" }
+      }
+      "$public": {
+        "tasks": {
+          "$mut": { "complete": ".tasks[@id].complete" }
+        }
+      }
+    }
+    "$data": {
+      "tasks": { "t1": {} }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.tasks.complete"
+      args: { id: "zz" }
+      // The selector resolves zero receiver rows.
+      expect: {
+        outcome: rejected
+        violates: ["§10.1", "§6.3"]
+        detail: "row-mutation receiver selected zero rows"
+      }
+    }
+  ]
+}

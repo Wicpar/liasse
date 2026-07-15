@@ -1,0 +1,30 @@
+{
+  format: 1
+  name: non-ascii-declaration-name-invalid
+  suite: static
+  spec: ["#state-model", "§2.5"]
+  tags: ["unicode"]
+  note: '''Counterpart to data-level confusables: identity confusion in the *schema*.
+§2.5: 'Application declaration names MUST begin with an ASCII letter and contain only
+ASCII letters, digits, and _.' A field name containing U+00E9 must be statically
+invalid — data keys may be any Unicode text, declaration names may not.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.nonasciidecl@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        // LATIN SMALL LETTER E WITH ACUTE in a declaration name
+        "café": "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["§2.5"]
+    detail: "declaration names are restricted to ASCII letters, digits, and _"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: seed-unique-violation-rejects-load
+  suite: static
+  spec: ["#loading", "#state-model"]
+  note: '''
+    §9.1: seed rows pass through the same uniqueness rules as mutation inserts.
+    Two seeded rows collide on the $unique email candidate key (§5.7), so the
+    load is rejected as one atomic transition.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seedunique@1.0.0"
+    "$model": {
+      "users": {
+        "$key": "id"
+        "$unique": ["email"]
+        "id": "text"
+        "email": "text"
+      }
+    }
+    "$data": {
+      "users": {
+        "u1": { "email": "dup@example.org" }
+        "u2": { "email": "dup@example.org" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: rejected
+    violates: ["#loading", "#state-model"]
+    detail: "seeded rows users/u1 and users/u2 collide on the unique candidate key 'email'"
+  }
+}

@@ -1,0 +1,46 @@
+{
+  format: 1
+  name: normalization-defeats-unique-evasion
+  suite: scenario
+  spec: ["#state-model", "§5.7", "§5.1", "§9.1", "§8.8"]
+  tags: ["identity"]
+  note: '''Attack: evade an email uniqueness constraint by re-registering the same address
+with different case and padding. $normalize produces the field's value before checks
+and before the state rules apply (§8.8; §9.1 lists the admission order 'defaults,
+normalization, checks, key, ref, uniqueness'), so the normalized values collide and
+the second insert must reject through the candidate key (§5.7).'''
+
+  package: {
+    $liasse: 1
+    $app: "t.uniqnorm@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        $unique: ["email"]
+        id: "uuid = uuid()"
+        email: {
+          $type: "text"
+          $normalize: "string.lower(string.trim(.))"
+        }
+      }
+      $public: {
+        users: {
+          $view: ".users { email }"
+          $mut: {
+            add: ".users + { email: @email }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.users.add", args: { email: "admin@x.example" },
+      expect: { outcome: "ok" } }
+    // padded, upper-cased spelling of the same address normalizes to the stored value
+    { call: "public.users.add", args: { email: "  ADMIN@X.EXAMPLE  " },
+      expect: { outcome: "rejected", violates: ["§5.7"], detail: "normalized email collides with an existing candidate-key value" } }
+    { watch: "public.users", id: "w1",
+      expect_init: { value: [ { email: "admin@x.example" } ] } }
+  ]
+}

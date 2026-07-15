@@ -1,0 +1,37 @@
+{
+  format: 1
+  name: seed-map-member-supplies-key
+  suite: scenario
+  spec: ["#loading"]
+  note: '''
+    §9.1: a keyed collection in $data is a map from canonical encoded key text
+    to row data, and "the map member supplies the local key". The row object
+    deliberately does not repeat the key field; the seeded row must still carry
+    id = "acme".
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seedkey@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "name": "Acme SAS" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "Acme SAS" } ] } }
+  ]
+}

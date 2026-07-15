@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: members-actor-type-mismatch-invalid
+  suite: static
+  // §10.3: "$members MAY produce actor rows or refs to them. Its row/key type
+  // MUST agree with the authenticator's $actor result." Here $actor resolves
+  // /accounts rows while $members yields /projects rows: the types cannot
+  // agree, so the package must fail static validation.
+  spec: ["#interfaces", "§10.3", "#loading"]
+  tags: []
+
+  package: {
+    "$liasse": 1
+    "$app": "t.members_type@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "projects": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "token"
+          // Invalid: membership rows are projects, but the authenticator
+          // resolves accounts.
+          "$members": ".projects"
+          "workspace": {
+            "$view": ".projects { id, name }"
+          }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces"]
+    detail: "$members row type does not agree with the authenticator's $actor result"
+  }
+}

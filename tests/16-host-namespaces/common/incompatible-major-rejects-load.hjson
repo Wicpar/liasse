@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: incompatible-major-rejects-load
+  suite: static
+  spec: ["#host-namespaces", "#conformance", "#annex-e"]
+  note: '''
+    §16.2: the $requires value identifies the semantic contract and
+    compatible major, and incompatible requirements reject loading before
+    the package becomes active. §E.8 permits movement only within the same
+    namespace major. The context registers only test.util@2.0.0 for a
+    requirement of test.util@1, even though the function surface looks
+    identical — major compatibility is decided by the declared contract,
+    not by structural similarity.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.wrongmajor@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      n: "int = 0"
+      doubled: { $view: "util.double(.n)" }
+      $public: {
+        stats: { $view: ".doubled" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "2.0.0"
+        interface_hash: "ih-util-2"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "#conformance"]
+    detail: "test.util@2.0.0 is not within the required major of test.util@1; loading is rejected"
+  }
+}

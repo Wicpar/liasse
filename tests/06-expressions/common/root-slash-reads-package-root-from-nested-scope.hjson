@@ -1,0 +1,37 @@
+{
+  format: 1
+  name: root-slash-reads-package-root-from-nested-scope
+  suite: scenario
+  spec: ["#expressions", "§6.2", "§5.2"]
+  note: "§6.2: '/' is the package root. A computed value inside a collection row reads root state through an absolute path; the result is deducible from the seeded values (3 * 5 = 15)."
+
+  package: {
+    $liasse: 1
+    $app: "t.roots@1.0.0"
+    $model: {
+      settings: {
+        rate: "int"
+      }
+      items: {
+        $key: "id"
+        id: "text"
+        qty: "int"
+        total: "= .qty * /settings.rate"
+      }
+      $public: {
+        items: { $view: ".items { id, total }" }
+      }
+    }
+    $data: {
+      settings: { rate: "5" }
+      items: {
+        a: { qty: "3" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.items", id: "w1",
+      expect_init: { value: [ { id: "a", total: "15" } ] } }
+  ]
+}

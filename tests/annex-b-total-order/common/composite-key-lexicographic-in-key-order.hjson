@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: composite-key-lexicographic-in-key-order
+  suite: scenario
+  spec: ["#annex-b", "§B.4", "§B.1", "§B.5"]
+  tags: ["ordering"]
+  note: '''
+    §B.4 composite key: "lexicographic components in $key order". With no
+    declared $sort the collection is key ascending (§B.5), so rows order by
+    the first key component, then the second, each using its own type order
+    (§B.1). Here $key is [region, city], both text: compare region first,
+    then city within a region. Seed key text uses ':' to join components in
+    $key order (D.2).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.compkey@1.0.0"
+    $model: {
+      offices: {
+        $key: ["region", "city"]
+        region: "text"
+        city: "text"
+      }
+      $public: {
+        all: { $view: ".offices { region, city }" }
+      }
+    }
+    $data: {
+      offices: {
+        "emea:Paris": {}
+        "amer:Lima": {}
+        "emea:Berlin": {}
+        "amer:Quito": {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.all", id: "w1",
+      expect_init: { value: [
+        { region: "amer", city: "Lima" }
+        { region: "amer", city: "Quito" }
+        { region: "emea", city: "Berlin" }
+        { region: "emea", city: "Paris" }
+      ] } }
+  ]
+}

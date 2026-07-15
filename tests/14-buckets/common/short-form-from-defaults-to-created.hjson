@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: short-form-from-defaults-to-created
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§22.5", "§22.6"]
+  tags: ["temporal"]
+  note: "The short form $bucket: '.expires_at' means { $from: '$created', $until: '.expires_at' }, and $created is the row's recorded admission time. The row is active at exactly its admission instant and not one microsecond before."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.created@1.0.0"
+    $model: {
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        expires_at: "timestamp"
+      }
+      $public: {
+        at: {
+          $params: { t: "timestamp" }
+          $view: ".sessions.$at(@t) { id }"
+        }
+        sessions: {
+          $mut: {
+            add: [
+              "s = .sessions + { expires_at: @expires_at }"
+              "return s { id }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // admission happens at the virtual start instant T0 = 2026-01-01T00:00:00Z,
+    // so $created == 1767225600000000 us; expires 2026-01-02T00:00:00Z
+    { call: "public.sessions.add", args: { expires_at: "1767312000000000" }
+      expect: { outcome: ok, value: { id: "$bind:s1" } } }
+
+    // $at(T0): active exactly at the recorded admission instant
+    { watch: "public.at", args: { t: "1767225600000000" }, id: "w1"
+      expect_init: { value: [ { id: "$ref:s1" } ] } }
+
+    // $at(T0 - 1us): not yet active one microsecond before admission
+    { watch: "public.at", args: { t: "1767225599999999" }, id: "w2"
+      expect_init: { value: [] } }
+  ]
+}

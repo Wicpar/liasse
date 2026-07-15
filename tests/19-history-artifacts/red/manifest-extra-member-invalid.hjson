@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: manifest-extra-member-invalid
+  suite: scenario
+  tags: [tampering]
+  // Attack: smuggle an extra top-level member into manifest.json (e.g. a
+  // side channel or a forward-compat probe). §19.5 closes the format:
+  // "Additional members are invalid for format version 1."
+  spec: ["§19.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    // manifest.json is not itself covered by an entries checksum, so no
+    // fix_checksums is needed: the only violated rule is the closed format.
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      { edit_json: { path: "manifest.json", pointer: "/vendor_extra",
+                     value: { note: "innocuous-looking extension" } } }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: invalid, violates: ["§19.5"],
+                  detail: "additional manifest member is invalid for format 1" } }
+    ] }
+  ]
+}

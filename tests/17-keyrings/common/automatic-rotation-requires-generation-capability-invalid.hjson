@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: automatic-rotation-requires-generation-capability-invalid
+  suite: static
+  spec: ["#keyrings", "§17.1", "§17.4", "§17.6"]
+  note: "§17.1: a duration $rotate is shorthand for automatic rotation. §17.4 step 1: automatic rotation requests a new provider key. §17.6: loading validates the provider's 'automatic generation or external binding mode'. This provider advertises binding only (generate:false), so it cannot supply the generated keys an automatic keyring requires, and loading is rejected with a capability diagnostic."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: false
+        bind: true
+        protection: "software"
+        external_keys: {
+          "ext1": { algorithm: "Ed25519" }
+        }
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§17.6", "§17.1"]
+    detail: "keyring uses automatic rotation but provider 'test-kp' does not advertise the automatic generation mode it requires"
+  }
+}

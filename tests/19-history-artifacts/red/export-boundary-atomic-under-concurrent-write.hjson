@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: export-boundary-atomic-under-concurrent-write
+  suite: scenario
+  tags: [ordering, concurrency]
+  // Race an export against a single mutation that inserts TWO rows in one
+  // atomic program. §19.7: an export selects ONE committed application
+  // boundary; later writes belong to a later boundary. §19.2: materialized
+  // history MUST reproduce the committed state. §22.2: the two inserts are
+  // one atomic admission. The restored artifact may therefore show the pair
+  // before or after the commit, but NEVER a torn half.
+  spec: ["§19.7", "§19.2", "§22.2"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+        put_pair: [
+          "a = .notes + { id: @id_a, body: @body }"
+          "b = .notes + { id: @id_b, body: @body }"
+          "return b { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put", put_pair: ".put_pair" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n0", body: "pre" },
+      expect: { outcome: ok, value: { id: "n0", body: "pre" } } }
+    { concurrently: [
+      [
+        { export: { as: "a1" }, expect: { outcome: ok } }
+      ]
+      [
+        { call: "public.notes.put_pair", args: { id_a: "pa", id_b: "pb", body: "pair" },
+          expect: { outcome: ok, value: { id: "pb", body: "pair" } } }
+      ]
+    ] }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1" }, expect: { outcome: ok } }
+      // Either serialization is valid; a torn pair is not.
+      { watch: "public.notes", id: "w1", expect_init_one_of: [
+        [
+          { id: "n0", body: "pre" }
+        ]
+        [
+          { id: "n0", body: "pre" }
+          { id: "pa", body: "pair" }
+          { id: "pb", body: "pair" }
+        ]
+      ] }
+    ] }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  format: 1
+  name: rename-field-via-from-copies-value
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.1: a target field MAY name its source with `$from`, and "Without `$as`,
+    the compatible value is copied." Version 2.0.0 renames `name` to `label`
+    via `$from: "name"` with no transform, so the seeded value "Alpha" is
+    copied verbatim into the renamed field. Major bump because the exposed
+    output member changes name (Annex E.5), which a migration is exactly for.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.rename@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        tasks: { $view: ".tasks { id, name }" }
+      }
+    }
+    $data: {
+      tasks: { a: { name: "Alpha" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1",
+      expect_init: { value: [ { id: "a", name: "Alpha" } ] } }
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.rename@2.0.0"
+          $model: {
+            tasks: {
+              $key: "id"
+              id: "text"
+              label: { $type: "text", $from: "name" }
+            }
+            $public: {
+              tasks: { $view: ".tasks { id, label }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.tasks", id: "w2",
+      expect_init: { value: [ { id: "a", label: "Alpha" } ] } }
+  ]
+}

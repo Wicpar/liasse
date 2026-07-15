@@ -1,0 +1,70 @@
+{
+  format: 1
+  name: sign-failure-rejects-mutation-without-effect
+  suite: scenario
+  tags: ["availability"]
+  spec: ["#keyrings", "§17.9", "§22.2", "#runtime"]
+  note: "§17.9: a provider failure before admission rejects the affected operation and commits no application effect. §22.2: a failure leaves the prior committed state intact. The login mutation inserts a session row before signing; when the sign operation fails, the whole mutation is rejected and no session row exists."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+        "revoked": "bool = false"
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+        "sessions": { "$view": "/sessions { revoked }" }
+      }
+    }
+    "$data": { "accounts": { "alice": { "name": "Alice" } } }
+  }
+
+  steps: [
+    { watch: "public.sessions", id: "w1", expect_init: { value: [] } }
+    { provider_set: { provider: "test-kp", fail: ["sign"] } }
+    { call: "public.login.login", args: { account: "alice" },
+      expect: { outcome: rejected, violates: ["§17.9"] } }
+    // No partial state: the session insert evaluated before the failing sign
+    // must not have been admitted.
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

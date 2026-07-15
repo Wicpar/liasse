@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: rekey-target-does-not-run-on-delete-cascade
+  suite: scenario
+  tags: [rekey, identity, cascade]
+  // Attack: rekeying a cascade-referenced row, hoping the key change is treated
+  // as a delete and cascades away the referencing rows (or, conversely, that the
+  // rekey severs the relationship). §5.4: assigning a new key performs an atomic
+  // rekey that updates every targeting ref and preserves incarnation; "$on_delete
+  // does not run." The token must survive and now expose the new visible key.
+  spec: ["§5.4", "§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+      }
+      tokens: {
+        $key: "id"
+        id: "text"
+        user: {
+          $ref: "/users"
+          $on_delete: "cascade"
+        }
+      }
+      $mut: {
+        rekey_user: ".users[@old].id = @new"
+      }
+      users_view: { $view: ".users { id, $sort: [id] }" }
+      tokens_view: { $view: ".tokens { id, user, $sort: [id] }" }
+      $public: {
+        users: { $view: ".users_view", $mut: { rekey: ".rekey_user" } }
+        tokens: { $view: ".tokens_view" }
+      }
+    }
+    $data: {
+      users: { u1: {} }
+      tokens: { t1: { user: "u1" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.users", id: "wu", expect_init: { value: [ { id: "u1" } ] } }
+    { watch: "public.tokens", id: "wt", expect_init: { value: [ { id: "t1", user: "u1" } ] } }
+    { call: "public.users.rekey", args: { old: "u1", new: "u2" }, expect: { outcome: ok, "...": true } }
+    // no cascade delete: token survives, ref now shows the rekeyed visible key
+    { expect_view: { watch: "wu", value: [ { id: "u2" } ] } }
+    { expect_view: { watch: "wt", value: [ { id: "t1", user: "u2" } ] } }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  // Attack: split a hostile double-insert across two statements hoping the
+  // first row survives when the second collides on a candidate key.
+  // §8.8: checks and constraints "reject the complete mutation before any
+  // partial effect becomes visible"; §22.2: a failure leaves the prior
+  // committed state intact. Nothing may be inserted.
+  format: 1
+  name: multi-statement-insert-atomic-on-unique-failure
+  suite: scenario
+  spec: ["#mutations", "§8.8", "§5.7", "§22.2"]
+  tags: ["atomicity"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.atomunique@1.0.0"
+    "$model": {
+      "users": {
+        "$key": "id"
+        "$unique": ["email"]
+        "id": "text"
+        "email": "text"
+      }
+      "$mut": {
+        "add_two": [
+          ".users + { id: @id1, email: @e1 }"
+          ".users + { id: @id2, email: @e2 }"
+        ]
+      }
+      "$public": {
+        "users": {
+          "$view": ".users { id, email }"
+          "$mut": { "add_two": ".add_two" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.users"
+      id: "w1"
+      expect_init: { value: [] }
+    }
+    {
+      call: "public.users.add_two"
+      args: { id1: "a", e1: "dup@x", id2: "b", e2: "dup@x" }
+      expect: {
+        outcome: rejected
+        violates: ["§5.7", "§8.8", "§22.2"]
+        detail: "the two prospective rows collide on the email candidate key"
+      }
+    }
+    {
+      // All-or-nothing: the first statement's row must not have leaked.
+      expect_view: { watch: "w1", value: [] }
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: sort-optional-descending-none-first
+  suite: scenario
+  spec: ["#views", "§7.3", "§B.2", "§A.1"]
+  note: "§7.3 and §B.2: descending optional order is 'none, then present values in reverse order.' §A.1: s2's omitted optional score is none, represented as an absent member. Descending by score gives the none row s2 first (score absent), then s1(2), then s3(1)."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewoptdesc@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        score: "int?"
+      }
+      $public: {
+        byscore: { $view: ".items { id, score, $sort: [-score] }" }
+      }
+    }
+    $data: {
+      items: {
+        s1: { score: "2" }
+        s2: {}
+        s3: { score: "1" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.byscore", id: "w1",
+      expect_init: { value: [
+        { id: "s2", score: "$absent" }
+        { id: "s1", score: "2" }
+        { id: "s3", score: "1" }
+      ] } }
+  ]
+}

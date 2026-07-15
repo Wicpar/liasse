@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: keyring-missing-algorithm-invalid
+  suite: static
+  spec: ["#keyrings", "§17.1", "§C.16"]
+  note: "Annex C.16 marks $provider and $algorithm as the only required keyring members ($usage?, $rotate?, $retain?, $protection? are optional). A declaration without $algorithm cannot select the algorithm §17.1 requires."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$rotate": "P30D"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§C.16", "§17.1"]
+    detail: "keyring declaration omits the required $algorithm member"
+  }
+}

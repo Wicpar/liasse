@@ -1,0 +1,88 @@
+{
+  format: 1
+  name: membership-revocation-race
+  suite: scenario
+  // Revocation race: one branch disables the actor's account while the other
+  // branch calls a role surface. §10.5: membership "is re-evaluated at
+  // admission. A role change therefore affects subsequent requests
+  // immediately in serial order." Either serialization is admissible for the
+  // racing call, but after both branches complete the revocation has
+  // certainly committed, so a subsequent call MUST be denied.
+  spec: ["#interfaces", "§10.5", "§10.3"]
+  tags: ["authz", "ordering", "race"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.revoke_race@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "enabled": "bool = true"
+      }
+      "notes": {
+        "$key": "id"
+        "id": "text"
+        "body": "text"
+      }
+      "$mut": {
+        "add_note": [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "token"
+          "$members": ".accounts[:a | a.enabled]"
+          "notes": {
+            "$view": ".notes { id, body }"
+            "$mut": { "add": ".add_note" }
+          }
+        }
+      }
+      "$public": {
+        "control": {
+          "$mut": {
+            "disable": "/accounts[@id].enabled = false"
+          }
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "member", auth: "token", credential: "alice" } }
+    { connect: "c2" }
+    { call: "member.notes.add", args: { id: "n1", body: "before" }, on: "c1",
+      expect: { outcome: ok, value: { id: "n1", body: "before" } } }
+    { concurrently: [
+      [
+        { call: "public.control.disable", args: { id: "alice" }, on: "c2",
+          expect: { outcome: ok } }
+      ]
+      [
+        // Serialized before the disable -> ok; after it -> denied.
+        { call: "member.notes.add", args: { id: "n2", body: "raced" }, on: "c1",
+          expect_one_of: [
+            { outcome: ok, value: { id: "n2", body: "raced" } }
+            { outcome: denied, violates: ["#interfaces"] }
+          ] }
+      ]
+    ] }
+    // Deterministic aftermath: the disable is committed, so membership fails.
+    { call: "member.notes.add", args: { id: "n3", body: "after" }, on: "c1",
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "revocation committed before this admission position" } }
+  ]
+}

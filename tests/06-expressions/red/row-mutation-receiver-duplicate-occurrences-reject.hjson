@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: row-mutation-receiver-duplicate-occurrences-reject
+  suite: scenario
+  spec: ["#expressions", "§6.3", "§10.1"]
+  tags: ["aliasing"]
+  note: "Attack: name the same key in both selector operands of a row-mutation receiver, hoping duplicate occurrences collapse and the call runs. §6.3: a row-mutation receiver 'MUST receive exactly one occurrence. Zero or several occurrences reject that evaluation' — and 'Selection preserves operand order and repeated keys', so [c1, c1] is two occurrences of one row and rejects. Incarnation deduplication is defined for mutation writes (bulk patches), not for one-row receiver contexts; contrast with patch-duplicate-selector-applies-once. When one operand misses (c1, zz) exactly one occurrence remains and the call succeeds."
+
+  package: {
+    $liasse: 1
+    $app: "t.dedup@1.0.0"
+    $model: {
+      counters: {
+        $key: "id"
+        id: "text"
+        n: "int"
+        $mut: {
+          bump: ".n = .n + 1"
+        }
+      }
+      $public: {
+        counters: {
+          $view: ".counters { id, n }"
+          $mut: { bump: ".counters[@a, @b].bump" }
+        }
+      }
+    }
+    $data: {
+      counters: {
+        c1: { n: "0" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.counters", id: "w1",
+      expect_init: { value: [ { id: "c1", n: "0" } ] } }
+    // two occurrences of the same row: reject, no state change
+    { call: "public.counters.bump", args: { a: "c1", b: "c1" },
+      expect: { outcome: "rejected", violates: ["#expressions"] } }
+    { expect_view: { watch: "w1", value: [ { id: "c1", n: "0" } ] } }
+    // one hit plus one miss: exactly one occurrence, the call succeeds
+    { call: "public.counters.bump", args: { a: "c1", b: "zz" },
+      expect: { outcome: "ok" } }
+    { expect_view: { watch: "w1", value: [ { id: "c1", n: "1" } ] } }
+  ]
+}

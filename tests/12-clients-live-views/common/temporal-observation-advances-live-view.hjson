@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: temporal-observation-advances-live-view
+  suite: scenario
+  spec: ["#clients", "#buckets", "#runtime"]
+  tags: ["temporal", "frontier"]
+  note: '''
+    §12.2: a frontier "covers committed application changes and temporal
+    bucket observations". §22.6: the runtime "MUST reflect the resulting
+    current logical view and emit a new live frontier" when a row leaves its
+    active interval. §14.1: the interval is half-open, so at and after
+    `$until` the row is no longer active. Advancing the virtual clock past the
+    row's `expires_at` must remove it from the live result without any commit.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.offers@1.0.0"
+    $model: {
+      offers: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "text"
+        expires_at: "timestamp"
+      }
+      $mut: {
+        add: ".offers + { id: @id, expires_at: @expires_at }"
+      }
+      active: {
+        $view: ".offers { id, $sort: [id] }"
+      }
+      $public: {
+        offers: {
+          $view: ".active"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Virtual clock starts at 2026-01-01T00:00:00Z; the offer is active
+    // until 2026-01-01T01:00:00Z.
+    {
+      call: "public.offers.add"
+      args: { id: "o1", expires_at: "2026-01-01T01:00:00Z" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    {
+      watch: "public.offers"
+      on: "c1"
+      id: "w1"
+      expect_init: { value: [ { id: "o1" } ] }
+    }
+    { advance_time: "PT2H" }
+    // The temporal observation removes the row from the active view and
+    // advances the subscription frontier; no commit is involved.
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

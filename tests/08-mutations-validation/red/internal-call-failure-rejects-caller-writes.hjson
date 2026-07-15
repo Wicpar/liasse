@@ -1,0 +1,63 @@
+{
+  // Attack: perform a privileged-looking write, then trip a failure inside a
+  // nested mutation call, hoping the outer write survives.
+  // §8.11: "Internal calls execute inside the same atomic program"; §8.8 and
+  // §22.2 reject the complete transition, including the caller's earlier
+  // statement effects.
+  format: 1
+  name: internal-call-failure-rejects-caller-writes
+  suite: scenario
+  spec: ["#mutations", "§8.11", "§8.8", "§22.2"]
+  tags: ["atomicity"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.nestedfail@1.0.0"
+    "$model": {
+      "locked": "bool = true"
+      "flags": {
+        "$key": "id"
+        "id": "text"
+        "armed": "bool = false"
+      }
+      "$mut": {
+        "fail_now": "assert(!.locked, 'locked')"
+        "outer": [
+          ".flags['f1'] { armed = true }"
+          ".fail_now()"
+        ]
+      }
+      "$public": {
+        "flags": {
+          "$view": ".flags { id, armed }"
+          "$mut": { "outer": ".outer" }
+        }
+      }
+    }
+    "$data": {
+      "locked": true
+      "flags": { "f1": {} }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.flags"
+      id: "w1"
+      expect_init: { value: [ { id: "f1", armed: false } ] }
+    }
+    {
+      call: "public.flags.outer"
+      args: {}
+      expect: {
+        outcome: rejected
+        violates: ["§8.8", "§8.11", "§22.2"]
+        detail: "assert failure inside the internal call rejects the whole program"
+      }
+    }
+    {
+      // The caller's earlier patch must not be visible.
+      expect_view: { watch: "w1", value: [ { id: "f1", armed: false } ] }
+    }
+  ]
+}

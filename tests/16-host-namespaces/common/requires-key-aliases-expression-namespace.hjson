@@ -1,0 +1,46 @@
+{
+  format: 1
+  name: requires-key-aliases-expression-namespace
+  suite: static
+  spec: ["#host-namespaces"]
+  note: '''
+    §16.2: "The local key is the expression namespace. The value identifies
+    the semantic contract and compatible major." The local key is therefore
+    an application-chosen alias, independent of the contract name: this
+    package binds the contract test.util@1 under the local namespace
+    "codec", and its expressions call codec.double. Nothing requires the
+    key to echo the contract name.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.aliaskey@1.0.0"
+    $requires: {
+      codec: "test.util@1"
+    }
+    $model: {
+      n: "int = 0"
+      doubled: { $view: "codec.double(.n)" }
+      $public: {
+        stats: { $view: ".doubled" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: ok
+  }
+}

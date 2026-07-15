@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: same-content-different-metadata-distinct-descriptors
+  suite: scenario
+  spec: ["#blobs", "§18.1", "§B.4"]
+  tags: ["blob", "identity"]
+  note: '''
+    §18.1: "The complete descriptor is the application value: two descriptors
+    MAY name the same content while carrying different media or filename
+    metadata." Annex B.4: descriptor ordering/equality include the complete
+    descriptor; only $sha512 is content identity. Two uploads of identical
+    bytes with different $name share one $sha512 yet are distinct descriptor
+    values.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.distinct@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id, sha: .file.$sha512, name: .file.$name }"
+        ]
+      }
+      $public: { docs: { $mut: { add: ".add" } } }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "shared bytes"
+        media: "text/plain"
+        name: "first.txt"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: { id: "d1", sha: "$bind:h", name: "first.txt" } } }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d2" }
+        content: "shared bytes"
+        media: "text/plain"
+        name: "second.txt"
+        on: "c1"
+      }
+      // Identical content -> identical $sha512; different $name -> distinct value.
+      expect: { outcome: ok, value: { id: "d2", sha: "$ref:h", name: "second.txt" } } }
+  ]
+}
+</content>

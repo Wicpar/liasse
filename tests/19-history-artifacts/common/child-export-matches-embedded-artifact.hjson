@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: child-export-matches-embedded-artifact
+  suite: scenario
+  // §19.7: "Exporting one child produces the same artifact found inside the
+  // parent export." Byte layout may differ (§19.10), so equality is asserted
+  // on the identity-bearing manifest content: instance incarnation, selected
+  // lineage/point, and definition identity.
+  spec: ["§19.7", "§19.10", "§19.5"]
+
+  packages: {
+    parent: {
+      $liasse: 1
+      $app: "t.parenthist@1.0.0"
+      $model: {
+        mods: { $modules: {} }
+      }
+    }
+    child: {
+      $liasse: 1
+      $module: "t.childnotes@1.0.0"
+      $model: {
+        items: {
+          $key: "id"
+          id: "text"
+          body: "text"
+        }
+      }
+      $data: {
+        items: { i1: { body: "seed" } }
+      }
+    }
+  }
+  root: parent
+
+  steps: [
+    { install_module: { space: "mods", name: "m1", module: "t.childnotes@1.0.0" },
+      expect: { outcome: ok } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { extract_artifact: { from: "a1", entry: "modules/*.liasse", as: "a_embedded" } }
+    { inspect_artifact: { artifact: "a_embedded", expect: {
+        outcome: ok
+        manifest: {
+          instance: "$bind:ci"
+          selected: { lineage: "$bind:cl", point: "$bind:cp" }
+          definition: { identity: "$bind:cd", "...": true }
+          "...": true
+        }
+    } } }
+    // Standalone export of the same child instance.
+    { export: { as: "a_child", instance: "mods/m1" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a_child", expect: {
+        outcome: ok
+        manifest: {
+          instance: "$ref:ci"
+          selected: { lineage: "$ref:cl", point: "$ref:cp" }
+          definition: { identity: "$ref:cd", "...": true }
+          "...": true
+        }
+    } } }
+  ]
+}

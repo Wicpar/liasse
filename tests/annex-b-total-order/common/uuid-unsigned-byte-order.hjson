@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: uuid-unsigned-byte-order
+  suite: scenario
+  spec: ["#annex-b", "§B.1", "§B.5", "§A.1"]
+  tags: ["ordering"]
+  note: '''
+    §B.1 uuid: ascending order is the unsigned lexicographic order of its 16
+    bytes. With no declared $sort the uuid-keyed collection is key ascending
+    (§B.5). The four keys differ only in their first byte: 0x00, 0x0f, 0xf0,
+    0xff. Unsigned order is 00 < 0f < f0 < ff. This also happens to equal the
+    lexicographic order of the lowercase hyphenated text form (A.1), which is
+    intended: text hex order and unsigned byte order agree for uuids. The
+    signed-byte misreading (which would place f0, ff first) is exercised in
+    the red suite via `bytes`.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.uuid@1.0.0"
+    $model: {
+      handles: {
+        $key: "id"
+        id: "uuid"
+      }
+      $public: {
+        all: { $view: ".handles { id }" }
+      }
+    }
+    $data: {
+      handles: {
+        "ff000000-0000-0000-0000-000000000000": {}
+        "0f000000-0000-0000-0000-000000000000": {}
+        "f0000000-0000-0000-0000-000000000000": {}
+        "00000000-0000-0000-0000-000000000000": {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.all", id: "w1",
+      expect_init: { value: [
+        { id: "00000000-0000-0000-0000-000000000000" }
+        { id: "0f000000-0000-0000-0000-000000000000" }
+        { id: "f0000000-0000-0000-0000-000000000000" }
+        { id: "ff000000-0000-0000-0000-000000000000" }
+      ] } }
+  ]
+}

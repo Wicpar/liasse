@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: public-surface-admits-unauthenticated-calls
+  suite: scenario
+  // §10.2: "A public surface is callable without an authenticated actor."
+  // §10.1: a $mut value naming a declared mutation exposes that mutation under
+  // the map key; $view defines the surface read result.
+  spec: ["#interfaces", "§10.1", "§10.2"]
+  tags: ["public"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.pub_open@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+        "done": "bool = false"
+      }
+      "$mut": {
+        "add_task": [
+          "task = .tasks + { id: @id, title: @title }"
+          "return task { id, title, done }"
+        ]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks[:t | !t.done] { id, title }"
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+    "$data": {
+      "tasks": { "t0": { "title": "Seeded" } }
+    }
+  }
+
+  steps: [
+    // No authenticate step anywhere: both the watch and the call are
+    // unauthenticated public operations.
+    { watch: "public.tasks", id: "w1",
+      expect_init: { value: [ { id: "t0", title: "Seeded" } ] } }
+    { call: "public.tasks.add", args: { id: "t1", title: "Unauthenticated" },
+      expect: { outcome: ok, value: { id: "t1", title: "Unauthenticated", done: false } } }
+    { expect_view: { watch: "w1", value: { $unordered: [
+        { id: "t0", title: "Seeded" }
+        { id: "t1", title: "Unauthenticated" }
+      ] } } }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  format: 1
+  name: uninstall-unbinds-optional-peer
+  suite: scenario
+  spec: ["#modules", "§13.5", "§13.7", "§13.12"]
+  note: '''
+    §13.12: uninstall removes the instance, its peer availability, and its
+    owned subtree through the ordinary cross-module deletion plan. §13.5 and
+    §13.7: an optional handle whose target disappears leaves the consumer
+    valid; has(#billing) then evaluates to false while the consumer's
+    private data remains in place.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "summary": { "$view": { "$key": "id", "id": "text" } }
+                "flags": { "$view": { "$key": "id", "id": "text", "billed": "bool" } }
+              }
+            }
+          }
+        }
+        "$public": {
+          "flags": { "$view": '/companies["acme"].modules["report"]::flags' }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    billing: {
+      "$liasse": 1
+      "$module": "t.billing@1.0.0"
+      "$model": {
+        "bills": { "$key": "id", "id": "text" }
+      }
+      "$expose": {
+        "summary": { "$view": ".bills { id }" }
+      }
+    }
+    report: {
+      "$liasse": 1
+      "$module": "t.report@1.0.0"
+      "$use": {
+        "$optional": {
+          "billing": "t.billing/summary@1"
+        }
+      }
+      "$model": {
+        "flags": { "$key": "id", "id": "text" }
+      }
+      "$data": { "flags": { "f1": {} } }
+      "$expose": {
+        "flags": { "$view": ".flags { id, billed: has(#billing) }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "billing", "$module": "t.billing@1.0.0" } }
+      expect: { outcome: ok } }
+    // single candidate: the optional handle binds at install
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "report", "$module": "t.report@1.0.0" } }
+      expect: { outcome: ok } }
+    { watch: "public.flags", id: "w1"
+      expect_init: { value: [ { id: "f1", billed: true } ] } }
+    // no refs and only an optional binding target: uninstall is unobstructed
+    { module_uninstall: { instance: "/companies/acme/modules/billing" }
+      expect: { outcome: ok } }
+    // the consumer stays installed with its private data; the handle is now absent
+    { expect_view: { watch: "w1", value: [ { id: "f1", billed: false } ] } }
+  ]
+}

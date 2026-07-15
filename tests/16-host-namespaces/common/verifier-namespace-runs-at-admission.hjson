@@ -1,0 +1,80 @@
+{
+  format: 1
+  name: verifier-namespace-runs-at-admission
+  suite: scenario
+  spec: ["#host-namespaces", "#authentication"]
+  tags: ["authz"]
+  note: '''
+    §16.3: a verifier validates untrusted input against declared
+    keys/configuration and returns a typed proof or diagnostic; verifiers
+    run during external request admission. §11.3: $verify MAY use a
+    registered verifier namespace; $proof is its typed result and $actor
+    must resolve exactly one row. The simulated verifier (op: accept, see
+    NOTES.md) accepts exactly the credential "good-credential" and returns
+    the proof { account: "a1" }; any other credential yields a verification
+    diagnostic, so authentication is denied.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.verifier@1.0.0"
+    $requires: {
+      authns: "test.auth@1"
+    }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "authns.check($credential)"
+          $actor: "/accounts[$proof.account]"
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: "/accounts"
+          me: { $view: "$actor { id, name }" }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        a1: { name: "Ada" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.auth"
+        version: "1.0.0"
+        interface_hash: "ih-auth-1"
+        functions: {
+          check: {
+            signature: "(text) -> { account: text }"
+            effect: "verifier"
+            op: "accept"
+            accepts: { "good-credential": { account: "a1" } }
+          }
+        }
+      }
+    ]
+  }
+
+  steps: [
+    { connect: "c1"
+      authenticate: { role: "member", auth: "token", credential: "good-credential" }
+      expect: { outcome: "ok" } }
+    { watch: "member.me", on: "c1", id: "w1",
+      expect_init: { value: { id: "a1", name: "Ada" } } }
+    { connect: "c2"
+      authenticate: { role: "member", auth: "token", credential: "forged-credential" }
+      expect: { outcome: "denied", violates: ["#authentication", "#host-namespaces"] } }
+  ]
+}

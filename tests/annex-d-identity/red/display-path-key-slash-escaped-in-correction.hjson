@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: display-path-key-slash-escaped-in-correction
+  suite: scenario
+  spec: ["§D.3", "§D.2", "§19.9"]
+  tags: ["identity", "paths"]
+  note: '''§D.3: a display path alternates declaration-name segments and canonical
+local key-text segments, and "Key segments use the scalar-component encoding above
+before composite joining." The row key here is the text "a/b"; its key segment must
+appear as "a%2Fb" so the `/` inside the key cannot be confused with the `/` that
+separates path segments. The correction of §19.9 addresses a conflicted coordinate
+by display path, so the escaped path "/notes/a%2Fb/body" identifies exactly this
+row's body. Attack: an author chooses a key containing the path separator, hoping
+the correction misparses "/notes/a/b/body" as some nested "b" under "a" (or fails
+to address the row at all). The escaped display path must resolve the intended
+row.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.dpath@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+        set_body: [
+          ".notes[@id].body = @body"
+          "return .notes[@id] { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put", set_body: ".set_body" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // a key that literally contains the path separator
+    { call: "public.notes.put", args: { id: "a/b", body: "start" },
+      expect: { outcome: ok, value: { id: "a/b", body: "start" } } }
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a0" }, expect: { outcome: ok } }
+      { call: "public.notes.set_body", args: { id: "a/b", body: "incoming-edit" },
+        expect: { outcome: ok, value: { id: "a/b", body: "incoming-edit" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    // divergent local edit to the same coordinate -> merge conflict
+    { call: "public.notes.set_body", args: { id: "a/b", body: "local-edit" },
+      expect: { outcome: ok, value: { id: "a/b", body: "local-edit" } } }
+    { reconcile: { from: "a2", policy: ["merge"], bind_plan: "r1" },
+      expect: { outcome: ok, value: {
+        relation: "merge", applied: false, conflicts: "$any", "...": true } } }
+    // the escaped display path addresses exactly the "a/b" row's body
+    { apply_correction: { plan: "r1", choose: { "/notes/a%2Fb/body": "incoming" } },
+      expect: { outcome: ok, value: { applied: true, "...": true } } }
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "a/b", body: "incoming-edit" }
+    ] } }
+  ]
+}

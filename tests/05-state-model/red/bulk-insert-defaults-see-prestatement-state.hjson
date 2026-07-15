@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: bulk-insert-defaults-see-prestatement-state
+  suite: scenario
+  spec: ["#state-model", "§5.1", "§8.7", "§B.5"]
+  tags: ["ordering"]
+  note: '''Pedantic corner: sequence-number defaults during bulk insertion. §5.1: 'External
+reads made by a default observe the transaction state produced by preceding mutation
+statements. Rows created by one bulk insertion statement become selectable together
+only after every row in that statement has resolved.' So both rows of one bulk insert
+compute count(/items) = 0 and get pos = 1 (an implementation resolving rows serially
+would produce 1 and 2 — wrong). A later single-statement insert observes both committed
+rows and gets pos = 3.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.bulkdefaults@1.0.0"
+    $model: {
+      staging: {
+        $key: "name"
+        name: "text"
+      }
+      items: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        pos: "int = count(/items) + 1"
+      }
+      $mut: {
+        bulk: ".items + .staging { id: .name, name: .name }"
+        add_one: ".items + { id: @id, name: @name }"
+      }
+      $public: {
+        items: {
+          $view: ".items { name, pos }"
+          $mut: {
+            bulk: ".bulk"
+            add_one: ".add_one"
+          }
+        }
+      }
+    }
+    $data: {
+      staging: {
+        x: {}
+        y: {}
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.items.bulk", args: {}, expect: { outcome: "ok" } }
+    // one statement: neither inserted row may observe its sibling
+    { watch: "public.items", id: "w1", expect_init: { value: [
+      { name: "x", pos: 1 }
+      { name: "y", pos: 1 }
+    ] } }
+    // separate statement in a later request observes both prior rows
+    { call: "public.items.add_one", args: { id: "z", name: "z" }, expect: { outcome: "ok" } }
+    { expect_view: { watch: "w1", value: [
+      { name: "x", pos: 1 }
+      { name: "y", pos: 1 }
+      { name: "z", pos: 3 }
+    ] } }
+  ]
+}

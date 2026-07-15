@@ -1,0 +1,60 @@
+{
+  // §22.2: "The engine evaluates its statements in order against a prospective
+  // state and admits the complete result once every applicable guarantee
+  // succeeds. A failure leaves the prior committed state intact." The mutation
+  // writes `last_attempt` and decrements `balance` BEFORE the assert that
+  // fails; both earlier writes must be discarded, not just the assert.
+  format: 1
+  name: atomic-admission-failed-check-rolls-back
+  suite: scenario
+  spec: ["§22.2", "#runtime", "#mutations"]
+  tags: ["atomicity"]
+
+  package: {
+    $liasse: 1
+    $app: "t.rollback@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        balance: "int"
+        last_attempt: "int"
+        $mut: {
+          charge: [
+            ".last_attempt = @amount"
+            ".balance = .balance - @amount"
+            "assert(.balance >= 0, 'overdraft')"
+          ]
+        }
+      }
+      $public: {
+        account: {
+          $view: ".accounts { id, balance, last_attempt }"
+          $mut: { charge: ".accounts[@id].charge" }
+        }
+      }
+    }
+    $data: {
+      accounts: { "a1": { balance: "100", last_attempt: "0" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      // 100 - 150 = -50 fails the assert; the whole program is rejected.
+      call: "public.account.charge"
+      args: { id: "a1", amount: "150" }
+      on: "c1"
+      expect: { outcome: rejected, violates: ["§22.2"] }
+    }
+    {
+      // Prior committed state intact: neither the decrement nor the
+      // `last_attempt` write survived.
+      watch: "public.account"
+      on: "c1"
+      id: "w1"
+      expect_init: { value: [ { id: "a1", balance: "100", last_attempt: "0" } ] }
+    }
+  ]
+}

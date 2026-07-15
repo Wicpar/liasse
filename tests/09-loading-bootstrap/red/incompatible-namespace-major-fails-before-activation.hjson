@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: incompatible-namespace-major-fails-before-activation
+  suite: static
+  spec: ["#host-namespaces", "#conformance", "#loading"]
+  tags: ["hosts"]
+  note: '''
+    Exact-boundary probe on host-component compatibility: the context DOES
+    register the required expression namespace, but implementing major 2 of
+    the contract while the package pins major 1. §16.2: the requirement value
+    "identifies the semantic contract and compatible major" and "Missing,
+    incompatible, or ambiguous requirements reject loading before the package
+    becomes active"; §2.1: an incompatible component "fails validation before
+    activation". A name-only resolver that ignores the contract major would
+    wrongly activate against incompatible semantics.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.nsmajor@1.0.0"
+    "$requires": {
+      "password": "liasse.password@1"
+    }
+    "$model": {
+      "items": {
+        "$key": "id"
+        "id": "text"
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: {
+      "password": "liasse.password@2.0.0"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "#conformance"]
+    detail: "registered contract liasse.password@2.0.0 does not satisfy the required compatible major 1"
+  }
+}

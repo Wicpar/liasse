@@ -1,0 +1,105 @@
+{
+  format: 1
+  name: member-token-cannot-reach-admin-surface-denied
+  suite: scenario
+  spec: ["#authentication", "§11.3", "#interfaces", "§10.3"]
+  tags: ["authz", "escalation"]
+  note: '''
+    §10.3: "$members decides whether that row holds the role at the request's
+    admission position. ... The actor holds the role when its exact row
+    identity occurs at least once in the resulting view." Alice's session
+    authenticates fully and her actor resolves, but the admin role's $members
+    ".accounts[:a | a.admin]" does not contain her row, so an admin surface is
+    denied. Holding a valid credential for one role grants no other role.
+  '''
+
+  // Attack: vertical privilege escalation. Alice has a genuine, active,
+  // unrevoked member session. Both roles accept the same "session"
+  // authenticator, so the credential verifies against admin too — only the
+  // per-role $members membership stands between her and the admin surface.
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.admin@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+        admin: "bool = false"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      $mut: {
+        disable_account: [
+          ".accounts[@account] { enabled = false }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          me: {
+            $view: ".accounts[:a | a == $actor] { id, name }"
+          }
+        }
+        admin: {
+          $auth: "session"
+          $members: ".accounts[:a | a.admin]"
+          accounts: {
+            $mut: { disable: ".disable_account" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+        "bbbbbbbb-0000-4000-8000-000000000002": { name: "victim" }
+      }
+      sessions: {
+        "5e551000-0000-4000-8000-000000000001": {
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "5e551000-0000-4000-8000-000000000001" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Alice (member, admin=false) aims her valid session at the admin surface.
+    { call: "admin.accounts.disable", args: { account: "bbbbbbbb-0000-4000-8000-000000000002" }, on: "c1",
+      auth: { auth: "session", credential: "tok-alice" },
+      expect: { outcome: denied, violates: ["#interfaces", "#authentication"] } }
+  ]
+}

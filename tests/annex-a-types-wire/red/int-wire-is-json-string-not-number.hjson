@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: int-wire-is-json-string-not-number
+  suite: scenario
+  spec: ["§A.1"]
+  tags: ["wire", "int", "boundary"]
+  note: '''Attack: a small int (7) is well within IEEE-754 exact range, so a lazy
+implementation emits the bare JSON number 7 "because it fits". That silently changes
+the wire type and destroys the precision guarantee for the large values that do not fit
+(2^53+1, etc.): a client that once saw a number keeps parsing this field as a number.
+Annex A.1 pins ONE canonical form for every int regardless of magnitude — a 'JSON
+string with canonical base-10 digits'. The small value MUST still be the JSON string
+"7". The value is computed (3 + 4) so the expectation is not an echo of input.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.intstr@1.0.0"
+    $model: {
+      a: "int"
+      b: "int"
+      sum: "= .a + .b"
+      $public: {
+        v: { $view: ". { sum }" }
+      }
+    }
+    $data: {
+      a: "3"
+      b: "4"
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { sum: "7" } } }
+  ]
+}

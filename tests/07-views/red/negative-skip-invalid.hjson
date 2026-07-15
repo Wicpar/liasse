@@ -1,0 +1,28 @@
+{
+  format: 1
+  name: negative-skip-invalid
+  suite: static
+  spec: ["#views", "§7.3"]
+  tags: ["boundary"]
+  note: "Attack: a negative $skip, hoping it is silently clamped to 0 or wraps to select from the end. §7.3: '$skip discards the first non-negative number of rows.' A negative bound is not a non-negative number, so the view declaration is statically invalid."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewnegskip@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      $public: {
+        page: { $view: ".items { id, $skip: -1 }" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#views"]
+    detail: "$skip must be a non-negative number; -1 is invalid"
+  }
+}

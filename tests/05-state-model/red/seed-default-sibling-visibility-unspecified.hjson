@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: seed-default-sibling-visibility-unspecified
+  suite: scenario
+  spec: ["#state-model", "§5.1", "§9.1"]
+  tags: ["ordering"]
+  note: '''Genuine spec ambiguity. §5.1 says rows of one bulk insertion 'become selectable
+together only after every row in that statement has resolved' and that seed rows 'pass
+through the same defaults ... rules as mutation inserts' (§9.1) — under that reading a
+seed-time default `count(/items) + 1` sees 0 rows and both rows get pos = 1. But §9.1
+also says 'All seeded row identities and supplied values form one prospective state
+before defaults resolve' — under that reading count(/items) sees both seeded rows and
+each gets pos = 3. Note that §9.1's order-independence rule ('source-object member
+order and field order have no semantic effect') rules out the serial answer (1, 2)
+either way, but the spec does not pin (1, 1) versus (3, 3). Recorded as unspecified.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.seeddefaults@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        pos: "int = count(/items) + 1"
+      }
+      $public: {
+        items: {
+          $view: ".items { id, pos }"
+        }
+      }
+    }
+    $data: {
+      items: {
+        a: {}
+        b: {}
+      }
+    }
+  }
+
+  steps: [
+    // the load succeeds; the pos values it produced are not pinned by the spec
+    { watch: "public.items", id: "w1", expect_init: { outcome: "unspecified" } }
+  ]
+}

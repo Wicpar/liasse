@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: confusable-from-source-name-nonexistent-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.1", "§2.5", "#loading", "§9.4"]
+  note: '''
+    Identity confusion via a Unicode confusable in `$from`. The source field is
+    the ASCII "name" (n, a=U+0061, m, e). The target's `$from` value is
+    "nаme" where the second character is CYRILLIC SMALL LETTER A (U+0430),
+    not Latin a. §2.5 requires declaration names to be ASCII letters/digits/_,
+    so no source field is actually named with the Cyrillic letter: `$from`
+    resolves to no existing old field. The required target field `label` gets
+    no compatible copy, no valid `$from` mapping, and no default, so the
+    prospective state has an unpopulated required field and the update is
+    rejected. The attacker's confusable does NOT alias the real "name".
+
+    (Whether an implementation reports this as a static bad-reference `invalid`
+    or a prospective-state `rejected` is the ch. 9 invalid/rejected split; the
+    non-ok lifecycle result is not in doubt. Recorded as `rejected` because a
+    conforming reading treats the unresolved copy as a state-population gap.)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.confuse@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        items: { $view: ".items { id, name }" }
+      }
+    }
+    $data: {
+      items: { i1: { name: "real" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.confuse@2.0.0"
+          $model: {
+            items: {
+              $key: "id"
+              id: "text"
+              // "nаme": the 'а' is Cyrillic U+0430, so this names no real field
+              label: { $type: "text", $from: "nаme" }
+            }
+            $public: {
+              items: { $view: ".items { id, label }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.1", "§2.5"]
+        detail: "$from 'nаme' (Cyrillic а U+0430) matches no ASCII source field; required 'label' is unpopulated in the prospective state"
+      } }
+    { watch: "public.items", id: "w1",
+      expect_init: { value: [ { id: "i1", name: "real" } ] } }
+  ]
+}

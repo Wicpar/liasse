@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: minor-update-narrowing-despite-migration-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.3", "annex-e", "§E.4"]
+  note: '''
+    §20.3: "Within one package major, minor and patch releases MUST preserve or
+    widen the compatibility surface. Breaking changes use a new major." The
+    attacker attaches a harmless `$from` migration to a 1.1.0 release that
+    ALSO drops the exposed public mutation `rename` — hoping the migration
+    machinery distracts the compatibility checker. Removing an exposed mutation
+    is narrowing (Annex E.4 "removing ... a mutation name" / E.7). A migration
+    cannot launder a boundary narrowing into a minor: the update is rejected
+    and 1.0.0 stays active, still serving `rename`.
+
+    Classified `invalid`: the narrowing is decidable from the two definitions
+    alone with no state (ch. 9 mapping in NOTES.md). Neighboring chapter 13
+    records the analogous §13.14 case as `rejected`; both collapse to the §9.4
+    `rejected` lifecycle result.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.narrow@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, name }"
+          $mut: {
+            rename: [
+              ".tasks[@id].name = @name"
+              "return .tasks[@id] { id, name }"
+            ]
+          }
+        }
+      }
+    }
+    $data: {
+      tasks: { t1: { name: "Alpha" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.narrow@1.1.0"
+          $model: {
+            tasks: {
+              $key: "id"
+              id: "text"
+              // harmless renamed-internal field with a migration mapping
+              label: { $type: "text", $from: "name" }
+            }
+            $public: {
+              // NARROWING: the exposed `rename` mutation is gone
+              tasks: { $view: ".tasks { id, label }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: invalid
+        violates: ["§20.3", "§E.4"]
+        detail: "1.1.0 removes exposed mutation public.tasks.rename; a minor release may not narrow the boundary, migration notwithstanding"
+      } }
+    // 1.0.0 remains active and still serves the exposed mutation
+    { call: "public.tasks.rename", args: { id: "t1", name: "Beta" },
+      expect: { outcome: ok, value: { id: "t1", name: "Beta" } } }
+  ]
+}

@@ -1,0 +1,22 @@
+{
+  format: 1
+  name: empty-declaration-name-rejected
+  suite: static
+  spec: ["#conformance", "§2.5"]
+  tags: ["boundary"]
+  note: "Exact lower boundary of the name grammar: the empty string has no first character, so it cannot 'begin with an ASCII letter' (§2.5). Empty member names are legal JSON, so only the Liasse name rule stands between this and a nameless declaration reachable by no display path."
+
+  package: {
+    $liasse: 1
+    $app: "t.empty@1.0.0"
+    $model: {
+      "": "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance", "§2.5"]
+    detail: "empty declaration name does not begin with an ASCII letter"
+  }
+}

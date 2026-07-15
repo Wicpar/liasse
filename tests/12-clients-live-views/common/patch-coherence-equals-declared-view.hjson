@@ -1,0 +1,100 @@
+{
+  format: 1
+  name: patch-coherence-equals-declared-view
+  suite: scenario
+  spec: ["#clients", "#views"]
+  tags: ["coherence", "ordering"]
+  note: '''
+    §12.2: "After applying every operation, the client result MUST equal the
+    authorized declared view at the new frontier." The scenario drives inserts,
+    a sort-position-changing update, and a delete, asserting the client result
+    equals the declared sorted projection after each commit. The concrete patch
+    operations (insert/move/update/remove) are the runtime's choice; only the
+    resulting equality is normative.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+        rename: ".tasks[@id].title = @title"
+        remove: ".tasks - @id"
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+            rename: ".rename"
+            remove: ".remove"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    {
+      call: "public.tasks.add"
+      args: { title: "m" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$bind:t1", title: "m" } }
+    }
+    { expect_view: { watch: "w1", value: [ { id: "$ref:t1", title: "m" } ] } }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$bind:t2", title: "a" } }
+    }
+    // New row sorts before the existing one.
+    {
+      expect_view: {
+        watch: "w1"
+        value: [
+          { id: "$ref:t2", title: "a" }
+          { id: "$ref:t1", title: "m" }
+        ]
+      }
+    }
+    // Update that changes the sort position: "m" -> "z" moves t1 after t2
+    // stays, i.e. the result must re-order, not merely re-value.
+    {
+      call: "public.tasks.rename"
+      args: { id: "$ref:t1", title: "z" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    {
+      expect_view: {
+        watch: "w1"
+        value: [
+          { id: "$ref:t2", title: "a" }
+          { id: "$ref:t1", title: "z" }
+        ]
+      }
+    }
+    {
+      call: "public.tasks.remove"
+      args: { id: "$ref:t2" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    { expect_view: { watch: "w1", value: [ { id: "$ref:t1", title: "z" } ] } }
+  ]
+}

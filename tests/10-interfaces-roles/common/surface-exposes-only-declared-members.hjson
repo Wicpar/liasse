@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: surface-exposes-only-declared-members
+  suite: scenario
+  // §10.1: "$view defines its read result, and $mut maps external call names
+  // to mutation behavior." A surface without $mut exposes no call names; a
+  // surface without $view exposes no read result. §10.4: "A surface grants
+  // named access to package-defined expressions" — no declaration, no grant.
+  spec: ["#interfaces", "§10.1", "§10.4"]
+  tags: ["exposure"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.exposure@1.0.0"
+    "$model": {
+      "products": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "pings": "int = 0"
+      "$public": {
+        // View-only surface: no callable names exist under it.
+        "catalog": {
+          "$view": ".products { id, name }"
+        }
+        // Mutation-only surface: it has no read result to watch.
+        "actions": {
+          "$mut": {
+            "ping": [
+              ".pings = .pings + 1"
+              "return .pings"
+            ]
+          }
+        }
+      }
+    }
+    "$data": {
+      "products": { "p1": { "name": "Widget" } }
+    }
+  }
+
+  steps: [
+    // Calling any name under a view-only surface fails: no $mut map exists.
+    { call: "public.catalog.buy", args: {},
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "surface declares no mutations" } }
+    // Watching a mutation-only surface fails: no $view exists.
+    { watch: "public.actions", id: "w-bad",
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "surface declares no view" } }
+    // Controls: the declared members work.
+    { watch: "public.catalog", id: "w1",
+      expect_init: { value: [ { id: "p1", name: "Widget" } ] } }
+    { call: "public.actions.ping", args: {},
+      expect: { outcome: ok, value: 1 } }
+  ]
+}

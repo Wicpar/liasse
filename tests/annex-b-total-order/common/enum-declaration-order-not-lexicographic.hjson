@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: enum-declaration-order-not-lexicographic
+  suite: scenario
+  spec: ["#annex-b", "§B.1"]
+  tags: ["ordering"]
+  note: '''
+    §B.1 enum: ascending order is declaration order, not label text order.
+    The enum is declared low < medium < high. Sorting ascending must yield
+    low, medium, high. Two wrong strategies are ruled out: a text sorter over
+    the labels (A.1 enum wire is the label string) would emit high, low,
+    medium; an insertion-order pass over the scrambled seed would emit
+    high, low, medium as well. The `label` key breaks ties within one level.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.enum@1.0.0"
+    $model: {
+      alerts: {
+        $key: "id"
+        id: "text"
+        level: { $enum: ["low", "medium", "high"] }
+      }
+      $public: {
+        by_level: { $view: ".alerts { id, level, $sort: [level, id] }" }
+      }
+    }
+    $data: {
+      alerts: {
+        a: { level: "high" }
+        b: { level: "low" }
+        c: { level: "medium" }
+        d: { level: "high" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_level", id: "w1",
+      expect_init: { value: [
+        { id: "b", level: "low" }
+        { id: "c", level: "medium" }
+        { id: "a", level: "high" }
+        { id: "d", level: "high" }
+      ] } }
+  ]
+}

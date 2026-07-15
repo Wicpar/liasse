@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: w1-operation-id-reuse-different-args-rejected
+  suite: scenario
+  spec: ["W1", "#clients", "§12.3"]
+  tags: [replay, tampering]
+  note: '''
+    Tampering on a deduplicated call. §12.3: "Reusing it with different request
+    metadata rejects the call." After committing add{ title: "first" } under
+    operation id op-9c1, a second call reuses op-9c1 but changes the payload to
+    { title: "second" }. That mismatch must reject; only the original task
+    exists afterwards.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.tasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: {
+          $type: "text"
+          $normalize: "string.trim(.)"
+          $check: ["size(.) > 0", "A title is required"]
+        }
+        done: "bool = false"
+        created_at: "timestamp = now()"
+        $mut: {
+          complete: [
+            ".done = true"
+            "return . { id, title, done, created_at }"
+          ]
+        }
+      }
+      $mut: {
+        add_task: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title, done, created_at }"
+        ]
+      }
+      open_tasks: {
+        $view: ".tasks[:task | !task.done] { id, title, created_at, $sort: [-created_at] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".open_tasks"
+          $mut: {
+            add: ".add_task"
+            complete: ".tasks[@id].complete()"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tasks.add", args: { title: "first" }, operation_id: "op-9c1", expect: { outcome: ok } }
+    { call: "public.tasks.add", args: { title: "second" }, operation_id: "op-9c1"
+      expect: { outcome: rejected, violates: ["§12.3"], detail: "operation id reused with different request metadata" } }
+    { watch: "public.tasks", id: "w1", expect_init: { value: [ { id: "$any:uuid", title: "first", created_at: "$any:timestamp" } ] } }
+  ]
+}

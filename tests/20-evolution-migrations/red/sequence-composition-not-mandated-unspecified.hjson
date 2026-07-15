@@ -1,0 +1,70 @@
+{
+  format: 1
+  name: sequence-composition-not-mandated-unspecified
+  suite: scenario
+  spec: ["#evolution", "§20.1"]
+  note: '''
+    Spec gap around cross-version composition. §20.1: "A runtime MAY compose a
+    sequence of package versions only when every adjacent target supplies a
+    migration from the preceding active version." The active source is 1.0.0,
+    and the update target 3.0.0 supplies a `$migrations` program keyed ONLY
+    "2.0.0" — i.e. from its adjacent predecessor, not directly from 1.0.0.
+
+    Two things are unspecified here:
+      - "MAY compose" makes composition optional: a runtime is free NOT to
+        chain 1.0.0 -> 2.0.0 -> 3.0.0 even when it could, and reject for lack
+        of a direct migration from the exact active source;
+      - §20 never says how a runtime obtains the intermediate 2.0.0 definition
+        needed to compose (registry, artifact, host-supplied), and this single
+        `host_load` provides only the 3.0.0 definition.
+
+    So the outcome is not deducible: a strict runtime rejects (no migration
+    keyed to the active source 1.0.0), while a composing runtime that can
+    source 2.0.0 MAY accept. Recorded as unspecified; whatever the runtime
+    does, 1.0.0 must remain active if it declines (§9.2, §9.4, Annex E.9).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.compose@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        items: { $view: ".items { id, name }" }
+      }
+    }
+    $data: {
+      items: { i1: { name: "seed" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.compose@3.0.0"
+          $model: {
+            items: {
+              $key: "id"
+              id: "text"
+              tag: "text"
+            }
+            $migrations: {
+              // only from the adjacent predecessor 2.0.0, never from 1.0.0
+              "2.0.0": [
+                ".items = $old.items { id, tag: string.trim(.label) }"
+              ]
+            }
+            $public: {
+              items: { $view: ".items { id, tag }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: unspecified } }
+  ]
+}

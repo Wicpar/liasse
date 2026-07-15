@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: migrated-value-fails-target-check-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.1: the complete prospective target is "checked under ordinary keys,
+    refs, uniqueness, checks ... before the package update commits." The check
+    applies to the migrated (`$as`-transformed) value, not merely to a copied
+    same-name field: `code` is derived from the old `val` via `string.trim`,
+    and the target declares a `$check` requiring size >= 3. The seeded "ab"
+    trims to "ab" (size 2), which fails the new check, so the migration is
+    rejected and 1.0.0 stays active.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.check@1.0.0"
+    $model: {
+      codes: {
+        $key: "id"
+        id: "text"
+        val: "text"
+      }
+      $public: {
+        codes: { $view: ".codes { id, val }" }
+      }
+    }
+    $data: {
+      codes: { x: { val: "ab" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.check@2.0.0"
+          $model: {
+            codes: {
+              $key: "id"
+              id: "text"
+              code: {
+                $type: "text"
+                $from: "val"
+                $as: "string.trim(.)"
+                $check: ["size(.) >= 3", "codes need at least 3 characters"]
+              }
+            }
+            $public: {
+              codes: { $view: ".codes { id, code }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.1"]
+        detail: "migrated code 'ab' (size 2) violates the target $check size(.) >= 3 in the prospective state"
+      } }
+    { watch: "public.codes", id: "w1",
+      expect_init: { value: [ { id: "x", val: "ab" } ] } }
+  ]
+}

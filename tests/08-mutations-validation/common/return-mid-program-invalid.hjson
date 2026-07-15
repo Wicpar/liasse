@@ -1,0 +1,28 @@
+{
+  // §8.10: "`return` MAY appear only as the final program statement."
+  // A program with a statement after `return` is statically invalid at load.
+  format: 1
+  name: return-mid-program-invalid
+  suite: static
+  spec: ["#mutations", "§8.10"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.midreturn@1.0.0"
+    "$model": {
+      "count": "int = 0"
+      "$mut": {
+        "bad": [
+          "return .count"
+          ".count = .count + 1"
+        ]
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§8.10"]
+    detail: "return appears before the final statement of the program"
+  }
+}

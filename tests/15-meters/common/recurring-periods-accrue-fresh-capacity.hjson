@@ -1,0 +1,91 @@
+{
+  format: 1
+  name: recurring-periods-accrue-fresh-capacity
+  suite: scenario
+  spec: ["#meters", "§15.1", "§15.3", "#buckets", "§14.5"]
+  tags: [temporal]
+  note: '''Accrual through recurring source-backed pools: each generated period is its own
+pool ($source identity + $from). When the next period starts, the meter offers that
+period's fresh quantity, and the unspent remainder of the finished period expires with
+it (pools are the rows active at evaluation time; capacity does not roll over).'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.accrual@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        account: { $ref: "/accounts" }
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp? = none"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      accounts: {
+        $key: "id"
+        id: "text"
+        $limits: {
+          credits: {
+            $sources: {
+              subscription: '''/credit_periods[:p | p.$source.account == .] {
+                $quantity: .credits
+              }'''
+            }
+            $order: ["$until"]
+          }
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".accounts { id, balance: .credits.balance }"
+          $mut: { consume: ".accounts[@account].consume" }
+        }
+      }
+    }
+    $data: {
+      plans: { weekly: { credits: "100", period: "P7D" } }
+      accounts: { a1: {} }
+      // unbounded weekly series starting at the virtual epoch 2026-01-01
+      subscriptions: { s1: { account: "a1", plan: "weekly", starts_at: "1767225600" } }
+    }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { account: "a1", amount: "40" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "a1", balance: "60" } ] } }
+    // next weekly period: fresh 100; the 60 left in the finished period are gone
+    { advance_time: "P7D" }
+    { expect_view: { watch: "w1", value: [ { id: "a1", balance: "100" } ] } }
+  ]
+}

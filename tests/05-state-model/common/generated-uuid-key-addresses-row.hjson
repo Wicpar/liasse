@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: generated-uuid-key-addresses-row
+  suite: scenario
+  spec: ["#state-model", "§5.4", "§5.1", "§8.12", "§B.5"]
+  note: "Generated keys (§5.4): a uuid() default produces the key once for the admitted insertion (§5.1, §8.12); the returned key is the stored key, and each insertion generates its own identity (two rows exist, so the two generated keys are distinct)."
+
+  package: {
+    $liasse: 1
+    $app: "t.genkey@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        $sort: ["title"]
+      }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title }"
+          $mut: {
+            add: [
+              "row = .tasks + { title: @title }"
+              "return row { id, title }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tasks.add", args: { title: "a" },
+      expect: { outcome: "ok", value: { id: "$bind:t1", title: "a" } } }
+    { call: "public.tasks.add", args: { title: "b" },
+      expect: { outcome: "ok", value: { id: "$bind:t2", title: "b" } } }
+    { watch: "public.tasks", id: "w1", expect_init: { value: [
+      // sorted by title; the stored keys are exactly the returned generated keys
+      { id: "$ref:t1", title: "a" }
+      { id: "$ref:t2", title: "b" }
+    ] } }
+  ]
+}

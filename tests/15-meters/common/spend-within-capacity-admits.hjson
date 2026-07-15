@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: spend-within-capacity-admits
+  suite: scenario
+  spec: ["#meters", "§15.1", "§15.2", "§15.6"]
+  note: "Happy path: an admitted spend receives capacity from the declared eligible source and .credits.balance reflects the remaining non-negative capacity (quantity minus allocations held by extant spends)."
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.basic@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id, amount }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { user: "u1", amount: "40" },
+      expect: { outcome: ok, value: { id: "$any:uuid", amount: "40" } } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "60" } ] } }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: seed-check-violation-rejects-load
+  suite: static
+  spec: ["#loading", "#state-model"]
+  note: '''
+    §9.1: seed rows pass through the same checks as mutation inserts; §9 admits
+    the package and its seed effects as one atomic transition. Row t2 fails the
+    title check, so the entire load is rejected — including the valid sibling
+    row t1, which must not exist afterwards.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seedcheck@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": {
+          "$type": "text"
+          "$check": ["size(.) > 0", "A title is required"]
+        }
+      }
+    }
+    "$data": {
+      "tasks": {
+        "t1": { "title": "valid" }
+        "t2": { "title": "" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: rejected
+    violates: ["#loading", "#state-model"]
+    detail: "seeded row tasks/t2 fails the declared title check"
+  }
+}

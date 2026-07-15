@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: composite-key-identity-and-lookup
+  suite: scenario
+  spec: ["#state-model", "§5.4", "§6.3"]
+  note: "An array $key groups several fields into one composite key in the listed order (§5.4). Rows sharing one component coexist; a duplicate of the complete composite key is rejected; a composite-key lookup uses one object operand naming each component (§6.3)."
+
+  package: {
+    $liasse: 1
+    $app: "t.compkey@1.0.0"
+    $model: {
+      vat_rates: {
+        $key: ["country", "code"]
+        country: "text"
+        code: "text"
+        rate: "int"
+      }
+      $public: {
+        vat: {
+          $view: ".vat_rates { country, code, rate }"
+          $mut: {
+            add: ".vat_rates + { country: @country, code: @code, rate: @rate }"
+            rate_of: "return .vat_rates[{ country: @country, code: @code }].rate"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.vat.add", args: { country: "FR", code: "STD", rate: 20 },
+      expect: { outcome: "ok" } }
+    // same country, different code -> different composite key -> accepted
+    { call: "public.vat.add", args: { country: "FR", code: "RED", rate: 5 },
+      expect: { outcome: "ok" } }
+    // complete composite key repeated -> rejected
+    { call: "public.vat.add", args: { country: "FR", code: "STD", rate: 21 },
+      expect: { outcome: "rejected", violates: ["§5.4"] } }
+    { call: "public.vat.rate_of", args: { country: "FR", code: "STD" },
+      expect: { outcome: "ok", value: 20 } }
+  ]
+}

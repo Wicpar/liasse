@@ -1,0 +1,58 @@
+{
+  // Tamper/replay probe: generated values must be admission facts, not
+  // re-rolled on replay. §8.12: uuid() and now() "produce their value once
+  // for an admitted request" and are "recorded when [they enter] committed
+  // state". §22.1 Recorded observations: "Replay uses those recorded values."
+  // After a restart (stop + replay), the committed row must expose the exact
+  // same generated id and timestamp.
+  format: 1
+  name: generated-values-recorded-survive-restart
+  suite: scenario
+  spec: ["#mutations", "§8.12", "§22.1"]
+  tags: ["replay"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.genrecord@1.0.0"
+    "$model": {
+      "events": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "at": "timestamp = now()"
+        "note": "text"
+      }
+      "$mut": {
+        "log": [
+          "e = .events + { note: @note }"
+          "return e { id, at, note }"
+        ]
+      }
+      "$public": {
+        "events": {
+          "$view": ".events { id, at, note }"
+          "$mut": { "log": ".log" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.events.log"
+      args: { note: "x" }
+      expect: {
+        outcome: ok
+        value: { id: "$bind:eid", at: "$bind:eat", note: "x" }
+      }
+    }
+    { restart: {} }
+    {
+      // Replay must reproduce the recorded values bit-for-bit.
+      watch: "public.events"
+      id: "w1"
+      expect_init: {
+        value: [ { id: "$ref:eid", at: "$ref:eat", note: "x" } ]
+      }
+    }
+  ]
+}

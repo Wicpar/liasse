@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: negative-spend-amount-rejected
+  suite: scenario
+  spec: ["#meters", "§15.1"]
+  note: '''Attack: a negative spend would act as a self-service refund and mint capacity.
+SPEC §15.1: spend $amount quantities MUST be non-negative, so the transition is
+rejected; the follow-up spend proves the balance was not inflated.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.negspend@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { user: "u1", amount: "-5" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.1"],
+                detail: "spend $amount MUST be non-negative" } }
+    // capacity is exactly the original 100: a full spend still fits, an overdraft does not
+    { call: "public.wallet.consume", args: { user: "u1", amount: "100" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { call: "public.wallet.consume", args: { user: "u1", amount: "1" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: recurring-rollover-at-exact-boundary
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.5"]
+  tags: ["boundary", "temporal", "recurrence", "precision"]
+  note: "Consecutive generated periods share their boundary with no gap and no overlap: at exactly b1 only period 1 is active, one microsecond before only period 0 is. Every generated period of an unbounded series still carries a finite $until supplied by its next boundary."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.rollover@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          weekly: { credits: "30", period: "P7D" }
+        }
+        subscriptions: {
+          // anchor 2026-01-01T00:00:00Z, no series end: indefinite generation
+          s1: { plan: "weekly", starts_at: "1767225600000000" }
+        }
+      }
+      $public: {
+        periods_at: {
+          $params: { t: "timestamp" }
+          $view: ".credit_periods.$at(@t) { index: $index, from: $from, until: $until }"
+        }
+      }
+    }
+  }
+
+  steps: [
+    // t == b1 - 1us (2026-01-07T23:59:59.999999Z): only period 0
+    { watch: "public.periods_at", args: { t: "1767830399999999" }, id: "w0"
+      expect_init: {
+        value: [
+          { index: "0", from: "1767225600000000", until: "1767830400000000" }
+        ]
+      } }
+
+    // t == b1 exactly (2026-01-08T00:00:00Z): only period 1 — half-open handoff.
+    // The unbounded series still gives period 1 a finite $until (b2 = Jan 15).
+    { watch: "public.periods_at", args: { t: "1767830400000000" }, id: "w1"
+      expect_init: {
+        value: [
+          { index: "1", from: "1767830400000000", until: "1768435200000000" }
+        ]
+      } }
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  format: 1
+  name: caret-reads-lexical-parent-scope
+  suite: scenario
+  spec: ["#expressions", "§6.2"]
+  note: "§6.2: '^' is the lexical parent scope. A computed value declared inside a nested static struct reads a field of its containing struct through '^'."
+
+  package: {
+    $liasse: 1
+    $app: "t.roots@1.0.0"
+    $model: {
+      profile: {
+        name: "text"
+        badge: {
+          label: "= ^.name"
+        }
+      }
+      $public: {
+        badge: { $view: ". { label: .profile.badge.label }" }
+      }
+    }
+    $data: {
+      profile: { name: "Ann" }
+    }
+  }
+
+  steps: [
+    { watch: "public.badge", id: "w1",
+      expect_init: { value: { label: "Ann" } } }
+  ]
+}

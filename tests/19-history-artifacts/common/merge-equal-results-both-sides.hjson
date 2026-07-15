@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: merge-equal-results-both-sides
+  suite: scenario
+  // §19.9: automatic merge accepts "equal results reached on both sides."
+  // Both sides independently set the same field to the same value; the
+  // merge activates without conflict.
+  spec: ["§19.9", "§19.8"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+        set_body: [
+          ".notes[@id].body = @body"
+          "return .notes[@id] { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put", set_body: ".set_body" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "start" },
+      expect: { outcome: ok, value: { id: "n1", body: "start" } } }
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a0" }, expect: { outcome: ok } }
+      { call: "public.notes.set_body", args: { id: "n1", body: "same-result" },
+        expect: { outcome: ok, value: { id: "n1", body: "same-result" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    { call: "public.notes.set_body", args: { id: "n1", body: "same-result" },
+      expect: { outcome: ok, value: { id: "n1", body: "same-result" } } }
+    { reconcile: { from: "a2", policy: ["merge"] },
+      expect: { outcome: ok, value: { relation: "merge", applied: true, "...": true } } }
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "n1", body: "same-result" }
+    ] } }
+  ]
+}

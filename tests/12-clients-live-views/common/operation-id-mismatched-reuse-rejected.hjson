@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: operation-id-mismatched-reuse-rejected
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["dedup"]
+  note: '''
+    §12.3: "Reusing it with different request metadata rejects the call."
+    The same scoped operation identifier is submitted again with different
+    arguments; the call must be rejected and must not commit.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      operation_id: "op-5e8d02b7c4f1a693"
+      expect: { outcome: ok, value: { id: "$bind:t1", title: "a" } }
+    }
+    {
+      call: "public.tasks.add"
+      args: { title: "b" }
+      on: "c1"
+      operation_id: "op-5e8d02b7c4f1a693"
+      expect: {
+        outcome: rejected
+        violates: ["#clients"]
+        detail: "operation identifier reused with different request metadata"
+      }
+    }
+    // The mismatched reuse neither executed nor damaged the original record.
+    { expect_view: { watch: "w1", value: [ { id: "$ref:t1", title: "a" } ] } }
+  ]
+}

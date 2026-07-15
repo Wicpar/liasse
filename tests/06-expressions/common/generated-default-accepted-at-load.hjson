@@ -1,0 +1,24 @@
+{
+  format: 1
+  name: generated-default-accepted-at-load
+  suite: static
+  spec: ["#expressions", "§8.8", "§16.3"]
+  note: "§8.8 (Expression effects): 'Defaults and mutation programs MAY use generated functions.' now() and uuid() are generated-class functions (§16.3); using them in field defaults is a valid effect position, so the package must load. This is the accepted counterpart of the red case rejecting generated functions in pure positions."
+
+  package: {
+    $liasse: 1
+    $app: "t.effects@1.0.0"
+    $model: {
+      events: {
+        $key: "id"
+        id: "uuid = uuid()"
+        at: "timestamp = now()"
+        label: "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: "ok"
+  }
+}

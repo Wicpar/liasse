@@ -1,0 +1,34 @@
+{
+  format: 1
+  name: row-binding-filter-selects-matching-rows
+  suite: scenario
+  spec: ["#expressions", "§6.4", "§B.5"]
+  note: "§6.4: 'collection[:name | condition]' names each row while the selector evaluates and keeps only rows satisfying the condition. Default order of the filtered collection is key ascending (Annex B.5)."
+
+  package: {
+    $liasse: 1
+    $app: "t.rowbind@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+      }
+      $public: {
+        open: { $view: ".tasks[:t | !t.done] { id }" }
+      }
+    }
+    $data: {
+      tasks: {
+        t1: { done: false }
+        t2: { done: true }
+        t3: { done: false }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.open", id: "w1",
+      expect_init: { value: [ { id: "t1" }, { id: "t3" } ] } }
+  ]
+}

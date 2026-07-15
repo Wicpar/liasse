@@ -1,0 +1,82 @@
+{
+  format: 1
+  name: window-default-first-and-last
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["window"]
+  note: '''
+    §12.2 bounded windows: "With no anchor, or with `$first`, the window is
+    the first `n` rows after the surface's own `$skip` and `$limit`. `$last`
+    selects the last `n`." Three subscriptions over [a, b, c, d]: no anchor
+    and $first both yield [a, b]; $last yields [c, d]. A later insert at the
+    end must update the $last window and leave the first-anchored windows
+    untouched in value.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.items@1.0.0"
+    $data: {
+      items: {
+        a: {}
+        b: {}
+        c: {}
+        d: {}
+      }
+    }
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      $mut: {
+        add: ".items + { id: @id }"
+      }
+      index: {
+        $view: ".items { id, $sort: [id] }"
+      }
+      $public: {
+        items: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      watch: "public.items"
+      on: "c1"
+      id: "w_default"
+      window: { $size: 2 }
+      expect_init: { value: [ { id: "a" }, { id: "b" } ] }
+    }
+    {
+      watch: "public.items"
+      on: "c1"
+      id: "w_first"
+      window: { $size: 2, $anchor: "$first" }
+      expect_init: { value: [ { id: "a" }, { id: "b" } ] }
+    }
+    {
+      watch: "public.items"
+      on: "c1"
+      id: "w_last"
+      window: { $size: 2, $anchor: "$last" }
+      expect_init: { value: [ { id: "c" }, { id: "d" } ] }
+    }
+    {
+      call: "public.items.add"
+      args: { id: "e" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    { expect_view: { watch: "w_default", value: [ { id: "a" }, { id: "b" } ] } }
+    { expect_view: { watch: "w_first", value: [ { id: "a" }, { id: "b" } ] } }
+    { expect_view: { watch: "w_last", value: [ { id: "d" }, { id: "e" } ] } }
+  ]
+}

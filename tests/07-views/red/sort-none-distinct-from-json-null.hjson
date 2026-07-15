@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: sort-none-distinct-from-json-null
+  suite: scenario
+  spec: ["#views", "§7.3", "§B.3", "§A.1"]
+  tags: ["boundary", "identity"]
+  note: "Attack: conflate a stored JSON null with an absent optional (none) so they sort together or collapse. §7.3: 'JSON has its own fixed internal order described in Annex B. none remains distinct from JSON null.' §B.3: for json?, ascending order is 'null ... object, none' — the JSON null value sorts first (lowest json rank), and none sorts last. Representation (§A.1): row 'n' stores the JSON null value (data: null, a present json value); row 'm' omits the member, so with no default it is none, an omitted optional field. Ascending by data gives n(null), x(true), then m(none, absent in the result)."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewnullnone@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        data: "json?"
+      }
+      $public: {
+        bydata: { $view: ".items { id, data, $sort: [data] }" }
+      }
+    }
+    $data: {
+      items: {
+        n: { data: null }
+        x: { data: true }
+        m: {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.bydata", id: "w1",
+      expect_init: { value: [
+        { id: "n", data: null }
+        { id: "x", data: true }
+        { id: "m", data: "$absent" }
+      ] } }
+  ]
+}

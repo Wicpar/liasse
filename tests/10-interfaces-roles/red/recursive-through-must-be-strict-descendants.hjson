@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: recursive-through-must-be-strict-descendants
+  suite: static
+  // §10.5: "$through yields strict descendants of the current row" and "The
+  // checker verifies descendant shape, acyclicity, identity, and predicate
+  // types." Here $through selects ALL companies — including the current row
+  // itself — so the relation is neither strict nor acyclic (every row would
+  // recursively cover itself). The checker must reject the package.
+  spec: ["#interfaces", "§10.5"]
+  tags: ["recursive", "boundary"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rec_cycle@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "members": {
+          "$key": "account"
+          "account": { "$ref": "/accounts" }
+          "admin": "bool = false"
+        }
+        "$roles": {
+          "admin": {
+            "$auth": "token"
+            "$members": ".members[:m | m.admin].account"
+            "company": {
+              "$view": ". { id, name }"
+              "$recursive": {
+                "$field": "subcompanies"
+                // Invalid: the whole top-level collection is not a strict
+                // descendant relation of the current row.
+                "$through": "/companies[:c]"
+                "$bind": "child"
+              }
+            }
+          }
+        }
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces"]
+    detail: "$through does not yield strict descendants; the coverage relation is cyclic"
+  }
+}

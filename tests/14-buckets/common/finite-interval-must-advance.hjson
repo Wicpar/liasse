@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: finite-interval-must-advance
+  suite: scenario
+  spec: ["#buckets", "§14.2"]
+  tags: ["boundary"]
+  note: "A finite interval MUST satisfy $until > $from; a transition producing an empty or reversed interval rejects. The smallest valid interval is one declared-precision unit (1 us) wide."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.advance@1.0.0"
+    $model: {
+      reservations: {
+        $key: "id"
+        $bucket: { $from: ".starts_at", $until: ".ends_at" }
+        id: "uuid = uuid()"
+        starts_at: "timestamp"
+        ends_at: "timestamp"
+      }
+      $public: {
+        reservations: {
+          $mut: {
+            add: [
+              "r = .reservations + { starts_at: @starts_at, ends_at: @ends_at }"
+              "return r { id }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // ends_at == starts_at: empty interval [t, t) — rejected
+    { call: "public.reservations.add"
+      args: { starts_at: "1767229200000000", ends_at: "1767229200000000" }
+      expect: { outcome: rejected, violates: ["§14.2"] } }
+
+    // ends_at < starts_at: reversed interval — rejected
+    { call: "public.reservations.add"
+      args: { starts_at: "1767232800000000", ends_at: "1767229200000000" }
+      expect: { outcome: rejected, violates: ["§14.2"] } }
+
+    // ends_at == starts_at + 1us: minimal advancing interval — accepted
+    { call: "public.reservations.add"
+      args: { starts_at: "1767229200000000", ends_at: "1767229200000001" }
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+  ]
+}

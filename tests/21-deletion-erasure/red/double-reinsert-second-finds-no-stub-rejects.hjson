@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: double-reinsert-second-finds-no-stub-rejects
+  suite: scenario
+  tags: [erasure, reinsert, replay]
+  // Attack: replay a reinsertion. §21.3: reinsert "restores requested bytes only
+  // where the exact expected stub remains. One mismatch rejects the complete
+  // reinsertion." The first reinsert replaces the digest stub with real bytes, so
+  // the second reinsert of the same extract no longer finds the expected stub and
+  // must reject wholesale.
+  spec: ["§21.3"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        secret: "text"
+      }
+      $mut: {
+        add: [
+          "u = .users + { id: @id, secret: @secret }"
+          "return u { id, secret }"
+        ]
+        erase_user: "return erase(.users[@id])"
+        reinsert_user: "reinsert(@extract)"
+      }
+      all: { $view: ".users { id, secret, $sort: [id] }" }
+      $public: {
+        users: {
+          $view: ".all"
+          $mut: { add: ".add", erase: ".erase_user", reinsert: ".reinsert_user" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.users.add", args: { id: "u1", secret: "s1" },
+      expect: { outcome: ok, value: { id: "u1", secret: "s1" } } }
+    { call: "public.users.erase", args: { id: "u1" }, expect: { outcome: ok, value: "$bind:extract" } }
+    // first reinsert finds the expected stub and restores bytes
+    { call: "public.users.reinsert", args: { extract: "$ref:extract" }, expect: { outcome: ok, "...": true } }
+    // replay: stub already replaced -> mismatch -> whole reinsertion rejects
+    { call: "public.users.reinsert", args: { extract: "$ref:extract" },
+      expect: { outcome: rejected, violates: ["§21.3"],
+                detail: "expected digest stub no longer present on second reinsert" } }
+  ]
+}

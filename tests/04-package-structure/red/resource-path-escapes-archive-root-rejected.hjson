@@ -1,0 +1,29 @@
+{
+  format: 1
+  name: resource-path-escapes-archive-root-rejected
+  suite: static
+  spec: ["#package-structure", "§4.1"]
+  tags: ["tamper", "path-traversal"]
+  note: "Classic zip-slip: a $path with '..' segments aimed at the loader's filesystem. §4.1: 'Paths MUST remain inside the archive root'. The path rule alone justifies rejection regardless of whether any entry exists at that location, so this is checkable statically."
+
+  package: {
+    $liasse: 1
+    $app: "t.zipslip@1.0.0"
+    $resources: {
+      stolen_key: {
+        $path: "resources/../../../../etc/ssl/private/server.pem"
+        $media: "application/x-pem-file"
+        $sha256: "2163bddf11b2e116332448d10374d504f9508c148b72e5c9d970b88665330490"
+      }
+    }
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "§4.1"]
+    detail: "$path resolves outside the archive root"
+  }
+}

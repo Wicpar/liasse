@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: downgrade-drops-populated-field-rejected
+  suite: scenario
+  spec: ["#evolution", "#annex-e"]
+  tags: [version, replay]
+  note: '''
+    Attack: replay an older release over a newer instance to silently discard
+    live state. §20.2: "A downgrade loads the older package and applies an
+    explicit direct migration or available exact inverses. When the older shape
+    cannot represent the current live values and no declared downgrade transform
+    preserves them, the downgrade is rejected." The active 1.1.0 instance holds
+    a populated private field `region`; the older 1.0.0 shape has no `region`
+    field and declares no downgrade transform, so the current live value cannot
+    be represented and the downgrade is rejected. Note the asymmetry with §20.1:
+    a forward migration MAY drop a source field (it survives in history), but a
+    downgrade that would lose live values is rejected. `region` is private, so
+    the public boundary {id, name} is identical and does not itself force the
+    outcome — the §20.2 live-value rule does.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.downgrade@1.1.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "region": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme", "region": "EU" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          // older release: `region` field removed, no downgrade transform
+          "$liasse": 1
+          "$app": "t.compat.downgrade@1.0.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+            }
+            "$public": {
+              "companies": { "$view": ".companies { id, name }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#evolution"]
+        detail: "downgrade to a shape without `region` cannot represent the live value and declares no downgrade transform; rejected"
+      } }
+    // 1.1.0 remains active with its populated state (E.9)
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "Acme" } ] } }
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: verifier-function-in-view-rejected
+  suite: static
+  spec: ["#host-namespaces", "#mutations"]
+  tags: ["replay", "escalation"]
+  note: '''
+    Attack: pull an admission-time verifier into a read path. A verifier
+    validates untrusted input against declared keys/configuration (§16.3)
+    and its result may depend on key state, so evaluating it inside a view
+    would let read/replay positions consult verification machinery and make
+    replayed view results depend on non-logical inputs. §16.3: verifiers
+    run during external request admission; only PURE functions MAY run
+    during views, checks, and replay. §8.8 (expression effects): computed
+    fields, views, $normalize, and $check use pure functions only, and the
+    checker rejects an effect class used in the wrong position while
+    loading the package.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.verifview@1.0.0"
+    $requires: {
+      authns: "test.auth@1"
+    }
+    $model: {
+      cred: "text = ''"
+      probe: { $view: "authns.check(.cred)" }
+      $public: {
+        stats: { $view: ".probe" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.auth"
+        version: "1.0.0"
+        interface_hash: "ih-auth-1"
+        functions: {
+          check: {
+            signature: "(text) -> { account: text }"
+            effect: "verifier"
+            op: "accept"
+            accepts: { "good-credential": { account: "a1" } }
+          }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#mutations", "#host-namespaces"]
+    detail: "verifier effect class used in a view position; views accept pure functions only and the load-time checker rejects it"
+  }
+}

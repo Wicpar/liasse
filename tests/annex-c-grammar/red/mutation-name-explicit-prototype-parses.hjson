@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: mutation-name-explicit-prototype-parses
+  suite: scenario
+  tags: [grammar, mutations, prototype]
+  // Pathological-but-legal syntax: the quoted-key mutation form. Annex C.9:
+  // 'name({ explicit: Type }): ...'. §8.3 shows exactly this — a mutation whose
+  // NAME string embeds an explicit parameter prototype, used when inference
+  // cannot uniquely determine the parameter shape. The external mutation name
+  // is 'set_note'; the '@note' parameter is typed 'text' by the prototype. A
+  // conforming runtime must parse the prototype out of the key and accept the
+  // typed call.
+  spec: ["#annex-c", "§C.9", "#mutations", "§8.3"]
+
+  package: {
+    $liasse: 1
+    $app: "t.prototype@1.0.0"
+    $model: {
+      doc: {
+        note: "text = ''"
+      }
+      $mut: {
+        "set_note({ note: text })": [
+          ".doc.note = @note"
+          "return .doc { note }"
+        ]
+      }
+      view_doc: { $view: ".doc { note }" }
+      $public: {
+        doc: {
+          $view: ".view_doc"
+          $mut: { set_note: ".set_note" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.doc.set_note", args: { note: "hello" },
+      expect: { outcome: ok, value: { note: "hello" } } }
+  ]
+}

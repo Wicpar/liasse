@@ -1,0 +1,31 @@
+{
+  format: 1
+  name: calendar-period-all-zero-magnitude-rejected
+  suite: static
+  spec: ["§A.4"]
+  tags: ["period"]
+  note: "Annex A.4: for a calendar period object, 'At least one magnitude component MUST be non-zero.' The seeded period sets every magnitude (years/months/weeks/days/time) to its zero default, so it has no non-zero magnitude and the definition is invalid. The seed is validated at load like any supplied value."
+
+  package: {
+    $liasse: 1
+    $app: "t.zeroperiod@1.0.0"
+    $model: {
+      step: "period"
+    }
+    $data: {
+      step: {
+        years: 0
+        months: 0
+        weeks: 0
+        days: 0
+        time: "PT0S"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§A.4"]
+    detail: "calendar period has no non-zero magnitude component"
+  }
+}

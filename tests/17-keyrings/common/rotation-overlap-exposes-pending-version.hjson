@@ -1,0 +1,82 @@
+{
+  format: 1
+  name: rotation-overlap-exposes-pending-version
+  suite: scenario
+  tags: ["rotation"]
+  spec: ["#keyrings", "§17.1", "§17.3", "§17.4"]
+  note: "§17.4 step 3: a pending public version is recorded and exposed at the configured $overlap lead time; step 4 activates it at the cadence and retires the prior active version. §17.3: pending has a provider handle and verified public metadata but is not activated. Rotation is due at day 30 with a 2-day lead, so at day 29 the pending version is visible and v1 is still active."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": { "$every": "P30D", "$overlap": "P2D" }
+          "$retain": "P45D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+        "ring_versions": { "$view": "/session_keys.$versions" }
+      }
+    }
+    "$data": { "accounts": { "alice": { "name": "Alice" } } }
+  }
+
+  steps: [
+    { watch: "public.ring_versions", id: "w1",
+      expect_init: { value: { $unordered: [
+        { id: "$bind:v1", activated_at: "$any:timestamp", retired_at: "$absent", "...": true }
+      ] } } }
+    // Day 29: past the day-28 lead time, before the day-30 activation.
+    { advance_time: "P29D" }
+    { call: "public.login.login", args: { account: "alice" },
+      expect: { outcome: ok, value: { token: "$any" } } }
+    { expect_view: { watch: "w1", value: { $unordered: [
+      { id: "$ref:v1", activated_at: "$any:timestamp", retired_at: "$absent", "...": true }
+      { id: "$bind:v2", created_at: "$any:timestamp", activated_at: "$absent", retired_at: "$absent", "...": true }
+    ] } } }
+    // Day 31: past activation.
+    { advance_time: "P2D" }
+    { call: "public.login.login", args: { account: "alice" },
+      expect: { outcome: ok, value: { token: "$any" } } }
+    { expect_view: { watch: "w1", value: { $unordered: [
+      { id: "$ref:v1", retired_at: "$any:timestamp", "...": true }
+      { id: "$ref:v2", activated_at: "$any:timestamp", retired_at: "$absent", "...": true }
+    ] } } }
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  format: 1
+  name: retry-with-operation-id-after-connection-loss
+  suite: scenario
+  spec: ["#clients", "#runtime"]
+  tags: ["reconnect", "dedup", "replay"]
+  note: '''
+    The reconnect story §12.3 is designed for: the connection drops before the
+    response is delivered, so the outcome is unknown to the client ("the
+    request may have committed, and a committed transition remains final"; a
+    loss before admission MAY instead cancel it). The client reconnects and
+    retries with the SAME operation identifier and an equivalent request,
+    which "provides at-most-once execution". Both permitted first-attempt
+    fates (canceled / committed) plus the deduplicating retry give exactly one
+    execution: after the retry's committed response, exactly one row exists.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // The transport drops before the response can be delivered; no
+    // expectation is possible for this exchange (see NOTES.md:
+    // call.abort_delivery).
+    {
+      call: "public.tasks.add"
+      args: { title: "x" }
+      on: "c1"
+      operation_id: "op-77aa02e4c19d5f36"
+      abort_delivery: true
+    }
+    { disconnect: "c1" }
+    { connect: "c2" }
+    // Equivalent request, same public target, same identifier.
+    {
+      call: "public.tasks.add"
+      args: { title: "x" }
+      on: "c2"
+      operation_id: "op-77aa02e4c19d5f36"
+      expect: { outcome: ok }
+    }
+    // Exactly-once effect regardless of the first attempt's fate.
+    {
+      watch: "public.tasks"
+      on: "c2"
+      id: "w1"
+      expect_init: { value: [ { id: "$any:uuid", title: "x" } ] }
+    }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: w1-blank-title-fails-check-after-trim
+  suite: scenario
+  spec: ["W1", "#mutations", "§8.8"]
+  tags: [normalize, checks]
+  note: '''
+    Ordinary error path of W1. §8.8: normalization runs before checks. A title
+    of only ASCII spaces normalizes via string.trim(.) to the empty string, then
+    the field $check ["size(.) > 0", "A title is required"] fails. A failed check
+    rejects the complete proposed transition, so add creates no task row and the
+    open view stays empty.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.tasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: {
+          $type: "text"
+          $normalize: "string.trim(.)"
+          $check: ["size(.) > 0", "A title is required"]
+        }
+        done: "bool = false"
+        created_at: "timestamp = now()"
+        $mut: {
+          complete: [
+            ".done = true"
+            "return . { id, title, done, created_at }"
+          ]
+        }
+      }
+      $mut: {
+        add_task: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title, done, created_at }"
+        ]
+      }
+      open_tasks: {
+        $view: ".tasks[:task | !task.done] { id, title, created_at, $sort: [-created_at] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".open_tasks"
+          $mut: {
+            add: ".add_task"
+            complete: ".tasks[@id].complete()"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tasks.add", args: { title: "   " }
+      expect: { outcome: rejected, violates: ["§8.8"], detail: "title normalizes to empty and fails size>0 check" } }
+    { watch: "public.tasks", id: "w1", expect_init: { value: [] } }
+  ]
+}

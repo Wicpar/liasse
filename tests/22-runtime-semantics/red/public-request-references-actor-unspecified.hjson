@@ -1,0 +1,61 @@
+{
+  // Probe on §22.8: "Public requests and engine maintenance run without an
+  // actor." The spec says a public request has no `$actor`, but does NOT pin
+  // what happens when a public mutation *references* `$actor`. Three readings
+  // are each defensible and SPEC.md chooses none:
+  //   (a) static rejection at load — `$actor` is unavailable in a public
+  //       lexical scope, so the reference is an invalid package;
+  //   (b) runtime rejection at admission — the reference resolves to an unbound
+  //       actor and the request fails;
+  //   (c) a null/absent binding written through to the (optional) field.
+  // The behavior is unspecified; the corpus records the gap.
+  format: 1
+  name: public-request-references-actor-unspecified
+  suite: scenario
+  spec: ["§22.8", "#runtime"]
+  tags: ["authz", "provenance", "boundary"]
+  note: '''
+    §22.8 states only that public requests run without an actor. It does not
+    define the result of a public mutation reading `$actor`: whether the
+    package is statically invalid (actor out of scope), the request is rejected
+    at admission (unbound actor), or `$actor` binds to null. Left unpinned by
+    SPEC.md, so `outcome: unspecified` with the plausible readings enumerated.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.pubactor@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: "text?"
+        body: "text"
+      }
+      $mut: {
+        // References $actor even though this is reached via a public surface.
+        add: [
+          "n = .notes + { author: $actor, body: @body }"
+          "return n { id, author, body }"
+        ]
+      }
+      $public: {
+        notes: {
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      call: "public.notes.add"
+      args: { body: "who am i" }
+      on: "c1"
+      // (a) invalid, (b) rejected, or (c) ok with author absent/null — SPEC.md
+      // does not pin which. See note.
+      expect: { outcome: unspecified }
+    }
+  ]
+}

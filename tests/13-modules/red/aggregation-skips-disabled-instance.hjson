@@ -1,0 +1,82 @@
+{
+  format: 1
+  name: aggregation-skips-disabled-instance
+  suite: scenario
+  spec: ["#modules", "§13.9", "§13.12"]
+  note: '''
+    §13.12: disabling preserves an instance's private stored state while
+    removing its active boundary occurrences. §13.9: the parent aggregation
+    reads every instance EXPOSING an interface. After kit_b is disabled its
+    exposed rows are no longer boundary occurrences, so they must not leak
+    into the aggregation; enabling restores them from preserved state.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+              }
+            }
+          }
+          "catalog": {
+            "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
+          }
+        }
+        "$public": {
+          "catalog": {
+            "$params": { "company": "text" }
+            "$view": "/companies[@company].catalog"
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tpl: {
+      "$liasse": 1
+      "$module": "t.tpl@1.0.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+      }
+      "$expose": {
+        "templates": { "$view": ".templates { id, label }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: { "$name": "kit_a", "$module": "t.tpl@1.0.0"
+                   "$data": { "templates": { "a1": { "label": "Alpha" } } } } }
+      expect: { outcome: ok } }
+    { module_install: { space: "/companies/acme/modules"
+        request: { "$name": "kit_b", "$module": "t.tpl@1.0.0"
+                   "$data": { "templates": { "b1": { "label": "Beta" } } } } }
+      expect: { outcome: ok } }
+    { watch: "public.catalog", args: { company: "acme" }, id: "w1"
+      expect_init: { value: [
+        { module: "kit_a", id: "a1", label: "Alpha" }
+        { module: "kit_b", id: "b1", label: "Beta" }
+      ] } }
+    // disabling kit_b removes its boundary occurrences from the aggregation
+    { module_disable: { instance: "/companies/acme/modules/kit_b" }
+      expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [ { module: "kit_a", id: "a1", label: "Alpha" } ] } }
+    // enabling restores the preserved rows
+    { module_enable: { instance: "/companies/acme/modules/kit_b" }
+      expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [
+      { module: "kit_a", id: "a1", label: "Alpha" }
+      { module: "kit_b", id: "b1", label: "Beta" }
+    ] } }
+  ]
+}

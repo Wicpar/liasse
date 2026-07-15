@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: ref-resolves-against-extant-all-domain
+  suite: scenario
+  spec: ["#buckets", "§14.2", "#state-model", "§5.6"]
+  tags: ["identity", "temporal"]
+  note: "Refs to a bucketed collection resolve against its extant .$all identity domain, so an inactive (expired) row remains a valid ref target. No mutation in this package can delete a session, so the ref's $on_delete may stay deferred (§5.6)."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.reftarget@1.0.0"
+    $model: {
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        expires_at: "timestamp"
+      }
+      orders: {
+        $key: "id"
+        id: "uuid = uuid()"
+        session: { $ref: "/sessions" }
+      }
+      $public: {
+        sessions: {
+          $mut: {
+            add: [
+              "s = .sessions + { expires_at: @expires_at }"
+              "return s { id }"
+            ]
+            list: "return .sessions { id }"
+          }
+        }
+        orders: {
+          $mut: {
+            add: [
+              "o = .orders + { session: @session }"
+              "return o { id, session }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // expires 2026-01-01T01:00:00Z
+    { call: "public.sessions.add", args: { expires_at: "1767229200000000" }
+      expect: { outcome: ok, value: { id: "$bind:s1" } } }
+
+    // let the session expire
+    { advance_time: "PT2H" }
+    { call: "public.sessions.list", args: {}
+      expect: { outcome: ok, value: [] } }
+
+    // the expired row is inactive but extant: inserting a ref to it succeeds,
+    // and the ref's visible value is the target's current typed key
+    { call: "public.orders.add", args: { session: "$ref:s1" }
+      expect: { outcome: ok, value: { id: "$any:uuid", session: "$ref:s1" } } }
+  ]
+}

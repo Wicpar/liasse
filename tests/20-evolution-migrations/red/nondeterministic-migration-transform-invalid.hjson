@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: nondeterministic-migration-transform-invalid
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.1: a migration program "MUST use deterministic pure functions." The
+    same requirement governs the transform expressions it composes. An attacker
+    tries to stamp fresh identity during migration by making `$as` call
+    `uuid()`, which ignores the bound old value and produces a different result
+    every run — not a deterministic pure function of `.`. The migration
+    transform is statically ill-formed, so the update is `invalid` (definition
+    is bad on its own terms; see NOTES.md) and 1.0.0 stays active.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.nondet@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        rows: { $view: ".rows { id, name }" }
+      }
+    }
+    $data: {
+      rows: { r1: { name: "keep" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.nondet@2.0.0"
+          $model: {
+            rows: {
+              $key: "id"
+              id: "text"
+              token: { $type: "text", $from: "name", $as: "uuid()" }
+            }
+            $public: {
+              rows: { $view: ".rows { id, token }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: invalid
+        violates: ["§20.1"]
+        detail: "migration transform $as: uuid() is not a deterministic pure function of the bound old value"
+      } }
+    { watch: "public.rows", id: "w1",
+      expect_init: { value: [ { id: "r1", name: "keep" } ] } }
+  ]
+}

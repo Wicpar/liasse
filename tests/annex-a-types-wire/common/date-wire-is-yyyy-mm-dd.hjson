@@ -1,0 +1,27 @@
+{
+  format: 1
+  name: date-wire-is-yyyy-mm-dd
+  suite: scenario
+  spec: ["§A.1"]
+  tags: ["wire", "date"]
+  note: "Annex A.1: the canonical strict-JSON value of `date` is a `YYYY-MM-DD` JSON string. A seeded date projects to exactly that zero-padded string form — not a day count, not a timestamp, not a locale spelling."
+
+  package: {
+    $liasse: 1
+    $app: "t.datewire@1.0.0"
+    $model: {
+      d: "date"
+      $public: {
+        v: { $view: ". { d }" }
+      }
+    }
+    $data: {
+      d: "2026-07-15"
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { d: "2026-07-15" } } }
+  ]
+}

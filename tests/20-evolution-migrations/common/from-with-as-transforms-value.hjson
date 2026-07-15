@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: from-with-as-transforms-value
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.1: "`$from` names the old field or collection, `$as` transforms its old
+    value bound as `.`". The seeded `name` "  Bob  " is bound as `.` and
+    `string.trim(.)` yields "Bob" in the renamed target field `display_name`.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.as@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        people: { $view: ".people { id, name }" }
+      }
+    }
+    $data: {
+      people: { p1: { name: "  Bob  " } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.as@2.0.0"
+          $model: {
+            people: {
+              $key: "id"
+              id: "text"
+              display_name: { $type: "text", $from: "name", $as: "string.trim(.)" }
+            }
+            $public: {
+              people: { $view: ".people { id, display_name }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.people", id: "w1",
+      expect_init: { value: [ { id: "p1", display_name: "Bob" } ] } }
+  ]
+}

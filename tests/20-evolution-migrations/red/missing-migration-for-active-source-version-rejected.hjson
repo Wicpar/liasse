@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: missing-migration-for-active-source-version-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.1: "The map key is the exact active source package version." The active
+    source is 1.0.0, but the target only supplies a `$migrations` program keyed
+    "0.9.0". An attacker hopes a near-miss version key still fires. It must not:
+    no program applies to source 1.0.0, the required target field `full` gets
+    neither a compatible copy (no same-identity source), a `$from` mapping, nor
+    a default, so the prospective state has an unpopulated required field and
+    the update is rejected. Version 1.0.0 stays active.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.nopath@1.0.0"
+    $model: {
+      orders: {
+        $key: "id"
+        id: "text"
+        first: "text"
+        last: "text"
+      }
+      $public: {
+        orders: { $view: ".orders { id, first, last }" }
+      }
+    }
+    $data: {
+      orders: { o1: { first: "Ann", last: "Lee" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.nopath@2.0.0"
+          $model: {
+            orders: {
+              $key: "id"
+              id: "text"
+              full: "text"
+            }
+            $migrations: {
+              // keyed to a version that is NOT the active source (1.0.0)
+              "0.9.0": [
+                ".orders = $old.orders { id, full: string.trim(.first) }"
+              ]
+            }
+            $public: {
+              orders: { $view: ".orders { id, full }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.1"]
+        detail: "no migration keyed to the exact active source 1.0.0; required target field 'full' is unpopulated in the prospective state"
+      } }
+    { watch: "public.orders", id: "w1",
+      expect_init: { value: [ { id: "o1", first: "Ann", last: "Lee" } ] } }
+  ]
+}

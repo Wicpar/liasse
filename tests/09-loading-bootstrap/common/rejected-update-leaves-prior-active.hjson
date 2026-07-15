@@ -1,0 +1,77 @@
+{
+  format: 1
+  name: rejected-update-leaves-prior-active
+  suite: scenario
+  spec: ["#loading"]
+  note: '''
+    §9.2: "A diagnostic leaves the prior active composition unchanged"; §9.4:
+    "rejected — validation failed and the prior application remains active."
+    The proposed 1.0.1 definition fails type-checking (§9.2 step 5: its view
+    projects a field that does not exist), so the load is invalid, and the
+    original definition must keep serving reads and writes afterwards.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rejectupd@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": {
+          "$view": ".companies { id, name }"
+          "$mut": {
+            "rename": [
+              ".companies[@id].name = @name"
+              "return .companies[@id] { id, name }"
+            ]
+          }
+        }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "name": "Acme SAS" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "Acme SAS" } ] } }
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.rejectupd@1.0.1"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+            }
+            "$public": {
+              // type error: 'missing_field' is not declared on companies
+              "companies": { "$view": ".companies { id, name, missing_field }" }
+            }
+          }
+          "$data": {
+            "companies": {
+              "acme": { "name": "Acme SAS" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: invalid
+        violates: ["#loading"]
+        detail: "updated definition fails type-checking; prior application remains active"
+      } }
+    // the prior composition must still serve both reads and writes
+    { call: "public.companies.rename", args: { id: "acme", name: "Acme 2" },
+      expect: { outcome: "ok", value: { id: "acme", name: "Acme 2" } } }
+    { expect_view: { watch: "w1", value: [ { id: "acme", name: "Acme 2" } ] } }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: int-mathematical-order-with-negatives
+  suite: scenario
+  spec: ["#annex-b", "§B.1"]
+  tags: ["ordering"]
+  note: '''
+    §B.1 int: ascending order is mathematical integer order. Negative values
+    precede zero which precedes positives, and magnitude is compared
+    numerically, not by text: -10 < -2 < 0 < 9 < 100. A lexicographic string
+    sorter over the canonical base-10 wire form (A.1) would misorder these
+    (e.g. "-10" before "-2", "100" before "9"). int values are authored as
+    plain numbers per the corpus convention.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.int@1.0.0"
+    $model: {
+      samples: {
+        $key: "id"
+        id: "text"
+        n: "int"
+      }
+      $public: {
+        by_n: { $view: ".samples { id, n, $sort: [n] }" }
+      }
+    }
+    $data: {
+      samples: {
+        a: { n: 100 }
+        b: { n: -2 }
+        c: { n: 9 }
+        d: { n: -10 }
+        e: { n: 0 }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_n", id: "w1",
+      expect_init: { value: [
+        { id: "d", n: -10 }
+        { id: "b", n: -2 }
+        { id: "e", n: 0 }
+        { id: "c", n: 9 }
+        { id: "a", n: 100 }
+      ] } }
+  ]
+}

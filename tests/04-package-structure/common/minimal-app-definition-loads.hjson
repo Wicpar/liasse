@@ -1,0 +1,19 @@
+{
+  format: 1
+  name: minimal-app-definition-loads
+  suite: static
+  spec: ["#package-structure", "§4.1", "#annex-c", "§C.1"]
+  note: "Smallest conforming application definition: $liasse, $app, $model (§4.1 authoring form; Annex C.1 app-package grammar marks exactly these three as required)."
+
+  package: {
+    $liasse: 1
+    $app: "t.minimal@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: ok
+  }
+}

@@ -1,0 +1,77 @@
+{
+  format: 1
+  name: resume-with-foreign-frontier
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["tampering", "replay", "frontier"]
+  note: '''
+    Attack: replay a frontier token captured from one subscription stream into
+    a resume of a different stream. §12.2 says a frontier is "an opaque,
+    totally ordered position within one subscription stream" and "Frontiers
+    from different subscriptions are independent", but it does not pin what a
+    runtime must do when handed a frontier that was not issued for the resumed
+    stream: rejecting it, answering with a fresh init, or (if tokens are
+    indistinguishable) treating it as a position are all unexcluded readings.
+    outcome: unspecified documents the gap. What is NOT in question is that
+    any data delivered must still be the authorized view of the resumed
+    surface (both surfaces here are public, so no privilege is at stake in
+    this case; the ambiguity is purely protocol behavior).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        done: "bool = false"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title, done }"
+        ]
+      }
+      open: {
+        $view: ".tasks[:t | !t.done] { id, title, $sort: [title] }"
+      }
+      closed: {
+        $view: ".tasks[:t | t.done] { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".open"
+          $mut: {
+            add: ".add"
+          }
+        }
+        done: {
+          $view: ".closed"
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { frontier: "$bind:f1", value: [] } }
+    { watch: "public.done", on: "c1", id: "w2", expect_init: { frontier: "$bind:f2", value: [] } }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "a", done: false } }
+    }
+    { disconnect: "c1" }
+    { connect: "c2" }
+    // f2 was issued for the public.done stream; resuming public.tasks with it
+    // is a cross-stream replay.
+    {
+      resume: { surface: "public.tasks", from: "$ref:f2", id: "w3" }
+      on: "c2"
+      expect: { outcome: unspecified }
+    }
+  ]
+}

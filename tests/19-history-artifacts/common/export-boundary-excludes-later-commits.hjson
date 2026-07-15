@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: export-boundary-excludes-later-commits
+  suite: scenario
+  // §19.7: "An export selects one committed application boundary ... Later
+  // writes belong to a later export boundary." A commit made after the
+  // export must not appear in the artifact's selected state.
+  spec: ["§19.7"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { call: "public.notes.put", args: { id: "n2", body: "two" },
+      expect: { outcome: ok, value: { id: "n2", body: "two" } } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1" }, expect: { outcome: ok } }
+      { watch: "public.notes", id: "w1", expect_init: { value: [
+        { id: "n1", body: "one" }
+      ] } }
+    ] }
+  ]
+}

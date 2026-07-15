@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: temporal-observation-then-commit-ordering
+  suite: scenario
+  spec: ["#buckets", "§14.1", "#clients", "§12.2", "§12.3", "#runtime", "§22.6", "§22.7", "#mutations", "§8.10"]
+  tags: ["ordering", "temporal"]
+  note: "One subscription stream orders temporal bucket observations and commits on the same frontier: the expiry observation removes the old row first, and a later successful call proves (committed barrier) that the view has advanced through its commit. The mutation response is evaluated from the committed state at the request's now, so it sees the new row and not the expired one."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.obscommit@1.0.0"
+    $model: {
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        expires_at: "timestamp"
+      }
+      $public: {
+        active: { $view: ".sessions { id }" }
+        sessions: {
+          $mut: {
+            add: [
+              "s = .sessions + { expires_at: @expires_at }"
+              "return .sessions { id }"   // response from committed state
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // s1 expires 2026-01-01T01:00:00Z
+    { call: "public.sessions.add", args: { expires_at: "1767229200000000" }
+      expect: { outcome: ok, value: [ { id: "$bind:s1" } ] } }
+    { watch: "public.active", id: "w1"
+      expect_init: { value: [ { id: "$ref:s1" } ] } }
+
+    // temporal observation: s1 leaves its active interval
+    { advance_time: "PT2H" }
+    { expect_view: { watch: "w1", value: [] } }
+
+    // commit after the observation: s2 expires 2026-01-11 (far future).
+    // The response is evaluated from the committed state at now == 02:00,
+    // so it contains only s2 (s1 is inactive).
+    { call: "public.sessions.add", args: { expires_at: "1768089600000000" }
+      expect: { outcome: ok, value: [ { id: "$bind:s2" } ] } }
+
+    // the committed response barrier guarantees w1 has advanced through the commit
+    { expect_view: { watch: "w1", value: [ { id: "$ref:s2" } ] } }
+  ]
+}

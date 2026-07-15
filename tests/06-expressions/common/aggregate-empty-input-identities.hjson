@@ -1,0 +1,31 @@
+{
+  format: 1
+  name: aggregate-empty-input-identities
+  suite: scenario
+  spec: ["#expressions", "§6.5", "§7.5", "§5.2"]
+  note: "§6.5 makes aggregation part of the expression language; §7.5: 'Empty input yields 0 for count, numeric zero for sum, and none for avg, min, and max.' §5.2: 'A computed expression yielding none produces an absent optional value', so the max output must be absent from the projected result."
+
+  package: {
+    $liasse: 1
+    $app: "t.aggregates@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        amount: "int"
+      }
+      n: "= count(.items)"
+      total: "= sum(.items.amount)"
+      top: "= max(.items.amount)"
+      $public: {
+        stats: { $view: ". { n, total, top }" }
+      }
+    }
+    // no $data: items starts empty
+  }
+
+  steps: [
+    { watch: "public.stats", id: "w1",
+      expect_init: { value: { n: "0", total: "0", top: "$absent" } } }
+  ]
+}

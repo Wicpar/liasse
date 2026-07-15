@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: calendar-monthly-clamp-preserves-anchor
+  suite: scenario
+  spec: ["#buckets", "§14.7", "§A.4"]
+  tags: ["temporal", "recurrence", "calendar"]
+  note: "Boundary i is calculated from the original series anchor using i x period, not by re-adding to the previous clamped boundary: January 31, monthly, clamp gives Jan 31; Feb 28; Mar 31. The February boundary clamps, and the March boundary returns to the 31st."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.clamp@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          monthly_utc: {
+            credits: "100"
+            period: { months: 1, zone: "UTC", overflow: "clamp" }
+          }
+        }
+        subscriptions: {
+          // anchor 2026-01-31T00:00:00Z, unbounded series
+          s1: { plan: "monthly_utc", starts_at: "1769817600000000" }
+        }
+      }
+      $public: {
+        periods_at: {
+          $params: { t: "timestamp" }
+          $view: ".credit_periods.$at(@t) { index: $index, from: $from, until: $until }"
+        }
+      }
+    }
+  }
+
+  steps: [
+    // read at 2026-03-15T00:00:00Z: inside period 1
+    // b1 = Jan 31 + 1 month = Feb 31 -> clamped to 2026-02-28
+    // b2 = anchor + 2 months = 2026-03-31 (anchor preserved, not Feb 28 + 1 month = Mar 28)
+    { watch: "public.periods_at", args: { t: "1773532800000000" }, id: "w1"
+      expect_init: {
+        value: [
+          { index: "1", from: "1772236800000000", until: "1774915200000000" }
+        ]
+      } }
+  ]
+}

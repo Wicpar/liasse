@@ -1,0 +1,69 @@
+{
+  format: 1
+  name: repeat-none-yields-single-interval
+  suite: scenario
+  spec: ["#buckets", "§14.5", "§14.7"]
+  tags: ["temporal", "recurrence"]
+  note: "When $repeat evaluates to none (a lifetime plan with no period), the source produces one interval using the series bounds: $index 0, $from = series start, $until = none for an unbounded series."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.lifetime@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          lifetime: { credits: "1000" }   // period omitted: none
+        }
+        subscriptions: {
+          // starts 2026-01-01T01:00Z, no series end
+          s1: { plan: "lifetime", starts_at: "1767229200000000" }
+        }
+      }
+      $public: {
+        periods: {
+          $params: { a: "timestamp", b: "timestamp" }
+          $view: ".credit_periods.$between(@a, @b) { index: $index, from: $from, until: $until, credits }"
+        }
+      }
+    }
+  }
+
+  steps: [
+    // window [2026-01-01T00:00Z, 2036-01-01T00:00Z)
+    { watch: "public.periods"
+      args: { a: "1767225600000000", b: "2082758400000000" }
+      id: "w1"
+      expect_init: {
+        value: [
+          {
+            index: "0"
+            from: "1767229200000000"
+            // until omitted: $until is none (unbounded interval, Annex A none = absence)
+            credits: "1000"
+          }
+        ]
+      } }
+  ]
+}

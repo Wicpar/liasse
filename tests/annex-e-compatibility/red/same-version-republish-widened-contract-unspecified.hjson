@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: same-version-republish-widened-contract-unspecified
+  suite: scenario
+  spec: ["#annex-e", "#package-structure"]
+  tags: [version, replay, aliasing]
+  note: '''
+    Attack / aliasing probe: republish a DIFFERENT definition under the SAME
+    $app version. The active 1.0.0 exposes {id, name}; the candidate is also
+    tagged 1.0.0 but WIDENS the boundary by adding the optional output `region`
+    (E.5-compatible if it were a version bump). E.1 forbids only NARROWING
+    ("rejects a minor or patch release whose effective boundary contract
+    narrows"); it is silent on a same-version release that widens. §4.2 gives a
+    distinct definition identity to the changed liasse.json, but no normative
+    rule states whether load treats a same-version, different-definition,
+    non-narrowing republish as: (a) `unchanged` (the version already applies),
+    (b) `committed` (a definition-only update, §9.3), or (c) an identity error
+    (a version MUST NOT be reused for different bytes). The outcome is therefore
+    not deducible from SPEC.md.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.reissue@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "region": "text?"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          // same version string, widened boundary, different definition identity
+          "$liasse": 1
+          "$app": "t.compat.reissue@1.0.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+              "region": "text?"
+            }
+            "$public": {
+              "companies": { "$view": ".companies { id, name, region }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: {
+        outcome: unspecified
+        detail: "same $app version republished with a widened (non-narrowing) boundary; SPEC.md does not pin accept/no-op/reject"
+      } }
+  ]
+}

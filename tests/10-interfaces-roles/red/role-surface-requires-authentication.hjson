@@ -1,0 +1,75 @@
+{
+  format: 1
+  name: role-surface-requires-authentication
+  suite: scenario
+  // Skip-authentication attack: address a role surface over a connection that
+  // never authenticated. §10.3: a role surface is available only to actor rows
+  // resolved by authentication and admitted by $members. §11.4: "Every
+  // authenticated request names both the role and one accepted authenticator."
+  // §12.1 step 2 selects and verifies "the explicitly named authenticator when
+  // required" and step 6 evaluates role membership; with no authenticator and
+  // no resolved $actor the role surface grants nothing. The public-surface
+  // path (§10.2) is the only unauthenticated one, and this name is not public.
+  spec: ["#interfaces", "§10.3", "#authentication", "#clients"]
+  tags: ["authz", "escalation"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.role_needs_auth@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "notes": {
+        "$key": "id"
+        "id": "text"
+        "body": "text"
+      }
+      "$mut": {
+        "add_note": [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "token"
+          "$members": ".accounts"
+          "notes": {
+            "$view": ".notes { id, body }"
+            "$mut": { "add": ".add_note" }
+          }
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+    }
+  }
+
+  steps: [
+    // c1 is opened but never authenticated: no $actor exists on it.
+    { connect: "c1" }
+    // Calling the role mutation with no authenticator selected and no resolved
+    // actor cannot pass role membership admission.
+    { call: "member.notes.add", args: { id: "n1", body: "anon" }, on: "c1",
+      expect: { outcome: denied, violates: ["#interfaces", "#authentication"],
+                detail: "a role surface requires an authenticated, admitted actor" } }
+    // Watching the role view without authentication is equally ungranted.
+    { watch: "member.notes", on: "c1", id: "w-bad",
+      expect: { outcome: denied, violates: ["#interfaces", "#authentication"],
+                detail: "role views are not available without authentication" } }
+    // Control: after authenticating, the same surface works.
+    { connect: "c2", authenticate: { role: "member", auth: "token", credential: "alice" } }
+    { call: "member.notes.add", args: { id: "n1", body: "real" }, on: "c2",
+      expect: { outcome: ok, value: { id: "n1", body: "real" } } }
+  ]
+}

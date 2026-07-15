@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: recursive-requires-field-through-bind
+  suite: static
+  // §10.5: "$field, $through, and $bind are required. $where is optional and
+  // defaults to inclusion; $except is optional and defaults to no pruning."
+  // This declaration omits $bind, so the package must fail validation.
+  spec: ["#interfaces", "§10.5"]
+  tags: []
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rec_required@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "subcompanies": { "$like": "^" }
+        "members": {
+          "$key": "account"
+          "account": { "$ref": "/accounts" }
+          "admin": "bool = false"
+        }
+        "$roles": {
+          "admin": {
+            "$auth": "token"
+            "$members": ".members[:m | m.admin].account"
+            "company": {
+              "$view": ". { id, name }"
+              "$recursive": {
+                "$field": "subcompanies"
+                "$through": ".subcompanies"
+                // Invalid: $bind is required but missing.
+              }
+            }
+          }
+        }
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces"]
+    detail: "$recursive requires $field, $through, and $bind"
+  }
+}

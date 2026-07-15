@@ -1,0 +1,81 @@
+{
+  format: 1
+  name: accepted-upload-commits-and-verifies
+  suite: scenario
+  spec: ["#blobs", "§18.2", "§18.7"]
+  tags: ["blob", "happy-path"]
+  note: '''
+    §18.2/§18.7: a blob parameter is accepted after streaming verification
+    confirms byte limit, accepted media, exact byte count, SHA-512 content
+    hash, and every verified copy required by one complete branch of the
+    current placement plan; the mutation then commits. The uploaded content is
+    within $max_bytes and an accepted media type, so the call commits and the
+    committed descriptor is verified in the single required store.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.accept@1.0.0"
+    $requires: {}
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        params: "json = {}"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain", "application/pdf"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id, satisfied: .file.$satisfied, stored: .file.$stored { id } }"
+        ]
+      }
+      $public: {
+        docs: {
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: {
+      stores: {
+        primary: { connector: "fs-a" }
+      }
+    }
+  }
+
+  hosts: {
+    connectors: {
+      "fs-a": { capabilities: ["stream_upload", "stream_download", "checksum", "delete"] }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "hello world"
+        media: "text/plain"
+        name: "greeting.txt"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: {
+        id: "d1"
+        satisfied: true
+        stored: { $unordered: [ { id: "primary" } ] }
+      } } }
+  ]
+}
+</content>

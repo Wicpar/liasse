@@ -1,0 +1,34 @@
+{
+  format: 1
+  name: conditional-false-branch-yields-empty
+  suite: scenario
+  spec: ["#views", "§7.4"]
+  tags: ["boundary"]
+  note: "§7.4: 'cond ? a : b  conditional view' and '[]  empty view.' The computed condition 'visible' is false (2 > 3), so the view resolves to the empty-view branch and returns no rows even though .tasks is non-empty."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewcond@1.0.0"
+    $model: {
+      visible: "= 2 > 3"
+      tasks: {
+        $key: "id"
+        id: "text"
+      }
+      $public: {
+        maybe: { $view: ".visible ? .tasks { id } : []" }
+      }
+    }
+    $data: {
+      tasks: {
+        a: {}
+        b: {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.maybe", id: "w1",
+      expect_init: { value: [] } }
+  ]
+}

@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: imported-state-survives-restart
+  suite: scenario
+  // §19.8: fast-forward applies the incoming continuation; a successful
+  // state or composition change creates a commit (§2.4) and a commit is
+  // final once admitted. The applied import must therefore be durable
+  // across a runtime restart.
+  spec: ["§19.8", "§2.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1" }, expect: { outcome: ok } }
+      { call: "public.notes.put", args: { id: "n2", body: "two" },
+        expect: { outcome: ok, value: { id: "n2", body: "two" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    { import: { from: "a2", policy: ["fast_forward"] },
+      expect: { outcome: ok, value: { relation: "fast_forward", applied: true, "...": true } } }
+    { restart: {} }
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "n1", body: "one" }
+      { id: "n2", body: "two" }
+    ] } }
+  ]
+}

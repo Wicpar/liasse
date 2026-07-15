@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: install-config-type-mismatch-invalid
+  suite: scenario
+  spec: ["#modules", "§13.1", "§13.3"]
+  note: '''
+    §13.1: $config is a typed struct. §13.3: loading validates the
+    configuration before the instance becomes active. Supplying a boolean
+    where the declared field type is text fails static validation of the
+    install request.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+              }
+            }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tplc: {
+      "$liasse": 1
+      "$module": "t.tplc@1.0.0"
+      "$config": { "currency": "text = 'USD'" }
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+      }
+      "$expose": {
+        "templates": { "$view": ".templates { id, label }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: { "$name": "kit", "$module": "t.tplc@1.0.0", "$config": { "currency": true } } }
+      expect: { outcome: invalid, violates: ["§13.1", "§13.3"]
+                detail: "installation $config value does not match the declared typed struct" } }
+  ]
+}

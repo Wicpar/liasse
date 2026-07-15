@@ -1,0 +1,23 @@
+{
+  // §8.3: "An explicit prototype resolves ambiguity or declares a structure
+  // that the body cannot uniquely infer." This is the spec's own prototype
+  // example; the package loads. (The prototype-less counterpart is the red
+  // case ambiguous-param-without-prototype-invalid.)
+  format: 1
+  name: explicit-prototype-resolves-ambiguity
+  suite: static
+  spec: ["#mutations", "§8.3"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.prototype@1.0.0"
+    "$model": {
+      "metadata": "map<text, json>?"
+      "$mut": {
+        "set_metadata({ metadata: optional<map<text, json>> })": ".metadata = @metadata"
+      }
+    }
+  }
+
+  expect: { outcome: ok }
+}

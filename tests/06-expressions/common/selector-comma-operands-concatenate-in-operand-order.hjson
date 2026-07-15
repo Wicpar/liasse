@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: selector-comma-operands-concatenate-in-operand-order
+  suite: scenario
+  spec: ["#expressions", "§6.3"]
+  note: "§6.3: 'Comma-separated selector operands are independent key sources, and their selected rows are concatenated in operand order.' and 'Selection preserves operand order and repeated keys' with 'Repeated occurrences remain distinct in ordinary view results.' Selecting ['b', 'a', 'b'] must therefore yield three occurrences in exactly that order, not a set."
+
+  package: {
+    $liasse: 1
+    $app: "t.selectors@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        picked: { $view: ".people['b', 'a', 'b'] { id }" }
+      }
+    }
+    $data: {
+      people: {
+        a: { name: "Ann" }
+        b: { name: "Bo" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.picked", id: "w1",
+      expect_init: { value: [ { id: "b" }, { id: "a" }, { id: "b" } ] } }
+  ]
+}

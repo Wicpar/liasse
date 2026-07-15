@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: unicode-confusable-keys-are-distinct
+  suite: scenario
+  spec: ["#state-model", "§5.4", "§A.1", "§D.2"]
+  tags: ["unicode", "identity"]
+  note: '''Attack: register keys that render identically to an existing key (mixed-script
+confusables, NFC/NFD variants) hoping the runtime aliases them onto the victim row —
+or, inversely, hoping a lookup for one resolves the other. text is a 'Unicode scalar
+sequence... preserved exactly' (§A.1) and canonical key text is 'exact Unicode text'
+(§D.2): no normalization or folding applies to identity. Distinct scalar sequences are
+distinct keys (§5.4) and each lookup must resolve exactly its own row.
+Literals used:
+  "paypal"  - all ASCII
+  "pаypal"  - second char is CYRILLIC SMALL LETTER A (U+0430)
+  "café"    - NFC, ends with U+00E9
+  "café"   - NFD, ends with "e" + COMBINING ACUTE ACCENT (U+0301)'''
+
+  package: {
+    $liasse: 1
+    $app: "t.confusables@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        marker: "text"
+      }
+      $public: {
+        accounts: {
+          $view: ".accounts { id, marker }"
+          $mut: {
+            add: ".accounts + { id: @id, marker: @marker }"
+            get: "return .accounts[@id].marker"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.accounts.add", args: { id: "paypal", marker: "latin" },
+      expect: { outcome: "ok" } }
+    // Cyrillic а: different scalar sequence -> different key -> no collision
+    { call: "public.accounts.add", args: { id: "pаypal", marker: "cyrillic" },
+      expect: { outcome: "ok" } }
+    // NFC vs NFD: also distinct scalar sequences
+    { call: "public.accounts.add", args: { id: "café", marker: "nfc" },
+      expect: { outcome: "ok" } }
+    { call: "public.accounts.add", args: { id: "café", marker: "nfd" },
+      expect: { outcome: "ok" } }
+    // exact lookups must not alias across the confusable pairs
+    { call: "public.accounts.get", args: { id: "paypal" },
+      expect: { outcome: "ok", value: "latin" } }
+    { call: "public.accounts.get", args: { id: "pаypal" },
+      expect: { outcome: "ok", value: "cyrillic" } }
+    { call: "public.accounts.get", args: { id: "café" },
+      expect: { outcome: "ok", value: "nfd" } }
+  ]
+}

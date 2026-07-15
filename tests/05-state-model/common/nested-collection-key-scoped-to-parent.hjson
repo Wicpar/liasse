@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: nested-collection-key-scoped-to-parent
+  suite: scenario
+  spec: ["#state-model", "§5.4", "§B.5"]
+  note: "§5.4: 'A collection key is unique within its parent row. Nested collections therefore have row identity plus ancestor identity.' The same local key under two different parents must coexist; a repeat under the same parent must reject."
+
+  package: {
+    $liasse: 1
+    $app: "t.nestedkey@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        offices: {
+          $key: "id"
+          id: "text"
+          name: "text"
+        }
+      }
+      $public: {
+        offices: {
+          $view: ".companies[:c].offices[:o] { company: c.id, office: o.id }"
+          $mut: {
+            add_company: ".companies + { id: @id }"
+            add_office: ".companies[@company].offices + { id: @id, name: @name }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.offices.add_company", args: { id: "acme" }, expect: { outcome: "ok" } }
+    { call: "public.offices.add_company", args: { id: "globex" }, expect: { outcome: "ok" } }
+    { call: "public.offices.add_office", args: { company: "acme", id: "hq", name: "Acme HQ" },
+      expect: { outcome: "ok" } }
+    // same local key "hq", different parent -> distinct full identity -> accepted
+    { call: "public.offices.add_office", args: { company: "globex", id: "hq", name: "Globex HQ" },
+      expect: { outcome: "ok" } }
+    // same local key under the same parent -> rejected
+    { call: "public.offices.add_office", args: { company: "acme", id: "hq", name: "Again" },
+      expect: { outcome: "rejected", violates: ["§5.4"] } }
+    { watch: "public.offices", id: "w1", expect_init: { value: [
+      { company: "acme", office: "hq" }
+      { company: "globex", office: "hq" }
+    ] } }
+  ]
+}

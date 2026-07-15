@@ -1,0 +1,48 @@
+{
+  // §22.7(1): for a successful call the runtime MUST "durably commit the
+  // operation." §22.2: "A commit is final once admitted." A commit produced by
+  // a mutation before a restart must still be present after the runtime is
+  // stopped and replayed (FORMAT.md: durable state must survive). An engine
+  // holding the commit only in process memory fails this case.
+  format: 1
+  name: committed-state-durable-across-restart
+  suite: scenario
+  spec: ["§22.7", "§22.2", "#runtime"]
+  tags: ["durability", "replay"]
+
+  package: {
+    $liasse: 1
+    $app: "t.durable@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "t = .tasks + { title: @title }"
+          "return t { id, title }"
+        ]
+      }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, title, $sort: [title] }"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "public.tasks.add", args: { title: "persist me" }, on: "c1",
+      expect: { outcome: ok, value: { id: "$bind:t1", title: "persist me" } } }
+    { restart: {} }
+    {
+      watch: "public.tasks"
+      id: "w1"
+      expect_init: { value: [ { id: "$ref:t1", title: "persist me" } ] }
+    }
+  ]
+}

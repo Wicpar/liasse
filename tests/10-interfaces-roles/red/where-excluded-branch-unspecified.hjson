@@ -1,0 +1,90 @@
+{
+  format: 1
+  name: where-excluded-branch-unspecified
+  suite: scenario
+  spec: ["#interfaces", "§10.5"]
+  tags: ["recursive"]
+  note: '''
+    §10.5 distinguishes $where ("includes candidates satisfying its
+    predicate") from $except ("removes candidates satisfying its predicate
+    and prunes that branch"). Only $except is specified to prune. That
+    wording implies a $where-excluded candidate's descendants might still be
+    traversed — otherwise $where and $except would be behaviorally identical
+    for exclusion — yet the output format gives an excluded child no slot:
+    results nest strictly under $field of INCLUDED children, so a traversed
+    grandchild ("b1" below, active under the where-excluded closed "b") has
+    no defined place to appear. Whether b1 is silently dropped (de-facto
+    pruning), attached elsewhere, or the construct is rejected is not
+    specified. This case seeds exactly that shape and records the gap.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rec_where_gap@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "plan": "text = 'active'"
+        "subcompanies": { "$like": "^" }
+        "members": {
+          "$key": "account"
+          "account": { "$ref": "/accounts" }
+          "admin": "bool = false"
+        }
+        "$roles": {
+          "admin": {
+            "$auth": "token"
+            "$members": ".members[:m | m.admin].account"
+            "company": {
+              "$view": ". { id, name, plan }"
+              "$recursive": {
+                "$field": "subcompanies"
+                "$through": ".subcompanies"
+                "$bind": "child"
+                "$where": "child.plan != 'closed'"
+              }
+            }
+          }
+        }
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+      "companies": {
+        "root": {
+          "name": "Root"
+          "members": { "alice": { "admin": true } }
+          "subcompanies": {
+            "b": {
+              "name": "Closed Branch"
+              "plan": "closed"
+              "subcompanies": {
+                // Satisfies $where but sits under a $where-excluded child.
+                "b1": { "name": "Active under closed" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+    { watch: "admin.company", scope: "root", id: "w1",
+      expect_init: { outcome: unspecified } }
+  ]
+}

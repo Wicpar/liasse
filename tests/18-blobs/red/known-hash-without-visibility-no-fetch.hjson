@@ -1,0 +1,121 @@
+{
+  format: 1
+  name: known-hash-without-visibility-no-fetch
+  suite: scenario
+  spec: ["#blobs", "§18.8", "§18.9"]
+  tags: ["blob", "fetch", "authz", "escalation"]
+  note: '''
+    Attack: use knowledge of another user's $sha512 (content is deduplicated /
+    content-addressed, §18.9) to fetch bytes the attacker cannot see. §18.8
+    grants a fetch only from "Visibility of a blob value through a currently
+    authorized surface", re-evaluating the "descriptor occurrence" and surface
+    projection. Bob's surface exposes only his own docs, so a fetch resolving
+    to Alice's doc finds no visible descriptor occurrence and is denied, even
+    though Bob supplies the correct content hash and identical bytes exist in
+    the store.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.knownhash@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      accounts: { $key: "id", id: "text" }
+      sessions: {
+        $key: "id"
+        id: "text"
+        account: { $ref: "/accounts" }
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        owner: { $ref: "/accounts" }
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, owner: $actor, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: ["$proof.auth == $auth_name"]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: "/accounts"
+          docs: {
+            // Only the caller's own docs are ever visible through this surface.
+            $view: ".docs[:d | d.owner == $actor && d.id == @id] { id, file }"
+            $mut: { add: ".add" }
+          }
+        }
+      }
+    }
+    $data: {
+      stores: { primary: { connector: "fs-a" } }
+      accounts: { alice: {}, bob: {} }
+      sessions: {
+        s_alice: { account: "alice" }
+        s_bob: { account: "bob" }
+      }
+    }
+  }
+
+  hosts: {
+    connectors: {
+      "fs-a": { capabilities: ["stream_upload", "stream_download", "checksum"] }
+    }
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "s_alice" }
+        "tok-bob": { auth: "session", session: "s_bob" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Alice uploads a private doc.
+    { blob_put: {
+        call: "member.docs.add"
+        param: "file"
+        args: { id: "alice-doc" }
+        content: "alice private bytes"
+        media: "text/plain"
+        on: "c1"
+        auth: { auth: "session", credential: "tok-alice" }
+      }
+      expect: { outcome: ok, value: { id: "alice-doc" } } }
+    // Bob knows the id and the correct hash, but the surface hides Alice's doc.
+    { blob_get: {
+        surface: "member.docs"
+        args: { id: "alice-doc" }
+        at: ".file"
+        on: "c1"
+        auth: { auth: "session", credential: "tok-bob" }
+      }
+      expect: { outcome: denied, violates: ["#blobs"],
+                detail: "no visible descriptor occurrence through Bob's surface projection" } }
+  ]
+}
+</content>

@@ -1,0 +1,103 @@
+{
+  format: 1
+  name: unauthenticated-role-surface-denied
+  suite: scenario
+  spec: ["#authentication", "§11.4", "#interfaces", "§10.3", "#clients", "§12.1"]
+  tags: ["authz"]
+  note: '''
+    A role surface is not a public surface: §10.3 grants its views and
+    mutations only to authenticated members, and §12.1's pipeline selects and
+    verifies the named authenticator when required. §11.1 reserves $actor for
+    "an external authenticated operation". A request that carries no credential
+    and names no authenticator on a role address cannot establish an actor or
+    membership, so it is denied — it is not silently treated as a public call.
+  '''
+
+  // Attack: skip authentication entirely and call the role surface directly,
+  // hoping it falls through to public/actor-less execution. The mutation body
+  // even references $actor; with no actor there is nothing to bind.
+
+  package: {
+    $liasse: 1
+    $app: "t.auth@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes[:n | n.author == $actor] { id, body }"
+            $mut: { add: ".add_note" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+      }
+      sessions: {
+        "5e551000-0000-4000-8000-000000000001": {
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "5e551000-0000-4000-8000-000000000001" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // No auth field on a connection that never authenticated: fully
+    // unauthenticated request against a role surface (NOTES.md).
+    { call: "member.notes.add", args: { body: "x" }, on: "c1",
+      expect: { outcome: denied, violates: ["#authentication", "#interfaces"] } }
+  ]
+}

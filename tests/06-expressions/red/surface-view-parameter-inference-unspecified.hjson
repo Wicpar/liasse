@@ -1,0 +1,32 @@
+{
+  format: 1
+  name: surface-view-parameter-inference-unspecified
+  suite: static
+  spec: ["#expressions", "§6.2", "§8.3", "§10.1"]
+  tags: ["typing"]
+  note: "Spec gap. §6.2 says '@name' denotes a mutation or view parameter. §8.3 defines type inference for mutation parameters only ('CEL typing infers a parameter from every use of @name' appears in the mutations chapter), and §10.1 introduces surface '$params' as an explicit declaration map. Whether a surface $view referencing @done without a $params declaration infers the parameter like a mutation would, or is statically invalid for using an undeclared parameter, is not pinned by any rule."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewparams@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+      }
+      $public: {
+        by_state: {
+          // no $params declaration
+          $view: ".tasks[:t | t.done == @done] { id }"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: "unspecified"
+    violates: ["#expressions", "#interfaces"]
+    detail: "view parameter without $params declaration: neither inference nor static rejection is mandated"
+  }
+}

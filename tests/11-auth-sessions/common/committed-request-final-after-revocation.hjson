@@ -1,0 +1,124 @@
+{
+  format: 1
+  name: committed-request-final-after-revocation
+  suite: scenario
+  spec: ["#authentication", "§11.7"]
+  note: '''
+    §11.7: "A later request using that session fails authentication or role
+    admission. A request already committed remains final." Alice commits a
+    note, revokes her own session (the spec's own revoke mutation), is denied
+    on her next request — and the committed note remains visible to another
+    actor. Revocation cuts future access, never past commits.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.revoke@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+        $mut: {
+          revoke: [
+            ".revoked = true"
+            "return . { id, revoked }"
+          ]
+        }
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          board: {
+            $view: ".notes { id, body }"
+            $mut: { add: ".add_note" }
+          }
+          session: {
+            $mut: { revoke: "/sessions[$session.$key].revoke()" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+        "bbbbbbbb-0000-4000-8000-000000000002": { name: "bob" }
+      }
+      sessions: {
+        "5e551000-0000-4000-8000-000000000001": {
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+        "5e551000-0000-4000-8000-000000000002": {
+          account: "bbbbbbbb-0000-4000-8000-000000000002"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "5e551000-0000-4000-8000-000000000001" }
+        "tok-bob": { auth: "session", session: "5e551000-0000-4000-8000-000000000002" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { auth: "session", credential: "tok-alice" } }
+    { call: "member.board.add", args: { body: "kept" }, on: "c1",
+      expect: { outcome: ok, value: {
+        id: "$bind:n1"
+        author: "aaaaaaaa-0000-4000-8000-000000000001"
+        body: "kept"
+      } } }
+    // Self-service logout: revoke the current session.
+    { call: "member.session.revoke", on: "c1",
+      expect: { outcome: ok, value: { id: "5e551000-0000-4000-8000-000000000001", revoked: true } } }
+    // Later request on the revoked session: denied.
+    { call: "member.board.add", args: { body: "late" }, on: "c1",
+      expect: { outcome: denied, violates: ["#authentication"] } }
+    // The earlier commit remains final and visible to another actor.
+    { connect: "c2", authenticate: { auth: "session", credential: "tok-bob" } }
+    { watch: "member.board", on: "c2", id: "w1",
+      expect_init: { value: [ { id: "$ref:n1", body: "kept" } ] } }
+  ]
+}

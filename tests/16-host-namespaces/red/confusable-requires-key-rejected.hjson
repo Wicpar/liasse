@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: confusable-requires-key-rejected
+  suite: static
+  spec: ["#host-namespaces", "#conformance"]
+  tags: ["unicode"]
+  note: '''
+    Attack: the $requires key below is "сbor" whose first letter is
+    CYRILLIC SMALL LETTER ES (U+0441), visually identical to ASCII "cbor".
+    A reviewer reads a familiar requirement while the attacker actually
+    introduces a distinct expression namespace (and could pair it with a
+    hostile contract). §2.5: application declaration names MUST begin with
+    an ASCII letter and contain only ASCII letters, digits, and "_" — the
+    confusable key violates the name grammar, so the package is statically
+    invalid regardless of what it resolves to.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.confusable@1.0.0"
+    $requires: {
+      "сbor": "liasse.cbor@1"   // first letter is U+0441, not ASCII "c"
+    }
+    $model: {
+      n: "int = 0"
+      encoded: { $view: "сbor.encode(.n)" }
+      $public: {
+        stats: { $view: ".encoded" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "liasse.cbor"
+        version: "1.2.0"
+        interface_hash: "ih-cbor-1"
+        functions: {
+          encode: { signature: "(int) -> bytes", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance"]
+    detail: "declaration name contains a non-ASCII letter (U+0441); names MUST begin with an ASCII letter and contain only ASCII letters, digits, and underscore"
+  }
+}

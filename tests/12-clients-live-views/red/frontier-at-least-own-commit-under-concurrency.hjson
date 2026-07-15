@@ -1,0 +1,86 @@
+{
+  format: 1
+  name: frontier-at-least-own-commit-under-concurrency
+  suite: scenario
+  spec: ["#clients", "#runtime"]
+  tags: ["ordering", "concurrency", "frontier"]
+  note: '''
+    Attack: exploit concurrent admission to observe a live result that lags
+    the caller's own committed mutation. §12.3: receiving `committed` proves
+    live results on the same logical connection have advanced through THAT
+    commit. §3.3/§22.3: the guarantee is at least the returned commit, not
+    global latest; the concurrent peer's commit may or may not be covered yet.
+    Each branch therefore asserts its own row is ALWAYS present, and admits
+    both serializations for the peer's row via expect_one_of.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { connect: "c2" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    { watch: "public.tasks", on: "c2", id: "w2", expect_init: { value: [] } }
+    {
+      concurrently: [
+        [
+          {
+            call: "public.tasks.add"
+            args: { title: "a" }
+            on: "c1"
+            expect: { outcome: ok, value: { id: "$any:uuid", title: "a" } }
+          }
+          {
+            expect_view: { watch: "w1" }
+            expect_one_of: [
+              { value: [ { id: "$any:uuid", title: "a" } ] }
+              { value: [ { id: "$any:uuid", title: "a" }, { id: "$any:uuid", title: "b" } ] }
+            ]
+          }
+        ]
+        [
+          {
+            call: "public.tasks.add"
+            args: { title: "b" }
+            on: "c2"
+            expect: { outcome: ok, value: { id: "$any:uuid", title: "b" } }
+          }
+          {
+            expect_view: { watch: "w2" }
+            expect_one_of: [
+              { value: [ { id: "$any:uuid", title: "b" } ] }
+              { value: [ { id: "$any:uuid", title: "a" }, { id: "$any:uuid", title: "b" } ] }
+            ]
+          }
+        ]
+      ]
+    }
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: omitted-until-is-unbounded
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.2"]
+  tags: ["temporal"]
+  note: "An omitted $until evaluates to none and leaves the interval unbounded: the row stays active arbitrarily far in the future, and its interval intersects any later non-empty query range."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.unbounded@1.0.0"
+    $model: {
+      licenses: {
+        $key: "id"
+        $bucket: { $from: ".starts_at" }
+        id: "text"
+        starts_at: "timestamp"
+      }
+      $data: {
+        licenses: {
+          l1: { starts_at: "1767225600000000" }  // 2026-01-01T00:00:00Z
+        }
+      }
+      $public: {
+        active: { $view: ".licenses { id }" }
+        q: {
+          $mut: {
+            between: "return .licenses.$between(@a, @b) { id }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // advance one hundred years; the license has no upper bound and stays active
+    { advance_time: "P36500D" }
+    { watch: "public.active", id: "w1"
+      expect_init: { value: [ { id: "l1" } ] } }
+
+    // the unbounded interval [2026-01-01, none) intersects a far-future window
+    // [2036-01-01T00:00:00Z, 2036-01-02T00:00:00Z)
+    { call: "public.q.between"
+      args: { a: "2082758400000000", b: "2082844800000000" }
+      expect: { outcome: ok, value: [ { id: "l1" } ] } }
+  ]
+}

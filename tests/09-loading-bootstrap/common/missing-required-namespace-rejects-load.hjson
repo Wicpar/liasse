@@ -1,0 +1,41 @@
+{
+  format: 1
+  name: missing-required-namespace-rejects-load
+  suite: static
+  spec: ["#host-namespaces", "#conformance", "#loading"]
+  tags: ["hosts"]
+  note: '''
+    §2.1: "a package requiring an unavailable or incompatible component fails
+    validation before activation"; §16.2: "Missing, incompatible, or ambiguous
+    requirements reject loading before the package becomes active"; §9.2 step
+    4 resolves required namespaces during complete validation. The simulated
+    context registers no non-core namespace, so the requirement cannot
+    resolve. The rejection follows from the unresolved requirement alone —
+    resolution (step 4) precedes expression type-checking (step 5), so no use
+    of the namespace is needed to trigger it.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.missingns@1.0.0"
+    "$requires": {
+      "password": "liasse.password@1"
+    }
+    "$model": {
+      "items": {
+        "$key": "id"
+        "id": "text"
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: {}
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "#conformance"]
+    detail: "required namespace contract liasse.password@1 is not registered in the host context"
+  }
+}

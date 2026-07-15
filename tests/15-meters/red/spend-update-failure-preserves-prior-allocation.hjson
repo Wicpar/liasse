@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: spend-update-failure-preserves-prior-allocation
+  suite: scenario
+  spec: ["#meters", "§15.2"]
+  note: '''Refund/rollback on a failed update. SPEC §15.2: updating a spend provisionally
+releases its current allocation and allocates its complete new amount against the
+prospective state; if reallocation fails, the prior spend and allocation remain
+unchanged. Attack: grow an admitted spend beyond capacity hoping the provisional
+release leaks the freed capacity or drops the original allocation. Verified by the
+spend row's own amount (still 40) and by the exact capacity still held (a later 60
+admits, a 61 rejects).'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.updatefail@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id, amount }"
+          ]
+          resize: ".spends[@spend] { amount = @amount }"
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance, spends: .spends { id, amount } }"
+          $mut: {
+            consume: ".users[@user].consume"
+            resize: ".users[@user].resize"
+          }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { user: "u1", amount: "40" },
+      expect: { outcome: ok, value: { id: "$bind:s1", amount: "40" } } }
+    // grow 40 -> 150: releasing 40 then allocating 150 against a 100 pool is insufficient
+    { call: "public.wallet.resize", args: { user: "u1", spend: "$ref:s1", amount: "150" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"],
+                detail: "reallocation of the enlarged spend exceeds eligible capacity" } }
+    // the prior spend and its allocation are unchanged: amount still 40, balance still 60
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "60", spends: [ { id: "$ref:s1", amount: "40" } ] } ] } }
+    // exactly 60 remain: 60 admits, one more than that does not
+    { call: "public.wallet.consume", args: { user: "u1", amount: "60" },
+      expect: { outcome: ok, value: { id: "$any:uuid", amount: "60" } } }
+    { call: "public.wallet.consume", args: { user: "u1", amount: "1" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: pinned-descriptor-drift-fails-reopen
+  suite: scenario
+  spec: ["#host-namespaces", "#conformance", "#loading", "#annex-e"]
+  tags: ["tampering", "supply-chain"]
+  note: '''
+    Attack: host-side supply-chain swap. After the package is installed and
+    running, the host context is rebuilt with a namespace that reuses the
+    SAME contract id and version (test.util@1.2.0) but a different semantic
+    interface (double now returns text — a changed typed signature, hence a
+    different interface hash, §E.8: "The namespace interface hash covers
+    typed functions, effect classes, codecs, and provider capabilities").
+    §16.2: the package install record pins the resolved descriptor. §9.2:
+    open(store) validates the recorded active composition and required
+    definitions before making the application available, and a diagnostic
+    leaves the prior composition unchanged. §2.1: a package requiring an
+    incompatible component fails validation before activation. Version
+    equality must NOT excuse the interface mismatch.
+    Extension step `reopen` is defined in NOTES.md.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.drift@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      n: "int = 0"
+      doubled: { $view: "util.double(.n)" }
+      $public: {
+        stats: { $view: ".doubled" }
+      }
+    }
+    $data: { n: 7 }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  steps: [
+    // the application is genuinely live before the swap
+    { watch: "public.stats", id: "w1", expect_init: { value: 14 } }
+    { unwatch: "w1" }
+    // same id, same version, different typed interface
+    { reopen: {
+        hosts: {
+          namespaces: [
+            {
+              id: "test.util"
+              version: "1.2.0"
+              interface_hash: "ih-util-imposter"
+              functions: {
+                double: { signature: "(int) -> text", effect: "pure", op: "double" }
+              }
+            }
+          ]
+        }
+      }
+      expect: {
+        outcome: invalid
+        violates: ["#host-namespaces", "#conformance"]
+      } }
+  ]
+}

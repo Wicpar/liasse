@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: canonical-uuid-key-lowercase-hyphenated
+  suite: scenario
+  spec: ["§D.2", "§9.1"]
+  tags: ["identity"]
+  note: '''§D.2: the canonical scalar key text of a `uuid` is its "lowercase
+hyphenated form". Seed map member names use canonical key text (§9.1), so a uuid
+key is seeded in lowercase hyphenated form; that seed member name must decode to the
+typed uuid value and become an addressable row. §D.2: "Expressions use typed key
+values rather than encoded strings", so the lookup passes the typed uuid, and the
+projected key round-trips as the canonical lowercase hyphenated form. (Whether a
+NON-canonical textual uuid, e.g. an upper-case seed member name, is accepted and
+normalized or rejected is not decided by §D.2 and is left to a separate case.)'''
+
+  package: {
+    $liasse: 1
+    $app: "t.uuidkey@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "uuid"
+        label: "text"
+      }
+      $public: {
+        items: {
+          $view: ".items { id, label }"
+          $mut: { label_of: "return .items[@id].label" }
+        }
+      }
+    }
+    $data: {
+      items: {
+        // canonical uuid key text: lowercase hyphenated
+        "550e8400-e29b-41d4-a716-446655440000": { label: "canonical" }
+      }
+    }
+  }
+
+  steps: [
+    // the lowercase seed member name decoded to an addressable typed uuid key
+    { call: "public.items.label_of", args: { id: "550e8400-e29b-41d4-a716-446655440000" },
+      expect: { outcome: ok, value: "canonical" } }
+    // the projected key round-trips as the canonical lowercase hyphenated form
+    { watch: "public.items", id: "w1", expect_init: { value: [
+      { id: "550e8400-e29b-41d4-a716-446655440000", label: "canonical" }
+    ] } }
+  ]
+}

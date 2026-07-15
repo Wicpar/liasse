@@ -1,0 +1,69 @@
+{
+  format: 1
+  name: call-without-operation-id-new-each-time
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["dedup"]
+  note: '''
+    §12.3: "A call without an identifier is a new operation on every
+    submission." Two byte-identical submissions without an operation
+    identifier must both execute: no implicit content-based deduplication is
+    permitted.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "a" } }
+    }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "a" } }
+    }
+    // Both submissions committed: two rows.
+    {
+      expect_view: {
+        watch: "w1"
+        value: [
+          { id: "$any:uuid", title: "a" }
+          { id: "$any:uuid", title: "a" }
+        ]
+      }
+    }
+  ]
+}

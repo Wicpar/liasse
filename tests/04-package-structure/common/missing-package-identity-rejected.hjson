@@ -1,0 +1,20 @@
+{
+  format: 1
+  name: missing-package-identity-rejected
+  suite: static
+  spec: ["#package-structure", "§4.3", "#annex-c", "§C.1"]
+  note: "Annex C.1: 'Exactly one of $app and $module identifies a package.' A definition with neither has no identity and no grammar production."
+
+  package: {
+    $liasse: 1
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.1", "#package-structure"]
+    detail: "definition declares neither $app nor $module"
+  }
+}

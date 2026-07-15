@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: generated-default-fixed-and-recorded
+  suite: scenario
+  spec: ["#host-namespaces", "#mutations"]
+  note: '''
+    §16.3: generated functions run in mutation/write-time positions; "one
+    successful result is fixed for the admitted operation" and "A generated
+    result affecting state ... is recorded." §8.8 (expression effects):
+    defaults MAY use generated functions. §8.12: generated results are
+    produced once per admitted request and recorded when they enter
+    committed state. The generated `token` value written by the insert must
+    therefore survive a restart unchanged: replay must reuse the recorded
+    result, never re-invoke the generated function.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.genrecord@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      rows: {
+        $key: "id"
+        id: "uuid = uuid()"
+        token: "text = util.token()"
+      }
+      all: { $view: ".rows { id, token }" }
+      $mut: {
+        add: [
+          "row = .rows + {}"
+          "return row { id, token }"
+        ]
+      }
+      $public: {
+        rows: {
+          $view: ".all"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          token: { signature: "() -> text", effect: "generated", op: "token" }
+        }
+      }
+    ]
+  }
+
+  steps: [
+    { call: "public.rows.add", args: {},
+      expect: { outcome: "ok", value: { id: "$bind:id1", token: "$bind:t1" } } }
+    { restart: {} }
+    { watch: "public.rows", id: "w1",
+      expect_init: { value: [ { id: "$ref:id1", token: "$ref:t1" } ] } }
+  ]
+}

@@ -1,0 +1,48 @@
+{
+  // §22.3: once the admission mechanism establishes A before B, "final
+  // admission MUST preserve A < B", and "the committed serial order is a linear
+  // extension of the established relation." Two appends issued sequentially on
+  // one connection — the second submitted only after the first returned
+  // `committed` (§22.7 makes that commit visible to later reads on the same
+  // connection) — are ordered A < B. Appending to a text field therefore yields
+  // exactly "ab", never "ba".
+  format: 1
+  name: sequential-order-preserved-in-trace
+  suite: scenario
+  spec: ["§22.3", "§22.4", "§22.7", "#runtime"]
+  tags: ["ordering"]
+
+  package: {
+    $liasse: 1
+    $app: "t.trace@1.0.0"
+    $model: {
+      board: {
+        $key: "id"
+        id: "text"
+        trace: "text"
+        $mut: {
+          append: ".trace = .trace + @c"
+        }
+      }
+      $public: {
+        board: {
+          $view: ".board { id, trace }"
+          $mut: { append: ".board[@id].append" }
+        }
+      }
+    }
+    $data: {
+      board: { "b1": { trace: "" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "public.board.append", args: { id: "b1", c: "a" }, on: "c1",
+      expect: { outcome: ok } }
+    { call: "public.board.append", args: { id: "b1", c: "b" }, on: "c1",
+      expect: { outcome: ok } }
+    { watch: "public.board", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "b1", trace: "ab" } ] } }
+  ]
+}

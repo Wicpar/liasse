@@ -1,0 +1,101 @@
+{
+  format: 1
+  name: public-surface-authenticator-selection-unspecified
+  suite: scenario
+  spec: ["#authentication", "§11.4", "#interfaces", "§10.2"]
+  tags: ["authz"]
+  note: '''
+    outcome: unspecified. §11.4 states "Public surfaces use their public
+    address and carry no authenticator selection", and §10.2 says a public
+    operation "has no $actor or $session" and "is callable without an
+    authenticated actor". But the spec does not pin what happens when a client
+    nonetheless attaches an authenticator selection and credential to a public
+    address: it is silent on whether the extraneous selection is ignored (call
+    proceeds actor-less) or the malformed request is rejected. Both are
+    defensible readings of §11.4/§10.2, so the outcome is genuinely
+    unspecified. A future spec revision should state one.
+  '''
+
+  // Adversarial framing: an attacker with a valid session token attaches it to
+  // a public call, hoping to smuggle an actor into an actor-less surface (or to
+  // find divergent implementation behavior). The spec neither promises the
+  // actor is honored nor mandates rejection here.
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.pub@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      feedback: {
+        $key: "id"
+        id: "uuid = uuid()"
+        body: "text"
+      }
+      $mut: {
+        add_feedback: [
+          "row = .feedback + { body: @body }"
+          "return row { id, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $public: {
+        feedback: {
+          $mut: { add: ".add_feedback" }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+      }
+      sessions: {
+        "5e551000-0000-4000-8000-000000000001": {
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "5e551000-0000-4000-8000-000000000001" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // A public address carrying an authenticator selection it should not carry.
+    { call: "public.feedback.add", args: { body: "hi" }, on: "c1",
+      auth: { auth: "session", credential: "tok-alice" },
+      expect: { outcome: unspecified } }
+  ]
+}

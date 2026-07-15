@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: default-order-is-key-ascending
+  suite: scenario
+  spec: ["#views", "§7.3", "§B.5", "§B.1"]
+  note: "§7.3: 'Default order is key ascending.' §B.5: a collection defaults to key ascending; §B.1: text compares by Unicode scalar order. Seed insertion order (b, a, c) is irrelevant; the view returns a, b, c."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewdefault@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      $public: {
+        all: { $view: ".items { id }" }
+      }
+    }
+    $data: {
+      items: {
+        b: {}
+        a: {}
+        c: {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.all", id: "w1",
+      expect_init: { value: [ { id: "a" }, { id: "b" }, { id: "c" } ] } }
+  ]
+}

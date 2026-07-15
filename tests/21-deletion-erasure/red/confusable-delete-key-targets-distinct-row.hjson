@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: confusable-delete-key-targets-distinct-row
+  suite: scenario
+  tags: [unicode, identity, deletion]
+  // Attack: delete by a visually identical key hoping to remove a different row.
+  // Rows keyed by Latin "a" (U+0061) and Cyrillic "а" (U+0430) are distinct
+  // identities (Annex D.2: canonical key text is the EXACT Unicode text, no
+  // folding). Deleting by the Cyrillic key MUST remove only the Cyrillic row; the
+  // Latin row survives. The two keys are distinct Unicode scalar sequences
+  // (U+0061 vs U+0430), not the same key under any normalization.
+  spec: ["Annex D.2", "§5.6", "§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        label: "text"
+      }
+      $mut: {
+        add: [
+          "u = .users + { id: @id, label: @label }"
+          "return u { id, label }"
+        ]
+        remove: ".users - @id"
+      }
+      all: { $view: ".users { id, label }" }
+      $public: {
+        users: {
+          $view: ".all"
+          $mut: { add: ".add", remove: ".remove" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.users.add", args: { id: "a", label: "latin" },
+      expect: { outcome: ok, value: { id: "a", label: "latin" } } }
+    { call: "public.users.add", args: { id: "а", label: "cyrillic" },
+      expect: { outcome: ok, value: { id: "а", label: "cyrillic" } } }
+    // delete by the Cyrillic key (U+0430): only the cyrillic row is removed
+    { call: "public.users.remove", args: { id: "а" }, expect: { outcome: ok, "...": true } }
+    { watch: "public.users", id: "w1", expect_init: { value: { $unordered: [
+      { id: "a", label: "latin" }
+    ] } } }
+  ]
+}

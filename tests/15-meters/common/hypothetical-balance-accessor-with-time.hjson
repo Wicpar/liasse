@@ -1,0 +1,72 @@
+{
+  format: 1
+  name: hypothetical-balance-accessor-with-time
+  suite: scenario
+  spec: ["#meters", "§15.6"]
+  tags: [temporal]
+  note: '''.credits.balance({ $time }) reports capacity for a hypothetical spend context
+using the same source evaluation and remaining-capacity rules as admission
+(SPEC §15.6). Probing before and after a pool's expiry instant shows the finite pool
+included, then excluded, without any state change. A succeeding call whose program
+changes no state still succeeds and returns its evaluated response (§8.9).'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.hypo@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          $bucket: { $until: ".expires_at" }
+          id: "text"
+          amount: "decimal"
+          expires_at: "timestamp? = none"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+            $order: ["$until"]
+          }
+        }
+        $mut: {
+          probe: "return .credits.balance({ $time: @at })"
+        }
+      }
+      $public: {
+        wallet: {
+          $mut: { probe: ".users[@user].probe" }
+        }
+      }
+    }
+    $data: {
+      users: {
+        u1: {
+          topups: {
+            // expires 2026-01-08
+            t1: { amount: "100", expires_at: "1767830400" }
+            t2: { amount: "50" }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // 2026-01-03: both pools active
+    { call: "public.wallet.probe", args: { user: "u1", at: "1767398400" },
+      expect: { outcome: ok, value: "150" } }
+    // 2026-01-11: t1 expired at that hypothetical instant
+    { call: "public.wallet.probe", args: { user: "u1", at: "1768089600" },
+      expect: { outcome: ok, value: "50" } }
+  ]
+}

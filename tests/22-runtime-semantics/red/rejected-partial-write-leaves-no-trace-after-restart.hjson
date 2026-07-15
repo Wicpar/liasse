@@ -1,0 +1,61 @@
+{
+  // Attack: force a mutation to fail AFTER it has written several fields, then
+  // restart hoping a partial write was durably flushed and replayed. §22.2: "A
+  // failure leaves the prior committed state intact." §22.7(1): only a
+  // successful call is durably committed. After the restart the state must be
+  // byte-identical to genesis: no partial durable residue survives replay.
+  format: 1
+  name: rejected-partial-write-leaves-no-trace-after-restart
+  suite: scenario
+  spec: ["§22.2", "§22.7", "#runtime"]
+  tags: ["atomicity", "durability", "replay"]
+
+  package: {
+    $liasse: 1
+    $app: "t.partial@1.0.0"
+    $model: {
+      vault: {
+        $key: "id"
+        id: "text"
+        a: "int"
+        b: "int"
+        balance: "int"
+        $mut: {
+          drain: [
+            ".a = @mark"
+            ".b = @mark"
+            ".balance = .balance - @mark"
+            "assert(.balance >= 0, 'overdraft')"
+          ]
+        }
+      }
+      $public: {
+        vault: {
+          $view: ".vault { id, a, b, balance }"
+          $mut: { drain: ".vault[@id].drain" }
+        }
+      }
+    }
+    $data: {
+      vault: { "v1": { a: "0", b: "0", balance: "10" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      // Writes a=b=999, balance -> -989, then assert fails: full rollback.
+      call: "public.vault.drain"
+      args: { id: "v1", mark: "999" }
+      on: "c1"
+      expect: { outcome: rejected, violates: ["§22.2"] }
+    }
+    { restart: {} }
+    {
+      // Replay must reconstruct genesis, not any speculative partial write.
+      watch: "public.vault"
+      id: "w1"
+      expect_init: { value: [ { id: "v1", a: "0", b: "0", balance: "10" } ] }
+    }
+  ]
+}

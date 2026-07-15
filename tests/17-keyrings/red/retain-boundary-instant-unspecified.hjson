@@ -1,0 +1,103 @@
+{
+  format: 1
+  name: retain-boundary-instant-unspecified
+  suite: scenario
+  tags: ["boundary", "rotation"]
+  spec: ["#keyrings", "§17.1", "§17.3", "§17.4", "§22.5"]
+  // Exact-boundary probe: v1 is signed at day 0, rotation is due at exactly
+  // day 30, and $retain is P45D — the authentication attempt lands at exactly
+  // day 75 = retirement + $retain. Two compounding gaps:
+  //   (a) §17.1/§17.3 never say whether the instant retired_at + $retain is
+  //       itself still accepted (inclusive) or already rejected (exclusive);
+  //   (b) §17.4 lets the rotation run as a scheduled system commit or lazily
+  //       "before the next operation" with identical logical order and key
+  //       selection — but it pins neither whether a rotation is already "due"
+  //       at exactly the cadence instant nor whether the RECORDED retirement
+  //       instant is the due instant or the triggering instant. The virtual
+  //       clock makes the triggering login and the due instant coincide at
+  //       day 30, narrowing but not closing gap (b).
+  note: "Both readings are conforming as written: outcome ok (inclusive boundary) and outcome denied (exclusive boundary). One second earlier or later is deterministic, as retain-window-bounds-retired-acceptance shows."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "enabled": "bool = true"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+        "revoked": "bool = false"
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$auth": {
+        "session": {
+          "$credential": "bytes"
+          "$verify": "cose.verify(/session_keys, $credential)"
+          "$session": "/sessions[$proof.session]"
+          "$actor": "/accounts[$session.account]"
+          "$check": ["$proof.auth == $auth_name", "!$session.revoked"]
+        }
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "session"
+          "$members": ".accounts[:a | a.enabled]"
+          "mysessions": { "$view": "/sessions[:s | s.account == $actor] { revoked }" }
+        }
+      }
+    }
+    "$data": { "accounts": { "alice": { "name": "Alice" } } }
+  }
+
+  steps: [
+    { call: "public.login.login", args: { account: "alice" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$bind:tok1" } } }
+    // Exactly the due instant: the triggering login and the scheduled instant
+    // coincide at day 30 on the virtual clock.
+    { advance_time: "P30D" }
+    { call: "public.login.login", args: { account: "alice" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$any" } } }
+    // Exactly retirement + $retain.
+    { advance_time: "P45D" }
+    { connect: "c2",
+      authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
+      expect: { outcome: unspecified, violates: ["§17.1", "§17.3"] } }
+  ]
+}

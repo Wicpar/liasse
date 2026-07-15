@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: clipped-final-interval-upper-bound-excluded
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.5"]
+  tags: ["boundary", "temporal", "recurrence", "precision"]
+  note: "Rollover at the exact series end. A recurring series is clipped at its upper bound: the final generated interval is [b2, series-until). Its upper bound is still half-open, so $at at exactly series-until sees no active period, while one microsecond earlier still sees the clipped final period. Attack angle: a client that reads at the exact clip instant must not observe a lingering clipped period."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.clipedge@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          weekly: { credits: "30", period: "P7D" }
+        }
+        subscriptions: {
+          // series [2026-01-01T00:00Z, 2026-01-18T00:00Z): periods 0,1 full,
+          // period 2 clipped to [Jan 15, Jan 18)
+          s1: { plan: "weekly", starts_at: "1767225600000000", ends_at: "1768694400000000" }
+        }
+      }
+      $public: {
+        periods_at: {
+          $params: { t: "timestamp" }
+          $view: ".credit_periods.$at(@t) { index: $index, from: $from, until: $until }"
+        }
+      }
+    }
+  }
+
+  steps: [
+    // t == series-until - 1us (2026-01-17T23:59:59.999999Z): clipped period 2 active
+    { watch: "public.periods_at", args: { t: "1768694399999999" }, id: "w0"
+      expect_init: {
+        value: [
+          { index: "2", from: "1768435200000000", until: "1768694400000000" }
+        ]
+      } }
+
+    // t == series-until exactly (2026-01-18T00:00:00Z): the clipped upper bound
+    // is excluded (half-open) and the series has ended: no active period
+    { watch: "public.periods_at", args: { t: "1768694400000000" }, id: "w1"
+      expect_init: { value: [] } }
+  ]
+}

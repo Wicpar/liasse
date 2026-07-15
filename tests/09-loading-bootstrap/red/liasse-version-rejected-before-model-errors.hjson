@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: liasse-version-rejected-before-model-errors
+  suite: static
+  spec: ["#package-structure", "#loading"]
+  note: '''
+    §4.1: "A runtime MUST reject an unsupported value before interpreting any
+    other declaration." Attack shape: a definition that declares a future
+    language generation AND is booby-trapped with declarations that are garbage
+    under v1 (an unknown reserved-looking member and a collection whose $key
+    names an undeclared field). A conforming runtime must reject on the
+    unsupported $liasse value without ever interpreting the rest — it must not
+    attempt to parse the v1-invalid model under v1 rules, and it must not
+    guess at "version 99" semantics. §9.2 step 3 resolves the language version
+    during complete validation.
+  '''
+
+  package: {
+    "$liasse": 99
+    "$app": "t.futurelang@1.0.0"
+    "$frobnicate": true
+    "$model": {
+      "bogus": {
+        "$key": "id"
+        "name": "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure"]
+    detail: "unsupported $liasse language generation 99 must be rejected before interpreting any other declaration"
+  }
+}

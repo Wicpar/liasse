@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: reinsert-tampered-extract-hash-rejects
+  suite: scenario
+  tags: [erasure, reinsert, tampering]
+  // Attack: modify the durable extract before reinserting it (e.g. swap the
+  // payload bytes to smuggle different content back into history under a genuine
+  // erasure point). §21.3: reinsert verifies "extract content hash" first; a
+  // corrupted extract fails that check and the whole reinsertion rejects.
+  spec: ["§21.3"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        secret: "text"
+      }
+      $mut: {
+        add: [
+          "u = .users + { id: @id, secret: @secret }"
+          "return u { id, secret }"
+        ]
+        erase_user: "return erase(.users[@id])"
+        reinsert_user: "reinsert(@extract)"
+      }
+      all: { $view: ".users { id, secret, $sort: [id] }" }
+      $public: {
+        users: {
+          $view: ".all"
+          $mut: { add: ".add", erase: ".erase_user", reinsert: ".reinsert_user" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.users.add", args: { id: "u1", secret: "s1" },
+      expect: { outcome: ok, value: { id: "u1", secret: "s1" } } }
+    { call: "public.users.erase", args: { id: "u1" }, expect: { outcome: ok, value: "$bind:extract" } }
+    // corrupt the extract's content bytes (see NOTES.md: tamper_extract)
+    { tamper_extract: { from: "extract", as: "extract_bad", op: "flip_content" } }
+    { call: "public.users.reinsert", args: { extract: "$ref:extract_bad" },
+      expect: { outcome: rejected, violates: ["§21.3"],
+                detail: "extract content hash fails verification" } }
+  ]
+}

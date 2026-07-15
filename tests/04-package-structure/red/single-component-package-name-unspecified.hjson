@@ -1,0 +1,20 @@
+{
+  format: 1
+  name: single-component-package-name-unspecified
+  suite: static
+  spec: ["#conformance", "§2.5", "#package-structure", "§4.3"]
+  tags: ["boundary", "identity"]
+  note: "§2.5 defines package names as 'dot-separated lowercase identifiers ... with each component beginning with a letter'. Every example in the spec is vendor-qualified ('vendor.application'), but the grammar prose never states a minimum of two components; a single identifier is trivially 'dot-separated' with zero dots. Whether an unqualified name like 'admin' is a valid compatibility line is unspecified — and it matters, because unqualified names are prime squatting/typo targets in any registry."
+
+  package: {
+    $liasse: 1
+    $app: "admin@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: unspecified
+  }
+}

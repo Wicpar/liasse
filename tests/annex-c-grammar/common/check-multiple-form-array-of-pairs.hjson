@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: check-multiple-form-array-of-pairs
+  suite: scenario
+  spec: ["#annex-c", "§C.3", "#state-model", "§5.10"]
+  note: "Annex C.3: '$check: expression | [expression, message] | [[expression, message], ...]'. The third form declares several independent checks as an array of [expression, message] pairs. §5.10: each is a state constraint. This case uses the multi-check form on a field and shows a value violating the SECOND pair is rejected, proving both pairs are enforced (not just the first)."
+
+  package: {
+    $liasse: 1
+    $app: "t.multicheck@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "uuid = uuid()"
+        qty: {
+          $type: "int"
+          $check: [
+            [". > 0", "quantity must be positive"]
+            [". <= 100", "quantity must not exceed 100"]
+          ]
+        }
+      }
+      $mut: {
+        add: [
+          "r = .items + { qty: @qty }"
+          "return r { id }"
+        ]
+      }
+      all: { $view: ".items { id }" }
+      $public: {
+        items: {
+          $view: ".all"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.items.add", args: { qty: "5" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { call: "public.items.add", args: { qty: "500" },
+      expect: { outcome: rejected, violates: ["#state-model", "§5.10"] } }
+  ]
+}

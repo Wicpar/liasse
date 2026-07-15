@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: seed-applies-defaults-and-normalization
+  suite: scenario
+  spec: ["#loading", "#state-model"]
+  note: '''
+    §9.1: "Seed rows pass through the same defaults, normalization, checks,
+    key, ref, uniqueness, bucket, and meter rules as mutation inserts."
+    The seeded title carries padding that $normalize must strip, and the
+    omitted done field must receive its declared default (§5.1).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seeddefaults@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": {
+          "$type": "text"
+          "$normalize": "string.trim(.)"
+          "$check": ["size(.) > 0", "A title is required"]
+        }
+        "done": "bool = false"
+      }
+      "$public": {
+        "tasks": { "$view": ".tasks { id, title, done }" }
+      }
+    }
+    "$data": {
+      "tasks": {
+        "t1": { "title": "  Read the specification  " }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1",
+      expect_init: { value: [ { id: "t1", title: "Read the specification", done: false } ] } }
+  ]
+}

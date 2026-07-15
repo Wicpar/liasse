@@ -1,0 +1,93 @@
+{
+  format: 1
+  name: module-space-instances-independent
+  suite: scenario
+  spec: ["#modules", "§13.2", "§13.3"]
+  note: '''
+    §13.2: each module-space location under a keyed row is an independent
+    installation space; installing the same package in each space creates two
+    independent instances. A write through one instance must not appear in
+    the other, even though package, instance name, and space declaration are
+    identical.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": {
+                  "$view": { "$key": "id", "id": "text", "label": "text" }
+                  "$mut": {
+                    "create({ id: text, label: text })": {
+                      "$return": { "id": "text", "label": "text" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+          "catalog": {
+            "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
+          }
+        }
+        "$public": {
+          "catalog": {
+            "$params": { "company": "text" }
+            "$view": "/companies[@company].catalog"
+          }
+          "admin": {
+            "$mut": { "create": "/companies[@company].modules[@module]::templates.create" }
+          }
+        }
+      }
+      "$data": {
+        "companies": {
+          "acme": { "name": "Acme" }
+          "globex": { "name": "Globex" }
+        }
+      }
+    }
+    tpl: {
+      "$liasse": 1
+      "$module": "t.tpl@1.0.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+        "$mut": {
+          "create_template": [
+            "t = .templates + { id: @id, label: @label }"
+            "return t { id, label }"
+          ]
+        }
+      }
+      "$expose": {
+        "templates": {
+          "$view": ".templates { id, label }"
+          "$mut": { "create": ".create_template" }
+        }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.tpl@1.0.0" } }
+      expect: { outcome: ok } }
+    { module_install: { space: "/companies/globex/modules", request: { "$name": "kit", "$module": "t.tpl@1.0.0" } }
+      expect: { outcome: ok } }
+    // write through Acme's instance only
+    { call: "public.admin.create", args: { company: "acme", module: "kit", id: "t1", label: "Alpha" }
+      expect: { outcome: ok, value: { id: "t1", label: "Alpha" } } }
+    { watch: "public.catalog", args: { company: "acme" }, id: "wa"
+      expect_init: { value: [ { module: "kit", id: "t1", label: "Alpha" } ] } }
+    { watch: "public.catalog", args: { company: "globex" }, id: "wg"
+      expect_init: { value: [] } }
+  ]
+}

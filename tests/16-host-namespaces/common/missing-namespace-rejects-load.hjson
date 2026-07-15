@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: missing-namespace-rejects-load
+  suite: static
+  spec: ["#host-namespaces", "#conformance", "#loading"]
+  note: '''
+    §16.2: "Missing, incompatible, or ambiguous requirements reject loading
+    before the package becomes active." §2.1: host components are explicit
+    dependencies; a package requiring an unavailable component fails
+    validation before activation. §9.2 step 4 resolves required namespaces
+    during load validation. The context registers no namespace at all.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.missingns@1.0.0"
+    $requires: {
+      cbor: "liasse.cbor@1"
+    }
+    $model: {
+      n: "int = 0"
+      encoded: { $view: "cbor.encode(.n)" }
+      $public: {
+        stats: { $view: ".encoded" }
+      }
+    }
+  }
+
+  hosts: { namespaces: [] }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "#conformance"]
+    detail: "requirement liasse.cbor@1 resolves to no registered descriptor; loading is rejected before the package becomes active"
+  }
+}

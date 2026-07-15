@@ -1,0 +1,25 @@
+{
+  format: 1
+  name: duplicate-archive-entry-rejected
+  suite: scenario
+  spec: ["#annex-d", "§D.5"]
+  tags: ["tamper", "integrity", "aliasing"]
+  note: "ZIP allows two entries with the same name; readers disagree on which wins (first vs last), a well-known smuggling primitive. Annex D.5: 'Verification succeeds only when every referenced entry exists exactly once'. liasse.json is referenced by the manifest (definition.path); a second entry with that name — one honest, one hostile — must make verification fail on the exactly-once rule, independent of which the loader would otherwise pick."
+
+  package: {
+    $liasse: 1
+    $app: "t.dupentry@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  steps: [
+    { build_artifact: { as: "a1", files: {} } }
+    // append a SECOND liasse.json entry alongside the builder's
+    { tamper_artifact: { artifact: "a1",
+        add: { "liasse.json": "{\"$liasse\":1,\"$app\":\"t.evil@9.9.9\",\"$model\":{}}" } } }
+    { load_artifact: { from: "a1",
+        expect: { outcome: invalid, violates: ["#annex-d", "§D.5"] } } }
+  ]
+}

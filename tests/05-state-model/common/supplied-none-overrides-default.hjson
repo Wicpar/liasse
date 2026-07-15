@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: supplied-none-overrides-default
+  suite: scenario
+  spec: ["#state-model", "§5.1"]
+  note: "§5.1: 'A supplied value, including none, takes precedence' over the field default. An omitted optional field takes the default; an explicitly supplied none must NOT be replaced by the default."
+
+  package: {
+    $liasse: 1
+    $app: "t.none_default@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        nickname: "text? = 'anon'"
+      }
+      $public: {
+        people: {
+          $view: ".people { name, nickname }"
+          $mut: {
+            add_defaulted: [
+              "row = .people + { name: @name }"
+              "return row { name, nickname }"
+            ]
+            add_explicit_none: [
+              "row = .people + { name: @name, nickname: none }"
+              "return row { name, nickname }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // omitted -> default applies
+    { call: "public.people.add_defaulted", args: { name: "a" },
+      expect: { outcome: "ok", value: { name: "a", nickname: "anon" } } }
+    // supplied none -> takes precedence over the default; field stays absent
+    { call: "public.people.add_explicit_none", args: { name: "b" },
+      expect: { outcome: "ok", value: { name: "b", nickname: "$absent" } } }
+  ]
+}

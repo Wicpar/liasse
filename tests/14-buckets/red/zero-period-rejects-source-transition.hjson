@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: zero-period-rejects-source-transition
+  suite: scenario
+  spec: ["#buckets", "§14.5"]
+  tags: ["boundary", "recurrence", "resource-abuse"]
+  note: "Attack: a zero-length fixed period would make every recurrence boundary equal to the anchor (an infinite number of empty periods). Every recurrence step MUST advance strictly from the prior boundary; the transition that produces the non-advancing recurrence — inserting a subscription on the PT0S plan — rejects. The plan row itself is plain data and seeds fine."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.zeroperiod@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          zero: { credits: "30", period: "PT0S" }    // valid duration value, non-advancing step
+          weekly: { credits: "30", period: "P7D" }
+        }
+      }
+      $public: {
+        subs: {
+          $mut: {
+            add: [
+              "s = .subscriptions + { id: @id, plan: @plan, starts_at: @starts_at }"
+              "return s { id }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // subscribing to the zero-period plan produces a non-advancing recurrence
+    { call: "public.subs.add"
+      args: { id: "s1", plan: "zero", starts_at: "1767229200000000" }
+      expect: { outcome: rejected, violates: ["§14.5"] } }
+
+    // control: the advancing plan admits normally
+    { call: "public.subs.add"
+      args: { id: "s2", plan: "weekly", starts_at: "1767229200000000" }
+      expect: { outcome: ok, value: { id: "s2" } } }
+  ]
+}

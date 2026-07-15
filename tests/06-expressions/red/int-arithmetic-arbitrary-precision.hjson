@@ -1,0 +1,32 @@
+{
+  format: 1
+  name: int-arithmetic-arbitrary-precision
+  suite: scenario
+  spec: ["#expressions", "§6.5", "§A.1"]
+  tags: ["boundary"]
+  note: "Attack: drive int arithmetic across the i64 boundary where a machine-integer implementation wraps, saturates, or crashes. Annex A.1: int is an 'arbitrary-precision integer' with canonical base-10 digit wire form. 9223372036854775807 (i64::MAX) + 1 must be exactly 9223372036854775808 and its square exactly 85070591730234615847396907784232501249 (values verified externally with bc)."
+
+  package: {
+    $liasse: 1
+    $app: "t.bigint@1.0.0"
+    $model: {
+      a: "int"
+      inc: "= .a + 1"
+      square: "= .a * .a"
+      $public: {
+        big: { $view: ". { inc, square }" }
+      }
+    }
+    $data: {
+      a: "9223372036854775807"
+    }
+  }
+
+  steps: [
+    { watch: "public.big", id: "w1",
+      expect_init: { value: {
+        inc: "9223372036854775808"
+        square: "85070591730234615847396907784232501249"
+      } } }
+  ]
+}

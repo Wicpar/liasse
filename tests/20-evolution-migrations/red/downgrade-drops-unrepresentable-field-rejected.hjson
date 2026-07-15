@@ -1,0 +1,83 @@
+{
+  format: 1
+  name: downgrade-drops-unrepresentable-field-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.2", "#loading", "§9.4"]
+  note: '''
+    §20.2: "When the older shape cannot represent the current live values and
+    no declared downgrade transform preserves them, the downgrade is rejected."
+    Version 2.0.0 adds a required `priority` field with live values that the
+    older 1.0.0 shape has no field for and no inverse to fold into an existing
+    field. The attacker attempts a silent downgrade that would discard live
+    data. It must be rejected, leaving 2.0.0 active, so the priority values are
+    not lost. Prior values remain in history regardless (§20.2).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.drop@1.0.0"
+    $model: {
+      tickets: {
+        $key: "id"
+        id: "text"
+        title: "text"
+      }
+      $public: {
+        tickets: { $view: ".tickets { id, title }" }
+      }
+    }
+    $data: {
+      tickets: { t1: { title: "Boot loops" } }
+    }
+  }
+
+  steps: [
+    // upgrade: add a required field carrying live data
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.drop@2.0.0"
+          $model: {
+            tickets: {
+              $key: "id"
+              id: "text"
+              title: "text"
+              priority: "int = 5"
+            }
+            $public: {
+              tickets: { $view: ".tickets { id, title, priority }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.tickets", id: "w1",
+      expect_init: { value: [ { id: "t1", title: "Boot loops", priority: "5" } ] } }
+    // downgrade back to 1.0.0: the older shape cannot represent `priority` and
+    // no declared inverse preserves it -> rejected
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.drop@1.0.0"
+          $model: {
+            tickets: {
+              $key: "id"
+              id: "text"
+              title: "text"
+            }
+            $public: {
+              tickets: { $view: ".tickets { id, title }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.2"]
+        detail: "older shape cannot represent live 'priority' and no declared downgrade transform preserves it"
+      } }
+    // 2.0.0 stays active with priority intact
+    { watch: "public.tickets", id: "w2",
+      expect_init: { value: [ { id: "t1", title: "Boot loops", priority: "5" } ] } }
+  ]
+}

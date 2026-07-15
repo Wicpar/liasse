@@ -1,0 +1,82 @@
+{
+  format: 1
+  name: metadata-only-projection-grants-no-fetch
+  suite: scenario
+  spec: ["#blobs", "§18.8"]
+  tags: ["blob", "fetch", "authz"]
+  note: '''
+    §18.8: "A projection exposing only selected metadata grants that metadata
+    and no blob fetch." The surface projects only $bytes and $media, never the
+    blob value itself, so a fetch attempt over that surface is denied even
+    though the metadata is visible.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.metaonly@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      meta: { $view: ".docs[@id] { id, bytes: .file.$bytes, media: .file.$media }" }
+      $public: {
+        docs: {
+          $view: ".meta"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: {
+      "fs-a": { capabilities: ["stream_upload", "stream_download", "checksum"] }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "secret bytes"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: { id: "d1" } } }
+    // Metadata is visible...
+    { watch: "public.docs", args: { id: "d1" }, on: "c1", id: "w1",
+      expect_init: { value: { id: "d1", bytes: 12, media: "text/plain" } } }
+    // ...but the projection carries no blob value, so no fetch is granted.
+    { blob_get: {
+        surface: "public.docs"
+        args: { id: "d1" }
+        at: ".file"
+        on: "c1"
+      }
+      expect: { outcome: denied, violates: ["#blobs"],
+                detail: "metadata-only projection grants no blob fetch" } }
+  ]
+}
+</content>

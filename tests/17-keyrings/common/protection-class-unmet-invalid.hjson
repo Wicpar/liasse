@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: protection-class-unmet-invalid
+  suite: static
+  spec: ["#keyrings", "§17.1", "§17.6"]
+  note: "§17.1: $protection states the required provider protection class. §17.6: loading validates the requested hardware/protection class when declared; an incompatible provider rejects loading. The keyring demands 'hardware'; the provider declares 'software'."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["ES256"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "ES256"
+          "$usage": ["sign"]
+          "$rotate": { "$every": "P30D", "$overlap": "P2D", "$mode": "automatic" }
+          "$retain": "P45D"
+          "$protection": "hardware"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§17.6", "§17.1"]
+    detail: "keyring requires protection class 'hardware'; provider 'test-kp' declares 'software'"
+  }
+}

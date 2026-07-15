@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: conflicting-on-delete-patches-reject
+  suite: scenario
+  tags: [deletion, patch, conflict]
+  // Attack: two independent deletions patch the SAME field of one surviving row
+  // to different values in one transition. §21.1: "Patches to a surviving row
+  // combine when they touch disjoint fields or assign the same resulting value;
+  // conflicting assignments reject the transition." Deleting both a and b patches
+  // task.label to 'AA' and 'BB' respectively -> conflict -> reject.
+  spec: ["§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      alphas: { $key: "id", id: "text" }
+      betas: { $key: "id", id: "text" }
+      tasks: {
+        $key: "id"
+        id: "text"
+        label: "text = 'none'"
+        a: {
+          $ref: "/alphas"
+          $optional: true
+          $on_delete: "= { a: none, label: 'AA' }"
+        }
+        b: {
+          $ref: "/betas"
+          $optional: true
+          $on_delete: "= { b: none, label: 'BB' }"
+        }
+      }
+      $mut: {
+        purge: [
+          ".alphas - @a"
+          ".betas - @b"
+        ]
+      }
+      tasks_view: { $view: ".tasks { id, label, a, b }" }
+      $public: {
+        tasks: { $view: ".tasks_view", $mut: { purge: ".purge" } }
+      }
+    }
+    $data: {
+      alphas: { a1: {} }
+      betas: { b1: {} }
+      tasks: { t1: { a: "a1", b: "b1" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [
+      { id: "t1", label: "none", a: "a1", b: "b1" }
+    ] } }
+    // both deletions in one transition patch t1.label to conflicting values
+    { call: "public.tasks.purge", args: { a: "a1", b: "b1" },
+      expect: { outcome: rejected, violates: ["§21.1"],
+                detail: "on_delete patches assign task.label = AA and BB in one transition" } }
+    { expect_view: { watch: "w1", value: [ { id: "t1", label: "none", a: "a1", b: "b1" } ] } }
+  ]
+}

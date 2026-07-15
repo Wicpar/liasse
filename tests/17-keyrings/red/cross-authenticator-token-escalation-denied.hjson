@@ -1,0 +1,113 @@
+{
+  format: 1
+  name: cross-authenticator-token-escalation-denied
+  suite: scenario
+  tags: ["authz", "escalation"]
+  spec: ["#keyrings", "§17.8", "#authentication", "§11.3", "§11.4"]
+  // Escalation attempt: both authenticators verify against the SAME keyring,
+  // so the signature check alone cannot distinguish them. §17.8: the package
+  // controls claims — login embeds auth:'session'. §11.4: the verified proof
+  // MUST bind to the selected authenticator (here via the signed claim and
+  // the $check "$proof.auth == $auth_name"). Presenting a member token to the
+  // admin authenticator must be denied despite the valid signature.
+  note: "The control step shows the same credential authenticates where its claim matches."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "enabled": "bool = true"
+        "admin": "bool = false"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+        "revoked": "bool = false"
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$auth": {
+        "session": {
+          "$credential": "bytes"
+          "$verify": "cose.verify(/session_keys, $credential)"
+          "$session": "/sessions[$proof.session]"
+          "$actor": "/accounts[$session.account]"
+          "$check": ["$proof.auth == $auth_name", "!$session.revoked"]
+        }
+        "admin": {
+          "$credential": "bytes"
+          "$verify": "cose.verify(/session_keys, $credential)"
+          "$session": "/sessions[$proof.session]"
+          "$actor": "/accounts[$session.account]"
+          "$check": ["$proof.auth == $auth_name", "!$session.revoked"]
+        }
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "session"
+          "$members": ".accounts[:a | a.enabled]"
+          "mysessions": { "$view": "/sessions[:s | s.account == $actor] { revoked }" }
+        }
+        "operators": {
+          "$auth": "admin"
+          "$members": ".accounts[:a | a.admin]"
+          "everyone": { "$view": "/accounts { id, name }" }
+        }
+      }
+    }
+    "$data": {
+      "accounts": {
+        "alice": { "name": "Alice", "admin": true }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.login.login", args: { account: "alice" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$bind:tok1" } } }
+    // Same keyring, valid signature, admin membership — but the signed claim
+    // binds the token to the 'session' authenticator, not 'admin'.
+    { connect: "c2",
+      authenticate: { role: "operators", auth: "admin", credential: "$ref:tok1" },
+      expect: { outcome: denied, violates: ["§11.4", "§17.8"] } }
+    // Control: accepted by the authenticator its claim names.
+    { connect: "c3",
+      authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
+      expect: { outcome: ok } }
+  ]
+}

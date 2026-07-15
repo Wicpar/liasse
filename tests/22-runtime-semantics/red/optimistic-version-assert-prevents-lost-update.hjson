@@ -1,0 +1,69 @@
+{
+  // Attack: two concurrent accepts both read version 0 and both try to write,
+  // hoping the runtime loses one update silently. §22.3: "Applications
+  // requiring a specific outcome under otherwise unordered concurrency express
+  // it in state or assertions" — the version assert is checked at each
+  // request's own serial position (§22.4). Exactly one accept commits (version
+  // 0 -> 1); the other observes version 1 and its assert fails. Both-commit and
+  // both-reject are forbidden; the final version is exactly 1.
+  format: 1
+  name: optimistic-version-assert-prevents-lost-update
+  suite: scenario
+  spec: ["§22.3", "§22.4", "#runtime"]
+  tags: ["ordering", "concurrency"]
+
+  package: {
+    $liasse: 1
+    $app: "t.optimistic@1.0.0"
+    $model: {
+      docs: {
+        $key: "id"
+        id: "text"
+        version: "int"
+        accepted: "bool = false"
+        $mut: {
+          accept: [
+            "assert(.version == @expected_version, 'Changed concurrently')"
+            ".accepted = true"
+            ".version = .version + 1"
+          ]
+        }
+      }
+      $public: {
+        docs: {
+          $view: ".docs { id, version, accepted }"
+          $mut: { accept: ".docs[@id].accept" }
+        }
+      }
+    }
+    $data: {
+      docs: { "d1": { version: "0", accepted: "false" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { connect: "c2" }
+    {
+      concurrently: [
+        [ { call: "public.docs.accept", args: { id: "d1", expected_version: "0" }, on: "c1",
+            expect_one_of: [
+              { outcome: ok }
+              { outcome: rejected, violates: ["§22.4"] }
+            ] } ]
+        [ { call: "public.docs.accept", args: { id: "d1", expected_version: "0" }, on: "c2",
+            expect_one_of: [
+              { outcome: ok }
+              { outcome: rejected, violates: ["§22.4"] }
+            ] } ]
+      ]
+    }
+    {
+      // Exactly one accept won; version advanced by exactly one.
+      watch: "public.docs"
+      on: "c1"
+      id: "w1"
+      expect_init: { value: [ { id: "d1", version: "1", accepted: true } ] }
+    }
+  ]
+}

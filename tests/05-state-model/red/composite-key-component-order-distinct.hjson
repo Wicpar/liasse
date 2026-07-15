@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: composite-key-component-order-distinct
+  suite: scenario
+  spec: ["#state-model", "§5.4", "§A.9"]
+  tags: ["identity"]
+  note: '''Attack: exploit an implementation that derives composite identity from an
+unordered component set or a naive hash of concatenated values. §5.4/§A.9: a composite
+key is the listed fields *in $key order* (a typed tuple). Rows ("x","y") and ("y","x")
+have different component values, hence different keys — both must exist and each
+composite lookup must resolve exactly its own row.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.komporder@1.0.0"
+    $model: {
+      pairs: {
+        $key: ["a", "b"]
+        a: "text"
+        b: "text"
+        tag: "text"
+      }
+      $public: {
+        pairs: {
+          $view: ".pairs { a, b, tag }"
+          $mut: {
+            add: ".pairs + { a: @a, b: @b, tag: @tag }"
+            get: "return .pairs[{ a: @a, b: @b }].tag"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.pairs.add", args: { a: "x", b: "y", tag: "xy" }, expect: { outcome: "ok" } }
+    // swapped components -> distinct key, must not collide
+    { call: "public.pairs.add", args: { a: "y", b: "x", tag: "yx" }, expect: { outcome: "ok" } }
+    { call: "public.pairs.get", args: { a: "x", b: "y" }, expect: { outcome: "ok", value: "xy" } }
+    { call: "public.pairs.get", args: { a: "y", b: "x" }, expect: { outcome: "ok", value: "yx" } }
+  ]
+}

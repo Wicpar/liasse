@@ -1,0 +1,85 @@
+{
+  format: 1
+  name: point-id-aliasing-unrelated-history-unspecified
+  suite: scenario
+  tags: [tampering, aliasing, identity]
+  // Attack: take an artifact of a completely UNRELATED application instance
+  // and rewrite its instance incarnation, lineage id, and head point id to
+  // collide with the local application's identifiers, repairing checksums.
+  // The forged artifact now claims to BE the local history's head.
+  note: '''§19.8 classifies an import by comparing "each matching instance
+incarnation with local retained history" and §19.6/Annex D.5 say history
+ancestry and point identity are "represented explicitly" — plain
+identifiers, no cryptographic binding. The spec never defines how point,
+lineage, or incarnation identifiers are allocated, whether they must be
+collision-resistant, or what a runtime must do when an incoming artifact
+presents a locally known identifier over foreign content (here: relation
+would classify as "same point" while the content differs). Acceptance,
+rejection, or content comparison are all defensible readings, so the
+outcome is unspecified. Together with
+forged-state-consistent-checksums-unspecified this documents that history
+identity is forgeable by construction.'''
+  spec: ["§19.8", "§19.6", "Annex D.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "genuine" },
+      expect: { outcome: ok, value: { id: "n1", body: "genuine" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a1", expect: {
+        outcome: ok
+        manifest: {
+          instance: "$bind:inst"
+          selected: { lineage: "$bind:l1", point: "$bind:p1" }
+          "...": true
+        }
+    } } }
+    // Unrelated second installation of the same definition.
+    { in_sandbox: "s1", fresh: true, steps: [
+      { call: "public.notes.put", args: { id: "n1", body: "foreign" },
+        expect: { outcome: ok, value: { id: "n1", body: "foreign" } } }
+      { export: { as: "ax" }, expect: { outcome: ok } }
+    ] }
+    { inspect_artifact: { artifact: "ax", expect: {
+        outcome: ok
+        manifest: {
+          instance: "$bind:xinst"
+          selected: { lineage: "$bind:xl", point: "$bind:xp" }
+          "...": true
+        }
+    } } }
+    // Rewrite the foreign identifiers to alias the local ones.
+    { tamper_artifact: { from: "ax", as: "axx", ops: [
+      { rewrite_identifier: { from: "$ref:xinst", to: "$ref:inst" } }
+      { rewrite_identifier: { from: "$ref:xl", to: "$ref:l1" } }
+      { rewrite_identifier: { from: "$ref:xp", to: "$ref:p1" } }
+      { fix_checksums: true }
+    ] } }
+    { import: { from: "axx", policy: ["fast_forward", "rollback", "merge"] },
+      expect: { outcome: unspecified, violates: ["§19.8", "§19.6"] } }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  // §8.8: a failed assertion rejects the complete proposed transition before
+  // any partial effect becomes visible (§22.2: a failure leaves the prior
+  // committed state intact). Balance values use canonical int wire form (§A.1).
+  format: 1
+  name: failed-assert-rejects-whole-transition
+  suite: scenario
+  spec: ["#mutations", "§8.8", "§22.2"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.assertrej@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "balance": "int"
+        "$mut": {
+          "withdraw": [
+            "assert(.balance >= @amount, 'Insufficient funds')"
+            ".balance = .balance - @amount"
+          ]
+        }
+      }
+      "$public": {
+        "account": {
+          "$view": ".accounts { id, balance }"
+          "$mut": { "withdraw": ".accounts[@id].withdraw" }
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "a1": { "balance": "100" } }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.account"
+      id: "w1"
+      expect_init: { value: [ { id: "a1", balance: "100" } ] }
+    }
+    {
+      call: "public.account.withdraw"
+      args: { id: "a1", amount: "150" }
+      expect: {
+        outcome: rejected
+        violates: ["§8.8"]
+        detail: "assert(.balance >= @amount) fails; no partial effect is admitted"
+      }
+    }
+    {
+      // No commit happened; the prior committed state is intact.
+      expect_view: { watch: "w1", value: [ { id: "a1", balance: "100" } ] }
+    }
+    {
+      call: "public.account.withdraw"
+      args: { id: "a1", amount: "40" }
+      expect: { outcome: ok }
+    }
+    {
+      expect_view: { watch: "w1", value: [ { id: "a1", balance: "60" } ] }
+    }
+  ]
+}

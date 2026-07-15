@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: tampered-child-artifact-invalid
+  suite: scenario
+  tags: [tampering]
+  // Attack: corrupt the embedded child-module artifact inside a parent
+  // export. Annex D.5: "A nested module artifact is covered by the checksum
+  // of its exact .liasse bytes." §19.8: import verifies the COMPLETE
+  // RECURSIVE artifact, so parent-level verification must catch it.
+  spec: ["§19.8", "Annex D.5", "§19.5"]
+
+  packages: {
+    parent: {
+      $liasse: 1
+      $app: "t.parenthist@1.0.0"
+      $model: {
+        mods: { $modules: {} }
+      }
+    }
+    child: {
+      $liasse: 1
+      $module: "t.childnotes@1.0.0"
+      $model: {
+        items: {
+          $key: "id"
+          id: "text"
+          body: "text"
+        }
+      }
+      $data: {
+        items: { i1: { body: "seed" } }
+      }
+    }
+  }
+  root: parent
+
+  steps: [
+    { install_module: { space: "mods", name: "m1", module: "t.childnotes@1.0.0" },
+      expect: { outcome: ok } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      { corrupt_entry: { path: "modules/*.liasse" } }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: invalid, violates: ["§19.8", "Annex D.5"],
+                  detail: "nested module artifact bytes do not match included_modules sha256" } }
+    ] }
+  ]
+}

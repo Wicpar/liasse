@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: patch-private-computation-change-accepted
+  suite: scenario
+  spec: ["#annex-e", "#evolution"]
+  note: '''
+    E.1: a patch "preserves the same boundary contracts while correcting their
+    implementation". E.5 lists "changing private computation while preserving
+    the declared result" as a compatible change, and E.2 states that
+    implementation expressions and computed values are internal details while
+    the declared contracts hold. Version 1.0.1 rewrites the private computed
+    value `active_count` (never exposed by any surface) and leaves the public
+    view {id, name} byte-identical, so the update must commit.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.patch@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "active": "bool = true"
+      }
+      // private computed value, not projected by any boundary surface
+      "active_count": "= count(.companies[:c | c.active])"
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.patch@1.0.1"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+              "active": "bool = true"
+            }
+            // private computation rewritten; boundary output unchanged
+            "active_count": "= count(.companies) - count(.companies[:c | !c.active])"
+            "$public": {
+              "companies": { "$view": ".companies { id, name }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+  ]
+}

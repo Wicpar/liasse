@@ -1,0 +1,40 @@
+{
+  format: 1
+  name: unique-candidate-key-rejects-duplicate
+  suite: scenario
+  spec: ["#state-model", "§5.7"]
+  note: "$unique declares candidate keys in addition to $key (§5.7). A second row carrying the same candidate-key value must reject even though its primary key differs."
+
+  package: {
+    $liasse: 1
+    $app: "t.unique@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        $unique: ["email"]
+        id: "uuid = uuid()"
+        email: "text"
+      }
+      $public: {
+        users: {
+          $view: ".users { email }"
+          $mut: {
+            add: ".users + { email: @email }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.users.add", args: { email: "a@x.example" }, expect: { outcome: "ok" } }
+    // distinct generated primary key, same candidate-key value -> rejected
+    { call: "public.users.add", args: { email: "a@x.example" },
+      expect: { outcome: "rejected", violates: ["§5.7"] } }
+    { call: "public.users.add", args: { email: "b@x.example" }, expect: { outcome: "ok" } }
+    { watch: "public.users", id: "w1", expect_init: { value: { $unordered: [
+      { email: "a@x.example" }
+      { email: "b@x.example" }
+    ] } } }
+  ]
+}

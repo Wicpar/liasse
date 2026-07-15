@@ -1,0 +1,78 @@
+{
+  format: 1
+  name: direct-child-private-path-call-invalid
+  suite: static
+  spec: ["#modules", "§13.11", "§13.8"]
+  note: '''
+    §13.11: direct calls to a child's private model path are invalid; the
+    handle and interface name must resolve through the boundary. §13.8: the
+    boundary grants access only to bound members; private child mutations
+    remain within the child package. The host binds a public mutation to
+    .modules["kit"].create_template — dotting past the instance boundary into
+    a private $mut instead of using ::templates.create. The host definition
+    is statically non-conforming.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": {
+                  "$view": { "$key": "id", "id": "text", "label": "text" }
+                  "$mut": {
+                    "create({ id: text, label: text })": {
+                      "$return": { "id": "text", "label": "text" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        "$public": {
+          "admin": {
+            "$mut": {
+              // illegal: reaches a private $mut through "." instead of "::templates.create"
+              "create": '/companies["acme"].modules["kit"].create_template'
+            }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tpl: {
+      "$liasse": 1
+      "$module": "t.tpl@1.0.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+        "$mut": {
+          "create_template": [
+            "t = .templates + { id: @id, label: @label }"
+            "return t { id, label }"
+          ]
+        }
+      }
+      "$expose": {
+        "templates": {
+          "$view": ".templates { id, label }"
+          "$mut": { "create": ".create_template" }
+        }
+      }
+    }
+  }
+  root: host
+
+  expect: {
+    outcome: invalid
+    violates: ["§13.11"]
+    detail: "a surface may not bind a direct call into a child instance's private model path; only ::interface boundary members are reachable"
+  }
+}

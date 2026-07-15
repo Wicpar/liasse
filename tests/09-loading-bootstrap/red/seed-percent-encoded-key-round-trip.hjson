@@ -1,0 +1,41 @@
+{
+  format: 1
+  name: seed-percent-encoded-key-round-trip
+  suite: scenario
+  spec: ["#loading", "#annex-d"]
+  tags: ["identity"]
+  note: '''
+    Path-confusion probe: a text key containing the three reserved characters
+    '/', ':', and '%'. §9.1 requires seed member names to be canonical encoded
+    key text; Annex D.2 encodes original '%', '/', ':' as %25, %2F, %3A and
+    never re-encodes the introduced percent signs. The member name
+    "a%2Fb%3Ac%25d" therefore decodes to the key "a/b:c%d", and the wire value
+    of the id field is the exact Unicode text (Annex A.1) — not the encoded
+    form, not a truncated path segment.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.enckey@1.0.0"
+    "$model": {
+      "entries": {
+        "$key": "id"
+        "id": "text"
+        "label": "text"
+      }
+      "$public": {
+        "entries": { "$view": ".entries { id, label }" }
+      }
+    }
+    "$data": {
+      "entries": {
+        "a%2Fb%3Ac%25d": { "label": "reserved characters" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.entries", id: "w1",
+      expect_init: { value: [ { id: "a/b:c%d", label: "reserved characters" } ] } }
+  ]
+}

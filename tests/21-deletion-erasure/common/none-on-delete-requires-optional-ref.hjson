@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: none-on-delete-requires-optional-ref
+  suite: static
+  // §21.1 / §5.6: `none` is valid only for an optional ref (it expands to a
+  // patch assigning `none` to the referencing field). Here `tasks.project` is a
+  // required ref, so `$on_delete: "none"` cannot represent its removal effect
+  // and the package is rejected.
+  spec: ["§21.1", "§5.6"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        project: {
+          $ref: "/projects"
+          // required (no $optional): `none` cannot be assigned here
+          $on_delete: "none"
+        }
+      }
+      $mut: {
+        delete_project: ".projects - @id"
+      }
+      $public: {
+        projects: {
+          $view: ".projects { id }"
+          $mut: { delete: ".delete_project" }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§21.1"]
+    detail: "$on_delete none used on a required ref tasks.project"
+  }
+}

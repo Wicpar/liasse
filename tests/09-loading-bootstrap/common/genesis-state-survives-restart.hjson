@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: genesis-state-survives-restart
+  suite: scenario
+  spec: ["#loading"]
+  tags: ["replay"]
+  note: '''
+    §9.3: the first successful create loads the genesis state, records genesis
+    history, and activates surfaces in one host-controlled transition; §9.4: a
+    successful lifecycle operation is final once its composition becomes
+    active. §9.2: open validates the recorded active composition before making
+    the application available. After a restart the same seeded state must be
+    served.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.genesisdurable@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "name": "Acme SAS" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "Acme SAS" } ] } }
+    { restart: {} }
+    { watch: "public.companies", id: "w2",
+      expect_init: { value: [ { id: "acme", name: "Acme SAS" } ] } }
+  ]
+}

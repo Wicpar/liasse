@@ -1,0 +1,64 @@
+{
+  // §8.5: set addition is union and set removal is difference — adding an
+  // existing member or removing an absent member succeeds without changing
+  // the set. §8.9: a program producing no state change returns `unchanged`
+  // and creates no commit. Set read order is canonical (§5.5, §B.1).
+  format: 1
+  name: set-noop-add-remove-returns-unchanged
+  suite: scenario
+  spec: ["#mutations", "§8.5", "§8.9", "§5.5"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.setnoop@1.0.0"
+    "$model": {
+      "docs": {
+        "$key": "id"
+        "id": "text"
+        "tags": { "$set": "text" }
+        "$mut": {
+          "tag": ".tags + @tag"
+          "untag": ".tags - @tag"
+        }
+      }
+      "$public": {
+        "docs": {
+          "$view": ".docs { id, tags }"
+          "$mut": {
+            "tag": ".docs[@id].tag"
+            "untag": ".docs[@id].untag"
+          }
+        }
+      }
+    }
+    "$data": {
+      "docs": { "d1": { "tags": ["a"] } }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.docs.tag"
+      args: { id: "d1", tag: "a" }
+      // Union with an existing member: success, but no state change.
+      expect: { outcome: ok, status: unchanged }
+    }
+    {
+      call: "public.docs.untag"
+      args: { id: "d1", tag: "z" }
+      // Difference with an absent member: success, but no state change.
+      expect: { outcome: ok, status: unchanged }
+    }
+    {
+      call: "public.docs.tag"
+      args: { id: "d1", tag: "b" }
+      expect: { outcome: ok, status: committed }
+    }
+    {
+      // Canonical member order for text: "a" < "b" (§B.1).
+      watch: "public.docs"
+      id: "w1"
+      expect_init: { value: [ { id: "d1", tags: ["a", "b"] } ] }
+    }
+  ]
+}

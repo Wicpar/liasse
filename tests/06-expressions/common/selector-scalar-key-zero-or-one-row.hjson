@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: selector-scalar-key-zero-or-one-row
+  suite: scenario
+  spec: ["#expressions", "§6.3"]
+  note: "§6.3: 'One scalar or composite key contributes zero rows when the key is absent and one row when it exists.' A present key yields exactly one occurrence; an absent key yields an empty row view rather than an error."
+
+  package: {
+    $liasse: 1
+    $app: "t.selectors@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        hit: { $view: ".people['a'] { id, name }" }
+        miss: { $view: ".people['zz'] { id, name }" }
+      }
+    }
+    $data: {
+      people: {
+        a: { name: "Ann" }
+        b: { name: "Bo" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.hit", id: "w1",
+      expect_init: { value: [ { id: "a", name: "Ann" } ] } }
+    { watch: "public.miss", id: "w2",
+      expect_init: { value: [] } }
+  ]
+}

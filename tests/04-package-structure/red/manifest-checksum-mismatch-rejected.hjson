@@ -1,0 +1,32 @@
+{
+  format: 1
+  name: manifest-checksum-mismatch-rejected
+  suite: scenario
+  spec: ["#annex-d", "§D.5", "#history", "§19.5", "#loading", "§9.2"]
+  tags: ["tamper", "integrity"]
+  note: "Annex D.5: 'Verification succeeds only when every referenced entry exists exactly once and every checksum matches.' Here the resource bytes are replaced WITHOUT rehashing the manifest, so manifest.json still records the checksum of the original entry. §9.2 step 2 ('verify the artifact entries and resource digests') must fail on the container checksum before the definition even runs."
+
+  package: {
+    $liasse: 1
+    $app: "t.manifesttamper@1.0.0"
+    $resources: {
+      invoice_template: {
+        $path: "resources/invoice.html"
+        $media: "text/html"
+        $sha256: "2163bddf11b2e116332448d10374d504f9508c148b72e5c9d970b88665330490"
+      }
+    }
+    $model: {
+      note: "text"
+    }
+  }
+
+  steps: [
+    { build_artifact: { as: "a1", files: { "resources/invoice.html": "<h1>Invoice</h1>" } } }
+    // replace bytes but leave manifest.json checksums untouched
+    { tamper_artifact: { artifact: "a1",
+        set: { "resources/invoice.html": "<h1>swapped</h1>" } } }
+    { load_artifact: { from: "a1",
+        expect: { outcome: invalid, violates: ["#annex-d", "§D.5"] } } }
+  ]
+}

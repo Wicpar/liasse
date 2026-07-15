@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: seed-default-observes-prospective-state
+  suite: scenario
+  spec: ["#loading", "#state-model", "§A.1"]
+  tags: ["ordering"]
+  note: '''
+    Pedantic-implementer corner: a seeded row's default reads ANOTHER seeded
+    collection. §9.1: "All seeded row identities and supplied values form one
+    prospective state before defaults resolve. Defaults are then evaluated by
+    dependency; source-object member order and field order have no semantic
+    effect." The audits row is listed before the companies it counts; the
+    default must still observe both seeded companies, so companies_seen is 2.
+    An implementation seeding collection-by-collection in source order would
+    compute 0. Expected value is written "2" because the canonical int wire
+    value is a base-10 JSON string (Annex A.1).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.prospective@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "audits": {
+        "$key": "id"
+        "id": "text"
+        "companies_seen": "int = count(/companies)"
+      }
+      "$public": {
+        "audits": { "$view": ".audits { id, companies_seen }" }
+      }
+    }
+    "$data": {
+      "audits": {
+        "boot": {}
+      }
+      "companies": {
+        "a": { "name": "Alpha" }
+        "b": { "name": "Beta" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.audits", id: "w1",
+      expect_init: { value: [ { id: "boot", companies_seen: "2" } ] } }
+  ]
+}

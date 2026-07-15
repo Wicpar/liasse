@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: provider-lacks-algorithm-capability-invalid
+  suite: static
+  spec: ["#keyrings", "§17.6"]
+  note: "§17.6: loading a keyring validates that its provider advertises the required algorithm and key type; an incompatible provider rejects package loading with a capability diagnostic. The keyring declares Ed25519; the provider advertises only ES256."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["ES256"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§17.6"]
+    detail: "provider 'test-kp' does not advertise algorithm Ed25519 required by the keyring"
+  }
+}

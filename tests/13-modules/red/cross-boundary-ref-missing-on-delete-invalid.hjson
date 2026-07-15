@@ -1,0 +1,75 @@
+{
+  format: 1
+  name: cross-boundary-ref-missing-on-delete-invalid
+  suite: scenario
+  spec: ["#modules", "§13.12", "#deletion", "§21.1"]
+  note: '''
+    §13.12 / §5 / §21.1: a ref crossing a module boundary MUST declare
+    $on_delete immediately because the target package controls its own state
+    and exposed membership. The orders module holds owner: { $ref: "#people" }
+    with no $on_delete on a handle bound to a peer instance; the package is
+    non-conforming and the install fails validation.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "people": { "$view": { "$key": "id", "id": "text", "name": "text" } }
+                "orders": { "$view": { "$key": "id", "id": "text", "owner": "text" } }
+              }
+            }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    people: {
+      "$liasse": 1
+      "$module": "t.people@1.0.0"
+      "$model": {
+        "members": { "$key": "id", "id": "text", "name": "text" }
+      }
+      "$expose": {
+        "people": { "$view": ".members { id, name }" }
+      }
+    }
+    orders: {
+      "$liasse": 1
+      "$module": "t.orders@1.0.0"
+      "$use": {
+        "people": "t.people/people@1"
+      }
+      "$model": {
+        "orders": {
+          "$key": "id"
+          "id": "text"
+          // ref targets the imported peer interface: crosses a module boundary,
+          // so $on_delete is REQUIRED at the ref site — it is omitted here.
+          "owner": { "$ref": "#people" }
+        }
+      }
+      "$expose": {
+        "orders": { "$view": ".orders { id, owner }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "people", "$module": "t.people@1.0.0" } }
+      expect: { outcome: ok } }
+    // the peer handle resolves, but the cross-boundary ref lacks $on_delete
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "shop", "$module": "t.orders@1.0.0" } }
+      expect: { outcome: invalid, violates: ["§13.12"]
+                detail: "a ref crossing a module boundary must declare $on_delete at the ref site" } }
+  ]
+}

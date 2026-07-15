@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: genesis-requires-no-actor-or-permission
+  suite: static
+  spec: ["#loading", "#authentication"]
+  tags: ["authz"]
+  note: '''
+    Chicken-and-egg escalation probe, inverted. This package has NO public
+    surface: every surface sits behind a role, the only authenticator resolves
+    actors from the accounts collection, and the single seeded account is
+    disabled — at genesis, no credential can exist and no row can hold any
+    role. §9.3: "No client, role, actor, or application permission
+    participates in genesis." Create must therefore succeed anyway: an
+    implementation that routes bootstrap through its own permission model
+    (requiring some actor to "own" the install) would deadlock here and
+    wrongly reject a conforming package.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.chicken@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "enabled": "bool = false"
+      }
+      "$auth": {
+        "basic": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "basic"
+          "$members": ".accounts[:a | a.enabled]"
+          "accounts": { "$view": ".accounts { id, name }" }
+        }
+      }
+    }
+    "$data": {
+      "accounts": {
+        "root": { "name": "Root" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: ok
+  }
+}

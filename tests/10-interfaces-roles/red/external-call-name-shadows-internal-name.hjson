@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: external-call-name-shadows-internal-name
+  suite: scenario
+  // Attack: the surface renames the mutation externally ("add" -> .add_task).
+  // A caller probing with the INTERNAL name through the exposing surface must
+  // fail: §10.1 "the map key is the external call name" — the $mut map is the
+  // complete set of callable names on a surface.
+  spec: ["#interfaces", "§10.1"]
+  tags: ["exposure"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.name_shadow@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+      }
+      "$mut": {
+        "add_task": [
+          "task = .tasks + { id: @id, title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [] } }
+    // The internal declaration name is not an external call name.
+    { call: "public.tasks.add_task", args: { id: "t1", title: "sneak" },
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "add_task is not a key of the surface $mut map" } }
+    { expect_view: { watch: "w1", value: [] } }
+    // Control: the declared external name works.
+    { call: "public.tasks.add", args: { id: "t1", title: "legit" },
+      expect: { outcome: ok, value: { id: "t1", title: "legit" } } }
+    { expect_view: { watch: "w1", value: [ { id: "t1", title: "legit" } ] } }
+  ]
+}

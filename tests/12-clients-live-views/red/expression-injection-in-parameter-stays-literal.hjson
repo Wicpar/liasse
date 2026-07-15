@@ -1,0 +1,70 @@
+{
+  format: 1
+  name: expression-injection-in-parameter-stays-literal
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["tampering", "injection"]
+  note: '''
+    Attack: smuggle executable-looking Liasse/CEL source through a typed text
+    parameter. §12.1: "External parameter values remain call-local unless
+    mutation statements write derived or supplied values into state. Typed
+    values are bound into package expressions; the wire carries no executable
+    source." The payload must be stored, returned, and re-delivered through
+    the live view as the exact literal text, never evaluated.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    {
+      call: "public.tasks.add"
+      args: { title: "1 + 1" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$bind:t1", title: "1 + 1" } }
+    }
+    {
+      call: "public.tasks.add"
+      args: { title: ".tasks[:t | true] { id } | uuid() + $actor" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$bind:t2", title: ".tasks[:t | true] { id } | uuid() + $actor" } }
+    }
+    {
+      expect_view: {
+        watch: "w1"
+        value: [
+          { id: "$ref:t2", title: ".tasks[:t | true] { id } | uuid() + $actor" }
+          { id: "$ref:t1", title: "1 + 1" }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,80 @@
+{
+  format: 1
+  name: billing-sum-over-stored-descriptors
+  suite: scenario
+  spec: ["#blobs", "§18.11", "§18.5"]
+  tags: ["blob", "billing"]
+  note: '''
+    §18.11: "Application billing uses committed logical placement rows and
+    descriptor sizes", with the worked expression
+    sum(.uploads[:u | /stores['primary'] in u.file.$stored].file.$bytes).
+    Two committed uploads of 2 and 5 bytes, both stored in `primary`, sum to 7.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.billing@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      uploads: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "u = .uploads + { id: @id, file: @file }"
+          "return u { id }"
+        ]
+      }
+      primary_bytes: {
+        $view: "= sum(.uploads[:u | /stores['primary'] in u.file.$stored].file.$bytes)"
+      }
+      $public: {
+        uploads: {
+          $view: ".primary_bytes"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.uploads.add"
+        param: "file"
+        args: { id: "u1" }
+        content: "hi"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: { id: "u1" } } }
+    { blob_put: {
+        call: "public.uploads.add"
+        param: "file"
+        args: { id: "u2" }
+        content: "hello"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: { id: "u2" } } }
+    { watch: "public.uploads", on: "c1", id: "w1", expect_init: { value: 7 } }
+  ]
+}
+</content>

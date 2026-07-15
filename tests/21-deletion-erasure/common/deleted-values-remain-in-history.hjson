@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: deleted-values-remain-in-history
+  suite: scenario
+  // §21.1: "An ordinary collection deletion removes the target from live state.
+  // Its prior values remain available through retained history." Deletion is
+  // NOT erasure: the pre-delete point is still restorable. Exporting before the
+  // delete, then importing that earlier point with a rollback policy (§19.8),
+  // brings the deleted row's prior values back.
+  spec: ["§21.1", "§19.8"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+        remove: ".notes - @id"
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put", remove: ".remove" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "confidential" },
+      expect: { outcome: ok, value: { id: "n1", body: "confidential" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { call: "public.notes.remove", args: { id: "n1" }, expect: { outcome: ok, "...": true } }
+    { watch: "public.notes", id: "w1", expect_init: { value: [] } }
+    // ordinary deletion left the prior value in retained history
+    { import: { from: "a1", policy: ["rollback"] },
+      expect: { outcome: ok, value: { relation: "rollback", applied: true, "...": true } } }
+    { expect_view: { watch: "w1", value: [ { id: "n1", body: "confidential" } ] } }
+  ]
+}

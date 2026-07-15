@@ -1,0 +1,41 @@
+{
+  format: 1
+  name: unicode-normalization-distinct-text-keys
+  suite: scenario
+  spec: ["#expressions", "§6.3", "§A.1", "§B.1"]
+  tags: ["unicode", "identity"]
+  note: "Attack: use canonically-equivalent but differently-encoded Unicode keys (NFC 'caf\\u00e9' vs NFD 'cafe\\u0301') hoping selection normalizes and conflates them. Annex A.1: text is a 'Unicode scalar sequence, preserved exactly'; Annex B.1 orders text by scalar values. No rule mandates Unicode normalization of keys or selector operands, so the two keys are distinct rows and each selector argument must resolve to exactly its own encoding. All key values below use explicit escapes so no tooling can silently renormalize the case."
+
+  package: {
+    $liasse: 1
+    $app: "t.unicode@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        title: "text"
+      }
+      $mut: {
+        read: "return .notes[@id] { title }"
+      }
+      $public: {
+        notes: {
+          $mut: { read: ".read" }
+        }
+      }
+    }
+    $data: {
+      notes: {
+        "caf\u00e9": { title: "nfc" }
+        "cafe\u0301": { title: "nfd" }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.read", args: { id: "caf\u00e9" },
+      expect: { outcome: "ok", value: [ { title: "nfc" } ] } }
+    { call: "public.notes.read", args: { id: "cafe\u0301" },
+      expect: { outcome: "ok", value: [ { title: "nfd" } ] } }
+  ]
+}

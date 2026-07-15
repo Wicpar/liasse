@@ -1,0 +1,98 @@
+{
+  format: 1
+  name: replay-operation-id-upload-at-most-once
+  suite: scenario
+  spec: ["#blobs", "#clients", "§12.3", "§18.7"]
+  tags: ["blob", "replay", "dedup"]
+  note: '''
+    Replay attack on an upload. §12.3: "Reusing the same scoped identifier with
+    an equivalent request provides at-most-once execution. Reusing it with
+    different request metadata rejects the call." The staged, verified
+    descriptor bound to the blob parameter (§18.7) is part of the request. A
+    replay with identical bytes is equivalent and must not create a second row;
+    a replay reusing the identifier with different bytes (a different
+    descriptor) is different metadata and must be rejected.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.replay@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "uuid = uuid()"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { file: @file }"
+          "return doc { id }"
+        ]
+      }
+      count: { $view: "= size(.docs)" }
+      $public: {
+        docs: {
+          $view: ".count"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: 0 } }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: {}
+        content: "payload one"
+        media: "text/plain"
+        operation_id: "op-blob-9f13a7c02e"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: { id: "$bind:d1" } } }
+    // Equivalent replay: identical bytes, same operation id -> at-most-once.
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: {}
+        content: "payload one"
+        media: "text/plain"
+        operation_id: "op-blob-9f13a7c02e"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: { id: "$ref:d1" } } }
+    { expect_view: { watch: "w1", value: 1 } }
+    // Same operation id, different bytes -> different metadata -> rejected.
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: {}
+        content: "payload two"
+        media: "text/plain"
+        operation_id: "op-blob-9f13a7c02e"
+        on: "c1"
+      }
+      expect: { outcome: rejected, violates: ["#clients"],
+                detail: "operation id reused with a different blob descriptor" } }
+    { expect_view: { watch: "w1", value: 1 } }
+  ]
+}
+</content>

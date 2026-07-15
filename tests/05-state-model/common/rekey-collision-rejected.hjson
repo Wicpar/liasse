@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: rekey-collision-rejected
+  suite: scenario
+  spec: ["#state-model", "§5.4"]
+  note: "§5.4: for an atomic rekey, 'A collision, invalid rewritten ref, or resulting constraint failure rejects the complete transition.' Rekeying onto an existing key must reject and leave both rows unchanged."
+
+  package: {
+    $liasse: 1
+    $app: "t.rekey_collision@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        companies: {
+          $view: ".companies { id, name }"
+          $mut: {
+            add: ".companies + { id: @id, name: @name }"
+            rekey: ".companies[@old].id = @new"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.companies.add", args: { id: "a", name: "Alpha" }, expect: { outcome: "ok" } }
+    { call: "public.companies.add", args: { id: "b", name: "Beta" }, expect: { outcome: "ok" } }
+    { call: "public.companies.rekey", args: { old: "a", new: "b" },
+      expect: { outcome: "rejected", violates: ["§5.4"], detail: "rekey collides with an existing key in the same parent" } }
+    { watch: "public.companies", id: "w1", expect_init: { value: [
+      { id: "a", name: "Alpha" }
+      { id: "b", name: "Beta" }
+    ] } }
+  ]
+}

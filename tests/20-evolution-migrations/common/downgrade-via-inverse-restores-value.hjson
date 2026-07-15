@@ -1,0 +1,81 @@
+{
+  format: 1
+  name: downgrade-via-inverse-restores-value
+  suite: scenario
+  spec: ["#evolution", "§20.2", "#loading", "§9.4"]
+  note: '''
+    §20.2: "A downgrade loads the older package and applies an explicit direct
+    migration or available exact inverses." Version 2.0.0 declares an exact
+    inverse `$back` for the `encoded` field (source `name`). Loading 1.0.0
+    (which reinstates `name`) over the 2.0.0 instance is a downgrade: the
+    available exact inverse reconstructs `name = $back(encoded)`.
+    encoded == "aGk=" -> string.from_bytes(base64.decode("aGk=")) == "hi",
+    so the restored `name` equals the original "hi".
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.down@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        accounts: { $view: ".accounts { id, name }" }
+      }
+    }
+    $data: {
+      accounts: { a1: { name: "hi" } }
+    }
+  }
+
+  steps: [
+    // upgrade 1.0.0 -> 2.0.0 (name -> encoded, with declared inverse)
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.down@2.0.0"
+          $model: {
+            accounts: {
+              $key: "id"
+              id: "text"
+              encoded: {
+                $type: "text"
+                $from: "name"
+                $as: "base64.encode(string.bytes(.))"
+                $back: "string.from_bytes(base64.decode(.))"
+              }
+            }
+            $public: {
+              accounts: { $view: ".accounts { id, encoded }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.accounts", id: "w1",
+      expect_init: { value: [ { id: "a1", encoded: "aGk=" } ] } }
+    // downgrade 2.0.0 -> 1.0.0 via the available exact inverse
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.down@1.0.0"
+          $model: {
+            accounts: {
+              $key: "id"
+              id: "text"
+              name: "text"
+            }
+            $public: {
+              accounts: { $view: ".accounts { id, name }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.accounts", id: "w2",
+      expect_init: { value: [ { id: "a1", name: "hi" } ] } }
+  ]
+}

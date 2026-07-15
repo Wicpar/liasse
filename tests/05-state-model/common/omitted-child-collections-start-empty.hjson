@@ -1,0 +1,40 @@
+{
+  format: 1
+  name: omitted-child-collections-start-empty
+  suite: scenario
+  spec: ["#state-model", "§5.5"]
+  note: "§5.5: 'When a containing row or struct is created, an omitted child set or keyed collection starts empty.' Both the omitted set and the omitted nested collection must come back empty, not absent."
+
+  package: {
+    $liasse: 1
+    $app: "t.emptychildren@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        tags: { $set: "text" }
+        tasks: {
+          $key: "id"
+          id: "text"
+          title: "text"
+        }
+      }
+      $public: {
+        projects: {
+          $view: ".projects { id, tags, tasks }"
+          $mut: {
+            add: [
+              "row = .projects + { id: @id }"
+              "return row { id, tags, tasks }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.projects.add", args: { id: "p1" },
+      expect: { outcome: "ok", value: { id: "p1", tags: [], tasks: [] } } }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: requirement-without-major-rejected
+  suite: static
+  spec: ["#host-namespaces"]
+  tags: ["boundary", "supply-chain"]
+  note: '''
+    Attack: leave the requirement unpinned ("liasse.cbor" with no "@major")
+    so it would grab whatever major the host happens to register — silent
+    semantic drift across incompatible contract generations. §16.2: "The
+    value identifies the semantic contract AND compatible major." A value
+    carrying no major identifies no compatible major; with both major 1 and
+    major 2 registered the requirement is at best ambiguous, and §16.2
+    rejects missing, incompatible, or ambiguous requirements before the
+    package becomes active. Every $requires example in SPEC.md carries an
+    explicit "@major".
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.nomajor@1.0.0"
+    $requires: {
+      cbor: "liasse.cbor"   // no @major
+    }
+    $model: {
+      n: "int = 0"
+      encoded: { $view: "cbor.encode(.n)" }
+      $public: {
+        stats: { $view: ".encoded" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "liasse.cbor"
+        version: "1.2.0"
+        interface_hash: "ih-cbor-1"
+        functions: {
+          encode: { signature: "(int) -> bytes", effect: "pure", op: "double" }
+        }
+      }
+      {
+        id: "liasse.cbor"
+        version: "2.0.0"
+        interface_hash: "ih-cbor-2"
+        functions: {
+          encode: { signature: "(int) -> bytes", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces"]
+    detail: "requirement value identifies no compatible major; it cannot pin one resolved descriptor and rejects loading"
+  }
+}

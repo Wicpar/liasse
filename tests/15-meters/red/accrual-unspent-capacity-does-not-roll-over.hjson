@@ -1,0 +1,103 @@
+{
+  format: 1
+  name: accrual-unspent-capacity-does-not-roll-over
+  suite: scenario
+  spec: ["#meters", "§15.1", "§15.3", "#buckets", "§14.5"]
+  tags: [temporal]
+  note: '''Accrual boundary attack: hoard one period's unspent credits into the next.
+Recurring source-backed pools are the rows active at the spend time (SPEC §15.1); each
+generated period is its own pool (§14.5). When the next weekly period starts it offers
+its own fresh 100, and the previous period's 60 unspent remainder expired with it — it
+does not roll over. A spend of 160 (which would require the stale 60 plus the fresh
+100) is rejected; exactly 100 admits.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.norollover@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        account: { $ref: "/accounts" }
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp? = none"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      accounts: {
+        $key: "id"
+        id: "text"
+        $limits: {
+          credits: {
+            $sources: {
+              subscription: '''/credit_periods[:p | p.$source.account == .] {
+                $quantity: .credits
+              }'''
+            }
+            $order: ["$until"]
+          }
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".accounts { id, balance: .credits.balance }"
+          $mut: { consume: ".accounts[@account].consume" }
+        }
+      }
+    }
+    $data: {
+      plans: { weekly: { credits: "100", period: "P7D" } }
+      accounts: { a1: {} }
+      // unbounded weekly series from the virtual epoch 2026-01-01
+      subscriptions: { s1: { account: "a1", plan: "weekly", starts_at: "1767225600" } }
+    }
+  }
+
+  steps: [
+    // period 1 [2026-01-01, 2026-01-08): spend 40, leave 60 unspent
+    { call: "public.wallet.consume", args: { account: "a1", amount: "40" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "a1", balance: "60" } ] } }
+    // period 2 [2026-01-08, 2026-01-15): only the fresh 100 exists, the stale 60 is gone
+    { advance_time: "P7D" }
+    { expect_view: { watch: "w1", value: [ { id: "a1", balance: "100" } ] } }
+    // 160 would need the vanished 60 to roll over: rejected
+    { call: "public.wallet.consume", args: { account: "a1", amount: "160" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"],
+                detail: "the finished period's remainder does not roll over" } }
+    // the fresh period offers exactly 100, no more
+    { call: "public.wallet.consume", args: { account: "a1", amount: "100" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { call: "public.wallet.consume", args: { account: "a1", amount: "1" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+  ]
+}

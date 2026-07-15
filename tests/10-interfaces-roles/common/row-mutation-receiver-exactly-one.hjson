@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: row-mutation-receiver-exactly-one
+  suite: scenario
+  // §10.1: "Zero or several selected rows reject the request."
+  // §6.3: a row-mutation receiver "MUST receive exactly one occurrence.
+  // Zero or several occurrences reject that evaluation."
+  // Both boundaries of the same rule: an empty selection and a two-row
+  // selection are each rejected at admission.
+  spec: ["#interfaces", "§10.1", "#expressions"]
+  tags: ["boundary"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.recv_card@1.0.0"
+    "$model": {
+      "projects": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "owner": "text"
+        "$mut": {
+          "rename": [
+            ".name = @name"
+            "return . { id, name }"
+          ]
+        }
+      }
+      "$public": {
+        "projects": {
+          "$view": ".projects { id, name, owner }"
+          "$mut": {
+            "rename": ".projects[@project].rename"
+            // A filter receiver may select any number of rows; only exactly
+            // one is admissible.
+            "rename_owned": ".projects[:p | p.owner == @owner].rename"
+          }
+        }
+      }
+    }
+    "$data": {
+      "projects": {
+        "p1": { "name": "Alpha", "owner": "alice" }
+        "p2": { "name": "Beta", "owner": "bob" }
+        "p3": { "name": "Gamma", "owner": "bob" }
+      }
+    }
+  }
+
+  steps: [
+    // Zero selected rows: the key does not exist.
+    { call: "public.projects.rename", args: { project: "nope", name: "X" },
+      expect: { outcome: rejected, violates: ["#interfaces"],
+                detail: "receiver selected zero rows" } }
+    // Several selected rows: two projects share owner bob.
+    { call: "public.projects.rename_owned", args: { owner: "bob", name: "X" },
+      expect: { outcome: rejected, violates: ["#interfaces"],
+                detail: "receiver selected two rows" } }
+    // Control: exactly one selected row is admitted.
+    { call: "public.projects.rename_owned", args: { owner: "alice", name: "Mine" },
+      expect: { outcome: ok, value: { id: "p1", name: "Mine" } } }
+  ]
+}

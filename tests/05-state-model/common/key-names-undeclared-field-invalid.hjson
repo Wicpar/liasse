@@ -1,0 +1,25 @@
+{
+  format: 1
+  name: key-names-undeclared-field-invalid
+  suite: static
+  spec: ["#state-model", "§5.4"]
+  note: "§5.4: 'A $key entry names declared fields.' Here $key names `id`, but no `id` field is declared on the collection. The key does not name a declared field, so the package must fail static validation rather than invent an implicit key field."
+
+  package: {
+    $liasse: 1
+    $app: "t.keynofield@1.0.0"
+    $model: {
+      things: {
+        $key: "id"
+        // no `id` field is declared
+        name: "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["§5.4"]
+    detail: "$key names `id`, which is not a declared field of the collection"
+  }
+}

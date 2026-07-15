@@ -1,0 +1,34 @@
+{
+  format: 1
+  name: aggregate-avg-converts-to-decimal
+  suite: scenario
+  spec: ["#views", "§7.5", "§A.1"]
+  note: "§7.5: 'avg(view.field) -> decimal?' and 'avg converts every numeric input exactly to decimal and performs decimal division under the package semantics.' avg over the int amounts { 1, 2 } is 3/2 = 1.5 as an exact decimal, NOT the integer-truncated 1. §A.1: decimal canonical form is a base-10 JSON string, so the result is \"1.5\"."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewavg@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        amount: "int"
+      }
+      av: "= avg(.items.amount)"
+      $public: {
+        stat: { $view: ". { av }" }
+      }
+    }
+    $data: {
+      items: {
+        a: { amount: "1" }
+        b: { amount: "2" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.stat", id: "w1",
+      expect_init: { value: { av: "1.5" } } }
+  ]
+}

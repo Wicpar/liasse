@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: operation-id-burned-by-rejected-request
+  suite: scenario
+  spec: ["§D.8", "§12"]
+  tags: ["idempotency"]
+  note: '''Attack: a client burns an operation identifier on a request that is
+REJECTED (a check failure), then tries to reuse the same identifier for a
+corrected, different request, hoping the runtime treats a rejected op as "free"
+and lets the corrected write through. §D.8: "The runtime stores a request digest
+and final status" (final status includes `rejected { diagnostics }`), and "Another
+digest rejects as an operation-identity conflict." §12: "Reusing it with different
+request metadata rejects the call." So the identifier stays taken after a
+rejection: an equivalent retry re-observes the retained rejection, and a corrected
+(different-metadata) request under the same identifier conflicts and MUST NOT
+commit. No row is ever written under this identifier.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.opidburn@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: { $type: "text", $check: ["size(.) <= 5", "body too long"] }
+      }
+      $public: {
+        notes: {
+          $view: ".notes { id, body, $sort: [id] }"
+          $mut: {
+            put: [
+              "n = .notes + { id: @id, body: @body }"
+              "return n { id, body }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // first use of op-Q: rejected by the body check
+    { call: "public.notes.put", args: { id: "n1", body: "way-too-long" }, op_id: "op-Q",
+      expect: { outcome: "rejected", violates: ["§8.8"],
+                detail: "body fails the size check" } }
+    // equivalent retry: re-observes the retained rejection, no execution
+    { call: "public.notes.put", args: { id: "n1", body: "way-too-long" }, op_id: "op-Q",
+      expect: { outcome: "rejected", "...": true } }
+    // corrected, DIFFERENT request under the burned identifier -> conflict
+    { call: "public.notes.put", args: { id: "n1", body: "ok" }, op_id: "op-Q",
+      expect: { outcome: "rejected", violates: ["§D.8", "§12"],
+                detail: "reused operation identifier with a different request" } }
+    // nothing was ever committed under this identifier
+    { watch: "public.notes", id: "w1", expect_init: { value: [] } }
+  ]
+}

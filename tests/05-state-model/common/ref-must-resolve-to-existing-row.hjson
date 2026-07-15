@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: ref-must-resolve-to-existing-row
+  suite: scenario
+  spec: ["#state-model", "§5.6"]
+  note: "§5.6: 'A ref exposes the target's key type and MUST resolve to one occurrence in its declared target relation.' Inserting a row whose ref names a nonexistent target key must reject; the same insert succeeds once the target exists."
+
+  package: {
+    $liasse: 1
+    $app: "t.refresolve@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      contacts: {
+        $key: "id"
+        id: "text"
+        company: { $ref: "/companies" }
+      }
+      $public: {
+        contacts: {
+          $view: ".contacts { id, company }"
+          $mut: {
+            add_company: ".companies + { id: @id, name: @name }"
+            add_contact: ".contacts + { id: @id, company: @company }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.contacts.add_contact", args: { id: "c1", company: "ghost" },
+      expect: { outcome: "rejected", violates: ["§5.6"], detail: "ref does not resolve to an existing row" } }
+    { call: "public.contacts.add_company", args: { id: "acme", name: "Acme" },
+      expect: { outcome: "ok" } }
+    { call: "public.contacts.add_contact", args: { id: "c1", company: "acme" },
+      expect: { outcome: "ok" } }
+    { watch: "public.contacts", id: "w1",
+      expect_init: { value: [ { id: "c1", company: "acme" } ] } }
+  ]
+}

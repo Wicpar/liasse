@@ -1,0 +1,31 @@
+{
+  format: 1
+  name: resource-descriptor-unknown-member-rejected
+  suite: static
+  spec: ["#annex-c", "§C.1", "#conformance", "§2.5", "#package-structure", "§4.1"]
+  tags: ["tamper", "artifact", "escalation"]
+  note: "Attack: smuggle an out-of-schema member ('$exec') into a resource descriptor, hoping a permissive loader honors it as an execution/side-channel directive on the packaged bytes. Annex C.1 fixes the resource descriptor to exactly { $path, $media, $sha256 }; §2.5: 'Unknown members in a declaration object are invalid unless that declaration explicitly accepts application-defined member names.' The descriptor accepts no application-defined members, so '$exec' MUST be rejected rather than silently ignored or acted upon. The $path/$sha256 are otherwise well-formed, so the unknown-member rule is what stands alone."
+
+  package: {
+    $liasse: 1
+    $app: "t.rogueres@1.0.0"
+    $resources: {
+      invoice_template: {
+        $path: "resources/invoice.html"
+        $media: "text/html"
+        $sha256: "2163bddf11b2e116332448d10374d504f9508c148b72e5c9d970b88665330490"
+        // not part of the resource-descriptor grammar
+        $exec: true
+      }
+    }
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.1", "#conformance", "§2.5"]
+    detail: "resource descriptor carries '$exec', which is not one of the descriptor members { $path, $media, $sha256 }"
+  }
+}

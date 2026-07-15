@@ -1,0 +1,55 @@
+{
+  format: 1
+  name: expiration-preserves-row-in-all
+  suite: scenario
+  spec: ["#buckets", "§14.2"]
+  tags: ["temporal", "lifecycle"]
+  note: "Bucket expiration changes active views but does not delete the row; .$all continues to expose it until an explicit deletion."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.extant@1.0.0"
+    $model: {
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        expires_at: "timestamp"
+      }
+      $public: {
+        active: { $view: ".sessions { id }" }
+        all: { $view: ".sessions.$all { id }" }
+        sessions: {
+          $mut: {
+            add: [
+              "s = .sessions + { expires_at: @expires_at }"
+              "return s { id }"
+            ]
+            // explicit deletion goes through the extant $all domain,
+            // since ordinary selectors only see active rows (§14.2)
+            purge: "-.sessions.$all[:s | s.id == @id]"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // expires 2026-01-01T01:00:00Z
+    { call: "public.sessions.add", args: { expires_at: "1767229200000000" }
+      expect: { outcome: ok, value: { id: "$bind:s1" } } }
+
+    { watch: "public.active", id: "wa", expect_init: { value: [ { id: "$ref:s1" } ] } }
+    { watch: "public.all", id: "wx", expect_init: { value: [ { id: "$ref:s1" } ] } }
+
+    // expire the row: it leaves the active view but remains extant
+    { advance_time: "PT2H" }
+    { expect_view: { watch: "wa", value: [] } }
+    { expect_view: { watch: "wx", value: [ { id: "$ref:s1" } ] } }
+
+    // only an explicit deletion removes it from $all
+    { call: "public.sessions.purge", args: { id: "$ref:s1" }
+      expect: { outcome: ok } }
+    { expect_view: { watch: "wx", value: [] } }
+  ]
+}

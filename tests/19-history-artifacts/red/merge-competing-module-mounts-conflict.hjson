@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: merge-competing-module-mounts-conflict
+  suite: scenario
+  tags: [identity, modules]
+  // Both sides install a child into the SAME mount name from a base that had
+  // no mount there. Each install is an independent instance incarnation
+  // (Annex D.1: a package instance has its own immutable incarnation;
+  // §19.5: multiple installations of the same definition appear as separate
+  // child artifacts). §19.8: "Competing child incarnations selected for the
+  // same mount produce a parent-level conflict." §19.9: the merge "reports
+  // conflicts for ... competing module mounts". The merge must not silently
+  // pick one child or fuse the two; the local mount stays put.
+  spec: ["§19.8", "§19.9", "§19.5", "Annex D.1"]
+
+  packages: {
+    parent: {
+      $liasse: 1
+      $app: "t.parenthist@1.0.0"
+      $model: {
+        mods: { $modules: {} }
+      }
+    }
+    child: {
+      $liasse: 1
+      $module: "t.childnotes@1.0.0"
+      $model: {
+        items: {
+          $key: "id"
+          id: "text"
+          body: "text"
+        }
+      }
+    }
+  }
+  root: parent
+
+  steps: [
+    // Shared base: an empty module space, no mount at m1.
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    // Incoming host installs its own child instance at mount m1.
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a0" }, expect: { outcome: ok } }
+      { install_module: { space: "mods", name: "m1", module: "t.childnotes@1.0.0" },
+        expect: { outcome: ok } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    // Local host installs an independent child instance at the same mount m1.
+    { install_module: { space: "mods", name: "m1", module: "t.childnotes@1.0.0" },
+      expect: { outcome: ok } }
+    { export: { as: "a_loc" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a_loc", expect: {
+        outcome: ok
+        manifest: { modules: { m1: { instance: "$bind:local_ci", "...": true } }, "...": true }
+    } } }
+    // Shared base + divergent mounts with distinct incarnations = conflict.
+    { reconcile: { from: "a2", policy: ["merge"] },
+      expect: { outcome: ok, value: {
+        relation: "merge", applied: false, conflicts: "$any", "...": true } } }
+    // The active composition is unchanged: m1 is still the local incarnation,
+    // the incoming child did not replace or fuse with it.
+    { export: { as: "a_after" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a_after", expect: {
+        outcome: ok
+        manifest: { modules: { m1: { instance: "$ref:local_ci", "...": true } }, "...": true }
+    } } }
+  ]
+}

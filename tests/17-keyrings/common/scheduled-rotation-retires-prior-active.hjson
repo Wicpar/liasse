@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: scheduled-rotation-retires-prior-active
+  suite: scenario
+  tags: ["rotation"]
+  spec: ["#keyrings", "§17.1", "§17.3", "§17.4"]
+  note: "A duration $rotate is shorthand for automatic rotation at that cadence (§17.1). §17.4 steps 4-5: activation of the replacement atomically retires the prior active version, which stays retained. §17.3: at most one signing version is active. §17.4 permits performing a due rotation before the next operation with identical logical order, so the case triggers an operation after advancing time and never exact-matches rotation timestamps."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+        "ring_versions": { "$view": "/session_keys.$versions" }
+      }
+    }
+    "$data": { "accounts": { "alice": { "name": "Alice" } } }
+  }
+
+  steps: [
+    { watch: "public.ring_versions", id: "w1",
+      expect_init: { value: { $unordered: [
+        { id: "$bind:v1", activated_at: "$any:timestamp", retired_at: "$absent", "...": true }
+      ] } } }
+    { advance_time: "P31D" }
+    // Admission-creating operation; a due rotation is performed no later than this (§17.4).
+    { call: "public.login.login", args: { account: "alice" },
+      expect: { outcome: ok, value: { token: "$any" } } }
+    // Exactly two versions: v1 retired, one new active version. Listing both
+    // entries pins "at most one signing version is active" (§17.3).
+    { expect_view: { watch: "w1", value: { $unordered: [
+      { id: "$ref:v1", retired_at: "$any:timestamp", "...": true }
+      { id: "$bind:v2", activated_at: "$any:timestamp", retired_at: "$absent", "...": true }
+    ] } } }
+  ]
+}

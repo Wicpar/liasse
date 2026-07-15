@@ -1,0 +1,79 @@
+{
+  format: 1
+  name: w2-login-subject-confusable-no-match-rejected
+  suite: scenario
+  spec: ["W2", "#authentication", "§11.5", "#expressions", "§6.3"]
+  tags: [authz, unicode, identity]
+  note: '''
+    Unicode-confusable identity attack on the login key. The seeded passkey login
+    subject is the ASCII "cred-alice". A verifier returns an identity whose
+    credential is "cred-аlice" — visually identical but with a Cyrillic
+    small letter a (U+0430) in place of ASCII a (U+0061). The login lookup
+    "/logins[{ kind:'passkey', issuer:..., subject: identity.credential }]" keys
+    on exact scalar text; the two subjects are distinct code-point sequences, so
+    it resolves zero rows and the login is rejected (§6.3). Identity keys do not
+    fold confusables together, so the attacker cannot ride Alice's login row.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.accounts@1.0.0"
+    $requires: { webauthn: "test.webauthn@1", token: "test.token@1" }
+    $model: {
+      accounts: { $key: "id", id: "uuid = uuid()", name: "text", enabled: "bool = true" }
+      logins: { $key: ["kind", "issuer", "subject"], kind: "text", issuer: "text", subject: "text" }
+      account_logins: { $key: ["account", "login"], account: { $ref: "/accounts" }, login: { $ref: "/logins" } }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        login: { $ref: "/logins" }
+        device: "text?"
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      $mut: {
+        bootstrap: [
+          "acct = /accounts + { name: @name }"
+          "lg = /logins + { kind: 'passkey', issuer: @rp, subject: @credential }"
+          "/account_logins + { account: acct.$key, login: lg.$key }"
+          "return { account: acct.$key }"
+        ]
+        passkey_login: [
+          "identity = webauthn.verify(@response)"
+          "login = /logins[{ kind: 'passkey', issuer: identity.rp, subject: identity.credential }]"
+          "mapping = /account_logins[{ account: @account, login: login.$key }]"
+          '''session = /sessions + {
+            account: mapping.account,
+            login: mapping.login,
+            device: @device,
+            expires_at: now() + time.duration('P30D')
+          }'''
+          "token = token.sign({ auth: 'session', session: session.$key })"
+          "return { auth: 'session', token, expires_at: session.$until }"
+        ]
+      }
+      $public: {
+        setup: { $mut: { bootstrap: ".bootstrap" } }
+        login: { $mut: { passkey: ".passkey_login" } }
+      }
+    }
+  }
+
+  hosts: {
+    webauthn: { $namespace: "test.webauthn@1", responses: {
+      // credential contains U+0430 CYRILLIC SMALL LETTER A, not ASCII 'a'
+      "resp-evil": { rp: "example.com", credential: "cred-аlice" }
+    } }
+    token: { $namespace: "test.token@1", tokens: {} }
+  }
+
+  steps: [
+    { call: "public.setup.bootstrap", args: { name: "alice", rp: "example.com", credential: "cred-alice" }
+      expect: { outcome: ok, value: { account: "$bind:alice" } } }
+    // confusable subject addresses no login row
+    { call: "public.login.passkey", args: { response: "resp-evil", account: "$ref:alice", device: "x" }
+      expect: { outcome: rejected, violates: ["§6.3"], detail: "confusable subject does not match the seeded ASCII login" } }
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  format: 1
+  name: unknown-reserved-member-invalid
+  suite: static
+  spec: ["#state-model", "§2.5"]
+  note: "§2.5: 'Names beginning with $ are reserved by Liasse. Unknown members in a declaration object are invalid unless that declaration explicitly accepts application-defined member names.' A keyed collection accepts application-defined field names, but a $-prefixed member that is not a defined declaration key ($key, $unique, $check, $mut, ...) is a reserved-but-unknown member and must fail static validation, not be silently ignored or treated as a field."
+
+  package: {
+    $liasse: 1
+    $app: "t.unknownmember@1.0.0"
+    $model: {
+      things: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        // $-prefixed name is reserved; $bogus is not a defined declaration member
+        $bogus: true
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["§2.5"]
+    detail: "unknown reserved ($-prefixed) member in a declaration object"
+  }
+}

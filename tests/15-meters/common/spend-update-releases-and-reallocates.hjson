@@ -1,0 +1,69 @@
+{
+  format: 1
+  name: spend-update-releases-and-reallocates
+  suite: scenario
+  spec: ["#meters", "§15.2"]
+  note: "Updating a spend provisionally releases its current allocation and allocates its complete new amount against the prospective state (SPEC §15.2). Shrinking a spend therefore frees capacity for later spends."
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.update@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id, amount }"
+          ]
+          resize: ".spends[@spend] { amount = @amount }"
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: {
+            consume: ".users[@user].consume"
+            resize: ".users[@user].resize"
+          }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { user: "u1", amount: "80" },
+      expect: { outcome: ok, value: { id: "$bind:s1", amount: "80" } } }
+    // only 20 remain: 30 rejects
+    { call: "public.wallet.consume", args: { user: "u1", amount: "30" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+    // shrink the first spend 80 -> 20: its allocation is released and re-made at 20
+    { call: "public.wallet.resize", args: { user: "u1", spend: "$ref:s1", amount: "20" },
+      expect: { outcome: ok } }
+    // the freed 60 now admit the same 30
+    { call: "public.wallet.consume", args: { user: "u1", amount: "30" },
+      expect: { outcome: ok, value: { id: "$any:uuid", amount: "30" } } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "50" } ] } }
+  ]
+}

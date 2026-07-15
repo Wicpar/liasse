@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: uppercase-hex-sha512-rejected
+  suite: scenario
+  spec: ["#blobs", "§18.1"]
+  tags: ["blob", "canonicalization", "identity"]
+  note: '''
+    §18.1: "$sha512 is 64 SHA-512 bytes encoded as lowercase hexadecimal." A
+    descriptor whose $sha512 spells the correct digest in UPPER-CASE hex is a
+    malformed descriptor value: the encoding rule fixes lowercase. This
+    isolates the descriptor format rule from any content mismatch, because the
+    claimed hex decodes to the same digest as the streamed bytes; only its case
+    is wrong. The upload is rejected. (Whether a runtime rejects vs. silently
+    lowercases such input is the strict reading of the normative "lowercase".)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.hexcase@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      $public: { docs: { $mut: { add: ".add" } } }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "hello"
+        media: "text/plain"
+        // Correct SHA-512 of "hello", but spelled in uppercase hexadecimal.
+        claim: { $sha512: "9B71D224BD62F3785D96D46AD3EA3D73319BFBC2890CAADAE2DFF72519673CA72323C3D99BA5C11D7C7ACC6E14B8C5DA0C4663475C2E5C3ADEF46F73BCDEC043" }
+        on: "c1"
+      }
+      expect: { outcome: rejected, violates: ["#blobs"],
+                detail: "$sha512 must be lowercase hexadecimal" } }
+  ]
+}
+</content>

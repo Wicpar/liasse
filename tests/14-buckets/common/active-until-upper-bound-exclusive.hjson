@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: active-until-upper-bound-exclusive
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§22.6", "#clients", "§12.2"]
+  tags: ["temporal", "boundary"]
+  note: "Every bucket interval is half-open [from, until): at the upper bound the row is no longer active, and a live view receives a temporal patch when the row leaves its active interval."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.upper@1.0.0"
+    $model: {
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        expires_at: "timestamp"
+      }
+      $public: {
+        active: { $view: ".sessions { id }" }
+        sessions: {
+          $mut: {
+            add: [
+              "s = .sessions + { expires_at: @expires_at }"
+              "return s { id }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // virtual clock starts at 2026-01-01T00:00:00Z = 1767225600000000 us
+    // expires_at = 2026-01-01T01:00:00Z
+    { call: "public.sessions.add", args: { expires_at: "1767229200000000" }
+      expect: { outcome: ok, value: { id: "$bind:s1" } } }
+
+    // [created, expires) contains the creation instant: active immediately
+    { watch: "public.active", id: "w1"
+      expect_init: { value: [ { id: "$ref:s1" } ] } }
+
+    // advance to exactly the upper bound: the interval is half-open,
+    // so at now == expires_at the row is no longer active
+    { advance_time: "PT1H" }
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

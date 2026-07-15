@@ -1,0 +1,91 @@
+{
+  format: 1
+  name: delete-grant-is-not-erasure-grant
+  suite: scenario
+  tags: [erasure, authz, escalation]
+  // Attack: an actor holding a DELETE grant tries to invoke erasure, hoping the
+  // stronger irreversible operation rides on the weaker one. §21.2: "Authorization
+  // uses an explicitly exposed erasure call for the target. A delete grant does
+  // not silently become an erasure grant." The `deleter` role exposes delete but
+  // not erase; the erase surface lives only under a role alice does not hold.
+  spec: ["§21.2", "§10.3"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        can_erase: "bool = false"
+      }
+      sessions: {
+        $key: "id"
+        id: "text"
+        account: { $ref: "/accounts" }
+      }
+      users: {
+        $key: "id"
+        id: "text"
+        secret: "text"
+      }
+      $mut: {
+        delete_user: ".users - @id"
+        erase_user: "return erase(.users[@id])"
+      }
+      users_view: { $view: ".users { id, $sort: [id] }" }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [ "$proof.auth == $auth_name" ]
+        }
+      }
+      $roles: {
+        deleter: {
+          $auth: "session"
+          $members: ".accounts"
+          users: {
+            $view: ".users_view"
+            $mut: { delete: ".delete_user" }
+          }
+        }
+        eraser: {
+          $auth: "session"
+          $members: ".accounts[:a | a.can_erase]"
+          users: {
+            $view: ".users_view"
+            $mut: { erase: ".erase_user" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: { alice: { can_erase: false } }
+      sessions: { s_alice: { account: "alice" } }
+      users: { u1: { secret: "x" } }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "s_alice" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { auth: "session", credential: "tok-alice" } }
+    // alice's delete grant works
+    { call: "deleter.users.delete", args: { id: "u1" }, on: "c1", expect: { outcome: ok, "...": true } }
+    // but the erasure call is a separate grant she does not hold
+    { call: "eraser.users.erase", args: { id: "u1" }, on: "c1",
+      expect: { outcome: denied, violates: ["§21.2", "§10.3"],
+                detail: "delete grant does not confer the eraser role's erasure call" } }
+  ]
+}

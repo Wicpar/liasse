@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: noparam-call-paren-equals-empty-args
+  suite: scenario
+  spec: ["#annex-c", "§C.9", "#mutations", "§8.5"]
+  note: "Annex C.9 / §8.5: 'mutation()  no-parameter call; equivalent to mutation({})'. §8.3: 'mutation()' is the compact spelling of 'mutation({})'; both forms are exactly equivalent. The root mutation 'apply' invokes the no-parameter root mutation 'bump' using the bare '()' call form; the effect (counter increment) proves the no-parameter call statement executes."
+
+  package: {
+    $liasse: 1
+    $app: "t.noparam@1.0.0"
+    $model: {
+      counter: {
+        n: "int = 0"
+      }
+      $mut: {
+        bump: ".counter.n = .counter.n + 1"
+        apply: [
+          "bump()"
+          "return .counter { n }"
+        ]
+      }
+      view_counter: { $view: ".counter { n }" }
+      $public: {
+        counter: {
+          $view: ".view_counter"
+          $mut: { apply: ".apply" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.counter.apply", args: {},
+      expect: { outcome: ok, value: { n: "1" } } }
+    { call: "public.counter.apply", args: {},
+      expect: { outcome: ok, value: { n: "2" } } }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: max-bytes-boundary-plus-one-rejected
+  suite: scenario
+  spec: ["#blobs", "§18.2"]
+  tags: ["blob", "boundary"]
+  note: '''
+    Boundary probe: $max_bytes is an *inclusive* limit (§18.2). Content of
+    exactly limit+1 bytes must be rejected. $max_bytes is 10; the staged
+    content "12345678901" is 11 UTF-8 bytes (limit + 1), with a truthful
+    descriptor, isolating the limit comparison from any hash/media failure.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.plusone@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      $public: { docs: { $mut: { add: ".add" } } }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "12345678901"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: rejected, violates: ["#blobs"],
+                detail: "content is one byte over the inclusive $max_bytes limit" } }
+  ]
+}
+</content>

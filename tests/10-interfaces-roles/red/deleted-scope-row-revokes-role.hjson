@@ -1,0 +1,86 @@
+{
+  format: 1
+  name: deleted-scope-row-revokes-role
+  suite: scenario
+  // Attack surface via stale scope: a scoped role lives on a row (§10.3:
+  // "Their location defines scope"); when that row is deleted its nested
+  // membership rows disappear with it, and §10.5 re-evaluates membership at
+  // every admission. A request addressing the role at the vanished scope row
+  // must be denied — the previously granted authority must not outlive the
+  // row that carried it.
+  spec: ["#interfaces", "§10.3", "§10.5"]
+  tags: ["authz", "scope", "lifecycle"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.scope_gone@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "members": {
+          "$key": "account"
+          "account": { "$ref": "/accounts" }
+          "admin": "bool = false"
+        }
+        "$mut": {
+          "rename": [
+            ".name = @name"
+            "return . { id, name }"
+          ]
+        }
+        "$roles": {
+          "admin": {
+            "$auth": "token"
+            "$members": ".members[:m | m.admin].account"
+            "company": {
+              "$view": ". { id, name }"
+              "$mut": { "rename": ".rename" }
+            }
+          }
+        }
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$public": {
+        "registry": {
+          "$mut": { "drop": "/companies - @id" }
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+      "companies": {
+        "acme": {
+          "name": "Acme"
+          "members": { "alice": { "admin": true } }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+    { call: "admin.company.rename", scope: "acme", args: { name: "Acme 2" }, on: "c1",
+      expect: { outcome: ok, value: { id: "acme", name: "Acme 2" } } }
+    // Delete the scope row through an unauthenticated public surface.
+    { connect: "c2" }
+    { call: "public.registry.drop", args: { id: "acme" }, on: "c2",
+      expect: { outcome: ok } }
+    // The role's containing row no longer exists: the scoped role cannot be
+    // addressed and grants nothing.
+    { call: "admin.company.rename", scope: "acme", args: { name: "Zombie" }, on: "c1",
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "the scoped role's containing row identity no longer exists" } }
+  ]
+}

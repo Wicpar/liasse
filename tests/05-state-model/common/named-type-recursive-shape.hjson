@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: named-type-recursive-shape
+  suite: scenario
+  spec: ["#state-model", "§5.8"]
+  note: "§5.8: $types maps reusable names to shapes using the same shape grammar as $model, and a shape may refer to itself ('subcompanies': 'company'). A field naming the type adopts that shape; the nested recursive collection behaves as an ordinary keyed collection."
+
+  package: {
+    $liasse: 1
+    $app: "t.namedshape@1.0.0"
+    $types: {
+      company: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        subcompanies: "company"
+      }
+    }
+    $model: {
+      companies: "company"
+      $public: {
+        companies: {
+          $view: ".companies[:c].subcompanies[:s] { parent: c.id, sub: s.id, name: s.name }"
+          $mut: {
+            add_root: ".companies + { id: @id, name: @name }"
+            add_sub: ".companies[@parent].subcompanies + { id: @id, name: @name }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.companies.add_root", args: { id: "acme", name: "Acme" },
+      expect: { outcome: "ok" } }
+    { call: "public.companies.add_sub", args: { parent: "acme", id: "labs", name: "Acme Labs" },
+      expect: { outcome: "ok" } }
+    { watch: "public.companies", id: "w1", expect_init: { value: [
+      { parent: "acme", sub: "labs", name: "Acme Labs" }
+    ] } }
+  ]
+}

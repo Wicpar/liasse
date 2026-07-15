@@ -1,0 +1,73 @@
+{
+  format: 1
+  name: roundtrip-inverse-mismatch-rejects
+  suite: scenario
+  spec: ["#evolution", "§20.2", "#loading", "§9.4"]
+  note: '''
+    §20.2: "A failed round trip rejects the complete migration." Here `$as`
+    trims the value and `$back` is the identity (`.`), so for the seeded
+    "  x  " the check is `$back($as("  x  ")) == "x" != "  x  "`. The declared
+    inverse is not an inverse of `$as` on this value, so the migration is
+    rejected and version 1.0.0 stays active (Annex E.9). Classified `rejected`
+    because the failure is discovered against the actual migrated value, not
+    from the definition alone (see NOTES.md).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.badrev@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        accounts: {
+          $view: ".accounts { id, name }"
+          $mut: {
+            rename: [
+              ".accounts[@id].name = @name"
+              "return .accounts[@id] { id, name }"
+            ]
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: { a1: { name: "  x  " } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.badrev@2.0.0"
+          $model: {
+            accounts: {
+              $key: "id"
+              id: "text"
+              trimmed: {
+                $type: "text"
+                $from: "name"
+                $as: "string.trim(.)"
+                $back: "."
+              }
+            }
+            $public: {
+              accounts: { $view: ".accounts { id, trimmed }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.2"]
+        detail: "$back($as('  x  ')) == 'x' != '  x  '; failed round trip rejects the complete migration"
+      } }
+    // 1.0.0 remains active and keeps accepting its own writes
+    { call: "public.accounts.rename", args: { id: "a1", name: "  y  " },
+      expect: { outcome: ok, value: { id: "a1", name: "  y  " } } }
+  ]
+}

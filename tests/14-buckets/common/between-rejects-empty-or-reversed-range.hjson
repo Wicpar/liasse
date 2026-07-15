@@ -1,0 +1,46 @@
+{
+  format: 1
+  name: between-rejects-empty-or-reversed-range
+  suite: scenario
+  spec: ["#buckets", "§14.1"]
+  tags: ["boundary"]
+  note: ".$between(a, b) requires b > a; an empty or reversed query range rejects evaluation. A valid range over no rows evaluates to the empty view."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.range@1.0.0"
+    $model: {
+      reservations: {
+        $key: "id"
+        $bucket: { $from: ".starts_at", $until: ".ends_at" }
+        id: "text"
+        starts_at: "timestamp"
+        ends_at: "timestamp"
+      }
+      $public: {
+        q: {
+          $mut: {
+            between: "return .reservations.$between(@a, @b) { id }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // empty range: b == a
+    { call: "public.q.between"
+      args: { a: "1767229200000000", b: "1767229200000000" }
+      expect: { outcome: rejected, violates: ["§14.1"] } }
+
+    // reversed range: b < a
+    { call: "public.q.between"
+      args: { a: "1767232800000000", b: "1767229200000000" }
+      expect: { outcome: rejected, violates: ["§14.1"] } }
+
+    // control: a valid non-empty range over an empty collection succeeds
+    { call: "public.q.between"
+      args: { a: "1767229200000000", b: "1767232800000000" }
+      expect: { outcome: ok, value: [] } }
+  ]
+}

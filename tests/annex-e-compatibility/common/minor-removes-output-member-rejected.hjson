@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: minor-removes-output-member-rejected
+  suite: scenario
+  spec: ["#annex-e", "#evolution"]
+  note: '''
+    E.5 breaking change: "removing or renaming an output member without a
+    declared alias." The view {id, name} is a boundary output-shape contract
+    (E.2). Version 1.1.0 drops `name` from the projection, narrowing the
+    declared output. E.1/E.3 and §20.3 require load to reject a minor release
+    that narrows a boundary in the same major, so the update is rejected and
+    the prior release stays active (E.9). See NOTES.md for the rejected/invalid
+    mapping.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.rmout@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme" } } }
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "Acme" } ] } }
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.rmout@1.1.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+            }
+            "$public": {
+              // `name` removed from the boundary output — narrowing
+              "companies": { "$view": ".companies { id }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#annex-e"]
+        detail: "minor release removes boundary output member `name` without an alias; narrowing rejected"
+      } }
+    // prior release remains active and still promises `name` (E.9)
+    { expect_view: { watch: "w1", value: [ { id: "acme", name: "Acme" } ] } }
+  ]
+}

@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: secondary-sort-key-breaks-ties
+  suite: scenario
+  spec: ["#annex-b", "§B.5"]
+  tags: ["ordering"]
+  note: '''
+    §B.5 / §B.1: "Sort keys compare lexicographically from left to right."
+    $sort: [grade, name] orders by grade ascending first; rows with an equal
+    grade are ordered by name ascending; only when both are equal does the
+    synthetic/inherited row identity apply. Here grade is an int and name is
+    text. Two rows share grade 2 and are separated by name; no two rows share
+    both, so the identity tiebreaker is not exercised (that is covered
+    separately). Proves a lower-priority key is consulted only on ties in the
+    higher-priority key.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.secondary@1.0.0"
+    $model: {
+      students: {
+        $key: "id"
+        id: "text"
+        grade: "int"
+        name: "text"
+      }
+      $public: {
+        ranked: { $view: ".students { id, grade, name, $sort: [grade, name] }" }
+      }
+    }
+    $data: {
+      students: {
+        s1: { grade: 2, name: "Yara" }
+        s2: { grade: 1, name: "Owen" }
+        s3: { grade: 2, name: "Amir" }
+        s4: { grade: 3, name: "Bea" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.ranked", id: "w1",
+      expect_init: { value: [
+        { id: "s2", grade: 1, name: "Owen" }
+        { id: "s3", grade: 2, name: "Amir" }
+        { id: "s1", grade: 2, name: "Yara" }
+        { id: "s4", grade: 3, name: "Bea" }
+      ] } }
+  ]
+}

@@ -1,0 +1,85 @@
+{
+  format: 1
+  name: serve-order-defaults-to-flattened-placement
+  suite: scenario
+  spec: ["#blobs", "§18.4", "§18.8"]
+  tags: ["blob", "fetch", "ordering"]
+  note: '''
+    §18.4: "$serve controls preferred read order and defaults to that flattened
+    placement order", where "Placement order is flattened depth-first and
+    left-to-right: ... $all and $any contribute branches in array order". §18.8:
+    "The plan contains accessible verified holders in $serve order." With
+    $in = $all[a, b] and no $serve, the fetch plan lists holders [a, b].
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.serveorder@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: { $all: ["/stores['a']", "/stores['b']"] } }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      one: { $view: ".docs[@id] { id, file }" }
+      $public: {
+        docs: {
+          $view: ".one"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: {
+      stores: {
+        a: { connector: "fs-a" }
+        b: { connector: "fs-b" }
+      }
+    }
+  }
+
+  hosts: {
+    connectors: {
+      "fs-a": { capabilities: ["stream_upload", "stream_download", "server_side_copy", "checksum"] }
+      "fs-b": { capabilities: ["stream_upload", "stream_download", "server_side_copy", "checksum"] }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "servable"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: { id: "d1" } } }
+    { blob_get: {
+        surface: "public.docs"
+        args: { id: "d1" }
+        at: ".file"
+        on: "c1"
+      }
+      // holders is order-sensitive: flattened placement order a then b.
+      expect: { outcome: ok, holders: ["a", "b"], bytes: "servable" } }
+  ]
+}
+</content>

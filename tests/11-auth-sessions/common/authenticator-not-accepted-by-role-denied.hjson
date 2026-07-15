@@ -1,0 +1,98 @@
+{
+  format: 1
+  name: authenticator-not-accepted-by-role-denied
+  suite: scenario
+  spec: ["#authentication", "§11.4"]
+  tags: ["authz"]
+  note: '''
+    §11.4: "The targeted role determines the accepted authenticators before the
+    credential is inspected." The member role accepts only the "session"
+    authenticator. A perfectly valid api_key credential naming the declared
+    api_key authenticator must still be denied for this role.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.two@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+        api_key: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $actor: "/accounts[$proof.account]"
+          $check: "$proof.auth == $auth_name"
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes[:n | n.author == $actor] { id, body }"
+            $mut: { add: ".add_note" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "key-alice": { auth: "api_key", account: "aaaaaaaa-0000-4000-8000-000000000001" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // The api_key authenticator is declared and the credential verifies, but
+    // the member role's $auth accepts only "session": denied (§11.4).
+    { call: "member.notes.add", args: { body: "x" }, on: "c1",
+      auth: { auth: "api_key", credential: "key-alice" },
+      expect: { outcome: denied, violates: ["#authentication"] } }
+  ]
+}

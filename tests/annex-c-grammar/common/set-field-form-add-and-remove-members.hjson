@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: set-field-form-add-and-remove-members
+  suite: scenario
+  spec: ["#annex-c", "§C.3", "#state-model", "§5.5", "#mutations", "§8.5"]
+  note: "Annex C.3 field form '\"field\": { $set: T }' declares a unique set (Annex C.2 $set marker). §5.5: membership is mathematical — repeated input collapses to one member. §8.5: 'set_field + values' union, 'set_field - values' difference. Adding 'a','b','a' yields {a,b}; removing 'a' yields {b}. Sets have canonical read order from the element total order (§5.5)."
+
+  package: {
+    $liasse: 1
+    $app: "t.setfield@1.0.0"
+    $model: {
+      doc: {
+        tags: { $set: "text" }
+      }
+      $mut: {
+        add_tags: [
+          ".doc.tags + @tags"
+          "return .doc { tags }"
+        ]
+        drop_tag: [
+          ".doc.tags - @tag"
+          "return .doc { tags }"
+        ]
+      }
+      view_doc: { $view: ".doc { tags }" }
+      $public: {
+        doc: {
+          $view: ".view_doc"
+          $mut: {
+            add_tags: ".add_tags"
+            drop_tag: ".drop_tag"
+          }
+        }
+      }
+    }
+    $data: {
+      doc: { tags: [] }
+    }
+  }
+
+  steps: [
+    { call: "public.doc.add_tags", args: { tags: ["a", "b", "a"] },
+      expect: { outcome: ok, value: { tags: ["a", "b"] } } }
+    { call: "public.doc.drop_tag", args: { tag: ["a"] },
+      expect: { outcome: ok, value: { tags: ["b"] } } }
+  ]
+}

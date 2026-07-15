@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: like-recursion-adopts-containing-shape
+  suite: scenario
+  spec: ["#state-model", "§5.8"]
+  note: "§5.8: '$like remains available for positional recursion... ^ names the immediately containing shape. The field adopts that shape contract while retaining its own location and data.' Children must accept the same fields as their containing category rows."
+
+  package: {
+    $liasse: 1
+    $app: "t.like@1.0.0"
+    $model: {
+      categories: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        children: { $like: "^" }
+      }
+      $public: {
+        categories: {
+          $view: ".categories[:c].children[:k] { parent: c.id, child: k.id, name: k.name }"
+          $mut: {
+            add_root: ".categories + { id: @id, name: @name }"
+            add_child: ".categories[@parent].children + { id: @id, name: @name }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.categories.add_root", args: { id: "root", name: "Root" },
+      expect: { outcome: "ok" } }
+    { call: "public.categories.add_child", args: { parent: "root", id: "leaf", name: "Leaf" },
+      expect: { outcome: "ok" } }
+    { watch: "public.categories", id: "w1", expect_init: { value: [
+      { parent: "root", child: "leaf", name: "Leaf" }
+    ] } }
+  ]
+}

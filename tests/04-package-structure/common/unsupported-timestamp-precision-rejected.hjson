@@ -1,0 +1,25 @@
+{
+  format: 1
+  name: unsupported-timestamp-precision-rejected
+  suite: static
+  spec: ["#package-structure", "§4.4"]
+  note: "§4.4: 'Supported timestamp precisions are s, ms, us, and ns.' 'ps' (picoseconds) is not in that closed set, so a $precision override naming it is invalid."
+
+  package: {
+    $liasse: 1
+    $app: "t.precision@1.0.0"
+    $model: {
+      captured_at: {
+        $type: "timestamp"
+        $precision: "ps"
+        $default: "= now()"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "§4.4"]
+    detail: "$precision 'ps' is outside the supported set {s, ms, us, ns}"
+  }
+}

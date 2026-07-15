@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: install-config-unknown-member-invalid
+  suite: scenario
+  spec: ["#modules", "§13.1", "§13.3", "#scope"]
+  note: '''
+    §13.1: $config declares an immutable typed struct for installation
+    values. §2.5: unknown members in a declaration object are invalid unless
+    that declaration accepts application-defined names. §13.3: loading
+    validates the configuration before the instance becomes active. The
+    install supplies a "tax_id" member the module's $config never declares,
+    so the request fails static validation.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+              }
+            }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tplc: {
+      "$liasse": 1
+      "$module": "t.tplc@1.0.0"
+      "$config": { "currency": "text = 'USD'" }
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+      }
+      "$expose": {
+        "templates": { "$view": ".templates { id, label }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: {
+          "$name": "kit"
+          "$module": "t.tplc@1.0.0"
+          // "tax_id" is not a declared $config field
+          "$config": { "currency": "EUR", "tax_id": "X1" }
+        } }
+      expect: { outcome: invalid, violates: ["§13.1"]
+                detail: "installation $config carries a member not declared by the module's typed $config struct" } }
+  ]
+}

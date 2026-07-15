@@ -1,0 +1,43 @@
+{
+  // §8.6: every right-hand expression of a patch reads the prospective row
+  // at the START of the patch. A one-statement patch { a = .b, b = .a }
+  // therefore swaps the two fields.
+  format: 1
+  name: patch-reads-row-at-patch-start
+  suite: scenario
+  spec: ["#mutations", "§8.6"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.patchstart@1.0.0"
+    "$model": {
+      "pairs": {
+        "$key": "id"
+        "id": "text"
+        "a": "text"
+        "b": "text"
+        "$mut": {
+          "swap": [
+            ". { a = .b, b = .a }"
+            "return . { a, b }"
+          ]
+        }
+      }
+      "$public": {
+        "pairs": { "$mut": { "swap": ".pairs[@id].swap" } }
+      }
+    }
+    "$data": {
+      "pairs": { "p1": { "a": "x", "b": "y" } }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.pairs.swap"
+      args: { id: "p1" }
+      // Both right-hand sides read the pre-patch row: a<->b swap.
+      expect: { outcome: ok, value: { a: "y", b: "x" } }
+    }
+  ]
+}

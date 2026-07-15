@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: rename-collection-via-from
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.1: "The same shorthand renames a collection" — a target collection with
+    `$from: "customers"` adopts the old collection's rows. The seeded row
+    survives the rename with its key and fields copied (no `$as` on the members,
+    so each compatible value is copied).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.coll@1.0.0"
+    $model: {
+      customers: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        customers: { $view: ".customers { id, name }" }
+      }
+    }
+    $data: {
+      customers: { c1: { name: "Acme" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.coll@2.0.0"
+          $model: {
+            clients: {
+              $from: "customers"
+              $key: "id"
+              id: "text"
+              name: "text"
+            }
+            $public: {
+              clients: { $view: ".clients { id, name }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.clients", id: "w1",
+      expect_init: { value: [ { id: "c1", name: "Acme" } ] } }
+  ]
+}

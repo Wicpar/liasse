@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: w1-complete-unknown-key-selects-zero-rejects
+  suite: scenario
+  spec: ["W1", "#interfaces", "§10.1", "#state-model", "§6.3"]
+  tags: [receiver]
+  note: '''
+    W1: public.tasks.complete = ".tasks[@id].complete()". §10.1: "A declared
+    row-mutation reference MUST select exactly one receiver before naming the
+    mutation ... Zero or several selected rows reject the request." @id is a
+    well-formed uuid that addresses no existing task, so ".tasks[@id]" selects
+    zero rows and the call is rejected — with no partial effect.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.tasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: {
+          $type: "text"
+          $normalize: "string.trim(.)"
+          $check: ["size(.) > 0", "A title is required"]
+        }
+        done: "bool = false"
+        created_at: "timestamp = now()"
+        $mut: {
+          complete: [
+            ".done = true"
+            "return . { id, title, done, created_at }"
+          ]
+        }
+      }
+      $mut: {
+        add_task: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title, done, created_at }"
+        ]
+      }
+      open_tasks: {
+        $view: ".tasks[:task | !task.done] { id, title, created_at, $sort: [-created_at] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".open_tasks"
+          $mut: {
+            add: ".add_task"
+            complete: ".tasks[@id].complete()"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tasks.complete", args: { id: "aaaaaaaa-0000-4000-8000-0000000000ff" }
+      expect: { outcome: rejected, violates: ["§10.1"], detail: "receiver selects zero rows" } }
+  ]
+}

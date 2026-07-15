@@ -1,0 +1,37 @@
+{
+  format: 1
+  name: bool-wire-is-json-boolean
+  suite: scenario
+  spec: ["§A.1"]
+  tags: ["wire", "bool"]
+  note: "Annex A.1: the canonical strict-JSON value of `bool` is `true` or `false` — a JSON boolean, not the JSON string \"true\"/\"false\". Two seeded rows carry the two boolean values; each projects to its JSON boolean. Text is a distinct primitive (A.1), so a string spelling would be a different wire type."
+
+  package: {
+    $liasse: 1
+    $app: "t.boolwire@1.0.0"
+    $model: {
+      flags: {
+        $key: "id"
+        id: "text"
+        on: "bool"
+      }
+      $public: {
+        v: { $view: ".flags { id, on, $sort: [id] }" }
+      }
+    }
+    $data: {
+      flags: {
+        f: { on: false }
+        t: { on: true }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: [
+        { id: "f", on: false }
+        { id: "t", on: true }
+      ] } }
+  ]
+}

@@ -1,0 +1,118 @@
+{
+  format: 1
+  name: session-bucket-authoritative-over-token-claim
+  suite: scenario
+  spec: ["#authentication", "§11.7", "§11.3", "#buckets", "§14.1"]
+  tags: ["boundary", "forgery"]
+  note: '''
+    §11.7: "The session collection's $bucket makes only active intervals
+    visible through /sessions." The authenticator resolves $session by
+    /sessions[$proof.session], which is bucket-gated by the session ROW's
+    expires_at. A token whose own claims advertise a far-future expiry grants
+    nothing once the session row leaves its interval: the token's self-asserted
+    lifetime is never consulted for session validity.
+  '''
+
+  // Attack: a legitimately issued token carries a long-lived expiry claim, but
+  // its backing session row is short-lived. After the row expires the holder
+  // replays the still-"valid-looking" token. Trusting the token's expiry claim
+  // instead of the bucket-gated row would extend access; the spec forbids it.
+
+  package: {
+    $liasse: 1
+    $app: "t.auth@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes[:n | n.author == $actor] { id, body }"
+            $mut: { add: ".add_note" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+      }
+      sessions: {
+        // Row expires 2026-01-02, regardless of any token claim.
+        "5e551000-0000-4000-8000-000000000001": {
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+          expires_at: "2026-01-02T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        // The token brazenly claims expiry in the year 2999. $verify returns
+        // it as-is; the authenticator never reads it for session validity.
+        "tok-alice": {
+          auth: "session"
+          session: "5e551000-0000-4000-8000-000000000001"
+          expires_at: "2999-01-01T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { auth: "session", credential: "tok-alice" } }
+    // Before the row's expiry: authenticates.
+    { call: "member.notes.add", args: { body: "while active" }, on: "c1",
+      expect: { outcome: ok, value: {
+        id: "$any:uuid"
+        author: "aaaaaaaa-0000-4000-8000-000000000001"
+        body: "while active"
+      } } }
+    { advance_time: "P2D" }
+    // Past the ROW's expiry; the token's 2999 claim buys nothing.
+    { call: "member.notes.add", args: { body: "after row expiry" }, on: "c1",
+      expect: { outcome: denied, violates: ["#authentication", "#buckets"] } }
+  ]
+}

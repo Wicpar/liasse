@@ -1,0 +1,30 @@
+{
+  format: 1
+  name: composite-selector-missing-component-invalid
+  suite: static
+  spec: ["#expressions", "§6.3"]
+  tags: ["boundary"]
+  note: "Attack: address a composite-keyed collection by a partial key, turning a point lookup into an implicit range scan. §6.3: 'A composite-key lookup uses one object operand naming each key component.' An object operand omitting the 'code' component does not name each component and the package must be rejected at load (expression types are checked at load per the §6 intro)."
+
+  package: {
+    $liasse: 1
+    $app: "t.selectors@1.0.0"
+    $model: {
+      vat_rates: {
+        $key: ["country", "code"]
+        country: "text"
+        code: "text"
+        rate: "int"
+      }
+      by_country: {
+        $view: ".vat_rates[{ country: 'fr' }] { rate }"
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#expressions"]
+    detail: "composite-key selector object names only 'country' and omits key component 'code'"
+  }
+}

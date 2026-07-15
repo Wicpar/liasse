@@ -1,0 +1,30 @@
+{
+  // §8.3: "All uses of the same parameter MUST infer one compatible type."
+  // @x is assigned to an int field and to a text field: no single compatible
+  // type exists, so the package fails to load.
+  format: 1
+  name: conflicting-param-inference-invalid
+  suite: static
+  spec: ["#mutations", "§8.3"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.paramconflict@1.0.0"
+    "$model": {
+      "n": "int = 0"
+      "s": "text = ''"
+      "$mut": {
+        "both": [
+          ".n = @x"
+          ".s = @x"
+        ]
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§8.3"]
+    detail: "@x infers int from one use and text from another"
+  }
+}

@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: unchanged-when-no-state-change
+  suite: scenario
+  spec: ["#clients", "#runtime"]
+  tags: ["completion"]
+  note: '''
+    §22.2: "A program producing no state change returns `unchanged` and creates
+    no commit." §12.3: "Receiving `unchanged` proves evaluation at the returned
+    frontier." A read-only mutation program (single `return` statement) must
+    complete as unchanged, still deliver its returned value, and leave the live
+    view without a new commit.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        poke: "return count(.tasks)"
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+            poke: ".poke"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tasks", on: "c1", id: "w1", expect_init: { value: [] } }
+    {
+      call: "public.tasks.poke"
+      args: {}
+      on: "c1"
+      expect: {
+        outcome: ok
+        completion: unchanged
+        value: 0
+      }
+    }
+    // No commit was created; the live result is unchanged.
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

@@ -1,0 +1,82 @@
+{
+  format: 1
+  name: reload-divergent-seed-data-unspecified
+  suite: scenario
+  spec: ["#loading"]
+  note: '''
+    Spec gap with replay/rollback flavor. After genesis, a committed mutation
+    moves the state away from the seed ("seeded" -> "changed"). The host then
+    loads a byte-identical artifact whose $data still says "seeded". §4.1
+    calls $data "optional genesis data", but §9.4 defines unchanged as "the
+    requested definition and data effects already apply", implying load
+    requests carry data effects. The spec never defines what an update's
+    $data means against diverged state: re-assert it (committed — silently
+    reverting a committed write, a rollback an attacker replaying an old
+    artifact would love), treat $data as genesis-only (unchanged, since the
+    definition already applies), or reject the divergence. None of the three
+    is derivable from the text, so the step outcome is unspecified.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.diverge@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          "$mut": {
+            "retitle": [
+              ".tasks[@id].title = @title"
+              "return .tasks[@id] { id, title }"
+            ]
+          }
+        }
+      }
+    }
+    "$data": {
+      "tasks": {
+        "t1": { "title": "seeded" }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tasks.retitle", args: { id: "t1", title: "changed" },
+      expect: { outcome: "ok", value: { id: "t1", title: "changed" } } }
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.diverge@1.0.0"
+          "$model": {
+            "tasks": {
+              "$key": "id"
+              "id": "text"
+              "title": "text"
+            }
+            "$public": {
+              "tasks": {
+                "$view": ".tasks { id, title }"
+                "$mut": {
+                  "retitle": [
+                    ".tasks[@id].title = @title"
+                    "return .tasks[@id] { id, title }"
+                  ]
+                }
+              }
+            }
+          }
+          "$data": {
+            "tasks": {
+              "t1": { "title": "seeded" }
+            }
+          }
+        }
+      }
+      expect: { outcome: "unspecified" } }
+  ]
+}

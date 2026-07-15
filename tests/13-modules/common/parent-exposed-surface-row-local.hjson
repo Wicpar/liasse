@@ -1,0 +1,98 @@
+{
+  format: 1
+  name: parent-exposed-surface-row-local
+  suite: scenario
+  spec: ["#modules", "§13.4"]
+  note: '''
+    §13.4: a module-space $expose projects a parent capability to children
+    and the surface is row-local: under Acme's space it refers to Acme,
+    under Globex to Globex. A child imports it as "$parent" (same-name
+    handle) or renames it via "$parent.company". Mutating the parent through
+    the exposed surface from the Globex child changes Globex only.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "$mut": { "rename": ".name = @name" }
+          "modules": {
+            "$modules": {
+              "$expose": {
+                "company": {
+                  "$view": ". { id, name }"
+                  "$mut": { "rename": ".rename" }
+                }
+              }
+              "$interfaces": {
+                "info": {
+                  "$view": { "$key": "id", "id": "text", "company": "text", "org": "text" }
+                  "$mut": {
+                    "rename_company({ name: text })": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+        "$public": {
+          "info": {
+            "$params": { "company": "text" }
+            "$view": '/companies[@company].modules["brand"]::info'
+          }
+          "admin": {
+            "$mut": { "rename": '/companies[@company].modules["brand"]::info.rename_company' }
+          }
+        }
+      }
+      "$data": {
+        "companies": {
+          "acme": { "name": "Acme" }
+          "globex": { "name": "Globex" }
+        }
+      }
+    }
+    brand: {
+      "$liasse": 1
+      "$module": "t.brand@1.0.0"
+      "$use": {
+        "company": "$parent"
+        "org": "$parent.company"
+      }
+      "$model": {
+        "slots": { "$key": "id", "id": "text" }
+      }
+      "$data": { "slots": { "s1": {} } }
+      "$expose": {
+        "info": {
+          "$view": ".slots { id, company: #company.name, org: #org.name }"
+          "$mut": {
+            "rename_company": "#company.rename({ name: @name })"
+          }
+        }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "brand", "$module": "t.brand@1.0.0" } }
+      expect: { outcome: ok } }
+    { module_install: { space: "/companies/globex/modules", request: { "$name": "brand", "$module": "t.brand@1.0.0" } }
+      expect: { outcome: ok } }
+    { watch: "public.info", args: { company: "acme" }, id: "wa"
+      expect_init: { value: [ { id: "s1", company: "Acme", org: "Acme" } ] } }
+    { watch: "public.info", args: { company: "globex" }, id: "wg"
+      expect_init: { value: [ { id: "s1", company: "Globex", org: "Globex" } ] } }
+    // mutate the parent through Globex's child; Acme is untouched
+    { call: "public.admin.rename", args: { company: "globex", name: "Globex Corp" }
+      expect: { outcome: ok } }
+    { expect_view: { watch: "wg", value: [ { id: "s1", company: "Globex Corp", org: "Globex Corp" } ] } }
+    { expect_view: { watch: "wa", value: [ { id: "s1", company: "Acme", org: "Acme" } ] } }
+  ]
+}

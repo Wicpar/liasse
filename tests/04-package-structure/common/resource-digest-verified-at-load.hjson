@@ -1,0 +1,29 @@
+{
+  format: 1
+  name: resource-digest-verified-at-load
+  suite: scenario
+  spec: ["#package-structure", "§4.1", "#history", "§19.5", "#annex-d", "§D.5"]
+  note: "Happy path for §4.1 $resources: descriptor with $path/$media/$sha256, entry bytes matching the declared digest. 'Every declared digest is verified before activation' — here verification succeeds and the artifact activates. Uses the extension steps documented in NOTES.md."
+  tags: ["artifact"]
+
+  package: {
+    $liasse: 1
+    $app: "t.invoice@1.0.0"
+    $resources: {
+      invoice_template: {
+        $path: "resources/invoice.html"
+        $media: "text/html"
+        $sha256: "2163bddf11b2e116332448d10374d504f9508c148b72e5c9d970b88665330490"
+      }
+    }
+    $model: {
+      note: "text"
+    }
+  }
+
+  steps: [
+    // sha256("<h1>Invoice</h1>") = 2163bddf...0490 — matches the declared digest
+    { build_artifact: { as: "a1", files: { "resources/invoice.html": "<h1>Invoice</h1>" } } }
+    { load_artifact: { from: "a1", expect: { outcome: ok } } }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  format: 1
+  name: declaration-name-leading-underscore-rejected
+  suite: static
+  spec: ["#conformance", "§2.5"]
+  note: "§2.5 requires declaration names to BEGIN with an ASCII letter. '_' is permitted inside a name but not as its first character, so '_hidden' fails the leading-character clause specifically."
+
+  package: {
+    $liasse: 1
+    $app: "t.names@1.0.0"
+    $model: {
+      _hidden: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance", "§2.5"]
+    detail: "declaration name '_hidden' does not begin with an ASCII letter"
+  }
+}

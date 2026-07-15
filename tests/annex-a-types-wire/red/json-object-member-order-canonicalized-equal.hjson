@@ -1,0 +1,37 @@
+{
+  format: 1
+  name: json-object-member-order-canonicalized-equal
+  suite: scenario
+  spec: ["§A.7", "§B.3"]
+  tags: ["json", "identity"]
+  note: '''Attack: forge a "distinct" json value by permuting object member order,
+hoping equality comparison treats {"a":1,"b":2} and {"b":2,"a":1} as different (e.g. to
+mint a second row that should collide, or to defeat a value equality check). Annex A.7:
+canonical JSON 'sorts object keys by the Liasse text order'; Annex B.3: json objects
+compare with 'keys sorted by text order, then lexicographic (key, value) pair order'.
+The two seeded json values differ only in source member order, so after canonicalization
+they are the SAME value and compare equal. The equality is evaluated by the engine
+(`.x == .y`) so the boolean is a spec consequence, not an echo.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.jsonorder@1.0.0"
+    $model: {
+      x: "json"
+      y: "json"
+      equal: "= .x == .y"
+      $public: {
+        v: { $view: ". { equal }" }
+      }
+    }
+    $data: {
+      x: { a: 1, b: 2 }
+      y: { b: 2, a: 1 }
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { equal: true } } }
+  ]
+}

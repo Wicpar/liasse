@@ -1,0 +1,30 @@
+{
+  // §8.8 Expression effects: "Computed fields, views, $normalize, and $check
+  // use pure functions only. ... The checker rejects an effect class used in
+  // the wrong position while loading the package." now() is a generated
+  // function, so a $check calling it must be rejected at load.
+  format: 1
+  name: pure-position-effect-class-invalid
+  suite: static
+  spec: ["#mutations", "§8.8", "§16.3"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.effectclass@1.0.0"
+    "$model": {
+      "until": {
+        "$type": "timestamp"
+        // Defaults MAY use generated functions (§8.8), so this default is
+        // legal; the $check below is the package's only defect.
+        "$default": "= now()"
+        "$check": [". > now()", "must lie in the future"]
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§8.8"]
+    detail: "generated function now() used in a pure-only $check position"
+  }
+}

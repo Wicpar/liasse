@@ -1,0 +1,122 @@
+{
+  format: 1
+  name: cross-module-atomic-transition
+  suite: scenario
+  spec: ["#modules", "#1310-stateful-services-across-module-boundaries", "§13.10"]
+  note: '''
+    §13.10: the caller's state changes and the owner mutation participate in
+    the same atomic cross-module transition. The shop module inserts its
+    order row and then calls #credits.consume on the bank module. When the
+    bank's assert fails, the whole transition is rejected and the already
+    executed order insert must not be visible either.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "credits": {
+                  "$view": { "$key": "id", "id": "text", "balance": "decimal" }
+                  "$mut": {
+                    "consume({ amount: decimal })": {
+                      "$return": { "remaining": "decimal" }
+                    }
+                  }
+                }
+                "orders": {
+                  "$view": { "$key": "id", "id": "text", "cost": "decimal" }
+                  "$mut": {
+                    "place({ id: text, cost: decimal })": {
+                      "$return": { "id": "text" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+        "$public": {
+          "orders": { "$view": '/companies["acme"].modules["shop"]::orders' }
+          "pools": { "$view": '/companies["acme"].modules["bank"]::credits' }
+          "shop": {
+            "$mut": { "place": '/companies["acme"].modules["shop"]::orders.place' }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    bank: {
+      "$liasse": 1
+      "$module": "t.bank@1.0.0"
+      "$model": {
+        "pools": { "$key": "id", "id": "text", "balance": "decimal" }
+        "$mut": {
+          "consume": [
+            'assert(.pools["main"].balance >= @amount, "insufficient credits")'
+            '.pools["main"].balance = .pools["main"].balance - @amount'
+            'return { remaining: .pools["main"].balance }'
+          ]
+        }
+      }
+      "$data": { "pools": { "main": { "balance": "10" } } }
+      "$expose": {
+        "credits": {
+          "$view": ".pools { id, balance }"
+          "$mut": { "consume": ".consume" }
+        }
+      }
+    }
+    shop: {
+      "$liasse": 1
+      "$module": "t.shop@1.0.0"
+      "$use": {
+        "credits": "t.bank/credits@1"
+      }
+      "$model": {
+        "orders": { "$key": "id", "id": "text", "cost": "decimal" }
+        "$mut": {
+          "place": [
+            "o = .orders + { id: @id, cost: @cost }"
+            "r = #credits.consume({ amount: @cost })"
+            "return o { id }"
+          ]
+        }
+      }
+      "$expose": {
+        "orders": {
+          "$view": ".orders { id, cost }"
+          "$mut": { "place": ".place" }
+        }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "bank", "$module": "t.bank@1.0.0" } }
+      expect: { outcome: ok } }
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "shop", "$module": "t.shop@1.0.0" } }
+      expect: { outcome: ok } }
+    { watch: "public.orders", id: "wo", expect_init: { value: [] } }
+    { watch: "public.pools", id: "wp", expect_init: { value: [ { id: "main", balance: "10" } ] } }
+    // both sides commit together
+    { call: "public.shop.place", args: { id: "o1", cost: "4" }
+      expect: { outcome: ok, value: { id: "o1" } } }
+    { expect_view: { watch: "wo", value: [ { id: "o1", cost: "4" } ] } }
+    { expect_view: { watch: "wp", value: [ { id: "main", balance: "6" } ] } }
+    // the owner's assert fails: the caller's insert must roll back with it
+    { call: "public.shop.place", args: { id: "o2", cost: "20" }
+      expect: { outcome: rejected, violates: ["§13.10"]
+                detail: "the owner mutation's failed assert rejects the whole cross-module transition" } }
+    { expect_view: { watch: "wo", value: [ { id: "o1", cost: "4" } ] } }
+    { expect_view: { watch: "wp", value: [ { id: "main", balance: "6" } ] } }
+  ]
+}

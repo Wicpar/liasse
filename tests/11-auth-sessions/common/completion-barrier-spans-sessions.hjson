@@ -1,0 +1,114 @@
+{
+  format: 1
+  name: completion-barrier-spans-sessions
+  suite: scenario
+  spec: ["#authentication", "§11.8", "#clients", "§12.3"]
+  note: '''
+    §11.8: "A single network connection MAY multiplex subscriptions from
+    several sessions. The connection-level completion barrier advances every
+    subscription through a successful call's commit". Bob's subscription and
+    Alice's call share one logical connection but different authentication
+    contexts; after Alice's call returns ok, Bob's subscription must already
+    reflect her commit.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.board@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          board: {
+            $view: ".notes { id, body }"
+            $mut: { add: ".add_note" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+        "bbbbbbbb-0000-4000-8000-000000000002": { name: "bob" }
+      }
+      sessions: {
+        "5e551000-0000-4000-8000-000000000001": {
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+        "5e551000-0000-4000-8000-000000000002": {
+          account: "bbbbbbbb-0000-4000-8000-000000000002"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "5e551000-0000-4000-8000-000000000001" }
+        "tok-bob": { auth: "session", session: "5e551000-0000-4000-8000-000000000002" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Bob's subscription, multiplexed on the same connection as Alice's calls.
+    { watch: "member.board", on: "c1", id: "w-bob",
+      auth: { auth: "session", credential: "tok-bob" },
+      expect_init: { value: [] } }
+    // Alice commits under her own session on the same connection.
+    { call: "member.board.add", args: { body: "shared" }, on: "c1",
+      auth: { auth: "session", credential: "tok-alice" },
+      expect: { outcome: ok, value: {
+        id: "$bind:n1"
+        author: "aaaaaaaa-0000-4000-8000-000000000001"
+        body: "shared"
+      } } }
+    // Bob's subscription has advanced through Alice's commit (§11.8, §12.3).
+    { expect_view: { watch: "w-bob", value: [ { id: "$ref:n1", body: "shared" } ] } }
+  ]
+}

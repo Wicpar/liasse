@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: deletion-returns-rows-as-they-existed
+  suite: scenario
+  // §8.4: "Deletion returns the deleted rows as they existed immediately before
+  // removal, in selector order after duplicate target identities are removed by
+  // first occurrence." The delete mutation returns the removed row's prior
+  // field values.
+  spec: ["§8.4", "§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+        remove: [
+          "d = .notes - @id"
+          "return d { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put", remove: ".remove" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "before" },
+      expect: { outcome: ok, value: { id: "n1", body: "before" } } }
+    // the delete returns the row's values as they existed immediately before removal
+    { call: "public.notes.remove", args: { id: "n1" },
+      expect: { outcome: ok, value: { id: "n1", body: "before" } } }
+    { watch: "public.notes", id: "w1", expect_init: { value: [] } }
+  ]
+}

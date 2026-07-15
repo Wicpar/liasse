@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: seed-keyring-version-invalid
+  suite: static
+  tags: ["escalation", "tampering"]
+  spec: ["#keyrings", "#loading", "§9.1"]
+  // Attack: smuggle an attacker-controlled "accepted" verification key into
+  // the keyring by seeding it through $data, bypassing the provider. §9.1:
+  // keyring-managed versions cannot be seeded directly — their values derive
+  // only from provider transitions. Accepting this seed would let anyone who
+  // holds the corresponding private key mint valid session tokens.
+  note: "$data mirrors writable state only; session_keys is keyring-managed."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+    }
+    "$data": {
+      "session_keys": {
+        "$versions": [
+          {
+            "id": "attacker-v1"
+            "algorithm": "Ed25519"
+            "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a"
+          }
+        ]
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§9.1"]
+    detail: "keyring-managed versions cannot be seeded through $data"
+  }
+}

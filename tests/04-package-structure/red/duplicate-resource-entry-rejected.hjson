@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: duplicate-resource-entry-rejected
+  suite: scenario
+  spec: ["#package-structure", "§4.1", "#annex-d", "§D.5"]
+  tags: ["tamper", "artifact", "aliasing"]
+  note: "Classic duplicate-entry ZIP attack: two archive entries named resources/logo.txt — the first with bytes matching the declared digest, a second appended with attacker bytes. Extractors and verifiers that pick different entries (first-wins vs last-wins) diverge. §4.1: paths 'MUST identify one entry'; Annex D.5: 'Verification succeeds only when every referenced entry exists exactly once and every checksum matches.'"
+
+  package: {
+    $liasse: 1
+    $app: "t.dupentry@1.0.0"
+    $resources: {
+      logo: {
+        $path: "resources/logo.txt"
+        $media: "text/plain"
+        // sha256("logo-bytes-v1")
+        $sha256: "75db1b791451743ece53a6f2595caadb42751c84ea9829e58b0550ea539f090a"
+      }
+    }
+    $model: {
+      note: "text"
+    }
+  }
+
+  steps: [
+    { build_artifact: { as: "a1", files: { "resources/logo.txt": "logo-bytes-v1" } } }
+    // append a SECOND entry with the same name and different bytes;
+    // manifest checksums are not recomputed
+    { tamper_artifact: { artifact: "a1", add: { "resources/logo.txt": "logo-bytes-v2" } } }
+    { load_artifact: { from: "a1", expect: {
+        outcome: invalid
+        violates: ["#annex-d", "§D.5", "#package-structure", "§4.1"]
+        detail: "resources/logo.txt exists more than once; the referenced entry is not unique"
+    } } }
+  ]
+}

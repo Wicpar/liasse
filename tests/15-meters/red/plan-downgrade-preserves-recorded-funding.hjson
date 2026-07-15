@@ -1,0 +1,105 @@
+{
+  format: 1
+  name: plan-downgrade-preserves-recorded-funding
+  suite: scenario
+  spec: ["#meters", "§15.2", "§15.3", "#buckets", "§14.5"]
+  tags: [temporal]
+  note: '''Retroactive downgrade attack. An account spent 40 against a plan-referenced
+period pool of 100. The plan credits are then cut to 30. SPEC §15.2/§15.3: later source
+edits never rewrite an earlier funding allocation, so the recorded funding for the
+first spend is unchanged (still 40). Because the pool keeps a live plan reference, the
+edit does affect current/future availability: current remaining capacity is the
+non-negative remainder max(0, 30 - 40) = 0, so a further spend rejects — the past is
+frozen, the future shrinks.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.downgrade@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        account: { $ref: "/accounts" }
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp? = none"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      accounts: {
+        $key: "id"
+        id: "text"
+        $limits: {
+          credits: {
+            $sources: {
+              subscription: '''/credit_periods[:p | p.$source.account == .] {
+                $quantity: .credits
+              }'''
+            }
+            $order: ["$until"]
+          }
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id, funding }"
+          ]
+        }
+      }
+      $mut: {
+        downgrade: ".plans[@plan] { credits = @credits }"
+      }
+      $public: {
+        wallet: {
+          $view: ".accounts { id, balance: .credits.balance, spends: .spends { id, funding } }"
+          $mut: {
+            consume: ".accounts[@account].consume"
+            downgrade: ".downgrade"
+          }
+        }
+      }
+    }
+    $data: {
+      // one unbounded weekly series from the virtual epoch 2026-01-01
+      plans: { weekly: { credits: "100", period: "P7D" } }
+      accounts: { a1: {} }
+      subscriptions: { s1: { account: "a1", plan: "weekly", starts_at: "1767225600" } }
+    }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { account: "a1", amount: "40" },
+      expect: { outcome: ok, value: { id: "$bind:sp1", funding: "$bind:f1" } } }
+    // cut the plan's credits from 100 to 30 after the spend was funded
+    { call: "public.wallet.downgrade", args: { plan: "weekly", credits: "30" },
+      expect: { outcome: ok } }
+    // the earlier spend's recorded funding is untouched; current remaining clamps at 0
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "a1", balance: "0",
+        spends: [ { id: "$ref:sp1", funding: "$ref:f1" } ] } ] } }
+    // future availability shrank with the plan: nothing left to spend this period
+    { call: "public.wallet.consume", args: { account: "a1", amount: "1" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+  ]
+}

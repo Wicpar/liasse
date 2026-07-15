@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: spliced-state-selection-mismatch-invalid
+  suite: scenario
+  tags: [tampering, aliasing]
+  // Attack: splice the state entry of a LATER export into an EARLIER
+  // artifact and recompute all checksums. Checksums now match, but the
+  // state entry's embedded selection (Annex D.5: state/current.cbor.zst
+  // decodes with its own "selected" lineage/point) names a different point
+  // than manifest.json and history/index.json. §19.7: "The root state,
+  // retained histories, composition point, and recursively selected child
+  // states MUST describe that same boundary."
+  spec: ["§19.7", "Annex D.5", "§19.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { call: "public.notes.put", args: { id: "n2", body: "two" },
+      expect: { outcome: ok, value: { id: "n2", body: "two" } } }
+    { export: { as: "a2" }, expect: { outcome: ok } }
+    // a1 with a2's state, checksums repaired.
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      { copy_entry_from: { artifact: "a2", path: "state/current.cbor.zst" } }
+      { fix_checksums: true }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: invalid, violates: ["§19.7", "Annex D.5"],
+                  detail: "state selection does not match the manifest/index selected point" } }
+    ] }
+  ]
+}

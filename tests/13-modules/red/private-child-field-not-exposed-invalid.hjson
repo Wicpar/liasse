@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: private-child-field-not-exposed-invalid
+  suite: static
+  spec: ["#modules", "§13.8"]
+  note: '''
+    §13.8: view satisfaction is structural and the boundary grants access
+    only to those bound members; private child paths remain within the child
+    package. The module-space interface "templates" declares a $view over
+    { id, label } only. The parent aggregation projects "secret", a field
+    that is not part of the boundary contract, so the host definition fails
+    static validation.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+              }
+            }
+          }
+          "catalog": {
+            // "secret" is not part of the interface $view contract
+            "$view": ".modules::templates { module: modules.$key, id, label, secret, $sort: [module, id] }"
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tpl: {
+      "$liasse": 1
+      "$module": "t.tpl@1.0.0"
+      "$model": {
+        // "secret" exists privately but is never exposed through the interface
+        "templates": { "$key": "id", "id": "text", "label": "text", "secret": "text = ''" }
+      }
+      "$expose": {
+        "templates": { "$view": ".templates { id, label }" }
+      }
+    }
+  }
+  root: host
+
+  expect: {
+    outcome: invalid
+    violates: ["§13.8"]
+    detail: "the parent projects a field absent from the interface $view contract; private child fields remain within the child package"
+  }
+}

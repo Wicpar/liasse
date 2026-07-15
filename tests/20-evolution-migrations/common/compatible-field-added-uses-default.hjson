@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: compatible-field-added-uses-default
+  suite: scenario
+  spec: ["#evolution", "§20.1", "annex-e", "§E.5"]
+  note: '''
+    §20.1 migration order begins with the "compatible same-identity copy":
+    `id` and `name` keep their identity and are copied unchanged. The newly
+    added `active` field has no source, so it takes its declared default
+    (`true`). Adding an output member is a compatible change (Annex E.5), so
+    this is a valid MINOR release (1.1.0) with no migration program needed.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.add@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        items: { $view: ".items { id, name }" }
+      }
+    }
+    $data: {
+      items: { i1: { name: "X" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.add@1.1.0"
+          $model: {
+            items: {
+              $key: "id"
+              id: "text"
+              name: "text"
+              active: "bool = true"
+            }
+            $public: {
+              items: { $view: ".items { id, name, active }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.items", id: "w1",
+      expect_init: { value: [ { id: "i1", name: "X", active: true } ] } }
+  ]
+}

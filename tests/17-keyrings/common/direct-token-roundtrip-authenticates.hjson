@@ -1,0 +1,85 @@
+{
+  format: 1
+  name: direct-token-roundtrip-authenticates
+  suite: scenario
+  spec: ["#keyrings", "§17.7", "§17.8", "#authentication"]
+  note: "§17.8: a public login mutation constructs and returns its own token through cose.sign over the keyring; §17.7: cose.verify against the same keyring's accepted versions yields the proof the authenticator maps to a session and actor. The happy path: mint on the public surface, then authenticate a second connection with the returned token and read the role surface."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "enabled": "bool = true"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+        "revoked": "bool = false"
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$auth": {
+        "session": {
+          "$credential": "bytes"
+          "$verify": "cose.verify(/session_keys, $credential)"
+          "$session": "/sessions[$proof.session]"
+          "$actor": "/accounts[$session.account]"
+          "$check": ["$proof.auth == $auth_name", "!$session.revoked"]
+        }
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "session"
+          "$members": ".accounts[:a | a.enabled]"
+          "mysessions": { "$view": "/sessions[:s | s.account == $actor] { revoked }" }
+        }
+      }
+    }
+    "$data": { "accounts": { "alice": { "name": "Alice" } } }
+  }
+
+  steps: [
+    { call: "public.login.login", args: { account: "alice" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$bind:tok1" } } }
+    { connect: "c2",
+      authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
+      expect: { outcome: ok } }
+    { watch: "member.mysessions", on: "c2", id: "w1",
+      expect_init: { value: [ { revoked: false } ] } }
+  ]
+}

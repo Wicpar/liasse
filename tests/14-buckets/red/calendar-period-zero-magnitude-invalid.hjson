@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: calendar-period-zero-magnitude-invalid
+  suite: static
+  spec: ["#buckets", "§14.7", "§A.4", "#loading", "§9.1"]
+  tags: ["static", "boundary"]
+  note: "A calendar period object MUST have at least one non-zero magnitude component; omitted fields default to zero, so { months: 0, zone: 'UTC' } has no magnitude at all. Seed rows pass the same value validation as mutation inserts, and load is atomic, so the package fails validation."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.zeromagnitude@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      $data: {
+        plans: {
+          broken: {
+            credits: "100"
+            // all magnitude components zero: not a valid period value
+            period: { months: 0, zone: "UTC" }
+          }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§A.4", "§14.7"]
+    detail: "seeded calendar period value has no non-zero magnitude component"
+  }
+}

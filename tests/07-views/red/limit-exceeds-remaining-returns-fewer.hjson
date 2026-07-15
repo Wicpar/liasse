@@ -1,0 +1,34 @@
+{
+  format: 1
+  name: limit-exceeds-remaining-returns-fewer
+  suite: scenario
+  spec: ["#views", "§7.3"]
+  tags: ["boundary"]
+  note: "Boundary: $limit larger than the rows remaining after $skip. §7.3: '$limit keeps at most the next non-negative number.' 'At most' means fewer rows are returned when fewer remain: after skipping 1 of 3 (sorted a, b, c), only b and c remain and $limit: 100 keeps both — not 100, not an error."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewlimitbig@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      $public: {
+        page: { $view: ".items { id, $sort: [id], $skip: 1, $limit: 100 }" }
+      }
+    }
+    $data: {
+      items: {
+        a: {}
+        b: {}
+        c: {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.page", id: "w1",
+      expect_init: { value: [ { id: "b" }, { id: "c" } ] } }
+  ]
+}

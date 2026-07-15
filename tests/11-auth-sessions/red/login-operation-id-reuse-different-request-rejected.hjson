@@ -1,0 +1,86 @@
+{
+  format: 1
+  name: login-operation-id-reuse-different-request-rejected
+  suite: scenario
+  spec: ["#authentication", "§11.5", "#clients", "§12.3"]
+  tags: ["replay"]
+  note: '''
+    §12.3: "Reusing it with different request metadata rejects the call." The
+    same scoped operation identifier is reused for a login naming a different
+    account. Because the request is not equivalent to the first, it must be
+    rejected rather than executed under the reused identifier, and no session
+    is created for the second account.
+  '''
+
+  // Attack: idempotency-key confusion. After a legitimate login for alice
+  // under op-login-1, the attacker reuses op-login-1 but swaps the account to
+  // bob, hoping the runtime either replays alice's result for bob or executes
+  // the new request. The spec requires rejection.
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.login@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      $mut: {
+        login: [
+          "session = /sessions + { account: @account, expires_at: now() + time.duration('P30D') }"
+          "token = token.sign({ auth: 'session', session: session.$key })"
+          "return { token: token, session: session.$key, account: session.account }"
+        ]
+      }
+      $public: {
+        auth: {
+          $mut: { login: ".login" }
+        }
+        sessions: {
+          $view: "/sessions.$all { id, account }"
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+        "bbbbbbbb-0000-4000-8000-000000000002": { name: "bob" }
+      }
+    }
+  }
+
+  hosts: {
+    token: { $namespace: "test.token@1" }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "public.auth.login", args: { account: "aaaaaaaa-0000-4000-8000-000000000001" }, on: "c1",
+      operation_id: "op-login-1",
+      expect: { outcome: ok, value: {
+        token: "$any"
+        session: "$bind:s1"
+        account: "aaaaaaaa-0000-4000-8000-000000000001"
+      } } }
+    // Same operation id, different account: not an equivalent request.
+    { call: "public.auth.login", args: { account: "bbbbbbbb-0000-4000-8000-000000000002" }, on: "c1",
+      operation_id: "op-login-1",
+      expect: { outcome: rejected, violates: ["#clients"] } }
+    // Only alice's session exists; bob got none.
+    { watch: "public.sessions", on: "c1", id: "w1",
+      expect_init: { value: [
+        { id: "$ref:s1", account: "aaaaaaaa-0000-4000-8000-000000000001" }
+      ] } }
+  ]
+}

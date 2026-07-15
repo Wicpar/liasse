@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: patch-block-is-one-statement
+  suite: scenario
+  spec: ["#annex-c", "§C.9", "#mutations", "§8.6"]
+  note: "Annex C.9 statement form 'row_source { patch }'. §8.6: 'A patch block is one mutation statement.' Its shorthands: '@name' means 'name = @name' and '-field' clears an optional field. This case patches two fields in one block — set 'title' from a parameter and clear the optional 'note' — and observes both take effect atomically."
+
+  package: {
+    $liasse: 1
+    $app: "t.patch@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
+        note: "text?"
+      }
+      $mut: {
+        edit: [
+          ".tasks[@id] { @title, -note }"
+          "return .tasks[@id] { id, title }"
+        ]
+      }
+      all: { $view: ".tasks { id, title }" }
+      $public: {
+        tasks: {
+          $view: ".all"
+          $mut: { edit: ".edit" }
+        }
+      }
+    }
+    $data: {
+      tasks: {
+        t1: { id: "t1", title: "old", note: "temp" }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tasks.edit", args: { id: "t1", title: "new" },
+      expect: { outcome: ok, value: { id: "t1", title: "new" } } }
+    { watch: "public.tasks", id: "w1",
+      expect_init: { value: { id: "t1", title: "new" } } }
+  ]
+}

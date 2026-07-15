@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: erased-row-absent-across-export-restore
+  suite: scenario
+  tags: [erasure, exports, privacy]
+  // Attack: try to recover an erased row's live value by exporting the instance
+  // AFTER erasure and restoring it elsewhere. §21.2 removes the row from live
+  // state and scrubs retained payload while preserving history structure; §19.7
+  // exports the selected committed boundary (state/current + retained history).
+  // The erased row must not reappear in live state in the restored copy.
+  spec: ["§21.2", "§19.7"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        secret: "text"
+      }
+      $mut: {
+        add: [
+          "u = .users + { id: @id, secret: @secret }"
+          "return u { id, secret }"
+        ]
+        erase_user: "return erase(.users[@id])"
+      }
+      all: { $view: ".users { id, secret, $sort: [id] }" }
+      $public: {
+        users: {
+          $view: ".all"
+          $mut: { add: ".add", erase: ".erase_user" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.users.add", args: { id: "u1", secret: "top-secret" },
+      expect: { outcome: ok, value: { id: "u1", secret: "top-secret" } } }
+    { call: "public.users.add", args: { id: "u2", secret: "keep" },
+      expect: { outcome: ok, value: { id: "u2", secret: "keep" } } }
+    { call: "public.users.erase", args: { id: "u1" }, expect: { outcome: ok, value: "$bind:extract" } }
+    // export the post-erasure boundary and restore it into a fresh sandbox
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1" }, expect: { outcome: ok } }
+      { watch: "public.users", id: "w1", expect_init: { value: [ { id: "u2", secret: "keep" } ] } }
+    ] }
+  ]
+}

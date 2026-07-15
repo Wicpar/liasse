@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: bytes-unsigned-byte-order
+  suite: scenario
+  spec: ["#annex-b", "§B.1", "§A.1"]
+  tags: ["ordering"]
+  note: '''
+    §B.1 bytes: "lexicographic unsigned-byte order". Two attacks on a signed
+    (two's-complement) byte comparator:
+      - Sign: byte 0x80 (= -128 signed) and 0xFF (= -1 signed) must sort ABOVE
+        0x00 and 0x7F, not below them. Unsigned: 0x00 < 0x7F < 0x80 < 0xFF.
+      - Prefix/length: a shorter byte string that is a prefix of a longer one
+        sorts first: [0x41] < [0x41,0x00].
+    bytes wire form is {"$bytes":"<base64>"} (A.1). Base64 of each value:
+      0x00        -> "AA=="
+      0x41        -> "QQ=="
+      0x41 0x00   -> "QQA="
+      0x7F        -> "fw=="
+      0x80        -> "gA=="
+      0xFF        -> "/w=="
+    Correct unsigned lexicographic order:
+      0x00 < 0x41 < [0x41,0x00] < 0x7F < 0x80 < 0xFF
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.bytes@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        b: "bytes"
+      }
+      $public: {
+        by_b: { $view: ".rows { id, b, $sort: [b] }" }
+      }
+    }
+    $data: {
+      rows: {
+        r_ff: { b: { $bytes: "/w==" } }
+        r_00: { b: { $bytes: "AA==" } }
+        r_80: { b: { $bytes: "gA==" } }
+        r_41: { b: { $bytes: "QQ==" } }
+        r_7f: { b: { $bytes: "fw==" } }
+        r_4100: { b: { $bytes: "QQA=" } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_b", id: "w1",
+      expect_init: { value: [
+        { id: "r_00", b: { $bytes: "AA==" } }
+        { id: "r_41", b: { $bytes: "QQ==" } }
+        { id: "r_4100", b: { $bytes: "QQA=" } }
+        { id: "r_7f", b: { $bytes: "fw==" } }
+        { id: "r_80", b: { $bytes: "gA==" } }
+        { id: "r_ff", b: { $bytes: "/w==" } }
+      ] } }
+  ]
+}

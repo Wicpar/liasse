@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: manual-policy-requires-binding-capability-invalid
+  suite: static
+  spec: ["#keyrings", "§17.1", "§17.3", "§17.4", "§17.6"]
+  note: "Omitting $rotate leaves activation manual (§17.1). §17.3/§17.4: manual mode requires the host to bind an externally created provider handle and activate it. §17.6: loading validates the provider's 'automatic generation or external binding mode'. This provider advertises generation only (bind:false), so it cannot perform the external binding the manual policy requires, and loading is rejected with a capability diagnostic."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§17.6", "§17.4"]
+    detail: "keyring uses a manual policy but provider 'test-kp' does not advertise the external binding mode it requires"
+  }
+}

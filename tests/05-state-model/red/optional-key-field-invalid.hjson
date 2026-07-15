@@ -1,0 +1,29 @@
+{
+  format: 1
+  name: optional-key-field-invalid
+  suite: static
+  spec: ["#state-model", "§5.4", "§A.8"]
+  tags: ["boundary"]
+  note: '''Pedantic-implementer corner: a key field declared optional would allow rows with
+absent identity. §A.8: 'Optional values, JSON, blobs, sets, maps, and views are
+excluded from row keys.' The declaration must be statically invalid, not deferred to
+insert-time failures.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.optkey@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text?"
+        name: "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["§A.8", "§5.4"]
+    detail: "optional types are excluded from row keys"
+  }
+}

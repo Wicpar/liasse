@@ -1,0 +1,23 @@
+{
+  format: 1
+  name: app-name-cyrillic-confusable-rejected
+  suite: static
+  spec: ["#conformance", "§2.5", "#package-structure", "§4.3"]
+  tags: ["unicode", "identity"]
+  note: "Attack: register a package visually indistinguishable from 't.tasks' to hijack its compatibility line (§4.3: 'The name identifies the compatibility line'). The name below is t.t\\u0430sks with U+0430 CYRILLIC SMALL LETTER A. §2.5 restricts package names to a-z, 0-9, _, so any implementation that compares names after a locale-ish fold or accepts full Unicode letters is nonconforming."
+
+  package: {
+    $liasse: 1
+    // "t.tаsks" — the second 'а' is U+0430, not U+0061
+    $app: "t.tаsks@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance", "§2.5"]
+    detail: "package name contains U+0430, outside the a-z/0-9/_ grammar"
+  }
+}

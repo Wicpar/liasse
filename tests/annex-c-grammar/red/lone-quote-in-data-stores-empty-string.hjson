@@ -1,0 +1,32 @@
+{
+  format: 1
+  name: lone-quote-in-data-stores-empty-string
+  suite: scenario
+  tags: [grammar, escaping, boundary, empty]
+  // Boundary: the escape prefix with an empty tail. Annex C.4: "'text  literal
+  // text with one leading ' removed". The value "'" is a single leading quote
+  // followed by empty text; removing the one leading quote yields the empty
+  // string "". This is the minimal application of the escape and must NOT be
+  // treated as an expression, a stored quote, or a load error.
+  spec: ["#annex-c", "§C.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.lonequote@1.0.0"
+    $model: {
+      doc: { label: "text" }
+      view_doc: { $view: ".doc { label }" }
+      $public: {
+        doc: { $view: ".view_doc" }
+      }
+    }
+    $data: {
+      doc: { label: "'" }
+    }
+  }
+
+  steps: [
+    { watch: "public.doc", id: "w1",
+      expect_init: { value: { label: "" } } }
+  ]
+}

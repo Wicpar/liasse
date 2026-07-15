@@ -1,0 +1,80 @@
+{
+  format: 1
+  name: w2-login-claims-unlinked-account-rejected
+  suite: scenario
+  spec: ["W2", "#authentication", "§11.5", "#expressions", "§6.3"]
+  tags: [authz, escalation, session]
+  note: '''
+    Account-takeover attempt via the account-selection argument. passkey_login
+    verifies the attacker's own passkey (login L_alice) but passes @account =
+    Bob's account id. The mapping step
+    "/account_logins[{ account: @account, login: login.$key }]" must resolve
+    exactly one row (§6.3); no account_logins row links Bob to Alice's login, so
+    it resolves zero rows and the login is rejected. The verified credential
+    alone cannot mint a session for an account it is not mapped to (§11.5).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.accounts@1.0.0"
+    $requires: { webauthn: "test.webauthn@1", token: "test.token@1" }
+    $model: {
+      accounts: { $key: "id", id: "uuid = uuid()", name: "text", enabled: "bool = true" }
+      logins: { $key: ["kind", "issuer", "subject"], kind: "text", issuer: "text", subject: "text" }
+      account_logins: { $key: ["account", "login"], account: { $ref: "/accounts" }, login: { $ref: "/logins" } }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        login: { $ref: "/logins" }
+        device: "text?"
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      $mut: {
+        bootstrap: [
+          "acct = /accounts + { name: @name }"
+          "lg = /logins + { kind: 'passkey', issuer: @rp, subject: @credential }"
+          "/account_logins + { account: acct.$key, login: lg.$key }"
+          "return { account: acct.$key }"
+        ]
+        passkey_login: [
+          "identity = webauthn.verify(@response)"
+          "login = /logins[{ kind: 'passkey', issuer: identity.rp, subject: identity.credential }]"
+          "mapping = /account_logins[{ account: @account, login: login.$key }]"
+          '''session = /sessions + {
+            account: mapping.account,
+            login: mapping.login,
+            device: @device,
+            expires_at: now() + time.duration('P30D')
+          }'''
+          "token = token.sign({ auth: 'session', session: session.$key })"
+          "return { auth: 'session', token, expires_at: session.$until }"
+        ]
+      }
+      $public: {
+        setup: { $mut: { bootstrap: ".bootstrap" } }
+        login: { $mut: { passkey: ".passkey_login" } }
+      }
+    }
+  }
+
+  hosts: {
+    webauthn: { $namespace: "test.webauthn@1", responses: {
+      "resp-alice": { rp: "example.com", credential: "cred-alice" }
+      "resp-bob": { rp: "example.com", credential: "cred-bob" }
+    } }
+    token: { $namespace: "test.token@1", tokens: {} }
+  }
+
+  steps: [
+    { call: "public.setup.bootstrap", args: { name: "alice", rp: "example.com", credential: "cred-alice" }
+      expect: { outcome: ok, value: { account: "$bind:alice" } } }
+    { call: "public.setup.bootstrap", args: { name: "bob", rp: "example.com", credential: "cred-bob" }
+      expect: { outcome: ok, value: { account: "$bind:bob" } } }
+    // attacker verifies Alice's passkey but claims Bob's account
+    { call: "public.login.passkey", args: { response: "resp-alice", account: "$ref:bob", device: "x" }
+      expect: { outcome: rejected, violates: ["§6.3"], detail: "no account_logins row maps Bob to Alice's login" } }
+  ]
+}

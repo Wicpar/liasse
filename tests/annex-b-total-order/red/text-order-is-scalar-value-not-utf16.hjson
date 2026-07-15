@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: text-order-is-scalar-value-not-utf16
+  suite: scenario
+  spec: ["#annex-b", "§B.1", "§A.1"]
+  tags: ["ordering", "unicode"]
+  note: '''
+    Attack: exploit the difference between Unicode scalar-value order and
+    UTF-16 code-unit order. §B.1 text is "lexicographic Unicode scalar-value
+    order" — compare by codepoint. A runtime that sorts UTF-16 code units
+    (a common accident in JVM/JS/UTF-16-internal stacks) misorders any string
+    whose first differing character is astral, because a surrogate lead unit
+    (0xD800..0xDBFF) sorts BELOW a high BMP codepoint like U+FFFD.
+
+    Three single-character strings, codepoints spelled out:
+      "z"  = U+007A            (ASCII lowercase z)
+      "�"  = U+FFFD            (REPLACEMENT CHARACTER, high BMP)
+      "𐀀" = U+10000           (LINEAR B SYLLABLE B008 A, first astral codepoint)
+
+    Correct scalar order:      U+007A < U+FFFD < U+10000  ->  z, �, 𐀀
+    UTF-8 byte order agrees:   7A < EF.. < F0..           ->  z, �, 𐀀
+    Buggy UTF-16 unit order:   007A < D800.. < FFFD       ->  z, 𐀀, �   (WRONG)
+
+    The corpus asserts the scalar order; the astral string must sort LAST.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.utf16@1.0.0"
+    $model: {
+      words: {
+        $key: "id"
+        id: "text"
+        w: "text"
+      }
+      $public: {
+        by_w: { $view: ".words { id, w, $sort: [w] }" }
+      }
+    }
+    $data: {
+      words: {
+        astral: { w: "𐀀" }
+        repl: { w: "�" }
+        ascii: { w: "z" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_w", id: "w1",
+      expect_init: { value: [
+        { id: "ascii", w: "z" }
+        { id: "repl", w: "�" }
+        { id: "astral", w: "𐀀" }
+      ] } }
+  ]
+}

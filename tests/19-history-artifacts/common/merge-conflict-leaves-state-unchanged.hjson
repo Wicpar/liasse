@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: merge-conflict-leaves-state-unchanged
+  suite: scenario
+  // §19.9: the merge "reports conflicts for incompatible field values" and
+  // "Failure leaves the active composition unchanged and keeps the
+  // reconciliation plan available for another correction attempt."
+  note: '''The reconciliation plan's concrete shape is implementation-defined
+(§19.9 "The Rust API shape is implementation-defined"), so the case asserts
+only that conflicts are reported and that active state did not move.'''
+  spec: ["§19.9"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+        set_body: [
+          ".notes[@id].body = @body"
+          "return .notes[@id] { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put", set_body: ".set_body" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "start" },
+      expect: { outcome: ok, value: { id: "n1", body: "start" } } }
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a0" }, expect: { outcome: ok } }
+      { call: "public.notes.set_body", args: { id: "n1", body: "incoming-b" },
+        expect: { outcome: ok, value: { id: "n1", body: "incoming-b" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    { call: "public.notes.set_body", args: { id: "n1", body: "local-a" },
+      expect: { outcome: ok, value: { id: "n1", body: "local-a" } } }
+    // Same coordinate, incompatible values -> conflict, nothing activates.
+    { reconcile: { from: "a2", policy: ["merge"] },
+      expect: { outcome: ok, value: {
+        relation: "merge", applied: false, conflicts: "$any", "...": true } } }
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "n1", body: "local-a" }
+    ] } }
+  ]
+}

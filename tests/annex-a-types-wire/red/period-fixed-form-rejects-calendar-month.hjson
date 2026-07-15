@@ -1,0 +1,32 @@
+{
+  format: 1
+  name: period-fixed-form-rejects-calendar-month
+  suite: static
+  spec: ["§A.4"]
+  tags: ["period", "boundary"]
+  note: '''Attack: smuggle a calendar month into a fixed-period slot as the ISO-8601
+string "P1M", hoping it is silently treated as ~30 days or accepted as a fixed period.
+Annex A.4: 'A fixed period uses an ISO-8601 duration containing only elapsed day/time
+components' (the string form), while a calendar period 'is an object'. "P1M" carries a
+months component, which is a calendar quantity, not an elapsed day/time component — so
+it is not a valid fixed-period string, and calendar recurrence MUST use the object form.
+The definition is statically invalid.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.pfixmonth@1.0.0"
+    $model: {
+      step: "period"
+    }
+    $data: {
+      // months is a calendar component, illegal in the fixed-period string form
+      step: "P1M"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§A.4"]
+    detail: "fixed-period string 'P1M' contains a calendar (month) component; only elapsed day/time components are allowed"
+  }
+}

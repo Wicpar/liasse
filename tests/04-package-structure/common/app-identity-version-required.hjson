@@ -1,0 +1,21 @@
+{
+  format: 1
+  name: app-identity-version-required
+  suite: static
+  spec: ["#package-structure", "§4.3", "#annex-e", "§E.1"]
+  note: "§4.3: '$app' values 'combine a stable name and semantic version'. A bare name without '@<semver>' carries no version and cannot participate in the Annex E compatibility rules."
+
+  package: {
+    $liasse: 1
+    $app: "t.noversion"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "§4.3"]
+    detail: "$app value lacks the @<semantic-version> part"
+  }
+}

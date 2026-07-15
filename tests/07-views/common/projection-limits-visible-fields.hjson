@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: projection-limits-visible-fields
+  suite: scenario
+  spec: ["#views", "§7.1"]
+  note: "§7.1: a projection block shapes the result; \"Projection members are unordered named outputs.\" Only the listed field is an output, so 'name' is not present. FORMAT.md: expected objects match exactly; members not listed must not be present."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewproj@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        ids: { $view: ".projects { id }" }
+      }
+    }
+    $data: {
+      projects: {
+        p1: { name: "Alpha" }
+        p2: { name: "Beta" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.ids", id: "w1",
+      expect_init: { value: [ { id: "p1" }, { id: "p2" } ] } }
+  ]
+}

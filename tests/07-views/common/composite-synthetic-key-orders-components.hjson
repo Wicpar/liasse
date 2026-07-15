@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: composite-synthetic-key-orders-components
+  suite: scenario
+  spec: ["#views", "§7.2", "§B.4", "§B.5"]
+  note: "§7.2: 'An array groups several output fields into one composite key, in the listed order.' §B.4: a composite key compares lexicographic components in $key order — here (region, account). §B.5: view rows follow synthetic identity, so groups appear ordered by (region, account): (eu, a) before (us, a)."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewckey@1.0.0"
+    $model: {
+      lines: {
+        $key: "id"
+        id: "text"
+        region: "text"
+        account: "text"
+        debit: "int"
+      }
+      $public: {
+        totals: { $view: ".lines { $key: [region, account], region, account, total: sum(group.debit) }" }
+      }
+    }
+    $data: {
+      lines: {
+        l1: { region: "eu", account: "a", debit: "1" }
+        l2: { region: "eu", account: "a", debit: "2" }
+        l3: { region: "us", account: "a", debit: "5" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.totals", id: "w1",
+      expect_init: { value: [
+        { region: "eu", account: "a", total: "3" }
+        { region: "us", account: "a", total: "5" }
+      ] } }
+  ]
+}

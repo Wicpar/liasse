@@ -1,0 +1,89 @@
+{
+  format: 1
+  name: update-added-check-rejected-against-existing-state
+  suite: scenario
+  spec: ["#loading", "#evolution"]
+  note: '''
+    Validation-before-activation under hostile timing: version 2.0.0 adds a
+    field check that the ALREADY COMMITTED state violates (seeded name "X" is
+    shorter than the new minimum). §9.3: updating an existing instance
+    "validates its definition, migration, owned state, module interfaces, and
+    complete application composition before activation"; §20.1: "The complete
+    prospective target is checked under ordinary keys, refs, uniqueness,
+    checks ... before the package update commits." The update must be rejected
+    as a whole — an implementation that activates first and validates later
+    would either brick the instance or serve state its own definition forbids.
+    Afterwards the prior application must remain fully live (§9.2, §9.4),
+    including writes the old definition allows. The seed-state violation is an
+    admission-class check failure, hence outcome rejected (see NOTES.md).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.tighten@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": {
+          "$view": ".companies { id, name }"
+          "$mut": {
+            "rename": [
+              ".companies[@id].name = @name"
+              "return .companies[@id] { id, name }"
+            ]
+          }
+        }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "name": "X" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "X" } ] } }
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.tighten@2.0.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": {
+                "$type": "text"
+                "$check": ["size(.) >= 3", "Company names need at least 3 characters"]
+              }
+            }
+            "$public": {
+              "companies": {
+                "$view": ".companies { id, name }"
+                "$mut": {
+                  "rename": [
+                    ".companies[@id].name = @name"
+                    "return .companies[@id] { id, name }"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#loading", "#evolution"]
+        detail: "existing row companies/acme violates the new name check; prospective state fails before activation"
+      } }
+    // prior definition (without the check) must keep accepting its own writes
+    { call: "public.companies.rename", args: { id: "acme", name: "Y" },
+      expect: { outcome: "ok", value: { id: "acme", name: "Y" } } }
+    { expect_view: { watch: "w1", value: [ { id: "acme", name: "Y" } ] } }
+  ]
+}

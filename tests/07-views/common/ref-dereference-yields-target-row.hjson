@@ -1,0 +1,40 @@
+{
+  format: 1
+  name: ref-dereference-yields-target-row
+  suite: scenario
+  spec: ["#views", "§7.6", "§6.3", "§5.6"]
+  note: "§7.6: 'A ref value is a target key. Dereference uses the normal selector' (/accounts[.owner]). §6.3: a scalar-key selector contributes the one existing target row. The projection reads that target's name field. task t1's owner ref u1 dereferences to account u1 (name Ann)."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewref@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        owner: { $ref: "/accounts" }
+      }
+      $public: {
+        owners: { $view: ".tasks { id, owner_name: /accounts[.owner].name }" }
+      }
+    }
+    $data: {
+      accounts: {
+        u1: { name: "Ann" }
+      }
+      tasks: {
+        t1: { owner: "u1" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.owners", id: "w1",
+      expect_init: { value: [ { id: "t1", owner_name: "Ann" } ] } }
+  ]
+}

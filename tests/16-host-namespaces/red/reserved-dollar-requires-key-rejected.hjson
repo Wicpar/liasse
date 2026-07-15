@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: reserved-dollar-requires-key-rejected
+  suite: static
+  spec: ["#host-namespaces", "#conformance"]
+  tags: ["escalation"]
+  note: '''
+    Attack: smuggle a requirement under a "$"-prefixed key so it reads as a
+    Liasse structural member and could collide with or impersonate reserved
+    machinery ($verify, $actor, ...) in expression positions. §2.5: names
+    beginning with "$" are reserved by Liasse, and unknown members in a
+    declaration object are invalid unless the declaration explicitly
+    accepts application-defined member names — $requires accepts
+    application-defined NAMES, which "$cbor" is not (it is not a valid
+    declaration name: names MUST begin with an ASCII letter).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.dollarkey@1.0.0"
+    $requires: {
+      "$cbor": "liasse.cbor@1"
+    }
+    $model: {
+      n: "int = 0"
+      $public: {
+        stats: { $view: ".n" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "liasse.cbor"
+        version: "1.2.0"
+        interface_hash: "ih-cbor-1"
+        functions: {
+          encode: { signature: "(int) -> bytes", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance"]
+    detail: "$requires key '$cbor' uses the reserved '$' prefix and is not a valid application declaration name"
+  }
+}

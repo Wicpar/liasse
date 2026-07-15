@@ -1,0 +1,87 @@
+{
+  format: 1
+  name: replay-identical-version-update-unchanged
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    Migration replay. Version 2.0.0 populates `encoded` from the old `name` via
+    a `$migrations` program keyed "1.0.0"; after the upgrade `encoded` ==
+    base64("hi") == "aGk=". An attacker replays the identical 2.0.0 load hoping
+    the program re-fires and double-applies the transform
+    (base64("aGk=") == "YUdrPQ==", corrupting the value). It must not: §20.1
+    ties the program to "the exact active source package version", now 2.0.0,
+    so the "1.0.0" program does not run; the same-identity `encoded` is simply
+    copied. §9.4: "unchanged   the requested definition and data effects already
+    apply." The replay result is `unchanged` and `encoded` stays "aGk=".
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.replay@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        rows: { $view: ".rows { id, name }" }
+      }
+    }
+    $data: {
+      rows: { r1: { name: "hi" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.replay@2.0.0"
+          $model: {
+            rows: {
+              $key: "id"
+              id: "text"
+              encoded: "text"
+            }
+            $migrations: {
+              "1.0.0": [
+                ".rows = $old.rows { id, encoded: base64.encode(string.bytes(.name)) }"
+              ]
+            }
+            $public: {
+              rows: { $view: ".rows { id, encoded }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.rows", id: "w1",
+      expect_init: { value: [ { id: "r1", encoded: "aGk=" } ] } }
+    // replay the byte-identical 2.0.0 load: the 1.0.0-keyed program cannot fire
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.replay@2.0.0"
+          $model: {
+            rows: {
+              $key: "id"
+              id: "text"
+              encoded: "text"
+            }
+            $migrations: {
+              "1.0.0": [
+                ".rows = $old.rows { id, encoded: base64.encode(string.bytes(.name)) }"
+              ]
+            }
+            $public: {
+              rows: { $view: ".rows { id, encoded }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: unchanged } }
+    { watch: "public.rows", id: "w2",
+      expect_init: { value: [ { id: "r1", encoded: "aGk=" } ] } }
+  ]
+}

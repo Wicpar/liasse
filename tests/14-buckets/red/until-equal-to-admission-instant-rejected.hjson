@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: until-equal-to-admission-instant-rejected
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.2", "§22.5", "§A.5"]
+  tags: ["boundary", "temporal", "precision"]
+  note: "Attack: create a session whose expires_at equals its own admission instant. With the short form, $from = $created = the request's fixed now(), so the interval would be the empty [T, T) and must reject. The 1 us sibling is the minimum-lifetime row: admitted, active for exactly one declared-precision unit."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.zerolife@1.0.0"
+    $model: {
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        expires_at: "timestamp"
+      }
+      $public: {
+        active: { $view: ".sessions { id }" }
+        sessions: {
+          $mut: {
+            add: [
+              "s = .sessions + { expires_at: @expires_at }"
+              "return s { id }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // virtual now == T0 == 2026-01-01T00:00:00Z == 1767225600000000 us;
+    // expires_at == $created: interval [T0, T0) does not satisfy $until > $from
+    { call: "public.sessions.add", args: { expires_at: "1767225600000000" }
+      expect: { outcome: rejected, violates: ["§14.2"] } }
+
+    // expires_at == $created + 1us: minimal valid interval, active right now
+    { call: "public.sessions.add", args: { expires_at: "1767225600000001" }
+      expect: { outcome: ok, value: { id: "$bind:s1" } } }
+    { watch: "public.active", id: "w1"
+      expect_init: { value: [ { id: "$ref:s1" } ] } }
+
+    // one microsecond later the row has already left its active interval
+    { advance_time: "PT0.000001S" }
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

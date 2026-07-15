@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: empty-source-collection-migrates-to-empty
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    Empty-input boundary. §20.1 defines the migration program over `$old` with
+    no lower bound on cardinality. The source `users` collection has zero rows.
+    An attacker hopes an empty snapshot trips the program (e.g. a required
+    field left unpopulated because there is nothing to iterate). It must
+    succeed cleanly: mapping an empty collection yields an empty target
+    collection, the prospective state is trivially valid, and both target views
+    are empty arrays. No spurious row and no rejection.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.empty@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        email: "text?"
+      }
+      $public: {
+        users: { $view: ".users { id, name }" }
+      }
+    }
+    // no $data: genesis state has zero users
+  }
+
+  steps: [
+    { watch: "public.users", id: "w0",
+      expect_init: { value: [] } }
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.empty@2.0.0"
+          $model: {
+            people: {
+              $key: "id"
+              id: "text"
+              display_name: "text"
+            }
+            emails: {
+              $key: "user"
+              user: "text"
+              email: "text"
+            }
+            $migrations: {
+              "1.0.0": [
+                ".people = $old.users { id, display_name: string.trim(.name) }"
+                ".emails = $old.users[:u | has(u.email)] { user: .id, email: .email }"
+              ]
+            }
+            $public: {
+              people: { $view: ".people { id, display_name }" }
+              emails: { $view: ".emails { user, email }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.people", id: "wp", expect_init: { value: [] } }
+    { watch: "public.emails", id: "we", expect_init: { value: [] } }
+  ]
+}

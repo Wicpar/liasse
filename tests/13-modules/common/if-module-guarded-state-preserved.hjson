@@ -1,0 +1,109 @@
+{
+  format: 1
+  name: if-module-guarded-state-preserved
+  suite: scenario
+  spec: ["#modules", "§13.7", "§13.12"]
+  note: '''
+    §13.7: a declaration guarded by $if_module is active while its optional
+    handle is bound to an enabled compatible instance, and state owned
+    solely by an inactive guarded declaration remains preserved and becomes
+    active again after revalidation against a present compatible binding.
+    §13.12: disabling an instance removes its peer availability and the
+    dependent $if_module declarations. Disabling billing therefore hides the
+    report's guarded notes without deleting them; enabling brings the same
+    rows back.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "summary": { "$view": { "$key": "id", "id": "text" } }
+                "notes": {
+                  "$view": { "$key": "id", "id": "text", "note": "text" }
+                  "$mut": {
+                    "add({ id: text, note: text })": {}
+                  }
+                }
+              }
+            }
+          }
+        }
+        "$public": {
+          "notes": {
+            "$view": '/companies["acme"].modules["report"]::notes'
+          }
+          "admin": {
+            "$mut": { "add_note": '/companies["acme"].modules["report"]::notes.add' }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    billing: {
+      "$liasse": 1
+      "$module": "t.billing@1.0.0"
+      "$model": {
+        "bills": { "$key": "id", "id": "text" }
+      }
+      "$expose": {
+        "summary": { "$view": ".bills { id }" }
+      }
+    }
+    report: {
+      "$liasse": 1
+      "$module": "t.report@1.0.0"
+      "$use": {
+        "$optional": {
+          "billing": "t.billing/summary@1"
+        }
+      }
+      "$model": {
+        "notes": {
+          "$if_module": "billing"
+          "$key": "id"
+          "id": "text"
+          "note": "text"
+        }
+      }
+      "$expose": {
+        "notes": {
+          "$if_module": "billing"
+          "$view": ".notes { id, note }"
+          "$mut": {
+            "add": ".notes + { id: @id, note: @note }"
+          }
+        }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "billing", "$module": "t.billing@1.0.0" } }
+      expect: { outcome: ok } }
+    // single compatible candidate: the optional handle binds and the guarded declaration is active
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "report", "$module": "t.report@1.0.0" } }
+      expect: { outcome: ok } }
+    { call: "public.admin.add_note", args: { id: "n1", note: "hello" }
+      expect: { outcome: ok } }
+    { watch: "public.notes", id: "w1"
+      expect_init: { value: [ { id: "n1", note: "hello" } ] } }
+    // disabling billing deactivates the guarded declaration: no exposed occurrences
+    { module_disable: { instance: "/companies/acme/modules/billing" }
+      expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [] } }
+    // enabling revalidates; the preserved guarded state becomes active again
+    { module_enable: { instance: "/companies/acme/modules/billing" }
+      expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [ { id: "n1", note: "hello" } ] } }
+  ]
+}

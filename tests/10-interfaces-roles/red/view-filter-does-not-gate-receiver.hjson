@@ -1,0 +1,74 @@
+{
+  format: 1
+  name: view-filter-does-not-gate-receiver
+  suite: scenario
+  // Uncomfortable but normative: §10.1 "A surface view does not implicitly
+  // select or authorize mutation receivers. Any receiver restriction belongs
+  // in the receiver expression, the referenced mutation, or its checks."
+  // The role view shows alice only her own tasks, but the surface mutation
+  // .tasks[@task].complete carries no owner restriction — so alice completes
+  // BOB'S task successfully. Implementations must not "helpfully" scope the
+  // receiver by the surface view.
+  spec: ["#interfaces", "§10.1", "§10.3"]
+  tags: ["authz", "footgun"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.view_gate@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+        "owner": { "$ref": "/accounts" }
+        "done": "bool = false"
+        "$mut": {
+          "complete": [
+            ".done = true"
+            "return . { id, done }"
+          ]
+        }
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "token"
+          "$members": ".accounts"
+          "tasks": {
+            "$view": ".tasks[:t | t.owner == $actor] { id, title }"
+            "$mut": { "complete": ".tasks[@task].complete" }
+          }
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {}, "bob": {} }
+      "tasks": {
+        "t1": { "title": "Alice's", "owner": "alice" }
+        "t2": { "title": "Bob's", "owner": "bob" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "member", auth: "token", credential: "alice" } }
+    // The view is scoped to the actor: alice sees only t1.
+    { watch: "member.tasks", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "t1", title: "Alice's" } ] } }
+    // The mutation receiver is NOT scoped by that view: completing bob's
+    // invisible task succeeds, because the declared receiver expression is
+    // the only restriction and it has none.
+    { call: "member.tasks.complete", args: { task: "t2" }, on: "c1",
+      expect: { outcome: ok, value: { id: "t2", done: true } } }
+  ]
+}

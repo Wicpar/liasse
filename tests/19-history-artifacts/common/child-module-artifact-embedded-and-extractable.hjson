@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: child-module-artifact-embedded-and-extractable
+  suite: scenario
+  // §19.5: every entry below modules/ is a complete .liasse artifact for one
+  // direct child-module instance, named by the child instance incarnation;
+  // extracting it yields an independently valid artifact. The parent
+  // manifest maps current mount names to child incarnations and selected
+  // child points. §19.1: a parent export includes required child artifacts.
+  spec: ["§19.5", "§19.1", "§19.7"]
+
+  packages: {
+    parent: {
+      $liasse: 1
+      $app: "t.parenthist@1.0.0"
+      $model: {
+        mods: { $modules: {} }
+      }
+    }
+    child: {
+      $liasse: 1
+      $module: "t.childnotes@1.0.0"
+      $model: {
+        items: {
+          $key: "id"
+          id: "text"
+          body: "text"
+        }
+      }
+      $data: {
+        items: { i1: { body: "seed" } }
+      }
+    }
+  }
+  root: parent
+
+  steps: [
+    { install_module: { space: "mods", name: "m1", module: "t.childnotes@1.0.0" },
+      expect: { outcome: ok } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a1", expect: {
+        outcome: ok
+        manifest: {
+          modules: {
+            m1: {
+              instance: "$bind:ci"
+              artifact: "$any"
+              selected: { lineage: "$any", point: "$any" }
+            }
+          }
+          "...": true
+        }
+    } } }
+    // The embedded child entry is itself a complete, independently valid
+    // .liasse artifact for the child instance incarnation.
+    { extract_artifact: { from: "a1", entry: "modules/*.liasse", as: "a_child" } }
+    { inspect_artifact: { artifact: "a_child", expect: {
+        outcome: ok
+        mimetype: "application/vnd.liasse+zip"
+        manifest: {
+          format: 1
+          instance: "$ref:ci"
+          "...": true
+        }
+    } } }
+  ]
+}

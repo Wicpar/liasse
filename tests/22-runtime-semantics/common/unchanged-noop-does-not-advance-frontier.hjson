@@ -1,0 +1,50 @@
+{
+  // §22.2: "A program producing no state change returns `unchanged` and creates
+  // no commit." §8.9: the returned response is still delivered with the
+  // `unchanged` status and "the client frontier does not advance." Assigning a
+  // field to the value it already holds produces no state change.
+  format: 1
+  name: unchanged-noop-does-not-advance-frontier
+  suite: scenario
+  spec: ["§22.2", "§8.9", "#runtime"]
+  tags: ["completion", "empty-delta"]
+
+  package: {
+    $liasse: 1
+    $app: "t.noop@1.0.0"
+    $model: {
+      settings: {
+        $key: "id"
+        id: "text"
+        label: "text"
+        $mut: {
+          set_label: ".label = @label"
+        }
+      }
+      $public: {
+        settings: {
+          $view: ".settings { id, label }"
+          $mut: { set_label: ".settings[@id].set_label" }
+        }
+      }
+    }
+    $data: {
+      settings: { "s1": { label: "config" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.settings", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "s1", label: "config" } ] } }
+    {
+      // Assigning the current value is a no-op: unchanged, no commit.
+      call: "public.settings.set_label"
+      args: { id: "s1", label: "config" }
+      on: "c1"
+      expect: { outcome: ok, completion: unchanged }
+    }
+    // The live view never received a patch; the frontier did not advance.
+    { expect_view: { watch: "w1", value: [ { id: "s1", label: "config" } ] } }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: optional-none-sorts-last-ascending
+  suite: scenario
+  spec: ["#annex-b", "§B.2"]
+  tags: ["ordering", "optional"]
+  note: '''
+    §B.2 optional<T> ascending: all present T values in ascending order, then
+    none ("this matches PostgreSQL's default absence placement"). Sorting an
+    optional int field ascending places the present values 1, 2, 3 first, then
+    every none row. A row whose value is none renders with the field omitted
+    (A.1: none is an omitted optional field). The `id` key totally orders the
+    trailing none rows among themselves (§B.5).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.optasc@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        v: "int?"
+      }
+      $public: {
+        by_v: { $view: ".rows { id, v, $sort: [v, id] }" }
+      }
+    }
+    $data: {
+      rows: {
+        a: { v: 3 }
+        n2: {}
+        b: { v: 1 }
+        n1: {}
+        c: { v: 2 }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_v", id: "w1",
+      expect_init: { value: [
+        { id: "b", v: 1 }
+        { id: "c", v: 2 }
+        { id: "a", v: 3 }
+        { id: "n1" }
+        { id: "n2" }
+      ] } }
+  ]
+}

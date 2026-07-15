@@ -1,0 +1,21 @@
+{
+  format: 1
+  name: package-name-uppercase-rejected
+  suite: static
+  spec: ["#conformance", "§2.5", "#package-structure", "§4.3"]
+  note: "§2.5: 'Package names are dot-separated lowercase identifiers containing a-z, 0-9, and _.' An uppercase ASCII letter is outside that set. This is a distinct violation from a non-ASCII confusable: 'A' is ASCII but not lowercase, so a runtime that merely checks for ASCII letters (rather than lowercase) would wrongly accept it and let 'Acme.todo' and 'acme.todo' name two lines that a case-folding registry would collide."
+
+  package: {
+    $liasse: 1
+    $app: "Acme.todo@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance", "§2.5"]
+    detail: "package-name component 'Acme' contains an uppercase letter, outside the lowercase a-z/0-9/_ grammar"
+  }
+}

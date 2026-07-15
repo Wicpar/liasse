@@ -1,0 +1,79 @@
+{
+  format: 1
+  name: resume-from-retained-frontier
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["reconnect", "frontier"]
+  note: '''
+    §12.2: "Resuming from a retained frontier yields the later authorized
+    patches in that stream or a fresh `init` when the runtime has released the
+    required range." Either form is conforming; what is pinned is that the
+    resumed client result equals the authorized declared view at the current
+    frontier. The client retains the init frontier, commits happen after it,
+    the connection drops, and the resumed subscription must reconstruct the
+    current result.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      watch: "public.tasks"
+      on: "c1"
+      id: "w1"
+      expect_init: { frontier: "$bind:f1", value: [] }
+    }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$bind:ta", title: "a" } }
+    }
+    {
+      call: "public.tasks.add"
+      args: { title: "b" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$bind:tb", title: "b" } }
+    }
+    { disconnect: "c1" }
+    { connect: "c2" }
+    {
+      resume: { surface: "public.tasks", from: "$ref:f1", id: "w2" }
+      on: "c2"
+      expect_result: {
+        value: [
+          { id: "$ref:ta", title: "a" }
+          { id: "$ref:tb", title: "b" }
+        ]
+      }
+    }
+  ]
+}

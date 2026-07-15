@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: active-from-lower-bound-inclusive
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.2", "§22.6"]
+  tags: ["temporal", "boundary"]
+  note: "The half-open interval [from, until) includes its lower bound: a row with an explicit future $from becomes active at exactly starts_at and stops being active at exactly ends_at."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.lower@1.0.0"
+    $model: {
+      reservations: {
+        $key: "id"
+        $bucket: { $from: ".starts_at", $until: ".ends_at" }
+        id: "uuid = uuid()"
+        starts_at: "timestamp"
+        ends_at: "timestamp"
+      }
+      $public: {
+        active: { $view: ".reservations { id }" }
+        reservations: {
+          $mut: {
+            add: [
+              "r = .reservations + { starts_at: @starts_at, ends_at: @ends_at }"
+              "return r { id }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // interval [2026-01-01T01:00Z, 2026-01-01T02:00Z)
+    { call: "public.reservations.add"
+      args: { starts_at: "1767229200000000", ends_at: "1767232800000000" }
+      expect: { outcome: ok, value: { id: "$bind:r1" } } }
+
+    // before starts_at: not active
+    { watch: "public.active", id: "w1"
+      expect_init: { value: [] } }
+
+    // now == starts_at exactly: the lower bound is included
+    { advance_time: "PT1H" }
+    { expect_view: { watch: "w1", value: [ { id: "$ref:r1" } ] } }
+
+    // now == ends_at exactly: the upper bound is excluded
+    { advance_time: "PT1H" }
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

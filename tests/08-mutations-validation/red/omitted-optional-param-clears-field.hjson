@@ -1,0 +1,56 @@
+{
+  // Data-wipe footgun: a caller omits an argument and thereby CLEARS stored
+  // data. Deduction chain, each step pinned by the spec:
+  //   1. §8.3: "@name inherits .name's type and optionality" — @email is
+  //      optional because profiles.email is text?.
+  //   2. §A.1: none is "absent optional<T> value | omitted optional field" —
+  //      an omitted optional argument is none.
+  //   3. §8.5 `field = value`: assigning none to an optional field stores the
+  //      absent value (a real state change from "a@x").
+  format: 1
+  name: omitted-optional-param-clears-field
+  suite: scenario
+  spec: ["#mutations", "§8.3", "§8.5", "§A.1"]
+  tags: ["boundary"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.omitclears@1.0.0"
+    "$model": {
+      "profiles": {
+        "$key": "id"
+        "id": "text"
+        "email": "text?"
+      }
+      "$mut": {
+        "set_email": ".profiles[@id] { email = @email }"
+      }
+      "$public": {
+        "profiles": {
+          "$view": ".profiles { id, email }"
+          "$mut": { "set_email": ".set_email" }
+        }
+      }
+    }
+    "$data": {
+      "profiles": { "p1": { "email": "a@x" } }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.profiles"
+      id: "w1"
+      expect_init: { value: [ { id: "p1", email: "a@x" } ] }
+    }
+    {
+      // email omitted -> none -> field cleared.
+      call: "public.profiles.set_email"
+      args: { id: "p1" }
+      expect: { outcome: ok, status: committed }
+    }
+    {
+      expect_view: { watch: "w1", value: [ { id: "p1", email: "$absent" } ] }
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: major-removes-output-member-accepted
+  suite: scenario
+  spec: ["#annex-e", "#modules"]
+  note: '''
+    E.1: "major may change or remove boundary contracts." The narrowing
+    prohibition in E.1 rejects only a minor or patch release "whose effective
+    boundary contract narrows relative to an earlier release in the same
+    major"; a major bump is not compared against the prior major. §13.14
+    likewise: "Breaking changes use a new major." Version 2.0.0 removes the
+    boundary output member `name` — a narrowing that E.5 forbids within a major
+    — but because it is a new major the compatibility check does not reject it.
+    The underlying `name` field still exists, so migration produces valid owned
+    state and the update commits. This is the escape hatch that makes the
+    identical change in `minor-removes-output-member-rejected` rejected.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.majorrm@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.majorrm@2.0.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+            }
+            "$public": {
+              // `name` removed from the boundary output — permitted across a major
+              "companies": { "$view": ".companies { id }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    // the new major's narrowed contract is now in force
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme" } ] } }
+  ]
+}

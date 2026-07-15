@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: union-duplicate-identity-appears-once
+  suite: scenario
+  spec: ["#views", "§7.4"]
+  tags: ["aliasing", "identity"]
+  note: "Attack: a row that satisfies both operands appears twice in the union, inflating counts or double-listing. §7.4: 'a | b  union, left order then new right identities.' t2 is both overdue and urgent; it must appear once, in the left (overdue) position. Left overdue = t1, t2; right urgent contributes only the NEW identity t3. Result: t1, t2, t3."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewuniondup@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        overdue: "bool"
+        urgent: "bool"
+      }
+      $public: {
+        flagged: { $view: ".tasks[:t | t.overdue] { id } | .tasks[:t | t.urgent] { id }" }
+      }
+    }
+    $data: {
+      tasks: {
+        t1: { overdue: true, urgent: false }
+        t2: { overdue: true, urgent: true }
+        t3: { overdue: false, urgent: true }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.flagged", id: "w1",
+      expect_init: { value: [ { id: "t1" }, { id: "t2" }, { id: "t3" } ] } }
+  ]
+}

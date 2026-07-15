@@ -1,0 +1,32 @@
+{
+  format: 1
+  name: double-leading-quote-stores-single-quote
+  suite: scenario
+  tags: [grammar, escaping, boundary]
+  // Boundary: exactly ONE leading quote is removed, no more. Annex C.4:
+  // "'text  literal text with one leading ' removed". The value "''x" has two
+  // leading quotes; stripping exactly one yields the literal "'x". A greedy
+  // implementation that strips all leading quotes would wrongly store "x"; one
+  // that strips none would store "''x". Only "'x" conforms.
+  spec: ["#annex-c", "§C.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.dblquote@1.0.0"
+    $model: {
+      doc: { label: "text" }
+      view_doc: { $view: ".doc { label }" }
+      $public: {
+        doc: { $view: ".view_doc" }
+      }
+    }
+    $data: {
+      doc: { label: "''x" }
+    }
+  }
+
+  steps: [
+    { watch: "public.doc", id: "w1",
+      expect_init: { value: { label: "'x" } } }
+  ]
+}

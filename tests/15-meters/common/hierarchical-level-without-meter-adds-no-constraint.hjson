@@ -1,0 +1,98 @@
+{
+  format: 1
+  name: hierarchical-level-without-meter-adds-no-constraint
+  suite: scenario
+  spec: ["#meters", "§15.4"]
+  note: "An intermediate ancestor row without the consumed meter adds no constraint (SPEC §15.4): the spend clears the account and org declarations, skipping the company level entirely."
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.skiplevel@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      orgs: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        companies: {
+          $key: "id"
+          id: "text"
+          // no credits meter at this level
+          accounts: {
+            $key: "id"
+            id: "text"
+            topups: {
+              $key: "id"
+              id: "text"
+              amount: "decimal"
+            }
+            $limits: {
+              credits: {
+                $sources: { topup: ".topups { $quantity: .amount }" }
+              }
+            }
+            spends: {
+              $key: "id"
+              $consumes: "credits"
+              id: "uuid = uuid()"
+              amount: "decimal"
+              occurred_at: "timestamp = now()"
+            }
+            $mut: {
+              consume: [
+                "spend = .spends + { amount: @amount }"
+                "return spend { id }"
+              ]
+            }
+          }
+        }
+      }
+      $public: {
+        wallet: {
+          $view: '''.orgs {
+            id,
+            balance: .credits.balance,
+            companies: .companies {
+              id,
+              accounts: .accounts { id, balance: .credits.balance }
+            }
+          }'''
+          $mut: { consume: ".orgs[@org].companies[@company].accounts[@account].consume" }
+        }
+      }
+    }
+    $data: {
+      orgs: {
+        o1: {
+          topups: { ot: { amount: "100" } }
+          companies: {
+            c1: {
+              accounts: {
+                a1: { topups: { at: { amount: "50" } } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // admits: account level (50) and org level (100) both clear; the meterless company level adds nothing
+    { call: "public.wallet.consume", args: { org: "o1", company: "c1", account: "a1", amount: "40" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "o1", balance: "60", companies: [
+        { id: "c1", accounts: [ { id: "a1", balance: "10" } ] }
+      ] } ] } }
+  ]
+}

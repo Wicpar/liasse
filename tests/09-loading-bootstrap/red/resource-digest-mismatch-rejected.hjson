@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: resource-digest-mismatch-rejected
+  suite: static
+  spec: ["#package-structure", "#loading"]
+  tags: ["tampering"]
+  note: '''
+    Tampering scenario: the archive entry bytes do not match the digest pinned
+    in the definition (as if the resource were swapped after signing/building).
+    §4.1: "$sha256 is the digest of the exact entry bytes. ... Every declared
+    digest is verified before activation." §9.2 step 2: "verify the artifact
+    entries and resource digests" — validation must fail before activation, so
+    no application (and no surface) ever becomes reachable. The declared
+    digest below is well-formed but is not the SHA-256 of the entry content.
+    Uses the `resources` case member (see NOTES.md).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.digest@1.0.0"
+    "$resources": {
+      "logo": {
+        "$path": "resources/logo.txt"
+        "$media": "text/plain"
+        "$sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      }
+    }
+    "$model": {
+      "items": {
+        "$key": "id"
+        "id": "text"
+      }
+    }
+  }
+
+  resources: {
+    "resources/logo.txt": "tampered resource content\n"
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "#loading"]
+    detail: "resource 'logo' entry bytes do not match the declared $sha256 digest"
+  }
+}

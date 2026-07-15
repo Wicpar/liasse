@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: restart-preserves-recorded-created-interval
+  suite: scenario
+  spec: ["#buckets", "§14.1", "#runtime", "§22.1", "§22.6"]
+  tags: ["temporal", "replay", "tampering", "boundary"]
+  note: "Attack via replay: the short form's $from = $created, and $created is a recorded observation fixed at admission (§22.1, §22.6 'now() and row $created values used in admitted transitions are recorded once'). A runtime restart replays durable state using those recorded values; it must not recompute $created against the post-restart clock, which would shift the active interval. The row therefore still expires at exactly its original upper bound, not one restart later."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.replaycreated@1.0.0"
+    $model: {
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        expires_at: "timestamp"
+      }
+      $public: {
+        sessions: {
+          $mut: {
+            add: [
+              "s = .sessions + { expires_at: @expires_at }"
+              "return s { id }"
+            ]
+            list: "return .sessions { id }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // admission at T0 = 2026-01-01T00:00:00Z, so $created == T0; expires T0+2h
+    { call: "public.sessions.add", args: { expires_at: "1767232800000000" }
+      expect: { outcome: ok, value: { id: "$bind:s1" } } }
+
+    // active now: interval [T0, T0+2h) contains T0
+    { call: "public.sessions.list", args: {}
+      expect: { outcome: ok, value: [ { id: "$ref:s1" } ] } }
+
+    // advance to T0+1h, then replay durable state; the virtual clock is preserved
+    { advance_time: "PT1H" }
+    { restart: {} }
+
+    // still active after replay: recorded $created was not shifted forward
+    { call: "public.sessions.list", args: {}
+      expect: { outcome: ok, value: [ { id: "$ref:s1" } ] } }
+
+    // advance to exactly the original upper bound T0+2h: half-open, inactive.
+    // If replay had recomputed $created to the restart instant, expiry would be
+    // later and this would still show the row — it must not.
+    { advance_time: "PT1H" }
+    { call: "public.sessions.list", args: {}
+      expect: { outcome: ok, value: [] } }
+  ]
+}

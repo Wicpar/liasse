@@ -1,0 +1,26 @@
+{
+  format: 1
+  name: structural-binding-outside-context-invalid
+  suite: static
+  spec: ["#expressions", "§6.2"]
+  tags: ["escalation", "authz"]
+  note: "Attack: reference $actor from a plain computed value, outside any authenticated request, to conjure an identity binding where none exists. §6.2: 'Structural bindings exist only in the feature context that defines them' — $actor is provided by authentication only. A model computed value has no such context, so the package must be rejected at load."
+
+  package: {
+    $liasse: 1
+    $app: "t.bindings@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+      }
+      who: "= $actor.$key"
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#expressions"]
+    detail: "$actor referenced outside the authentication feature context that defines it"
+  }
+}

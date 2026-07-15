@@ -1,0 +1,27 @@
+{
+  format: 1
+  name: state-change-operator-in-check-invalid
+  suite: static
+  spec: ["#expressions", "§6.1", "§8.8", "§C.4"]
+  tags: ["escalation"]
+  note: "Attack: smuggle a write into a validation position so that merely checking a row mutates it. §6.1: only mutation expressions add state-changing operators; a $check is a value expression position (Annex C.4 lists $check under always-expression positions) and §6 intro requires class checking at load. The assignment operator inside $check must reject the package statically."
+
+  package: {
+    $liasse: 1
+    $app: "t.effects@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+        $check: [".done = true", "smuggled write"]
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#expressions"]
+    detail: "state-changing operator used in a value-class check position"
+  }
+}

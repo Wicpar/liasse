@@ -1,0 +1,49 @@
+{
+  // §5.7: $unique declares candidate keys; additional uniqueness is a state
+  // constraint (§22.1). Inserting a second row with the same candidate-key
+  // value rejects that transition while the primary $key differs.
+  format: 1
+  name: duplicate-unique-insert-rejected
+  suite: scenario
+  spec: ["#mutations", "§8.7", "§5.7", "§22.1"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.dupunique@1.0.0"
+    "$model": {
+      "users": {
+        "$key": "id"
+        "$unique": ["email"]
+        "id": "uuid = uuid()"
+        "email": "text"
+      }
+      "$mut": {
+        "register": [
+          "u = .users + { email: @email }"
+          "return u { email }"
+        ]
+      }
+      "$public": {
+        "users": { "$mut": { "register": ".register" } }
+      }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.users.register"
+      args: { email: "a@x" }
+      expect: { outcome: ok, value: { email: "a@x" } }
+    }
+    {
+      call: "public.users.register"
+      args: { email: "a@x" }
+      // Distinct generated primary key, identical candidate key: rejected.
+      expect: {
+        outcome: rejected
+        violates: ["§5.7", "§22.1"]
+        detail: "second row collides on the email candidate key"
+      }
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: ref-orders-by-target-key
+  suite: scenario
+  spec: ["#annex-b", "§B.1", "§A.9"]
+  tags: ["ordering"]
+  note: '''
+    §B.1 ref<T>: ascending order is "target key order". A ref's sort position
+    is determined by the value of the key it points at (A.9: a scalar ref is
+    its target's scalar key value), not by anything about the referencing row.
+    Attack: hope a ref sorts by the referencing row's insertion order, its
+    creation identity, or an internal handle. Sorting items by their `owner`
+    ref must order them by the referenced account key text: alpha < mid < zeta.
+    Items are seeded so that their own key order (i1,i2,i3) deliberately
+    disagrees with the target-key order, isolating the rule.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.ref@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+      }
+      items: {
+        $key: "id"
+        id: "text"
+        owner: { $ref: "/accounts" }
+      }
+      $public: {
+        by_owner: { $view: ".items { id, owner, $sort: [owner] }" }
+      }
+    }
+    $data: {
+      accounts: {
+        zeta: {}
+        alpha: {}
+        mid: {}
+      }
+      items: {
+        i1: { owner: "zeta" }
+        i2: { owner: "alpha" }
+        i3: { owner: "mid" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_owner", id: "w1",
+      expect_init: { value: [
+        { id: "i2", owner: "alpha" }
+        { id: "i3", owner: "mid" }
+        { id: "i1", owner: "zeta" }
+      ] } }
+  ]
+}

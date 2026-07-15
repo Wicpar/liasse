@@ -1,0 +1,30 @@
+{
+  format: 1
+  name: semantics-standard-choices-accepted
+  suite: static
+  spec: ["#package-structure", "§4.4"]
+  note: "§4.4 accepted forms, verbatim from the spec's examples: a scalar choice (timestamp_precision), an object choice (decimal_division with scale and rounding), and a per-field $precision override on a timestamp field with a supported precision ('s', 'ms', 'us', 'ns')."
+
+  package: {
+    $liasse: 1
+    $app: "t.semantics@1.0.0"
+    $semantics: {
+      timestamp_precision: "us"
+      decimal_division: {
+        scale: "postgres"
+        rounding: "half_away_from_zero"
+      }
+    }
+    $model: {
+      captured_at: {
+        $type: "timestamp"
+        $precision: "ns"
+        $default: "= now()"
+      }
+    }
+  }
+
+  expect: {
+    outcome: ok
+  }
+}

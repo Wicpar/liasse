@@ -1,0 +1,40 @@
+{
+  format: 1
+  name: now-advances-with-virtual-clock
+  suite: scenario
+  spec: ["#expressions", "§6.5", "§A.5", "§A.1"]
+  tags: ["time"]
+  note: "Annex A.5: a timestamp is a signed Unix-time count at the declared precision (package default us) and now() samples the host clock once per admitted operation. The harness virtual clock starts at 2026-01-01T00:00:00Z (FORMAT.md determinism), i.e. 1767225600000000 us; after advance_time PT1H the next admitted operation observes 1767229200000000 us. Wire form is the canonical base-10 JSON string of Annex A.1."
+
+  package: {
+    $liasse: 1
+    $app: "t.time@1.0.0"
+    $model: {
+      events: {
+        $key: "id"
+        id: "uuid = uuid()"
+        label: "text"
+        at: "timestamp = now()"
+      }
+      $mut: {
+        add: [
+          "e = .events + { label: @label }"
+          "return e { at }"
+        ]
+      }
+      $public: {
+        events: {
+          $mut: { add: ".add" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.events.add", args: { label: "x1" },
+      expect: { outcome: "ok", value: { at: "1767225600000000" } } }
+    { advance_time: "PT1H" }
+    { call: "public.events.add", args: { label: "x2" },
+      expect: { outcome: "ok", value: { at: "1767229200000000" } } }
+  ]
+}

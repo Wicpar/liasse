@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: empty-selector-brackets-invalid
+  suite: static
+  tags: [grammar, selectors, empty, boundary]
+  // Boundary: an empty selector '[]' on a collection. Annex C.6 enumerates the
+  // selector forms — rows[key], rows[key_a, key_b, key_collection], rows[:b],
+  // rows[:b | cond], rows:: — every one carries a key operand or binding. None
+  // is an empty bracket pair. (The bare '[]' token in Annex C.8 is the empty-
+  // VIEW combinator, valid only as a standalone view operand, not as a selector
+  // applied to a source.) '.tasks[]' matches no selector form and must fail
+  // static validation.
+  spec: ["#annex-c", "§C.6", "§C.8"]
+
+  package: {
+    $liasse: 1
+    $app: "t.emptysel@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
+      }
+      none_view: { $view: ".tasks[] { id, title }" }
+      $public: {
+        tasks: { $view: ".none_view" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.6"]
+    detail: "'.tasks[]' is an empty selector; Annex C.6 defines no empty-bracket selector form"
+  }
+}

@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: request-now-at-exact-expiry-boundary
+  suite: scenario
+  spec: ["#buckets", "§14.1", "#runtime", "§22.5", "#mutations", "§8.9", "§8.10"]
+  tags: ["boundary", "temporal", "precision"]
+  note: "A request's reads evaluate at its fixed transaction now(). A read-only call issued one microsecond before the upper bound still sees the row; a call issued at exactly now == $until must not (half-open interval). The read-only program produces no state change, so it completes with the unchanged status carrying the evaluated response (asserted as ok, see NOTES.md)."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.nowedge@1.0.0"
+    $model: {
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        expires_at: "timestamp"
+      }
+      $public: {
+        sessions: {
+          $mut: {
+            add: [
+              "s = .sessions + { expires_at: @expires_at }"
+              "return s { id }"
+            ]
+            list: "return .sessions { id }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // expires 2026-01-01T01:00:00Z
+    { call: "public.sessions.add", args: { expires_at: "1767229200000000" }
+      expect: { outcome: ok, value: { id: "$bind:s1" } } }
+
+    // now == expires - 1us: still active
+    { advance_time: "PT59M59.999999S" }
+    { call: "public.sessions.list", args: {}
+      expect: { outcome: ok, value: [ { id: "$ref:s1" } ] } }
+
+    // now == expires exactly: no longer active for this request's evaluation time
+    { advance_time: "PT0.000001S" }
+    { call: "public.sessions.list", args: {}
+      expect: { outcome: ok, value: [] } }
+  ]
+}

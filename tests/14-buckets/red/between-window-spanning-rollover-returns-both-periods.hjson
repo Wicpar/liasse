@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: between-window-spanning-rollover-returns-both-periods
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.5"]
+  tags: ["boundary", "temporal", "recurrence", "window"]
+  note: "Two consecutive generated periods share their boundary b1 with no gap and no overlap. A .$between window straddling b1 by one microsecond on each side intersects both: period 0 = [b0, b1) intersects because b1-1us < b1 (its $until); period 1 = [b1, b2) intersects because b1 < b1+1us (the window's upper bound). The half-open handoff never drops or duplicates the instant b1."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.spanroll@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          weekly: { credits: "30", period: "P7D" }
+        }
+        subscriptions: {
+          // anchor 2026-01-01T00:00:00Z, no series end: indefinite generation.
+          // b1 = 2026-01-08T00:00:00Z = 1767830400000000
+          s1: { plan: "weekly", starts_at: "1767225600000000" }
+        }
+      }
+      $public: {
+        periods: {
+          $params: { a: "timestamp", b: "timestamp" }
+          $view: '.credit_periods.$between(@a, @b) { index: $index, from: $from, until: $until, $sort: ["from"] }'
+        }
+      }
+    }
+  }
+
+  steps: [
+    // window [b1 - 1us, b1 + 1us) straddles the shared boundary; a bounded
+    // selector is required for this unbounded recurring collection (§14.5)
+    { watch: "public.periods"
+      args: { a: "1767830399999999", b: "1767830400000001" }
+      id: "w1"
+      expect_init: {
+        value: [
+          { index: "0", from: "1767225600000000", until: "1767830400000000" }
+          { index: "1", from: "1767830400000000", until: "1768435200000000" }
+        ]
+      } }
+  ]
+}

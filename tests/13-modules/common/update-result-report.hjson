@@ -1,0 +1,83 @@
+{
+  format: 1
+  name: update-result-report
+  suite: scenario
+  spec: ["#modules", "§13.15"]
+  note: '''
+    §13.15: a successful update reports $instance, $from, $to, $migrated,
+    $seeded, $exposed grouped as $unchanged/$changed/$removed, $imports
+    grouped as $rebound/$broken, and $commit. The update below changes seed
+    data only; the exposed interface is unchanged and the module has no
+    imports. The per-item shape of $seeded entries is not pinned by §13.15,
+    so it is matched as $any.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+              }
+            }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tplr1: {
+      "$liasse": 1
+      "$module": "t.tplr@1.0.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+      }
+      "$data": { "templates": { "std": { "label": "Standard" } } }
+      "$expose": {
+        "templates": { "$view": ".templates { id, label }" }
+      }
+    }
+    tplr2: {
+      "$liasse": 1
+      "$module": "t.tplr@1.1.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+      }
+      "$data": {
+        "templates": {
+          "std": { "label": "Standard" }
+          "extra": { "label": "Extra" }
+        }
+      }
+      "$expose": {
+        "templates": { "$view": ".templates { id, label }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "kit", "$module": "t.tplr@1.0.0" } }
+      expect: { outcome: ok } }
+    { module_update: { instance: "/companies/acme/modules/kit", to: "t.tplr@1.1.0" }
+      expect: {
+        outcome: ok
+        value: {
+          "$instance": "/companies/acme/modules/kit"
+          "$from": "1.0.0"
+          "$to": "1.1.0"
+          "$migrated": []
+          "$seeded": "$any"
+          "$exposed": { "$unchanged": ["templates"], "$changed": [], "$removed": [] }
+          "$imports": { "$rebound": [], "$broken": [] }
+          "$commit": "$any"
+        }
+      } }
+  ]
+}

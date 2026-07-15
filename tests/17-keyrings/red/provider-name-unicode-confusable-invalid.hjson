@@ -1,0 +1,46 @@
+{
+  format: 1
+  name: provider-name-unicode-confusable-invalid
+  suite: static
+  tags: ["unicode", "identity"]
+  spec: ["#keyrings", "#conformance", "§9.2", "§17.6"]
+  // Identity confusion: the declared $provider is "test‑kp" spelled with
+  // U+2011 NON-BREAKING HYPHEN, visually identical to the registered ASCII
+  // provider name "test-kp" (U+002D). Provider resolution is by exact
+  // registered name (§17.5 "registered under the name used by $provider"),
+  // so this must resolve to NO provider and fail validation before
+  // activation (§2.1, §9.2 step 4) — never fuzzy-match to the ASCII name.
+  note: "A load that succeeds here means provider identity was normalized or fuzzily matched, which the spec never permits."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test‑kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance", "§9.2", "§17.6"]
+    detail: "no key provider is registered under the exact name 'test‑kp' (U+2011); 'test-kp' (U+002D) is a different name"
+  }
+}

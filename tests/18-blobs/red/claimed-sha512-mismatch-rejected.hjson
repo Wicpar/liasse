@@ -1,0 +1,75 @@
+{
+  format: 1
+  name: claimed-sha512-mismatch-rejected
+  suite: scenario
+  spec: ["#blobs", "§18.2", "§18.7"]
+  tags: ["blob", "integrity", "tampering"]
+  note: '''
+    Attack: a client declares a descriptor whose $sha512 names benign content
+    but streams different bytes, hoping the runtime trusts the declared hash.
+    §18.2 requires acceptance to confirm the "SHA-512 content hash" of the
+    streamed bytes; §18.7 stages and hashes before binding the verified
+    descriptor. The streamed bytes hash to a value other than the claimed one,
+    so verification fails and the call is rejected before admission.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.hashmismatch@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      count: { $view: "= size(.docs)" }
+      $public: {
+        docs: {
+          $view: ".count"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: 0 } }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "actual malicious bytes"
+        media: "text/plain"
+        // Declared hash of some other, benign content the attacker wants to pass off.
+        claim: { $sha512: "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" }
+        on: "c1"
+      }
+      expect: { outcome: rejected, violates: ["#blobs"],
+                detail: "streamed bytes do not hash to the declared $sha512" } }
+    { expect_view: { watch: "w1", value: 0 } }
+  ]
+}
+</content>

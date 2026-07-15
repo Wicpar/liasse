@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: ref-to-nested-collection-key-form-unspecified
+  suite: static
+  spec: ["#state-model", "§5.4", "§5.6", "§A.9"]
+  tags: ["identity"]
+  note: '''Gap discovered while writing rekey cases. §5.4 requires the runtime to update
+'every ref that targets one of its descendants whose full identity contains that key',
+which presupposes refs into nested collections exist. But §5.6 and §A.9 define a ref
+target only as a collection or keyed view, with 'the exact key type of its target
+collection' — for a nested collection the full identity is ancestor keys plus local
+$key (§5.4, §D.1), and the spec never defines (a) whether a target path such as
+"/companies.offices" is a valid ref declaration, nor (b) the key/wire form that would
+combine ancestor and local components. Whether this package is valid, and what key
+type links.office would carry, is unspecified.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.nestedref@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        offices: {
+          $key: "id"
+          id: "text"
+        }
+      }
+      links: {
+        $key: "id"
+        id: "text"
+        office: { $ref: "/companies.offices" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: "unspecified"
+    violates: ["§5.6", "§A.9"]
+    detail: "the spec presupposes refs to descendants (§5.4) but never defines the declaration or key form of a ref targeting a nested collection"
+  }
+}

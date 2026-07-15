@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: composite-selector-member-order-irrelevant
+  suite: scenario
+  spec: ["#expressions", "§6.3", "§A.9", "§5.1"]
+  tags: ["ordering"]
+  note: "Attack: write the composite selector object with its members in the reverse of $key order, hoping a positional implementation binds code to country. §6.3: the object operand names each key component; Annex A.9: 'named object selectors are authoring syntax for the same typed tuple' in $key order; §5.1: named structure source order has no semantic effect. The lookup must match by component name, not member position."
+
+  package: {
+    $liasse: 1
+    $app: "t.selectors@1.0.0"
+    $model: {
+      vat_rates: {
+        $key: ["country", "code"]
+        country: "text"
+        code: "text"
+        rate: "int"
+      }
+      $mut: {
+        // members deliberately reversed relative to $key order
+        read: "return .vat_rates[{ code: @code, country: @country }] { rate }"
+      }
+      $public: {
+        rates: {
+          $mut: { read: ".read" }
+        }
+      }
+    }
+    $data: {
+      vat_rates: {
+        "fr:std": { country: "fr", code: "std", rate: "20" }
+        "std:fr": { country: "std", code: "fr", rate: "99" }
+      }
+    }
+  }
+
+  steps: [
+    // a positional binding would find the decoy row (rate 99); named
+    // binding must find fr/std (rate 20)
+    { call: "public.rates.read", args: { country: "fr", code: "std" },
+      expect: { outcome: "ok", value: [ { rate: "20" } ] } }
+  ]
+}

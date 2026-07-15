@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: composite-key-second-component-uses-int-order
+  suite: scenario
+  spec: ["#annex-b", "§B.4", "§B.1", "§A.9", "§D.2"]
+  tags: ["ordering"]
+  note: '''
+    §B.4 composite key: "lexicographic components in $key order", each
+    component compared in its own type order (§B.1). Attack: a runtime that
+    orders composite keys by their joined canonical text form (D.2 joins
+    components with ':') instead of component-wise typed comparison. Here $key
+    is [region, seq] with seq an int. Component-wise, within region "eu" the
+    order is 2 < 3 < 10 (int math order, §B.1). The text-join misreading
+    compares "eu:10" / "eu:2" / "eu:3" as strings and yields 10 < 2 < 3
+    (WRONG). Seed member names use the ':'-joined canonical key text (D.2), and
+    seq travels as canonical base-10 digits.
+    Correct key-ascending order: eu/2, eu/3, eu/10, us/1.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.compint@1.0.0"
+    $model: {
+      slots: {
+        $key: ["region", "seq"]
+        region: "text"
+        seq: "int"
+      }
+      $public: {
+        all: { $view: ".slots { region, seq }" }
+      }
+    }
+    $data: {
+      slots: {
+        "eu:10": {}
+        "eu:2": {}
+        "us:1": {}
+        "eu:3": {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.all", id: "w1",
+      expect_init: { value: [
+        { region: "eu", seq: 2 }
+        { region: "eu", seq: 3 }
+        { region: "eu", seq: 10 }
+        { region: "us", seq: 1 }
+      ] } }
+  ]
+}

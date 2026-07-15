@@ -1,0 +1,24 @@
+{
+  format: 1
+  name: missing-required-namespace-rejected
+  suite: static
+  spec: ["#package-structure", "§4.1", "#host-namespaces", "§16.2", "#conformance", "§2.1"]
+  note: "§2.1: 'a package requiring an unavailable or incompatible component fails validation before activation.' §16.2: 'Missing, incompatible, or ambiguous requirements reject loading before the package becomes active.' No hosts are declared in this case, so the required namespace is unavailable."
+
+  package: {
+    $liasse: 1
+    $app: "t.needscbor@1.0.0"
+    $requires: {
+      cbor: "liasse.cbor@1"
+    }
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "§16.2", "#conformance", "§2.1"]
+    detail: "required namespace liasse.cbor@1 is not registered in the loading context"
+  }
+}

@@ -1,0 +1,130 @@
+{
+  format: 1
+  name: resume-after-authority-loss-denied
+  suite: scenario
+  spec: ["#clients", "#interfaces"]
+  tags: ["authz", "reconnect", "replay"]
+  note: '''
+    Attack: hold a retained frontier from a period of legitimate access, get
+    revoked, reconnect, and replay the frontier to keep receiving data.
+    §12.2: resuming yields "the later AUTHORIZED patches"; authentication and
+    role membership are re-evaluated at every outgoing frontier, and removed
+    authority yields `close`. A revoked actor must receive no rows on resume;
+    the harness maps "refused or closed before any data" to `denied` (see
+    NOTES.md).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.roletasks@1.0.0"
+    $requires: { authsim: "test.authsim@1" }
+    $data: {
+      accounts: {
+        alice: {}
+      }
+    }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        enabled: "bool = true"
+      }
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        owner: "text"
+        title: "text"
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "authsim.verify($credential)"
+          $actor: "/accounts[$proof.account]"
+          $check: "$proof.auth == $auth_name"
+        }
+      }
+      $mut: {
+        add_own: [
+          "task = .tasks + { owner: $actor.id, title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts[:a | a.enabled]"
+          tasks: {
+            $view: ".tasks[:t | t.owner == $actor.id] { id, title, $sort: [title] }"
+            $mut: {
+              add: ".add_own"
+            }
+          }
+        }
+      }
+      $public: {
+        admin: {
+          $mut: {
+            disable: ".accounts[@id].enabled = false"
+          }
+        }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: {
+      authsim: {
+        contract: "test.authsim@1"
+        functions: {
+          verify: {
+            effect: "verifier"
+            signature: "(credential: text) -> { auth: text, account: text }"
+            behavior: "Splits the credential at the first ':' into { auth, account }. Any credential containing ':' verifies; others fail verification."
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    {
+      connect: "c1"
+      authenticate: { role: "member", auth: "token", credential: "token:alice" }
+    }
+    {
+      call: "member.tasks.add"
+      args: { title: "mine" }
+      on: "c1"
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "mine" } }
+    }
+    {
+      watch: "member.tasks"
+      on: "c1"
+      id: "w1"
+      expect_init: { frontier: "$bind:f1", value: [ { id: "$any:uuid", title: "mine" } ] }
+    }
+    { disconnect: "c1" }
+    { connect: "c2" }
+    {
+      call: "public.admin.disable"
+      args: { id: "alice" }
+      on: "c2"
+      expect: { outcome: ok }
+    }
+    // Reconnect with the still-verifiable credential and replay the retained
+    // frontier: membership is gone, so no data may flow.
+    {
+      connect: "c3"
+      authenticate: { role: "member", auth: "token", credential: "token:alice" }
+    }
+    {
+      resume: { surface: "member.tasks", from: "$ref:f1", id: "w2" }
+      on: "c3"
+      expect: {
+        outcome: denied
+        violates: ["#clients", "#interfaces"]
+        detail: "resume delivers only authorized patches; revoked membership yields refusal or immediate close without data"
+      }
+    }
+  ]
+}

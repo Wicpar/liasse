@@ -1,0 +1,97 @@
+{
+  format: 1
+  name: install-data-overlay-merge
+  suite: scenario
+  spec: ["#modules", "§13.3"]
+  note: '''
+    §13.3: package $data is applied first. Installation $data then overlays
+    writable scalar and struct fields, merges keyed child collections by
+    key, and unions sets. Expected:
+      - std: seeded label retained, note overlaid, tags = union {a,b,c}
+      - pro: untouched seed row retained
+      - extra: new row from installation $data inserted
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": {
+                  "$view": {
+                    "$key": "id"
+                    "id": "text"
+                    "label": "text"
+                    "note": "text"
+                    "tags": { "$set": "text" }
+                  }
+                }
+              }
+            }
+          }
+          "catalog": {
+            "$view": ".modules::templates { module: modules.$key, id, label, note, tags, $sort: [module, id] }"
+          }
+        }
+        "$public": {
+          "catalog": {
+            "$params": { "company": "text" }
+            "$view": "/companies[@company].catalog"
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tpls: {
+      "$liasse": 1
+      "$module": "t.tpls@1.0.0"
+      "$model": {
+        "templates": {
+          "$key": "id"
+          "id": "text"
+          "label": "text"
+          "note": "text = ''"
+          "tags": { "$set": "text" }
+        }
+      }
+      "$data": {
+        "templates": {
+          "std": { "label": "Standard", "note": "seed", "tags": ["a", "b"] }
+          "pro": { "label": "Pro", "note": "seed", "tags": [] }
+        }
+      }
+      "$expose": {
+        "templates": { "$view": ".templates { id, label, note, tags }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: {
+          "$name": "kit"
+          "$module": "t.tpls@1.0.0"
+          "$data": {
+            "templates": {
+              "std": { "note": "custom", "tags": ["b", "c"] }
+              "extra": { "label": "Extra", "note": "x", "tags": [] }
+            }
+          }
+        } }
+      expect: { outcome: ok } }
+    { watch: "public.catalog", args: { company: "acme" }, id: "w1"
+      expect_init: { value: [
+        { module: "kit", id: "extra", label: "Extra", note: "x", tags: [] }
+        { module: "kit", id: "pro", label: "Pro", note: "seed", tags: [] }
+        { module: "kit", id: "std", label: "Standard", note: "custom", tags: { $unordered: ["a", "b", "c"] } }
+      ] } }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: confusable-surface-name-does-not-resolve
+  suite: scenario
+  // Unicode confusable attack on name resolution. The declared surface is
+  // ASCII "tasks". The attacker sends "tаsks" where the second letter is
+  // CYRILLIC SMALL LETTER A (U+0430), visually identical to ASCII "a".
+  // §2.5: declared names are ASCII-only, so no declared name can ever equal
+  // the confusable; resolution of the targeted surface (§12.1 step 1) must
+  // fail, and no folding/normalization rule exists that could map it to the
+  // ASCII name.
+  spec: ["#interfaces", "§10.1", "#conformance"]
+  tags: ["unicode", "exposure"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.confusable_wire@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+      }
+      "$mut": {
+        "add_task": [
+          "task = .tasks + { id: @id, title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [] } }
+    // "tаsks" below contains U+0430, not ASCII a.
+    { call: "public.tаsks.add", args: { id: "t1", title: "spoof" },
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "no declared surface has this name; ASCII 'tasks' must not match" } }
+    { expect_view: { watch: "w1", value: [] } }
+    // Control: the ASCII name resolves.
+    { call: "public.tasks.add", args: { id: "t1", title: "real" },
+      expect: { outcome: ok, value: { id: "t1", title: "real" } } }
+  ]
+}

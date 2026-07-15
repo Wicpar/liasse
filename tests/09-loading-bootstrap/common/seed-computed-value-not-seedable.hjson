@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: seed-computed-value-not-seedable
+  suite: static
+  spec: ["#loading"]
+  note: '''
+    §9.1: "$data mirrors writable state" and "Computed values, views,
+    source-backed bucket rows, module spaces, and keyring-managed versions
+    cannot be seeded directly." Supplying the computed member 'upper' in $data
+    is a definition-level misuse, statically invalid.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seedcomputed@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "upper": "= string.upper(.name)"
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "name": "acme", "upper": "OVERRIDDEN" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#loading"]
+    detail: "$data supplies the computed value companies.upper, which cannot be seeded directly"
+  }
+}

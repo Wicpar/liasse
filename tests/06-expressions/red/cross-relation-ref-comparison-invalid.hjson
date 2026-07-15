@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: cross-relation-ref-comparison-invalid
+  suite: static
+  spec: ["#expressions", "§6.3"]
+  tags: ["identity"]
+  note: "Attack: compare refs into two different collections whose keys share the same text form, hoping key-text equality leaks across relations. §6.3: 'Values belonging to different target relations are statically incomparable.' The package must be rejected at load, not resolved by comparing key text at runtime."
+
+  package: {
+    $liasse: 1
+    $app: "t.identity@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+      }
+      groups: {
+        $key: "id"
+        id: "text"
+      }
+      links: {
+        $key: "id"
+        id: "text"
+        u: { $ref: "/users" }
+        g: { $ref: "/groups" }
+        same: "= .u == .g"
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#expressions"]
+    detail: "equality between refs targeting different relations is statically incomparable"
+  }
+}

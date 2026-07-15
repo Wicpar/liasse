@@ -1,0 +1,32 @@
+{
+  format: 1
+  name: projection-members-cross-reference-acyclic
+  suite: scenario
+  spec: ["#views", "§7.1"]
+  note: "§7.1: projection members 'MAY refer to one another when their dependency graph is acyclic; the implementation evaluates them in any valid dependency order.' 'shout' depends on 'base', which depends on the source field 'first'; the only valid order yields base = first and shout = first + \"!\"."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewdag@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        first: "text"
+      }
+      $public: {
+        loud: { $view: ".people { base: first, shout: base + \"!\" }" }
+      }
+    }
+    $data: {
+      people: {
+        a: { first: "Ada" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.loud", id: "w1",
+      expect_init: { value: [ { base: "Ada", shout: "Ada!" } ] } }
+  ]
+}

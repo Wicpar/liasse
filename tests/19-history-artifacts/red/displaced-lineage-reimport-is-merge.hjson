@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: displaced-lineage-reimport-is-merge
+  suite: scenario
+  tags: [ordering, replay]
+  // Attack shape: rollback + divergent continuation, then replay the
+  // displaced future's artifact hoping it fast-forwards over the new work.
+  // After rollback to p1 and a new commit p3, the displaced artifact (head
+  // p2) shares p1 and DIVERGES: §19.8 classifies "shared point followed by
+  // divergence -> three-way merge", so with only fast_forward/rollback in
+  // the policy nothing may activate; the new lineage's work must survive.
+  spec: ["§19.8", "§19.3"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { call: "public.notes.put", args: { id: "n2", body: "two" },
+      expect: { outcome: ok, value: { id: "n2", body: "two" } } }
+    { export: { as: "a2" }, expect: { outcome: ok } }
+    { import: { from: "a1", policy: ["rollback"] },
+      expect: { outcome: ok, value: { relation: "rollback", applied: true, "...": true } } }
+    // Diverge from p1 on a new lineage.
+    { call: "public.notes.put", args: { id: "n3", body: "three" },
+      expect: { outcome: ok, value: { id: "n3", body: "three" } } }
+    // Replay the displaced future: shared point + divergence = merge.
+    { import: { from: "a2", policy: ["fast_forward", "rollback"] },
+      expect: { outcome: ok, value: { relation: "merge", applied: false, "...": true } } }
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "n1", body: "one" }
+      { id: "n3", body: "three" }
+    ] } }
+  ]
+}

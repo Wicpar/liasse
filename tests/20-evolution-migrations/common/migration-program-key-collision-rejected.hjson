@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: migration-program-key-collision-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.1: "The complete prospective target is checked under ordinary keys,
+    refs, uniqueness, checks, buckets, meters, modules, and interfaces before
+    the package update commits." The migration program maps every source row
+    to the literal key "dup", so two distinct source rows collide on the target
+    key. The prospective state fails the key/uniqueness check and the update is
+    rejected; version 1.0.0 stays active. Well-formed definition, state-level
+    failure -> `rejected` (see NOTES.md).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.collide@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        value: "int"
+      }
+      $public: {
+        items: { $view: ".items { id, value, $sort: [id] }" }
+      }
+    }
+    $data: {
+      items: {
+        a: { value: 1 }
+        b: { value: 2 }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.collide@2.0.0"
+          $model: {
+            tags: {
+              $key: "id"
+              id: "text"
+              value: "int"
+            }
+            $migrations: {
+              "1.0.0": [
+                ".tags = $old.items { id: \"dup\", value }"
+              ]
+            }
+            $public: {
+              tags: { $view: ".tags { id, value }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.1"]
+        detail: "both source rows map to key 'dup'; prospective target fails the key/uniqueness check before commit"
+      } }
+    // 1.0.0 remains active
+    { watch: "public.items", id: "w1",
+      expect_init: { value: [ { id: "a", value: "1" }, { id: "b", value: "2" } ] } }
+  ]
+}

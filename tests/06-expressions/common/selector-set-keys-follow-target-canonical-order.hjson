@@ -1,0 +1,41 @@
+{
+  format: 1
+  name: selector-set-keys-follow-target-canonical-order
+  suite: scenario
+  spec: ["#expressions", "§6.3", "§B.5"]
+  tags: ["ordering"]
+  note: "§6.3: 'a set contributes keys in the target collection's canonical order.' The canonical order of a collection is key ascending (Annex B.5), so selecting through a set seeded as ['c', 'a'] must return rows a then c regardless of seed order."
+
+  package: {
+    $liasse: 1
+    $app: "t.selectors@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      team: {
+        reviewers: { $set: { $ref: "/accounts" } }
+      }
+      $public: {
+        reviewers: { $view: "/accounts[/team.reviewers] { id }" }
+      }
+    }
+    $data: {
+      accounts: {
+        c: { name: "Cy" }
+        a: { name: "Ann" }
+        b: { name: "Bo" }
+      }
+      team: {
+        reviewers: ["c", "a"]
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.reviewers", id: "w1",
+      expect_init: { value: [ { id: "a" }, { id: "c" } ] } }
+  ]
+}

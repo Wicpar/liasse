@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: computed-value-derives-from-state
+  suite: scenario
+  spec: ["#state-model", "§5.2"]
+  note: "A computed value is read-only and determined by its expression (§5.2); it participates in views and projections like any other value, and reflects the current committed state after a later field change."
+
+  package: {
+    $liasse: 1
+    $app: "t.computed@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        first: "text"
+        last: "text"
+        full: "= .first + ' ' + .last"
+      }
+      $public: {
+        people: {
+          $view: ".people { id, full }"
+          $mut: {
+            add: [
+              "row = .people + { id: @id, first: @first, last: @last }"
+              "return row { id, full }"
+            ]
+            set_last: [
+              ".people[@id].last = @last"
+              "return .people[@id].full"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.people.add", args: { id: "p1", first: "Ada", last: "Byron" },
+      expect: { outcome: "ok", value: { id: "p1", full: "Ada Byron" } } }
+    { call: "public.people.set_last", args: { id: "p1", last: "Lovelace" },
+      expect: { outcome: "ok", value: "Ada Lovelace" } }
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: confusable-surface-address-rename-rejected
+  suite: scenario
+  spec: ["#conformance", "#annex-e"]
+  tags: [unicode, identity, version]
+  note: '''
+    Attack: keep a boundary looking unchanged by renaming its surface with a
+    homoglyph. E.2 lists "public and authenticated surface addresses" as a
+    boundary contract; removing an address is narrowing. The candidate renames
+    the public surface `companies` to `companiеs`, where the sixth letter is
+    Cyrillic `е` (U+0435), not Latin `e` (U+0065). §2.5: "Application
+    declaration names MUST begin with an ASCII letter and contain only ASCII
+    letters, digits, and `_`." A surface address therefore cannot carry a
+    non-ASCII homoglyph at all: the candidate is statically invalid before any
+    Annex E comparison, so identity confusion at a boundary address is
+    structurally impossible. outcome: invalid, not a narrowing rejection.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.confuse@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.confuse@1.1.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+            }
+            "$public": {
+              // "companiеs": the 6th codepoint is Cyrillic е (U+0435) — an
+              // illegal non-ASCII declaration name (§2.5)
+              "companiеs": { "$view": ".companies { id, name }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: {
+        outcome: invalid
+        violates: ["#conformance"]
+        detail: "surface declaration name contains a non-ASCII codepoint (Cyrillic е); illegal declaration name"
+      } }
+    // prior release, with the genuine ASCII address, remains active (E.9)
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "Acme" } ] } }
+  ]
+}

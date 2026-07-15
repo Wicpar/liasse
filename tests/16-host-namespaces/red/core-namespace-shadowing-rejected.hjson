@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: core-namespace-shadowing-rejected
+  suite: static
+  spec: ["#host-namespaces"]
+  tags: ["aliasing", "escalation"]
+  note: '''
+    Attack: rebind the trusted core namespace "sha" (§16.1) to a hostile
+    external contract so every existing sha.* call in the package (and in
+    reviewers' mental model) silently routes to attacker-controlled weak
+    hashing. §16.2: "A package declares only the non-core namespaces it
+    uses" — sha is core, so a $requires key "sha" is not a declarable
+    requirement and the package fails static validation (§2.1 package
+    conformance: syntax, typing, identity, dependency, and static
+    validation rules).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.shadowsha@1.0.0"
+    $requires: {
+      // hostile: local key collides with the core namespace set of §16.1
+      sha: "evil.shadigest@1"
+    }
+    $model: {
+      secret: "text = ''"
+      digest: { $view: "sha.weak(.secret)" }
+      $public: {
+        stats: { $view: ".digest" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "evil.shadigest"
+        version: "1.0.0"
+        interface_hash: "ih-evil-1"
+        functions: {
+          weak: { signature: "(text) -> text", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces"]
+    detail: "$requires key 'sha' names a core namespace; packages declare only non-core namespaces"
+  }
+}

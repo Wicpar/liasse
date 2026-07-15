@@ -1,0 +1,62 @@
+{
+  // Confusable-identity attack: register "cafe" + U+00E9 ("caf\u00e9") and then
+  // "cafe" + "e" + combining acute U+0301 ("cafe\u0301"). Both render identically.
+  // A.1: text is a "Unicode scalar sequence ... preserved exactly" -- no
+  // normalization -- so these are two DISTINCT keys and the second insert
+  // must not collide. B.1: text orders by Unicode scalar value, so the "cafe\u0301"
+  // spelling ('e' = U+0065 at index 3) sorts before the "caf\u00e9" spelling
+  // (U+00E9 at index 3).
+  // The key strings are written with backslash-u escapes resolved by the
+  // Hjson parser, so the two scalar sequences are byte-level unambiguous.
+  format: 1
+  name: unicode-confusable-keys-are-distinct
+  suite: scenario
+  spec: ["§A.1", "§B.1", "§5.4", "#mutations"]
+  tags: ["unicode", "identity"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.confusable@1.0.0"
+    "$model": {
+      "handles": {
+        "$key": "name"
+        "name": "text"
+      }
+      "$mut": {
+        "claim": ".handles + { name: @name }"
+      }
+      "$public": {
+        "handles": {
+          "$view": ".handles { name }"
+          "$mut": { "claim": ".claim" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    {
+      // NFC form: c a f U+00E9
+      call: "public.handles.claim"
+      args: { name: "caf\u00e9" }
+      expect: { outcome: ok }
+    }
+    {
+      // NFD form: c a f e U+0301 -- a distinct scalar sequence, therefore a
+      // distinct key. Must NOT be rejected as a duplicate.
+      call: "public.handles.claim"
+      args: { name: "cafe\u0301" }
+      expect: { outcome: ok }
+    }
+    {
+      watch: "public.handles"
+      id: "w1"
+      expect_init: {
+        value: [
+          { name: "cafe\u0301" }
+          { name: "caf\u00e9" }
+        ]
+      }
+    }
+  ]
+}

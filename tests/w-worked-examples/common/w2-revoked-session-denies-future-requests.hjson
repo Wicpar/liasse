@@ -1,0 +1,104 @@
+{
+  format: 1
+  name: w2-revoked-session-denies-future-requests
+  suite: scenario
+  spec: ["W2", "#authentication", "§11.7", "§11.3"]
+  tags: [authz, session, revocation]
+  note: '''
+    W2 revocation (§11.7): the session authenticator checks "!$session.revoked".
+    Alice logs in, authenticates, then revokes her own session through the role
+    mutation. §11.7: "A later request using that session fails authentication ...
+    A request already committed remains final." The revoke commit itself is
+    final; the very next request presenting the same token is denied because the
+    $check now fails.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.accounts@1.0.0"
+    $requires: { webauthn: "test.webauthn@1", token: "test.token@1" }
+    $model: {
+      accounts: { $key: "id", id: "uuid = uuid()", name: "text", enabled: "bool = true" }
+      logins: { $key: ["kind", "issuer", "subject"], kind: "text", issuer: "text", subject: "text" }
+      account_logins: { $key: ["account", "login"], account: { $ref: "/accounts" }, login: { $ref: "/logins" } }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        login: { $ref: "/logins" }
+        device: "text?"
+        expires_at: "timestamp"
+        revoked: "bool = false"
+        $mut: { revoke: [".revoked = true", "return . { id, revoked }"] }
+      }
+      $mut: {
+        bootstrap: [
+          "acct = /accounts + { name: @name }"
+          "lg = /logins + { kind: 'passkey', issuer: @rp, subject: @credential }"
+          "/account_logins + { account: acct.$key, login: lg.$key }"
+          "return { account: acct.$key }"
+        ]
+        passkey_login: [
+          "identity = webauthn.verify(@response)"
+          "login = /logins[{ kind: 'passkey', issuer: identity.rp, subject: identity.credential }]"
+          "mapping = /account_logins[{ account: @account, login: login.$key }]"
+          '''session = /sessions + {
+            account: mapping.account,
+            login: mapping.login,
+            device: @device,
+            expires_at: now() + time.duration('P30D')
+          }'''
+          "token = token.sign({ auth: 'session', session: session.$key })"
+          "return { auth: 'session', token, expires_at: session.$until }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: ["$proof.auth == $auth_name", "!$session.revoked", "$actor.enabled"]
+        }
+      }
+      $public: {
+        setup: { $mut: { bootstrap: ".bootstrap" } }
+        login: { $mut: { passkey: ".passkey_login" } }
+      }
+      $roles: {
+        account: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          profile: { $view: "$actor { id, name }" }
+          sessions: {
+            $view: ".sessions.$all[:s | s.account == $actor] { id, device, revoked }"
+            $mut: { revoke: ".sessions[@id].revoke()" }
+          }
+        }
+      }
+    }
+  }
+
+  hosts: {
+    webauthn: { $namespace: "test.webauthn@1", responses: { "resp-alice": { rp: "example.com", credential: "cred-alice" } } }
+    token: { $namespace: "test.token@1", tokens: {} }
+  }
+
+  steps: [
+    { call: "public.setup.bootstrap", args: { name: "alice", rp: "example.com", credential: "cred-alice" }
+      expect: { outcome: ok, value: { account: "$bind:alice" } } }
+    { call: "public.login.passkey", args: { response: "resp-alice", account: "$ref:alice", device: "laptop" }
+      expect: { outcome: ok, value: { token: "$bind:tok1", "...": true } } }
+    { connect: "c1", authenticate: { auth: "session", credential: "$ref:tok1" } }
+    // learn own session id while still authenticated
+    { watch: "account.sessions", on: "c1", id: "w1"
+      expect_init: { value: [ { id: "$bind:sess", device: "laptop", revoked: false } ] } }
+    // revoke own session -> final commit
+    { call: "account.sessions.revoke", args: { id: "$ref:sess" }, on: "c1"
+      expect: { outcome: ok, value: { id: "$ref:sess", revoked: true } } }
+    // next request with the same token is denied by the !$session.revoked check
+    { call: "account.sessions.revoke", args: { id: "$ref:sess" }, on: "c1"
+      expect: { outcome: denied, violates: ["§11.7"], detail: "session is revoked" } }
+  ]
+}

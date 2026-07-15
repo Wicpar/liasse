@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: seed-repeated-key-field-must-agree
+  suite: static
+  spec: ["#loading"]
+  note: '''
+    §9.1: "The map member supplies the local key. A repeated key field MUST
+    agree with it." Here the map member says "acme" while the repeated id field
+    says "acmeinc". Key rules are admission-class (see NOTES.md outcome
+    mapping), and §9 admits the whole load as one atomic transition, so the
+    load fails as a whole.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seedkeyagree@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "id": "acmeinc", "name": "Acme SAS" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: rejected
+    violates: ["#loading"]
+    detail: "repeated key field 'id' disagrees with the seed map member key"
+  }
+}

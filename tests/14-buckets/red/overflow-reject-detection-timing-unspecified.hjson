@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: overflow-reject-detection-timing-unspecified
+  suite: scenario
+  spec: ["#buckets", "§14.5", "§14.7", "§A.4"]
+  tags: ["calendar", "recurrence", "boundary", "unspecified"]
+  note: "A.4 defines overflow: reject — when a generated boundary lands on a calendar date missing from the destination month, that policy rejects rather than clamps. Here a monthly series anchored on Jan 31 must produce b1 = Feb 31, which does not exist. The OUTCOME (a rejection) is pinned, but the spec does not pin WHEN it surfaces: §14.5 states the reject rule only for non-advancing recurrence, and neither §14.5 nor A.4 says whether an overflow: reject boundary is validated eagerly at the source-row transition (admission) or lazily only when a temporal read requires that boundary. Even for this finite series eager detection is possible but not mandated, so the admission-time outcome is genuinely unspecified."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.overflowreject@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          // months:1, reject when the destination day is missing
+          strict_monthly: { credits: "100", period: { months: 1, zone: "UTC", overflow: "reject" } }
+        }
+      }
+      $public: {
+        subs: {
+          $mut: {
+            add: [
+              "s = .subscriptions + { id: @id, plan: @plan, starts_at: @starts_at, ends_at: @ends_at }"
+              "return s { id }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // finite series [Jan 31, Mar 31); computing it requires b1 = Feb 31 (missing).
+    // Whether this rejects at admission (eager) or is admitted and only rejects a
+    // read that reaches the missing boundary (lazy) is not fixed by the spec.
+    { call: "public.subs.add"
+      args: { id: "s1", plan: "strict_monthly", starts_at: "1769817600000000", ends_at: "1774915200000000" }
+      expect: { outcome: unspecified } }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: window-slide-centers-within-bounds
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["window", "boundary"]
+  note: '''
+    §12.2: "A concrete anchor normally becomes the first row; `$slide: true`
+    centers it as far as the view bounds allow." With rows [a, b, c, d, e]
+    sorted by id: a centered 3-row window on "c" is [b, c, d]; anchored on
+    the first row "a", centering is bounded by the view start, so the window
+    degrades to [a, b, c]. An odd $size avoids any ambiguity about the center
+    position.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.items@1.0.0"
+    $data: {
+      items: {
+        a: {}
+        b: {}
+        c: {}
+        d: {}
+        e: {}
+      }
+    }
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      index: {
+        $view: ".items { id, $sort: [id] }"
+      }
+      $public: {
+        items: {
+          $view: ".index"
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Mid-view anchor: fully centered.
+    {
+      watch: "public.items"
+      on: "c1"
+      id: "w1"
+      window: { $size: 3, $anchor: "c", $slide: true }
+      expect_init: {
+        value: [ { id: "b" }, { id: "c" }, { id: "d" } ]
+      }
+    }
+    // Anchor at the view start: centering limited by the bound.
+    {
+      watch: "public.items"
+      on: "c1"
+      id: "w2"
+      window: { $size: 3, $anchor: "a", $slide: true }
+      expect_init: {
+        value: [ { id: "a" }, { id: "b" }, { id: "c" } ]
+      }
+    }
+  ]
+}

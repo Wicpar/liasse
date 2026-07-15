@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: restore-reexport-preserves-selection-identity
+  suite: scenario
+  // §19.10: restoring an artifact and exporting the same instance boundary,
+  // selected points, and retained history reproduces the same definitions
+  // and lineages. §19.2: once a history point has been exported, its
+  // identity and relative position remain stable.
+  spec: ["§19.10", "§19.2"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a1", expect: {
+        outcome: ok
+        manifest: {
+          instance: "$bind:inst"
+          selected: { lineage: "$bind:l1", point: "$bind:p1" }
+          definition: { identity: "$bind:d1", "...": true }
+          "...": true
+        }
+    } } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1" }, expect: { outcome: ok } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    // The re-export of the untouched restored instance selects the same
+    // instance incarnation, lineage, point, and definition identity.
+    { inspect_artifact: { artifact: "a2", expect: {
+        outcome: ok
+        manifest: {
+          instance: "$ref:inst"
+          selected: { lineage: "$ref:l1", point: "$ref:p1" }
+          definition: { identity: "$ref:d1", "...": true }
+          "...": true
+        }
+    } } }
+  ]
+}

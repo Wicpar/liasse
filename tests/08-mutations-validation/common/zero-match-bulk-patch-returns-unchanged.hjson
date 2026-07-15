@@ -1,0 +1,47 @@
+{
+  // §8.9: a filtered bulk operation selecting no rows succeeds as an
+  // expression; when the complete program produces no state change the call
+  // returns `unchanged`, creates no commit, and a trailing `return` is still
+  // evaluated against the unchanged state.
+  // The `status` expectation member is documented in ../NOTES.md.
+  format: 1
+  name: zero-match-bulk-patch-returns-unchanged
+  suite: scenario
+  spec: ["#mutations", "§8.9", "§22.2"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.zeromatch@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "done": "bool = false"
+        "archived": "bool = false"
+      }
+      "$mut": {
+        "archive_done": [
+          ".tasks[:t | t.done] { archived = true }"
+          "return .tasks[:t | t.archived] { id }"
+        ]
+      }
+      "$public": {
+        "tasks": { "$mut": { "archive_done": ".archive_done" } }
+      }
+    }
+    "$data": {
+      "tasks": { "t1": {} }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.tasks.archive_done"
+      args: {}
+      // No task is done: the bulk patch selects zero rows, the program
+      // changes nothing, and the response is evaluated against the
+      // unchanged state (no task is archived either).
+      expect: { outcome: ok, status: unchanged, value: [] }
+    }
+  ]
+}

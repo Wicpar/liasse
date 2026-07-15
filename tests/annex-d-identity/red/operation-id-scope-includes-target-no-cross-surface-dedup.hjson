@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: operation-id-scope-includes-target-no-cross-surface-dedup
+  suite: scenario
+  spec: ["§D.8", "§12"]
+  tags: ["idempotency"]
+  note: '''Attack: use one operation identifier as a global write-once lock, hoping
+that submitting the same identifier against a DIFFERENT surface is deduplicated and
+suppresses the second write. §D.8: the operation identifier is scoped to the
+application instance PLUS the "public or scoped-role target" PLUS the selected
+authenticator PLUS the client-supplied identifier. §12 repeats: the scope is "the
+application, public or scoped-role target, selected authenticator when present, and
+identifier." Two different public surfaces are two different targets, hence two
+different scopes; the same identifier does NOT collide across them. Both calls
+execute, producing two rows. De-duplication is per scope, never global.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.opidscope@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        via: "text"
+      }
+      $mut: {
+        add_a: [
+          "n = .notes + { id: @id, via: \"a\" }"
+          "return n { id, via }"
+        ]
+        add_b: [
+          "n = .notes + { id: @id, via: \"b\" }"
+          "return n { id, via }"
+        ]
+      }
+      all: { $view: ".notes { id, via, $sort: [id] }" }
+      $public: {
+        // two distinct public surface targets
+        surface_a: {
+          $view: ".all"
+          $mut: { add: ".add_a" }
+        }
+        surface_b: {
+          $view: ".all"
+          $mut: { add: ".add_b" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.surface_a.add", args: { id: "n1" }, op_id: "op-SHARED",
+      expect: { outcome: ok, value: { id: "n1", via: "a" } } }
+    // same op_id, DIFFERENT target -> different scope -> not deduplicated
+    { call: "public.surface_b.add", args: { id: "n2" }, op_id: "op-SHARED",
+      expect: { outcome: ok, value: { id: "n2", via: "b" } } }
+    // both executed
+    { watch: "public.surface_a", id: "w1", expect_init: { value: [
+      { id: "n1", via: "a" }
+      { id: "n2", via: "b" }
+    ] } }
+  ]
+}

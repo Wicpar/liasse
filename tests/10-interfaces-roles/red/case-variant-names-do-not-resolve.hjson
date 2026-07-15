@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: case-variant-names-do-not-resolve
+  suite: scenario
+  // Pedantic boundary: external names are exact identifiers. §2.5 defines
+  // declaration names over ASCII letters with no folding rule, and no
+  // chapter defines case-insensitive resolution of surface or call names
+  // (case folding exists in the language only as an explicit string
+  // function). "Tasks" and "Add" are therefore different, undeclared names
+  // and must not resolve to "tasks"/"add".
+  spec: ["#interfaces", "§10.1", "#conformance"]
+  tags: ["exposure", "boundary"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.case_names@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+      }
+      "$mut": {
+        "add_task": [
+          "task = .tasks + { id: @id, title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [] } }
+    { call: "public.Tasks.add", args: { id: "t1", title: "x" },
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "no surface named 'Tasks' is declared" } }
+    { call: "public.tasks.Add", args: { id: "t1", title: "x" },
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "no call named 'Add' is exposed by the surface" } }
+    { expect_view: { watch: "w1", value: [] } }
+    // Control: the exact declared names resolve.
+    { call: "public.tasks.add", args: { id: "t1", title: "exact" },
+      expect: { outcome: ok, value: { id: "t1", title: "exact" } } }
+  ]
+}

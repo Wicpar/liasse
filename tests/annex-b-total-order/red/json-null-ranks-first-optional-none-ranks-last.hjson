@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: json-null-ranks-first-optional-none-ranks-last
+  suite: scenario
+  spec: ["#annex-b", "§B.3", "§A.1", "§A.7"]
+  tags: ["ordering", "json", "optional"]
+  note: '''
+    Attack: conflate JSON `null` with Liasse `none`. They are different values
+    (A.1: "JSON null is a value of json; none is absence"; §7.3: "none remains
+    distinct from JSON null") and they sort at OPPOSITE ends.
+
+    Field type is `json?`. §B.3 gives the intra-json rank
+      null < bool < number < string < array < object
+    and the optional wrapper (§B.2 as restated in §B.3 for json?) is
+      ASC:  null ... object, none
+    So ascending yields: JSON null FIRST (lowest json rank), then bool, number,
+    string, array, object, and finally the none row (absent value) LAST.
+
+    A runtime that treats JSON null and none as the same sentinel would collapse
+    the first and last rows together — the exact bug this case is built to catch.
+    The none row is seeded by omitting the optional field (A.1); the JSON-null
+    row is seeded with an explicit `j: null`.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.jsonrank@1.0.0"
+    $model: {
+      docs: {
+        $key: "id"
+        id: "text"
+        j: "json?"
+      }
+      $public: {
+        by_j: { $view: ".docs { id, j, $sort: [j, id] }" }
+      }
+    }
+    $data: {
+      docs: {
+        r_obj: { j: {} }
+        r_none: {}
+        r_num: { j: 42 }
+        r_null: { j: null }
+        r_arr: { j: [1] }
+        r_bool: { j: false }
+        r_str: { j: "x" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_j", id: "w1",
+      expect_init: { value: [
+        { id: "r_null", j: null }
+        { id: "r_bool", j: false }
+        { id: "r_num", j: 42 }
+        { id: "r_str", j: "x" }
+        { id: "r_arr", j: [1] }
+        { id: "r_obj", j: {} }
+        { id: "r_none" }
+      ] } }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: double-colon-binds-collection-field-names
+  suite: scenario
+  spec: ["#expressions", "§6.4", "§7.2"]
+  note: "§6.4: '.projects::tasks' expands to '.projects[:projects].tasks[:tasks]', binding each traversed collection to its own field name. The projection may therefore reference the outer binding 'projects'. Identity and order follow the source row chain (§7.2, Annex B.5): projects key ascending, then tasks key ascending."
+
+  package: {
+    $liasse: 1
+    $app: "t.rowbind@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+        tasks: {
+          $key: "id"
+          id: "text"
+        }
+      }
+      $public: {
+        all_tasks: { $view: ".projects::tasks { id, project: projects.id }" }
+      }
+    }
+    $data: {
+      projects: {
+        p1: {
+          tasks: {
+            t1: {}
+            t2: {}
+          }
+        }
+        p2: {
+          tasks: {
+            t3: {}
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.all_tasks", id: "w1",
+      expect_init: { value: [
+        { id: "t1", project: "p1" }
+        { id: "t2", project: "p1" }
+        { id: "t3", project: "p2" }
+      ] } }
+  ]
+}

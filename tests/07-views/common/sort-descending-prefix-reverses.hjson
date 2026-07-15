@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: sort-descending-prefix-reverses
+  suite: scenario
+  spec: ["#views", "§7.3", "§B.1"]
+  note: "§7.3: 'A leading - reverses one key.' §B.1: int uses mathematical integer order. $sort: [-n] therefore returns rows in descending n: 30, 20, 10."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewdesc@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        n: "int"
+      }
+      $public: {
+        byn: { $view: ".items { id, n, $sort: [-n] }" }
+      }
+    }
+    $data: {
+      items: {
+        a: { n: "10" }
+        b: { n: "30" }
+        c: { n: "20" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.byn", id: "w1",
+      expect_init: { value: [
+        { id: "b", n: "30" }
+        { id: "c", n: "20" }
+        { id: "a", n: "10" }
+      ] } }
+  ]
+}

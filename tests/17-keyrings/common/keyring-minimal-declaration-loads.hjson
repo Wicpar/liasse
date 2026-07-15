@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: keyring-minimal-declaration-loads
+  suite: static
+  spec: ["#keyrings", "§17.1", "§17.6", "§C.16"]
+  note: "Simple-form keyring declaration (§17.1) with a registered provider advertising the required algorithm, automatic-generation mode, and operations validates and loads."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+    }
+  }
+
+  expect: { outcome: ok }
+}

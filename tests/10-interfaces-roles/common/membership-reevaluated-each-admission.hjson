@@ -1,0 +1,78 @@
+{
+  format: 1
+  name: membership-reevaluated-each-admission
+  suite: scenario
+  // §10.5: "Membership, recursive edges, filters, and exceptions are
+  // re-evaluated at admission. A role change therefore affects subsequent
+  // requests immediately in serial order." A commit that removes the actor
+  // from $members must deny the very next request on the same connection.
+  spec: ["#interfaces", "§10.5", "§10.3"]
+  tags: ["authz", "ordering"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.member_readm@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "enabled": "bool = true"
+      }
+      "notes": {
+        "$key": "id"
+        "id": "text"
+        "body": "text"
+      }
+      "$mut": {
+        "add_note": [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "token"
+          "$members": ".accounts[:a | a.enabled]"
+          "notes": {
+            "$view": ".notes { id, body }"
+            "$mut": { "add": ".add_note" }
+          }
+          "self": {
+            "$mut": {
+              // Inline program on the role surface: the actor disables its
+              // own account, removing itself from $members.
+              "quit": [
+                "/accounts[$actor.$key].enabled = false"
+                "return $actor { id, enabled }"
+              ]
+            }
+          }
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "member", auth: "token", credential: "alice" } }
+    { call: "member.notes.add", args: { id: "n1", body: "while member" }, on: "c1",
+      expect: { outcome: ok, value: { id: "n1", body: "while member" } } }
+    // alice was a member at this request's own admission position, so the
+    // request that removes the membership itself commits.
+    { call: "member.self.quit", args: {}, on: "c1",
+      expect: { outcome: ok, value: { id: "alice", enabled: false } } }
+    // The next request re-evaluates $members and is denied.
+    { call: "member.notes.add", args: { id: "n2", body: "after quit" }, on: "c1",
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "membership is re-evaluated at each admission" } }
+  ]
+}

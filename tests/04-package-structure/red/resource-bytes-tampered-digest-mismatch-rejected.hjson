@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: resource-bytes-tampered-digest-mismatch-rejected
+  suite: scenario
+  spec: ["#package-structure", "§4.1", "#annex-d", "§D.4", "#loading", "§9.2"]
+  tags: ["tamper", "integrity"]
+  note: "Attack: swap a verified resource's bytes after build while keeping the definition-declared $sha256 the same, so the running definition-identity claims one template but the archive serves another. §4.1: 'Every declared digest is verified before activation'; §9.2 step 2 verifies resource digests. tamper_artifact with rehash fixes the manifest.json container checksums so the ONLY surviving mismatch is the definition-declared digest vs the actual bytes — isolating the §4.1/D.4 resource-digest check from the D.5 container-integrity check."
+
+  package: {
+    $liasse: 1
+    $app: "t.tampered@1.0.0"
+    $resources: {
+      invoice_template: {
+        $path: "resources/invoice.html"
+        $media: "text/html"
+        $sha256: "2163bddf11b2e116332448d10374d504f9508c148b72e5c9d970b88665330490"
+      }
+    }
+    $model: {
+      note: "text"
+    }
+  }
+
+  steps: [
+    // build with the honest bytes that match the declared digest
+    { build_artifact: { as: "a1", files: { "resources/invoice.html": "<h1>Invoice</h1>" } } }
+    // attacker replaces the bytes and re-checksums the container so manifest entries stay valid
+    { tamper_artifact: { artifact: "a1",
+        set: { "resources/invoice.html": "<h1>PAID TO ATTACKER</h1>" },
+        rehash: true } }
+    // the definition-declared $sha256 no longer matches the served bytes -> reject before activation
+    { load_artifact: { from: "a1",
+        expect: { outcome: invalid, violates: ["#package-structure", "§4.1", "#annex-d", "§D.4"] } } }
+  ]
+}

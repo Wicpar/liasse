@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: merge-delete-vs-modify-conflict
+  suite: scenario
+  tags: [deletion]
+  // §19.9: the merge "reports conflicts for ... deletion against
+  // modification". Local deletes the row; incoming modifies it. The merge
+  // must not silently resurrect the row or silently drop the edit.
+  spec: ["§19.9"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+        set_body: [
+          ".notes[@id].body = @body"
+          "return .notes[@id] { id, body }"
+        ]
+        drop: [
+          ".notes - @id"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put", set_body: ".set_body", drop: ".drop" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "start" },
+      expect: { outcome: ok, value: { id: "n1", body: "start" } } }
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a0" }, expect: { outcome: ok } }
+      { call: "public.notes.set_body", args: { id: "n1", body: "incoming-edit" },
+        expect: { outcome: ok, value: { id: "n1", body: "incoming-edit" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    { call: "public.notes.drop", args: { id: "n1" },
+      expect: { outcome: ok } }
+    { reconcile: { from: "a2", policy: ["merge"] },
+      expect: { outcome: ok, value: {
+        relation: "merge", applied: false, conflicts: "$any", "...": true } } }
+    // Active composition unchanged: the row stays deleted locally.
+    { watch: "public.notes", id: "w1", expect_init: { value: [] } }
+  ]
+}

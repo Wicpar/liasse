@@ -1,0 +1,26 @@
+{
+  format: 1
+  name: always-expression-position-parses-string-as-expression
+  suite: static
+  spec: ["#annex-c", "§C.4", "#loading", "§9.1"]
+  note: "Annex C.4 lists $check among the ALWAYS-expression positions: 'Other expression positions ... contain bare expressions' (§4.2). A plain string there is an expression, never a literal — so '.missing_field > 0' references a field that is not declared on the row, an unresolvable reference that fails static validation at load. If $check were a literal-or-expression position the same string could be stored literally; proving it is rejected shows it is parsed as an expression."
+
+  package: {
+    $liasse: 1
+    $app: "t.alwaysexpr@1.0.0"
+    $model: {
+      widgets: {
+        $key: "id"
+        id: "uuid = uuid()"
+        size: "int"
+        $check: ".missing_field > 0"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.4"]
+    detail: "$check is an always-expression position; '.missing_field' resolves to no declared field and fails static validation"
+  }
+}

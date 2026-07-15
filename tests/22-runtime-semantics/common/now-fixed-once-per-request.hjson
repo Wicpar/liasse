@@ -1,0 +1,47 @@
+{
+  // §22.5: "one best-effort wall-clock instant is fixed for the complete
+  // external request … and every `now()` call in that operation returns that
+  // same instant." A single mutation that evaluates `now()` twice must yield
+  // two identical timestamps. Binding the first and requiring `$ref` for the
+  // second asserts equality without hard-coding the clock value.
+  format: 1
+  name: now-fixed-once-per-request
+  suite: scenario
+  spec: ["§22.5", "#runtime"]
+  tags: ["time"]
+
+  package: {
+    $liasse: 1
+    $app: "t.nowfixed@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "uuid = uuid()"
+        a: "timestamp"
+        b: "timestamp"
+      }
+      $mut: {
+        stamp: [
+          "r = .rows + { a: now(), b: now() }"
+          "return r { a, b }"
+        ]
+      }
+      $public: {
+        rows: {
+          $mut: { stamp: ".stamp" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      call: "public.rows.stamp"
+      args: {}
+      on: "c1"
+      // Both now() calls in one request produce the same fixed instant.
+      expect: { outcome: ok, value: { a: "$bind:t", b: "$ref:t" } }
+    }
+  ]
+}

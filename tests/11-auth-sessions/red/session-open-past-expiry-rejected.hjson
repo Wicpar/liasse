@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: session-open-past-expiry-rejected
+  suite: scenario
+  spec: ["#authentication", "§11.5", "#buckets", "§14.2"]
+  tags: ["boundary"]
+  note: '''
+    §14.2: "A finite interval MUST satisfy $until > $from; a transition
+    producing an invalid interval rejects." The session bucket is
+    [$created, .expires_at). A login mutation that sets expires_at to a moment
+    at or before the row's admission time produces an empty/reversed interval,
+    so admission rejects the insert and no session is created — a session can
+    never be born already dead.
+  '''
+
+  // Attack: mint a session with a bogus (past) expiry, hoping it is created
+  // anyway and then treated as "always expired but present" or, worse, active.
+  // The invalid interval must be rejected at admission.
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.login@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      $mut: {
+        // expiry lands strictly before now() (= $created), so the bucket
+        // interval [$created, expires_at) is empty/reversed.
+        login_backdated: [
+          "session = /sessions + { account: @account, expires_at: now() - time.duration('P1D') }"
+          "return { session: session.$key }"
+        ]
+      }
+      $public: {
+        auth: {
+          $mut: { login: ".login_backdated" }
+        }
+        sessions: {
+          $view: "/sessions.$all { id }"
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+      }
+    }
+  }
+
+  hosts: {
+    token: { $namespace: "test.token@1" }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // now() is 2026-01-01T00:00:00Z; expires_at becomes 2025-12-31 < $created.
+    { call: "public.auth.login", args: { account: "aaaaaaaa-0000-4000-8000-000000000001" }, on: "c1",
+      expect: { outcome: rejected, violates: ["#buckets"] } }
+    // The rejected transition left no session behind (atomic admission).
+    { watch: "public.sessions", on: "c1", id: "w1",
+      expect_init: { value: [] } }
+  ]
+}

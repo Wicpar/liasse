@@ -1,0 +1,72 @@
+{
+  format: 1
+  name: oversize-upload-rejected
+  suite: scenario
+  spec: ["#blobs", "§18.2"]
+  tags: ["blob"]
+  note: '''
+    §18.2: acceptance requires the byte limit to be met; "A failure rejects the
+    containing call before its state transition is admitted." Content of 11
+    bytes exceeds $max_bytes of 5, so the upload is rejected and no doc row is
+    created.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.oversize@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "5"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      count: { $view: "= size(.docs)" }
+      $public: {
+        docs: {
+          $view: ".count"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: 0 } }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "hello world"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: rejected, violates: ["#blobs"],
+                detail: "content size exceeds $max_bytes" } }
+    // The rejected upload admitted no transition.
+    { expect_view: { watch: "w1", value: 0 } }
+  ]
+}
+</content>

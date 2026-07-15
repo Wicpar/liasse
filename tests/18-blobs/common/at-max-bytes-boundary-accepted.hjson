@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: at-max-bytes-boundary-accepted
+  suite: scenario
+  spec: ["#blobs", "§18.2"]
+  tags: ["blob", "boundary"]
+  note: '''
+    §18.2: "$max_bytes is an inclusive content-size limit." Content of exactly
+    $max_bytes bytes satisfies the byte-limit verification and is accepted.
+    The staged content "hello world" is 11 UTF-8 bytes and $max_bytes is 11.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.atlimit@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "11"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      $public: { docs: { $mut: { add: ".add" } } }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "hello world"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: { id: "d1" } } }
+  ]
+}
+</content>

@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: fallback-nonempty-keeps-first
+  suite: scenario
+  spec: ["#views", "§7.4"]
+  tags: ["boundary"]
+  note: "Attack: assume '??' always merges or prefers the right operand. §7.4: 'view ?? other  fallback when the first view is empty.' The left view (non-archived tasks a, b) is non-empty, so the fallback does NOT trigger and the archived rows are never included. Result: a, b only."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewfbfirst@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        archived: "bool"
+      }
+      $public: {
+        shown: { $view: ".tasks[:t | !t.archived] { id } ?? .tasks[:t | t.archived] { id }" }
+      }
+    }
+    $data: {
+      tasks: {
+        a: { archived: false }
+        b: { archived: false }
+        z: { archived: true }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.shown", id: "w1",
+      expect_init: { value: [ { id: "a" }, { id: "b" } ] } }
+  ]
+}

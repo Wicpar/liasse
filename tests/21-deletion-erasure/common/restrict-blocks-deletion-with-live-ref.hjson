@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: restrict-blocks-deletion-with-live-ref
+  suite: scenario
+  // §21.1: a `restrict` ref rejects deletion while the referencing row exists
+  // (and is outside the delete set). Deleting p1 while task t1 still references
+  // it rejects the entire transition; deleting t1 first then p1 succeeds.
+  spec: ["§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        project: {
+          $ref: "/projects"
+          $on_delete: "restrict"
+        }
+      }
+      $mut: {
+        delete_project: ".projects - @id"
+        delete_task: ".tasks - @id"
+      }
+      projects_view: { $view: ".projects { id, $sort: [id] }" }
+      $public: {
+        projects: {
+          $view: ".projects_view"
+          $mut: { delete: ".delete_project" }
+        }
+        tasks: {
+          $view: ".tasks { id, project }"
+          $mut: { delete: ".delete_task" }
+        }
+      }
+    }
+    $data: {
+      projects: { p1: {} }
+      tasks: { t1: { project: "p1" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.projects", id: "w1", expect_init: { value: [ { id: "p1" } ] } }
+    // restrict blocks while t1 still references p1
+    { call: "public.projects.delete", args: { id: "p1" },
+      expect: { outcome: rejected, violates: ["§21.1"],
+                detail: "restrict ref tasks.project blocks deleting p1 while t1 exists" } }
+    { expect_view: { watch: "w1", value: [ { id: "p1" } ] } }
+    // remove the referencing row, then deletion is allowed
+    { call: "public.tasks.delete", args: { id: "t1" }, expect: { outcome: ok, "...": true } }
+    { call: "public.projects.delete", args: { id: "p1" }, expect: { outcome: ok, "...": true } }
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

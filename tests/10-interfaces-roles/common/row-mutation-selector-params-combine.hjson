@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: row-mutation-selector-params-combine
+  suite: scenario
+  // §10.1: "A declared row-mutation reference MUST select exactly one receiver
+  // before naming the mutation. In .projects[@project].rename, @project selects
+  // the row bound as . for rename; the surface parameters are the selector
+  // parameters combined with the referenced mutation's parameters under
+  // ordinary type inference."
+  spec: ["#interfaces", "§10.1", "#mutations"]
+  tags: []
+
+  package: {
+    "$liasse": 1
+    "$app": "t.row_recv@1.0.0"
+    "$model": {
+      "projects": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "$mut": {
+          "rename": [
+            ".name = @name"
+            "return . { id, name }"
+          ]
+        }
+      }
+      "$public": {
+        "projects": {
+          "$view": ".projects { id, name }"
+          "$mut": { "rename": ".projects[@project].rename" }
+        }
+      }
+    }
+    "$data": {
+      "projects": { "p1": { "name": "Original" } }
+    }
+  }
+
+  steps: [
+    // One call supplies both the selector parameter (@project, inferring the
+    // collection key type) and the mutation parameter (@name).
+    { call: "public.projects.rename", args: { project: "p1", name: "Renamed" },
+      expect: { outcome: ok, value: { id: "p1", name: "Renamed" } } }
+    { watch: "public.projects", id: "w1",
+      expect_init: { value: [ { id: "p1", name: "Renamed" } ] } }
+  ]
+}

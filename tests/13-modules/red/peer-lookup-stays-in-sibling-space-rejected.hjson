@@ -1,0 +1,75 @@
+{
+  format: 1
+  name: peer-lookup-stays-in-sibling-space-rejected
+  suite: scenario
+  spec: ["#modules", "§13.5", "§13.2"]
+  note: '''
+    §13.5: peer lookup stays within the sibling space; §13.2: installing the
+    same package in each space creates independent instances. A "people"
+    instance exists in Globex's space, and "sales" is installed in Acme's
+    space requiring t.people/people@1. Resolution considers only Acme's
+    siblings, finds zero candidates there, and rejects the required binding
+    even though a compatible instance exists in another space.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "people": { "$view": { "$key": "id", "id": "text", "name": "text" } }
+                "roster": { "$view": { "$key": "id", "id": "text", "name": "text" } }
+              }
+            }
+          }
+        }
+      }
+      "$data": {
+        "companies": {
+          "acme": { "name": "Acme" }
+          "globex": { "name": "Globex" }
+        }
+      }
+    }
+    people: {
+      "$liasse": 1
+      "$module": "t.people@1.0.0"
+      "$model": {
+        "members": { "$key": "id", "id": "text", "name": "text" }
+      }
+      "$expose": {
+        "people": { "$view": ".members { id, name }" }
+      }
+    }
+    sales: {
+      "$liasse": 1
+      "$module": "t.sales@1.0.0"
+      "$use": {
+        "people": "t.people/people@1"
+      }
+      "$expose": {
+        "roster": { "$view": "#people { id, name }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    // the only compatible candidate lives in a DIFFERENT space
+    { module_install: { space: "/companies/globex/modules"
+        request: { "$name": "people", "$module": "t.people@1.0.0"
+                   "$data": { "members": { "p1": { "name": "Alice" } } } } }
+      expect: { outcome: ok } }
+    // Acme's space has no people sibling: peer lookup does not cross spaces
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "sales", "$module": "t.sales@1.0.0" } }
+      expect: { outcome: rejected, violates: ["§13.5"]
+                detail: "required peer binding has zero candidates in the instance's own module space; peer lookup stays within the sibling space" } }
+  ]
+}

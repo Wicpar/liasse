@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: set-of-enum-reads-in-declaration-order
+  suite: scenario
+  spec: ["#state-model", "§5.5", "§5.9", "§B.1"]
+  tags: ["ordering"]
+  note: '''Reordering trap: enum order is declaration order (§5.9, §B.1), not lexicographic,
+and sets read in the element type's canonical order regardless of insertion order
+(§5.5). Declared low < medium < high; an implementation sorting labels as text would
+emit ["high", "low", "medium"], and one preserving insertion order would emit
+["high", "low", "medium"] too after the late add — both wrong.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.enumset@1.0.0"
+    $model: {
+      tickets: {
+        $key: "id"
+        id: "text"
+        levels: {
+          $set: { $enum: ["low", "medium", "high"] }
+        }
+      }
+      $public: {
+        tickets: {
+          $view: ".tickets { id, levels }"
+          $mut: {
+            add: [
+              "row = .tickets + { id: @id, levels: @levels }"
+              "return row { id, levels }"
+            ]
+            add_medium: ".tickets[@id].levels + 'medium'"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // inserted as [high, low]; canonical read order is declaration order
+    { call: "public.tickets.add", args: { id: "t1", levels: ["high", "low"] },
+      expect: { outcome: "ok", value: { id: "t1", levels: ["low", "high"] } } }
+    // added last, but "medium" reads in the middle
+    { call: "public.tickets.add_medium", args: { id: "t1" }, expect: { outcome: "ok" } }
+    { watch: "public.tickets", id: "w1",
+      expect_init: { value: [ { id: "t1", levels: ["low", "medium", "high"] } ] } }
+  ]
+}

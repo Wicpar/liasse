@@ -1,0 +1,55 @@
+{
+  format: 1
+  name: descending-reverses-with-none-first
+  suite: scenario
+  spec: ["#annex-b", "§B.2", "§B.5"]
+  tags: ["ordering", "optional"]
+  note: '''
+    §B.2 descending reverses the COMPLETE order: "none, then all present T
+    values in descending order". Descending is not "ascending with only the
+    present block reversed and the none tail kept last" — the none rows move
+    to the FRONT. An implementation that reverses only the present-value block
+    and pins none last would violate §B.2.
+
+    The two none rows are equal under the sole declared key `-v`, so they fall
+    to the final tiebreaker, which §B.5 defines as row/occurrence identity
+    ASCENDING (the identity tiebreaker is appended ascending and is not
+    reversed by a descending declared key). Row identity is key ascending, so
+    n1 precedes n2. The present block then follows in descending value order.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.optdesc@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        v: "int?"
+      }
+      $public: {
+        by_v_desc: { $view: ".rows { id, v, $sort: [-v] }" }
+      }
+    }
+    $data: {
+      rows: {
+        a: { v: 3 }
+        n2: {}
+        b: { v: 1 }
+        n1: {}
+        c: { v: 2 }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_v_desc", id: "w1",
+      expect_init: { value: [
+        { id: "n1" }
+        { id: "n2" }
+        { id: "a", v: 3 }
+        { id: "c", v: 2 }
+        { id: "b", v: 1 }
+      ] } }
+  ]
+}

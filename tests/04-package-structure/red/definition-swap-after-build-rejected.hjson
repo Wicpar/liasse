@@ -1,0 +1,32 @@
+{
+  format: 1
+  name: definition-swap-after-build-rejected
+  suite: scenario
+  spec: ["#annex-d", "§D.5", "#history", "§19.5", "#loading", "§9.2"]
+  tags: ["tamper", "artifact", "escalation"]
+  note: "Definition-swap escalation: after a legitimate build, replace liasse.json with a definition that adds a $public surface over the private collection, WITHOUT updating manifest.json. §19.5 makes manifest.json record checksums for every required entry, and Annex D.5: 'Verification succeeds only when every referenced entry exists exactly once and every checksum matches'; §9.2 verifies entries (step 2) before type-checking. The swapped definition is itself well-formed, so an implementation that skips manifest verification would activate the escalated surface."
+
+  package: {
+    $liasse: 1
+    $app: "t.swapdef@1.0.0"
+    $model: {
+      secrets: {
+        $key: "id"
+        id: "int"
+        value: "text"
+      }
+    }
+  }
+
+  steps: [
+    { build_artifact: { as: "a1" } }
+    { tamper_artifact: { artifact: "a1", set: {
+        "liasse.json": "{\"$app\":\"t.swapdef@1.0.0\",\"$liasse\":1,\"$model\":{\"$public\":{\"secrets\":{\"$view\":\".secrets_view\"}},\"secrets\":{\"$key\":\"id\",\"id\":\"int\",\"value\":\"text\"},\"secrets_view\":{\"$view\":\".secrets { id, value }\"}}}"
+    } } }
+    { load_artifact: { from: "a1", expect: {
+        outcome: invalid
+        violates: ["#annex-d", "§D.5", "#history", "§19.5"]
+        detail: "liasse.json bytes do not match the manifest checksum"
+    } } }
+  ]
+}

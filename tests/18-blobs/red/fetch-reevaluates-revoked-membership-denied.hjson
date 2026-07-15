@@ -1,0 +1,146 @@
+{
+  format: 1
+  name: fetch-reevaluates-revoked-membership-denied
+  suite: scenario
+  spec: ["#blobs", "§18.8", "#authentication"]
+  tags: ["blob", "fetch", "authz", "escalation"]
+  note: '''
+    Attack: keep fetching bytes after losing access. §18.8: "The runtime
+    re-evaluates the caller's authentication, scoped role membership, surface
+    projection, descriptor occurrence, and current verified holders when
+    issuing or refreshing a fetch plan." A member uploads and successfully
+    fetches; an admin then disables the member's account; the very next fetch
+    over the same connection and token is denied because role membership is
+    re-evaluated when the fetch plan is issued.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.fetchrevoke@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      accounts: {
+        $key: "id"
+        id: "text"
+        enabled: "bool = true"
+        admin: "bool = false"
+      }
+      sessions: {
+        $key: "id"
+        id: "text"
+        account: { $ref: "/accounts" }
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        owner: { $ref: "/accounts" }
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, owner: $actor, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: ["$proof.auth == $auth_name"]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          docs: {
+            $view: ".docs[@id] { id, file }"
+            $mut: { add: ".add" }
+          }
+        }
+        admin: {
+          $auth: "session"
+          $members: ".accounts[:a | a.admin]"
+          accounts: {
+            $mut: { disable: ".accounts[@account] { enabled = false }" }
+          }
+        }
+      }
+    }
+    $data: {
+      stores: { primary: { connector: "fs-a" } }
+      accounts: {
+        alice: { enabled: true }
+        root: { enabled: true, admin: true }
+      }
+      sessions: {
+        s_alice: { account: "alice" }
+        s_root: { account: "root" }
+      }
+    }
+  }
+
+  hosts: {
+    connectors: {
+      "fs-a": { capabilities: ["stream_upload", "stream_download", "checksum"] }
+    }
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "s_alice" }
+        "tok-root": { auth: "session", session: "s_root" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "member.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "member bytes"
+        media: "text/plain"
+        on: "c1"
+        auth: { auth: "session", credential: "tok-alice" }
+      }
+      expect: { outcome: ok, value: { id: "d1" } } }
+    // Access works while a member.
+    { blob_get: {
+        surface: "member.docs"
+        args: { id: "d1" }
+        at: ".file"
+        on: "c1"
+        auth: { auth: "session", credential: "tok-alice" }
+      }
+      expect: { outcome: ok, bytes: "member bytes" } }
+    // Admin disables Alice's account.
+    { call: "admin.accounts.disable", args: { account: "alice" }, on: "c1",
+      auth: { auth: "session", credential: "tok-root" },
+      expect: { outcome: ok } }
+    // Next fetch over the same token: membership re-evaluated -> denied.
+    { blob_get: {
+        surface: "member.docs"
+        args: { id: "d1" }
+        at: ".file"
+        on: "c1"
+        auth: { auth: "session", credential: "tok-alice" }
+      }
+      expect: { outcome: denied, violates: ["#blobs", "#authentication"],
+                detail: "role membership revoked; fetch plan no longer issued" } }
+  ]
+}
+</content>

@@ -1,0 +1,79 @@
+{
+  format: 1
+  name: pool-reduction-clamps-remainder-at-zero
+  suite: scenario
+  spec: ["#meters", "§15.2"]
+  note: '''Overdraft engineering: drain 60 from a 100 pool, then shrink the pool to 10.
+SPEC §15.2: reducing a pool cannot revoke the admitted spend, and current remaining
+capacity is the NON-NEGATIVE remainder per pool — max(0, 10 - 60) = 0, never -50.
+A fresh pool of 20 must then yield exactly 20: the overhang of the reduced pool must
+not bleed into other pools' capacity.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.clamp@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+          set_topup: ".topups[@topup] { amount = @amount }"
+          add_topup: ".topups + { id: @topup, amount: @amount }"
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: {
+            consume: ".users[@user].consume"
+            set_topup: ".users[@user].set_topup"
+            add_topup: ".users[@user].add_topup"
+          }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { user: "u1", amount: "60" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    // reducing below the held allocation is admitted; it cannot revoke the spend
+    { call: "public.wallet.set_topup", args: { user: "u1", topup: "t1", amount: "10" },
+      expect: { outcome: ok } }
+    // remainder clamps at zero
+    { call: "public.wallet.consume", args: { user: "u1", amount: "5" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+    // a new pool contributes its full quantity, undiminished by t1's overhang
+    { call: "public.wallet.add_topup", args: { user: "u1", topup: "t2", amount: "20" },
+      expect: { outcome: ok } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "20" } ] } }
+    { call: "public.wallet.consume", args: { user: "u1", amount: "20" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { call: "public.wallet.consume", args: { user: "u1", amount: "1" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+  ]
+}

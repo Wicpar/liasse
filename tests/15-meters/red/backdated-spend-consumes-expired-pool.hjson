@@ -1,0 +1,81 @@
+{
+  format: 1
+  name: backdated-spend-consumes-expired-pool
+  suite: scenario
+  spec: ["#meters", "§15.1", "#state-model", "§5.1"]
+  tags: [temporal]
+  note: '''Attack: resurrect expired credits by backdating a spend. Spend $time defaults
+to .occurred_at, and a supplied field value takes precedence over its default (§5.1).
+Meter sources are evaluated in the temporal context of the spend (§15.1), so the spec
+MANDATES that a spend whose $time falls inside the pool's past active interval is
+funded by that pool, even though the pool is expired at admission wall-clock time.
+Applications that consider backdating hostile must constrain occurred_at themselves;
+the meter model does not.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.backdate@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          $bucket: { $until: ".expires_at" }
+          id: "text"
+          amount: "decimal"
+          expires_at: "timestamp? = none"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+            $order: ["$until"]
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+          consume_at: [
+            "spend = .spends + { amount: @amount, occurred_at: @at }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $mut: {
+            consume: ".users[@user].consume"
+            consume_at: ".users[@user].consume_at"
+          }
+        }
+      }
+    }
+    $data: {
+      users: {
+        // pool active [2026-01-01, 2026-01-08)
+        u1: { topups: { t1: { amount: "100", expires_at: "1767830400" } } }
+      }
+    }
+  }
+
+  steps: [
+    // now = 2026-01-11: the pool is expired
+    { advance_time: "P10D" }
+    // a current-time spend finds no active pool
+    { call: "public.wallet.consume", args: { user: "u1", amount: "50" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.1"] } }
+    // backdated to 2026-01-03, inside the pool's interval: the spec admits it
+    { call: "public.wallet.consume_at", args: { user: "u1", amount: "50", at: "1767398400" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+  ]
+}

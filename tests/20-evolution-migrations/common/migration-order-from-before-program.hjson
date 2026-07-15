@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: migration-order-from-before-program
+  suite: scenario
+  spec: ["#evolution", "§20.1"]
+  note: '''
+    §20.1 fixes the migration order: "compatible same-identity copy, local
+    `$from` mappings in dependency order, then the selected package-level
+    statements in array order." The `$migrations` program reads `cleaned`
+    through `.` — i.e. the prospective target "after compatible declarations
+    and local `$from` mappings have been copied." So `cleaned` is already the
+    trimmed "x" when the program runs, and `length = size(cleaned)` is 1
+    (int wire form "1"). Had the program run before the `$from` mapping,
+    `cleaned` would be absent and `size(cleaned)` would have nothing to read.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.order@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        raw: "text"
+      }
+      $public: {
+        items: { $view: ".items { id, raw }" }
+      }
+    }
+    $data: {
+      items: { i1: { raw: "  x  " } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.order@2.0.0"
+          $model: {
+            items: {
+              $key: "id"
+              id: "text"
+              cleaned: { $type: "text", $from: "raw", $as: "string.trim(.)" }
+              length: "int"
+            }
+            $migrations: {
+              "1.0.0": [
+                ".items = .items { id, cleaned, length: size(cleaned) }"
+              ]
+            }
+            $public: {
+              items: { $view: ".items { id, cleaned, length }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.items", id: "w1",
+      expect_init: { value: [ { id: "i1", cleaned: "x", length: "1" } ] } }
+  ]
+}

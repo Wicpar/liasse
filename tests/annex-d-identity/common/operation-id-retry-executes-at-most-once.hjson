@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: operation-id-retry-executes-at-most-once
+  suite: scenario
+  spec: ["§D.8", "§12"]
+  tags: ["idempotency"]
+  note: '''§D.8: "An equivalent retry in the same scope returns the retained status
+and never executes the mutation twice." §12: reusing the same scoped identifier
+with an equivalent request provides at-most-once execution. The mutation allocates
+a fresh uuid key on every execution, so a second execution would produce a second,
+distinct row. Submitting the same op_id with an equivalent request must leave
+exactly one row. Mutation return values are ephemeral (§D.8), so only the committed
+state is asserted; the retry result object is matched loosely.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.opid@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        body: "text"
+      }
+      $public: {
+        notes: {
+          $view: ".notes { id, body, $sort: [body] }"
+          $mut: {
+            add: [
+              "n = .notes + { body: @body }"
+              "return n { id, body }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.add", args: { body: "once" }, op_id: "op-A",
+      expect: { outcome: ok, value: { id: "$any:uuid", body: "once" } } }
+    // equivalent retry: same op_id, same surface, same args -> no second execution
+    { call: "public.notes.add", args: { body: "once" }, op_id: "op-A",
+      expect: { outcome: ok, "...": true } }
+    // exactly one row exists: the retry did not execute a second insert
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "$any:uuid", body: "once" }
+    ] } }
+  ]
+}

@@ -1,0 +1,81 @@
+{
+  format: 1
+  name: scoped-role-addressed-by-row-and-name
+  suite: scenario
+  // §10.3: "Roles MAY be nested on application rows. Their location defines
+  // scope. An external request addresses a scoped role by its containing row
+  // identity and role name." Also: "$members MAY produce actor rows or refs
+  // to them" — this membership view yields refs.
+  // The same actor is admin of acme and a plain member of globex: the same
+  // role name grants under one scope row and denies under the other.
+  spec: ["#interfaces", "§10.3"]
+  tags: ["authz", "scope"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.scoped_role@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "members": {
+          "$key": "account"
+          "account": { "$ref": "/accounts" }
+          "admin": "bool = false"
+        }
+        "$mut": {
+          "rename": [
+            ".name = @name"
+            "return . { id, name }"
+          ]
+        }
+        "$roles": {
+          "admin": {
+            "$auth": "token"
+            "$members": ".members[:m | m.admin].account"
+            "company": {
+              "$view": ". { id, name }"
+              "$mut": { "rename": ".rename" }
+            }
+          }
+        }
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+      "companies": {
+        "acme": {
+          "name": "Acme"
+          "members": { "alice": { "admin": true } }
+        }
+        "globex": {
+          "name": "Globex"
+          "members": { "alice": { "admin": false } }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+    // Scope row acme: alice occurs in that row's scoped $members.
+    { call: "admin.company.rename", scope: "acme", args: { name: "Acme Renamed" }, on: "c1",
+      expect: { outcome: ok, value: { id: "acme", name: "Acme Renamed" } } }
+    // Same role name, scope row globex: alice is not an admin member there.
+    { call: "admin.company.rename", scope: "globex", args: { name: "Pwned" }, on: "c1",
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "actor is not a member of the role scoped to this row" } }
+  ]
+}

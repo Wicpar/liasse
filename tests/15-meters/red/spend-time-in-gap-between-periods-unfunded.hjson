@@ -1,0 +1,100 @@
+{
+  format: 1
+  name: spend-time-in-gap-between-periods-unfunded
+  suite: scenario
+  spec: ["#meters", "§15.1", "#buckets", "§14.4"]
+  tags: [temporal]
+  note: '''Two non-contiguous subscription periods for one account leave a coverage gap.
+Meter sources are evaluated at spend.$time (SPEC §15.1), and a source-backed bucket
+row is active only inside its own interval (§14.4). Attack: time a spend into the gap
+between two funded windows expecting it to reach either neighbour's capacity. A spend
+at 2026-01-10 (gap) finds no active pool and rejects; the same amount at 2026-01-05
+(inside sub1) and 2026-01-18 (inside sub2) is funded.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.gap@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        account: { $ref: "/accounts" }
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp? = none"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      accounts: {
+        $key: "id"
+        id: "text"
+        $limits: {
+          credits: {
+            $sources: {
+              subscription: '''/credit_periods[:p | p.$source.account == .] {
+                $quantity: .credits
+              }'''
+            }
+            $order: ["$until"]
+          }
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $mut: {
+          consume_at: [
+            "spend = .spends + { amount: @amount, occurred_at: @at }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $mut: { consume_at: ".accounts[@account].consume_at" }
+        }
+      }
+    }
+    $data: {
+      // period value none -> one interval per subscription using its series bounds
+      plans: { fixed: { credits: "50", period: "= none" } }
+      accounts: { a1: {} }
+      subscriptions: {
+        // sub1 active [2026-01-01, 2026-01-08)
+        sub1: { account: "a1", plan: "fixed", starts_at: "1767225600", ends_at: "1767830400" }
+        // sub2 active [2026-01-15, 2026-01-22); the interval [01-08, 01-15) is uncovered
+        sub2: { account: "a1", plan: "fixed", starts_at: "1768435200", ends_at: "1769040000" }
+      }
+    }
+  }
+
+  steps: [
+    // 2026-01-05: inside sub1
+    { call: "public.wallet.consume_at", args: { account: "a1", amount: "10", at: "1767571200" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    // 2026-01-10: in the gap, no pool active at the spend time
+    { call: "public.wallet.consume_at", args: { account: "a1", amount: "10", at: "1768003200" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.1"],
+                detail: "no credit period is active at the spend $time" } }
+    // 2026-01-18: inside sub2
+    { call: "public.wallet.consume_at", args: { account: "a1", amount: "10", at: "1768694400" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+  ]
+}

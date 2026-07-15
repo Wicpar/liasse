@@ -1,0 +1,57 @@
+{
+  // §22.2: "A failure leaves the prior committed state intact." §8.9: "A keyed
+  // row patch targets one existing row; a missing target rejects the call." A
+  // rejected request creates no commit: the live view is unaffected and a
+  // subsequent count still reflects only the pre-existing rows.
+  format: 1
+  name: rejected-request-creates-no-commit
+  suite: scenario
+  spec: ["§22.2", "§8.9", "#runtime"]
+  tags: ["atomicity"]
+
+  package: {
+    $liasse: 1
+    $app: "t.norej@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool = false"
+        $mut: {
+          complete: ".done = true"
+        }
+      }
+      $mut: {
+        total: "return count(.tasks)"
+      }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, done }"
+          $mut: {
+            complete: ".tasks[@id].complete"
+            total: ".total"
+          }
+        }
+      }
+    }
+    $data: {
+      tasks: { "t1": {} }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      // No row "ghost": the keyed patch rejects.
+      call: "public.tasks.complete"
+      args: { id: "ghost" }
+      on: "c1"
+      expect: { outcome: rejected, violates: ["§8.9", "§22.2"] }
+    }
+    // Prior state intact; the rejection created no row and no commit.
+    { call: "public.tasks.total", args: {}, on: "c1",
+      expect: { outcome: ok, completion: unchanged, value: 1 } }
+    { watch: "public.tasks", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "t1", done: false } ] } }
+  ]
+}

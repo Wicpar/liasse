@@ -1,0 +1,24 @@
+{
+  format: 1
+  name: unknown-semantics-choice-rejected
+  suite: static
+  spec: ["#package-structure", "§4.4", "#conformance", "§2.5"]
+  note: "§4.4: 'Each member of $semantics names one standard semantic choice. The declared Liasse version defines the accepted choice names and members.' A choice name the declared version does not define is an unknown member and invalid per §2.5."
+
+  package: {
+    $liasse: 1
+    $app: "t.semantics@1.0.0"
+    $semantics: {
+      quantum_flux: "on"
+    }
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "§4.4", "#conformance", "§2.5"]
+    detail: "'quantum_flux' is not a standard semantic choice defined by $liasse generation 1"
+  }
+}

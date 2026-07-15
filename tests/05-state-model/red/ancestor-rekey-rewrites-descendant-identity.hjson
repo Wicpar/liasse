@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: ancestor-rekey-rewrites-descendant-identity
+  suite: scenario
+  spec: ["#state-model", "§5.4", "§6.3", "§D.1"]
+  tags: ["identity"]
+  note: '''Nested rows have row identity plus ancestor identity (§5.4). Rekeying the parent
+must atomically move the whole subtree to the new ancestor key: descendants stay
+reachable under the new parent key, keep their data (they 'retain their logical
+incarnation'), and the old ancestor address must resolve to nothing. A one-row
+context on the stale address must reject (§6.3). An implementation caching addresses
+or copying rows would leave a reachable ghost subtree under "acme".'''
+
+  package: {
+    $liasse: 1
+    $app: "t.ancestorrekey@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        offices: {
+          $key: "id"
+          id: "text"
+          name: "text"
+        }
+      }
+      $public: {
+        offices: {
+          $view: ".companies[:c].offices[:o] { company: c.id, office: o.id, name: o.name }"
+          $mut: {
+            add_company: ".companies + { id: @id }"
+            add_office: ".companies[@company].offices + { id: @id, name: @name }"
+            rekey_company: ".companies[@old].id = @new"
+            office_name: "return .companies[@company].offices[@office].name"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.offices.add_company", args: { id: "acme" }, expect: { outcome: "ok" } }
+    { call: "public.offices.add_office", args: { company: "acme", id: "hq", name: "HQ" },
+      expect: { outcome: "ok" } }
+    { call: "public.offices.rekey_company", args: { old: "acme", new: "newco" },
+      expect: { outcome: "ok" } }
+    // reachable under the new ancestor key, data intact
+    { call: "public.offices.office_name", args: { company: "newco", office: "hq" },
+      expect: { outcome: "ok", value: "HQ" } }
+    // the stale ancestor address selects zero rows -> one-row context rejects
+    { call: "public.offices.office_name", args: { company: "acme", office: "hq" },
+      expect: { outcome: "rejected", violates: ["§6.3"], detail: "no row exists at the old ancestor key" } }
+    { watch: "public.offices", id: "w1", expect_init: { value: [
+      { company: "newco", office: "hq", name: "HQ" }
+    ] } }
+  ]
+}

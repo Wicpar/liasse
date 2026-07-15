@@ -1,0 +1,31 @@
+{
+  format: 1
+  name: member-order-carries-no-semantics
+  suite: scenario
+  spec: ["#annex-c", "§C.1", "#state-model", "§5.1"]
+  note: "Annex C.1: 'Object member order carries no package semantics.' §5.1: 'their source order has no semantic effect.' A computed field is declared textually BEFORE the two fields it reads; because member order is not semantic, the acyclic dependency graph (§5.1) still resolves it. If an implementation used declaration order the computed field would read unresolved inputs."
+
+  package: {
+    $liasse: 1
+    $app: "t.order@1.0.0"
+    $model: {
+      doc: {
+        total: "= .a + .b"
+        a: "int"
+        b: "int"
+      }
+      view_doc: { $view: ".doc { a, b, total }" }
+      $public: {
+        doc: { $view: ".view_doc" }
+      }
+    }
+    $data: {
+      doc: { a: "3", b: "4" }
+    }
+  }
+
+  steps: [
+    { watch: "public.doc", id: "w1",
+      expect_init: { value: { a: "3", b: "4", total: "7" } } }
+  ]
+}

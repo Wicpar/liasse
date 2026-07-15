@@ -1,0 +1,74 @@
+{
+  format: 1
+  name: role-rejects-unaccepted-authenticator
+  suite: scenario
+  // Authenticator substitution: the role accepts only "token", but the
+  // request explicitly selects the package's other declared authenticator.
+  // §10.3: a role defines "the authenticator or authenticators accepted by
+  // its surfaces". §11.4: "The targeted role determines the accepted
+  // authenticators before the credential is inspected." A credential that
+  // would verify fine under apikey must still be refused for this role.
+  spec: ["#interfaces", "§10.3", "#authentication"]
+  tags: ["authz", "escalation"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.auth_gate@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+      }
+      "notes": {
+        "$key": "id"
+        "id": "text"
+        "body": "text"
+      }
+      "$mut": {
+        "add_note": [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+        "apikey": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          // Accepts exactly one authenticator.
+          "$auth": "token"
+          "$members": ".accounts"
+          "notes": {
+            "$view": ".notes { id, body }"
+            "$mut": { "add": ".add_note" }
+          }
+        }
+      }
+    }
+    "$data": {
+      "accounts": { "alice": {} }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // The selected authenticator is declared by the package but NOT accepted
+    // by the targeted role.
+    { authenticate: { role: "member", auth: "apikey", credential: "alice" }, on: "c1",
+      expect: { outcome: denied, violates: ["#interfaces", "#authentication"],
+                detail: "the member role accepts only the token authenticator" } }
+    // Control: the accepted authenticator works.
+    { connect: "c2", authenticate: { role: "member", auth: "token", credential: "alice" } }
+    { call: "member.notes.add", args: { id: "n1", body: "ok" }, on: "c2",
+      expect: { outcome: ok, value: { id: "n1", body: "ok" } } }
+  ]
+}

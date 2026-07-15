@@ -1,0 +1,90 @@
+{
+  format: 1
+  name: uninstall-blocked-by-cross-boundary-restrict-ref
+  suite: scenario
+  spec: ["#modules", "§13.12", "#deletion", "§21.1"]
+  note: '''
+    §13.12: uninstall applies the same declared ref policies as ordinary
+    deletion, and every ref whose declared target occurrence disappears
+    enters ordinary $on_delete planning. §21.1: a restrict ref rejects the
+    deletion while the ref exists. The "orders" module holds a restrict ref
+    into the peer "people" interface, and a seeded order references member
+    p1. Uninstalling people would withdraw p1's occurrence, so the inbound
+    restrict ref blocks the uninstall and the whole transition is rejected;
+    people remains installed.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "people": { "$view": { "$key": "id", "id": "text", "name": "text" } }
+                "orders": { "$view": { "$key": "id", "id": "text", "owner": "text" } }
+              }
+            }
+          }
+        }
+        "$public": {
+          "people": { "$view": '/companies["acme"].modules["people"]::people' }
+          "orders": { "$view": '/companies["acme"].modules["shop"]::orders' }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    people: {
+      "$liasse": 1
+      "$module": "t.people@1.0.0"
+      "$model": {
+        "members": { "$key": "id", "id": "text", "name": "text" }
+      }
+      "$data": { "members": { "p1": { "name": "Alice" } } }
+      "$expose": {
+        "people": { "$view": ".members { id, name }" }
+      }
+    }
+    orders: {
+      "$liasse": 1
+      "$module": "t.orders@1.0.0"
+      "$use": {
+        "people": "t.people/people@1"
+      }
+      "$model": {
+        "orders": {
+          "$key": "id"
+          "id": "text"
+          // cross-boundary ref with an explicit restrict policy
+          "owner": { "$ref": "#people", "$on_delete": "restrict" }
+        }
+      }
+      "$data": { "orders": { "o1": { "owner": "p1" } } }
+      "$expose": {
+        "orders": { "$view": ".orders { id, owner }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "people", "$module": "t.people@1.0.0" } }
+      expect: { outcome: ok } }
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "shop", "$module": "t.orders@1.0.0" } }
+      expect: { outcome: ok } }
+    { watch: "public.orders", id: "wo", expect_init: { value: [ { id: "o1", owner: "p1" } ] } }
+    { watch: "public.people", id: "wp", expect_init: { value: [ { id: "p1", name: "Alice" } ] } }
+    // uninstalling people withdraws p1; the inbound restrict ref blocks it
+    { module_uninstall: { instance: "/companies/acme/modules/people" }
+      expect: { outcome: rejected, violates: ["§13.12", "§21.1"]
+                detail: "an inbound restrict ref across the module boundary blocks uninstall of the referenced instance" } }
+    // people is still installed and the referencing order still resolves
+    { expect_view: { watch: "wp", value: [ { id: "p1", name: "Alice" } ] } }
+    { expect_view: { watch: "wo", value: [ { id: "o1", owner: "p1" } ] } }
+  ]
+}

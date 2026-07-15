@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: surface-mut-must-be-a-map
+  suite: static
+  // §10.1: "A surface $mut is always a map" whose keys are external call names.
+  // Annex C.10 fixes the shape: $mut?: { external_name: reference | program }.
+  // A $mut given as a bare mutation reference string (not a map) is not a legal
+  // surface declaration and must fail static validation.
+  spec: ["#interfaces", "§10.1", "#loading"]
+  tags: []
+
+  package: {
+    "$liasse": 1
+    "$app": "t.mut_map@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+      }
+      "$mut": {
+        "add_task": [
+          "task = .tasks + { id: @id, title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          // Invalid: $mut must be a map of external call names, not a bare
+          // mutation reference.
+          "$mut": ".add_task"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces"]
+    detail: "a surface $mut must be a map of external call names to mutation behavior"
+  }
+}

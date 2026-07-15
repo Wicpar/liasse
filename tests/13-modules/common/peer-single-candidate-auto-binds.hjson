@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: peer-single-candidate-auto-binds
+  suite: scenario
+  spec: ["#modules", "§13.5"]
+  note: '''
+    §13.5: a peer dependency binds to a sibling instance in the same module
+    space; with exactly one compatible candidate the handle binds
+    automatically, without an explicit $use entry in the install request.
+    The consumer's exposed view reads through #people.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "people": { "$view": { "$key": "id", "id": "text", "name": "text" } }
+                "roster": { "$view": { "$key": "id", "id": "text", "name": "text" } }
+              }
+            }
+          }
+        }
+        "$public": {
+          "roster": {
+            "$view": '/companies["acme"].modules["sales"]::roster'
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    people: {
+      "$liasse": 1
+      "$module": "t.people@1.0.0"
+      "$model": {
+        "members": { "$key": "id", "id": "text", "name": "text" }
+      }
+      "$expose": {
+        "people": { "$view": ".members { id, name }" }
+      }
+    }
+    sales: {
+      "$liasse": 1
+      "$module": "t.sales@1.0.0"
+      "$use": {
+        "people": "t.people/people@1"
+      }
+      "$expose": {
+        "roster": { "$view": "#people { id, name }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: {
+          "$name": "people"
+          "$module": "t.people@1.0.0"
+          "$data": { "members": { "p1": { "name": "Alice" } } }
+        } }
+      expect: { outcome: ok } }
+    // exactly one compatible sibling: no explicit $use binding required
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "sales", "$module": "t.sales@1.0.0" } }
+      expect: { outcome: ok } }
+    { watch: "public.roster", id: "w1"
+      expect_init: { value: [ { id: "p1", name: "Alice" } ] } }
+  ]
+}

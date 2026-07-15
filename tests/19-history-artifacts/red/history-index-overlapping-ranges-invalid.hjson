@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: history-index-overlapping-ranges-invalid
+  suite: scenario
+  tags: [tampering]
+  // Attack: duplicate a range record in history/index.json under a second
+  // range id (same base/tip, same segment) and repair checksums. §19.6:
+  // "ranges partitions the retained points of that lineage into
+  // non-overlapping contiguous ranges" — two ranges covering the same
+  // points are not a partition.
+  spec: ["§19.6"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      // Duplicate the (canonically first) range of the (single) lineage
+      // under a new range id: the same points are now covered twice.
+      { duplicate_json_member: { path: "history/index.json",
+                                 pointer: "/lineages/*/ranges/*",
+                                 new_name: "duplicated-range" } }
+      { fix_checksums: true }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: invalid, violates: ["§19.6"],
+                  detail: "lineage ranges overlap; not a partition of retained points" } }
+    ] }
+  ]
+}

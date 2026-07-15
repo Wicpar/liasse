@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: manifest-entries-cover-required-entries
+  suite: scenario
+  // §19.5: manifest `entries` covers every required direct archive entry
+  // other than manifest.json; the member name is the exact archive path.
+  // Annex D.5: manifest.json records a SHA-256 checksum and uncompressed
+  // media type for every required non-manifest entry.
+  spec: ["§19.5", "Annex D.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "hello" },
+      expect: { outcome: ok, value: { id: "n1", body: "hello" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a1", expect: {
+        outcome: ok
+        manifest: {
+          entries: {
+            // Entries required in every export by the §19.5 structure.
+            mimetype: { media: "$any", sha256: "$any" }
+            "liasse.json": { media: "$any", sha256: "$any" }
+            "state/current.cbor.zst": { media: "$any", sha256: "$any" }
+            "history/index.json": { media: "$any", sha256: "$any" }
+            // §19.5: entries covers every required entry OTHER THAN manifest.json.
+            "manifest.json": "$absent"
+            "...": true
+          }
+          "...": true
+        }
+    } } }
+  ]
+}

@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: ineligible-pool-does-not-fund-spend
+  suite: scenario
+  spec: ["#meters", "§15.1", "§15.2"]
+  note: '''$eligible gates which pools a spend may draw from (SPEC §15.2). Here the pool
+carries a projected `feature` and the spend carries a `feature` metadata member
+(config-object form of $consumes, §15.1); $eligible funds a pool only when features
+match. Attack: spend against capacity earmarked for a different feature. The gpu pool
+holds 100 but is ineligible for a cpu spend, so eligible capacity is zero and the
+transition rejects; a gpu spend draws only from the single gpu pool (never doubled),
+pinned by the 91-vs-90 boundary after a 10 spend.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.eligible@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+          feature: "text"
+        }
+        spends: {
+          $key: "id"
+          $consumes: { credits: { feature: ".feature" } }
+          id: "uuid = uuid()"
+          amount: "decimal"
+          feature: "text"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount, feature }" }
+            $eligible: "!has(pool.feature) || pool.feature == spend.feature"
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount, feature: @feature }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: {
+      users: {
+        u1: { topups: { t1: { amount: "100", feature: "gpu" } } }
+      }
+    }
+  }
+
+  steps: [
+    // cpu spend: the only pool is a gpu pool, ineligible -> no eligible capacity
+    { call: "public.wallet.consume", args: { user: "u1", amount: "10", feature: "cpu" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"],
+                detail: "pool.feature gpu does not match spend.feature cpu; no eligible capacity" } }
+    // gpu spend: eligible, funded from the gpu pool
+    { call: "public.wallet.consume", args: { user: "u1", amount: "10", feature: "gpu" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    // the gpu pool contributes exactly its 100, not a multiple: 90 remain
+    { call: "public.wallet.consume", args: { user: "u1", amount: "91", feature: "gpu" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+    { call: "public.wallet.consume", args: { user: "u1", amount: "90", feature: "gpu" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  format: 1
+  name: liasse-version-checked-before-declarations
+  suite: static
+  spec: ["#package-structure", "§4.1", "#loading", "§9.2"]
+  tags: ["ordering"]
+  note: "§4.1: 'A runtime MUST reject an unsupported value before interpreting any other declaration', and the §9.2 pipeline resolves the language version (step 3) before type-checking (step 5). The body deliberately contains members that are garbage under v1 ($teleport, a hyphenated name): a v99 definition may legitimately use syntax v1 does not know, so the rejection MUST cite the unsupported $liasse generation, not v1-rule violations inside an uninterpreted body."
+
+  package: {
+    $liasse: 99
+    $app: "t.fromthefuture@1.0.0"
+    $teleport: {
+      "entangle-with": "t.other@1.0.0"
+    }
+    $model: {
+      "quantum-state": "qubit"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "§4.1"]
+    detail: "rejection must be for the unsupported $liasse generation 99; the body must not be interpreted under v1 rules"
+  }
+}

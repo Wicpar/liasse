@@ -1,0 +1,72 @@
+{
+  format: 1
+  name: rollback-preserves-displaced-future-lineage
+  suite: scenario
+  // §19.3: "Rollback selects an earlier point. The displaced continuation
+  // remains available as an alternate lineage. Continuing from the selected
+  // point extends a new lineage." §19.6: a lineage created from an earlier
+  // point uses { lineage, point } as origin.
+  spec: ["§19.3", "§19.6", "§19.8"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a1", expect: {
+        outcome: ok
+        manifest: { selected: { lineage: "$bind:l1", point: "$bind:p1" }, "...": true }
+    } } }
+    // Displaced future: commit n2 on lineage l1.
+    { call: "public.notes.put", args: { id: "n2", body: "two" },
+      expect: { outcome: ok, value: { id: "n2", body: "two" } } }
+    { export: { as: "a2" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a2", expect: {
+        outcome: ok
+        manifest: { selected: { lineage: "$ref:l1", point: "$bind:p2" }, "...": true }
+    } } }
+    // Roll back to p1, then continue: this extends a NEW lineage from p1.
+    { import: { from: "a1", policy: ["rollback"] },
+      expect: { outcome: ok, value: { relation: "rollback", applied: true, "...": true } } }
+    { call: "public.notes.put", args: { id: "n3", body: "three" },
+      expect: { outcome: ok, value: { id: "n3", body: "three" } } }
+    { export: { as: "a3", lineages: "all" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a3", expect: {
+        outcome: ok
+        manifest: { selected: { lineage: "$any", point: "$bind:p3" }, "...": true }
+        // The active continuation is a lineage originating at (l1, p1).
+        selected_lineage: {
+          origin: { lineage: "$ref:l1", point: "$ref:p1" }
+          head: "$ref:p3"
+          ranges: "$any"
+          "...": true
+        }
+        // The displaced continuation (head p2) is still retained.
+        lineage_heads: { $unordered: ["$ref:p2", "$ref:p3"] }
+    } } }
+  ]
+}

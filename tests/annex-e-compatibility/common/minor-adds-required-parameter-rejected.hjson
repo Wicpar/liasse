@@ -1,0 +1,72 @@
+{
+  format: 1
+  name: minor-adds-required-parameter-rejected
+  suite: scenario
+  spec: ["#annex-e"]
+  note: '''
+    E.4 breaking change: "adding a required parameter." Version 1.0.0 exposes
+    add({title}). Version 1.1.0 reads @priority, inferred as a required
+    parameter from the non-optional field `priority` (§8.3). A caller sending
+    only {title} — accepted by 1.0.0 — would now be rejected for a missing
+    required parameter, so the release does not accept every request the earlier
+    contract accepted. E.1/E.3 require load to reject this narrowing minor; the
+    prior release stays active (E.9).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.reqparam@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "title": "text"
+        "priority": "int = 0"
+      }
+      "$mut": {
+        "add_task": ["t = .tasks + { title: @title }", "return t { id, title }"]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.reqparam@1.1.0"
+          "$model": {
+            "tasks": {
+              "$key": "id"
+              "id": "uuid = uuid()"
+              "title": "text"
+              "priority": "int"
+            }
+            "$mut": {
+              // @priority inferred required from non-optional `priority`
+              "add_task": ["t = .tasks + { title: @title, priority: @priority }", "return t { id, title }"]
+            }
+            "$public": {
+              "tasks": {
+                "$view": ".tasks { id, title }"
+                "$mut": { "add": ".add_task" }
+              }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#annex-e"]
+        detail: "minor release adds required parameter `priority` to exposed mutation `add`; narrowing rejected"
+      } }
+    // prior contract still accepts the {title}-only call (E.9)
+    { call: "public.tasks.add", args: { title: "A" },
+      expect: { outcome: ok, value: { id: "$any:uuid", title: "A" } } }
+  ]
+}

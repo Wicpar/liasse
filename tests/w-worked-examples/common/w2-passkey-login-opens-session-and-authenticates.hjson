@@ -1,0 +1,100 @@
+{
+  format: 1
+  name: w2-passkey-login-opens-session-and-authenticates
+  suite: scenario
+  spec: ["W2", "#authentication", "§11.5", "§11.3", "#interfaces", "§10.3"]
+  tags: [authz, session]
+  note: '''
+    Full W2 path with the substituted simulated namespaces (see NOTES.md):
+    test.webauthn stands in for `webauthn`, test.token for `cose`+keyring.
+    (1) bootstrap seeds an account, a passkey login, and their mapping through
+    ordinary inserts (§8.7). (2) public.login.passkey runs passkey_login (§11.5):
+    webauthn.verify resolves the identity, /logins and /account_logins map it to
+    the named account, a session row is created, and a token is signed and
+    returned. (3) The client authenticates on role `account` with that token;
+    §11.3 binds $proof→$session→$actor and clears every $check, so the profile
+    view returns exactly the resolved actor account.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.accounts@1.0.0"
+    $requires: { webauthn: "test.webauthn@1", token: "test.token@1" }
+    $model: {
+      accounts: { $key: "id", id: "uuid = uuid()", name: "text", enabled: "bool = true" }
+      logins: { $key: ["kind", "issuer", "subject"], kind: "text", issuer: "text", subject: "text" }
+      account_logins: { $key: ["account", "login"], account: { $ref: "/accounts" }, login: { $ref: "/logins" } }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        login: { $ref: "/logins" }
+        device: "text?"
+        expires_at: "timestamp"
+        revoked: "bool = false"
+        $mut: { revoke: [".revoked = true", "return . { id, revoked }"] }
+      }
+      $mut: {
+        bootstrap: [
+          "acct = /accounts + { name: @name }"
+          "lg = /logins + { kind: 'passkey', issuer: @rp, subject: @credential }"
+          "/account_logins + { account: acct.$key, login: lg.$key }"
+          "return { account: acct.$key }"
+        ]
+        passkey_login: [
+          "identity = webauthn.verify(@response)"
+          "login = /logins[{ kind: 'passkey', issuer: identity.rp, subject: identity.credential }]"
+          "mapping = /account_logins[{ account: @account, login: login.$key }]"
+          '''session = /sessions + {
+            account: mapping.account,
+            login: mapping.login,
+            device: @device,
+            expires_at: now() + time.duration('P30D')
+          }'''
+          "token = token.sign({ auth: 'session', session: session.$key })"
+          "return { auth: 'session', token, expires_at: session.$until }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: ["$proof.auth == $auth_name", "!$session.revoked", "$actor.enabled"]
+        }
+      }
+      $public: {
+        setup: { $mut: { bootstrap: ".bootstrap" } }
+        login: { $mut: { passkey: ".passkey_login" } }
+      }
+      $roles: {
+        account: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          profile: { $view: "$actor { id, name }" }
+          sessions: {
+            $view: ".sessions.$all[:s | s.account == $actor] { id, device, revoked }"
+            $mut: { revoke: ".sessions[@id].revoke()" }
+          }
+        }
+      }
+    }
+  }
+
+  hosts: {
+    webauthn: { $namespace: "test.webauthn@1", responses: { "resp-alice": { rp: "example.com", credential: "cred-alice" } } }
+    token: { $namespace: "test.token@1", tokens: {} }
+  }
+
+  steps: [
+    { call: "public.setup.bootstrap", args: { name: "alice", rp: "example.com", credential: "cred-alice" }
+      expect: { outcome: ok, value: { account: "$bind:alice" } } }
+    { call: "public.login.passkey", args: { response: "resp-alice", account: "$ref:alice", device: "laptop" }
+      expect: { outcome: ok, value: { auth: "session", token: "$bind:tok1", expires_at: "$any:timestamp" } } }
+    { connect: "c1", authenticate: { auth: "session", credential: "$ref:tok1" } }
+    { watch: "account.profile", on: "c1", id: "w1"
+      expect_init: { value: { id: "$ref:alice", name: "alice" } } }
+  ]
+}

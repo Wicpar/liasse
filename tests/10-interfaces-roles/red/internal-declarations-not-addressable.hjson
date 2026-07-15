@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: internal-declarations-not-addressable
+  suite: scenario
+  // Attack: address internal model declarations (a root view, a root
+  // mutation) directly over the wire, bypassing the exposing surface.
+  // §10: "A surface is a named external API entry"; §10.4: "A surface grants
+  // named access to package-defined expressions." The internal view name is
+  // not a public surface name, and the surface here exposes no $mut map at
+  // all, so the internal mutation has no external call name. Neither request
+  // may execute anything.
+  spec: ["#interfaces", "§10.1", "§10.2", "§10.4"]
+  tags: ["exposure", "authz"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.internal_addr@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+        "done": "bool = false"
+      }
+      "open_tasks": {
+        "$view": ".tasks[:t | !t.done] { id, title }"
+      }
+      "$mut": {
+        "add_task": ".tasks + { id: @id, title: @title }"
+      }
+      "$public": {
+        // View-only exposure. add_task and open_tasks stay internal names.
+        "tasks": { "$view": ".open_tasks" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [] } }
+    // The internal view name used as if it were a public surface.
+    { watch: "public.open_tasks", id: "w-bad",
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "open_tasks is an internal view, not a declared public surface" } }
+    // The internal mutation name used as a call under the real surface.
+    { call: "public.tasks.add_task", args: { id: "x1", title: "sneak" },
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "the surface exposes no call names; internal mutations are not reachable" } }
+    // Nothing executed: the view is unchanged on the same frontier.
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

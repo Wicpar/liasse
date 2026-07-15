@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: deep-nested-projection-loads
+  suite: scenario
+  tags: [grammar, projection, nesting, pathological]
+  // Pathological-but-legal: Annex C.7 lists 'nested: { ... }' as a projection
+  // member with no stated depth bound, and §5.3 permits structs to nest
+  // structs. A projection that mirrors four levels of nested static structs is
+  // therefore well-formed and must load and produce the mirrored shape — the
+  // grammar has no arbitrary nesting limit, so a conforming runtime cannot
+  // reject deep-but-finite nesting as malformed.
+  spec: ["#annex-c", "§C.7", "#state-model", "§5.3"]
+
+  package: {
+    $liasse: 1
+    $app: "t.deepproj@1.0.0"
+    $model: {
+      root: {
+        l1: {
+          l2: {
+            l3: {
+              l4: {
+                leaf: "text"
+              }
+            }
+          }
+        }
+      }
+      view_root: {
+        $view: ".root { l1: { l2: { l3: { l4: { leaf } } } } }"
+      }
+      $public: {
+        root: { $view: ".view_root" }
+      }
+    }
+    $data: {
+      root: { l1: { l2: { l3: { l4: { leaf: "bottom" } } } } }
+    }
+  }
+
+  steps: [
+    { watch: "public.root", id: "w1",
+      expect_init: { value: { l1: { l2: { l3: { l4: { leaf: "bottom" } } } } } } }
+  ]
+}

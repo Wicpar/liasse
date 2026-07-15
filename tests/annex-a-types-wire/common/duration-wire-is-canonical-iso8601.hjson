@@ -1,0 +1,27 @@
+{
+  format: 1
+  name: duration-wire-is-canonical-iso8601
+  suite: scenario
+  spec: ["§A.1"]
+  tags: ["wire", "duration"]
+  note: "Annex A.1: a `duration` value's canonical strict-JSON value is a 'canonical ISO-8601 duration string'. A seeded canonical duration projects to exactly that string. The seed uses the canonical spelling PT1H, so the case tests the wire *type* (an ISO-8601 string, not a seconds count or an object) without depending on any input-canonicalization rule the annex does not state."
+
+  package: {
+    $liasse: 1
+    $app: "t.durwire@1.0.0"
+    $model: {
+      d: "duration"
+      $public: {
+        v: { $view: ". { d }" }
+      }
+    }
+    $data: {
+      d: "PT1H"
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { d: "PT1H" } } }
+  ]
+}

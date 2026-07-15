@@ -1,0 +1,41 @@
+{
+  // §8.3: "Inference does not copy the target field's default, normalization,
+  // or checks ... The assigned target still applies its own normalization and
+  // state checks." The parameter itself is a plain text, but assigning it to
+  // the normalized field yields the normalized committed value.
+  format: 1
+  name: inferred-param-target-normalization-applies
+  suite: scenario
+  spec: ["#mutations", "§8.3", "§8.10"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.infernorm@1.0.0"
+    "$model": {
+      "name": {
+        "$type": "text"
+        "$normalize": "string.lower(string.trim(.))"
+      }
+      "$mut": {
+        "rename": [
+          ".name = @name"
+          "return .name"
+        ]
+      }
+      "$public": {
+        "profile": { "$mut": { "rename": ".rename" } }
+      }
+    }
+    "$data": { "name": "bob" }
+  }
+
+  steps: [
+    {
+      call: "public.profile.rename"
+      args: { name: "  ALICE  " }
+      // The target field normalizes on assignment; the return is evaluated
+      // from committed state (§8.10), so it shows the normalized value.
+      expect: { outcome: ok, value: "alice" }
+    }
+  ]
+}

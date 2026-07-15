@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: aggregate-skips-absent-inputs
+  suite: scenario
+  spec: ["#expressions", "§6.5", "§7.5", "§5.2", "§A.1"]
+  tags: ["absence"]
+  note: "§6.5 makes aggregation part of the expression language. §7.5: 'Absent inputs are skipped', and empty input yields 'none for avg, min, and max' — the none clause applies only to empty input, not to a non-empty input that contains absences. With optional amounts present on two of three rows, sum totals only the present values (10 + 20 = 30) and min returns the smallest present value (10), not none: absence is skipped, not propagated. count(view) counts rows, so it observes all three rows regardless of the absent field. Int wire form is the canonical base-10 JSON string of Annex A.1."
+
+  package: {
+    $liasse: 1
+    $app: "t.aggregates@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        amount: "int?"
+      }
+      n: "= count(.items)"
+      total: "= sum(.items.amount)"
+      lo: "= min(.items.amount)"
+      $public: {
+        stats: { $view: ". { n, total, lo }" }
+      }
+    }
+    $data: {
+      items: {
+        a: { amount: "10" }
+        b: {}
+        c: { amount: "20" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.stats", id: "w1",
+      expect_init: { value: { n: "3", total: "30", lo: "10" } } }
+  ]
+}

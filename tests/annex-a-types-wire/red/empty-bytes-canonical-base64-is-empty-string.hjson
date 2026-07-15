@@ -1,0 +1,31 @@
+{
+  format: 1
+  name: empty-bytes-canonical-base64-is-empty-string
+  suite: scenario
+  spec: ["§A.1", "§D.2"]
+  tags: ["wire", "bytes", "boundary"]
+  note: '''Boundary: the zero-length bytes value. Its canonical padded base64 (A.1, D.2)
+is the empty string, so the wire form is exactly `{ "$bytes": "" }`. An implementation
+that conflates empty bytes with none/absence, or rejects an empty base64 payload, or
+substitutes null, is nonconforming: empty is a present, valid `bytes` value distinct from
+`none`.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.bytesempty@1.0.0"
+    $model: {
+      b: "bytes"
+      $public: {
+        v: { $view: ". { b }" }
+      }
+    }
+    $data: {
+      b: { $bytes: "" }
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { b: { $bytes: "" } } } }
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  format: 1
+  name: projection-explicit-output-expression
+  suite: scenario
+  spec: ["#views", "§7.1"]
+  note: "§7.1: 'name: expression' declares an explicit output; the worked example computes 'full: first + \" \" + last'. '.' remains the source row, so 'first' and 'last' read source fields."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewexpr@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        first: "text"
+        last: "text"
+      }
+      $public: {
+        names: { $view: ".people { first, last, full: first + \" \" + last }" }
+      }
+    }
+    $data: {
+      people: {
+        a: { first: "Ada", last: "Byron" }
+        b: { first: "Alan", last: "Turing" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.names", id: "w1",
+      expect_init: { value: [
+        { first: "Ada", last: "Byron", full: "Ada Byron" }
+        { first: "Alan", last: "Turing", full: "Alan Turing" }
+      ] } }
+  ]
+}

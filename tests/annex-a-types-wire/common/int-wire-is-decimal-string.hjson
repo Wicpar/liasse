@@ -1,0 +1,28 @@
+{
+  format: 1
+  name: int-wire-is-decimal-string
+  suite: scenario
+  spec: ["§A.1"]
+  tags: ["wire", "int"]
+  note: "Annex A.1: the canonical strict-JSON value of `int` is a 'JSON string with canonical base-10 digits'. The computed value is produced by arithmetic (not echoed input) so the case is not tautological, and it is asserted as the JSON string \"43\" — an implementation emitting the JSON number 43 does not match the canonical wire form."
+
+  package: {
+    $liasse: 1
+    $app: "t.intwire@1.0.0"
+    $model: {
+      a: "int"
+      inc: "= .a + 1"
+      $public: {
+        v: { $view: ". { inc }" }
+      }
+    }
+    $data: {
+      a: "42"
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { inc: "43" } } }
+  ]
+}

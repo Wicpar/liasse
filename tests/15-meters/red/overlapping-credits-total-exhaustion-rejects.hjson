@@ -1,0 +1,109 @@
+{
+  format: 1
+  name: overlapping-credits-total-exhaustion-rejects
+  suite: scenario
+  spec: ["#meters", "§15.2", "§15.3", "#buckets", "§14.3"]
+  tags: [temporal, ordering]
+  note: '''Over-consume across overlapping heterogeneous pools. Two overlapping pools
+(weekly 30 finite, monthly 100 finite) total 130. Attack: a spend of 131 hoping the
+engine greedily drains the cheaper/earlier pool first and only fails partway, leaving
+weekly drained. SPEC §15.2 rejects the COMPLETE transition when eligible capacity is
+insufficient, so nothing is drained (balance stays 130). A spend of exactly 130 then
+admits, splitting weekly 30 + monthly 100 in $until order (§14.3, §15.3).'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.overexhaust@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        account: { $ref: "/accounts" }
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp? = none"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      accounts: {
+        $key: "id"
+        id: "text"
+        $limits: {
+          credits: {
+            $sources: {
+              subscription: '''/credit_periods[:p | p.$source.account == .] {
+                $quantity: .credits
+              }'''
+            }
+            $order: ["$until"]
+          }
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id, funding }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".accounts { id, balance: .credits.balance }"
+          $mut: { consume: ".accounts[@account].consume" }
+        }
+      }
+    }
+    $data: {
+      plans: {
+        weekly:  { credits: "30",  period: "P7D" }
+        monthly: { credits: "100", period: "P28D" }
+      }
+      accounts: { a1: {} }
+      // each finite series bounded to exactly one period; both active at 2026-01-01
+      subscriptions: {
+        sw: { account: "a1", plan: "weekly",  starts_at: "1767225600", ends_at: "1767830400" }
+        sm: { account: "a1", plan: "monthly", starts_at: "1767225600", ends_at: "1769644800" }
+      }
+    }
+  }
+
+  steps: [
+    // 131 > 130 total: the complete transition rejects, nothing drained
+    { call: "public.wallet.consume", args: { account: "a1", amount: "131" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "a1", balance: "130" } ] } }
+    // exactly 130 admits, draining weekly ($until 2026-01-08) before monthly ($until 2026-01-29)
+    { call: "public.wallet.consume", args: { account: "a1", amount: "130" },
+      expect: { outcome: ok, value: {
+        id: "$any:uuid"
+        funding: { $unordered: [
+          { source: "subscription", amount: "30",  "...": true }
+          { source: "subscription", amount: "100", "...": true }
+        ] }
+      } } }
+    { expect_view: { watch: "w1", value: [ { id: "a1", balance: "0" } ] } }
+    { call: "public.wallet.consume", args: { account: "a1", amount: "1" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: empty-mutation-program-array-unspecified
+  suite: static
+  tags: [grammar, mutations, empty, boundary]
+  // Boundary probe: a mutation whose program is the empty statement array.
+  // Annex C.9: 'name: [statement, statement, ...]' and §8.1: "An array is one
+  // sequential, atomic program. ... A single expression is a one-statement
+  // program." Both describe programs with at least one statement; neither text
+  // states whether a ZERO-statement program is valid (a no-op empty commit) or
+  // a static error. The degenerate empty-array case is not pinned.
+  note: "Annex C.9 and §8.1 define one-statement (bare expression) and multi-statement (array) mutation programs but neither states whether an empty statement array is a valid no-op program or a static error. The outcome is not deducible from SPEC.md."
+  spec: ["#annex-c", "§C.9", "#mutations", "§8.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.emptymut@1.0.0"
+    $model: {
+      doc: {
+        n: "int = 0"
+      }
+      $mut: {
+        noop: []
+      }
+      view_doc: { $view: ".doc { n }" }
+      $public: {
+        doc: {
+          $view: ".view_doc"
+          $mut: { noop: ".noop" }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: unspecified
+  }
+}

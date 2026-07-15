@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: erasure-extract-replay-foreign-instance-rejected
+  suite: scenario
+  spec: ["§D.7", "§21.3", "§21.2"]
+  tags: ["erasure", "integrity", "replay"]
+  note: '''Attack: capture an erasure extract from one application instance and
+replay `reinsert(extract)` against a DIFFERENT instance (a fresh genesis of the
+same definition, hence a different instance incarnation and different history),
+hoping to inject the scrubbed bytes where they do not belong. §21.3: reinsertion
+verifies the extract content hash, required attestations, "the referenced erasure
+history point", and "each requested occurrence's current digest stub", and restores
+bytes "only where the exact expected stub remains. One mismatch rejects the complete
+reinsertion." The foreign instance has no such erasure history point and no matching
+stub at those coordinates (§D.7: the extract maps specific instance / history point
+/ coordinate identities), so the reinsertion is rejected in full. An extract is not
+a portable capability to write arbitrary bytes into any instance.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.erasereplay@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: {
+            put: [
+              "n = .notes + { id: @id, body: @body }"
+              "return n { id, body }"
+            ]
+            scrub: "erase(.notes[@id])"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "secret" },
+      expect: { outcome: ok, value: { id: "n1", body: "secret" } } }
+    { erase: { call: "public.notes.scrub", args: { id: "n1" }, bind_extract: "e1" },
+      expect: { outcome: ok } }
+    // a separate application: fresh genesis of the same definition -> different
+    // instance incarnation and unrelated history
+    { in_sandbox: "s1", fresh: true, steps: [
+      { call: "public.notes.put", args: { id: "n1", body: "other-instance" },
+        expect: { outcome: ok, value: { id: "n1", body: "other-instance" } } }
+      // replaying the foreign extract must be rejected: no referenced erasure
+      // history point here, and no matching stub at the coordinate
+      { reinsert: { extract: "e1" },
+        expect: { outcome: "invalid", violates: ["§21.3", "§D.7"],
+                  detail: "extract references an erasure history point and stubs that do not exist in this instance" } }
+      // the local row is untouched by the failed replay
+      { watch: "public.notes", id: "w1", expect_init: { value: [
+        { id: "n1", body: "other-instance" }
+      ] } }
+    ] }
+  ]
+}

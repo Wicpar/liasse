@@ -1,0 +1,73 @@
+{
+  format: 1
+  name: w1-open-view-excludes-completed-and-sorts-desc
+  suite: scenario
+  spec: ["W1", "#views", "#interfaces", "§10.1"]
+  tags: [ordering, view]
+  note: '''
+    W1's public.tasks view is open_tasks:
+    ".tasks[:task | !task.done] { id, title, created_at, $sort: [-created_at] }".
+    The filter removes completed rows; $sort: [-created_at] orders the survivors
+    newest-first. created_at defaults to now(), and the virtual clock only moves
+    on advance_time, so time is advanced between inserts to give the three rows
+    distinct, deterministic created_at values. Completing the middle row removes
+    it from the view; the remaining two appear newest-first (c, then a). The
+    projection omits `done`, so the expected rows carry only id/title/created_at.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.tasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: {
+          $type: "text"
+          $normalize: "string.trim(.)"
+          $check: ["size(.) > 0", "A title is required"]
+        }
+        done: "bool = false"
+        created_at: "timestamp = now()"
+        $mut: {
+          complete: [
+            ".done = true"
+            "return . { id, title, done, created_at }"
+          ]
+        }
+      }
+      $mut: {
+        add_task: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title, done, created_at }"
+        ]
+      }
+      open_tasks: {
+        $view: ".tasks[:task | !task.done] { id, title, created_at, $sort: [-created_at] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".open_tasks"
+          $mut: {
+            add: ".add_task"
+            complete: ".tasks[@id].complete()"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tasks.add", args: { title: "a" }, expect: { outcome: ok, value: { id: "$bind:a", "...": true } } }
+    { advance_time: "PT1H" }
+    { call: "public.tasks.add", args: { title: "b" }, expect: { outcome: ok, value: { id: "$bind:b", "...": true } } }
+    { advance_time: "PT1H" }
+    { call: "public.tasks.add", args: { title: "c" }, expect: { outcome: ok, value: { id: "$bind:c", "...": true } } }
+    // complete the middle row -> it must leave the open view
+    { call: "public.tasks.complete", args: { id: "$ref:b" }, expect: { outcome: ok, value: { done: true, "...": true } } }
+    { watch: "public.tasks", id: "w1", expect_init: { value: [
+      { id: "$ref:c", title: "c", created_at: "$any:timestamp" }
+      { id: "$ref:a", title: "a", created_at: "$any:timestamp" }
+    ] } }
+  ]
+}

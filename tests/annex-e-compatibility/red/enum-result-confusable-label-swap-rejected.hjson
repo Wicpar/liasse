@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: enum-result-confusable-label-swap-rejected
+  suite: scenario
+  spec: ["#annex-e", "#annex-d"]
+  tags: [unicode, identity, version]
+  note: '''
+    Attack: change an exhaustive output enum's domain while keeping it visually
+    identical. The public view projects `status`, whose enum domain
+    ["draft","active","closed"] is a boundary output contract (E.2). Version
+    1.1.0 replaces the label "closed" with the homoglyph "cIosed" — a capital
+    Latin I (U+0049) standing in for lowercase l (U+006C). Both are valid ASCII
+    enum labels (§5.9 labels are checked text values, not declaration names), so
+    the definition builds. But E.3 compares canonical contracts and Annex D
+    compares text by codepoint, so "closed" and "cIosed" are distinct. The
+    exhaustive result domain loses the promised value "closed", which E.5 makes
+    breaking ("removing or renaming an output member"; also touches "widening an
+    exhaustively declared enum result"). No row is seeded with "closed", so the
+    only defect is the boundary enum narrowing. Rejected within the major; prior
+    release stays active (E.9).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.enum@1.0.0"
+    "$model": {
+      "tickets": {
+        "$key": "id"
+        "id": "text"
+        "status": { "$enum": ["draft", "active", "closed"] }
+      }
+      "$public": {
+        "tickets": { "$view": ".tickets { id, status }" }
+      }
+    }
+    "$data": { "tickets": { "t1": { "status": "draft" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.enum@1.1.0"
+          "$model": {
+            "tickets": {
+              "$key": "id"
+              "id": "text"
+              // "closed" replaced by homoglyph "cIosed" (capital I, U+0049)
+              "status": { "$enum": ["draft", "active", "cIosed"] }
+            }
+            "$public": {
+              "tickets": { "$view": ".tickets { id, status }" }
+            }
+          }
+          "$data": { "tickets": { "t1": { "status": "draft" } } }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#annex-e"]
+        detail: "exhaustive output enum drops promised label `closed` (homoglyph `cIosed` is a distinct label); narrowing rejected"
+      } }
+    // prior release still promises the original domain (E.9)
+    { watch: "public.tickets", id: "w1",
+      expect_init: { value: [ { id: "t1", status: "draft" } ] } }
+  ]
+}

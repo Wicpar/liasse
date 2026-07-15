@@ -1,0 +1,28 @@
+{
+  format: 1
+  name: reserved-dollar-name-case-variant-rejected
+  suite: static
+  spec: ["#conformance", "§2.5"]
+  tags: ["identity"]
+  note: "Attack: smuggle '$Key' next to a legitimate '$key', hoping the implementation either matches declaration keywords case-insensitively (silently rekeying identity to 'title') or passes the member through as data. §2.5: names beginning with $ are reserved by Liasse, '$Key' is not a Liasse declaration, and unknown members in a declaration object are invalid."
+
+  package: {
+    $liasse: 1
+    $app: "t.dollarcase@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "int"
+        title: "text"
+        // reserved-prefix member that is not a Liasse declaration
+        "$Key": "title"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance", "§2.5"]
+    detail: "'$Key' begins with the reserved $ prefix but is not a Liasse declaration; unknown members are invalid"
+  }
+}

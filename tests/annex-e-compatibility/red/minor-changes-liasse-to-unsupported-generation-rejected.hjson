@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: minor-changes-liasse-to-unsupported-generation-rejected
+  suite: scenario
+  spec: ["#package-structure", "#annex-e"]
+  tags: [version]
+  note: '''
+    Attack: smuggle a language-generation change inside a release that is
+    otherwise a compatible minor (identical boundary, added optional output
+    field). §4.1: "$liasse is required and selects the complete language
+    generation ... The value 1 selects the language defined by this
+    specification. A runtime MUST reject an unsupported value before
+    interpreting any other declaration." Semantic $app versions are independent
+    of the $liasse generation. Version 1.1.0 declares $liasse: 2, which v0.5
+    does not define, so the runtime rejects it before any Annex E boundary
+    comparison runs. outcome: invalid (static), not a narrowing rejection — see
+    NOTES.md.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.gen@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          // unsupported language generation smuggled into an otherwise
+          // compatible minor release
+          "$liasse": 2
+          "$app": "t.compat.gen@1.1.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+              "region": "text?"
+            }
+            "$public": {
+              "companies": { "$view": ".companies { id, name, region }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: {
+        outcome: invalid
+        violates: ["#package-structure"]
+        detail: "$liasse: 2 is an unsupported language generation; rejected before any other declaration is interpreted"
+      } }
+    // prior release remains active (E.9)
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "Acme" } ] } }
+  ]
+}

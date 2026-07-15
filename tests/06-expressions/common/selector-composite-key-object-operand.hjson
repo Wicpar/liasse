@@ -1,0 +1,34 @@
+{
+  format: 1
+  name: selector-composite-key-object-operand
+  suite: scenario
+  spec: ["#expressions", "§6.3"]
+  note: "§6.3: 'A composite-key lookup uses one object operand naming each key component.' The object operand addressing both components of the composite key selects exactly that row. Seed map keys use Annex D.2 canonical key text: composite components joined by ':' in $key order."
+
+  package: {
+    $liasse: 1
+    $app: "t.selectors@1.0.0"
+    $model: {
+      vat_rates: {
+        $key: ["country", "code"]
+        country: "text"
+        code: "text"
+        rate: "int"
+      }
+      $public: {
+        lookup: { $view: ".vat_rates[{ country: 'fr', code: 'std' }] { rate }" }
+      }
+    }
+    $data: {
+      vat_rates: {
+        "fr:std": { country: "fr", code: "std", rate: "20" }
+        "fr:low": { country: "fr", code: "low", rate: "5" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.lookup", id: "w1",
+      expect_init: { value: [ { rate: "20" } ] } }
+  ]
+}

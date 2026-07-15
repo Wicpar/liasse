@@ -1,0 +1,31 @@
+{
+  format: 1
+  name: computed-field-equals-prefix-form
+  suite: scenario
+  spec: ["#annex-c", "§C.3", "#state-model", "§5.2"]
+  note: "Annex C.3 field form '\"field\": \"= computed_expression\"' declares a read-only computed value (§5.2). No value is stored for 'total'; it is determined by '.subtotal + .tax'. The '=' prefix (with no leading type) selects the computed-value form, distinct from the 'T = default' writable-default form. Integer arithmetic is exact (Annex A.5) so the canonical result is unambiguous."
+
+  package: {
+    $liasse: 1
+    $app: "t.computed@1.0.0"
+    $model: {
+      invoice: {
+        subtotal: "int"
+        tax: "int"
+        total: "= .subtotal + .tax"
+      }
+      view_invoice: { $view: ".invoice { subtotal, tax, total }" }
+      $public: {
+        invoice: { $view: ".view_invoice" }
+      }
+    }
+    $data: {
+      invoice: { subtotal: "100", tax: "20" }
+    }
+  }
+
+  steps: [
+    { watch: "public.invoice", id: "w1",
+      expect_init: { value: { subtotal: "100", tax: "20", total: "120" } } }
+  ]
+}

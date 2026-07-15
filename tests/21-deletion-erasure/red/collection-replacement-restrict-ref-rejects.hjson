@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: collection-replacement-restrict-ref-rejects
+  suite: scenario
+  tags: [deletion, restrict, replacement]
+  // Attack: dodge a restrict ref by DROPPING the referenced row through whole-
+  // collection replacement instead of `- key`. §21.1 lists `collection =
+  // replacement_view` as a deleting capability; §8.7: an existing key absent from
+  // the replacement "is deleted through ordinary $on_delete planning." So the
+  // dropped project still triggers restrict, and the replacement is rejected.
+  spec: ["§21.1", "§8.7"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      projects: {
+        $key: "id"
+        id: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        project: {
+          $ref: "/projects"
+          $on_delete: "restrict"
+        }
+      }
+      $mut: {
+        // replace the whole projects collection with just p2 (drops p1)
+        replace_projects: ".projects = [{ id: 'p2' }]"
+      }
+      projects_view: { $view: ".projects { id, $sort: [id] }" }
+      $public: {
+        projects: { $view: ".projects_view", $mut: { replace: ".replace_projects" } }
+      }
+    }
+    $data: {
+      projects: { p1: {}, p2: {} }
+      tasks: { t1: { project: "p1" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.projects", id: "w1", expect_init: { value: [ { id: "p1" }, { id: "p2" } ] } }
+    { call: "public.projects.replace", args: {},
+      expect: { outcome: rejected, violates: ["§21.1"],
+                detail: "replacement drops p1 which task t1 references under restrict" } }
+    // nothing changed: transition rejected as a whole
+    { expect_view: { watch: "w1", value: [ { id: "p1" }, { id: "p2" } ] } }
+  ]
+}

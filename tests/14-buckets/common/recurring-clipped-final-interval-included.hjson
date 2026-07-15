@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: recurring-clipped-final-interval-included
+  suite: scenario
+  spec: ["#buckets", "§14.5"]
+  tags: ["temporal", "recurrence", "boundary"]
+  note: "When the series upper bound falls inside a period, the final interval is clipped to $until = series-until and is included because its start is below its end."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.clipped@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          weekly: { credits: "30", period: "P7D" }
+        }
+        subscriptions: {
+          // series [2026-01-01T00:00Z, 2026-01-18T00:00Z): two full weeks + 3 days
+          s1: { plan: "weekly", starts_at: "1767225600000000", ends_at: "1768694400000000" }
+        }
+      }
+      $public: {
+        periods: {
+          $params: { a: "timestamp", b: "timestamp" }
+          $view: '.credit_periods.$between(@a, @b) { index: $index, from: $from, until: $until, $sort: ["from"] }'
+        }
+      }
+    }
+  }
+
+  steps: [
+    // window [2026-01-01, 2026-02-01)
+    { watch: "public.periods"
+      args: { a: "1767225600000000", b: "1769904000000000" }
+      id: "w1"
+      expect_init: {
+        value: [
+          { index: "0", from: "1767225600000000", until: "1767830400000000" }  // Jan 1  - Jan 8
+          { index: "1", from: "1767830400000000", until: "1768435200000000" }  // Jan 8  - Jan 15
+          // final interval clipped from [Jan 15, Jan 22) to [Jan 15, Jan 18)
+          { index: "2", from: "1768435200000000", until: "1768694400000000" }
+        ]
+      } }
+  ]
+}

@@ -1,0 +1,55 @@
+{
+  format: 1
+  name: zip-path-traversal-entry-invalid
+  suite: scenario
+  tags: [tampering, traversal]
+  // Classic zip-slip: an archive entry named "../evil.txt", declared in the
+  // manifest with a correct checksum so integrity verification alone would
+  // pass. §19.5: "Every .liasse artifact ... uses this ZIP64 structure" —
+  // an entry escaping the archive root is not part of that structure, and
+  // the manifest may only cover "required direct archive entr[ies]", which
+  // "../evil.txt" can never be. A conforming importer must reject the
+  // artifact rather than extract or honor the entry.
+  spec: ["§19.5", "Annex D.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      { add_entry: { path: "../evil.txt", text: "pwned" } }
+      { add_manifest_entry: { path: "../evil.txt" } }
+      { fix_checksums: true }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: invalid, violates: ["§19.5"],
+                  detail: "archive entry outside the defined artifact structure" } }
+    ] }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  format: 1
+  name: combinator-mismatched-identity-domain-invalid
+  suite: static
+  spec: ["#views", "§7.4"]
+  tags: ["identity"]
+  note: "Attack: union two views from unrelated collections to smuggle rows of one identity domain into another. §7.4: 'Operands share row shape and identity domain.' tasks and users are distinct collections with distinct key domains, so the union is statically invalid. (§6.3 also makes values of different target relations statically incomparable.)"
+
+  package: {
+    $liasse: 1
+    $app: "t.viewbaddomain@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+      }
+      users: {
+        $key: "id"
+        id: "text"
+      }
+      $public: {
+        mixed: { $view: ".tasks | .users" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#views"]
+    detail: "union operands .tasks and .users do not share an identity domain"
+  }
+}

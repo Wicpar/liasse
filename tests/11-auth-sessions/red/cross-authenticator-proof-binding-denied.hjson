@@ -1,0 +1,127 @@
+{
+  format: 1
+  name: cross-authenticator-proof-binding-denied
+  suite: scenario
+  spec: ["#authentication", "§11.4", "§11.3"]
+  tags: ["confused-deputy"]
+  note: '''
+    §11.4: "The verified proof MUST bind to that authenticator through a
+    protected type, audience, issuer, signed claim, or equivalent verifier
+    contract." Both authenticators share one verifier, and the binding is the
+    signed auth claim checked against $auth_name (§11.3 bindings). A session
+    token presented under the api_key authenticator verifies cryptographically
+    and even resolves an actor, but the claim binding fails.
+  '''
+
+  // Attack: audience confusion. The automation role accepts both
+  // authenticators, and both use the same signer. The attacker takes a valid
+  // SESSION token and presents it as an API KEY, hoping the shared verifier
+  // lets the proof cross authenticator boundaries. The signed auth claim
+  // pins the proof to its authenticator; the crossover must be denied.
+
+  package: {
+    $liasse: 1
+    $app: "t.auth.two@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+        api_key: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $actor: "/accounts[$proof.account]"
+          $check: "$proof.auth == $auth_name"
+        }
+      }
+      $roles: {
+        automation: {
+          $auth: ["session", "api_key"]
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes[:n | n.author == $actor] { id, body }"
+            $mut: { add: ".add_note" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
+      }
+      sessions: {
+        "5e551000-0000-4000-8000-000000000001": {
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        // A session token that ALSO carries an account claim, so that under
+        // api_key the $actor binding would resolve and only the auth-claim
+        // check separates the two authenticators.
+        "tok-alice": {
+          auth: "session"
+          session: "5e551000-0000-4000-8000-000000000001"
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Sanity: the credential is valid under its own authenticator.
+    { call: "automation.notes.add", args: { body: "legit" }, on: "c1",
+      auth: { auth: "session", credential: "tok-alice" },
+      expect: { outcome: ok, value: {
+        id: "$any:uuid"
+        author: "aaaaaaaa-0000-4000-8000-000000000001"
+        body: "legit"
+      } } }
+    // Crossover: same credential, other authenticator. The proof's signed
+    // auth claim is 'session', $auth_name is 'api_key': denied.
+    { call: "automation.notes.add", args: { body: "crossover" }, on: "c1",
+      auth: { auth: "api_key", credential: "tok-alice" },
+      expect: { outcome: denied, violates: ["#authentication"] } }
+  ]
+}

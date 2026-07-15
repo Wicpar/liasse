@@ -1,0 +1,46 @@
+{
+  format: 1
+  name: seed-confusable-keys-remain-distinct
+  suite: scenario
+  spec: ["#loading", "#annex-d"]
+  tags: ["unicode", "identity"]
+  note: '''
+    Unicode-confusable identity attack. The two seeded keys render identically
+    to a human: "acme" (all ASCII) and "аcme" (first letter is CYRILLIC
+    SMALL LETTER A, U+0430). Annex D.2: canonical text key is the "exact
+    Unicode text", and Annex A.1 preserves text exactly — nothing in the spec
+    permits case folding, confusable folding, or normalization of key text at
+    seed time. Both rows must load and remain two distinct identities; an
+    implementation that folds or normalizes would either reject a valid seed
+    as a duplicate or silently merge two identities.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.confusable@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "script": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, script }" }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "script": "latin" }
+        "аcme": { "script": "cyrillic" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: { $unordered: [
+        { id: "acme", script: "latin" }
+        { id: "аcme", script: "cyrillic" }
+      ] } } }
+  ]
+}

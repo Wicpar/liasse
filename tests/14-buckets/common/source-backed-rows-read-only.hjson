@@ -1,0 +1,40 @@
+{
+  format: 1
+  name: source-backed-rows-read-only
+  suite: static
+  spec: ["#buckets", "§14.4", "#expressions", "§6.1"]
+  tags: ["static"]
+  note: "Source-backed bucket rows are read-only; mutations change their source rows or the tables they reference. A mutation program inserting into the derived collection cannot type-check, and expression classes are checked when the package is loaded."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.readonly@1.0.0"
+    $model: {
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: "text"
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      access_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+        }
+        plan: "= $source.plan"
+      }
+      $mut: {
+        // writing into a derived, read-only collection
+        forge_period: ".access_periods + { plan: 'forged' }"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§14.4"]
+    detail: "a mutation inserts into a source-backed bucket collection, whose rows are read-only"
+  }
+}

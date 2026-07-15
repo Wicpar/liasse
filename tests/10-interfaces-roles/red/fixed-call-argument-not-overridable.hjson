@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: fixed-call-argument-not-overridable
+  suite: scenario
+  spec: ["#interfaces", "§10.1", "#clients"]
+  tags: ["injection", "authz"]
+  note: '''
+    §10.1: "An explicit call may rename, derive, or fix arguments" — here the
+    referenced mutation's `name` argument is derived from @new_name, so the
+    external surface shape is exactly { project, new_name }. §12.1 step 3
+    parses parameters "against the inferred or explicit shape", and the
+    caller-supplied `name` member is not part of that shape, so it MUST NOT
+    reach the mutation (the row must never become "HACKED"). What the spec
+    does not pin is the disposition of the unknown wire member itself:
+    §2.5's unknown-member rule covers declaration objects, not call
+    parameters, so a conforming runtime could either reject the call or
+    ignore the extra member and commit the derived value. Outcome recorded
+    as unspecified; the forbidden result is caller-controlled override.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.fixed_arg@1.0.0"
+    "$model": {
+      "projects": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "$mut": {
+          "rename": [
+            ".name = @name"
+            "return . { id, name }"
+          ]
+        }
+      }
+      "$public": {
+        "projects": {
+          "$view": ".projects { id, name }"
+          "$mut": {
+            // Explicit call: the mutation argument is derived, not passed
+            // through.
+            "rename": ".projects[@project].rename({ name: string.trim(@new_name) })"
+          }
+        }
+      }
+    }
+    "$data": {
+      "projects": { "p1": { "name": "Original" } }
+    }
+  }
+
+  steps: [
+    // Control: the derived argument path works and applies the trim.
+    { call: "public.projects.rename", args: { project: "p1", new_name: "  Tidy  " },
+      expect: { outcome: ok, value: { id: "p1", name: "Tidy" } } }
+    // Attack: smuggle the referenced mutation's own parameter name alongside
+    // the declared surface parameters.
+    { call: "public.projects.rename",
+      args: { project: "p1", new_name: "ok", name: "HACKED" },
+      expect: { outcome: unspecified } }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: static-struct-inserts-with-row
+  suite: scenario
+  spec: ["#state-model", "§5.3", "§5.1"]
+  note: "A plain nested object declares a static struct whose fields share the identity and lifecycle of the containing row (§5.3). Struct fields resolve their own defaults during the containing insertion (§5.1); the omitted optional member stays absent."
+
+  package: {
+    $liasse: 1
+    $app: "t.struct@1.0.0"
+    $model: {
+      orders: {
+        $key: "id"
+        id: "text"
+        address: {
+          line1: "text"
+          line2: "text?"
+          city: "text"
+          country: "text = 'FR'"
+        }
+      }
+      $public: {
+        orders: {
+          $view: ".orders { id, address }"
+          $mut: {
+            add: [
+              "row = .orders + { id: @id, address: { line1: @line1, city: @city } }"
+              "return row { id, address }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.orders.add", args: { id: "o1", line1: "1 Main St", city: "Paris" },
+      expect: { outcome: "ok", value: {
+        id: "o1"
+        // line2 was omitted and optional -> absent; country default resolved with the insertion
+        address: { line1: "1 Main St", city: "Paris", country: "FR" }
+      } } }
+  ]
+}

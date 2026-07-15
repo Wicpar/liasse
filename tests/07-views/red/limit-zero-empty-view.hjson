@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: limit-zero-empty-view
+  suite: scenario
+  spec: ["#views", "§7.3"]
+  tags: ["boundary"]
+  note: "Boundary: $limit: 0 is the smallest non-negative bound. §7.3: '$limit keeps at most the next non-negative number.' Keeping at most zero rows yields an empty result even though the collection is non-empty."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewlimit0@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      $public: {
+        page: { $view: ".items { id, $limit: 0 }" }
+      }
+    }
+    $data: {
+      items: {
+        a: {}
+        b: {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.page", id: "w1",
+      expect_init: { value: [] } }
+  ]
+}

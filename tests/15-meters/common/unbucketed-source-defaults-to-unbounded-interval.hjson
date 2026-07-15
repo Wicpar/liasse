@@ -1,0 +1,85 @@
+{
+  format: 1
+  name: unbucketed-source-defaults-to-unbounded-interval
+  suite: scenario
+  spec: ["#meters", "§15.1", "§15.2", "#buckets", "§14.3"]
+  tags: [ordering, temporal]
+  note: '''An unbucketed source has $from = $created and $until = none (SPEC §15.1).
+Under $order [$until], ascending optional order places none last, so the finite
+bucketed pool drains before the unbounded one. Verified shape-independently: after
+the finite pool expires, the surviving balance shows which pool kept its remainder.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.unbucketed@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        subs: {
+          $key: "id"
+          $bucket: { $until: ".expires_at" }
+          id: "text"
+          amount: "decimal"
+          expires_at: "timestamp? = none"
+        }
+        grants: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: {
+              sub: ".subs { $quantity: .amount }"
+              grant: ".grants { $quantity: .amount }"
+            }
+            $order: ["$until"]
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: {
+      users: {
+        u1: {
+          // finite pool: active [genesis, 2026-01-08)
+          subs: { s1: { amount: "50", expires_at: "1767830400" } }
+          // unbucketed pool: [$created, none)
+          grants: { g1: { amount: "100" } }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // 60 = finite 50 first ($until 2026-01-08 sorts before none), then 10 from the grant
+    { call: "public.wallet.consume", args: { user: "u1", amount: "60" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "90" } ] } }
+    // after the finite pool expires, only the grant remains: 100 - 10 = 90.
+    // (Had the unbounded pool drained first, this balance would be 40.)
+    { advance_time: "P8D" }
+    { expect_view: { watch: "w1", value: [ { id: "u1", balance: "90" } ] } }
+  ]
+}

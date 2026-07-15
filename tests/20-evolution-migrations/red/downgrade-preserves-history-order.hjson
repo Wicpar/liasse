@@ -1,0 +1,112 @@
+{
+  format: 1
+  name: downgrade-preserves-history-order
+  suite: scenario
+  spec: ["#evolution", "§20.2", "§19.6", "§19.5"]
+  note: '''
+    §20.2: after a downgrade "Prior values remain available in history; history
+    order remains unchanged." An attacker hopes a downgrade rewrites or forks
+    the lineage (to bury the pre-downgrade commit or reorder history). It must
+    not: each package update — upgrade or downgrade — is an ordinary commit that
+    advances the SAME active lineage from its genesis origin (§9.3). This case
+    binds the lineage id and origin from an export taken right after genesis,
+    then re-exports after an upgrade+downgrade and asserts the selected lineage
+    id is unchanged and its origin is still "genesis" (§19.6). Reversible
+    field via declared `$back` so the downgrade itself is admissible (§20.2).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.histord@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        notes: { $view: ".notes { id, name }" }
+      }
+    }
+    $data: {
+      notes: { n1: { name: "hi" } }
+    }
+  }
+
+  steps: [
+    // export the genesis point; capture lineage identity and origin
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a0", expect: {
+        outcome: ok
+        history_index: {
+          format: 1
+          selected: { lineage: "$bind:l1", point: "$any" }
+          lineages: "$any"
+          "...": true
+        }
+        selected_lineage: {
+          origin: "genesis"
+          "...": true
+        }
+    } } }
+    // upgrade 1.0.0 -> 2.0.0 (reversible transform)
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.histord@2.0.0"
+          $model: {
+            notes: {
+              $key: "id"
+              id: "text"
+              encoded: {
+                $type: "text"
+                $from: "name"
+                $as: "base64.encode(string.bytes(.))"
+                $back: "string.from_bytes(base64.decode(.))"
+              }
+            }
+            $public: {
+              notes: { $view: ".notes { id, encoded }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    // downgrade 2.0.0 -> 1.0.0 via the available exact inverse
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.histord@1.0.0"
+          $model: {
+            notes: {
+              $key: "id"
+              id: "text"
+              name: "text"
+            }
+            $public: {
+              notes: { $view: ".notes { id, name }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    // history order preserved: same lineage id, still originating at genesis
+    { export: { as: "a2" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a2", expect: {
+        outcome: ok
+        history_index: {
+          format: 1
+          selected: { lineage: "$ref:l1", point: "$any" }
+          lineages: "$any"
+          "...": true
+        }
+        selected_lineage: {
+          origin: "genesis"
+          "...": true
+        }
+    } } }
+    // and the value survived the round trip
+    { watch: "public.notes", id: "w1",
+      expect_init: { value: [ { id: "n1", name: "hi" } ] } }
+  ]
+}

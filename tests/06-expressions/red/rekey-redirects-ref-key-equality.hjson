@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: rekey-redirects-ref-key-equality
+  suite: scenario
+  spec: ["#expressions", "§6.3", "§5.4", "§5.6"]
+  tags: ["identity", "aliasing"]
+  note: "Attack: rely on a stale key to keep matching a row after it was rekeyed. §6.3: 'Equality between a row or ref and a key of the same declared target compares the current typed key.' §5.4: assigning a key field is an atomic rekey and every ref targeting the row is updated in the same transition; §5.6: the application-visible ref value is the target's current typed key. After rekeying account 'a' to 'b', filters comparing the ref against 'a' must go empty and against 'b' must match, and the projected ref value must read 'b'."
+
+  package: {
+    $liasse: 1
+    $app: "t.identity@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        owner: { $ref: "/accounts" }
+      }
+      $mut: {
+        rename_account: ".accounts[@from].id = @to"
+      }
+      $public: {
+        owned_by_a: { $view: ".tasks[:t | t.owner == 'a'] { id }" }
+        owned_by_b: { $view: ".tasks[:t | t.owner == 'b'] { id }" }
+        owner_of_t1: { $view: ".tasks['t1'] { owner }" }
+        admin: {
+          $mut: { rename_account: ".rename_account" }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        a: {}
+      }
+      tasks: {
+        t1: { owner: "a" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.owned_by_a", id: "w1",
+      expect_init: { value: [ { id: "t1" } ] } }
+    { watch: "public.owned_by_b", id: "w2",
+      expect_init: { value: [] } }
+    { watch: "public.owner_of_t1", id: "w3",
+      expect_init: { value: [ { owner: "a" } ] } }
+    { call: "public.admin.rename_account", args: { from: "a", to: "b" },
+      expect: { outcome: "ok" } }
+    { expect_view: { watch: "w1", value: [] } }
+    { expect_view: { watch: "w2", value: [ { id: "t1" } ] } }
+    { expect_view: { watch: "w3", value: [ { owner: "b" } ] } }
+  ]
+}

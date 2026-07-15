@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: backdated-interval-rewrites-at-window
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.2", "#clients", "§12.2"]
+  tags: ["temporal", "ordering", "tampering"]
+  note: "Attack: commit a row whose interval lies entirely in the already-observed past. .$at(t) is a function of current state, not of what was observed at t: after the commit, a live $at(past) view must include the backdated row (the client result must equal the declared view at the new frontier), while the current-activity view stays empty."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.backdate@1.0.0"
+    $model: {
+      reservations: {
+        $key: "id"
+        $bucket: { $from: ".starts_at", $until: ".ends_at" }
+        id: "uuid = uuid()"
+        starts_at: "timestamp"
+        ends_at: "timestamp"
+      }
+      $public: {
+        active: { $view: ".reservations { id }" }
+        at: {
+          $params: { t: "timestamp" }
+          $view: ".reservations.$at(@t) { id }"
+        }
+        reservations: {
+          $mut: {
+            add: [
+              "r = .reservations + { starts_at: @starts_at, ends_at: @ends_at }"
+              "return r { id }"
+            ]
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // move to 2026-01-01T03:00:00Z first: 01:30 is now "the past"
+    { advance_time: "PT3H" }
+
+    { watch: "public.at", args: { t: "1767231000000000" }, id: "wpast"   // 01:30Z
+      expect_init: { value: [] } }
+    { watch: "public.active", id: "wnow"
+      expect_init: { value: [] } }
+
+    // backdate an interval [01:00, 02:00) fully inside the observed past;
+    // nothing in §14 restricts intervals relative to now, only $until > $from
+    { call: "public.reservations.add"
+      args: { starts_at: "1767229200000000", ends_at: "1767232800000000" }
+      expect: { outcome: ok, value: { id: "$bind:r1" } } }
+
+    // the past-window view now includes the backdated row ...
+    { expect_view: { watch: "wpast", value: [ { id: "$ref:r1" } ] } }
+    // ... while current activity at 03:00 is unaffected
+    { expect_view: { watch: "wnow", value: [] } }
+  ]
+}

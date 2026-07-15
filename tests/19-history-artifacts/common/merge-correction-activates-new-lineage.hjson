@@ -1,0 +1,79 @@
+{
+  format: 1
+  name: merge-correction-activates-new-lineage
+  suite: scenario
+  // §19.9: a host correction function may select valid values for a failed
+  // merge; "Activation succeeds atomically and records the accepted
+  // correction in a new lineage preserving both source histories."
+  spec: ["§19.9", "§19.3"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+        set_body: [
+          ".notes[@id].body = @body"
+          "return .notes[@id] { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put", set_body: ".set_body" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "start" },
+      expect: { outcome: ok, value: { id: "n1", body: "start" } } }
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a0" }, expect: { outcome: ok } }
+      { call: "public.notes.set_body", args: { id: "n1", body: "incoming-b" },
+        expect: { outcome: ok, value: { id: "n1", body: "incoming-b" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    { inspect_artifact: { artifact: "a2", expect: {
+        outcome: ok
+        manifest: { selected: { lineage: "$any", point: "$bind:p_inc" }, "...": true }
+    } } }
+    { call: "public.notes.set_body", args: { id: "n1", body: "local-a" },
+      expect: { outcome: ok, value: { id: "n1", body: "local-a" } } }
+    // Record the local head before reconciling.
+    { export: { as: "a_loc" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a_loc", expect: {
+        outcome: ok
+        manifest: { selected: { lineage: "$any", point: "$bind:p_loc" }, "...": true }
+    } } }
+    { reconcile: { from: "a2", policy: ["merge"], bind_plan: "r1" },
+      expect: { outcome: ok, value: {
+        relation: "merge", applied: false, conflicts: "$any", "...": true } } }
+    // Host correction picks the incoming value for the conflicting field.
+    { apply_correction: { plan: "r1", choose: { "/notes/n1/body": "incoming" } },
+      expect: { outcome: ok, value: { applied: true, "...": true } } }
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "n1", body: "incoming-b" }
+    ] } }
+    // The accepted correction lives in a new lineage; both source heads
+    // (local p_loc, incoming p_inc) remain retained.
+    { export: { as: "a3", lineages: "all" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a3", expect: {
+        outcome: ok
+        manifest: { selected: { lineage: "$any", point: "$bind:p_merge" }, "...": true }
+        lineage_heads: { $unordered: ["$ref:p_loc", "$ref:p_inc", "$ref:p_merge"] }
+    } } }
+  ]
+}

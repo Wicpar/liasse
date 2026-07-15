@@ -1,0 +1,83 @@
+{
+  format: 1
+  name: connector-resolution-timing-unspecified
+  suite: scenario
+  spec: ["#blobs", "§18.3", "§18.12"]
+  tags: ["blob", "loading", "unspecified"]
+  note: '''
+    §18.3: "Store rows MAY be scoped to companies, users, or modules like
+    ordinary data" — so a store row, and the connector name it carries, can be
+    inserted at runtime. §18.12: "Loading validates connector capabilities
+    required by declared placement", but a connector named only by a
+    later-inserted store row is not knowable at load. The spec does not pin WHEN
+    an unregistered/ incapable connector named by runtime data is caught: at the
+    store-row insertion, at the first upload that routes to it, or never as a
+    load check. Here a store row naming an unregistered connector "ghost" is
+    inserted and then an upload targets it; §18 leaves the failure point open.
+    The insert is a plain data write (§18.3), so this case marks the *upload* as
+    unspecified while noting a runtime MAY instead reject the insert.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.dyncon@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['dynamic']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add_store: [
+          "s = .stores + { id: @id, connector: @connector }"
+          "return s { id }"
+        ]
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      $public: {
+        stores: { $mut: { add: ".add_store" } }
+        docs: { $mut: { add: ".add" } }
+      }
+    }
+    // No stores seeded; `primary`/`dynamic` created at runtime.
+    $data: {}
+  }
+
+  hosts: {
+    // Only fs-a exists; the store row below will name "ghost".
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Ordinary data write of a store row that names an unregistered connector.
+    { call: "public.stores.add", args: { id: "dynamic", connector: "ghost" }, on: "c1",
+      expect: { outcome: ok, value: { id: "dynamic" } } }
+    // Upload routed to that store: the spec pins no timing for the connector check.
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "routed to ghost"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: unspecified, violates: ["#blobs"],
+                detail: "§18 does not pin when a connector named by runtime store data is validated" } }
+  ]
+}
+</content>

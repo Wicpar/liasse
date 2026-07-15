@@ -1,0 +1,22 @@
+{
+  format: 1
+  name: generated-function-in-pure-position-invalid
+  suite: static
+  spec: ["#expressions", "§8.8", "§16.3"]
+  tags: ["purity"]
+  note: "Attack: make a computed value depend on the clock so that reads, caches, and replay silently disagree. §8.8: 'Computed fields, views, $normalize, and $check use pure functions only' and 'The checker rejects an effect class used in the wrong position while loading the package.' now() is generated-class (§16.3), so a computed field using it must be rejected at load."
+
+  package: {
+    $liasse: 1
+    $app: "t.effects@1.0.0"
+    $model: {
+      stamp: "= now()"
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["#mutations", "#expressions"]
+    detail: "generated function now() used in a pure-only computed-value position"
+  }
+}

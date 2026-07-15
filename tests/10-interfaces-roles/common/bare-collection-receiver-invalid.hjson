@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: bare-collection-receiver-invalid
+  suite: static
+  // §10.1: "A bare collection such as .projects.rename is not a row
+  // receiver." Annex C.10: "A collection without row selection is not a
+  // valid row-mutation receiver." This is a static shape rule, so the
+  // package must fail validation at load.
+  spec: ["#interfaces", "§10.1"]
+  tags: []
+
+  package: {
+    "$liasse": 1
+    "$app": "t.bare_recv@1.0.0"
+    "$model": {
+      "projects": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "$mut": {
+          "rename": ".name = @name"
+        }
+      }
+      "$public": {
+        "projects": {
+          // Invalid: the row mutation is referenced without selecting a row.
+          "$mut": { "rename": ".projects.rename" }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces"]
+    detail: "a collection without row selection is not a valid row-mutation receiver"
+  }
+}

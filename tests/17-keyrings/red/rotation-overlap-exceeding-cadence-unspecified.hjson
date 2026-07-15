@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: rotation-overlap-exceeding-cadence-unspecified
+  suite: static
+  tags: ["boundary"]
+  spec: ["#keyrings", "§17.1", "§17.4", "§C.16"]
+  // Boundary abuse: $overlap (pending lead time) longer than $every (cadence).
+  // Taken literally, the pending version for rotation N+1 would have to be
+  // exposed BEFORE rotation N activates, so several pending versions per ring
+  // would coexist. §17.1 and §17.4 define $every/$overlap semantics but never
+  // constrain $overlap relative to $every, and §17.3's lifecycle text speaks
+  // of "a pending public version" in the singular.
+  note: "Genuine gap: the spec neither forbids $overlap > $every (a static validation question, §C.16 grammar allows any duration) nor defines the rotation schedule that would result (multiple concurrent pending versions vs clamping vs rejection)."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": { "$every": "P30D", "$overlap": "P40D" }
+          "$retain": "P45D"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: unspecified
+    violates: ["§17.1", "§17.4"]
+    detail: "$overlap P40D exceeds $every P30D; the spec neither rejects this statically nor defines the resulting schedule"
+  }
+}

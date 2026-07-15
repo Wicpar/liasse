@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: negative-pool-quantity-enforcement-unspecified
+  suite: scenario
+  spec: ["#meters", "§15.1"]
+  note: '''SPEC §15.1 says pool $quantity MUST be non-negative, but does not state where
+that rule is enforced when $quantity is projected from a writable field: (a) the
+transition inserting the pool row whose projected $quantity is negative is rejected;
+(b) the insert is admitted and the violation only surfaces when the meter is evaluated
+(rejecting spends, or treating the pool as zero). The enforcement point is not pinned,
+so the outcome of admitting a topup of -100 is recorded as unspecified. An
+implementation choosing (b) would let a negative pool silently poison later
+allocation arithmetic, which is why the gap matters.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.negpool@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+          add_topup: ".topups + { id: @topup, amount: @amount }"
+        }
+      }
+      $public: {
+        wallet: {
+          $mut: {
+            consume: ".users[@user].consume"
+            add_topup: ".users[@user].add_topup"
+          }
+        }
+      }
+    }
+    $data: { users: { u1: {} } }
+  }
+
+  steps: [
+    // control: a positive topup is an ordinary insert
+    { call: "public.wallet.add_topup", args: { user: "u1", topup: "t1", amount: "50" },
+      expect: { outcome: ok } }
+    // the pool quantity projected from this row would be negative
+    { call: "public.wallet.add_topup", args: { user: "u1", topup: "t2", amount: "-100" },
+      expect: { outcome: unspecified } }
+  ]
+}

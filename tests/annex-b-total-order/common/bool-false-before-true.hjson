@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: bool-false-before-true
+  suite: scenario
+  spec: ["#annex-b", "§B.1", "§B.5"]
+  tags: ["ordering"]
+  note: '''
+    §B.1 bool row: ascending order is `false`, then `true`. Sorting by a bool
+    field must place all false rows before all true rows; the appended `id`
+    key totally orders rows that share a flag value (§B.5, occurrence/row
+    identity as final tiebreaker). Seeded in scrambled order to prove the
+    output order comes from the value order and not from insertion order.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.bool@1.0.0"
+    $model: {
+      flags: {
+        $key: "id"
+        id: "text"
+        on: "bool"
+      }
+      $public: {
+        by_flag: { $view: ".flags { id, on, $sort: [on, id] }" }
+      }
+    }
+    $data: {
+      flags: {
+        t1: { on: true }
+        f2: { on: false }
+        t3: { on: true }
+        f1: { on: false }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_flag", id: "w1",
+      expect_init: { value: [
+        { id: "f1", on: false }
+        { id: "f2", on: false }
+        { id: "t1", on: true }
+        { id: "t3", on: true }
+      ] } }
+  ]
+}

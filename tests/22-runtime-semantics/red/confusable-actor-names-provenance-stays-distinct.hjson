@@ -1,0 +1,102 @@
+{
+  // Attack: two accounts whose display names are unicode confusables —
+  // "admin" (all ASCII) and "аdmin" (leading Cyrillic U+0430 а) — each with
+  // its own credential. A confusable name must NOT collapse actor provenance:
+  // §22.8 binds `$actor` to the row resolved by authentication (§2.4 "the
+  // application row resolved by authentication"), keyed by identity, not by a
+  // rendered name. Each note's recorded author must be that credential's own
+  // distinct account key; neither actor is resolved as the other.
+  format: 1
+  name: confusable-actor-names-provenance-stays-distinct
+  suite: scenario
+  spec: ["§22.8", "#runtime", "#authentication"]
+  tags: ["authz", "provenance", "unicode", "identity"]
+
+  package: {
+    $liasse: 1
+    $app: "t.confusable@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        id: "text"
+        account: { $ref: "/accounts" }
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "n = .notes + { author: $actor, body: @body }"
+          "return n { author, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [ "$proof.auth == $auth_name" ]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $mut: { add: ".add_note" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        // Distinct keys; confusable rendered names.
+        "acct-latin": { name: "admin" }
+        "acct-cyrillic": { name: "аdmin" }
+      }
+      sessions: {
+        "sess-latin": { account: "acct-latin" }
+        "sess-cyrillic": { account: "acct-cyrillic" }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-latin": { auth: "session", session: "sess-latin" }
+        "tok-cyrillic": { auth: "session", session: "sess-cyrillic" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { auth: "session", credential: "tok-latin" } }
+    { connect: "c2", authenticate: { auth: "session", credential: "tok-cyrillic" } }
+    {
+      call: "member.notes.add"
+      args: { body: "from latin" }
+      on: "c1"
+      expect: { outcome: ok, value: { author: "acct-latin", body: "from latin" } }
+    }
+    {
+      call: "member.notes.add"
+      args: { body: "from cyrillic" }
+      on: "c2"
+      // Not "acct-latin": the confusable name did not alias the actor.
+      expect: { outcome: ok, value: { author: "acct-cyrillic", body: "from cyrillic" } }
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  // Attack: two concurrent renames of the same field, probing whether a "lost"
+  // update is illegal. §22.4: "Two concurrent renames MAY both commit; the
+  // later serial position determines the resulting name." Unlike an append,
+  // rename overwrites: BOTH commits are final (§22.2 "A commit is final once
+  // admitted"), yet only the value written at the later serial position
+  // survives. The final name is "x" or "y" — but never a merge, and never the
+  // pre-race value.
+  format: 1
+  name: last-writer-wins-at-final-serial-position
+  suite: scenario
+  spec: ["§22.4", "§22.2", "§22.3", "#runtime"]
+  tags: ["ordering", "concurrency"]
+
+  package: {
+    $liasse: 1
+    $app: "t.lastwriter@1.0.0"
+    $model: {
+      docs: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        $mut: {
+          rename: ".name = @name"
+        }
+      }
+      $public: {
+        docs: {
+          $view: ".docs { id, name }"
+          $mut: { rename: ".docs[@id].rename" }
+        }
+      }
+    }
+    $data: {
+      docs: { "d1": { name: "start" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { connect: "c2" }
+    {
+      concurrently: [
+        [ { call: "public.docs.rename", args: { id: "d1", name: "x" }, on: "c1",
+            expect: { outcome: ok } } ]
+        [ { call: "public.docs.rename", args: { id: "d1", name: "y" }, on: "c2",
+            expect: { outcome: ok } } ]
+      ]
+    }
+    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: "$any" } }
+    {
+      // The later serial position wins; the pre-race "start" cannot survive.
+      expect_view: { watch: "w1" }
+      expect_one_of: [
+        { value: [ { id: "d1", name: "x" } ] }
+        { value: [ { id: "d1", name: "y" } ] }
+      ]
+    }
+  ]
+}

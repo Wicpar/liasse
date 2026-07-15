@@ -1,0 +1,30 @@
+{
+  format: 1
+  name: unknown-dollar-shape-marker-invalid
+  suite: static
+  tags: [grammar, reserved, shape-markers]
+  // Attack: invent a new $-marker and hope the runtime ignores unknown members.
+  // §2.5: "Names beginning with $ are reserved by Liasse" and "Unknown members
+  // in a declaration object are invalid unless that declaration explicitly
+  // accepts application-defined member names." Annex C.2 enumerates the shape
+  // markers; '$secret' is not among them. A struct declaration does not accept
+  // application-defined $-members, so '$secret' must fail static validation.
+  spec: ["#conformance", "§2.5", "#annex-c", "§C.2"]
+
+  package: {
+    $liasse: 1
+    $app: "t.unknownmarker@1.0.0"
+    $model: {
+      widget: {
+        name: "text"
+        $secret: "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance", "§2.5"]
+    detail: "'$secret' is a reserved $-prefixed member that is not a defined shape marker and is not an accepted application member"
+  }
+}

@@ -1,0 +1,22 @@
+{
+  format: 1
+  name: app-version-not-semver-rejected
+  suite: static
+  spec: ["#annex-e", "§E.1", "#package-structure", "§4.3"]
+  tags: ["boundary", "identity"]
+  note: "Annex E.1: 'Package identifiers use semantic versions' with major/minor/patch roles. '1.0' has no patch component and is not a semantic version; accepting it would create identifiers that cannot participate in the compatibility algorithm and that alias '1.0.0' in sloppy comparisons."
+
+  package: {
+    $liasse: 1
+    $app: "t.app@1.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-e", "§E.1", "#package-structure", "§4.3"]
+    detail: "'1.0' lacks the patch component required of a semantic version"
+  }
+}

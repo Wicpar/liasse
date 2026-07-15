@@ -1,0 +1,31 @@
+{
+  format: 1
+  name: enum-duplicate-labels-invalid
+  suite: static
+  spec: ["#state-model", "§5.9"]
+  tags: ["identity", "boundary"]
+  note: '''Attack: a duplicated enum label creates two declaration-order positions for one
+label, so B.1 declaration order and any position-derived identity become ambiguous.
+§5.9: 'The $enum array lists distinct accepted labels and establishes their declaration
+order.' A repeated label is not a distinct label set, so the declaration must fail
+static validation rather than pick one of the two positions.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.enumdup@1.0.0"
+    $model: {
+      things: {
+        $key: "id"
+        id: "text"
+        // "draft" appears twice -> labels are not distinct
+        status: { $enum: ["draft", "active", "draft"] }
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["§5.9"]
+    detail: "the $enum label list is not distinct: 'draft' is repeated"
+  }
+}

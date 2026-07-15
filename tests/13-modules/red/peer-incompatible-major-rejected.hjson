@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: peer-incompatible-major-rejected
+  suite: scenario
+  spec: ["#modules", "§13.5", "§13.14"]
+  note: '''
+    §13.5: a peer specification's "@1" selects a COMPATIBLE major version;
+    §13.14: breaking changes use a new major. A sibling instance exposes the
+    people interface at major 2 only. "sales" requires t.people/people@1, so
+    the major-2 sibling is not a compatible candidate. Resolution finds zero
+    compatible candidates and rejects the required binding.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "people": { "$view": { "$key": "id", "id": "text", "name": "text" } }
+                "roster": { "$view": { "$key": "id", "id": "text", "name": "text" } }
+              }
+            }
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    people2: {
+      "$liasse": 1
+      "$module": "t.people@2.0.0"
+      "$model": {
+        "members": { "$key": "id", "id": "text", "name": "text" }
+      }
+      "$expose": {
+        "people": { "$view": ".members { id, name }" }
+      }
+    }
+    sales: {
+      "$liasse": 1
+      "$module": "t.sales@1.0.0"
+      "$use": {
+        "people": "t.people/people@1"
+      }
+      "$expose": {
+        "roster": { "$view": "#people { id, name }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: { "$name": "people", "$module": "t.people@2.0.0"
+                   "$data": { "members": { "p1": { "name": "Alice" } } } } }
+      expect: { outcome: ok } }
+    // the only sibling exposes major 2; "@1" does not consider it compatible
+    { module_install: { space: "/companies/acme/modules", request: { "$name": "sales", "$module": "t.sales@1.0.0" } }
+      expect: { outcome: rejected, violates: ["§13.5"]
+                detail: "the required peer selects major 1 and the only candidate exposes an incompatible major 2" } }
+  ]
+}

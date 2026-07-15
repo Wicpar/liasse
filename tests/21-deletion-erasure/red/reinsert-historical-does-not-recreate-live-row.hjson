@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: reinsert-historical-does-not-recreate-live-row
+  suite: scenario
+  tags: [erasure, reinsert]
+  note: '''§21.3 states two things that pull apart for an extract produced by
+erasing a LIVE row: "Reinsertion restores historical or live occurrences
+selected by the extract operation" and "Restoring historical bytes alone does
+not recreate a live row." The chapter never pins whether an erase(row) of a live
+row records the LIVE occurrence in its extract (so reinsert restores the live
+row) or only the historical occurrences (so the live view stays empty and a
+fresh insert is required). Both readings are consistent with §21.2 step 2's
+"every payload required for possible reinsertion." So the post-reinsert live
+state here is genuinely unspecified. What IS deducible and asserted: the erase
+removes the row from live state, and the reinsert call itself is accepted.'''
+  spec: ["§21.3", "§21.2"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        secret: "text"
+      }
+      $mut: {
+        add: [
+          "u = .users + { id: @id, secret: @secret }"
+          "return u { id, secret }"
+        ]
+        erase_user: "return erase(.users[@id])"
+        reinsert_user: "reinsert(@extract)"
+      }
+      all: { $view: ".users { id, secret, $sort: [id] }" }
+      $public: {
+        users: {
+          $view: ".all"
+          $mut: { add: ".add", erase: ".erase_user", reinsert: ".reinsert_user" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.users.add", args: { id: "u1", secret: "s1" },
+      expect: { outcome: ok, value: { id: "u1", secret: "s1" } } }
+    { watch: "public.users", id: "w1", expect_init: { value: [ { id: "u1", secret: "s1" } ] } }
+    { call: "public.users.erase", args: { id: "u1" }, expect: { outcome: ok, value: "$bind:extract" } }
+    // deducible: erasure removed the live row
+    { expect_view: { watch: "w1", value: [] } }
+    // the reinsert call is accepted...
+    { call: "public.users.reinsert", args: { extract: "$ref:extract" }, expect: { outcome: ok, "...": true } }
+    // ...but whether the LIVE row returns is not pinned by §21.3: both the
+    // historical-only reading (empty) and the live-restore reading are
+    // spec-conformant. This disjunction IS the unspecified finding.
+    { expect_view: { watch: "w1" }, expect_one_of: [
+      { value: [] }
+      { value: [ { id: "u1", secret: "s1" } ] }
+    ] }
+  ]
+}

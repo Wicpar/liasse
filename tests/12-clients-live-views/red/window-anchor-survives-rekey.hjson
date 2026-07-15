@@ -1,0 +1,75 @@
+{
+  format: 1
+  name: window-anchor-survives-rekey
+  suite: scenario
+  spec: ["#clients", "#state-model"]
+  tags: ["window", "identity", "rekey"]
+  note: '''
+    Attack on identity continuity: rekey the anchored row and check whether
+    the window wrongly treats it as removed (which would leave an ordered gap
+    at the old key) or follows the occurrence. §5 (state model, "Assigning a
+    new value to any key field performs an atomic rekey ... The row and its
+    descendants retain their logical incarnation") and §12.2 ("`rekey` changes
+    the exposed row key while preserving occurrence and row incarnation").
+    The anchor is an occurrence, not a key: after the rekey commit the window
+    must follow the row to its new sort position "x" (now last), not stay at
+    the vacated coordinate "b" (which would yield [c, d]).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.items@1.0.0"
+    $data: {
+      items: {
+        a: {}
+        b: {}
+        c: {}
+        d: {}
+      }
+    }
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      $mut: {
+        rename_id: ".items[@id].id = @to"
+      }
+      index: {
+        $view: ".items { id, $sort: [id] }"
+      }
+      $public: {
+        items: {
+          $view: ".index"
+          $mut: {
+            rename_id: ".rename_id"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      watch: "public.items"
+      on: "c1"
+      id: "w1"
+      window: { $size: 2, $anchor: "b" }
+      expect_init: {
+        value: [ { id: "b" }, { id: "c" } ]
+      }
+    }
+    // Atomic rekey: b -> x. Same incarnation, same occurrence; the row now
+    // sorts after d.
+    {
+      call: "public.items.rename_id"
+      args: { id: "b", to: "x" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    // The anchored occurrence is now the last row; a 2-row window starting at
+    // it contains only "x".
+    { expect_view: { watch: "w1", value: [ { id: "x" } ] } }
+  ]
+}

@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: timestamp-signed-negative-before-epoch
+  suite: scenario
+  spec: ["§A.1", "§A.5", "§B.1"]
+  tags: ["wire", "timestamp", "boundary"]
+  note: '''Attack: a pre-1970 instant. An implementation backing timestamps with an
+unsigned counter, or clamping at the epoch, either rejects the value or sorts it after
+positive instants. Annex A.5: a timestamp is a *signed* count since
+1970-01-01T00:00:00Z; Annex A.1: its wire form is a canonical base-10 JSON string (so a
+negative value keeps its leading '-'); Annex B.1: timestamps use signed Unix-time order,
+so -1000000 sorts strictly before 1000000. Both are asserted: the negative wire spelling
+and the signed ordering.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.tsneg@1.0.0"
+    $model: {
+      events: {
+        $key: "id"
+        id: "text"
+        at: "timestamp"
+      }
+      $public: {
+        v: { $view: ".events { at, $sort: [at] }" }
+      }
+    }
+    $data: {
+      events: {
+        past:   { at: "-1000000" }
+        future: { at: "1000000" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      // signed order: negative (before epoch) first, and the '-' is preserved on the wire
+      expect_init: { value: [
+        { at: "-1000000" }
+        { at: "1000000" }
+      ] } }
+  ]
+}

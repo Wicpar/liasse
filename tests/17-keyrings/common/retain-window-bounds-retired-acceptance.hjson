@@ -1,0 +1,96 @@
+{
+  format: 1
+  name: retain-window-bounds-retired-acceptance
+  suite: scenario
+  tags: ["rotation"]
+  spec: ["#keyrings", "§17.1", "§17.3", "§17.7", "#authentication"]
+  note: "§17.1/§17.3: $retain controls how long a retired version remains accepted for verification. v1 retires between day 30 (scheduled) and day 31 (due rotation before the triggering login, §17.4), so with $retain P45D its acceptance ends between days 75 and 76. Day 60 is inside the window under either reading (token verifies, §17.7); day 90 is beyond it under either reading (authentication is denied). Session validity itself never expires in this package, isolating the keyring rule."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "enabled": "bool = true"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+        "revoked": "bool = false"
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$auth": {
+        "session": {
+          "$credential": "bytes"
+          "$verify": "cose.verify(/session_keys, $credential)"
+          "$session": "/sessions[$proof.session]"
+          "$actor": "/accounts[$session.account]"
+          "$check": ["$proof.auth == $auth_name", "!$session.revoked"]
+        }
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "session"
+          "$members": ".accounts[:a | a.enabled]"
+          "mysessions": { "$view": "/sessions[:s | s.account == $actor] { revoked }" }
+        }
+      }
+    }
+    "$data": { "accounts": { "alice": { "name": "Alice" } } }
+  }
+
+  steps: [
+    // Day 0: token signed by v1.
+    { call: "public.login.login", args: { account: "alice" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$bind:tok1" } } }
+    // Day 31: rotation due at day 30 has happened by the end of this call.
+    { advance_time: "P31D" }
+    { call: "public.login.login", args: { account: "alice" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$any" } } }
+    // Day 60: within the retain window — the retired v1 still verifies.
+    { advance_time: "P29D" }
+    { connect: "c2",
+      authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
+      expect: { outcome: ok } }
+    // Day 90: beyond the retain window — verification no longer accepts v1.
+    { advance_time: "P30D" }
+    { connect: "c3",
+      authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
+      expect: { outcome: denied, violates: ["§17.1", "§17.3"] } }
+  ]
+}

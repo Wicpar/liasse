@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: spend-deletion-releases-allocation
+  suite: scenario
+  spec: ["#meters", "§15.2"]
+  note: "Deleting a spend releases its current allocation (SPEC §15.2): capacity fully drained by a spend becomes available again once that spend row is deleted."
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.release@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+          revoke: ".spends - @spend"
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: {
+            consume: ".users[@user].consume"
+            revoke: ".users[@user].revoke"
+          }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { user: "u1", amount: "100" },
+      expect: { outcome: ok, value: { id: "$bind:s1" } } }
+    { call: "public.wallet.consume", args: { user: "u1", amount: "10" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+    // deleting the exhausting spend releases its allocation
+    { call: "public.wallet.revoke", args: { user: "u1", spend: "$ref:s1" },
+      expect: { outcome: ok } }
+    { call: "public.wallet.consume", args: { user: "u1", amount: "90" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "10" } ] } }
+  ]
+}

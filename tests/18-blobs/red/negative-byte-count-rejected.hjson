@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: negative-byte-count-rejected
+  suite: scenario
+  spec: ["#blobs", "§18.1"]
+  tags: ["blob", "boundary", "identity"]
+  note: '''
+    §18.1: "$bytes is a non-negative integer byte count." A descriptor
+    declaring a negative $bytes is a malformed descriptor value regardless of
+    the streamed content, so the upload is rejected before admission. Probes
+    the lower boundary of the $bytes domain with a hostile value.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.negbytes@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      $public: { docs: { $mut: { add: ".add" } } }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "hello"
+        media: "text/plain"
+        claim: { $bytes: -5 }
+        on: "c1"
+      }
+      expect: { outcome: rejected, violates: ["#blobs"],
+                detail: "$bytes must be a non-negative integer" } }
+  ]
+}
+</content>

@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: unused-requirement-declaration
+  suite: static
+  spec: ["#host-namespaces"]
+  tags: ["pedantic"]
+  note: '''
+    Pedantic corner: the package declares a requirement it never calls.
+    §16.2 says "A package declares only the non-core namespaces it USES" —
+    read strictly, an unused requirement violates the sentence and would be
+    invalid; read as descriptive guidance, the requirement still resolves
+    (the host supplies it) and the package loads with a pinned but unused
+    descriptor. The rejection list in §16.2 covers only missing,
+    incompatible, or ambiguous requirements — over-declaration appears in
+    no rejection rule. UNSPECIFIED: the spec does not pin whether an
+    unused, resolvable requirement is accepted or rejected. This matters
+    for red review: an unused requirement widens the attack surface pinned
+    into the install record without any expression ever exercising it.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.unusedreq@1.0.0"
+    $requires: {
+      cbor: "liasse.cbor@1"   // resolvable, never used below
+    }
+    $model: {
+      n: "int = 0"
+      $public: {
+        stats: { $view: ".n" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "liasse.cbor"
+        version: "1.2.0"
+        interface_hash: "ih-cbor-1"
+        functions: {
+          encode: { signature: "(int) -> bytes", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: unspecified
+    violates: ["#host-namespaces"]
+    detail: "whether a declared, resolvable, but unused namespace requirement loads or is rejected is not pinned by §16.2"
+  }
+}

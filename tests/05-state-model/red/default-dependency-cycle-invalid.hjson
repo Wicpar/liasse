@@ -1,0 +1,31 @@
+{
+  format: 1
+  name: default-dependency-cycle-invalid
+  suite: static
+  spec: ["#state-model", "§5.1"]
+  tags: ["boundary"]
+  note: '''Resource-abuse / hang hunt: two defaults that each read the other would make
+insertion-time evaluation loop or produce an arbitrary implementation-chosen value.
+§5.1: 'Defaults and computed insertion values form one dependency graph. The model is
+valid when that graph is acyclic' — a cyclic graph is therefore statically invalid at
+load, never a runtime hang.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.cycle@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        a: "int = .b + 1"
+        b: "int = .a + 1"
+      }
+    }
+  }
+
+  expect: {
+    outcome: "invalid"
+    violates: ["§5.1"]
+    detail: "the default dependency graph of a and b is cyclic"
+  }
+}

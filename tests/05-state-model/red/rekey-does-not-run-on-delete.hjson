@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: rekey-does-not-run-on-delete
+  suite: scenario
+  spec: ["#state-model", "§5.4", "§5.6"]
+  tags: ["identity"]
+  note: '''Attack surface: an implementation that realizes rekey as delete + reinsert would
+fire $on_delete. With a cascade policy that would silently destroy every referencing
+row. §5.4: on rekey 'The row and its descendants retain their logical incarnation and
+history continuity; $on_delete does not run.' The contact must survive with the ref
+rewritten to the new key.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.rekeycascade@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      contacts: {
+        $key: "id"
+        id: "text"
+        company: {
+          $ref: "/companies"
+          $on_delete: "cascade"
+        }
+      }
+      $public: {
+        contacts: {
+          $view: ".contacts { id, company }"
+          $mut: {
+            add_company: ".companies + { id: @id, name: @name }"
+            add_contact: ".contacts + { id: @id, company: @company }"
+            rekey_company: ".companies[@old].id = @new"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.contacts.add_company", args: { id: "acme", name: "Acme" },
+      expect: { outcome: "ok" } }
+    { call: "public.contacts.add_contact", args: { id: "c1", company: "acme" },
+      expect: { outcome: "ok" } }
+    { call: "public.contacts.rekey_company", args: { old: "acme", new: "newco" },
+      expect: { outcome: "ok" } }
+    // the cascade must NOT have fired; the ref shows the new key
+    { watch: "public.contacts", id: "w1",
+      expect_init: { value: [ { id: "c1", company: "newco" } ] } }
+  ]
+}

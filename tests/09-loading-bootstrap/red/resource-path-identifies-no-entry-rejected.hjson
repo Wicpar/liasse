@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: resource-path-identifies-no-entry-rejected
+  suite: static
+  spec: ["#package-structure", "#loading"]
+  tags: ["tampering"]
+  note: '''
+    Stripped-entry tampering, distinct from the digest-mismatch and
+    path-traversal cases: the $resources path is well-formed and stays inside
+    the archive root, its digest is well-formed, but the named archive entry is
+    simply not present (as if removed after the definition was authored, so no
+    bytes exist to digest). §4.1: "Paths MUST remain inside the archive root and
+    MUST identify one entry"; §9.2 step 2: "verify the artifact entries and
+    resource digests". The resolution of the referenced entry fails during
+    complete validation, so the load is rejected before activation and no
+    surface ever becomes reachable. No `resources` member is declared, so the
+    path resolves to nothing (see NOTES.md).
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.missingentry@1.0.0"
+    "$resources": {
+      "logo": {
+        "$path": "resources/logo.txt"
+        "$media": "text/plain"
+        "$sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+    "$model": {
+      "items": {
+        "$key": "id"
+        "id": "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "#loading"]
+    detail: "resource path 'resources/logo.txt' identifies no archive entry"
+  }
+}

@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: window-size-zero-empty-window
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["window", "boundary"]
+  note: '''
+    Boundary abuse: request a zero-row window. §12.2: "`$size` is the
+    requested non-negative row count", so 0 is a valid request; with no
+    anchor the window is "the first `n` rows", i.e. none. The subscription
+    must open with an empty complete result, stay empty across later commits,
+    and remain live (its frontier still advances through the commit made on
+    the same connection).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.items@1.0.0"
+    $data: {
+      items: {
+        a: {}
+        b: {}
+      }
+    }
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      $mut: {
+        add: ".items + { id: @id }"
+      }
+      index: {
+        $view: ".items { id, $sort: [id] }"
+      }
+      $public: {
+        items: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      watch: "public.items"
+      on: "c1"
+      id: "w1"
+      window: { $size: 0 }
+      expect_init: { frontier: "$any", value: [] }
+    }
+    {
+      call: "public.items.add"
+      args: { id: "c" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    // Evaluated at the advanced frontier, the zero-row window is still empty.
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

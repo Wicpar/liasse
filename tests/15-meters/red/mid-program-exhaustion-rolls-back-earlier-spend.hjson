@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: mid-program-exhaustion-rolls-back-earlier-spend
+  suite: scenario
+  spec: ["#meters", "§15.2", "#runtime", "§22.2"]
+  note: '''Refund-on-failure: one mutation program inserts two spends; the second exceeds
+the remaining capacity. Insufficient eligible capacity rejects the complete
+transition (§15.2), and atomic admission (§22.2) leaves the prior committed state
+intact — including the first spend's provisional allocation, which must be fully
+released. The follow-up full-capacity spend proves nothing leaked.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.rollback@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume_two: [
+            ".spends + { amount: @a }"
+            ".spends + { amount: @b }"
+          ]
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: {
+            consume_two: ".users[@user].consume_two"
+            consume: ".users[@user].consume"
+          }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    // 60 + 60 > 100: the second insert fails allocation, the whole program is rejected
+    { call: "public.wallet.consume_two", args: { user: "u1", a: "60", b: "60" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+    // no partial effect: the full 100 are still available
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "u1", balance: "100" } ] } }
+    { call: "public.wallet.consume", args: { user: "u1", amount: "100" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+  ]
+}

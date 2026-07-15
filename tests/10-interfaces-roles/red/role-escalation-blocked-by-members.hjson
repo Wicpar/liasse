@@ -1,0 +1,85 @@
+{
+  format: 1
+  name: role-escalation-blocked-by-members
+  suite: scenario
+  // Privilege escalation attempt: a valid, authenticated member tries to use
+  // the admin role's surface. §10.3: each role defines "the views and
+  // mutations available to those actors" and $members decides who holds the
+  // role. Holding one role grants nothing from another role; the same
+  // credential naming the admin role must be denied at admission.
+  spec: ["#interfaces", "§10.3", "#authentication"]
+  tags: ["authz", "escalation"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.escalation@1.0.0"
+    "$model": {
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "is_admin": "bool = false"
+      }
+      "notes": {
+        "$key": "id"
+        "id": "text"
+        "body": "text"
+      }
+      "$mut": {
+        "add_note": [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+        "wipe_notes": "-.notes[:n]"
+      }
+      "$auth": {
+        "token": {
+          "$credential": "text"
+          "$verify": "$credential"
+          "$actor": "/accounts[$proof]"
+        }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "token"
+          "$members": ".accounts"
+          "notes": {
+            "$view": ".notes { id, body }"
+            "$mut": { "add": ".add_note" }
+          }
+        }
+        "admin": {
+          "$auth": "token"
+          "$members": ".accounts[:a | a.is_admin]"
+          "control": {
+            "$mut": { "wipe": ".wipe_notes" }
+          }
+        }
+      }
+    }
+    "$data": {
+      "accounts": {
+        "alice": {}
+        "bob": { "is_admin": true }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "member", auth: "token", credential: "alice" } }
+    { call: "member.notes.add", args: { id: "n1", body: "keep me" }, on: "c1",
+      expect: { outcome: ok, value: { id: "n1", body: "keep me" } } }
+    // Cross-role call on the member-authenticated connection.
+    { call: "admin.control.wipe", args: {}, on: "c1",
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "membership in member does not grant admin surfaces" } }
+    // Re-authenticating FOR the admin role with a valid credential does not
+    // help: alice does not occur in admin's $members.
+    { connect: "c2", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+    { call: "admin.control.wipe", args: {}, on: "c2",
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "actor is not a member of the admin role" } }
+    // The note survived both attempts.
+    { watch: "member.notes", on: "c1", id: "w1",
+      expect_init: { value: [ { id: "n1", body: "keep me" } ] } }
+  ]
+}

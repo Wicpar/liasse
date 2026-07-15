@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: set-compared-as-sorted-member-sequence
+  suite: scenario
+  spec: ["#annex-b", "§B.4", "§B.1"]
+  tags: ["ordering"]
+  note: '''
+    §B.4 set: "sort members by element order, then compare the resulting member
+    sequences". A set has no authored order, so its comparison key is the
+    member sequence sorted by the element type's order (§B.1 text). Attack:
+    hope a set's sort position depends on the order members were inserted, or
+    on set size/hash. It must not — {"c","a"} and {"a","c"} are the same value
+    and both compare as the sequence [a,c].
+
+    Seeded sets (insertion order deliberately scrambled) and their sorted
+    member sequences:
+      {c,a}  -> [a,c]
+      {a,b}  -> [a,b]
+      {b,c}  -> [b,c]
+    Sequence comparison (all length 2, so no length ambiguity is invoked):
+      [a,b] < [a,c]   differ at position 2: b < c
+      [a,c] < [b,c]   differ at position 1: a < b
+    Correct ascending order of the owning rows: r_ab, r_ca, r_bc.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.set@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        tags: { $set: "text" }
+      }
+      $public: {
+        by_tags: { $view: ".rows { id, tags, $sort: [tags] }" }
+      }
+    }
+    $data: {
+      rows: {
+        r_ca: { tags: ["c", "a"] }
+        r_ab: { tags: ["b", "a"] }
+        r_bc: { tags: ["c", "b"] }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_tags", id: "w1",
+      expect_init: { value: [
+        { id: "r_ab", tags: ["a", "b"] }
+        { id: "r_ca", tags: ["a", "c"] }
+        { id: "r_bc", tags: ["b", "c"] }
+      ] } }
+  ]
+}

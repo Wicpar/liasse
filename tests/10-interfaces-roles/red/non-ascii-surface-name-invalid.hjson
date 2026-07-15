@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: non-ascii-surface-name-invalid
+  suite: static
+  // Confusable at declaration time: the package declares a public surface
+  // named "tаsks" whose second letter is CYRILLIC SMALL LETTER A (U+0430).
+  // §2.5: "Application declaration names MUST begin with an ASCII letter and
+  // contain only ASCII letters, digits, and `_`." The build/load must reject
+  // the package, keeping the external namespace confusable-free.
+  spec: ["#conformance", "#interfaces", "§10.2"]
+  tags: ["unicode"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.confusable_decl@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": "text"
+      }
+      "$public": {
+        // Invalid: surface name contains U+0430.
+        "tаsks": {
+          "$view": ".tasks { id, title }"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#conformance"]
+    detail: "declaration names must contain only ASCII letters, digits, and underscore"
+  }
+}

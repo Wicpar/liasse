@@ -1,0 +1,55 @@
+{
+  // §22.4: "A request observes every committed request ordered before it." A
+  // separate later request (a read-only `count` mutation) must see the effect
+  // of an earlier committed insert. This isolates the visibility guarantee for
+  // a *distinct* request, not read-your-writes within one program.
+  format: 1
+  name: request-observes-prior-committed-request
+  suite: scenario
+  spec: ["§22.4", "#runtime"]
+  tags: ["ordering", "visibility"]
+
+  package: {
+    $liasse: 1
+    $app: "t.observe@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "uuid = uuid()"
+        label: "text"
+      }
+      $mut: {
+        add: [
+          "it = .items + { label: @label }"
+          "return it { id }"
+        ]
+        // Read-only program: observes committed state at its serial position.
+        total: "return count(.items)"
+      }
+      $public: {
+        items: {
+          $mut: {
+            add: ".add"
+            total: ".total"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "public.items.total", args: {}, on: "c1",
+      expect: { outcome: ok, completion: unchanged, value: 0 } }
+    { call: "public.items.add", args: { label: "x" }, on: "c1",
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    {
+      // This later request is ordered after the commit above and must observe
+      // it: exactly one item.
+      call: "public.items.total"
+      args: {}
+      on: "c1"
+      expect: { outcome: ok, completion: unchanged, value: 1 }
+    }
+  ]
+}

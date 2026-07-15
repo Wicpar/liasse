@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: collection-receiver-without-row-selection-invalid
+  suite: static
+  tags: [grammar, surface, receiver]
+  // Attack: point a surface row-mutation at the whole collection with no row
+  // selected, hoping it fans out or is accepted. Annex C.10: "A declared
+  // row-mutation reference includes a receiver expression resolving exactly one
+  // row before the mutation name. ... A collection without row selection is not
+  // a valid row-mutation receiver." §8.2: 'complete' is a row mutation needing
+  // a selected row. '.tasks.complete' names the collection with no selector and
+  // must fail static validation.
+  spec: ["#annex-c", "§C.10", "#mutations", "§8.2"]
+
+  package: {
+    $liasse: 1
+    $app: "t.badreceiver@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool = false"
+        $mut: {
+          complete: ".done = true"
+        }
+      }
+      all: { $view: ".tasks { id, done }" }
+      $public: {
+        tasks: {
+          $view: ".all"
+          $mut: { complete: ".tasks.complete" }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.10"]
+    detail: "'.tasks.complete' uses a collection with no row selection as a row-mutation receiver"
+  }
+}

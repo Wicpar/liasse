@@ -1,0 +1,41 @@
+{
+  format: 1
+  name: row-mutation-zero-occurrences-rejected
+  suite: scenario
+  spec: ["#expressions", "§6.3", "§10.1"]
+  note: "§6.3: 'A context requiring one row, such as a row-mutation receiver ... MUST receive exactly one occurrence. Zero or several occurrences reject that evaluation.' A call whose receiver key is absent rejects and leaves state unchanged."
+
+  package: {
+    $liasse: 1
+    $app: "t.receiver@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+        $mut: {
+          complete: ".done = true"
+        }
+      }
+      $public: {
+        tasks: {
+          $view: ".tasks { id, done }"
+          $mut: { complete: ".tasks[@id].complete" }
+        }
+      }
+    }
+    $data: {
+      tasks: {
+        t1: { done: false }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1",
+      expect_init: { value: [ { id: "t1", done: false } ] } }
+    { call: "public.tasks.complete", args: { id: "zz" },
+      expect: { outcome: "rejected", violates: ["#expressions"] } }
+    { expect_view: { watch: "w1", value: [ { id: "t1", done: false } ] } }
+  ]
+}

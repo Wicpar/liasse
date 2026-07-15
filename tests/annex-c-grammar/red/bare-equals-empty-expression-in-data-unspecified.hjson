@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: bare-equals-empty-expression-in-data-unspecified
+  suite: static
+  tags: [grammar, escaping, boundary]
+  // Boundary probe: the escape's mirror image. Annex C.4 makes a $data string
+  // beginning with '=' an expression ("= expr"), and §4.2 confirms "a string
+  // beginning with = is an expression". But the value "=" is '=' followed by an
+  // EMPTY expression body. Neither Annex C.4 nor §4.2 states whether an empty
+  // expression after '=' is (a) a static error, (b) a literal "=", or (c) some
+  // empty/none result. The spec pins the non-empty cases only.
+  note: "Annex C.4 and §4.2 define '= expr' for a non-empty expression and \"'= text\" / \"'text\" for literals, but neither text defines the degenerate value \"=\" (the '=' marker with no expression after it). Its outcome — load error vs. literal '=' vs. empty result — is not deducible from SPEC.md."
+  spec: ["#annex-c", "§C.4", "#package-structure", "§4.2"]
+
+  package: {
+    $liasse: 1
+    $app: "t.bareequals@1.0.0"
+    $model: {
+      doc: { label: "text" }
+      view_doc: { $view: ".doc { label }" }
+      $public: {
+        doc: { $view: ".view_doc" }
+      }
+    }
+    $data: {
+      doc: { label: "=" }
+    }
+  }
+
+  expect: {
+    outcome: unspecified
+  }
+}

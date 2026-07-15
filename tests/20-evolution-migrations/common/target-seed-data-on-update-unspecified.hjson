@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: target-seed-data-on-update-unspecified
+  suite: scenario
+  spec: ["#evolution", "§20.1", "§13.13", "§9.1"]
+  note: '''
+    Spec gap. §20.1 describes migration purely in terms of `$old` (source
+    state) and `.` (prospective target after compatible copies and `$from`),
+    and never says how a *target package's own* `$data` seed participates in a
+    root-application update. §13.13 defines a three-way seed merge, but only for
+    MODULE updates; nothing extends it to the root app, and §9.1 seed semantics
+    are written for genesis `create`, not `load`-time update.
+
+    Concretely: version 1.0.0 seeds items/a with value "old". Version 1.1.0
+    also declares `$data` for items/a with value "new" (a compatible
+    definition change otherwise). Whether the post-update live value of
+    items/a is "old" (migration copy of existing state wins), "new" (new seed
+    overwrites), or a three-way merge outcome is not deducible from §20. The
+    load itself succeeds; only the resulting value is unpinned.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.seed@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        value: "text"
+      }
+      $public: {
+        items: { $view: ".items { id, value }" }
+      }
+    }
+    $data: {
+      items: { a: { value: "old" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.seed@1.1.0"
+          $model: {
+            items: {
+              $key: "id"
+              id: "text"
+              value: "text"
+            }
+            $public: {
+              items: { $view: ".items { id, value }" }
+            }
+          }
+          $data: {
+            items: { a: { value: "new" } }
+          }
+        }
+      }
+      expect: { outcome: ok } }
+    { watch: "public.items", id: "w1",
+      expect_init: { outcome: unspecified } }
+  ]
+}

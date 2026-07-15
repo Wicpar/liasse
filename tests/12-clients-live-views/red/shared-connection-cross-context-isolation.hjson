@@ -1,0 +1,111 @@
+{
+  format: 1
+  name: shared-connection-cross-context-isolation
+  suite: scenario
+  spec: ["#clients", "#authentication"]
+  tags: ["authz", "aliasing", "coherence"]
+  note: '''
+    Attack: multiplex two authentication contexts on one connection and hope
+    the connection-level completion barrier leaks one actor's rows into the
+    other actor's subscription. §11.8: "The connection-level completion
+    barrier advances every subscription through a successful call's commit,
+    while each subscription continues to apply its own authorization and
+    projection." So bob's subscription must advance through alice's commit and
+    still show nothing of alice's data.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.roletasks@1.0.0"
+    $requires: { authsim: "test.authsim@1" }
+    $data: {
+      accounts: {
+        alice: {}
+        bob: {}
+      }
+    }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        enabled: "bool = true"
+      }
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        owner: "text"
+        title: "text"
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "authsim.verify($credential)"
+          $actor: "/accounts[$proof.account]"
+          $check: "$proof.auth == $auth_name"
+        }
+      }
+      $mut: {
+        add_own: [
+          "task = .tasks + { owner: $actor.id, title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts[:a | a.enabled]"
+          tasks: {
+            $view: ".tasks[:t | t.owner == $actor.id] { id, title, $sort: [title] }"
+            $mut: {
+              add: ".add_own"
+            }
+          }
+        }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: {
+      authsim: {
+        contract: "test.authsim@1"
+        functions: {
+          verify: {
+            effect: "verifier"
+            signature: "(credential: text) -> { auth: text, account: text }"
+            behavior: "Splits the credential at the first ':' into { auth, account }. Any credential containing ':' verifies; others fail verification."
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      authenticate: { role: "member", auth: "token", credential: "token:alice" }
+      on: "c1"
+      as: "alice"
+    }
+    {
+      authenticate: { role: "member", auth: "token", credential: "token:bob" }
+      on: "c1"
+      as: "bob"
+    }
+    { watch: "member.tasks", on: "c1", context: "alice", id: "wa", expect_init: { value: [] } }
+    { watch: "member.tasks", on: "c1", context: "bob", id: "wb", expect_init: { value: [] } }
+    {
+      call: "member.tasks.add"
+      args: { title: "alice-secret" }
+      on: "c1"
+      context: "alice"
+      expect: { outcome: ok, completion: committed, value: { id: "$bind:t1", title: "alice-secret" } }
+    }
+    // Alice's own subscription reflects her commit.
+    { expect_view: { watch: "wa", value: [ { id: "$ref:t1", title: "alice-secret" } ] } }
+    // Bob's subscription has advanced through the same commit (its frontier
+    // covers it) yet its own projection must still be empty: no cross-context
+    // leak through the shared barrier.
+    { expect_view: { watch: "wb", value: [] } }
+  ]
+}

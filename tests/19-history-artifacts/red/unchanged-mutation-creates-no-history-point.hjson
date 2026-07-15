@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: unchanged-mutation-creates-no-history-point
+  suite: scenario
+  tags: [boundary]
+  // Pedantic corner: a mutation that assigns the value a field already has
+  // produces no state change, so it "returns unchanged and creates no
+  // commit" (§22.2). §19.2: "History construction follows committed
+  // transitions" — no commit, no new history point. The selected point
+  // after the no-op call must be the SAME exported point as before it.
+  spec: ["§22.2", "§19.2", "§19.3"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+        set_body: [
+          ".notes[@id].body = @body"
+          "return .notes[@id] { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put", set_body: ".set_body" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "x" },
+      expect: { outcome: ok, value: { id: "n1", body: "x" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a1", expect: {
+        outcome: ok
+        manifest: { selected: { lineage: "$bind:l1", point: "$bind:p1" }, "...": true }
+    } } }
+    // Same value again: no state change, no commit.
+    { call: "public.notes.set_body", args: { id: "n1", body: "x" },
+      expect: { outcome: ok } }
+    { export: { as: "a2" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a2", expect: {
+        outcome: ok
+        manifest: { selected: { lineage: "$ref:l1", point: "$ref:p1" }, "...": true }
+    } } }
+  ]
+}

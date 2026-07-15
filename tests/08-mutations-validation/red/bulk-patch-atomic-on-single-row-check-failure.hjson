@@ -1,0 +1,67 @@
+{
+  // Attack/corner: a bulk patch applies to every selected row (§8.6); one of
+  // the selected rows fails its field check after the patch. §8.8/§22.2:
+  // the check rejects the COMPLETE mutation — the rows that individually
+  // passed must not be committed either.
+  format: 1
+  name: bulk-patch-atomic-on-single-row-check-failure
+  suite: scenario
+  spec: ["#mutations", "§8.6", "§8.8", "§22.2"]
+  tags: ["atomicity"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.bulkatomic@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "prio": {
+          "$type": "int"
+          "$check": [". <= 3", "priority capped at 3"]
+        }
+      }
+      "$mut": {
+        "bump_all": ".tasks[:t] { prio = t.prio + 1 }"
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, prio }"
+          "$mut": { "bump_all": ".bump_all" }
+        }
+      }
+    }
+    "$data": {
+      "tasks": {
+        "t1": { "prio": "1" }
+        "t2": { "prio": "3" }
+      }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.tasks"
+      id: "w1"
+      expect_init: {
+        value: [ { id: "t1", prio: "1" }, { id: "t2", prio: "3" } ]
+      }
+    }
+    {
+      call: "public.tasks.bump_all"
+      args: {}
+      // t2 would become 4 and fail its check; t1's valid bump must not leak.
+      expect: {
+        outcome: rejected
+        violates: ["§8.8", "§22.2"]
+        detail: "one patched row fails its field check; the whole bulk patch is rejected"
+      }
+    }
+    {
+      expect_view: {
+        watch: "w1"
+        value: [ { id: "t1", prio: "1" }, { id: "t2", prio: "3" } ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: seed-json-null-distinct-from-omitted-none
+  suite: scenario
+  spec: ["#loading", "§A.1"]
+  tags: ["boundary"]
+  note: '''
+    Confusable-absence boundary. §9.1: "An omitted optional field is none;
+    JSON null remains a present JSON value." Annex A.1: JSON null is a value
+    of type json, none is absence and appears as an omitted member on the
+    wire. Row "a" seeds an explicit null payload, row "b" omits it. A lossy
+    implementation that conflates null with none (a classic serialization
+    bug) would either drop a's payload or invent one for b. Expected: a's
+    payload member is present with value null; b's payload member is absent.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.jsonnull@1.0.0"
+    "$model": {
+      "docs": {
+        "$key": "id"
+        "id": "text"
+        "payload": "json?"
+      }
+      "$public": {
+        "docs": { "$view": ".docs { id, payload }" }
+      }
+    }
+    "$data": {
+      "docs": {
+        "a": { "payload": null }
+        "b": {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.docs", id: "w1",
+      expect_init: { value: { $unordered: [
+        { id: "a", payload: null }
+        { id: "b", payload: "$absent" }
+      ] } } }
+  ]
+}

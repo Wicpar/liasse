@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: merge-equal-inserts-incarnation-unspecified
+  suite: scenario
+  tags: [identity]
+  // Both sides insert a row with the same key AND identical field values.
+  note: '''§19.9 accepts "equal results reached on both sides", comparing
+"logical states". But Annex D.1 gives every inserted row an opaque immutable
+incarnation allocated at insertion, and refs, history coordinates, and
+deletion records durably bind that incarnation. The two inserts here are
+logically identical yet carry two independently allocated incarnations. The
+spec does not say whether "equal results" compares typed field values only
+(merge accepts, and then which incarnation survives — with consequences for
+any later ref or history coordinate?) or identity continuity too (merge
+conflicts as "competing identities"). Both readings are defensible, so the
+merge outcome is unspecified.'''
+  spec: ["§19.9", "Annex D.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "base", body: "anchor" },
+      expect: { outcome: ok, value: { id: "base", body: "anchor" } } }
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a0" }, expect: { outcome: ok } }
+      { call: "public.notes.put", args: { id: "k", body: "same" },
+        expect: { outcome: ok, value: { id: "k", body: "same" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    { call: "public.notes.put", args: { id: "k", body: "same" },
+      expect: { outcome: ok, value: { id: "k", body: "same" } } }
+    { reconcile: { from: "a2", policy: ["merge"] },
+      expect: { outcome: unspecified, violates: ["§19.9", "Annex D.1"] } }
+  ]
+}

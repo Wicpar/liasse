@@ -1,0 +1,98 @@
+{
+  format: 1
+  name: disabled-account-fails-role-admission
+  suite: scenario
+  spec: ["#authentication", "§11.7", "#interfaces", "§10.3"]
+  tags: ["authz"]
+  note: '''
+    §11.7: "A later request using that session fails authentication or role
+    admission." §10.3: "$members decides whether that row holds the role at
+    the request's admission position." Authentication itself succeeds here —
+    the session is active, unrevoked, and $actor resolves — but the resolved
+    account has enabled=false, so it does not occur in $members and the role
+    is not held.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.auth@1.0.0"
+    $requires: { token: "test.token@1" }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+        enabled: "bool = true"
+      }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        expires_at: "timestamp"
+        revoked: "bool = false"
+      }
+      notes: {
+        $key: "id"
+        id: "uuid = uuid()"
+        author: { $ref: "/accounts" }
+        body: "text"
+      }
+      $mut: {
+        add_note: [
+          "note = .notes + { author: $actor, body: @body }"
+          "return note { id, author, body }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: [
+            "$proof.auth == $auth_name"
+            "!$session.revoked"
+          ]
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          notes: {
+            $view: ".notes[:n | n.author == $actor] { id, body }"
+            $mut: { add: ".add_note" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice", enabled: false }
+      }
+      sessions: {
+        "5e551000-0000-4000-8000-000000000001": {
+          account: "aaaaaaaa-0000-4000-8000-000000000001"
+          expires_at: "2026-02-01T00:00:00Z"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    token: {
+      $namespace: "test.token@1"
+      tokens: {
+        "tok-alice": { auth: "session", session: "5e551000-0000-4000-8000-000000000001" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { call: "member.notes.add", args: { body: "x" }, on: "c1",
+      auth: { auth: "session", credential: "tok-alice" },
+      expect: { outcome: denied, violates: ["#interfaces", "#authentication"] } }
+  ]
+}

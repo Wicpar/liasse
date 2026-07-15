@@ -1,0 +1,37 @@
+{
+  format: 1
+  name: json-optional-distinguishes-null-and-none
+  suite: scenario
+  spec: ["§A.1", "§A.7"]
+  tags: ["wire", "json", "none"]
+  note: "Annex A.7: 'A Liasse optional JSON value has type json?, allowing both null and none.' Annex A.1: `none` is 'absent optional<T> value', rendered as an omitted optional field; JSON null is a distinct present value. Row `a` holds json null (present); row `b` omits the field (none). The projection must keep null on `a` and omit the member on `b` — the two are not interchangeable."
+
+  package: {
+    $liasse: 1
+    $app: "t.jsonopt@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        j: "json?"
+      }
+      $public: {
+        v: { $view: ".notes { id, j, $sort: [id] }" }
+      }
+    }
+    $data: {
+      notes: {
+        a: { j: null }
+        b: {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: [
+        { id: "a", j: null }
+        { id: "b", j: "$absent" }
+      ] } }
+  ]
+}

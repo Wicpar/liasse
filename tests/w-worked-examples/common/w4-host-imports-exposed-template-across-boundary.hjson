@@ -1,0 +1,97 @@
+{
+  format: 1
+  name: w4-host-imports-exposed-template-across-boundary
+  suite: scenario
+  spec: ["W4", "#modules", "§13.9", "§1310-stateful-services-across-module-boundaries"]
+  tags: [modules]
+  note: '''
+    W4 host fragment import_template reads a single exposed module row across the
+    boundary — "source = .modules[@module]::templates[@template]" — and copies
+    its label/journal/lines into the host's own companies.templates collection.
+    The boundary grants exactly the bound interface members (§13.8); the host
+    reads them through the ::templates interface (§13.9) and performs its own
+    ordinary insert in one atomic host transition. Afterwards the copied row is
+    visible in the host's private templates table, independent of the module.
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.company.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          plan: "text"
+          templates: {
+            $key: ["module", "template"]
+            module: "text", template: "text", label: "text", journal: "text", lines: "json"
+          }
+          $mut: {
+            rename: ".name = @name"
+            import_template: [
+              "source = .modules[@module]::templates[@template]"
+              '''.templates + {
+                module: @module, template: @template,
+                label: source.label, journal: source.journal, lines: source.lines
+              }'''
+            ]
+          }
+          modules: {
+            $modules: {
+              $expose: { company: { $view: ". { id, name, plan }", $mut: { rename: ".rename" } } }
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
+              }
+            }
+          }
+          imported_templates: {
+            $view: ".templates { module, template, label, journal, $sort: [module, template] }"
+          }
+        }
+        $public: {
+          imported: {
+            $params: { company: "text" }
+            $view: "/companies[@company].imported_templates"
+            $mut: { import: "/companies[@company].import_template" }
+          }
+        }
+      }
+      $data: { companies: { acme: { name: "Acme", plan: "fr-pcg" } } }
+    }
+
+    frsales: {
+      $liasse: 1
+      $module: "acme.fr_sales_templates@1.0.0"
+      $use: { company: "$parent" }
+      $model: {
+        templates: { $key: "id", id: "text", label: "text", journal: "text", enabled: "bool = true", lines: "json" }
+      }
+      $data: {
+        templates: {
+          sale_invoice: {
+            label: "Facture de vente"
+            journal: "VE"
+            enabled: "= #company.plan == 'fr-pcg'"
+            lines: [ { account: "411", side: "debit", amount: "'= total_ttc" } ]
+          }
+        }
+      }
+      $expose: { templates: { $view: ".templates[:t | t.enabled] { id, label, journal, lines }" } }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: { $name: "fr_sales", $module: "acme.fr_sales_templates@1.0.0" } }
+      expect: { outcome: ok } }
+    { call: "public.imported.import", args: { company: "acme", module: "fr_sales", template: "sale_invoice" }
+      expect: { outcome: ok } }
+    { watch: "public.imported", args: { company: "acme" }, id: "w1"
+      expect_init: { value: [
+        { module: "fr_sales", template: "sale_invoice", label: "Facture de vente", journal: "VE" }
+      ] } }
+  ]
+}

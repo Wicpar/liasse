@@ -1,0 +1,72 @@
+{
+  // Pedantic ordering probe on §22.3. On ONE connection, a request submitted
+  // after an earlier one returned `committed` is ordered after it (§22.7 makes
+  // the commit visible to later reads on that connection). But ACROSS
+  // connections there is no such guarantee: §22.3 lists causal completion as
+  // only an OPTIONAL precedence event — "Ordering events MAY include causal
+  // completion, an assigned ingress sequence, comparable receive timestamps, a
+  // sequencer, database serialization, or consensus." An implementation whose
+  // declared admission mechanism does not encode cross-connection wall-clock
+  // causality is free to serialize B before A even though B was issued only
+  // after A's response was observed on a different connection. The committed
+  // order of A and B is therefore unspecified.
+  format: 1
+  name: cross-connection-sequential-order-unspecified
+  suite: scenario
+  spec: ["§22.3", "§22.4", "#runtime"]
+  tags: ["ordering", "concurrency", "boundary"]
+  note: '''
+    §22.3 makes the precedence relation implementation-defined and lists causal
+    completion as an OPTIONAL ("MAY") ordering event. When append A on c1 has
+    returned before append B on c2 is issued, an engine that treats cross-
+    connection causal completion as precedence yields "ab"; an engine that does
+    not is permitted to yield "ba" (no path between the two requests => either
+    order valid). SPEC.md does not require the former, so the final trace is not
+    pinned. Both serializations are enumerated; the calls themselves succeed.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.crossorder@1.0.0"
+    $model: {
+      board: {
+        $key: "id"
+        id: "text"
+        trace: "text"
+        $mut: {
+          append: ".trace = .trace + @c"
+        }
+      }
+      $public: {
+        board: {
+          $view: ".board { id, trace }"
+          $mut: { append: ".board[@id].append" }
+        }
+      }
+    }
+    $data: {
+      board: { "b1": { trace: "" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { connect: "c2" }
+    // A completes on c1 before B is issued on c2 — wall-clock causal, but not
+    // necessarily an established precedence relation.
+    { call: "public.board.append", args: { id: "b1", c: "a" }, on: "c1",
+      expect: { outcome: ok } }
+    { call: "public.board.append", args: { id: "b1", c: "b" }, on: "c2",
+      expect: { outcome: ok } }
+    { watch: "public.board", on: "c1", id: "w1", expect_init: { value: "$any" } }
+    {
+      // Order not pinned by SPEC.md: see note. Recorded as an ambiguity —
+      // both serializations conform; neither is required.
+      expect_view: { watch: "w1" }
+      expect_one_of: [
+        { value: [ { id: "b1", trace: "ab" } ] }
+        { value: [ { id: "b1", trace: "ba" } ] }
+      ]
+    }
+  ]
+}

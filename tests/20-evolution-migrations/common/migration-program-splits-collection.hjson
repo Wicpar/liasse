@@ -1,0 +1,77 @@
+{
+  format: 1
+  name: migration-program-splits-collection
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.1: for one-to-many changes the target MAY declare a direct
+    `$migrations` program keyed by the exact active source version. This
+    reproduces the worked example: `users` splits into `people` (every user)
+    and `emails` (only users that have an email). `$old` is the read-only
+    source state; the program reads it and writes the target collections.
+    Seed: u1 has an email, u2 does not, so `emails` gets exactly one row.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.split@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        email: "text?"
+      }
+      $public: {
+        users: { $view: ".users { id, name }" }
+      }
+    }
+    $data: {
+      users: {
+        u1: { name: "  Ann  ", email: "ann@example.com" }
+        u2: { name: "Bob" }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.split@2.0.0"
+          $model: {
+            people: {
+              $key: "id"
+              id: "text"
+              display_name: "text"
+            }
+            emails: {
+              $key: "user"
+              user: "text"
+              email: "text"
+            }
+            $migrations: {
+              "1.0.0": [
+                ".people = $old.users { id, display_name: string.trim(.name) }"
+                ".emails = $old.users[:u | has(u.email)] { user: .id, email: .email }"
+              ]
+            }
+            $public: {
+              people: { $view: ".people { id, display_name, $sort: [id] }" }
+              emails: { $view: ".emails { user, email, $sort: [user] }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.people", id: "wp",
+      expect_init: { value: [
+        { id: "u1", display_name: "Ann" }
+        { id: "u2", display_name: "Bob" }
+      ] } }
+    { watch: "public.emails", id: "we",
+      expect_init: { value: [
+        { user: "u1", email: "ann@example.com" }
+      ] } }
+  ]
+}

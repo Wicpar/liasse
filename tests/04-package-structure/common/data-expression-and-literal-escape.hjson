@@ -1,0 +1,37 @@
+{
+  format: 1
+  name: data-expression-and-literal-escape
+  suite: scenario
+  spec: ["#package-structure", "§4.2", "#loading", "§9.1"]
+  note: "§4.2: in $data positions, a string beginning with '=' is an expression, and a leading ' stores a literal string beginning with '='. Both sides of the rule, straight from the spec's own examples: '= 1 + 1' must evaluate to 2, and \"'= total + tax\" must store the literal '= total + tax'."
+
+  package: {
+    $liasse: 1
+    $app: "t.escape@1.0.0"
+    $model: {
+      doc: {
+        formula: "text"
+        n: "int"
+      }
+      doc_view: {
+        $view: ".doc { formula, n }"
+      }
+      $public: {
+        doc: {
+          $view: ".doc_view"
+        }
+      }
+    }
+    $data: {
+      doc: {
+        formula: "'= total + tax"
+        n: "= 1 + 1"
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.doc", id: "w1",
+      expect_init: { value: { formula: "= total + tax", n: 2 } } }
+  ]
+}

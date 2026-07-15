@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: unknown-extra-entry-unspecified
+  suite: scenario
+  tags: [tampering]
+  // A benign-looking extra archive entry that is NOT referenced by the
+  // manifest at all.
+  note: '''Annex D.5 verification is defined over REFERENCED entries ("every
+referenced entry exists exactly once and every checksum matches"), so an
+unreferenced extra entry does not fail checksum verification. §19.5 closes
+the manifest's member set ("Additional members are invalid") but says
+nothing about unreferenced archive entries; the structure listing does not
+state whether it is exhaustive for entry names. Whether a conforming
+importer must reject, ignore, or strip an unreferenced entry is therefore
+unspecified. The gap matters: an unreferenced entry is an unauthenticated
+smuggling channel that survives inside an otherwise verified artifact.'''
+  spec: ["§19.5", "Annex D.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      { add_entry: { path: "extra/readme.txt", text: "not referenced anywhere" } }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: unspecified, violates: ["§19.5", "Annex D.5"] } }
+    ] }
+  ]
+}

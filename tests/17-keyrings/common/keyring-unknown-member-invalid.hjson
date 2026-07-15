@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: keyring-unknown-member-invalid
+  suite: static
+  spec: ["#keyrings", "§2.5", "§C.16"]
+  note: "§2.5: unknown members in a declaration object are invalid unless the declaration explicitly accepts application-defined member names. $keyring (§C.16) accepts none, so a stray $expire member is rejected."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$expire": "P30D"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§2.5", "§C.16"]
+    detail: "$expire is not a member of the $keyring declaration"
+  }
+}

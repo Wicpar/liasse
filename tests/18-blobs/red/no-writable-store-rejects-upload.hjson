@@ -1,0 +1,77 @@
+{
+  format: 1
+  name: no-writable-store-rejects-upload
+  suite: scenario
+  spec: ["#blobs", "§18.4", "§18.7", "§18.12"]
+  tags: ["blob", "placement", "connector-failure"]
+  note: '''
+    §18.4: a new write "rejects when none can" be fulfilled; §18.7: the
+    mutation "commits only after one complete policy branch is satisfied by
+    verified landed copies", re-evaluating the complete placement policy at the
+    final serial position. §18.12: "Temporary connector failure rejects or
+    delays the affected operation while preserving committed application state."
+    The single required store's connector is unavailable, so no verified copy
+    can land, the only policy branch cannot be satisfied, and the upload is
+    rejected with prior committed state intact.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.nowritable@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      count: { $view: "= size(.docs)" }
+      $public: {
+        docs: {
+          $view: ".count"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: 0 } }
+    { connector_set: { connector: "fs-a", available: false } }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "cannot land"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: rejected, violates: ["#blobs"],
+                detail: "no verified copy can land; the only placement branch is unsatisfiable" } }
+    // Committed application state is preserved across the rejected upload.
+    { expect_view: { watch: "w1", value: 0 } }
+  ]
+}
+</content>

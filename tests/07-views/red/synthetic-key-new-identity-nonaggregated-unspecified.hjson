@@ -1,0 +1,29 @@
+{
+  format: 1
+  name: synthetic-key-new-identity-nonaggregated-unspecified
+  suite: static
+  spec: ["#views", "§7.2"]
+  tags: ["grouping", "identity"]
+  note: "Spec gap. §7.2 says a projection '$key' may be declared 'for grouping OR a new identity', then states 'Every non-key source value MUST be aggregated or derived solely from key values.' When the synthetic key is a per-row UNIQUE new identity (here 'id', the source key itself), no rows share it, so grouping is trivial and the aggregation requirement reads oddly. Whether the MUST clause applies unconditionally (making this projection invalid because 'label' is a plain non-key source value) or applies only to genuine multi-row grouping (making it valid, a re-identity projection) is not disambiguated. Both readings are defensible; the spec pins neither."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewnewid@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        label: "text"
+      }
+      $public: {
+        reid: { $view: ".rows { $key: id, id, label }" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: "unspecified"
+    violates: ["#views"]
+    detail: "synthetic $key equal to the per-row source key: whether the 'aggregated or key-derived' rule applies when no rows share the key is not pinned"
+  }
+}

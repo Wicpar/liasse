@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: skip-beyond-size-empty-view
+  suite: scenario
+  spec: ["#views", "§7.3"]
+  tags: ["boundary"]
+  note: "Boundary: $skip larger than the row count. §7.3: '$skip discards the first non-negative number of rows.' Discarding 5 from a 2-row collection leaves nothing; the result is empty (not an error, not a wrap-around)."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewskipbig@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+      }
+      $public: {
+        page: { $view: ".items { id, $skip: 5 }" }
+      }
+    }
+    $data: {
+      items: {
+        a: {}
+        b: {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.page", id: "w1",
+      expect_init: { value: [] } }
+  ]
+}

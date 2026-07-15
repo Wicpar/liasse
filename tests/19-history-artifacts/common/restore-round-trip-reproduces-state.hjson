@@ -1,0 +1,48 @@
+{
+  format: 1
+  name: restore-round-trip-reproduces-state
+  suite: scenario
+  // §19.10: restoring an artifact reproduces the same owned logical state.
+  // §19.2: materialized history MUST reproduce the committed state.
+  spec: ["§19.10", "§19.2", "§19.8"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { call: "public.notes.put", args: { id: "n2", body: "two" },
+      expect: { outcome: ok, value: { id: "n2", body: "two" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1" }, expect: { outcome: ok } }
+      { watch: "public.notes", id: "w1", expect_init: { value: [
+        { id: "n1", body: "one" }
+        { id: "n2", body: "two" }
+      ] } }
+    ] }
+  ]
+}

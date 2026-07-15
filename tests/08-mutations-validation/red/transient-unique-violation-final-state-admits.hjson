@@ -1,0 +1,58 @@
+{
+  // Pedantic corner: statement 1 makes the prospective state violate a
+  // candidate key; statement 2 repairs it before the program ends.
+  // §22.1: "State constraints hold in every committed state" — committed, not
+  // intermediate prospective states. §22.2: the engine "admits the complete
+  // result once every applicable guarantee succeeds". The final state is
+  // unique-clean, so the transition commits.
+  format: 1
+  name: transient-unique-violation-final-state-admits
+  suite: scenario
+  spec: ["#mutations", "§8.1", "§5.7", "§22.1", "§22.2"]
+  tags: ["ordering", "atomicity"]
+  note: "Deduction: §22.1 scopes uniqueness (a state constraint) to committed states, and §22.2 evaluates guarantees against the complete result of the program. No rule subjects intermediate prospective states between statements to state constraints, so the transient duplicate in the prospective state after statement 1 must not reject the call."
+
+  package: {
+    "$liasse": 1
+    "$app": "t.transient@1.0.0"
+    "$model": {
+      "users": {
+        "$key": "id"
+        "$unique": ["email"]
+        "id": "text"
+        "email": "text"
+      }
+      "$mut": {
+        "shuffle": [
+          ".users['a'].email = 'b@x'"
+          ".users['b'].email = 'c@x'"
+          "return .users { id, email }"
+        ]
+      }
+      "$public": {
+        "users": { "$mut": { "shuffle": ".shuffle" } }
+      }
+    }
+    "$data": {
+      "users": {
+        "a": { "email": "a@x" }
+        "b": { "email": "b@x" }
+      }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.users.shuffle"
+      args: {}
+      // After statement 1 both rows carry b@x; the final state is distinct.
+      expect: {
+        outcome: ok
+        value: [
+          { id: "a", email: "b@x" }
+          { id: "b", email: "c@x" }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{
+  // §8.1: an array is one sequential atomic program; later statements observe
+  // the prospective effects of earlier statements. The same two assignments
+  // that swap inside one patch (see patch-reads-row-at-patch-start) instead
+  // overwrite when written as two sequential statements.
+  format: 1
+  name: sequential-statements-observe-earlier-writes
+  suite: scenario
+  spec: ["#mutations", "§8.1", "§8.6"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seqstmt@1.0.0"
+    "$model": {
+      "pairs": {
+        "$key": "id"
+        "id": "text"
+        "a": "text"
+        "b": "text"
+        "$mut": {
+          "copy_over": [
+            ".a = .b"
+            ".b = .a"
+            "return . { a, b }"
+          ]
+        }
+      }
+      "$public": {
+        "pairs": { "$mut": { "copy_over": ".pairs[@id].copy_over" } }
+      }
+    }
+    "$data": {
+      "pairs": { "p1": { "a": "x", "b": "y" } }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.pairs.copy_over"
+      args: { id: "p1" }
+      // Statement 2 reads the prospective effect of statement 1:
+      // a := "y", then b := a == "y". No swap.
+      expect: { outcome: ok, value: { a: "y", b: "y" } }
+    }
+  ]
+}

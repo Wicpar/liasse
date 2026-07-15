@@ -1,0 +1,106 @@
+{
+  format: 1
+  name: hierarchical-limits-clear-every-level
+  suite: scenario
+  spec: ["#meters", "§15.4"]
+  note: '''The same meter name at several lexical ancestor rows: a spend MUST clear every
+declaration reached through that ancestor chain (SPEC §15.4). Step 1 isolates an
+account-level rejection (company has capacity), step 4 isolates a company-level
+rejection (account has capacity), and balances show each level holding its own
+allocations.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.hier@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        accounts: {
+          $key: "id"
+          id: "text"
+          topups: {
+            $key: "id"
+            id: "text"
+            amount: "decimal"
+          }
+          $limits: {
+            credits: {
+              $sources: { topup: ".topups { $quantity: .amount }" }
+            }
+          }
+          spends: {
+            $key: "id"
+            $consumes: "credits"
+            id: "uuid = uuid()"
+            amount: "decimal"
+            occurred_at: "timestamp = now()"
+          }
+          $mut: {
+            consume: [
+              "spend = .spends + { amount: @amount }"
+              "return spend { id }"
+            ]
+          }
+        }
+      }
+      $public: {
+        wallet: {
+          $view: '''.companies {
+            id,
+            balance: .credits.balance,
+            accounts: .accounts { id, balance: .credits.balance }
+          }'''
+          $mut: { consume: ".companies[@company].accounts[@account].consume" }
+        }
+      }
+    }
+    $data: {
+      companies: {
+        co: {
+          topups: { ct: { amount: "100" } }
+          accounts: {
+            a1: { topups: { at1: { amount: "50" } } }
+            a2: { topups: { at2: { amount: "200" } } }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // account level rejects: a1 has 50, company has 100
+    { call: "public.wallet.consume", args: { company: "co", account: "a1", amount: "60" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.4"],
+                detail: "the account-level credits declaration lacks capacity" } }
+    { call: "public.wallet.consume", args: { company: "co", account: "a1", amount: "40" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    // each level holds its own allocation for the same 40
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "co", balance: "60", accounts: [
+        { id: "a1", balance: "10" }
+        { id: "a2", balance: "200" }
+      ] } ] } }
+    // company level rejects: a2 has 200, company only 60 remain
+    { call: "public.wallet.consume", args: { company: "co", account: "a2", amount: "70" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.4"],
+                detail: "the company-level credits declaration lacks capacity" } }
+    { call: "public.wallet.consume", args: { company: "co", account: "a2", amount: "60" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { expect_view: { watch: "w1", value: [ { id: "co", balance: "0", accounts: [
+        { id: "a1", balance: "10" }
+        { id: "a2", balance: "140" }
+      ] } ] } }
+  ]
+}

@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: ambiguous-descriptor-resolution-rejected
+  suite: static
+  spec: ["#host-namespaces", "#conformance"]
+  tags: ["aliasing", "supply-chain"]
+  note: '''
+    Attack: dependency-confusion inside the host context. Two registered
+    descriptors both claim the semantic contract liasse.cbor at version
+    1.2.0 but carry DIFFERENT interface hashes (different typed function
+    sets), so the requirement liasse.cbor@1 has two distinct candidate
+    contracts and no rule can prefer one. §16.2: "Missing, incompatible, or
+    ambiguous requirements reject loading before the package becomes
+    active"; the install record must pin ONE resolved descriptor. The case
+    intentionally uses identical id+version so no version-preference
+    reading can resolve the tie (see NOTES.md: distinct-compatible-version
+    preference is not pinned by the spec and is not tested here).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.ambiguous@1.0.0"
+    $requires: {
+      cbor: "liasse.cbor@1"
+    }
+    $model: {
+      n: "int = 0"
+      encoded: { $view: "cbor.encode(.n)" }
+      $public: {
+        stats: { $view: ".encoded" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "liasse.cbor"
+        version: "1.2.0"
+        interface_hash: "ih-cbor-genuine"
+        functions: {
+          encode: { signature: "(int) -> bytes", effect: "pure", op: "double" }
+        }
+      }
+      {
+        id: "liasse.cbor"
+        version: "1.2.0"
+        interface_hash: "ih-cbor-imposter"
+        functions: {
+          encode: { signature: "(int) -> bytes", effect: "pure", op: "double" }
+          exfil: { signature: "(text) -> text", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces"]
+    detail: "two distinct descriptors satisfy liasse.cbor@1; ambiguous requirements reject loading before the package becomes active"
+  }
+}

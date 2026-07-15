@@ -1,0 +1,85 @@
+{
+  format: 1
+  name: minor-narrows-relative-to-active-intermediate-release-rejected
+  suite: scenario
+  spec: ["#annex-e"]
+  tags: [version]
+  note: '''
+    Attack on the version matrix: reach a narrow contract in two hops so each
+    step "looks" monotonic against genesis. E.1 rejects a minor that "narrows
+    relative to an earlier release in the same major," and the baseline at load
+    time is the currently active release (E.9). 1.1.0 widens genesis by adding
+    the optional output `region` (E.5 compatible); it commits and becomes
+    active. 1.2.0 then drops `region`. Even though 1.2.0's output equals the
+    original 1.0.0 output, it narrows relative to the ACTIVE 1.1.0 contract, so
+    it is rejected. The comparison is against the active release, not against
+    genesis.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.chain@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "region": "text?"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme" } } }
+  }
+
+  steps: [
+    // hop 1: widen genesis with an optional output field -> committed
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.chain@1.1.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+              "region": "text?"
+            }
+            "$public": {
+              "companies": { "$view": ".companies { id, name, region }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    // hop 2: drop `region` again -> narrows relative to the active 1.1.0
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.chain@1.2.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+              "region": "text?"
+            }
+            "$public": {
+              "companies": { "$view": ".companies { id, name }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#annex-e"]
+        detail: "1.2.0 removes output member `region` promised by the active 1.1.0 contract; narrowing rejected"
+      } }
+    // the active 1.1.0 contract (with region) remains in force (E.9)
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "Acme", region: "$absent" } ] } }
+  ]
+}

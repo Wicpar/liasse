@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: json-type-in-struct-key-excluded
+  suite: static
+  spec: ["§A.8"]
+  tags: ["key", "json"]
+  note: '''Attack: evade the 'json is not key-eligible' rule by hiding the json field one
+level down, inside a struct used as the key. Annex A.8 allows 'structs composed solely of
+key-eligible required fields' as keys, and separately excludes JSON. A struct key with a
+`json` member is therefore not composed solely of key-eligible fields and is statically
+invalid — nesting does not launder an ineligible type into a key.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.structjsonkey@1.0.0"
+    $model: {
+      docs: {
+        $key: "loc"
+        loc: {
+          area: "text"
+          meta: "json"
+        }
+        body: "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§A.8"]
+    detail: "struct key component 'meta' is json, which is not key-eligible"
+  }
+}

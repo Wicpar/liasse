@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: export-artifact-structure-and-mimetype
+  suite: scenario
+  // §19.5: every .liasse artifact uses the fixed ZIP64 structure; mimetype
+  // contains exactly "application/vnd.liasse+zip"; manifest.json has the
+  // required format-1 structure with definition/state/history descriptors.
+  spec: ["§19.5", "Annex D.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "hello" },
+      expect: { outcome: ok, value: { id: "n1", body: "hello" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { inspect_artifact: { artifact: "a1", expect: {
+        outcome: ok
+        mimetype: "application/vnd.liasse+zip"
+        manifest: {
+          format: 1
+          instance: "$any"
+          selected: { lineage: "$any", point: "$any" }
+          definition: { identity: "$any", path: "liasse.json" }
+          state: { path: "state/current.cbor.zst", sha256: "$any" }
+          history: { path: "history/index.json", sha256: "$any" }
+          "...": true
+        }
+    } } }
+  ]
+}

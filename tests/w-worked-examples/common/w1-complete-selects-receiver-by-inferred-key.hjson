@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: w1-complete-selects-receiver-by-inferred-key
+  suite: scenario
+  spec: ["W1", "#mutations", "§8.2", "§8.3", "#interfaces", "§10.1"]
+  tags: [view, receiver]
+  note: '''
+    W1: public.tasks.complete = ".tasks[@id].complete()". §8.2 complete is a row
+    mutation whose receiver `.` is the row selected by ".tasks[@id]"; §8.3 infers
+    @id : tasks.$key (uuid). The call flips done=true on exactly that row and
+    returns the committed projection. Observably, the completed row disappears
+    from the open_tasks view (filter !task.done) live on the same connection —
+    §12.3 advances the caller's subscriptions through the commit before success.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.tasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: {
+          $type: "text"
+          $normalize: "string.trim(.)"
+          $check: ["size(.) > 0", "A title is required"]
+        }
+        done: "bool = false"
+        created_at: "timestamp = now()"
+        $mut: {
+          complete: [
+            ".done = true"
+            "return . { id, title, done, created_at }"
+          ]
+        }
+      }
+      $mut: {
+        add_task: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title, done, created_at }"
+        ]
+      }
+      open_tasks: {
+        $view: ".tasks[:task | !task.done] { id, title, created_at, $sort: [-created_at] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".open_tasks"
+          $mut: {
+            add: ".add_task"
+            complete: ".tasks[@id].complete()"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.tasks.add", args: { title: "only" }, expect: { outcome: ok, value: { id: "$bind:t", "...": true } } }
+    { watch: "public.tasks", id: "w1", expect_init: { value: [ { id: "$ref:t", title: "only", created_at: "$any:timestamp" } ] } }
+    { call: "public.tasks.complete", args: { id: "$ref:t" }
+      expect: { outcome: ok, value: { id: "$ref:t", title: "only", done: true, created_at: "$any:timestamp" } } }
+    { expect_view: { watch: "w1", value: [] } }
+  ]
+}

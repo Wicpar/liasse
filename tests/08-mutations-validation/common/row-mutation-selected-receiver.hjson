@@ -1,0 +1,47 @@
+{
+  // §8.2: a mutation declared on a keyed collection shape is a row mutation;
+  // calling it requires a selected row and `.` is that row.
+  format: 1
+  name: row-mutation-selected-receiver
+  suite: scenario
+  spec: ["#mutations", "§8.2", "§10.1"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rowmut@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "done": "bool = false"
+        "$mut": { "complete": ".done = true" }
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, done }"
+          "$mut": { "complete": ".tasks[@id].complete" }
+        }
+      }
+    }
+    "$data": {
+      "tasks": { "t1": {} }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.tasks"
+      id: "w1"
+      expect_init: { value: [ { id: "t1", done: false } ] }
+    }
+    {
+      // @id selects the receiver row bound as `.` for `complete` (§10.1).
+      call: "public.tasks.complete"
+      args: { id: "t1" }
+      expect: { outcome: ok }
+    }
+    {
+      expect_view: { watch: "w1", value: [ { id: "t1", done: true } ] }
+    }
+  ]
+}

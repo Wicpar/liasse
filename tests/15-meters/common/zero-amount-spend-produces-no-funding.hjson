@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: zero-amount-spend-produces-no-funding
+  suite: scenario
+  spec: ["#meters", "§15.1", "§15.6"]
+  note: "Zero is a valid spend amount and produces no funding rows (SPEC §15.1). It therefore needs no capacity: it admits even against a meter with zero capacity, and spend.funding is empty."
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.zerospend@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id, funding }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: { users: { u1: {} } }
+  }
+
+  steps: [
+    { call: "public.wallet.consume", args: { user: "u1", amount: "0" },
+      expect: { outcome: ok, value: { id: "$any:uuid", funding: [] } } }
+  ]
+}

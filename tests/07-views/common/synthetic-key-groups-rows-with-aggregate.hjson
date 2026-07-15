@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: synthetic-key-groups-rows-with-aggregate
+  suite: scenario
+  spec: ["#views", "§7.2", "§7.5", "§B.5", "§B.1"]
+  note: "§7.2: a projection MAY declare a synthetic '$key'; 'Rows sharing the synthetic key form one group. group is the source-row view for that output row.' The non-key output 'total' is an aggregate over 'group', as required. §7.5: sum over ints yields the field numeric type. §B.5: a view follows its synthetic row identity; §B.1: text order — output rows appear in synthetic-key ascending order (account 'a' before 'b')."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewgroup@1.0.0"
+    $model: {
+      lines: {
+        $key: "id"
+        id: "text"
+        account: "text"
+        debit: "int"
+      }
+      $public: {
+        totals: { $view: ".lines { $key: account, account, total: sum(group.debit) }" }
+      }
+    }
+    $data: {
+      lines: {
+        l1: { account: "a", debit: "10" }
+        l2: { account: "a", debit: "5" }
+        l3: { account: "b", debit: "3" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.totals", id: "w1",
+      expect_init: { value: [
+        { account: "a", total: "15" }
+        { account: "b", total: "3" }
+      ] } }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: all-equal-sort-key-falls-to-row-identity
+  suite: scenario
+  spec: ["#annex-b", "§B.5"]
+  tags: ["ordering", "determinism"]
+  note: '''
+    §B.5: "A sort is therefore total even when every declared sort expression
+    is equal or the same row occurs repeatedly." Attack: hope that when every
+    row ties on the declared sort key the result order becomes insertion order
+    or is nondeterministic across replays. It must not — the order falls
+    through to inherited row identity (key ascending), yielding a single
+    deterministic sequence.
+
+    Every row has grp = "x", so the declared key `grp` is equal for all four.
+    The result must be key ascending: r1, r2, r3, r4 — regardless of the
+    scrambled seed order. A `restart` re-reads the same durable state and must
+    reproduce the identical order (the total order is a property of values and
+    identities, not of a transient sort run).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.alleq@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        grp: "text"
+      }
+      $public: {
+        by_grp: { $view: ".rows { id, $sort: [grp] }" }
+      }
+    }
+    $data: {
+      rows: {
+        r3: { grp: "x" }
+        r1: { grp: "x" }
+        r4: { grp: "x" }
+        r2: { grp: "x" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_grp", id: "w1",
+      expect_init: { value: [
+        { id: "r1" }
+        { id: "r2" }
+        { id: "r3" }
+        { id: "r4" }
+      ] } }
+    { unwatch: "w1" }
+    { restart: {} }
+    { watch: "public.by_grp", id: "w2",
+      expect_init: { value: [
+        { id: "r1" }
+        { id: "r2" }
+        { id: "r3" }
+        { id: "r4" }
+      ] } }
+  ]
+}

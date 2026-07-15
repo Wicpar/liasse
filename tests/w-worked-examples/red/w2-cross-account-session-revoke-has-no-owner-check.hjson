@@ -1,0 +1,117 @@
+{
+  format: 1
+  name: w2-cross-account-session-revoke-has-no-owner-check
+  suite: scenario
+  spec: ["W2", "#interfaces", "§10.1", "§10.3", "#authentication", "§11.7"]
+  tags: [authz, escalation, session]
+  note: '''
+    Adversarial reading of W2 exactly as written. The role surface is
+    "revoke": ".sessions[@id].revoke()" — a receiver selected purely by key. Its
+    sibling $view filters "s.account == $actor", but §10.1 is explicit: "A
+    surface view does not implicitly select or authorize mutation receivers. Any
+    receiver restriction belongs in the receiver expression, the referenced
+    mutation, or its checks." The receiver here carries NO owner restriction, so
+    an authenticated account that learns another account's session id can revoke
+    it. This case pins the spec-mandated outcome: Alice revoking Bob's session
+    SUCCEEDS (outcome ok), and Bob is then denied (§11.7). The result is a
+    latent cross-tenant authorization gap in the worked example, surfaced as a
+    conformance expectation rather than hidden.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "example.accounts@1.0.0"
+    $requires: { webauthn: "test.webauthn@1", token: "test.token@1" }
+    $model: {
+      accounts: { $key: "id", id: "uuid = uuid()", name: "text", enabled: "bool = true" }
+      logins: { $key: ["kind", "issuer", "subject"], kind: "text", issuer: "text", subject: "text" }
+      account_logins: { $key: ["account", "login"], account: { $ref: "/accounts" }, login: { $ref: "/logins" } }
+      sessions: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+        login: { $ref: "/logins" }
+        device: "text?"
+        expires_at: "timestamp"
+        revoked: "bool = false"
+        $mut: { revoke: [".revoked = true", "return . { id, revoked }"] }
+      }
+      $mut: {
+        bootstrap: [
+          "acct = /accounts + { name: @name }"
+          "lg = /logins + { kind: 'passkey', issuer: @rp, subject: @credential }"
+          "/account_logins + { account: acct.$key, login: lg.$key }"
+          "return { account: acct.$key }"
+        ]
+        passkey_login: [
+          "identity = webauthn.verify(@response)"
+          "login = /logins[{ kind: 'passkey', issuer: identity.rp, subject: identity.credential }]"
+          "mapping = /account_logins[{ account: @account, login: login.$key }]"
+          '''session = /sessions + {
+            account: mapping.account,
+            login: mapping.login,
+            device: @device,
+            expires_at: now() + time.duration('P30D')
+          }'''
+          "token = token.sign({ auth: 'session', session: session.$key })"
+          "return { auth: 'session', token, expires_at: session.$until }"
+        ]
+      }
+      $auth: {
+        session: {
+          $credential: "text"
+          $verify: "token.verify($credential)"
+          $session: "/sessions[$proof.session]"
+          $actor: "/accounts[$session.account]"
+          $check: ["$proof.auth == $auth_name", "!$session.revoked", "$actor.enabled"]
+        }
+      }
+      $public: {
+        setup: { $mut: { bootstrap: ".bootstrap" } }
+        login: { $mut: { passkey: ".passkey_login" } }
+      }
+      $roles: {
+        account: {
+          $auth: "session"
+          $members: ".accounts[:a | a.enabled]"
+          profile: { $view: "$actor { id, name }" }
+          sessions: {
+            $view: ".sessions.$all[:s | s.account == $actor] { id, device, revoked }"
+            $mut: { revoke: ".sessions[@id].revoke()" }
+          }
+        }
+      }
+    }
+  }
+
+  hosts: {
+    webauthn: { $namespace: "test.webauthn@1", responses: {
+      "resp-alice": { rp: "example.com", credential: "cred-alice" }
+      "resp-bob": { rp: "example.com", credential: "cred-bob" }
+    } }
+    token: { $namespace: "test.token@1", tokens: {} }
+  }
+
+  steps: [
+    { call: "public.setup.bootstrap", args: { name: "alice", rp: "example.com", credential: "cred-alice" }
+      expect: { outcome: ok, value: { account: "$bind:alice" } } }
+    { call: "public.setup.bootstrap", args: { name: "bob", rp: "example.com", credential: "cred-bob" }
+      expect: { outcome: ok, value: { account: "$bind:bob" } } }
+    { call: "public.login.passkey", args: { response: "resp-alice", account: "$ref:alice", device: "a" }
+      expect: { outcome: ok, value: { token: "$bind:tokA", "...": true } } }
+    { call: "public.login.passkey", args: { response: "resp-bob", account: "$ref:bob", device: "b" }
+      expect: { outcome: ok, value: { token: "$bind:tokB", "...": true } } }
+    // Bob's own view leaks his session id to whoever obtains it
+    { connect: "cbob", authenticate: { auth: "session", credential: "$ref:tokB" } }
+    { watch: "account.sessions", on: "cbob", id: "wbob"
+      expect_init: { value: [ { id: "$bind:sessBob", device: "b", revoked: false } ] } }
+    // Alice revokes Bob's session by id — no owner restriction on the receiver -> succeeds
+    { connect: "calice", authenticate: { auth: "session", credential: "$ref:tokA" } }
+    { call: "account.sessions.revoke", args: { id: "$ref:sessBob" }, on: "calice"
+      expect: { outcome: ok, value: { id: "$ref:sessBob", revoked: true } } }
+    // Bob is now locked out
+    { call: "account.sessions.revoke", args: { id: "$ref:sessBob" }, on: "cbob"
+      expect: { outcome: denied, violates: ["§11.7"], detail: "Bob's session was revoked by Alice" } }
+  ]
+}

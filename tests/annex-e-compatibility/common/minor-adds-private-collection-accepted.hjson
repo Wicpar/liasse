@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: minor-adds-private-collection-accepted
+  suite: scenario
+  spec: ["#annex-e"]
+  note: '''
+    E.6: "A private model may change freely when migration produces valid owned
+    state and every boundary contract remains satisfied. Compatible private
+    changes include adding or replacing fields, collections, computed values,
+    helper mutations, checks, indexes ..." Version 1.1.0 adds a private
+    collection `audit` that no surface exposes; the boundary (view {id, name})
+    is unchanged, so the update commits. The new collection starts empty, which
+    is valid owned state.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.privcoll@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.privcoll@1.1.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+            }
+            // new private collection, not exposed by any boundary
+            "audit": {
+              "$key": "id"
+              "id": "uuid = uuid()"
+              "at": "timestamp = now()"
+            }
+            "$public": {
+              "companies": { "$view": ".companies { id, name }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+  ]
+}

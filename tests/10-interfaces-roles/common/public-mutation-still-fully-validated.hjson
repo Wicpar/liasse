@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: public-mutation-still-fully-validated
+  suite: scenario
+  // §10.2: "A public operation has no $actor or $session. Its mutation still
+  // passes every type, check, ref, uniqueness, meter, blob, and provider
+  // admission condition." Being unauthenticated does not relax validation.
+  spec: ["#interfaces", "§10.2", "#state-model"]
+  tags: ["public", "validation"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.pub_check@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "title": {
+          "$type": "text"
+          "$check": ["size(.) > 0", "A title is required"]
+        }
+      }
+      "$mut": {
+        "add_task": [
+          "task = .tasks + { id: @id, title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      "$public": {
+        "tasks": {
+          "$view": ".tasks { id, title }"
+          "$mut": { "add": ".add_task" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.tasks", id: "w1", expect_init: { value: [] } }
+    // The empty title violates the field $check; the public call is rejected
+    // by ordinary admission validation.
+    { call: "public.tasks.add", args: { id: "t1", title: "" },
+      expect: { outcome: rejected, violates: ["#state-model", "#interfaces"],
+                detail: "field check fails for a public call exactly as for any other call" } }
+    // Nothing was committed.
+    { expect_view: { watch: "w1", value: [] } }
+    // Control: a valid public call is admitted.
+    { call: "public.tasks.add", args: { id: "t1", title: "Valid" },
+      expect: { outcome: ok, value: { id: "t1", title: "Valid" } } }
+  ]
+}

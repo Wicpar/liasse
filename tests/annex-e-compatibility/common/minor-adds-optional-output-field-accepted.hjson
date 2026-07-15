@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: minor-adds-optional-output-field-accepted
+  suite: scenario
+  spec: ["#annex-e"]
+  note: '''
+    E.5: "adding an optional output field" is a compatible output change; a
+    compatible release "preserves every output property promised by the earlier
+    boundary contract." Version 1.0.0 projects {id, name}. Version 1.1.0 also
+    projects the optional field `region` (text?), an added optional output
+    member. Every property promised by 1.0.0 is still present, so the update
+    commits.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.compat.optout@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "region": "text?"
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, name }" }
+      }
+    }
+    "$data": { "companies": { "acme": { "name": "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.compat.optout@1.1.0"
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+              "region": "text?"
+            }
+            "$public": {
+              // optional output field `region` added to the projection
+              "companies": { "$view": ".companies { id, name, region }" }
+            }
+          }
+          "$data": { "companies": { "acme": { "name": "Acme" } } }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: liasse-json-duplicate-member-rejected
+  suite: scenario
+  spec: ["#annex-d", "§D.5", "#annex-d", "§D.4", "#package-structure", "§4.1", "#loading", "§9.2"]
+  tags: ["tamper", "artifact", "parser-differential", "escalation"]
+  note: "Parser-differential attack: liasse.json carrying '$model' TWICE — a benign first occurrence and a second one exposing the private collection publicly. A first-wins parser validates the benign model while a last-wins parser (serde_json default, most JS parsers) activates the hostile one; whichever the reviewer's tool showed, the other may run. Manifest entry checksums are rehashed so the raw-byte container-integrity layer (D.5 'every checksum matches') passes and the CONTENT rule is what is under test. §4.1 calls liasse.json 'canonical strict-JSON'; D.5 requires 'manifest.json, liasse.json ... use strict canonical JSON'; D.4 canonical bytes have 'object member names sorted by Unicode scalar order', which necessarily makes member names unique. A duplicate-member document is therefore not a valid canonical definition and MUST be rejected at parse (§9.2 step 1), never resolved by parser accident to whichever occurrence wins."
+
+  package: {
+    $liasse: 1
+    $app: "t.dupkey@1.0.0"
+    $model: {
+      secrets: {
+        $key: "id"
+        id: "int"
+        value: "text"
+      }
+    }
+  }
+
+  steps: [
+    { build_artifact: { as: "a1" } }
+    { tamper_artifact: {
+        artifact: "a1"
+        set: {
+          "liasse.json": "{\"$app\":\"t.dupkey@1.0.0\",\"$liasse\":1,\"$model\":{\"secrets\":{\"$key\":\"id\",\"id\":\"int\",\"value\":\"text\"}},\"$model\":{\"$public\":{\"secrets\":{\"$view\":\".secrets_view\"}},\"secrets\":{\"$key\":\"id\",\"id\":\"int\",\"value\":\"text\"},\"secrets_view\":{\"$view\":\".secrets { id, value }\"}}}"
+        }
+        rehash: true
+    } }
+    { load_artifact: { from: "a1", expect: {
+        outcome: invalid
+        violates: ["#annex-d", "§D.5", "#package-structure", "§4.1"]
+        detail: "liasse.json contains a duplicate top-level member '$model' and is not strict canonical JSON; the definition MUST be rejected rather than resolved to either occurrence"
+    } } }
+  ]
+}

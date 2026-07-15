@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: unrelated-import-requires-policy
+  suite: scenario
+  // §19.8: "no shared point -> unrelated import policy required." An
+  // artifact of an independently created application (its own genesis, its
+  // own instance incarnation) shares no history point; without the
+  // "unrelated" policy no movement may activate.
+  spec: ["§19.8"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "local" },
+      expect: { outcome: ok, value: { id: "n1", body: "local" } } }
+    // A second, independent installation of the same definition: same
+    // package, unrelated genesis.
+    { in_sandbox: "s1", fresh: true, steps: [
+      { call: "public.notes.put", args: { id: "n1", body: "foreign" },
+        expect: { outcome: ok, value: { id: "n1", body: "foreign" } } }
+      { export: { as: "ax" }, expect: { outcome: ok } }
+    ] }
+    { import: { from: "ax", policy: ["fast_forward", "rollback", "merge"] },
+      expect: { outcome: ok, value: { relation: "unrelated", applied: false, "...": true } } }
+    // Local state untouched.
+    { watch: "public.notes", id: "w1", expect_init: { value: [
+      { id: "n1", body: "local" }
+    ] } }
+  ]
+}

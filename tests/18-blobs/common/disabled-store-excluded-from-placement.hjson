@@ -1,0 +1,73 @@
+{
+  format: 1
+  name: disabled-store-excluded-from-placement
+  suite: scenario
+  spec: ["#blobs", "§18.3", "§18.4"]
+  tags: ["blob", "placement"]
+  note: '''
+    §18.3 defines an "enabled" store flag; §18.4 placement selects stores
+    through a store-view. A view filtered on s.enabled excludes a disabled
+    store, so a new write lands only in the enabled store. Store `old` is
+    disabled; the $in view `/stores[:s | s.enabled]` yields only `new`.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.disabled@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores[:s | s.enabled]" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id, stored: .file.$stored { id } }"
+        ]
+      }
+      $public: { docs: { $mut: { add: ".add" } } }
+    }
+    $data: {
+      stores: {
+        new: { connector: "fs-a", enabled: true }
+        old: { connector: "fs-b", enabled: false }
+      }
+    }
+  }
+
+  hosts: {
+    connectors: {
+      "fs-a": { capabilities: ["stream_upload", "checksum"] }
+      "fs-b": { capabilities: ["stream_upload", "checksum"] }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "placed"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: ok, value: {
+        id: "d1"
+        stored: { $unordered: [ { id: "new" } ] }
+      } } }
+  ]
+}
+</content>

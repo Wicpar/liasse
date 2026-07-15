@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: wildcard-projection-star-invalid
+  suite: static
+  tags: [grammar, projection]
+  // Attack: a "select all fields" wildcard in the projection block, the
+  // classic SELECT *. Annex C.6: "projections name fields explicitly", and
+  // Annex C.7 enumerates projection members (field, field: expr, @param,
+  // binding.field, binding:, nested, $key, $sort, $skip, $limit) — none is a
+  // wildcard. A projection body of '*' matches no member form and must fail
+  // static validation, distinct from the selector-wildcard sibling case.
+  spec: ["#annex-c", "§C.6", "§C.7"]
+
+  package: {
+    $liasse: 1
+    $app: "t.wildproj@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
+      }
+      all: { $view: ".tasks { * }" }
+      $public: {
+        tasks: { $view: ".all" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.6"]
+    detail: "'.tasks { * }' uses a wildcard projection; Annex C.6/C.7 require fields named explicitly"
+  }
+}

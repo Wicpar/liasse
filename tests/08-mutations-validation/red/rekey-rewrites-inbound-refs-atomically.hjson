@@ -1,0 +1,54 @@
+{
+  // Identity manipulation: assigning a new value to a key field is an atomic
+  // rekey. §5.4: "The runtime MUST update every ref that targets the row ...
+  // in the same transition"; "$on_delete does not run". §5.6/§A.9: the
+  // application-visible ref value is the target's CURRENT typed key, so the
+  // inbound ref must read as the new key immediately after the commit.
+  format: 1
+  name: rekey-rewrites-inbound-refs-atomically
+  suite: scenario
+  spec: ["§5.4", "§5.6", "§A.9", "#mutations"]
+  tags: ["identity", "atomicity"]
+
+  package: {
+    "$liasse": 1
+    "$app": "t.rekeyrefs@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "$mut": { "rekey": ".id = @new" }
+      }
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+        "owner": { "$ref": "/companies" }
+      }
+      "$public": {
+        "tasks": { "$view": ".tasks { id, owner }" }
+        "companies": { "$mut": { "rekey": ".companies[@id].rekey" } }
+      }
+    }
+    "$data": {
+      "companies": { "acme": {} }
+      "tasks": { "t1": { "owner": "acme" } }
+    }
+  }
+
+  steps: [
+    {
+      watch: "public.tasks"
+      id: "w1"
+      expect_init: { value: [ { id: "t1", owner: "acme" } ] }
+    }
+    {
+      call: "public.companies.rekey"
+      args: { id: "acme", new: "acme2" }
+      expect: { outcome: ok }
+    }
+    {
+      // The ref was rewritten in the same transition; no dangling "acme".
+      expect_view: { watch: "w1", value: [ { id: "t1", owner: "acme2" } ] }
+    }
+  ]
+}

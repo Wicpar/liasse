@@ -1,0 +1,27 @@
+{
+  format: 1
+  name: bytes-wire-is-dollar-bytes-base64
+  suite: scenario
+  spec: ["§A.1", "§D.2"]
+  tags: ["wire", "bytes"]
+  note: "Annex A.1: a `bytes` value's canonical strict-JSON value is the object `{ \"$bytes\": \"<canonical base64>\" }`; Annex D.2 fixes canonical *padded* base64. The five bytes \"Hello\" encode to \"SGVsbG8=\". A seeded bytes value projects to exactly that wrapper object — not a bare string, not a JSON array of byte integers."
+
+  package: {
+    $liasse: 1
+    $app: "t.byteswire@1.0.0"
+    $model: {
+      b: "bytes"
+      $public: {
+        v: { $view: ". { b }" }
+      }
+    }
+    $data: {
+      b: { $bytes: "SGVsbG8=" }
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: { b: { $bytes: "SGVsbG8=" } } } }
+  ]
+}

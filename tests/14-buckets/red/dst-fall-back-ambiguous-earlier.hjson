@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: dst-fall-back-ambiguous-earlier
+  suite: scenario
+  spec: ["#buckets", "§14.7", "§A.4"]
+  tags: ["temporal", "calendar", "boundary"]
+  note: "Calendar periods apply their fields in the declared zone using pinned time-rule data. Europe/Paris repeats 02:00-03:00 local on 2026-10-25 (fall back at 03:00 CEST -> 02:00 CET). A monthly boundary landing on 02:30 local is ambiguous; policy 'earlier' picks the earlier instant, 00:30:00Z (+02:00 offset), not 01:30:00Z (+01:00)."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.fallback@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $data: {
+        plans: {
+          monthly_paris: {
+            credits: "100"
+            period: { months: 1, zone: "Europe/Paris", overflow: "clamp", ambiguous: "earlier" }
+          }
+        }
+        subscriptions: {
+          // anchor 2026-09-25T02:30:00+02:00 = 2026-09-25T00:30:00Z, unbounded
+          s1: { plan: "monthly_paris", starts_at: "1790296200000000" }
+        }
+      }
+      $public: {
+        periods_at: {
+          $params: { t: "timestamp" }
+          $view: ".credit_periods.$at(@t) { index: $index, from: $from, until: $until }"
+        }
+      }
+    }
+  }
+
+  steps: [
+    // read inside period 0, at 2026-10-01T00:00:00Z.
+    // b1 = anchor + 1 month = 2026-10-25T02:30 local, which occurs twice;
+    // 'earlier' resolves to 2026-10-25T00:30:00Z = 1792888200000000 us
+    // (the 'later' occurrence would be 1792891800000000).
+    { watch: "public.periods_at", args: { t: "1790812800000000" }, id: "w1"
+      expect_init: {
+        value: [
+          { index: "0", from: "1790296200000000", until: "1792888200000000" }
+        ]
+      } }
+  ]
+}

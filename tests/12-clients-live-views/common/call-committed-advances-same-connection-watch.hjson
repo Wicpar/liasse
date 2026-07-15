@@ -1,0 +1,72 @@
+{
+  format: 1
+  name: call-committed-advances-same-connection-watch
+  suite: scenario
+  spec: ["#clients", "#runtime"]
+  tags: ["coherence", "frontier"]
+  note: '''
+    §12.1 pipeline step 8 and §12.3 final paragraph: before returning `committed`,
+    the runtime advances every still-authorized active subscription on the same
+    logical client connection through the commit. §22.7 restates the barrier.
+    Therefore, once the call's committed response is observed, the watch on the
+    same connection must already reflect at least that commit.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+        done: "bool = false"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title, done }"
+        ]
+      }
+      open: {
+        $view: ".tasks[:t | !t.done] { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".open"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      watch: "public.tasks"
+      on: "c1"
+      id: "w1"
+      expect_init: { value: [] }
+    }
+    {
+      call: "public.tasks.add"
+      args: { title: "a" }
+      on: "c1"
+      expect: {
+        outcome: ok
+        completion: committed
+        value: { id: "$bind:t1", title: "a", done: false }
+      }
+    }
+    // The committed response proves w1 has advanced through this commit:
+    // the live result at c1's frontier must already contain the new row.
+    {
+      expect_view: {
+        watch: "w1"
+        value: [ { id: "$ref:t1", title: "a" } ]
+      }
+    }
+  ]
+}

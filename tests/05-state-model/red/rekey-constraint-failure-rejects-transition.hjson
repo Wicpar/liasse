@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: rekey-constraint-failure-rejects-transition
+  suite: scenario
+  spec: ["#state-model", "§5.4", "§5.10", "§6.3"]
+  tags: ["atomicity", "identity"]
+  note: '''Attack: rekey a target so that rewritten inbound refs put *other* rows into a
+state their checks forbid, hoping the runtime rewrites refs without revalidating the
+referencing rows. §5.4: rekey updates every inbound ref in the same transition and
+'A collision, invalid rewritten ref, or resulting constraint failure rejects the
+complete transition.' The member's row check compares its ref against a key literal
+(§6.3 ref/key equality), so rekeying the team to the reserved key must reject and
+leave everything unchanged.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.rekeycheck@1.0.0"
+    $model: {
+      teams: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      members: {
+        $key: "id"
+        id: "text"
+        team: { $ref: "/teams" }
+        $check: [".team != 'banned'", "The banned team key is reserved"]
+      }
+      $public: {
+        members: {
+          $view: ".members { id, team }"
+          $mut: {
+            add_team: ".teams + { id: @id, name: @name }"
+            add_member: ".members + { id: @id, team: @team }"
+            rekey_team: ".teams[@old].id = @new"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.members.add_team", args: { id: "good", name: "Good" },
+      expect: { outcome: "ok" } }
+    { call: "public.members.add_member", args: { id: "m1", team: "good" },
+      expect: { outcome: "ok" } }
+    // the rewritten ref would violate the member's row check -> complete rejection
+    { call: "public.members.rekey_team", args: { old: "good", new: "banned" },
+      expect: { outcome: "rejected", violates: ["§5.4", "§5.10"], detail: "resulting constraint failure on a referencing row rejects the rekey" } }
+    { watch: "public.members", id: "w1",
+      expect_init: { value: [ { id: "m1", team: "good" } ] } }
+    // a harmless rekey still works and rewrites the ref
+    { call: "public.members.rekey_team", args: { old: "good", new: "fine" },
+      expect: { outcome: "ok" } }
+    { expect_view: { watch: "w1", value: [ { id: "m1", team: "fine" } ] } }
+  ]
+}

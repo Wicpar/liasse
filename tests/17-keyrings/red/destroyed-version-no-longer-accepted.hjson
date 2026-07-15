@@ -1,0 +1,106 @@
+{
+  format: 1
+  name: destroyed-version-no-longer-accepted
+  suite: scenario
+  tags: ["keys"]
+  spec: ["#keyrings", "§17.1", "§17.3"]
+  // Attack surface: without $retain, a retired version is accepted forever —
+  // §17.1 says "until explicit revocation or destruction". This case takes the
+  // destruction branch: after keyring_admin destroy, a token under v1 must be
+  // denied and the accepted set must shrink back to the single active version.
+  note: "The pre-destruction authenticate proves acceptance persisted after rotation (isolating destruction as the cause of the later denial). Whether destroyed versions keep an audit entry in $versions is provider metadata the spec does not pin, so only $accepted is asserted."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "enabled": "bool = true"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+        "revoked": "bool = false"
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$auth": {
+        "session": {
+          "$credential": "bytes"
+          "$verify": "cose.verify(/session_keys, $credential)"
+          "$session": "/sessions[$proof.session]"
+          "$actor": "/accounts[$session.account]"
+          "$check": ["$proof.auth == $auth_name", "!$session.revoked"]
+        }
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+        "ring_current": { "$view": "/session_keys.$current" }
+        "ring_accepted": { "$view": "/session_keys.$accepted" }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "session"
+          "$members": ".accounts[:a | a.enabled]"
+          "mysessions": { "$view": "/sessions[:s | s.account == $actor] { revoked }" }
+        }
+      }
+    }
+    "$data": { "accounts": { "alice": { "name": "Alice" } } }
+  }
+
+  steps: [
+    { watch: "public.ring_current", id: "w1",
+      expect_init: { value: { id: "$bind:v1", "...": true } } }
+    { call: "public.login.login", args: { account: "alice" },
+      expect: { outcome: ok, value: { token: "$bind:tok1" } } }
+    { advance_time: "P31D" }
+    { call: "public.login.login", args: { account: "alice" },
+      expect: { outcome: ok, value: { token: "$any" } } }
+    // No $retain: still accepted after rotation.
+    { connect: "c2",
+      authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
+      expect: { outcome: ok } }
+    { keyring_admin: { ring: "/session_keys", op: "destroy", version: "$ref:v1" },
+      expect: { outcome: ok } }
+    // Destruction ends acceptance (§17.1 "until explicit revocation or destruction").
+    { connect: "c3",
+      authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
+      expect: { outcome: denied, violates: ["§17.1", "§17.3"] } }
+    // Exactly one accepted version remains, and it is not a retired one.
+    { watch: "public.ring_accepted", id: "w2",
+      expect_init: { value: { $unordered: [
+        { id: "$any", retired_at: "$absent", "...": true }
+      ] } } }
+  ]
+}

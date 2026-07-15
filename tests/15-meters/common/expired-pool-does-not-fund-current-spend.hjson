@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: expired-pool-does-not-fund-current-spend
+  suite: scenario
+  spec: ["#meters", "§15.1", "#buckets", "§14.1"]
+  tags: [temporal]
+  note: "Meter sources are evaluated in the temporal context of the spend ($time defaults to .occurred_at = now()). A bare bucketed source yields only the pool rows active at that instant, so a pool past its $until no longer funds new spends."
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.expiry@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          $bucket: { $until: ".expires_at" }
+          id: "text"
+          amount: "decimal"
+          expires_at: "timestamp? = none"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+            $order: ["$until"]
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $mut: { consume: ".users[@user].consume" }
+        }
+      }
+    }
+    $data: {
+      users: {
+        u1: {
+          // active [genesis 2026-01-01, 2026-01-08)
+          topups: { t1: { amount: "100", expires_at: "1767830400" } }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // while the pool is active, spends admit
+    { call: "public.wallet.consume", args: { user: "u1", amount: "10" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    // move past the pool's $until
+    { advance_time: "P8D" }
+    // the remaining 90 expired with the pool; no eligible capacity at the spend time
+    { call: "public.wallet.consume", args: { user: "u1", amount: "10" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.1"],
+                detail: "no pool is active at the spend $time" } }
+  ]
+}

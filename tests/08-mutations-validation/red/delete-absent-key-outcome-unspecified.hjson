@@ -1,0 +1,44 @@
+{
+  // Spec gap: `.tasks - @id` where @id names no existing row.
+  // §8.9 pins two neighboring behaviors but not this one:
+  //   - "A filtered bulk operation selecting no rows succeeds" -> unchanged;
+  //   - "A keyed row patch targets one existing row; a missing target
+  //      rejects the call."
+  // Delete-by-key with an absent key sits exactly between: §6.3 selector
+  // semantics say an absent key contributes zero rows (suggesting an
+  // `unchanged` success), while the keyed-patch precedent suggests rejection.
+  // The spec does not pin which applies to `collection - key`.
+  format: 1
+  name: delete-absent-key-outcome-unspecified
+  suite: scenario
+  spec: ["#mutations", "§8.9", "§8.7", "§6.3"]
+  note: "§8.9 rejects a keyed row PATCH with a missing target and lets zero-match FILTERED bulk operations succeed as unchanged, but never states which rule governs delete-by-key (collection - key) when the key is absent. §6.3 gives the selector reading (zero rows, no change, unchanged), yet delete-by-key addresses one specific identity just like a keyed patch. An implementation could defensibly reject or return unchanged."
+
+  package: {
+    "$liasse": 1
+    "$app": "t.delabsent@1.0.0"
+    "$model": {
+      "tasks": {
+        "$key": "id"
+        "id": "text"
+      }
+      "$mut": {
+        "remove": ".tasks - @id"
+      }
+      "$public": {
+        "tasks": { "$mut": { "remove": ".remove" } }
+      }
+    }
+    "$data": {
+      "tasks": { "t1": {} }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.tasks.remove"
+      args: { id: "zz" }
+      expect: { outcome: unspecified }
+    }
+  ]
+}

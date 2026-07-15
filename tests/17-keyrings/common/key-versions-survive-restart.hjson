@@ -1,0 +1,91 @@
+{
+  format: 1
+  name: key-versions-survive-restart
+  suite: scenario
+  spec: ["#keyrings", "§17.9", "§22.1", "#runtime"]
+  note: "§17.9: a provider result used by a successful mutation is fixed when it enters committed state or another durable admission fact; key activation is an explicit logical transition. §22.1: replay uses recorded observations. After a restart the same key version is current and a token issued before the restart still authenticates."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$requires": { "cose": "liasse.cose@1" }
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+      "accounts": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+        "enabled": "bool = true"
+      }
+      "sessions": {
+        "$key": "id"
+        "id": "uuid = uuid()"
+        "account": { "$ref": "/accounts" }
+        "revoked": "bool = false"
+      }
+      "$mut": {
+        "login": [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      "$auth": {
+        "session": {
+          "$credential": "bytes"
+          "$verify": "cose.verify(/session_keys, $credential)"
+          "$session": "/sessions[$proof.session]"
+          "$actor": "/accounts[$session.account]"
+          "$check": ["$proof.auth == $auth_name", "!$session.revoked"]
+        }
+      }
+      "$public": {
+        "login": { "$mut": { "login": ".login" } }
+        "ring_current": { "$view": "/session_keys.$current" }
+      }
+      "$roles": {
+        "member": {
+          "$auth": "session"
+          "$members": ".accounts[:a | a.enabled]"
+          "mysessions": { "$view": "/sessions[:s | s.account == $actor] { revoked }" }
+        }
+      }
+    }
+    "$data": { "accounts": { "alice": { "name": "Alice" } } }
+  }
+
+  steps: [
+    { watch: "public.ring_current", id: "w1",
+      expect_init: { value: { id: "$bind:v1", "...": true } } }
+    { call: "public.login.login", args: { account: "alice" },
+      expect: { outcome: ok, value: { token: "$bind:tok1" } } }
+    { restart: {} }
+    // Durable state survives: same active version, committed session row,
+    // and the previously issued token verifies against the accepted set.
+    { connect: "c2",
+      authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
+      expect: { outcome: ok } }
+    { watch: "public.ring_current", on: "c2", id: "w2",
+      expect_init: { value: { id: "$ref:v1", retired_at: "$absent", "...": true } } }
+  ]
+}

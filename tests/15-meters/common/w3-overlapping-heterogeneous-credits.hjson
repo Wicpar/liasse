@@ -1,0 +1,117 @@
+{
+  format: 1
+  name: w3-overlapping-heterogeneous-credits
+  suite: scenario
+  spec: ["#meters", "§15.3", "#buckets", "§14.5", "W3"]
+  tags: [ordering, temporal]
+  note: '''Flagship W3 scenario: heterogeneous overlapping subscription pools drain in
+$order [$until, price]; ascending optional order places $until = none (lifetime) last,
+so finite pools drain first. One spend of 150 splits weekly 30 / monthly 100 /
+quarterly 20 and leaves lifetime untouched, verified both through the returned
+funding view (member names follow §15.3's returned funding view) and, shape-independently,
+through the balance remaining after every finite pool has expired.
+Timestamps (s precision): 2026-01-01=1767225600, +7d=1767830400, +28d=1769644800, +84d=1774483200.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.w3@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+        price: "decimal"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        account: { $ref: "/accounts" }
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp? = none"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+        price: "= /plans[$source.plan].price"
+      }
+      accounts: {
+        $key: "id"
+        id: "text"
+        $limits: {
+          credits: {
+            $sources: {
+              subscription: '''/credit_periods[:p | p.$source.account == .] {
+                $quantity: .credits,
+                price
+              }'''
+            }
+            $order: ["$until", "price"]
+          }
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id, amount, funding }"
+          ]
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".accounts { id, balance: .credits.balance }"
+          $mut: { consume: ".accounts[@account].consume" }
+        }
+      }
+    }
+    $data: {
+      plans: {
+        weekly:    { credits: "30",   period: "P7D",  price: "9" }
+        monthly:   { credits: "100",  period: "P28D", price: "20" }
+        quarterly: { credits: "400",  period: "P84D", price: "50" }
+        lifetime:  { credits: "1000", price: "200" }
+      }
+      accounts: { a1: {} }
+      subscriptions: {
+        // each finite series is bounded to exactly one period
+        sw: { account: "a1", plan: "weekly",    starts_at: "1767225600", ends_at: "1767830400" }
+        sm: { account: "a1", plan: "monthly",   starts_at: "1767225600", ends_at: "1769644800" }
+        sq: { account: "a1", plan: "quarterly", starts_at: "1767225600", ends_at: "1774483200" }
+        sl: { account: "a1", plan: "lifetime",  starts_at: "1767225600" }
+      }
+    }
+  }
+
+  steps: [
+    // 150 = weekly 30 + monthly 100 + quarterly 20; lifetime ($until none) sorts last and is untouched
+    { call: "public.wallet.consume", args: { account: "a1", amount: "150" },
+      expect: { outcome: ok, value: {
+        id: "$any:uuid"
+        amount: "150"
+        funding: { $unordered: [
+          { source: "subscription", amount: "30",  "...": true }
+          { source: "subscription", amount: "100", "...": true }
+          { source: "subscription", amount: "20",  "...": true }
+        ] }
+      } } }
+    // 1530 total - 150 spent
+    { watch: "public.wallet", id: "w1",
+      expect_init: { value: [ { id: "a1", balance: "1380" } ] } }
+    // after every finite pool has expired only lifetime remains; it must still hold its full 1000
+    { advance_time: "P90D" }
+    { expect_view: { watch: "w1", value: [ { id: "a1", balance: "1000" } ] } }
+  ]
+}

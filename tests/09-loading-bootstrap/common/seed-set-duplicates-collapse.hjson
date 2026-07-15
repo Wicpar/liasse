@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: seed-set-duplicates-collapse
+  suite: scenario
+  spec: ["#loading", "#state-model"]
+  note: '''
+    §9.1: "Sets use JSON arrays of member values and collapse duplicates.
+    Omitted child sets and keyed collections start empty." Row acme seeds
+    "customer" twice and must end with two members; row beta omits tags and
+    must start empty. The tags array order is deterministic: §5.5 gives sets a
+    canonical read order from the element type's total order, so
+    "customer" < "priority".
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.seedsets@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "tags": { "$set": "text" }
+      }
+      "$public": {
+        "companies": { "$view": ".companies { id, tags }" }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "tags": ["priority", "customer", "priority"] }
+        "beta": {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: { $unordered: [
+        { id: "acme", tags: ["customer", "priority"] }
+        { id: "beta", tags: [] }
+      ] } } }
+  ]
+}

@@ -1,0 +1,95 @@
+{
+  format: 1
+  name: update-missing-namespace-keeps-prior-active
+  suite: scenario
+  spec: ["#loading", "#host-namespaces", "#conformance"]
+  tags: ["hosts"]
+  note: '''
+    Host-component failure on UPDATE rather than genesis: the running 1.0.0
+    instance requires nothing, and 1.1.0 adds a $requires entry that the host
+    context does not register. §2.1: a package requiring an unavailable
+    component "fails validation before activation"; §16.2: missing
+    requirements "reject loading before the package becomes active"; §9.2: "A
+    diagnostic leaves the prior active composition unchanged." The trap under
+    test: an implementation that tears down or swaps the composition before
+    resolving host components would take a healthy application down with a
+    doomed update. Reads and writes must keep working on 1.0.0 afterwards.
+  '''
+
+  package: {
+    "$liasse": 1
+    "$app": "t.needsns@1.0.0"
+    "$model": {
+      "companies": {
+        "$key": "id"
+        "id": "text"
+        "name": "text"
+      }
+      "$public": {
+        "companies": {
+          "$view": ".companies { id, name }"
+          "$mut": {
+            "rename": [
+              ".companies[@id].name = @name"
+              "return .companies[@id] { id, name }"
+            ]
+          }
+        }
+      }
+    }
+    "$data": {
+      "companies": {
+        "acme": { "name": "Acme SAS" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: {}
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1",
+      expect_init: { value: [ { id: "acme", name: "Acme SAS" } ] } }
+    { host_load: {
+        package: {
+          "$liasse": 1
+          "$app": "t.needsns@1.1.0"
+          "$requires": {
+            "password": "liasse.password@1"
+          }
+          "$model": {
+            "companies": {
+              "$key": "id"
+              "id": "text"
+              "name": "text"
+            }
+            "$public": {
+              "companies": {
+                "$view": ".companies { id, name }"
+                "$mut": {
+                  "rename": [
+                    ".companies[@id].name = @name"
+                    "return .companies[@id] { id, name }"
+                  ]
+                }
+              }
+            }
+          }
+          "$data": {
+            "companies": {
+              "acme": { "name": "Acme SAS" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: invalid
+        violates: ["#host-namespaces", "#conformance"]
+        detail: "required namespace contract liasse.password@1 is not registered; prior composition stays active"
+      } }
+    { call: "public.companies.rename", args: { id: "acme", name: "Acme 2" },
+      expect: { outcome: "ok", value: { id: "acme", name: "Acme 2" } } }
+    { expect_view: { watch: "w1", value: [ { id: "acme", name: "Acme 2" } ] } }
+  ]
+}

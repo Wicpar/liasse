@@ -1,0 +1,37 @@
+{
+  format: 1
+  name: sort-structured-form-equals-string-form
+  suite: scenario
+  spec: ["#views", "§7.3"]
+  note: "§7.3: 'the structured form expresses the same choice through $by and $dir.' The string form [-n] and the structured form [{ $by: n, $dir: desc }] denote the same order, so both views return 30, 20, 10."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewstruct@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        n: "int"
+      }
+      $public: {
+        shorthand: { $view: ".items { id, n, $sort: [-n] }" }
+        structured: { $view: ".items { id, n, $sort: [ { $by: n, $dir: desc } ] }" }
+      }
+    }
+    $data: {
+      items: {
+        a: { n: "10" }
+        b: { n: "30" }
+        c: { n: "20" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.shorthand", id: "w1",
+      expect_init: { value: [ { id: "b", n: "30" }, { id: "c", n: "20" }, { id: "a", n: "10" } ] } }
+    { watch: "public.structured", id: "w2",
+      expect_init: { value: [ { id: "b", n: "30" }, { id: "c", n: "20" }, { id: "a", n: "10" } ] } }
+  ]
+}

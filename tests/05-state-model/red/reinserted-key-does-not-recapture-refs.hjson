@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: reinserted-key-does-not-recapture-refs
+  suite: scenario
+  spec: ["#state-model", "§5.6", "§D.1"]
+  tags: ["identity", "replay"]
+  note: '''Attack: after a privileged row is deleted, re-register the same key and inherit
+the inbound relationships (aliasing onto a dead identity). §5.6: 'Deleting and
+reinserting the same key creates a new incarnation and does not transfer existing
+refs.' Here the ref was cleared by its declared $on_delete: none policy at deletion,
+and it must remain cleared after the key is reinserted.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.reinsert@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      posts: {
+        $key: "id"
+        id: "text"
+        author: {
+          $ref: "/accounts"
+          $optional: true
+          $on_delete: "none"
+        }
+      }
+      $public: {
+        posts: {
+          $view: ".posts { id, author }"
+          $mut: {
+            add_account: ".accounts + { id: @id, name: @name }"
+            add_post: ".posts + { id: @id, author: @author }"
+            del_account: ".accounts - @id"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.posts.add_account", args: { id: "alice", name: "Alice" },
+      expect: { outcome: "ok" } }
+    { call: "public.posts.add_post", args: { id: "p1", author: "alice" },
+      expect: { outcome: "ok" } }
+    // deletion clears the optional ref per its declared policy ($on_delete: none)
+    { call: "public.posts.del_account", args: { id: "alice" },
+      expect: { outcome: "ok" } }
+    { watch: "public.posts", id: "w1",
+      expect_init: { value: [ { id: "p1", author: "$absent" } ] } }
+    // reinsert the same key: new incarnation (§D.1); the old ref must NOT re-attach
+    { call: "public.posts.add_account", args: { id: "alice", name: "Mallory" },
+      expect: { outcome: "ok" } }
+    { expect_view: { watch: "w1", value: [ { id: "p1", author: "$absent" } ] } }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: private-key-material-not-application-value-invalid
+  suite: static
+  tags: ["keys", "escalation"]
+  spec: ["#keyrings", "§17.2", "§2.5"]
+  // Extraction attempt: a view tries to project private key material out of the
+  // keyring so that a client watch would stream it. §17.2 enumerates exactly the
+  // public accessors a keyring exposes — ring.$current, ring.$accepted,
+  // ring.$public, ring.$versions — and states flatly that "private key bytes and
+  // provider credentials are never application values". There is therefore no
+  // ring.$private accessor to select; referencing one is an undefined structural
+  // member (§2.5) and the package fails static validation. No conforming reading
+  // lets private bytes reach an application value or a client.
+  note: "Isolates the sealed-value guarantee: the provider and keyring are otherwise well-formed; the sole defect is the view reaching for a private accessor §17.2 does not define."
+
+  hosts: {
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    "$liasse": 1
+    "$app": "t.keyrings@1.0.0"
+    "$model": {
+      "session_keys": {
+        "$keyring": {
+          "$provider": "test-kp"
+          "$algorithm": "Ed25519"
+          "$rotate": "P30D"
+          "$retain": "P45D"
+        }
+      }
+      "$public": {
+        "leak": { "$view": "/session_keys.$private" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§17.2", "§2.5"]
+    detail: "the view selects /session_keys.$private, which §17.2 does not expose; private key bytes are never application values"
+  }
+}

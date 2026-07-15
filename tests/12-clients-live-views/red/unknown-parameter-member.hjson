@@ -1,0 +1,58 @@
+{
+  format: 1
+  name: unknown-parameter-member
+  suite: scenario
+  spec: ["#clients"]
+  tags: ["boundary", "protocol"]
+  note: '''
+    Attack: attach an undeclared member to the call arguments, either to
+    smuggle data past the shape or to probe for structural directives.
+    §12.1 step 3 says the runtime "parses parameters against the inferred or
+    explicit shape", and §2.5's strictness about unknown members applies to
+    declarations, not wire arguments. The specification does not state
+    whether an unknown argument member fails parsing or is ignored, so the
+    outcome is unspecified. The gap matters beyond this call: §12.3
+    deduplication compares "equivalent request" metadata, which is ill-defined
+    for ignored-but-present members. The same question applies to reserved
+    $-prefixed members such as { $sort: [...] } sent as arguments.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      call: "public.tasks.add"
+      args: { title: "a", extra: 1 }
+      on: "c1"
+      expect: { outcome: unspecified }
+    }
+  ]
+}

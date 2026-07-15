@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: empty-text-key-addressable
+  suite: scenario
+  spec: ["#expressions", "§6.3", "§A.8", "§A.1"]
+  tags: ["boundary", "identity"]
+  note: "Attack: the degenerate identity value. Annex A.1 defines text as a Unicode scalar sequence — the empty sequence is a valid text — and Annex A.8 makes text key-eligible with no minimum-length rule; identity is application-defined (§5.4). The empty-string key must therefore seed, sort before 'x' (Annex B.1 lexicographic scalar order), and be addressable by an ordinary selector."
+
+  package: {
+    $liasse: 1
+    $app: "t.emptykey@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        v: "int"
+      }
+      $mut: {
+        read: "return .rows[@id] { v }"
+      }
+      $public: {
+        all: { $view: ".rows { id, v }" }
+        rows: {
+          $mut: { read: ".read" }
+        }
+      }
+    }
+    $data: {
+      rows: {
+        "": { v: "1" }
+        "x": { v: "2" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.all", id: "w1",
+      expect_init: { value: [ { id: "", v: "1" }, { id: "x", v: "2" } ] } }
+    { call: "public.rows.read", args: { id: "" },
+      expect: { outcome: "ok", value: [ { v: "1" } ] } }
+  ]
+}

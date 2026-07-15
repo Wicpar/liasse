@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: interface-aggregation-inherited-identity
+  suite: scenario
+  spec: ["#modules", "§13.9"]
+  note: '''
+    §13.9: the parent reads every instance exposing an interface through
+    .modules::templates; inherited identity is module instance identity plus
+    exposed row identity, and the projection exposes both keys. The declared
+    $sort [module, id] fixes the expected order across instances.
+  '''
+
+  packages: {
+    host: {
+      "$liasse": 1
+      "$app": "t.host@1.0.0"
+      "$model": {
+        "companies": {
+          "$key": "id"
+          "id": "text"
+          "name": "text"
+          "modules": {
+            "$modules": {
+              "$interfaces": {
+                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+              }
+            }
+          }
+          "catalog": {
+            "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
+          }
+        }
+        "$public": {
+          "catalog": {
+            "$params": { "company": "text" }
+            "$view": "/companies[@company].catalog"
+          }
+        }
+      }
+      "$data": { "companies": { "acme": { "name": "Acme" } } }
+    }
+    tpl: {
+      "$liasse": 1
+      "$module": "t.tpl@1.0.0"
+      "$model": {
+        "templates": { "$key": "id", "id": "text", "label": "text" }
+      }
+      "$expose": {
+        "templates": { "$view": ".templates { id, label }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { space: "/companies/acme/modules"
+        request: { "$name": "kit_a", "$module": "t.tpl@1.0.0"
+                   "$data": { "templates": { "a2": { "label": "Zeta" }, "z1": { "label": "Alpha" } } } } }
+      expect: { outcome: ok } }
+    { module_install: { space: "/companies/acme/modules"
+        request: { "$name": "kit_b", "$module": "t.tpl@1.0.0"
+                   "$data": { "templates": { "a1": { "label": "Mid" } } } } }
+      expect: { outcome: ok } }
+    { watch: "public.catalog", args: { company: "acme" }, id: "w1"
+      expect_init: { value: [
+        { module: "kit_a", id: "a2", label: "Zeta" }
+        { module: "kit_a", id: "z1", label: "Alpha" }
+        { module: "kit_b", id: "a1", label: "Mid" }
+      ] } }
+  ]
+}

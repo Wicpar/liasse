@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: plain-object-is-static-struct
+  suite: scenario
+  spec: ["#annex-c", "§C.2", "#state-model", "§5.3"]
+  note: "Annex C.2: 'A plain object without a shape marker is a static struct.' §5.3: a plain object is a static struct sharing the identity/lifecycle of its containing row; its members are projected as a nested object, not as addressable rows. The 'address' object here carries no $key/$set/$view marker, so it is one struct value on the single 'company' struct, observable through a nested projection."
+
+  package: {
+    $liasse: 1
+    $app: "t.struct@1.0.0"
+    $model: {
+      company: {
+        name: "text"
+        address: {
+          city: "text"
+          country: "text"
+        }
+      }
+      view_company: {
+        $view: ".company { name, address: { city, country } }"
+      }
+      $public: {
+        company: { $view: ".view_company" }
+      }
+    }
+    $data: {
+      company: {
+        name: "Acme"
+        address: { city: "Paris", country: "FR" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.company", id: "w1",
+      expect_init: { value: { name: "Acme", address: { city: "Paris", country: "FR" } } } }
+  ]
+}

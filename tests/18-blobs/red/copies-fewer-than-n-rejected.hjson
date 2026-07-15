@@ -1,0 +1,74 @@
+{
+  format: 1
+  name: copies-fewer-than-n-rejected
+  suite: scenario
+  spec: ["#blobs", "§18.4"]
+  tags: ["blob", "placement", "boundary"]
+  note: '''
+    §18.4: for $copies, "fewer than n available stores reject the plan." The
+    policy demands 2 copies from the eu store view, but only one eu store is
+    writable (the other's connector is unavailable), so the new write cannot
+    reach n distinct verified stores and is rejected. Boundary at n-1 available.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.copiesshort@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        region: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: { $copies: 2, $of: "/stores[:s | s.region == 'eu']" } }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      $public: { docs: { $mut: { add: ".add" } } }
+    }
+    $data: {
+      stores: {
+        eu1: { connector: "fs-a", region: "eu" }
+        eu2: { connector: "fs-b", region: "eu" }
+      }
+    }
+  }
+
+  hosts: {
+    connectors: {
+      "fs-a": { capabilities: ["stream_upload", "checksum"] }
+      "fs-b": { capabilities: ["stream_upload", "checksum"] }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Only one of the two eu stores is writable.
+    { connector_set: { connector: "fs-b", available: false } }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "needs two"
+        media: "text/plain"
+        on: "c1"
+      }
+      expect: { outcome: rejected, violates: ["#blobs"],
+                detail: "fewer than n=2 writable stores; $copies plan rejected" } }
+  ]
+}
+</content>

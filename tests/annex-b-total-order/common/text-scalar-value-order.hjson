@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: text-scalar-value-order
+  suite: scenario
+  spec: ["#annex-b", "§B.1", "§A.1"]
+  tags: ["ordering", "unicode"]
+  note: '''
+    §B.1 text: ascending order is lexicographic Unicode scalar-value order —
+    codepoint by codepoint (A.1: text is a Unicode scalar sequence). No case
+    folding or locale collation applies (§B.1 says applications that need
+    those produce an explicit sort key). Consequences asserted here:
+      - all ASCII uppercase precede ASCII lowercase, because U+0041..U+005A
+        (A..Z) < U+0061..U+007A (a..z): "Apple" < "apple";
+      - the empty string sorts first (empty scalar sequence, shared prefix of
+        everything);
+      - a shorter string precedes a longer one that extends it: "app" < "apple".
+    Literals are all ASCII so the file is confusable-free.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.text@1.0.0"
+    $model: {
+      words: {
+        $key: "id"
+        id: "text"
+        w: "text"
+      }
+      $public: {
+        by_w: { $view: ".words { id, w, $sort: [w, id] }" }
+      }
+    }
+    $data: {
+      words: {
+        r1: { w: "apple" }
+        r2: { w: "Apple" }
+        r3: { w: "app" }
+        r4: { w: "" }
+        r5: { w: "Banana" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_w", id: "w1",
+      expect_init: { value: [
+        { id: "r4", w: "" }
+        { id: "r2", w: "Apple" }
+        { id: "r5", w: "Banana" }
+        { id: "r3", w: "app" }
+        { id: "r1", w: "apple" }
+      ] } }
+  ]
+}

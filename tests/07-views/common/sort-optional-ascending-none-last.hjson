@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: sort-optional-ascending-none-last
+  suite: scenario
+  spec: ["#views", "§7.3", "§B.2", "§A.1"]
+  note: "§7.3 and §B.2: ascending optional order is 'present values in ascending order, then none' (PostgreSQL-style absence placement). §A.1: none is 'absent optional<T> value' represented as an omitted optional field, so s2's omitted score is none and is absent in the result. Ascending by score gives s3(1), s1(2), then the none row s2 with score absent."
+
+  package: {
+    $liasse: 1
+    $app: "t.viewoptasc@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        score: "int?"
+      }
+      $public: {
+        byscore: { $view: ".items { id, score, $sort: [score] }" }
+      }
+    }
+    $data: {
+      items: {
+        s1: { score: "2" }
+        s2: {}
+        s3: { score: "1" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.byscore", id: "w1",
+      expect_init: { value: [
+        { id: "s3", score: "1" }
+        { id: "s1", score: "2" }
+        { id: "s2", score: "$absent" }
+      ] } }
+  ]
+}
