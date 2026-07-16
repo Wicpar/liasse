@@ -70,11 +70,35 @@ impl ExprType {
 
 /// The shape of a row: its visible fields (name → type) and, when the row is
 /// keyed, the type of its identity key.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// A bucketed (temporal) row additionally carries *structural bindings*
+/// (`$source`/`$from`/`$until`/`$index`, §14.4) — names a projection over the row
+/// may read that are not ordinary fields — and a temporal `unbounded` marker
+/// (§14.5): a recurring source-backed bucket whose series may run forever must be
+/// read through a bounded temporal selector, never enumerated whole. Neither the
+/// structural bindings nor the marker participates in row *identity*: two rows
+/// with the same visible fields and key denote the same shape (§12.4/Annex E view
+/// identity), so [`PartialEq`] compares only `fields` and `key`.
+#[derive(Debug, Clone)]
 pub struct RowType {
     fields: BTreeMap<String, ExprType>,
     key: Option<Box<ExprType>>,
+    /// Structural bindings a projection over this row may read (§14.4). Empty for
+    /// an ordinary (non-bucketed) row.
+    structural: BTreeMap<String, ExprType>,
+    /// Whether reading this row stream whole would enumerate an unbounded series
+    /// (§14.5). Only a recurring source-backed bucket with a possibly-unbounded
+    /// upper bound sets this; a bounded temporal selector clears it.
+    unbounded: bool,
 }
+
+impl PartialEq for RowType {
+    fn eq(&self, other: &Self) -> bool {
+        self.fields == other.fields && self.key == other.key
+    }
+}
+
+impl Eq for RowType {}
 
 impl RowType {
     /// A row with the given fields and optional key identity type.
@@ -86,6 +110,8 @@ impl RowType {
         Self {
             fields: fields.into_iter().collect(),
             key: key.map(Box::new),
+            structural: BTreeMap::new(),
+            unbounded: false,
         }
     }
 
@@ -93,6 +119,26 @@ impl RowType {
     #[must_use]
     pub fn keyless(fields: impl IntoIterator<Item = (String, ExprType)>) -> Self {
         Self::new(fields, None)
+    }
+
+    /// Attach the structural bindings a projection over this bucketed row may read
+    /// (`$source`/`$from`/`$until`/`$index`, §14.4).
+    #[must_use]
+    pub fn with_structural(
+        mut self,
+        structural: impl IntoIterator<Item = (String, ExprType)>,
+    ) -> Self {
+        self.structural = structural.into_iter().collect();
+        self
+    }
+
+    /// Mark this row stream as an unbounded recurring bucket (§14.5): reading it
+    /// whole enumerates a possibly-infinite series and is rejected; a bounded
+    /// temporal selector (`.$at`/`.$between`) must gate it.
+    #[must_use]
+    pub fn unbounded(mut self, unbounded: bool) -> Self {
+        self.unbounded = unbounded;
+        self
     }
 
     /// The type of a visible field.
@@ -104,6 +150,19 @@ impl RowType {
     /// The visible fields in canonical field-name order.
     pub fn fields(&self) -> impl Iterator<Item = (&String, &ExprType)> {
         self.fields.iter()
+    }
+
+    /// The type of a structural binding `$name` this row exposes (§14.4).
+    #[must_use]
+    pub fn structural(&self, name: &str) -> Option<&ExprType> {
+        self.structural.get(name)
+    }
+
+    /// Whether reading this row stream whole would enumerate an unbounded series
+    /// (§14.5).
+    #[must_use]
+    pub fn is_unbounded(&self) -> bool {
+        self.unbounded
     }
 
     /// The identity key type, if the row is keyed.

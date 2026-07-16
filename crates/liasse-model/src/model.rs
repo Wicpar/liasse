@@ -78,6 +78,10 @@ impl Model {
         // resolves to the value's real type (a `bool` condition, an `int` operand)
         // rather than the widest `json`. Diagnostics are the tree check's job.
         infer::root_computed_types(sources, &resolver, &mut root);
+        // §14.4–§14.6: type each source-backed bucket into its temporal-collection
+        // row before the tree/surface checks, so a temporal selector over the
+        // bucket resolves against real output-field and structural-binding types.
+        bucket::type_source_buckets(&mut reporter, sources, &resolver, &mut root, &build.source_bucket_decls);
         check::check_tree(&mut reporter, sources, &resolver, &root);
         let mutations = check_mutations(
             &mut reporter,

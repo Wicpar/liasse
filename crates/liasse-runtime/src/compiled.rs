@@ -47,8 +47,9 @@ pub(crate) enum OnDelete {
     Cascade,
     /// Clear this optional ref (`$on_delete: none`).
     Clear,
-    /// Apply a `= { … }` patch to the surviving referencing row.
-    Patch(TypedExpr),
+    /// Apply a `= { … }` patch to the surviving referencing row. Boxed so the
+    /// large typed patch does not widen every `OnDelete` (clippy large-variant).
+    Patch(Box<TypedExpr>),
 }
 
 /// A compiled writable field of a collection row.
@@ -302,7 +303,7 @@ fn compile_on_delete(
                 .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
             let scope = RuntimeScope::new(row_ty.clone(), root_ty.clone()).with_structural("target", target_ty);
             let (patch, _) = compile_expr(sources, &scope, "on-delete", body)?;
-            Ok(OnDelete::Patch(patch))
+            Ok(OnDelete::Patch(Box::new(patch)))
         }
         other => Err(EngineError::Internal(format!("unrecognized `$on_delete` policy `{other}`"))),
     }

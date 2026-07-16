@@ -21,6 +21,14 @@ impl Checker<'_> {
     /// has already established the `$all` spelling.
     pub(crate) fn check_temporal_all(&mut self, expr: &Expr, base: &Expr) -> Option<TypedExpr> {
         let (base, row) = self.selector_base(base, "a temporal selector")?;
+        // §14.5: `.$all` enumerates every extant row, which an unbounded recurring
+        // bucket cannot provide — it must be read through a bounded selector.
+        if row.is_unbounded() {
+            return self.error(
+                expr,
+                "`.$all` enumerates an unbounded recurring bucket; read it through a bounded temporal selector `.$at`/`.$between` (§14.5)",
+            );
+        }
         Some(self.temporal_node(expr, row, base, TypedTemporal::All))
     }
 
@@ -33,6 +41,9 @@ impl Checker<'_> {
         args: &[Arg],
     ) -> Option<TypedExpr> {
         let (base, row) = self.selector_base(base, "a temporal selector")?;
+        // A bounded window (`.$at`/`.$between`) reads a finite slice, so the result
+        // is no longer subject to the §14.5 unbounded-enumeration restriction.
+        let row = row.unbounded(false);
         let query = match selector {
             "at" => {
                 let mut instants = self.instants(expr, args, 1)?;

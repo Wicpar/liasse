@@ -43,6 +43,15 @@ impl Checker<'_> {
                 return self.error(expr, format!("cannot project a {}", other.describe()));
             }
         };
+        // §14.5: projecting an unbounded recurring bucket whole enumerates a
+        // possibly-infinite series; it must be read through a bounded temporal
+        // selector (`.$at`/`.$between`) first.
+        if source_row.is_unbounded() {
+            return self.error(
+                expr,
+                "this view enumerates an unbounded recurring bucket; read it through a bounded temporal selector `.$at`/`.$between` before projecting (§14.5)",
+            );
+        }
 
         let mut key_fields: Vec<String> = Vec::new();
         let mut raw_outputs: Vec<RawOutput> = Vec::new();

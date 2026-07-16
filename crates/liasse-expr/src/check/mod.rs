@@ -248,7 +248,11 @@ impl<'a> Checker<'a> {
     }
 
     fn check_structural(&mut self, expr: &Expr, name: &str) -> Option<TypedExpr> {
-        match self.scope.structural(name) {
+        // A structural binding resolves from the base scope's feature context
+        // (`$actor`/`$session`/… and a bucket declaration's own `$source`/`$from`),
+        // or, inside a projection over a bucketed view, from the current row's
+        // structural bindings (`$index`/`$from`/`$until`/`$source`, §14.4).
+        match self.scope.structural(name).or_else(|| self.row_structural(name)) {
             Some(ty) => Some(TypedExpr::new(
                 expr.span,
                 ty,
@@ -259,6 +263,20 @@ impl<'a> Checker<'a> {
                 format!("structural binding `${name}` is not available in this context"),
             ),
         }
+    }
+
+    /// A structural binding exposed by the current row's shape (§14.4): a
+    /// projection over a bucketed view reads `$from`/`$until`/`$index`/`$source`
+    /// off the row it maps. Innermost frame wins, matching lexical `.` scope.
+    fn row_structural(&self, name: &str) -> Option<ExprType> {
+        for frame in self.frames.iter().rev() {
+            if let ExprType::Row(row) | ExprType::View(row) = &frame.current
+                && let Some(ty) = row.structural(name)
+            {
+                return Some(ty.clone());
+            }
+        }
+        None
     }
 
     fn check_import(&mut self, expr: &Expr, name: &str) -> Option<TypedExpr> {

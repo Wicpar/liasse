@@ -304,6 +304,26 @@ impl MutPhase<'_, '_> {
             ExprKind::Object(members) => {
                 self.infer_object(members, receiver, params);
             }
+            // A temporal window selector `.base.$at(t)` / `.base.$between(a, b)`
+            // takes `timestamp` instants (§14.1); a bare `@param` argument inherits
+            // `timestamp`. The general checker otherwise ignores call arguments, so
+            // a parameter used *only* here would stay uninferred (§8.3).
+            ExprKind::Call { callee, args } => {
+                if let ExprKind::Field { member, .. } = &callee.kind
+                    && member.structural
+                    && matches!(member.text.as_str(), "at" | "between")
+                {
+                    for arg in args {
+                        let value = match arg {
+                            Arg::Positional(value) => value,
+                            Arg::Named { value, .. } => value,
+                        };
+                        if let ExprKind::Param(id) = &value.kind {
+                            record(params, &id.text, ExprType::scalar(Type::timestamp()));
+                        }
+                    }
+                }
+            }
             _ => {}
         }
         // Recurse into children, threading a row binding introduced by a

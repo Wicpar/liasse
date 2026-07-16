@@ -60,23 +60,31 @@ impl<'a> Builder<'a> {
     }
 
     /// A `$bucket` object without `$key` is a source-backed, read-only bucket
-    /// collection (§14.4/§14.6). Its output fields read the source row through
-    /// `$source`, a structural binding the general tree checker does not carry,
-    /// so the node is opaque here: the `$bucket` declaration is collected for the
-    /// bucket phase (which types the interval expressions in the source scope),
-    /// and the path is recorded read-only for the mutation phase. Typing the
-    /// output fields (`plan: "= $source.plan"`) and the custom-`$key` form of
-    /// §14.6 are documented seams.
+    /// collection (§14.4/§14.6). Its rows are derived from a `$source` view and
+    /// expose the source identity and interval bounds as structural bindings
+    /// (`$source`/`$from`/`$until`/`$index`), plus the collection's own output
+    /// fields (`plan: "= $source.plan"`). Those output-field types need the source
+    /// scope the general tree walk does not carry, so the node is projected as a
+    /// [temporal-collection view](crate::state::ViewDecl) whose row is *computed
+    /// later* by [`crate::bucket::type_source_buckets`] — it runs before the tree
+    /// and surface checks so a temporal selector over the collection type-checks.
+    /// The whole collection object is recorded for that pass; the absolute path is
+    /// recorded read-only for the mutation phase (§14.4).
     fn source_bucket_node(&mut self, value: &'a DocValue, path: &[String]) -> Node {
         self.source_buckets.push(absolute_path(path));
-        if let Some(bucket) = value.member("$bucket") {
-            self.buckets.push(super::RawDecl {
-                path: path.to_vec(),
-                span: bucket.span,
-                value: &bucket.value,
-            });
-        }
-        Node::Scalar(placeholder(value.span))
+        self.source_bucket_decls.push(super::RawDecl {
+            path: path.to_vec(),
+            span: value.span,
+            value,
+        });
+        // A placeholder empty temporal view; the real row lands in the pre-pass.
+        Node::View(crate::state::ViewDecl {
+            expr: ExprSource {
+                text: ".".to_owned(),
+                span: value.span,
+            },
+            row: liasse_expr::RowType::keyless(std::iter::empty::<(String, liasse_expr::ExprType)>()),
+        })
     }
 
     /// A `$keyring` managed-keyring declaration (§17.1, C.16). Its policy shape

@@ -31,8 +31,60 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             StepKind::Restore => self.drive_restore(request),
             StepKind::HostLoad => self.drive_host_load(request),
             StepKind::Operator => self.active().operator(&request.target),
+            StepKind::OperationStatus => self.drive_operation_status(request),
+            StepKind::Manifest => self.drive_manifest(request),
+            StepKind::Resume => self.drive_resume(request),
+            StepKind::Authenticate => self.drive_authenticate(request),
             _ => Err(AdapterError::unsupported(unsupported_reason(&request.kind))),
         }
+    }
+
+    /// §12.3 `operation_status`: query the retained status of the operation whose
+    /// high-entropy identifier the step names — the identifier is the capability, so
+    /// an unrecorded one reports `unknown`.
+    fn drive_operation_status(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let Some(id) = request.target.get("id").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`operation_status` step carries no operation `id`"));
+        };
+        let id = id.to_owned();
+        self.active().operation_status(&id)
+    }
+
+    /// §12.1 `manifest`: the surfaces granted to the step's connection context.
+    fn drive_manifest(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let connection = super::connection_name(request.on.as_ref());
+        let context = request.member("context").and_then(serde_json::Value::as_str).map(ToOwned::to_owned);
+        self.active().manifest(&connection, context.as_deref())
+    }
+
+    /// §12.2 `resume`: reopen a subscription over the named surface from a retained
+    /// frontier. The retained `from` is a hint the surface reconstructs a fresh
+    /// `init` over, so it is parsed leniently (an absent/opaque token resumes from
+    /// genesis, which the surface's current-frontier reconstruction still covers).
+    fn drive_resume(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let connection = super::connection_name(request.on.as_ref());
+        let Some(surface) = request.target.get("surface").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`resume` step carries no `surface` address"));
+        };
+        let Some(watch_id) = request.target.get("id").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`resume` step carries no subscription `id`"));
+        };
+        let from = request
+            .target
+            .get("from")
+            .and_then(serde_json::Value::as_u64)
+            .map_or(liasse_runtime::CommitSeq::GENESIS, liasse_runtime::CommitSeq::from_stored);
+        let (surface, watch_id) = (surface.to_owned(), watch_id.to_owned());
+        self.active().resume(&connection, &surface, &watch_id, from)
+    }
+
+    /// §11.4/§11.8 `authenticate`: bind (or refuse) an authentication context on the
+    /// step's connection, optionally naming a multiplexed context (`as`).
+    fn drive_authenticate(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let connection = super::connection_name(request.on.as_ref());
+        let context = request.member("as").and_then(serde_json::Value::as_str).map(ToOwned::to_owned);
+        let payload = request.target.clone();
+        self.active().authenticate_op(&connection, &payload, context.as_deref())
     }
 
     /// §19.5 `export`: capture the active instance's committed boundary as verified

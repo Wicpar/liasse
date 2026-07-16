@@ -74,8 +74,10 @@ pub const SKIP: &[(&str, &str)] = &[
     // harness skip, so the case is skipped, not judged.
     // ========================================================================
     // --- `authenticate` step ---
-    ("10-interfaces-roles/role-rejects-unaccepted-authenticator", "`authenticate` step not driven this phase"),
-    ("12-clients-live-views/shared-connection-cross-context-isolation", "`authenticate` step not driven this phase"),
+    // The `authenticate` step drives through `SurfaceHost::authenticate`; the
+    // residual case fails later — its `watch`/`call` name a multiplexed `context`
+    // (§11.8) the adapter does not yet thread onto the surface watch/call.
+    ("12-clients-live-views/shared-connection-cross-context-isolation", "connection `context` multiplexing not threaded onto watch/call"),
     // --- `blob_put` step ---
     ("18-blobs/accepted-upload-commits-and-verifies", "`blob_put` step not driven this phase"),
     ("18-blobs/all-branch-verifies-every-copy-at-admission", "`blob_put` step not driven this phase"),
@@ -183,8 +185,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("17-keyrings/bind-algorithm-mismatch-rejected", "`keyring_admin` step not driven this phase"),
     ("17-keyrings/manual-activation-enables-dependent-surface", "`keyring_admin` step not driven this phase"),
     ("17-keyrings/manual-second-activation-retires-prior", "`keyring_admin` step not driven this phase"),
-    // --- `manifest` step ---
-    ("12-clients-live-views/manifest-lists-granted-surfaces", "`manifest` step not driven this phase"),
     // --- `module_install` step ---
     ("13-modules/aggregation-skips-disabled-instance", "`module_install` step not driven this phase"),
     ("13-modules/cross-boundary-ref-missing-on-delete-invalid", "`module_install` step not driven this phase"),
@@ -235,9 +235,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("w-worked-examples/w4-plan-gates-template-disabled-not-exposed", "`module_install` step not driven this phase"),
     ("w-worked-examples/w4-seed-computed-enabled-reevaluation-unspecified", "`module_install` step not driven this phase"),
     ("w-worked-examples/w4-uninstall-removes-aggregated-templates", "`module_install` step not driven this phase"),
-    // --- `operation_status` step ---
-    ("12-clients-live-views/operation-status-identifier-is-capability", "`operation_status` step not driven this phase"),
-    ("12-clients-live-views/operation-status-reports-committed", "`operation_status` step not driven this phase"),
     // --- `operator` step ---
     // Root-mutation operator transitions now drive through a synthetic public
     // surface (`SurfaceHost::operator_call`); the entries below remain debt for a
@@ -250,9 +247,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("17-keyrings/sign-failure-rejects-mutation-without-effect", "`provider_set` step not driven this phase"),
     ("23-host-contract/no-time-budget-hanging-provider-unspecified", "`provider_set` step not driven this phase"),
     // --- `restart` step ---
-    // --- `resume` step ---
-    ("12-clients-live-views/resume-from-retained-frontier", "`resume` step not driven this phase"),
-    ("12-clients-live-views/resume-with-foreign-frontier", "`resume` step not driven this phase"),
     // ========================================================================
     // HOST-ENVIRONMENT SHAPING INVARIANTS (ENGINE)
     // The step reached the engine but tripped an engine invariant while shaping the
@@ -297,12 +291,10 @@ pub const SKIP: &[(&str, &str)] = &[
     ("11-auth-sessions/completion-barrier-spans-sessions", "role-scoped `$actor` view not rendered (no view value)"),
     ("11-auth-sessions/internal-call-preserves-actor", "role-scoped `$actor` view not rendered (no view value)"),
     ("11-auth-sessions/session-not-yet-active-denied", "session bucket lower-bound activation not observed at boundary"),
-    ("14-buckets/between-intersects-half-open", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/between-window-spanning-rollover-returns-both-periods", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/calendar-monthly-clamp-preserves-anchor", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/clipped-final-interval-upper-bound-excluded", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/dst-fall-back-ambiguous-earlier", "package does not load yet (upstream compile/model gap)"),
-    ("14-buckets/omitted-until-is-unbounded", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/plan-period-escalation-rejected", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/recurring-clipped-final-interval-included", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/recurring-consecutive-periods", "package does not load yet (upstream compile/model gap)"),
@@ -411,7 +403,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("12-clients-live-views/authority-loss-emits-close", "outcome divergence: expected `ok` observed `denied`"),
     ("12-clients-live-views/parameter-normalization-and-checks", "outcome divergence: expected `ok` observed `denied`"),
     ("12-clients-live-views/resume-after-authority-loss-denied", "outcome divergence: expected `ok` observed `denied`"),
-    ("14-buckets/between-rejects-empty-or-reversed-range", "outcome divergence: expected `rejected` observed `ok`"),
     ("15-meters/accrual-unspent-capacity-does-not-roll-over", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/backdated-spend-consumes-expired-pool", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/expired-pool-does-not-fund-current-spend", "outcome divergence: expected `ok` observed `rejected`"),

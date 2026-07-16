@@ -84,6 +84,10 @@ pub(crate) struct StateBuild<'a> {
     /// Absolute paths (`/segment/...`) of source-backed bucket collections,
     /// whose rows are read-only (§14.4).
     pub source_buckets: Vec<String>,
+    /// Source-backed bucket collection declarations (§14.4–§14.6): the whole
+    /// collection object (its `$bucket`, `$key`, and output-field members), typed
+    /// into a temporal-collection row by [`crate::bucket::type_source_buckets`].
+    pub source_bucket_decls: Vec<RawDecl<'a>>,
 }
 
 /// The structural builder: accumulates the reusable type table and the raw
@@ -103,6 +107,7 @@ pub(crate) struct Builder<'a> {
     consumes: Vec<RawDecl<'a>>,
     blob_storage: Vec<RawDecl<'a>>,
     source_buckets: Vec<String>,
+    source_bucket_decls: Vec<RawDecl<'a>>,
     /// Model-root paths a `$like: "^"` positional recursion resolves to (§5.8):
     /// the containing shape/collection each inline recursive field adopts. After
     /// the root is built, each target's node is registered in [`Self::types`]
@@ -130,6 +135,7 @@ impl<'a> Builder<'a> {
             consumes: Vec::new(),
             blob_storage: Vec::new(),
             source_buckets: Vec::new(),
+            source_bucket_decls: Vec::new(),
             recur_targets: std::collections::BTreeSet::new(),
         };
         if let Some(types_doc) = types_doc {
@@ -154,6 +160,7 @@ impl<'a> Builder<'a> {
             consumes: builder.consumes,
             blob_storage: builder.blob_storage,
             source_buckets: builder.source_buckets,
+            source_bucket_decls: builder.source_bucket_decls,
         }
     }
 

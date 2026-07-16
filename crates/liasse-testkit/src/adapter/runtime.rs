@@ -14,9 +14,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use liasse_runtime::{ImportError, ImportRelation, Precision, Timestamp};
+use liasse_runtime::{CommitSeq, ImportError, ImportRelation, Precision, Timestamp};
 use liasse_store::InstanceStore;
-use liasse_surface::{SurfaceAddress, SurfaceCall, SurfaceHost, SurfaceWatch, VirtualClock as SurfaceClock};
+use liasse_surface::{
+    AuthResult, OperationKey, OperationStatus, SurfaceAddress, SurfaceCall, SurfaceHost,
+    SurfaceResume, SurfaceWatch, VirtualClock as SurfaceClock,
+};
 
 use crate::clock::VirtualClock;
 use crate::contract::{CallRequest, ConnectRequest, Observation, WatchRequest};
@@ -41,6 +44,10 @@ pub(super) struct Runtime<S: InstanceStore> {
     pub(super) watch_singular: BTreeMap<String, bool>,
     /// The connection ids currently open on the host.
     pub(super) open_connections: BTreeSet<String>,
+    /// The §12.3 operation key each submitted `operation_id` scoped to, so a later
+    /// `operation_status` step reconstructs the exact key the call recorded under
+    /// (the identifier is the capability; an unknown identifier maps to no key).
+    pub(super) op_keys: BTreeMap<String, OperationKey>,
     /// The adapter-side virtual clock, used to compute the absolute instant an
     /// `advance_time` moves this instance's surface clock to.
     pub(super) clock: VirtualClock,
@@ -54,6 +61,7 @@ impl<S: InstanceStore> Runtime<S> {
             watch_conns: BTreeMap::new(),
             watch_singular: BTreeMap::new(),
             open_connections: BTreeSet::new(),
+            op_keys: BTreeMap::new(),
             clock: VirtualClock::new(),
         }
     }
@@ -105,6 +113,7 @@ impl<S: InstanceStore> Runtime<S> {
         self.open_connections.clear();
         self.watch_conns.clear();
         self.watch_singular.clear();
+        self.op_keys.clear();
     }
 
     /// Re-open every tracked connection on the current host — a §9.2 lifecycle
@@ -134,6 +143,29 @@ pub(super) trait Instance {
     fn restart(&mut self) -> Result<Observation, AdapterError>;
     fn host_load(&mut self, package: &serde_json::Value) -> Result<Observation, AdapterError>;
     fn operator(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError>;
+    /// Query the §12.3 retained status of the operation `id` scoped by a prior
+    /// call. The identifier is the capability: an id no call recorded maps to no
+    /// key, so the runtime reports `unknown` and reveals nothing.
+    fn operation_status(&mut self, id: &str) -> Result<Observation, AdapterError>;
+    /// The §12.1 `manifest`: the surfaces granted to `connection`'s context.
+    fn manifest(&mut self, connection: &str, context: Option<&str>) -> Result<Observation, AdapterError>;
+    /// Resume subscription `watch_id` over surface `address` on `connection` from
+    /// the retained frontier `from` (§12.2), rendering the reconstructed result.
+    fn resume(
+        &mut self,
+        connection: &str,
+        address: &str,
+        watch_id: &str,
+        from: CommitSeq,
+    ) -> Result<Observation, AdapterError>;
+    /// Authenticate a context on `connection` (§11.4/§11.8): a `denied` outcome for
+    /// a selection the targeted role does not accept, `ok` when a context binds.
+    fn authenticate_op(
+        &mut self,
+        connection: &str,
+        payload: &serde_json::Value,
+        context: Option<&str>,
+    ) -> Result<Observation, AdapterError>;
     /// Export the committed boundary as `.liasse` bytes (§19.5).
     fn export(&mut self) -> Result<Vec<u8>, AdapterError>;
     /// Import `bytes` under `policy` (§19.8), rendering the movement report.
@@ -174,22 +206,38 @@ impl<S: InstanceStore> Instance for Runtime<S> {
     fn call(&mut self, request: CallRequest) -> Result<Observation, AdapterError> {
         let connection = connection_name(request.on.as_ref());
         self.ensure_connection(&connection);
-        let loaded = self.loaded()?;
-        let address = SurfaceAddress::parse(&request.target)
-            .map_err(|err| AdapterError::Host(format!("malformed address `{}`: {err}", request.target)))?;
-        let types = loaded.routing.arg_types(&request.target);
-        let args = wire::decode_args(&request.args, &types);
-        let mut call = SurfaceCall::new(address, args);
-        if let Some(operation_id) = &request.operation_id {
-            call = call.with_operation_id(operation_id.clone());
-        }
         // §11.4: a per-request authenticator selection on the call overrides the
-        // connection's stored context for this one request.
-        if let Some(selection) = request.auth.as_ref().and_then(parse_auth_selection) {
-            call = call.with_auth(selection);
+        // connection's stored context for this one request; its authenticator name
+        // is part of the §12.3 operation scope, so capture it before the borrow.
+        let selection = request.auth.as_ref().and_then(parse_auth_selection);
+        let auth_name = selection.as_ref().map(|s| s.auth().to_owned());
+        let (observation, op_record) = {
+            let loaded = self.loaded()?;
+            let address = SurfaceAddress::parse(&request.target)
+                .map_err(|err| AdapterError::Host(format!("malformed address `{}`: {err}", request.target)))?;
+            // §12.3: the retained operation scopes to the surface target, the selected
+            // authenticator, and the identifier — the exact key the host records under.
+            let surface_prefix = address.surface_prefix();
+            let types = loaded.routing.arg_types(&request.target);
+            let args = wire::decode_args(&request.args, &types);
+            let mut call = SurfaceCall::new(address, args);
+            if let Some(operation_id) = &request.operation_id {
+                call = call.with_operation_id(operation_id.clone());
+            }
+            if let Some(selection) = selection {
+                call = call.with_auth(selection);
+            }
+            let outcome = loaded.host.call(&connection, &call).map_err(host_fault)?;
+            let op_record = request
+                .operation_id
+                .as_ref()
+                .map(|opid| (opid.clone(), OperationKey::new(surface_prefix, auth_name, opid.clone())));
+            (observe_call(&outcome), op_record)
+        };
+        if let Some((opid, key)) = op_record {
+            self.op_keys.insert(opid, key);
         }
-        let outcome = loaded.host.call(&connection, &call).map_err(host_fault)?;
-        Ok(observe_call(&outcome))
+        Ok(observation)
     }
 
     fn watch(&mut self, request: WatchRequest) -> Result<Observation, AdapterError> {
@@ -308,6 +356,61 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         Ok(observe_call(&outcome))
     }
 
+    fn operation_status(&mut self, id: &str) -> Result<Observation, AdapterError> {
+        let key = self.op_keys.get(id).cloned();
+        let loaded = self.loaded()?;
+        let status = key.map_or(OperationStatus::Unknown, |key| loaded.host.operation_status(&key));
+        Ok(Observation::ok(Some(operation_status_value(&status))))
+    }
+
+    fn manifest(&mut self, connection: &str, context: Option<&str>) -> Result<Observation, AdapterError> {
+        self.ensure_connection(connection);
+        let loaded = self.loaded()?;
+        let surfaces = loaded.host.manifest(connection, context).map_err(host_fault)?;
+        let surfaces: Vec<serde_json::Value> =
+            surfaces.into_iter().map(serde_json::Value::String).collect();
+        Ok(Observation::ok(Some(serde_json::json!({ "surfaces": surfaces }))))
+    }
+
+    fn resume(
+        &mut self,
+        connection: &str,
+        address: &str,
+        watch_id: &str,
+        from: CommitSeq,
+    ) -> Result<Observation, AdapterError> {
+        self.ensure_connection(connection);
+        let loaded = self.loaded()?;
+        let parsed = SurfaceAddress::parse(address)
+            .map_err(|err| AdapterError::Host(format!("malformed resume address `{address}`: {err}")))?;
+        let singular = loaded.routing.is_singular_view(address);
+        let resume = SurfaceResume::new(parsed, watch_id.to_owned(), from);
+        let subscription = loaded.host.resume(connection, &resume).map_err(host_fault)?;
+        Ok(observe_subscription(&subscription, singular))
+    }
+
+    fn authenticate_op(
+        &mut self,
+        connection: &str,
+        payload: &serde_json::Value,
+        context: Option<&str>,
+    ) -> Result<Observation, AdapterError> {
+        self.ensure_connection(connection);
+        let loaded = self.loaded()?;
+        let Some(mut request) = parse_authenticate(payload, &loaded.routing) else {
+            // A selection that resolves no wired role leaves the context unbound;
+            // the denial is the observable outcome (§11.4).
+            return Ok(Observation::outcome(Outcome::Denied));
+        };
+        if let Some(context) = context {
+            request = request.as_context(context.to_owned());
+        }
+        match loaded.host.authenticate(connection, &request).map_err(host_fault)? {
+            AuthResult::Bound => Ok(Observation::ok(None)),
+            AuthResult::Denied(_) => Ok(Observation::outcome(Outcome::Denied)),
+        }
+    }
+
     fn export(&mut self) -> Result<Vec<u8>, AdapterError> {
         let loaded = self.loaded()?;
         loaded.host.export().map_err(host_fault)
@@ -423,6 +526,25 @@ fn relation_token(relation: ImportRelation) -> &'static str {
         ImportRelation::Rollback => "rollback",
         ImportRelation::Merge => "merge",
         ImportRelation::Unrelated => "unrelated",
+    }
+}
+
+/// The `{ status, [frontier], [commit] }` value an `operation_status` step renders
+/// (§12.3 retained status). A `committed` record carries its frontier and commit
+/// sequence; `unknown` reveals nothing beyond the status token.
+fn operation_status_value(status: &OperationStatus) -> serde_json::Value {
+    match status {
+        OperationStatus::Committed { frontier, commit } => serde_json::json!({
+            "status": "committed",
+            "frontier": frontier.get(),
+            "commit": commit.get(),
+        }),
+        OperationStatus::Unchanged { frontier } => serde_json::json!({
+            "status": "unchanged",
+            "frontier": frontier.get(),
+        }),
+        OperationStatus::Rejected => serde_json::json!({ "status": "rejected" }),
+        OperationStatus::Unknown => serde_json::json!({ "status": "unknown" }),
     }
 }
 
