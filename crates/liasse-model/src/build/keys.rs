@@ -23,10 +23,15 @@ impl<'a> Builder<'a> {
         let shape = self.build_shape(reporter, members, path, false);
         let key_member = value.member("$key");
         let (key, key_span) = self.key_fields(reporter, key_member, &shape);
-        let unique = value
+        let mut unique = value
             .member("$unique")
             .map(|m| self.unique_keys(reporter, &m.value, &shape))
             .unwrap_or_default();
+        // §5.7: `$unique: true` on a field adds one single-field candidate key
+        // for that field, equivalent to the array spelling `$unique: [field]`;
+        // its component must be key-eligible (A.8), enforced here so the
+        // shorthand is not silently weaker than the array form.
+        unique.extend(self.field_unique_keys(reporter, &shape));
         let consumes = value.member("$consumes").is_some();
         Collection {
             key,
@@ -158,6 +163,24 @@ impl<'a> Builder<'a> {
             }
             if !candidate.is_empty() {
                 candidates.push(candidate);
+            }
+        }
+        candidates
+    }
+
+    /// The single-field candidate keys contributed by field-level `$unique: true`
+    /// shorthands (§5.7), each validated for key-eligibility (A.8) exactly as an
+    /// array-form `$unique` entry is.
+    fn field_unique_keys(&self, reporter: &mut Reporter, shape: &Shape) -> Vec<Vec<DeclName>> {
+        let mut candidates = Vec::new();
+        for member in &shape.members {
+            let Node::Scalar(field) = &member.node else { continue };
+            if !field.unique {
+                continue;
+            }
+            match self.unique_field(shape, member.name.as_str()) {
+                Ok(name) => candidates.push(vec![name]),
+                Err(reason) => reporter.reject(field.span, code::KEY, reason),
             }
         }
         candidates

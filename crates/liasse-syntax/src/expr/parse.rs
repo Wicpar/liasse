@@ -107,8 +107,7 @@ impl Builder<'_> {
             Rule::fallback
             | Rule::logic_or
             | Rule::logic_and
-            | Rule::equality
-            | Rule::relational
+            | Rule::comparison
             | Rule::additive
             | Rule::multiplicative => self.binary_layer(pair),
             Rule::unary => self.unary(pair),

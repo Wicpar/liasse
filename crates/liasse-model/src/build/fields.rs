@@ -104,23 +104,25 @@ impl<'a> Builder<'a> {
     pub(super) fn expanded_field(&mut self, reporter: &mut Reporter, value: &DocValue) -> Node {
         let mut field = placeholder(value.span);
         let mut blob_member: Option<liasse_diag::ByteSpan> = None;
+        // §5.1: an expanded field's members all refine one field and "their
+        // source order has no semantic effect". The base type (`$type`) and the
+        // optional wrapper (`$optional`) are therefore gathered independently and
+        // combined once after the loop, so `$optional` before `$type` cannot be
+        // overwritten by a later `$type` assignment (which would silently drop
+        // optionality and let an optional field be used as a `$key`).
+        let mut base_ty = Type::Json;
+        let mut optional = false;
         for member in value.as_object().unwrap_or(&[]) {
             match member.name.text.as_str() {
                 "$type" => {
                     if let Some(text) = member.value.as_string() {
                         match TypeParser::parse(text.trim(), &self.named) {
-                            Ok(ty) => field.ty = ty,
+                            Ok(ty) => base_ty = ty,
                             Err(reason) => reporter.reject(member.value.span, code::TYPE, reason),
                         }
                     }
                 }
-                "$optional" => {
-                    if member.value.as_bool() == Some(true)
-                        && !matches!(field.ty, Type::Optional(_))
-                    {
-                        field.ty = Type::Optional(Box::new(std::mem::replace(&mut field.ty, Type::Json)));
-                    }
-                }
+                "$optional" => optional = member.value.as_bool() == Some(true),
                 "$default" => field.default = Some(default_source(&member.value)),
                 "$normalize" => field.normalize = Some(expr_source(&member.value)),
                 "$check" => field.checks = self.checks(reporter, &member.value),
@@ -158,6 +160,11 @@ impl<'a> Builder<'a> {
                 ),
             }
         }
+        field.ty = if optional && !matches!(base_ty, Type::Optional(_)) {
+            Type::Optional(Box::new(base_ty))
+        } else {
+            base_ty
+        };
         if let Some(span) = blob_member {
             crate::blob::require_blob_type(reporter, &field.ty, span);
         }

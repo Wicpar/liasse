@@ -16,8 +16,6 @@
 
 mod helpers;
 
-use std::collections::BTreeMap;
-
 use liasse_diag::{ByteSpan, SourceId, SourceMap};
 use liasse_expr::{check_statement, ExprType, RowType};
 use liasse_syntax::{parse_expression, Arg, BinaryOp, Expr, ExprKind, Selector, Stmt, StmtKind};
@@ -34,7 +32,7 @@ use crate::walk::child_exprs;
 
 use helpers::{
     collect_param_refs, is_program_call, is_scalar_binop, parse_name, receiver_shape, record,
-    resolve_node, stmt_exprs, uses_mutation_operator, wrap, write_path, BindEnv,
+    resolve_node, stmt_exprs, uses_mutation_operator, wrap, write_path, BindEnv, Params,
 };
 
 /// A validated mutation: where it is declared, its external name, and its
@@ -106,7 +104,7 @@ impl MutPhase<'_, '_> {
         let receiver = self.receiver_type(&entry.path)?;
         let statements = self.parse_program(entry)?;
 
-        let mut params = prototype.unwrap_or_default();
+        let mut params = Params::from_prototype(prototype);
         self.infer_params(&statements, &receiver, &mut params);
         self.check_param_inference(&statements, &params);
 
@@ -116,7 +114,7 @@ impl MutPhase<'_, '_> {
         Some(Mutation {
             path: entry.path.clone(),
             name,
-            params: params.into_iter().collect(),
+            params: params.into_pairs(),
         })
     }
 
@@ -175,9 +173,9 @@ impl MutPhase<'_, '_> {
         }
     }
 
-    fn build_scope(&self, receiver: &ExprType, params: &BTreeMap<String, ExprType>) -> ModelScope {
+    fn build_scope(&self, receiver: &ExprType, params: &Params) -> ModelScope {
         let mut scope = ModelScope::nested(vec![receiver.clone()], self.root_row.clone());
-        for (name, ty) in params {
+        for (name, ty) in params.iter() {
             scope = scope.with_param(name.clone(), ty.clone());
         }
         scope
@@ -188,7 +186,7 @@ impl MutPhase<'_, '_> {
         &self,
         statements: &[(Stmt, SourceId)],
         receiver: &ExprType,
-        params: &mut BTreeMap<String, ExprType>,
+        params: &mut Params,
     ) {
         let binds = BindEnv::new();
         for (stmt, _) in statements {
@@ -212,11 +210,7 @@ impl MutPhase<'_, '_> {
     /// inferred from a use context or fixed by an explicit prototype. A parameter
     /// used only in a position that constrains no type (e.g. `return @value`)
     /// leaves more than one valid shape, so the package cannot load.
-    fn check_param_inference(
-        &mut self,
-        statements: &[(Stmt, SourceId)],
-        params: &BTreeMap<String, ExprType>,
-    ) {
+    fn check_param_inference(&mut self, statements: &[(Stmt, SourceId)], params: &Params) {
         let mut reported: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (stmt, source) in statements {
             let mut refs = Vec::new();
@@ -224,14 +218,22 @@ impl MutPhase<'_, '_> {
                 collect_param_refs(expr, &mut refs);
             }
             for (name, span) in refs {
-                if !params.contains_key(name) && reported.insert(name.to_owned()) {
+                if !reported.insert(name.to_owned()) {
+                    continue;
+                }
+                if !params.contains(name) {
                     self.reject_at(
                         *source,
                         span,
-                        &format!(
-                            "parameter `@{name}` cannot be inferred to a single type (§8.3)"
-                        ),
+                        &format!("parameter `@{name}` cannot be inferred to a single type (§8.3)"),
                         "give it a type with a prototype, e.g. `name({ value: text })`",
+                    );
+                } else if params.conflicts(name) {
+                    self.reject_at(
+                        *source,
+                        span,
+                        &format!("parameter `@{name}` is used with two incompatible types (§8.3)"),
+                        "use the parameter consistently, or fix a prototype so all uses agree",
                     );
                 }
             }
@@ -243,7 +245,7 @@ impl MutPhase<'_, '_> {
         expr: &Expr,
         receiver: &ExprType,
         binds: &BindEnv,
-        params: &mut BTreeMap<String, ExprType>,
+        params: &mut Params,
     ) {
         match &expr.kind {
             // `collection[@p]` — @p inherits the collection key type. A composite
@@ -331,7 +333,7 @@ impl MutPhase<'_, '_> {
         other_side: &Expr,
         receiver: &ExprType,
         binds: &BindEnv,
-        params: &mut BTreeMap<String, ExprType>,
+        params: &mut Params,
     ) {
         if let ExprKind::Param(id) = &param_side.kind
             && let Some(ty) = self.resolve(other_side, receiver, binds)
@@ -354,7 +356,7 @@ impl MutPhase<'_, '_> {
         &self,
         members: &[liasse_syntax::BlockMember],
         receiver: &ExprType,
-        params: &mut BTreeMap<String, ExprType>,
+        params: &mut Params,
     ) {
         use liasse_syntax::BlockMemberKind;
         let row = receiver.as_row();
@@ -411,7 +413,7 @@ impl MutPhase<'_, '_> {
         &self,
         members: &[liasse_syntax::BlockMember],
         key_ty: &ExprType,
-        params: &mut BTreeMap<String, ExprType>,
+        params: &mut Params,
     ) {
         use liasse_syntax::BlockMemberKind;
         let Some(Type::Struct(struct_ty)) = key_ty.as_scalar() else { return };
@@ -436,7 +438,7 @@ impl MutPhase<'_, '_> {
     fn infer_context_object(
         &self,
         members: &[liasse_syntax::BlockMember],
-        params: &mut BTreeMap<String, ExprType>,
+        params: &mut Params,
     ) {
         use liasse_syntax::BlockMemberKind;
         for member in members {

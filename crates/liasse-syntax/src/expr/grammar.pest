@@ -46,20 +46,22 @@ fallback_op = { "??" }
 
 logic_or  = { logic_and ~ (or_op ~ logic_and)* }
 or_op     = { "||" }
-logic_and = { equality ~ (and_op ~ equality)* }
+logic_and = { comparison ~ (and_op ~ comparison)* }
 and_op    = { "&&" }
 
-equality   = { relational ~ (eq_op ~ relational)* }
-eq_op      = { eq | ne }
-eq = { "==" }
-ne = { "!=" }
-
-relational = { additive ~ (rel_op ~ additive)* }
-rel_op = { le | ge | lt | gt | in_op }
+// SPEC.md §6.1 pins CEL operator precedence. CEL puts every comparison AND
+// equality operator on ONE left-associative level (`Relation = [Relation Relop]
+// Addition`, `Relop = "<" | "<=" | ">=" | ">" | "==" | "!=" | "in"`), so
+// `a == b < c` groups as `(a == b) < c`. Do not split `==`/`!=` off into a
+// looser C-style level — that would misgroup any mix of the two operator kinds.
+comparison = { additive ~ (rel_op ~ additive)* }
+rel_op = { le | ge | lt | gt | eq | ne | in_op }
 le = { "<=" }
 ge = { ">=" }
 lt = { "<" }
 gt = { ">" }
+eq = { "==" }
+ne = { "!=" }
 in_op = { "in" ~ !ident_cont }
 
 additive = { multiplicative ~ (add_op ~ multiplicative)* }

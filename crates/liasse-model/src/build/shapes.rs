@@ -81,8 +81,17 @@ impl<'a> Builder<'a> {
 
     /// A `$keyring` managed-keyring declaration (§17.1, C.16). Its policy shape
     /// is validated inline (no cross-model scope is needed); provider capability
-    /// resolution is a documented runtime seam. The node is opaque: a reference
-    /// to the ring resolves through a host namespace, not ordinary field access.
+    /// resolution is a documented runtime seam.
+    ///
+    /// §17.2: the runtime exposes the ring's managed versions as a *view* of
+    /// version-metadata rows, so a keyring public selector
+    /// (`.$current`/`.$accepted`/`.$public`/`.$versions`) resolves against a view
+    /// rather than the opaque `json` a scalar placeholder would give. The node is
+    /// therefore projected as a view; its row is open/empty because §17.2 pins no
+    /// version-metadata member names (SPEC-ISSUES 18). The view's stand-in
+    /// expression `.` is never the ring's value — [`crate::resolve`] takes the
+    /// view row directly — it only keeps the expression checker's well-formedness
+    /// pass satisfied for a synthetic, non-authored view.
     fn keyring_node(&self, reporter: &mut Reporter, value: &DocValue) -> Node {
         if let Some(keyring) = value.member("$keyring") {
             crate::keyring::check(reporter, &keyring.value);
@@ -96,7 +105,13 @@ impl<'a> Builder<'a> {
                 );
             }
         }
-        Node::Scalar(placeholder(value.span))
+        Node::View(crate::state::ViewDecl {
+            expr: ExprSource {
+                text: ".".to_owned(),
+                span: value.span,
+            },
+            row: liasse_expr::RowType::keyless(std::iter::empty::<(String, liasse_expr::ExprType)>()),
+        })
     }
 
     /// A `$modules` module space (§13.2, C.15). The composition grammar

@@ -92,3 +92,39 @@ fn rotate_object_requires_every_rejected() {
     );
     assert!(built.has_code("M-MISSING"));
 }
+
+/// §17.2 — the ring's managed versions are exposed as a view, so a keyring
+/// public selector (`.$current`, single active version §17.3; `.$versions`, a
+/// version stream) type-checks against it in a `$view` position. Before the ring
+/// was projected as a view it typed as opaque `json`, and the expression layer
+/// rejected the selector as "applies to a view, not a json"; this locks in that
+/// the selector resolves and the package loads.
+#[test]
+fn keyring_public_selectors_load_as_view() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.k@1.0.0", "$model": {
+            "session_keys": {
+              "$keyring": { "$provider": "hsm", "$algorithm": "Ed25519", "$rotate": "P30D", "$retain": "P45D" }
+            },
+            "ring_current": { "$view": "/session_keys.$current" },
+            "ring_versions": { "$view": "/session_keys.$versions" }
+        } }"#,
+    );
+    built.expect_ok();
+}
+
+/// §17.2 — an unknown `.$name` structural selector on the ring is still rejected
+/// (the ring being a view must not turn every `$`-suffixed access into a valid
+/// selector), so the view fix does not mask a real error.
+#[test]
+fn keyring_unknown_selector_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.k@1.0.0", "$model": {
+            "session_keys": {
+              "$keyring": { "$provider": "hsm", "$algorithm": "Ed25519", "$rotate": "P30D", "$retain": "P45D" }
+            },
+            "ring_bogus": { "$view": "/session_keys.$latest" }
+        } }"#,
+    );
+    assert!(built.result.is_err());
+}

@@ -122,6 +122,10 @@ pub(crate) struct CompiledBucket {
 /// The compiled artefacts the engine reuses across requests.
 pub(crate) struct Compiled {
     pub(crate) collections: Vec<CompiledCollection>,
+    /// Root-level computed values (§5.2) declared directly under `$model`, folded
+    /// onto the package-root row at materialization so a view or projection reads
+    /// them like any collection or stored value.
+    pub(crate) root_computed: Vec<CompiledComputed>,
     pub(crate) mutations: Vec<CompiledMutation>,
     pub(crate) views: Vec<CompiledView>,
     pub(crate) buckets: Vec<CompiledBucket>,
@@ -137,10 +141,11 @@ impl Compiled {
         let schema = Schema::new(model);
         let root_ty = ExprType::Row(schema.root_row_type());
         let collections = compile_collections(sources, schema, &root_ty)?;
+        let root_computed = compile_root_computed(sources, schema, &root_ty)?;
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc)?;
         let views = compile_views(sources, schema, &root_ty)?;
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc)?;
-        Ok(Self { collections, mutations, views, buckets })
+        Ok(Self { collections, root_computed, mutations, views, buckets })
     }
 
     /// The compiled collection named `name`, if any.
@@ -398,6 +403,28 @@ fn mutation_bodies(
 /// prototype suffix (§8.3).
 fn mut_base_name(key: &str) -> &str {
     key.split('(').next().unwrap_or(key).trim()
+}
+
+/// Compile each root-level computed value (§5.2): a non-writable scalar member
+/// declared directly under `$model`, typed with the package root as its receiver
+/// (`.` = root), so `n: "= count(.items)"` reads sibling collections and other
+/// root computed values.
+fn compile_root_computed(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+) -> Result<Vec<CompiledComputed>, EngineError> {
+    let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone());
+    let mut out = Vec::new();
+    for member in &schema.model().root().members {
+        if let Node::Scalar(scalar) = &member.node
+            && let Some(source) = &scalar.computed
+        {
+            let (expr, _src) = compile_expr(sources, &scope, "computed", &source.text)?;
+            out.push(CompiledComputed { name: member.name.as_str().to_owned(), expr });
+        }
+    }
+    Ok(out)
 }
 
 fn compile_views(

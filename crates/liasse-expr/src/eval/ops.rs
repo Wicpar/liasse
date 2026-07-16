@@ -190,7 +190,7 @@ fn decimal_arith(op: ArithOp, left: &Value, right: &Value) -> Result<Value, Eval
             if b.is_zero() {
                 return Err(EvalError::DivisionByZero);
             }
-            divide(&a, &b)?
+            crate::eval::decimal::divide(&a, &b)?
         }
         // SPEC-ISSUES item 3: remainder carries the dividend's sign (truncated
         // toward zero), consistent with the integer choice and A.6 division —
@@ -203,21 +203,6 @@ fn decimal_arith(op: ArithOp, left: &Value, right: &Value) -> Result<Value, Eval
         }
     };
     Ok(Value::Decimal(Decimal::from_big_decimal(result)))
-}
-
-/// Decimal division under PostgreSQL-style semantics (A.6): a result scale of at
-/// least sixteen fractional digits and no less than either operand's display
-/// scale, rounded half-away-from-zero, then normalized (trailing zeros trimmed)
-/// as the least-surprising canonical spelling (SPEC-ISSUES item 1).
-fn divide(a: &BigDecimal, b: &BigDecimal) -> Result<BigDecimal, EvalError> {
-    let scale = 16
-        .max(a.fractional_digit_count())
-        .max(b.fractional_digit_count());
-    if scale > i64::from(u16::MAX) {
-        return Err(EvalError::DecimalScale);
-    }
-    let quotient = (a / b).with_scale_round(scale, RoundingMode::HalfUp);
-    Ok(quotient.normalized())
 }
 
 /// Exact decimal remainder `a - trunc(a / b) * b`, with the quotient truncated

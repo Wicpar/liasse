@@ -70,7 +70,30 @@ impl EvalCtx<'_> {
     pub(crate) fn root(&self, prospective: &Prospective) -> Row {
         let base = self.base_root(prospective);
         let base = self.expose_computed(prospective, base);
+        let base = self.expose_root_computed(prospective, base);
         self.expose_views(prospective, base)
+    }
+
+    /// Fold each root-level computed value (§5.2) into the package-root row as a
+    /// cell, evaluated with the root itself as `.` so `count(.items)` reads a
+    /// sibling collection. Iterated to a fixed point (bounded by their count) so
+    /// one root computed may read another regardless of declaration order. Exposed
+    /// before views, so a view may project a root computed value.
+    fn expose_root_computed(&self, prospective: &Prospective, base: Row) -> Row {
+        if self.compiled.root_computed.is_empty() {
+            return base;
+        }
+        let temporal = self.temporal_index(prospective);
+        let env = RuntimeEnv::new(
+            base.clone(),
+            self.params.clone(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            self.now,
+            self.seed,
+            temporal,
+        );
+        fold_computed(&env, &self.compiled.root_computed, base)
     }
 
     /// Fold each collection row's computed values (§5.2) into the row as cells,

@@ -93,6 +93,25 @@ impl<S: InstanceStore> SurfaceHost<S> {
         &self.engine
     }
 
+    /// Consume the host and hand back the engine, router, and clock it seals
+    /// (§22 restart/durability). A restart is a *volatile-state* reset: the
+    /// engine (and, with it, the durable store, its committed log, and the
+    /// virtual clock) is retained, while the host's connections, live
+    /// subscriptions, and retained operation records — none of which are durable
+    /// — are dropped when the host is.
+    ///
+    /// A driver restarts by [`into_parts`](Self::into_parts)-ing the running
+    /// host and immediately rebuilding a fresh one over the returned engine with
+    /// [`SurfaceHost::new`]. Because the same engine is reused, no `$data` seed is
+    /// re-applied and no generated value (a recorded `now()`, a `uuid()` key) is
+    /// re-rolled: committed state is exactly what it was, which is precisely what
+    /// the §22 durability cases assert survives a restart. The rebuilt host opens
+    /// its connections afresh, each frontier starting at the retained head.
+    #[must_use]
+    pub fn into_parts(self) -> (Engine<S>, SurfaceRouter, VirtualClock) {
+        (self.engine, self.router, self.clock)
+    }
+
     /// The virtual clock, for advancing time and reading the instant (§11.7).
     pub fn clock_mut(&mut self) -> &mut VirtualClock {
         &mut self.clock

@@ -40,7 +40,13 @@
 //! Bounded windows ([`Window`], §12.2 `$size`/`$anchor`/`$slide`) and
 //! resume-from-retained-frontier ([`SurfaceHost::resume`], §12.2) are supplied
 //! here as client-side projections over the engine's per-frontier
-//! [`ViewResult`]. Following one occurrence *across a rekey* (§12.2), recursive
+//! [`ViewResult`]. Restart durability (§22) is [`SurfaceHost::into_parts`]: it
+//! hands the sealed engine, router, and clock back so a driver can drop the host
+//! — losing only its volatile connection/subscription/operation state — and
+//! rebuild a fresh host over the same engine, whose committed store survives the
+//! handoff untouched. The bucket clock (§14) advances through
+//! [`SurfaceHost::advance_time`], which moves the engine's own virtual clock (not
+//! only the surface expiry clock) so temporal reads reflect the new instant. Following one occurrence *across a rekey* (§12.2), recursive
 //! surface coverage (§10.5), scoped-role views nested on rows (§10.3), and
 //! bucket-driven temporal frontier observation (§12.2) each need identity or
 //! scope-parameterized view evaluation the runtime's flat, key-derived

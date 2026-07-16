@@ -4,10 +4,11 @@
 //! [`super::MutPhase`] so the checking logic reads without these mechanics
 //! inline.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_expr::ExprType;
 use liasse_syntax::{BinaryOp, Expr, ExprKind, SpannedExpression, Stmt, StmtKind};
+use liasse_value::Type;
 
 use crate::state::{Node, Shape};
 use crate::walk::child_exprs;
@@ -51,9 +52,76 @@ pub(super) fn receiver_shape<'a>(root: &'a Shape, path: &[String]) -> &'a Shape 
     shape
 }
 
-/// Record an inferred parameter type, or reject an incompatible re-inference.
-pub(super) fn record(params: &mut BTreeMap<String, ExprType>, name: &str, ty: ExprType) {
-    params.entry(name.to_owned()).or_insert(ty);
+/// The parameter contract inferred for one mutation (§8.3): each name's settled
+/// type plus the names whose uses inferred two incompatible types.
+///
+/// §8.3 requires that "all uses of the same parameter MUST infer one compatible
+/// type". A key selector over a `text`-keyed and an `int`-keyed collection, for
+/// instance, infers two incompatible types for one `@p`; keeping only the first
+/// (as a plain map insert would) hides that conflict, so it is recorded here and
+/// surfaced as a load rejection.
+#[derive(Default)]
+pub(super) struct Params {
+    types: BTreeMap<String, ExprType>,
+    conflicts: BTreeSet<String>,
+}
+
+impl Params {
+    /// Seed the contract from an explicit `name({ proto })` prototype (§8.3),
+    /// whose declared types later uses must stay compatible with.
+    pub(super) fn from_prototype(prototype: Option<BTreeMap<String, ExprType>>) -> Self {
+        Self {
+            types: prototype.unwrap_or_default(),
+            conflicts: BTreeSet::new(),
+        }
+    }
+
+    /// Whether a settled type exists for `name`.
+    pub(super) fn contains(&self, name: &str) -> bool {
+        self.types.contains_key(name)
+    }
+
+    /// Whether `name`'s uses inferred two incompatible types.
+    pub(super) fn conflicts(&self, name: &str) -> bool {
+        self.conflicts.contains(name)
+    }
+
+    /// The settled `name → type` pairs in name order.
+    pub(super) fn iter(&self) -> impl Iterator<Item = (&String, &ExprType)> {
+        self.types.iter()
+    }
+
+    /// Consume into the ordered pair list the [`super::Mutation`] contract holds.
+    pub(super) fn into_pairs(self) -> Vec<(String, ExprType)> {
+        self.types.into_iter().collect()
+    }
+}
+
+/// Record an inferred parameter type, flagging an incompatible re-inference as a
+/// §8.3 conflict rather than silently keeping the first.
+pub(super) fn record(params: &mut Params, name: &str, ty: ExprType) {
+    match params.types.get(name) {
+        None => {
+            params.types.insert(name.to_owned(), ty);
+        }
+        Some(existing) if !compatible(existing, &ty) => {
+            params.conflicts.insert(name.to_owned());
+        }
+        Some(_) => {}
+    }
+}
+
+/// Whether two inferred types for one parameter are §8.3-compatible. Two scalar
+/// types are compatible when equal or related by the `int`/`decimal` numeric
+/// widening; a non-scalar (row/view) re-inference is left permissive, as the
+/// CORE model does not compare row identities here.
+fn compatible(a: &ExprType, b: &ExprType) -> bool {
+    match (a.as_scalar(), b.as_scalar()) {
+        (Some(x), Some(y)) => {
+            x == y || matches!((x, y), (Type::Int, Type::Decimal) | (Type::Decimal, Type::Int))
+        }
+        _ => true,
+    }
 }
 
 /// Parse a `$mut` member name into its base name and optional §8.3 prototype,

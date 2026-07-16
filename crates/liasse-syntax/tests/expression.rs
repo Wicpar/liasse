@@ -56,6 +56,43 @@ fn field_arithmetic_shape_and_spans() -> Check {
 }
 
 #[test]
+fn cel_equality_and_relational_share_one_left_associative_level() -> Check {
+    // SPEC.md §6.1: "Liasse scalar expressions use CEL syntax, operator
+    // precedence, and static typing." CEL puts every comparison AND equality
+    // operator on one left-associative level (`Relation = [Relation Relop]
+    // Addition`), so `a == b < c` groups as `(a == b) < c`: the TOP operator is
+    // `<`, and its left operand is the `a == b` node. A C-style split that made
+    // `==` looser would misgroup this as `a == (b < c)`.
+    let expr = bare("a == b < c")?;
+    let ExprKind::Binary { op, lhs, .. } = expr.kind else {
+        return Err(format!("expected a binary op at top, got {:?}", expr.kind));
+    };
+    assert_eq!(
+        op,
+        BinaryOp::Lt,
+        "CEL groups `a == b < c` as `(a == b) < c`, so `<` is the top operator"
+    );
+    assert!(
+        matches!(lhs.kind, ExprKind::Binary { op: BinaryOp::Eq, .. }),
+        "the left operand of the top `<` must be the `a == b` node, got {:?}",
+        lhs.kind
+    );
+
+    // The reverse textual order stays left-associative too: `a < b == c` groups
+    // as `(a < b) == c`, top operator `==`, left operand the `<` node.
+    let expr = bare("a < b == c")?;
+    let ExprKind::Binary { op, lhs, .. } = expr.kind else {
+        return Err(format!("expected a binary op at top, got {:?}", expr.kind));
+    };
+    assert_eq!(op, BinaryOp::Eq);
+    assert!(matches!(
+        lhs.kind,
+        ExprKind::Binary { op: BinaryOp::Lt, .. }
+    ));
+    Ok(())
+}
+
+#[test]
 fn bound_selector_with_filter() -> Check {
     // `.tasks[:task | !task.done]` — §6.4 row binding with a predicate.
     let expr = bare(".tasks[:task | !task.done]")?;

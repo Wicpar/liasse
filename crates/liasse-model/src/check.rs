@@ -216,7 +216,9 @@ impl TreeChecker<'_, '_> {
                         collect_field_refs(statement_expr(&parsed), &names, &mut deps);
                     }
                 }
-                deps.remove(member.name.as_str());
+                // A default/computed expression that reads its own field is a
+                // length-one cycle (§5.1): with no self-edge removed, `visit`
+                // reaches the still-active node and reports it as cyclic.
                 graph.insert(member.name.as_str(), deps);
             }
         }

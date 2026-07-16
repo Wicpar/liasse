@@ -11,6 +11,7 @@
 
 mod aggregate;
 mod builtins;
+mod decimal;
 mod keyring;
 mod ops;
 mod temporal;

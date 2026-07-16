@@ -2,7 +2,7 @@
 //! `max`, `distinct`, each skipping absent inputs and giving the spec's empty
 //! identities.
 
-use liasse_value::bigdecimal::{BigDecimal, RoundingMode};
+use liasse_value::bigdecimal::BigDecimal;
 use liasse_value::num_bigint::BigInt;
 use liasse_value::{Decimal, Integer, Type, Value};
 
@@ -89,13 +89,7 @@ fn average(values: Vec<Value>) -> Result<Value, EvalError> {
         .map(to_decimal)
         .fold(BigDecimal::from(0), |acc, next| acc + next);
     let divisor = BigDecimal::from(BigInt::from(count as i64));
-    let scale = 16.max(total.fractional_digit_count());
-    if scale > i64::from(u16::MAX) {
-        return Err(EvalError::DecimalScale);
-    }
-    let mean = (total / divisor)
-        .with_scale_round(scale, RoundingMode::HalfUp)
-        .normalized();
+    let mean = crate::eval::decimal::divide(&total, &divisor)?;
     Ok(Value::Decimal(Decimal::from_big_decimal(mean)))
 }
 
