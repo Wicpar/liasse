@@ -158,3 +158,57 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
 27. **Clock and ordering fine print.** `now()` half-unit precision tie-break;
     cross-connection wall-clock causality as serial precedence is only a MAY.
     `22/now-half-precision-rounding-mode`, `22/cross-connection-sequential-order`.
+
+## Gaps surfaced by implementation red-teaming
+
+These were found while attacking the implementation for spec divergences;
+each is a place the spec genuinely does not pin behavior (distinct from an
+implementation bug, which gets fixed against the spec instead).
+
+28. **`json` number scale is unbounded.** Annex A.6 bounds `decimal` scale
+    (the implementation rejects extreme exponents at the wire boundary), but a
+    number inside a `json` value has no such bound, so a `json` field carrying
+    `1E-2000000000` forces an unbounded digit-string allocation during A.7
+    canonicalization — a hang, not a clean rejection. The spec should bound
+    `json` number scale the same way it bounds `decimal`.
+
+29. **`optional<json>` cannot represent a `json` object equal to the none
+    sentinel.** A.1 encodes a generic-slot `none` as `{"$none": true}`, and a
+    legitimate `json` object whose literal shape is `{"$none": true}` encodes
+    identically. Under `optional<json>`, decode resolves those bytes to `none`,
+    so a representable `json` value is lost on round-trip. A.1/A.7 do not
+    disambiguate a `json` object equal to the sentinel.
+
+30. **Absent optional member ordering within a composite value.** B.2 pins
+    present-before-`none` for a top-level `optional<T>` sort column, but does
+    not state whether a descriptor's absent optional member (e.g. a blob
+    `$name`, or a calendar period `zone`) follows the same none-last rule
+    inside B.4's structural ordering. A one-line B.4 clarification would settle
+    whether absent sorts before or after present.
+
+31. **Empty-`text` key vs display-path round-trip.** A.1/A.8 make an empty
+    string a legal `text` key value and D.2 pins its key text as empty, but an
+    empty component makes a rendered display path non-injective / non-round-
+    trippable (`/it//x` style). The spec pins neither a prohibition on empty
+    key components nor an escaping that keeps display paths reversible.
+
+32. **`text` values containing `U+0000`.** A.1 defines `text` as a sequence of
+    Unicode scalar values and does not exclude `U+0000`, yet PostgreSQL — the
+    mandated backend illustration — cannot store a NUL inside `jsonb`. The spec
+    should either exclude `U+0000` from `text` or require an encoding that
+    survives the storage layer, so conforming backends agree. (The
+    implementation must still make its two backends agree regardless — tracked
+    as a fix, not left here.)
+
+33. **§19.5 `entries` membership scope.** "`entries` covers every required
+    direct archive entry other than `manifest.json`" states one exclusion, but
+    entries with dedicated manifest members (`liasse.json`, state, history) and
+    child-module artifacts under `modules/` are also "required direct entries";
+    whether each must additionally appear in `entries` is under-pinned.
+
+34. **Extra member in a returned host value.** §5.8 structural satisfaction
+    ("a value ... with the required fields ... satisfies the shape") read as
+    width subtyping would accept a returned struct carrying an extra member;
+    the strict closed-struct reading rejects it. This is the return-value
+    analogue of item 5 (unknown members in call arguments): reject vs ignore
+    is unstated. Surfaced by host-conformance red-teaming.
