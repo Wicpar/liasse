@@ -33,6 +33,7 @@ impl Checker<'_> {
         let mut key_fields: Vec<String> = Vec::new();
         let mut raw_outputs: Vec<RawOutput> = Vec::new();
         let mut sort_members: Vec<&Expr> = Vec::new();
+        let mut quantity_member: Option<&Expr> = None;
         let mut skip: Option<u64> = None;
         let mut limit: Option<u64> = None;
 
@@ -42,6 +43,7 @@ impl Checker<'_> {
                     match name.text.as_str() {
                         "key" => key_fields = self.key_field_names(value)?,
                         "sort" => sort_members = list_items(value),
+                        "quantity" => quantity_member = Some(value),
                         "skip" => skip = Some(self.bound(value)?),
                         "limit" => limit = Some(self.bound(value)?),
                         other => {
@@ -133,6 +135,10 @@ impl Checker<'_> {
             outputs.push(Output { name: raw.name.clone(), expr: typed });
         }
 
+        let quantity = self.check_quantity(quantity_member)?;
+        if let Some(quantity) = &quantity {
+            field_types.push(("$quantity".to_owned(), quantity.ty().clone()));
+        }
         let sort = self.check_sort(&sort_members)?;
         self.pop_frame();
 
@@ -151,6 +157,7 @@ impl Checker<'_> {
                 projection: Projection {
                     key: key_fields,
                     outputs,
+                    quantity: quantity.map(Box::new),
                     sort,
                     skip,
                     limit,
@@ -202,6 +209,28 @@ impl Checker<'_> {
             }
             _ => {
                 self.report(value, "`$skip`/`$limit` must be a constant integer");
+                None
+            }
+        }
+    }
+
+    /// Type the `$quantity` pool-capacity directive (§15.1). It is evaluated over
+    /// the source row like an output, so it is checked inside the pushed frame.
+    /// A pool capacity is an exact numeric quantity (`int`/`decimal`); other
+    /// types are rejected. Non-negativity is a runtime admission check, not a
+    /// static one (SPEC-ISSUES item 13).
+    fn check_quantity(&mut self, member: Option<&Expr>) -> Option<Option<TypedExpr>> {
+        let Some(value) = member else {
+            return Some(None);
+        };
+        let typed = self.check(value)?;
+        match typed.ty().as_scalar() {
+            Some(Type::Int | Type::Decimal) => Some(Some(typed)),
+            _ => {
+                self.report(
+                    value,
+                    "`$quantity` is a pool capacity and must be a numeric (`int`/`decimal`) value (§15.1)",
+                );
                 None
             }
         }

@@ -184,6 +184,28 @@ pub(crate) enum TypedKind {
     /// `uuid()` — a generated UUID (§8.12); carries its call site so the
     /// environment can resolve per-call-site identity (SPEC-ISSUES item 4).
     Uuid,
+    /// A temporal selector over a bucketed base view (§14.1): `.$at`,
+    /// `.$between`, `.$all`. Evaluation reduces the query's instants and defers
+    /// activity resolution to the environment's temporal index.
+    Temporal {
+        base: Box<TypedExpr>,
+        query: TypedTemporal,
+    },
+}
+
+/// A resolved temporal selector form (§14.1). The instant operands are typed
+/// `timestamp` expressions, reduced to values only at evaluation.
+#[derive(Debug, Clone)]
+pub(crate) enum TypedTemporal {
+    /// `.$at(t)` — rows active at instant `t`.
+    At(Box<TypedExpr>),
+    /// `.$between(a, b)` — rows intersecting `[a, b)`.
+    Between {
+        start: Box<TypedExpr>,
+        end: Box<TypedExpr>,
+    },
+    /// `.$all` — every extant row (§14.2).
+    All,
 }
 
 /// A resolved row selector.
@@ -206,6 +228,11 @@ pub(crate) struct Projection {
     pub(crate) key: Vec<String>,
     /// The output fields, ordered so each depends only on earlier ones (§7.1).
     pub(crate) outputs: Vec<Output>,
+    /// The `$quantity` pool-capacity expression, when this is a meter pool
+    /// source view (§15.1). It assigns the structural `$quantity` role: an exact,
+    /// non-negative `decimal` capacity that the runtime allocates against. Boxed
+    /// so `Projection` (reached through `TypedKind::Project`) stays finite-sized.
+    pub(crate) quantity: Option<Box<TypedExpr>>,
     /// Sort keys, highest priority first (§7.3).
     pub(crate) sort: Vec<SortKey>,
     /// `$skip`, a non-negative row count (§7.3).

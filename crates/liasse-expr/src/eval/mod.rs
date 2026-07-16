@@ -12,6 +12,7 @@
 mod aggregate;
 mod builtins;
 mod ops;
+mod temporal;
 mod views;
 
 use std::collections::BTreeMap;
@@ -148,6 +149,7 @@ impl Evaluator<'_> {
             TypedKind::Uuid => Ok(Cell::Scalar(Value::Uuid(
                 self.env.uuid(crate::env::CallSite::new(expr.span())),
             ))),
+            TypedKind::Temporal { base, query } => self.eval_temporal(base, query),
         }
     }
 

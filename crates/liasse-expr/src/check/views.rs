@@ -144,6 +144,11 @@ impl Checker<'_> {
     ) -> Option<TypedExpr> {
         match &callee.kind {
             ExprKind::Name(name) => self.check_named_call(expr, &name.text, args),
+            // `.base.$at(t)` / `.base.$between(a, b)` — a temporal selector (§14.1)
+            // is a structural member applied to a view, not a namespace call.
+            ExprKind::Field { base, member } if member.structural => {
+                self.check_temporal_call(expr, base, &member.text, args)
+            }
             ExprKind::Field { base, member } => match &base.kind {
                 ExprKind::Name(ns) => self.check_namespace_call(expr, &ns.text, &member.text, args),
                 _ => self.error(expr, "unsupported call target"),

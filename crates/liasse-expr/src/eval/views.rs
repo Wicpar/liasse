@@ -141,11 +141,11 @@ impl Evaluator<'_> {
             groups.entry(key).or_default().push(scope);
         }
         let mut ranked = Vec::with_capacity(groups.len());
-        for (seed, (key, members)) in groups.into_iter().enumerate() {
+        for (key, members) in groups {
             let Some(first) = members.first() else { continue };
             let group_cell = Cell::Collection(members.iter().map(|s| s.row.clone()).collect());
             let identity = synthetic_key_value(&key);
-            let row = self.project_row(first, projection, Some((group_cell, identity, seed as u64)))?;
+            let row = self.project_row(first, projection, Some((group_cell, identity)))?;
             let keys = if projection.sort.is_empty() {
                 Vec::new()
             } else {
@@ -173,13 +173,13 @@ impl Evaluator<'_> {
         &mut self,
         scope: &RowScope,
         projection: &Projection,
-        group: Option<(Cell, Value, u64)>,
+        group: Option<(Cell, Value)>,
     ) -> Result<Row, EvalError> {
         self.push(Cell::Row(Box::new(scope.row.clone())));
         for (name, cell) in &scope.binds {
             self.bind(name.clone(), cell.clone());
         }
-        if let Some((group_cell, _, _)) = &group {
+        if let Some((group_cell, _)) = &group {
             self.bind("group".to_owned(), group_cell.clone());
         }
         let mut cells: BTreeMap<String, Cell> = BTreeMap::new();
@@ -195,9 +195,25 @@ impl Evaluator<'_> {
                 }
             }
         }
+        // §15.1: `$quantity` assigns the pool-capacity structural role. It is
+        // evaluated in the same frame as the outputs and exposed as a structural
+        // cell the runtime allocates against.
+        if let Some(quantity) = &projection.quantity {
+            match self.eval(quantity) {
+                Ok(cell) => {
+                    cells.insert("$quantity".to_owned(), cell);
+                }
+                Err(err) => {
+                    self.pop();
+                    return Err(err);
+                }
+            }
+        }
         self.pop();
         let (id, key) = match group {
-            Some((_, identity, seed)) => (synthetic_id(seed), identity),
+            // §7.2/§12.4: a synthetic group's identity is its group key, not its
+            // position — rendered to canonical key text (D.2) so it is stable.
+            Some((_, identity)) => (group_row_id(&identity), identity),
             None => (scope.row.id().clone(), scope.row.key().clone()),
         };
         Ok(Row::new(id, key, cells))
@@ -348,6 +364,14 @@ fn synthetic_key_value(components: &[Value]) -> Value {
     }
 }
 
-fn synthetic_id(seed: u64) -> RowId {
-    RowId::from_path([u64::MAX, seed])
+/// The stable identity of a synthetic-`$key` group (§7.2, §12.4): its group key
+/// rendered to canonical key text (Annex D.2). The scalar or composite group key
+/// flattens through the one shared D.2 codec; a group key value that D.2 gives no
+/// key text (a non-key-eligible type the checker still admits, SPEC-ISSUES item
+/// 16) falls back to its canonical wire JSON so identity stays total and pure.
+fn group_row_id(identity: &Value) -> RowId {
+    let text = liasse_ident::KeyText::from_key_values(std::slice::from_ref(identity))
+        .map(|key| key.as_str().to_owned())
+        .unwrap_or_else(|_| identity.to_canonical_json_string());
+    RowId::keyed(text)
 }

@@ -29,8 +29,13 @@ pub enum Completion {
 /// The outcome of an external surface operation.
 #[derive(Debug, Clone)]
 pub enum SurfaceOutcome {
-    /// The call committed at `commit`; the connection frontier now covers it.
-    Committed { commit: CommitSeq, response: Option<ResponseValue> },
+    /// The call committed at `commit`; the connection frontier advanced to
+    /// `frontier` (at least `commit`, §12.3) and its subscriptions were swept
+    /// through it before the response returned. `frontier` is recorded at commit
+    /// time so a retained §12.3 status reports the connection's actual frontier —
+    /// which may be past `commit` when the connection already led it — rather than
+    /// re-deriving it from `commit`.
+    Committed { frontier: CommitSeq, commit: CommitSeq, response: Option<ResponseValue> },
     /// The call changed nothing (§8.9); the response was evaluated at `frontier`
     /// (§12.3: "Receiving `unchanged` proves evaluation at the returned
     /// frontier"), and the frontier did not advance.
@@ -67,13 +72,13 @@ impl SurfaceOutcome {
         }
     }
 
-    /// The frontier a successful outcome was returned at: the commit for a
-    /// committed call, the evaluation position for an unchanged one (§12.3).
+    /// The frontier a successful outcome was returned at: the connection frontier
+    /// covering the commit for a committed call (at least `commit`, §12.3), the
+    /// evaluation position for an unchanged one.
     #[must_use]
     pub fn frontier(&self) -> Option<CommitSeq> {
         match self {
-            Self::Committed { commit, .. } => Some(*commit),
-            Self::Unchanged { frontier, .. } => Some(*frontier),
+            Self::Committed { frontier, .. } | Self::Unchanged { frontier, .. } => Some(*frontier),
             _ => None,
         }
     }

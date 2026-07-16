@@ -9,10 +9,12 @@
 
 use std::collections::BTreeMap;
 
+use liasse_runtime::CommitSeq;
 use liasse_value::Value;
 
 use crate::address::SurfaceAddress;
 use crate::authn::Credential;
+use crate::window::Window;
 
 /// A per-request authenticator selection (§11.4): the named authenticator and the
 /// credential to verify. Overrides the connection's stored context for this one
@@ -159,20 +161,82 @@ impl SurfaceCall {
     }
 }
 
-/// A request to open a live subscription over a surface view (§12.1 `view`).
+/// A request to open a live subscription over a surface view (§12.1 `view`),
+/// optionally bounded by a client window (§12.2).
 #[derive(Debug, Clone)]
 pub struct SurfaceWatch {
     address: SurfaceAddress,
     id: String,
     context: Option<String>,
+    window: Option<Window>,
 }
 
 impl SurfaceWatch {
     /// A subscription named `id` over `address`, using the connection's default
-    /// context.
+    /// context and tracking the whole view.
     #[must_use]
     pub fn new(address: SurfaceAddress, id: impl Into<String>) -> Self {
-        Self { address, id: id.into(), context: None }
+        Self { address, id: id.into(), context: None, window: None }
+    }
+
+    /// Select a named authentication context (§11.8).
+    #[must_use]
+    pub fn with_context(mut self, context: impl Into<String>) -> Self {
+        self.context = Some(context.into());
+        self
+    }
+
+    /// Bound the subscription to a client window (§12.2).
+    #[must_use]
+    pub fn with_window(mut self, window: Window) -> Self {
+        self.window = Some(window);
+        self
+    }
+
+    /// The targeted surface address.
+    #[must_use]
+    pub fn address(&self) -> &SurfaceAddress {
+        &self.address
+    }
+
+    /// The subscription id.
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The selected context name, if any.
+    #[must_use]
+    pub fn context(&self) -> Option<&str> {
+        self.context.as_deref()
+    }
+
+    /// The bounded window, if the subscription requested one (§12.2).
+    #[must_use]
+    pub fn window(&self) -> Option<&Window> {
+        self.window.as_ref()
+    }
+}
+
+/// A request to resume a subscription from a retained frontier (§12.2). The
+/// `from` frontier is the position the client last observed; resuming yields the
+/// authorized declared view at the current frontier — as later patches or a fresh
+/// `init` — with authentication and role membership re-evaluated, so a resume
+/// that has since lost authority delivers no rows.
+#[derive(Debug, Clone)]
+pub struct SurfaceResume {
+    address: SurfaceAddress,
+    id: String,
+    from: CommitSeq,
+    context: Option<String>,
+}
+
+impl SurfaceResume {
+    /// Resume subscription `id` over `address` from the retained frontier `from`,
+    /// using the connection's default context.
+    #[must_use]
+    pub fn new(address: SurfaceAddress, id: impl Into<String>, from: CommitSeq) -> Self {
+        Self { address, id: id.into(), from, context: None }
     }
 
     /// Select a named authentication context (§11.8).
@@ -192,6 +256,12 @@ impl SurfaceWatch {
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// The retained frontier the client resumes from (§12.2).
+    #[must_use]
+    pub fn from(&self) -> CommitSeq {
+        self.from
     }
 
     /// The selected context name, if any.

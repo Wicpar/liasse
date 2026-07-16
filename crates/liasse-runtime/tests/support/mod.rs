@@ -166,6 +166,9 @@ pub const BUCKETS: &str = r#"{
       "open_session": ".sessions + { id: @id, expires_at: @expires_at }"
       "open_license": ".licenses + { id: @id, starts_at: @starts_at }"
       "reserve": ".reservations + { id: @id, starts_at: @starts_at, ends_at: @ends_at }"
+      "sessions_at({ t: timestamp })": "return .sessions.$at(@t) { id }"
+      "sessions_between({ a: timestamp, b: timestamp })": "return .sessions.$between(@a, @b) { id }"
+      "sessions_all": "return .sessions.$all { id }"
     }
   }
 }"#;

@@ -86,7 +86,20 @@ impl<'a> Resolver<'a> {
 
     fn collection_at(&self, collection: &Collection, depth: u32) -> RowType {
         let key = self.key_type(collection, depth);
-        self.shape_at(&collection.shape, Some(key), depth)
+        let mut row = self.shape_at(&collection.shape, Some(key), depth);
+        // §15.3/§15.6: a spending collection's rows expose `funding`, the fixed
+        // admission allocation recorded for the spend. The runtime materializes
+        // it; the model gives the accessor a type so `spend.funding` and
+        // `spend { funding }` check. A user field of the same name wins.
+        if collection.consumes && row.field("funding").is_none() {
+            let fields = row
+                .fields()
+                .map(|(name, ty)| (name.clone(), ty.clone()))
+                .chain(std::iter::once(("funding".to_owned(), ExprType::View(funding_row()))))
+                .collect::<Vec<_>>();
+            row = RowType::new(fields, row.key().cloned());
+        }
+        row
     }
 
     /// The identity type of a collection's primary key (§5.4, A.9): the field
@@ -110,4 +123,17 @@ impl<'a> Resolver<'a> {
             }
         }
     }
+}
+
+/// The row shape of a spend's `funding` view (§15.3): the members the returned
+/// funding view pins — the source label, the pool identity, and the allocated
+/// amount. The `pool` identity is an opaque composite (`[subscription, start]`),
+/// typed `json`. Whether source-projected metadata also appears is unspecified
+/// (SPEC-ISSUES item 14), so only the deducible members are exposed here.
+fn funding_row() -> RowType {
+    RowType::keyless([
+        ("source".to_owned(), ExprType::scalar(Type::Text)),
+        ("pool".to_owned(), ExprType::scalar(Type::Json)),
+        ("amount".to_owned(), ExprType::scalar(Type::Decimal)),
+    ])
 }

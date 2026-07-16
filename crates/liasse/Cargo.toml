@@ -7,6 +7,26 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The facade re-exports the workspace's public API as one coherent crate, one
+# concern per module. Each dependency contributes exactly one module (the store
+# module unifies the contract with its two implementations).
+liasse-diag = { path = "../liasse-diag" }
+liasse-value = { path = "../liasse-value" }
+liasse-ident = { path = "../liasse-ident" }
+liasse-model = { path = "../liasse-model" }
+liasse-runtime = { path = "../liasse-runtime" }
+liasse-store = { path = "../liasse-store" }
+liasse-pg = { path = "../liasse-pg" }
+liasse-surface = { path = "../liasse-surface" }
+liasse-artifact = { path = "../liasse-artifact" }
+liasse-host = { path = "../liasse-host" }
+
+[dependencies.serde_json]
+# The engine's `ResponseValue::to_wire` yields a `serde_json::Value`; the crate
+# doctest reads the §3.3 result shape through it, so the facade shares the same
+# `arbitrary_precision` build the value layer already unifies on.
+version = "1.0"
+features = ["arbitrary_precision"]
 
 [lints]
 workspace = true

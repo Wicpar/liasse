@@ -10,7 +10,8 @@ use std::collections::BTreeMap;
 
 use liasse_diag::{Diagnostics, SourceMap};
 use liasse_expr::{
-    CallSite, Cell, Environment, ExprType, Row, RowId, RowType, Scope, TypedExpr,
+    CallSite, Cell, Environment, EvalError, ExprType, Row, RowId, RowType, Scope, TemporalQuery,
+    TypedExpr,
 };
 use liasse_syntax::parse_expression;
 use liasse_value::{Decimal, Integer, Text, Timestamp, Type, Uuid, Value};
@@ -138,6 +139,38 @@ impl Environment for FixedEnv {
     fn uuid(&self, _site: CallSite) -> Uuid {
         self.uuid
     }
+
+    /// A test temporal index (§14.1): each base row's `[from, until)` interval is
+    /// read from its `from`/`until` timestamp cells (absent = unbounded), exactly
+    /// the half-open activity rule of SPEC §14.1–§14.2.
+    fn temporal(&self, base: &[Row], query: &TemporalQuery) -> Result<Vec<Row>, EvalError> {
+        let kept = base
+            .iter()
+            .filter(|row| {
+                let from = timestamp_cell(row, "from");
+                let until = timestamp_cell(row, "until");
+                match query {
+                    TemporalQuery::All => true,
+                    TemporalQuery::At(at) => {
+                        from.is_none_or(|f| *at >= f) && until.is_none_or(|u| *at < u)
+                    }
+                    TemporalQuery::Between(a, b) => {
+                        from.is_none_or(|f| f < *b) && until.is_none_or(|u| u > *a)
+                    }
+                }
+            })
+            .cloned()
+            .collect();
+        Ok(kept)
+    }
+}
+
+/// A row's `timestamp` bound cell, or `None` when absent/`none` (unbounded).
+fn timestamp_cell(row: &Row, name: &str) -> Option<Timestamp> {
+    match row.cell(name)?.as_scalar()? {
+        Value::Timestamp(instant) => Some(*instant),
+        _ => None,
+    }
 }
 
 /// Parse and type-check, panicking with the rendered diagnostics on rejection.
@@ -203,6 +236,16 @@ pub fn rows_fields(cell: &Cell) -> Vec<Vec<(String, Value)>> {
         .collect()
 }
 
+/// The stable occurrence identity of every row in a collection, in order — the
+/// key-derived [`RowId`] a view delta is diffed by (§12.4, Annex B.5).
+pub fn row_ids(cell: &Cell) -> Vec<RowId> {
+    cell.as_collection()
+        .unwrap_or_else(|| panic!("expected a collection, got {cell:?}"))
+        .iter()
+        .map(|row| row.id().clone())
+        .collect()
+}
+
 /// The `text` field of every row, in order — a compact identity check.
 pub fn ids(cell: &Cell, field: &str) -> Vec<Value> {
     cell.as_collection()
@@ -255,6 +298,15 @@ pub fn row(id: u64, key: Value, cells: Vec<(&str, Cell)>) -> Row {
 }
 pub fn keyless_row(id: u64, cells: Vec<(&str, Cell)>) -> Row {
     Row::keyless(RowId::leaf(id), cells.into_iter().map(|(n, c)| (n.to_owned(), c)))
+}
+/// A row whose occurrence identity is its canonical key text (Annex D.2) — the
+/// stable, key-derived identity a materialized source row carries (§12.4).
+pub fn keyed_row(key_text: &str, key: Value, cells: Vec<(&str, Cell)>) -> Row {
+    Row::new(
+        RowId::keyed(key_text),
+        key,
+        cells.into_iter().map(|(n, c)| (n.to_owned(), c)),
+    )
 }
 pub fn collection(rows: Vec<Row>) -> Cell {
     Cell::Collection(rows)

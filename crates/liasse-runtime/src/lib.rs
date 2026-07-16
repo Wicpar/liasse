@@ -45,30 +45,72 @@
 //!
 //! CORE covers top-level keyed collections with scalar/ref/set fields, row and
 //! root mutations (assign, keyed insert, keyed delete, keyed single-row patch,
-//! clear, `assert`, `return`), seed admission, root views, the virtual clock, and
-//! lifecycle buckets. Nested collections, view-sourced insert/replace, local
-//! bindings, internal calls, host-requirement resolution against a registry, and
-//! full dependency-ordered default evaluation remain documented seams. So do the
-//! remaining feature families, each blocked on machinery outside this crate:
-//! source-backed/recurring buckets and the `.$at`/`.$between`/`.$all` selectors
-//! (§14.4–§14.6, expression-layer selectors and source derivation); meters
-//! (§15, the `$quantity` pool projection and `spend.funding` accessor the
-//! expression layer does not expose); keyrings and blobs (§17/§18, `liasse-host`
-//! providers/connectors); history export/import/reconcile (§19,
-//! `liasse-artifact` builders); migrations (§20); erasure (§21); and module
-//! composition (§13, multi-instance store composition).
+//! clear, `assert`, `return`), seed admission, root views, the virtual clock,
+//! lifecycle buckets, and the `.$at`/`.$between`/`.$all` temporal selectors over
+//! bucketed collections (§14.1–§14.2). Nested collections, view-sourced
+//! insert/replace, local bindings, internal calls, host-requirement resolution
+//! against a registry, and full dependency-ordered default evaluation remain
+//! documented seams. So do the remaining feature families, each blocked on
+//! machinery outside this crate's current reach:
+//!
+//! - **Source-backed and recurring buckets** (§14.4–§14.6): deriving interval
+//!   rows from a `$source` view needs a source-materialization pass, and
+//!   recurring calendar periods need period-to-timestamp arithmetic (zone/DST/
+//!   overflow) that `liasse-value` does not yet expose. Fixed-period recurrence
+//!   is unblocked but not yet built.
+//! - **Meters** (§15): `$limits`/`$consumes`/`$sources` allocation, `$eligible`,
+//!   `$order` draining, `spend.funding`, and the `.credits.balance`/`.pools`
+//!   accessors. The `$quantity` pool projection and the temporal selectors this
+//!   stage landed are the expression-layer prerequisites; the remaining blocker
+//!   is *nested* collections — every §15 spend/pool arrangement places the spend
+//!   and pool collections under an ancestor row (`spends`/`topups` inside
+//!   `users`/`accounts`), which the top-level-only materializer, interpreter, and
+//!   `Prospective` do not yet handle. Allocation must run inside atomic admission
+//!   so an exhausted meter rejects the whole transition and a failed program
+//!   releases every provisional allocation; that lands with nested collections.
+//! - history export/import/reconcile (§19, `liasse-artifact` builders);
+//!   migrations (§20); and module composition (§13, multi-instance store).
+//!
+//! # Keyrings, blobs, deletion, and erasure (§17/§18/§21)
+//!
+//! These three feature families land as self-contained dynamic-semantics
+//! modules over the `liasse-host` provider/connector contracts and the engine's
+//! virtual clock, each exercised against the host doubles:
+//!
+//! - [`Keyring`] (§17): the version lifecycle, rotation scheduling on the
+//!   virtual clock, sealed public-only metadata, and §17.9 failure keep-current
+//!   over a [`KeyProvider`](liasse_host::KeyProvider).
+//! - [`BlobEngine`] (§18): descriptor acceptance, placement-policy planning,
+//!   transactional upload, and integrity-verified fetch over a
+//!   [`BlobConnector`](liasse_host::BlobConnector), so tampered bytes never
+//!   surface.
+//! - [`Graph`]/[`Erasure`] (§21): the cascade deletion plan and erasure that
+//!   scrubs retained payloads to digest stubs while keeping history verifiable.
+//!
+//! Persisting keyring versions and blob-placement rows as store-backed
+//! application state, and threading these through the mutation admission
+//! pipeline and history log, remains a seam blocked on store-contract
+//! extensions (a durable version/placement schema and a history-scrub hook);
+//! the modules pin the observable semantics the corpus re-derives.
 
+mod blobs;
 mod bucket;
 mod compiled;
+mod deletion;
 mod doc;
 mod engine;
 mod env;
 mod error;
 mod eval;
 mod generator;
+mod history;
 mod interp;
+mod keyring;
 mod materialize;
+mod migrate;
+mod modules;
 mod outcome;
+mod portable;
 mod request;
 mod response;
 mod rules;
@@ -78,9 +120,28 @@ mod seed;
 mod state;
 mod view;
 
+pub use blobs::{
+    AcceptedType, Blob, BlobEngine, CopyState, DeclaredDescriptor, FetchError, Placement, Store,
+    StoreId, UploadError,
+};
+pub use deletion::{
+    DeleteError, DeletePolicy, DeletionPlan, Erasure, Extract, Graph, Occurrence, RefEdge, RowRef,
+};
 pub use engine::Engine;
 pub use error::{EngineError, Rejection, RejectionReason};
 pub use generator::{derive_uuid, FixedGenerators, Generators};
+pub use history::{
+    ConflictKind, ImportError, ImportRelation, ImportReport, MergeConflict, MergeOutcome,
+};
+pub use migrate::{UpdateError, UpdateReport};
+pub use modules::{ModuleError, ModuleHost, SeedMerge};
+
+/// The Annex E version relationship an [`UpdateReport`] carries (§20.3).
+pub use liasse_artifact::UpdateRelation;
+pub use keyring::{
+    KeyState, KeyVersion, Keyring, KeyringError, KeyringPolicy, RotationMode, RotationOutcome,
+    RotationSchedule, SessionToken, VerifyError, VersionId,
+};
 pub use outcome::CallOutcome;
 pub use request::CallRequest;
 pub use response::ResponseValue;

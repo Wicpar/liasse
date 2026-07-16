@@ -10,6 +10,7 @@
 
 mod ops;
 mod project;
+mod temporal;
 mod views;
 mod walk;
 
@@ -178,6 +179,9 @@ impl<'a> Checker<'a> {
             ExprKind::Param(name) => self.check_param(expr, &name.text),
             ExprKind::Structural(name) => self.check_structural(expr, &name.text),
             ExprKind::Name(name) => self.check_name(expr, &name.text),
+            ExprKind::Field { base, member } if member.structural => {
+                self.check_temporal_all(expr, base, &member.text)
+            }
             ExprKind::Field { base, member } => self.check_field(expr, base, &member.text),
             ExprKind::SameName { base, member } => self.check_traverse(expr, base, &member.text),
             ExprKind::Select { base, selector } => self.check_select(expr, base, selector),

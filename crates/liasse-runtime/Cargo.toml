@@ -15,6 +15,9 @@ liasse-expr = { path = "../liasse-expr" }
 liasse-model = { path = "../liasse-model" }
 liasse-store = { path = "../liasse-store" }
 liasse-host = { path = "../liasse-host" }
+# §19 history: composing and opening `.liasse` artifacts, and the Annex E
+# version-relationship decision (§20.3) the update/downgrade paths consume.
+liasse-artifact = { path = "../liasse-artifact" }
 # Strict-JSON wire values for decoding call arguments and `$data` seeds against
 # their declared types via `liasse_value::Type::decode`; `arbitrary_precision`
 # keeps big int/decimal inputs exact and matches the feature the value layer

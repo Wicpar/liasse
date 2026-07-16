@@ -13,7 +13,7 @@ use support::{add_task, address, authenticate_member, call, host, text};
 fn watch(host: &mut SurfaceHost<MemoryStore>, conn: &str, target: &str, id: &str) -> ViewResult {
     match host.watch(conn, &SurfaceWatch::new(address(target), id)).expect("watch") {
         Subscription::Init(result) => result,
-        Subscription::Denied(denial) => panic!("watch denied: {denial:?}"),
+        other => panic!("expected an unwindowed init, got {other:?}"),
     }
 }
 
@@ -132,6 +132,6 @@ fn unauthenticated_role_watch_is_denied() {
         Subscription::Denied(denial) => {
             assert_eq!(denial.reason(), liasse_surface::DenialReason::Unauthenticated);
         }
-        Subscription::Init(_) => panic!("an unauthenticated role watch must be denied"),
+        other => panic!("an unauthenticated role watch must be denied, got {other:?}"),
     }
 }

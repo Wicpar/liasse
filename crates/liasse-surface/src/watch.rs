@@ -13,7 +13,9 @@
 //! emits `close` (§12.2). The host decides authority and drives [`Watch::close`];
 //! this type carries the view-tracking state and the close latch.
 
-use liasse_runtime::{CommitSeq, ViewDelta, ViewResult};
+use liasse_runtime::{CommitSeq, ViewDelta, ViewResult, ViewRow};
+
+use crate::window::{Window, WindowError};
 
 /// The authorization context a subscription re-checks at every frontier: which
 /// authentication context it belongs to (§11.8) and, for a role surface, the
@@ -51,11 +53,17 @@ impl WatchAuthz {
 }
 
 /// A live subscription's tracked state.
+///
+/// `last` retains the full authorized view for delta continuity and for the
+/// window's neighbor tracking; `windowed`, present only for a bounded
+/// subscription (§12.2), is the client-visible slice of that view.
 pub struct Watch {
     view: String,
     authz: WatchAuthz,
     frontier: CommitSeq,
     last: Option<ViewResult>,
+    window: Option<Window>,
+    windowed: Option<Vec<ViewRow>>,
     closed: Option<String>,
 }
 
@@ -64,7 +72,27 @@ impl Watch {
     /// under `authz`, before any result has been delivered.
     #[must_use]
     pub fn open(view: impl Into<String>, authz: WatchAuthz, frontier: CommitSeq) -> Self {
-        Self { view: view.into(), authz, frontier, last: None, closed: None }
+        Self { view: view.into(), authz, frontier, last: None, window: None, windowed: None, closed: None }
+    }
+
+    /// Open a bounded-window subscription (§12.2): the same view under a client
+    /// window that keeps only a bounded slice incremental.
+    #[must_use]
+    pub fn windowed(
+        view: impl Into<String>,
+        authz: WatchAuthz,
+        frontier: CommitSeq,
+        window: Window,
+    ) -> Self {
+        Self {
+            view: view.into(),
+            authz,
+            frontier,
+            last: None,
+            window: Some(window),
+            windowed: None,
+            closed: None,
+        }
     }
 
     /// The runtime view this subscription reads.
@@ -86,9 +114,17 @@ impl Watch {
     }
 
     /// The last delivered complete result, if the subscription has initialized.
+    /// This is the full authorized view; for a bounded subscription the
+    /// client-visible slice is [`Watch::window_rows`].
     #[must_use]
     pub fn current(&self) -> Option<&ViewResult> {
         self.last.as_ref()
+    }
+
+    /// The client-visible windowed rows, for a bounded subscription (§12.2).
+    #[must_use]
+    pub fn window_rows(&self) -> Option<&[ViewRow]> {
+        self.windowed.as_deref()
     }
 
     /// Whether the subscription has been closed, and why.
@@ -98,19 +134,32 @@ impl Watch {
     }
 
     /// Deliver the initial complete result at `frontier`, returning the `init`
-    /// delta (§12.2). Called once, when the subscription opens.
-    pub fn init(&mut self, result: ViewResult, frontier: CommitSeq) -> ViewDelta {
+    /// delta (§12.2). Called once, when the subscription opens. A bounded
+    /// subscription also opens its window over `result`, which fails when a
+    /// concrete anchor identifies no current occurrence.
+    ///
+    /// # Errors
+    /// [`WindowError`] when a bounded subscription's anchor is absent at open.
+    pub fn init(&mut self, result: ViewResult, frontier: CommitSeq) -> Result<ViewDelta, WindowError> {
         let delta = ViewDelta::between(None, &result);
+        if let Some(window) = &mut self.window {
+            self.windowed = Some(window.open(&result)?);
+        }
         self.last = Some(result);
         self.frontier = frontier;
-        delta
+        Ok(delta)
     }
 
     /// Advance to `result` at `frontier`, returning the coherent patch delta from
     /// the prior result (§12.2). The applied client result equals `result` — the
-    /// recomputed authorized view — by construction.
+    /// recomputed authorized view — by construction; a bounded subscription
+    /// re-slices its window over the recomputed view, tracking its anchor across
+    /// gaps and reappearances.
     pub fn advance(&mut self, result: ViewResult, frontier: CommitSeq) -> ViewDelta {
         let delta = ViewDelta::between(self.last.as_ref(), &result);
+        if let Some(window) = &mut self.window {
+            self.windowed = Some(window.refresh(&result));
+        }
         self.last = Some(result);
         self.frontier = frontier;
         delta
@@ -120,6 +169,7 @@ impl Watch {
     /// cached result is released; no further deltas are delivered.
     pub fn close(&mut self, reason: impl Into<String>) {
         self.last = None;
+        self.windowed = None;
         self.closed = Some(reason.into());
     }
 }

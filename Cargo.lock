@@ -618,6 +618,19 @@ dependencies = [
 [[package]]
 name = "liasse"
 version = "0.0.1"
+dependencies = [
+ "liasse-artifact",
+ "liasse-diag",
+ "liasse-host",
+ "liasse-ident",
+ "liasse-model",
+ "liasse-pg",
+ "liasse-runtime",
+ "liasse-store",
+ "liasse-surface",
+ "liasse-value",
+ "serde_json",
+]
 
 [[package]]
 name = "liasse-artifact"
@@ -643,6 +656,7 @@ version = "0.0.1"
 dependencies = [
  "criterion",
  "liasse-diag",
+ "liasse-ident",
  "liasse-syntax",
  "liasse-value",
 ]
@@ -699,6 +713,7 @@ name = "liasse-runtime"
 version = "0.0.1"
 dependencies = [
  "criterion",
+ "liasse-artifact",
  "liasse-diag",
  "liasse-expr",
  "liasse-host",

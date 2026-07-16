@@ -25,42 +25,70 @@ use std::collections::BTreeMap;
 use liasse_diag::ByteSpan;
 use liasse_value::{Timestamp, Uuid, Value};
 
-/// The identity of one row occurrence within an evaluation, ordered so it can
-/// serve as the final sort tiebreaker (Annex B.5) and let a view result be
-/// diffed by downstream crates.
-///
-/// It is a path of unsigned segments: a top-level row is `[k]`; a row reached
-/// by descending into a nested collection extends its parent's path. Ordering
-/// is lexicographic over the path, matching the source-row chain order a view
-/// inherits (§7.2).
+use crate::error::EvalError;
+
+/// One segment of a [`RowId`]: an identity component along the source-row chain
+/// (§7.2, Annex D.1).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct RowId(Vec<u64>);
+pub enum RowIdPart {
+    /// Identity derived from a keyed row's key: its canonical key text (Annex
+    /// D.2). A source-collection row uses its collection key; a synthetic-`$key`
+    /// group uses its group key rendered canonically. Stable across sibling
+    /// insertions and deletions — the property a positional index lacks and the
+    /// §12.4 view delta depends on.
+    Key(String),
+    /// An occurrence-order component: the Annex B.5 final tiebreaker, used when a
+    /// row has no key identity (a keyless projection or scope root).
+    Occurrence(u64),
+}
+
+/// The stable identity of one row occurrence within an evaluation, ordered so it
+/// can serve as the final sort tiebreaker (Annex B.5) and let a view result be
+/// diffed by identity across frontiers (§12.4).
+///
+/// It is a path of [`RowIdPart`]s along the source-row chain: a top-level row is
+/// one segment; a row reached by descending into a nested collection extends its
+/// parent's path (§7.2, Annex D.1). Ordering is lexicographic over the path.
+/// Identity derives from the row's *key*, never its materialized position, so a
+/// row keeps its identity when earlier rows disappear.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RowId(Vec<RowIdPart>);
 
 impl RowId {
-    /// A top-level occurrence identity.
+    /// A top-level occurrence identity (the B.5 tiebreak for a keyless row).
     #[must_use]
     pub fn leaf(segment: u64) -> Self {
-        Self(vec![segment])
+        Self(vec![RowIdPart::Occurrence(segment)])
     }
 
-    /// Build from an explicit segment path.
+    /// A top-level key-derived identity: the row's canonical key text (D.2).
     #[must_use]
-    pub fn from_path(path: impl IntoIterator<Item = u64>) -> Self {
-        Self(path.into_iter().collect())
+    pub fn keyed(text: impl Into<String>) -> Self {
+        Self(vec![RowIdPart::Key(text.into())])
     }
 
-    /// The identity of a child occurrence one level deeper.
+    /// The identity of a child occurrence one level deeper (keyless tiebreak).
     #[must_use]
     pub fn child(&self, segment: u64) -> Self {
-        let mut path = self.0.clone();
-        path.push(segment);
-        Self(path)
+        self.extend(RowIdPart::Occurrence(segment))
     }
 
-    /// The path segments.
+    /// The identity of a keyed child one level deeper (its canonical key text).
     #[must_use]
-    pub fn segments(&self) -> &[u64] {
+    pub fn child_keyed(&self, text: impl Into<String>) -> Self {
+        self.extend(RowIdPart::Key(text.into()))
+    }
+
+    /// The identity components along the source-row chain.
+    #[must_use]
+    pub fn parts(&self) -> &[RowIdPart] {
         &self.0
+    }
+
+    fn extend(&self, part: RowIdPart) -> Self {
+        let mut path = self.0.clone();
+        path.push(part);
+        Self(path)
     }
 }
 
@@ -187,6 +215,21 @@ impl CallSite {
     }
 }
 
+/// A resolved temporal selector over a bucketed base view (§14.1), carrying the
+/// instants the evaluator has already reduced from the selector's argument
+/// expressions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TemporalQuery {
+    /// `.$at(t)` — the rows active at instant `t` (§14.1).
+    At(Timestamp),
+    /// `.$between(a, b)` — the rows whose half-open interval intersects the
+    /// non-empty range `[a, b)`. The evaluator checks `b > a` before building
+    /// this, so a query of this form always carries a non-empty range (§14.1).
+    Between(Timestamp, Timestamp),
+    /// `.$all` — every extant row, independent of current activity (§14.2).
+    All,
+}
+
 /// The read-only, deterministic evaluation context an expression runs against.
 ///
 /// Every method is a pure lookup: two evaluations against an environment that
@@ -223,4 +266,19 @@ pub trait Environment {
     /// A generated UUID for the `uuid()` call at `site` (§8.12, SPEC-ISSUES
     /// item 4). The environment decides whether call sites share a value.
     fn uuid(&self, site: CallSite) -> Uuid;
+
+    /// Resolve a temporal selector (§14.1) over a bucketed base view. `base` is
+    /// the evaluated base collection's rows; the environment returns the rows
+    /// `query` selects, deriving each row's `[from, until)` interval from the
+    /// temporal index it owns (a bucketed collection's `$from`/`$until`).
+    ///
+    /// Keeping the index in the environment is what preserves purity: the
+    /// evaluator hands over the base rows and the reduced instants and never
+    /// computes activity itself. The default has no temporal index and rejects,
+    /// so only a bucket-aware environment (the runtime) answers a temporal
+    /// selector; ordinary expressions never reach this method.
+    fn temporal(&self, base: &[Row], query: &TemporalQuery) -> Result<Vec<Row>, EvalError> {
+        let _ = (base, query);
+        Err(EvalError::NoTemporalIndex)
+    }
 }

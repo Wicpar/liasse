@@ -13,7 +13,7 @@ mod call;
 
 use std::collections::BTreeMap;
 
-use liasse_runtime::{Engine, EngineError, ViewResult};
+use liasse_runtime::{Engine, EngineError, ViewResult, ViewRow};
 use liasse_store::InstanceStore;
 
 use crate::authn::AuthContext;
@@ -25,6 +25,7 @@ use crate::reader::EngineReader;
 use crate::request::{Authenticate, AuthSelection};
 use crate::role::Role;
 use crate::router::SurfaceRouter;
+use crate::window::WindowError;
 
 /// A transport/host fault — never a spec outcome. A denied or rejected request
 /// is a successful observation of that outcome, returned in the outcome type;
@@ -48,14 +49,20 @@ pub enum AuthResult {
     Denied(Denial),
 }
 
-/// The result of opening a subscription (§12.1 `view`): the initial complete
-/// result at its frontier, or a denial.
+/// The result of opening or resuming a subscription (§12.1 `view`, §12.2): the
+/// initial result at its frontier, or a refusal.
 #[derive(Debug, Clone)]
 pub enum Subscription {
     /// The subscription opened; carries the complete initial result.
     Init(ViewResult),
-    /// Opening the subscription was refused (§10/§11).
+    /// A bounded subscription opened; carries its initial windowed rows (§12.2).
+    Window(Vec<ViewRow>),
+    /// Opening the subscription was refused by authentication or roles (§10/§11).
     Denied(Denial),
+    /// A bounded subscription could not open: its anchor identified no current
+    /// occurrence (§12.2). Not an authorization failure — no admission is
+    /// involved.
+    Failed(WindowError),
 }
 
 /// The owned surface state over one engine.
@@ -114,6 +121,14 @@ impl<S: InstanceStore> SurfaceHost<S> {
     #[must_use]
     pub fn read_view(&self, id: &str, watch: &str) -> Option<&ViewResult> {
         self.connections.get(id)?.watch(watch)?.current()
+    }
+
+    /// The client-visible rows of a bounded subscription `watch` on connection
+    /// `id` (§12.2), or `None` if the subscription is absent, closed, or not
+    /// windowed.
+    #[must_use]
+    pub fn read_window(&self, id: &str, watch: &str) -> Option<&[ViewRow]> {
+        self.connections.get(id)?.watch(watch)?.window_rows()
     }
 
     /// The close reason of subscription `watch`, if it has been closed (§12.2).

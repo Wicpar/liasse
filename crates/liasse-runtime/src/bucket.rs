@@ -17,11 +17,26 @@
 //! row was admitted in the past and the clock only advances, so its lower bound
 //! is always satisfied without depending on per-row admission-time storage (a
 //! documented seam, since the store records serial positions, not wall-clock
-//! creation instants). Source-backed and recurring buckets (`$source`/`$repeat`,
-//! §14.4–§14.6), the `.$at`/`.$between`/`.$all` temporal selectors (§14.1), and
-//! bounds that read other root collections are documented seams: those need
-//! expression-layer selector support and source derivation the CORE checker does
-//! not expose.
+//! creation instants).
+//!
+//! # Temporal selectors (§14.1–§14.2)
+//!
+//! The `.$at(t)`/`.$between(a, b)`/`.$all` selectors resolve through
+//! [`interval_bounds`]: each bucketed row carries its evaluated `[from, until)`
+//! as the `$from`/`$until` structural cells, and [`RuntimeEnv`](crate::env)
+//! answers [`Environment::temporal`](liasse_expr::Environment::temporal) by
+//! applying §14.1's half-open activity rule to those cells. A bare read of a
+//! bucketed collection still yields only the rows active at the clock (via
+//! [`is_active`]); a selector re-derives activity from the full extant set, so
+//! `.$all` and a back-dated `.$at` observe rows that have already left the active
+//! interval (§14.2).
+//!
+//! # Documented seams
+//!
+//! Source-backed and recurring buckets (`$source`/`$repeat`, §14.4–§14.6) and
+//! bounds that read other root collections need source derivation the CORE
+//! materializer does not yet build; recurring calendar periods additionally need
+//! period-to-timestamp arithmetic `liasse-value` does not expose.
 
 use std::collections::BTreeMap;
 
@@ -54,6 +69,23 @@ pub(crate) fn is_active(
         }
         Err(_) => true,
     }
+}
+
+/// The half-open interval `[from, until)` of a bucketed row at `now`, with an
+/// unevaluable bound treated as unconstrained (`None`) — the same fail-open
+/// stance as [`is_active`]. This is the temporal index a [`TemporalQuery`] reads:
+/// the runtime evaluates each bucketed row's bounds once and exposes them as the
+/// `$from`/`$until` structural cells the selector filters on (§14.1, §14.4).
+///
+/// [`TemporalQuery`]: liasse_expr::TemporalQuery
+#[must_use]
+pub(crate) fn interval_bounds(
+    bucket: &CompiledBucket,
+    collection: &CompiledCollection,
+    fields: &FieldMap,
+    now: Timestamp,
+) -> (Option<Timestamp>, Option<Timestamp>) {
+    bounds(bucket, collection, fields, now).unwrap_or((None, None))
 }
 
 /// Reject a transition that produced an invalid finite interval (§14.2): a
@@ -108,7 +140,7 @@ fn eval_bound(
     now: Timestamp,
 ) -> Result<Option<Timestamp>, EvalError> {
     let current = row_cell(collection, fields);
-    let env = RuntimeEnv::new(Row::keyless(RowId::leaf(0), Vec::new()), BTreeMap::new(), now, 0);
+    let env = RuntimeEnv::new(Row::keyless(RowId::leaf(0), Vec::new()), BTreeMap::new(), now, 0, Vec::new());
     match typed.evaluate(&env, &current)? {
         Cell::Scalar(Value::Timestamp(ts)) => Ok(Some(ts)),
         _ => Ok(None),

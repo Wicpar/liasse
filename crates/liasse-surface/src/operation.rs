@@ -133,8 +133,8 @@ impl OperationLog {
         match self.records.get(key) {
             None => OperationStatus::Unknown,
             Some(record) => match &record.outcome {
-                SurfaceOutcome::Committed { commit, .. } => {
-                    OperationStatus::Committed { frontier: *commit, commit: *commit }
+                SurfaceOutcome::Committed { frontier, commit, .. } => {
+                    OperationStatus::Committed { frontier: *frontier, commit: *commit }
                 }
                 SurfaceOutcome::Unchanged { frontier, .. } => {
                     OperationStatus::Unchanged { frontier: *frontier }

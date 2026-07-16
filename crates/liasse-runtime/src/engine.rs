@@ -12,8 +12,9 @@ use std::collections::BTreeMap;
 
 use liasse_diag::SourceMap;
 use liasse_expr::{check_expression, Cell};
+use liasse_ident::LineageId;
 use liasse_model::Model;
-use liasse_store::{CommitOutcome, CommitSeq, DefinitionText, InstanceStore, KeyValue, Transition};
+use liasse_store::{CommitOutcome, CommitSeq, DefinitionText, InstanceStore, KeyValue, RowAddress, Transition};
 use liasse_syntax::parse_document;
 use liasse_value::Timestamp;
 
@@ -30,6 +31,39 @@ use crate::schema::Schema;
 use crate::state::{Change, Prospective};
 use crate::view::ViewResult;
 
+/// The parsed, validated, compiled artefacts of one definition text — the
+/// reusable output of the load-time front end that genesis, restore, and update
+/// all consume (§9.2).
+pub(crate) struct Compilation {
+    pub(crate) sources: SourceMap,
+    pub(crate) model: Model,
+    pub(crate) compiled: Compiled,
+    pub(crate) data: Option<liasse_syntax::DocValue>,
+}
+
+/// Parse a definition text and compile its model, statements, views, and buckets
+/// (§9.2 steps 1–6), returning the reusable [`Compilation`] without admitting any
+/// genesis. A static failure is [`EngineError::Invalid`].
+pub(crate) fn compile_definition(definition: &str) -> Result<Compilation, EngineError> {
+    let mut sources = SourceMap::new();
+    let src = sources.add_file("liasse.json", definition.to_owned());
+    let document = parse_document(src, definition).map_err(|d| EngineError::Invalid(Box::new(d)))?;
+    let model = Model::build(&mut sources, src, &document).map_err(|d| EngineError::Invalid(Box::new(d)))?;
+    let model_doc = doc::member(document.root(), "$model")
+        .cloned()
+        .ok_or_else(|| EngineError::Internal("definition has no `$model`".to_owned()))?;
+    let compiled = Compiled::build(&mut sources, &model, &model_doc)?;
+    let data = doc::member(document.root(), "$data").cloned();
+    Ok(Compilation { sources, model, compiled, data })
+}
+
+/// The genesis lineage identifier of an instance (§19.3, D.5): its first
+/// lineage, deterministically derived from the instance incarnation so a
+/// restore of the same instance reconstructs the same lineage identity.
+fn genesis_lineage(instance: &liasse_ident::InstanceId) -> LineageId {
+    LineageId::new(format!("{}#L0", instance.as_str()))
+}
+
 /// A loaded, activated package instance over a store `S`.
 pub struct Engine<S> {
     store: S,
@@ -41,7 +75,10 @@ pub struct Engine<S> {
     /// [`Engine::advance`]/[`Engine::set_time`], so temporal reads are
     /// deterministic and independent of a wall clock.
     clock: Timestamp,
-    #[allow(dead_code)]
+    /// This instance's genesis lineage (§19.3): the lineage its committed points
+    /// belong to, so an export names a stable `(lineage, point)` history point
+    /// and an import can classify an incoming artifact against local history.
+    lineage: LineageId,
     sources: SourceMap,
 }
 
@@ -59,20 +96,148 @@ impl<S: InstanceStore> Engine<S> {
         definition: &str,
         generator: &mut G,
     ) -> Result<Self, EngineError> {
-        let mut sources = SourceMap::new();
-        let src = sources.add_file("liasse.json", definition.to_owned());
-        let document = parse_document(src, definition).map_err(|d| EngineError::Invalid(Box::new(d)))?;
-        let model = Model::build(&mut sources, src, &document).map_err(|d| EngineError::Invalid(Box::new(d)))?;
-        let model_doc = doc::member(document.root(), "$model")
-            .cloned()
-            .ok_or_else(|| EngineError::Internal("definition has no `$model`".to_owned()))?;
-        let compiled = Compiled::build(&mut sources, &model, &model_doc)?;
-        let data = doc::member(document.root(), "$data").cloned();
-
+        let Compilation { sources, model, compiled, data } = compile_definition(definition)?;
         let clock = generator.now();
-        let mut engine = Self { store, model, compiled, clock, sources };
+        let lineage = genesis_lineage(store.instance());
+        let mut engine = Self { store, model, compiled, clock, lineage, sources };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
+    }
+
+    /// Rebuild an activated instance over `store` from a definition and a
+    /// portable state capture (§19.10 restore): compile the definition, then
+    /// admit the captured rows verbatim as one genesis-position commit. Unlike
+    /// [`Engine::load`] this applies no `$data` seed and no defaults — the capture
+    /// is already the authoritative committed state — so a restore reproduces the
+    /// exported state exactly.
+    pub(crate) fn from_state<G: Generators>(
+        store: S,
+        definition: &str,
+        state: &crate::portable::StateSection,
+        generator: &mut G,
+    ) -> Result<Self, EngineError> {
+        let Compilation { sources, model, compiled, .. } = compile_definition(definition)?;
+        let clock = generator.now();
+        let lineage = genesis_lineage(store.instance());
+        let mut engine = Self { store, model, compiled, clock, lineage, sources };
+        engine.install_state(definition, state)?;
+        Ok(engine)
+    }
+
+    /// This instance's incarnation (D.1).
+    #[must_use]
+    pub fn instance(&self) -> &liasse_ident::InstanceId {
+        self.store.instance()
+    }
+
+    /// This instance's genesis lineage (§19.3).
+    #[must_use]
+    pub(crate) fn lineage(&self) -> &LineageId {
+        &self.lineage
+    }
+
+    /// The active definition text (D.4).
+    pub(crate) fn definition_source(&self) -> Option<String> {
+        self.store.definition().map(|d| d.source().to_owned())
+    }
+
+    pub(crate) fn compiled(&self) -> &Compiled {
+        &self.compiled
+    }
+
+    pub(crate) fn schema(&self) -> Schema<'_> {
+        Schema::new(&self.model)
+    }
+
+    /// Stage every captured row as an insert against the current empty base and
+    /// commit it as the definition-load genesis (§19.10).
+    fn install_state(
+        &mut self,
+        definition: &str,
+        state: &crate::portable::StateSection,
+    ) -> Result<(), EngineError> {
+        let schema = Schema::new(&self.model);
+        let mut prospective = Prospective::empty();
+        for (name, rows) in state.collections() {
+            let Some(model) = schema.top_collection(name) else { continue };
+            for fields in rows {
+                let Some(key) = crate::materialize::row_key(model, fields) else {
+                    return Err(EngineError::Internal(format!(
+                        "captured row in `{name}` is missing a key field"
+                    )));
+                };
+                let address = crate::materialize::top_address(name, key);
+                prospective.insert(address, fields.clone());
+            }
+        }
+        let changes = prospective.diff();
+        let mut txn = self.store.begin();
+        stage(&mut txn, changes)?;
+        txn.set_definition(DefinitionText::new(definition.to_owned()));
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Replace live state with `state`, staging the exact diff as one commit —
+    /// the movement an applied import (fast-forward or rollback) performs
+    /// (§19.8). Returns the new head, or the current head when nothing changed.
+    pub(crate) fn reinstall_state(
+        &mut self,
+        state: &crate::portable::StateSection,
+    ) -> Result<CommitSeq, EngineError> {
+        let schema = Schema::new(&self.model);
+        let mut prospective = Prospective::gather(&self.store, schema)?;
+        let target = state.working(schema)?;
+        // Drop every live address absent from the target, then overwrite the rest.
+        let live: Vec<_> = prospective.working().keys().cloned().collect();
+        for address in live {
+            if !target.contains_key(&address) {
+                prospective.remove(&address);
+            }
+        }
+        for (address, fields) in target {
+            prospective.insert(address, fields);
+        }
+        let changes = prospective.diff();
+        let mut txn = self.store.begin();
+        stage(&mut txn, changes)?;
+        Ok(match txn.commit()? {
+            CommitOutcome::Committed(seq) => seq,
+            CommitOutcome::Unchanged => self.store.head(),
+        })
+    }
+
+    /// Commit a migration (§20): replace live state with the migrated rows under
+    /// the new definition in one atomic commit, then swap in the target's model
+    /// and compiled artefacts. The migrated rows were already checked against the
+    /// target's rule pipeline by the caller, so this only stages the diff.
+    pub(crate) fn apply_migration(
+        &mut self,
+        definition: &str,
+        target: Compilation,
+        migrated: BTreeMap<RowAddress, crate::materialize::FieldMap>,
+    ) -> Result<CommitSeq, EngineError> {
+        let schema = Schema::new(&self.model);
+        let mut prospective = Prospective::gather(&self.store, schema)?;
+        let live: Vec<RowAddress> = prospective.working().keys().cloned().collect();
+        for address in live {
+            prospective.remove(&address);
+        }
+        for (address, fields) in migrated {
+            prospective.insert(address, fields);
+        }
+        let changes = prospective.diff();
+        let mut txn = self.store.begin();
+        stage(&mut txn, changes)?;
+        txn.set_definition(DefinitionText::new(definition.to_owned()));
+        let seq = match txn.commit()? {
+            CommitOutcome::Committed(seq) => seq,
+            CommitOutcome::Unchanged => self.store.head(),
+        };
+        self.model = target.model;
+        self.compiled = target.compiled;
+        self.sources = target.sources;
+        Ok(seq)
     }
 
     /// The current head serial position.

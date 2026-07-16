@@ -27,10 +27,12 @@ impl<'a> Builder<'a> {
             .member("$unique")
             .map(|m| self.unique_keys(reporter, &m.value, &shape))
             .unwrap_or_default();
+        let consumes = value.member("$consumes").is_some();
         Collection {
             key,
             key_span,
             unique,
+            consumes,
             shape,
         }
     }

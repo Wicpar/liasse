@@ -83,6 +83,48 @@ fn meter_without_sources_rejected() {
     assert!(built.has_code("M-MISSING"));
 }
 
+/// §15.3 / §15.6 — a spending collection's rows expose a `funding` accessor, so
+/// a view projecting `.spends { …, funding }` types (the accessor no longer
+/// rejects as an unknown name). The view is checked strictly against the spend
+/// row type.
+#[test]
+fn spend_funding_accessor_types() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.m@1.0.0", "$model": {
+            "users": {
+              "$key": "id", "id": "text",
+              "topups": { "$key": "id", "id": "text", "amount": "decimal" },
+              "spends": {
+                "$key": "id", "$consumes": "credits",
+                "id": "uuid = uuid()", "amount": "decimal"
+              }
+              "$limits": {
+                "credits": { "$sources": { "topup": ".topups { $quantity: .amount }" } }
+              }
+              "history": { "$view": ".spends { id, amount, funding }" }
+            }
+        } }"#,
+    );
+    built.expect_ok();
+}
+
+/// §15.6 — `funding` is only exposed on a spending collection; a collection with
+/// no `$consumes` has no `funding` field, so a view referencing it is rejected.
+/// This keeps the accessor gated on the meter relationship rather than universal.
+#[test]
+fn funding_absent_on_non_consuming_collection() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.m@1.0.0", "$model": {
+            "users": {
+              "$key": "id", "id": "text",
+              "notes": { "$key": "id", "id": "text", "body": "text" }
+              "recent": { "$view": ".notes { id, funding }" }
+            }
+        } }"#,
+    );
+    built.expect_err();
+}
+
 /// §2.5 / C.14 — an unknown meter member is rejected.
 #[test]
 fn unknown_meter_member_rejected() {

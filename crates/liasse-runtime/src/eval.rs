@@ -13,11 +13,13 @@ use std::collections::BTreeMap;
 use liasse_expr::{Cell, Row, RowId, TypedExpr};
 use liasse_value::{Timestamp, Value};
 
+use liasse_model::Node;
+
 use crate::bucket;
 use crate::compiled::{Compiled, CompiledCollection};
 use crate::env::RuntimeEnv;
 use crate::error::Rejection;
-use crate::materialize::{self, FieldMap};
+use crate::materialize::{self, FieldMap, Interval, Temporal};
 use crate::schema::Schema;
 use crate::state::Prospective;
 
@@ -31,18 +33,52 @@ pub(crate) struct EvalCtx<'a> {
 }
 
 impl EvalCtx<'_> {
-    /// The evaluation environment over the current prospective state, with
-    /// bucketed collections filtered to the rows active at [`Self::now`] (§14).
+    /// The evaluation environment over the current prospective state (§8.12): the
+    /// package root with bucketed collections filtered to the rows active at
+    /// [`Self::now`] (§14.1), plus the full extant set of each bucketed collection
+    /// so a temporal selector can re-derive activity over inactive rows (§14.2).
     pub(crate) fn env(&self, prospective: &Prospective) -> RuntimeEnv {
-        RuntimeEnv::new(self.root(prospective), self.params.clone(), self.now, self.seed)
+        RuntimeEnv::new(
+            self.root(prospective),
+            self.params.clone(),
+            self.now,
+            self.seed,
+            self.temporal_index(prospective),
+        )
     }
 
     /// The temporal-aware package-root row: bucketed collections expose only the
-    /// rows active at [`Self::now`]; every other collection is materialized in
-    /// full (§8.2, §14.2).
+    /// rows active at [`Self::now`] (each carrying its `$from`/`$until` interval
+    /// cells); every other collection is materialized in full (§8.2, §14.2).
     pub(crate) fn root(&self, prospective: &Prospective) -> Row {
         let keep = |name: &str, fields: &FieldMap| self.active(name, fields);
-        materialize::materialize_root_filtered(self.schema, prospective.working(), &keep)
+        let interval = |name: &str, fields: &FieldMap| self.interval(name, fields);
+        let temporal = Temporal { keep: &keep, interval: &interval };
+        materialize::materialize_root_filtered(self.schema, prospective.working(), &temporal)
+    }
+
+    /// The full extant rows of every bucketed collection (§14.2), the working set
+    /// [`RuntimeEnv`] substitutes when a temporal selector reads a bare bucketed
+    /// collection, so `.$all` and a back-dated `.$at` observe inactive rows.
+    fn temporal_index(&self, prospective: &Prospective) -> Vec<Vec<Row>> {
+        let keep = |name: &str, fields: &FieldMap| self.active(name, fields);
+        let interval = |name: &str, fields: &FieldMap| self.interval(name, fields);
+        let temporal = Temporal { keep: &keep, interval: &interval };
+        let mut index = Vec::new();
+        for member in &self.schema.model().root().members {
+            if let Node::Collection(collection) = &member.node {
+                let name = member.name.as_str();
+                if self.compiled.bucket(name).is_some() {
+                    index.push(materialize::extant_bucketed_rows(
+                        collection,
+                        name,
+                        prospective.working(),
+                        &temporal,
+                    ));
+                }
+            }
+        }
+        index
     }
 
     /// Whether collection `name`'s row `fields` is currently readable: always for
@@ -51,6 +87,17 @@ impl EvalCtx<'_> {
         match (self.compiled.bucket(name), self.compiled.collection(name)) {
             (Some(bucket), Some(collection)) => bucket::is_active(bucket, collection, fields, self.now),
             _ => true,
+        }
+    }
+
+    /// Collection `name`'s row interval `[from, until)` at [`Self::now`], or
+    /// `None` when it is not bucketed (§14.1).
+    fn interval(&self, name: &str, fields: &FieldMap) -> Option<Interval> {
+        match (self.compiled.bucket(name), self.compiled.collection(name)) {
+            (Some(bucket), Some(collection)) => {
+                Some(bucket::interval_bounds(bucket, collection, fields, self.now))
+            }
+            _ => None,
         }
     }
 

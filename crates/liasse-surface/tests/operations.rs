@@ -5,12 +5,21 @@
 
 mod support;
 
-use liasse_surface::{OperationKey, OperationStatus, SurfaceOutcome};
-use support::{call, host, text};
+use liasse_store::MemoryStore;
+use liasse_surface::{OperationKey, OperationStatus, Subscription, SurfaceHost, SurfaceOutcome, SurfaceWatch};
+use support::{address, call, host, text};
 
 /// The number of rows currently in the public `index` view.
-fn row_count(host: &liasse_surface::SurfaceHost<liasse_store::MemoryStore>) -> usize {
+fn row_count(host: &SurfaceHost<MemoryStore>) -> usize {
     host.engine().view_at_head("index").expect("view").expect("declared").len()
+}
+
+/// Open an unwindowed subscription over `target` on `conn`.
+fn watch(host: &mut SurfaceHost<MemoryStore>, conn: &str, target: &str, id: &str) {
+    match host.watch(conn, &SurfaceWatch::new(address(target), id)).expect("watch") {
+        Subscription::Init(_) => {}
+        other => panic!("expected an init, got {other:?}"),
+    }
 }
 
 #[test]
@@ -85,6 +94,36 @@ fn retained_status_reports_the_committed_operation() {
         OperationStatus::Committed { commit: at, .. } => assert_eq!(at, commit, "status reports the commit position"),
         other => panic!("expected a committed status, got {other:?}"),
     }
+}
+
+#[test]
+fn replay_settles_the_replaying_connection() {
+    // §12.3: receiving `committed` — even on an operation-id replay — proves the
+    // *replaying* connection's authorized live results have advanced through that
+    // commit. A retry from a lagging connection must therefore sweep it, not just
+    // hand back the stored outcome.
+    let mut host = host();
+    host.connect("c1");
+    host.connect("c2");
+    watch(&mut host, "c2", "public.tasks", "w2");
+
+    // c1 commits the operation; c2 is not on c1's connection, so it lags.
+    let first = host
+        .call("c1", &call("public.tasks.add", [("title", text("a"))]).with_operation_id("op"))
+        .expect("first");
+    let commit = first.commit().expect("first commits");
+    assert!(host.read_view("c2", "w2").expect("view").is_empty(), "c2's watch has not seen c1's commit");
+
+    // c2 replays the equivalent operation: at-most-once (no second row), yet its
+    // own frontier and subscription now reflect the commit.
+    let replay = host
+        .call("c2", &call("public.tasks.add", [("title", text("a"))]).with_operation_id("op"))
+        .expect("replay");
+    assert!(replay.is_ok(), "the replay is accepted: {replay:?}");
+    assert_eq!(replay.commit(), Some(commit), "the replay re-observes the stored commit");
+    assert_eq!(row_count(&host), 1, "the replay did not execute a second time");
+    assert_eq!(host.frontier("c2"), Some(commit), "the replaying connection advanced through the commit");
+    assert_eq!(host.read_view("c2", "w2").expect("view").len(), 1, "the replay swept c2's subscription");
 }
 
 #[test]

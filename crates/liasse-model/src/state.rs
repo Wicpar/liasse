@@ -158,6 +158,10 @@ pub struct Collection {
     pub key_span: ByteSpan,
     /// Additional candidate keys (§5.7); each is one composite key's field list.
     pub unique: Vec<Vec<DeclName>>,
+    /// Whether the collection declares `$consumes` (§15.1): a spending
+    /// collection whose rows expose a `funding` accessor recording each admitted
+    /// spend's allocation (§15.3, §15.6).
+    pub consumes: bool,
     /// The collection body.
     pub shape: Shape,
 }

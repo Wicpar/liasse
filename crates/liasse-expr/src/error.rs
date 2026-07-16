@@ -55,6 +55,16 @@ pub enum EvalError {
     /// bound (mirrors [`ValueError::DecimalScaleOutOfRange`] guarding the
     /// canonical-text encoder).
     DecimalScale,
+
+    /// A `.$between(a, b)` selector received an empty or reversed range
+    /// (`b <= a`); §14.1 rejects evaluation of such a query.
+    EmptyTemporalRange,
+
+    /// A temporal selector (`.$at`/`.$between`/`.$all`) was evaluated against an
+    /// environment that supplies no temporal index (§14.1). An environment
+    /// contract breach: a bucketed read must run against a bucket-aware
+    /// environment.
+    NoTemporalIndex,
 }
 
 impl EvalError {
@@ -72,6 +82,12 @@ impl EvalError {
             }
             Self::Value(err) => err.to_string(),
             Self::DecimalScale => "decimal result scale exceeds the supported bound".to_owned(),
+            Self::EmptyTemporalRange => {
+                "`.$between(a, b)` requires `b > a`; the range is empty or reversed".to_owned()
+            }
+            Self::NoTemporalIndex => {
+                "a temporal selector needs an environment with a temporal index".to_owned()
+            }
         }
     }
 }

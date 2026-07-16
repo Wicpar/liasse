@@ -13,6 +13,10 @@ liasse-syntax = { path = "../liasse-syntax" }
 # evaluator sorts and compares with. `bigdecimal`/`num_bigint` are re-exported
 # from here so exact `int`/`decimal` arithmetic shares the wire number types.
 liasse-value = { path = "../liasse-value" }
+# Annex D.2 canonical key text: a synthetic-`$key` group's stable row identity
+# (§12.4) is its group key rendered through the one shared D.2 codec, never a
+# hand-rolled spelling.
+liasse-ident = { path = "../liasse-ident" }
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false }
