@@ -16,8 +16,6 @@
 
 mod helpers;
 
-pub(crate) use helpers::child_exprs as child_exprs_of;
-
 use std::collections::BTreeMap;
 
 use liasse_diag::{ByteSpan, SourceId, SourceMap};
@@ -32,10 +30,11 @@ use crate::report::{code, Reporter};
 use crate::resolve::Resolver;
 use crate::scope::ModelScope;
 use crate::state::{Node, Shape};
+use crate::walk::child_exprs;
 
 use helpers::{
-    child_exprs, collect_param_refs, parse_name, receiver_shape, record, resolve_node,
-    resolve_target, stmt_exprs, uses_mutation_operator, wrap, write_path,
+    collect_param_refs, parse_name, receiver_shape, record, resolve_node, resolve_target,
+    stmt_exprs, uses_mutation_operator, wrap, write_path,
 };
 
 /// A validated mutation: where it is declared, its external name, and its
@@ -85,7 +84,18 @@ struct MutPhase<'a, 'b> {
 
 impl MutPhase<'_, '_> {
     fn check(&mut self, entry: &RawMut) -> Option<Mutation> {
-        let (base, prototype) = parse_name(&entry.name);
+        let (base, prototype) = match parse_name(&entry.name) {
+            Ok(parsed) => parsed,
+            Err(reason) => {
+                self.reporter.reject_hint(
+                    entry.span,
+                    code::MUTATION,
+                    reason,
+                    "declare the prototype as `name({ param: type })` (§8.3)",
+                );
+                return None;
+            }
+        };
         let name = match DeclName::parse(&base) {
             Ok(name) => name,
             Err(reason) => {
@@ -432,7 +442,7 @@ impl MutPhase<'_, '_> {
         // the §8.3 contract type of a parameter used as the value).
         if let Some(typed) = self.type_value(value, scope, source)
             && let Some(field_ty) = &target_ty
-            && !crate::check::assignable(typed.ty(), field_ty)
+            && !crate::check::value_assignable(&typed, field_ty)
         {
             self.reject_at(
                 source,

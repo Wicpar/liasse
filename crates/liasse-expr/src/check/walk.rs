@@ -16,6 +16,11 @@ pub(super) struct RawOutput {
 
 /// Dependency-order the outputs so each depends only on earlier ones; returns
 /// `None` on a cycle (§7.1).
+///
+/// The DFS recurses on output-name dependency edges, not AST nesting, so its
+/// bound is its own: the `Visit` marking visits each output at most once,
+/// capping the recursion depth at the projection's output count — independent
+/// of liasse-syntax's 512 expression-nesting cap.
 pub(super) fn order_outputs(outputs: &[RawOutput]) -> Option<Vec<usize>> {
     let names: BTreeSet<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
     let mut ordered = Vec::with_capacity(outputs.len());

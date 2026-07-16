@@ -2,19 +2,26 @@
 //!
 //! Validates the top-level definition object: the required `$liasse` language
 //! generation (checked first, §4.1), the exclusive `$app`/`$module` identity,
-//! and the shape of `$semantics`, `$requires`, and `$resources`. The Annex C.1
-//! grammar is closed, so any member outside it — including a reserved
-//! `$`-member that is not a defined declaration — is rejected (§2.5).
+//! and the closed Annex C.1 member grammar — any member outside it, including a
+//! reserved `$`-member that is not a defined declaration, is rejected (§2.5).
+//! The `$semantics` choices live in [`semantics`], the `$requires`/`$resources`
+//! descriptors in [`resources`].
 //!
 //! CORE scope: `$requires` is validated for *shape* only; resolving a namespace
 //! against a host and verifying resource digests belong to a later pass, so
 //! those are not performed here.
+
+mod resources;
+mod semantics;
 
 use liasse_syntax::{DocMember, DocValue};
 
 use crate::doc::DocValueExt;
 use crate::names::PackageId;
 use crate::report::{code, Reporter};
+
+use resources::{check_requires, check_resources};
+use semantics::check_semantics;
 
 /// The supported `$liasse` language generation (this specification, §4.1).
 const SUPPORTED_GENERATION: i64 = 1;
@@ -247,163 +254,6 @@ fn classify_member(reporter: &mut Reporter, member: &DocMember, allowed: &[&str]
             code::UNKNOWN_MEMBER,
             format!("top-level member `{name}` is not part of the package grammar"),
             "application state belongs under `$model`",
-        );
-    }
-}
-
-fn check_semantics(reporter: &mut Reporter, value: &DocValue) {
-    let Some(members) = value.as_object() else {
-        reporter.reject(value.span, code::HEADER, "`$semantics` must be an object");
-        return;
-    };
-    for member in members {
-        match member.name.text.as_str() {
-            "timestamp_precision" => check_timestamp_precision(reporter, &member.value),
-            "decimal_division" => check_decimal_division(reporter, &member.value),
-            other => reporter.reject_hint(
-                member.span,
-                code::HEADER,
-                format!("`{other}` is not a standard `$semantics` choice"),
-                "supported choices are `timestamp_precision` and `decimal_division`",
-            ),
-        }
-    }
-}
-
-fn check_timestamp_precision(reporter: &mut Reporter, value: &DocValue) {
-    let ok = value
-        .as_string()
-        .is_some_and(|text| liasse_value::Precision::parse(text).is_some());
-    if !ok {
-        reporter.reject_hint(
-            value.span,
-            code::HEADER,
-            "`timestamp_precision` must be one of `s`, `ms`, `us`, `ns`",
-            "e.g. `\"timestamp_precision\": \"us\"`",
-        );
-    }
-}
-
-/// Supported explicit rounding modes (A.6).
-const ROUNDING_MODES: &[&str] = &[
-    "half_even",
-    "half_away_from_zero",
-    "toward_zero",
-    "away_from_zero",
-    "floor",
-    "ceiling",
-];
-
-fn check_decimal_division(reporter: &mut Reporter, value: &DocValue) {
-    let Some(members) = value.as_object() else {
-        reporter.reject(
-            value.span,
-            code::HEADER,
-            "`decimal_division` must be an object of `scale`/`rounding`",
-        );
-        return;
-    };
-    for member in members {
-        match member.name.text.as_str() {
-            "scale" => {}
-            "rounding" => {
-                let ok = member
-                    .value
-                    .as_string()
-                    .is_some_and(|text| ROUNDING_MODES.contains(&text));
-                if !ok {
-                    reporter.reject_hint(
-                        member.value.span,
-                        code::HEADER,
-                        "unsupported `decimal_division.rounding` mode",
-                        "supported modes are listed in Annex A.6",
-                    );
-                }
-            }
-            other => reporter.reject(
-                member.span,
-                code::HEADER,
-                format!("`{other}` is not a `decimal_division` setting"),
-            ),
-        }
-    }
-}
-
-fn check_requires(reporter: &mut Reporter, value: &DocValue) {
-    let Some(members) = value.as_object() else {
-        reporter.reject(
-            value.span,
-            code::HEADER,
-            "`$requires` maps namespace handles to `namespace@major` descriptors",
-        );
-        return;
-    };
-    for member in members {
-        if member.value.as_string().is_none() {
-            reporter.reject(
-                member.value.span,
-                code::HEADER,
-                format!("`$requires.{}` must be a `namespace@major` string", member.name.text),
-            );
-        }
-    }
-}
-
-fn check_resources(reporter: &mut Reporter, value: &DocValue) {
-    let Some(members) = value.as_object() else {
-        reporter.reject(value.span, code::HEADER, "`$resources` must be an object");
-        return;
-    };
-    for member in members {
-        check_one_resource(reporter, member);
-    }
-}
-
-fn check_one_resource(reporter: &mut Reporter, member: &DocMember) {
-    let Some(fields) = member.value.as_object() else {
-        reporter.reject(
-            member.value.span,
-            code::HEADER,
-            "a resource descriptor must be an object",
-        );
-        return;
-    };
-    for required in ["$path", "$media", "$sha256"] {
-        if !fields.iter().any(|f| f.name.text == required) {
-            reporter.reject_hint(
-                member.value.span,
-                code::MISSING_MEMBER,
-                format!("resource `{}` is missing `{required}`", member.name.text),
-                "a resource needs `$path`, `$media`, and `$sha256`",
-            );
-        }
-    }
-    for field in fields {
-        match field.name.text.as_str() {
-            "$path" => check_resource_path(reporter, field),
-            "$media" | "$sha256" => {}
-            other => reporter.reject(
-                field.span,
-                code::UNKNOWN_MEMBER,
-                format!("`{other}` is not a resource-descriptor member"),
-            ),
-        }
-    }
-}
-
-fn check_resource_path(reporter: &mut Reporter, field: &DocMember) {
-    let Some(path) = field.value.as_string() else {
-        reporter.reject(field.value.span, code::HEADER, "`$path` must be a string");
-        return;
-    };
-    let escapes = path.starts_with('/')
-        || path.split('/').any(|segment| segment == "..");
-    if escapes {
-        reporter.reject_hint(
-            field.value.span,
-            code::HEADER,
-            format!("resource `$path` `{path}` must stay inside the archive root"),
-            "use a relative path such as `resources/invoice.html`",
         );
     }
 }

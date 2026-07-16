@@ -58,7 +58,13 @@ impl Builder<'_> {
         let inner = self.first_inner(&pair)?;
         let kind = match inner.as_rule() {
             Rule::return_stmt => {
-                let expr_pair = self.first_inner(&inner)?;
+                // `return_stmt` = `return_kw ~ expression`; the atomic keyword is
+                // present as a leading token, so select the `expression` pair.
+                let Some(expr_pair) =
+                    inner.into_inner().find(|p| p.as_rule() == Rule::expression)
+                else {
+                    return self.internal(span);
+                };
                 StmtKind::Return(self.node(expr_pair)?)
             }
             Rule::tail_stmt => self.tail_stmt(inner)?,

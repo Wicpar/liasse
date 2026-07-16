@@ -12,8 +12,11 @@
 //! Both the checker (building this tree) and the evaluator (walking it) recurse
 //! structurally on the AST. liasse-syntax caps expression nesting at 512 before
 //! this crate ever sees a tree (`scan::check_nesting_depth`), so that cap is the
-//! recursion bound here; there is no self-referential or growth path that adds
-//! depth beyond the parsed structure.
+//! recursion bound for the structural walks. The one non-structural recursion —
+//! the checker's projection-output dependency ordering
+//! (`check::walk::order_outputs`) — recurses on output-name edges and visits
+//! each output at most once, so its depth is bounded by the projection's output
+//! count, independently of the syntax cap.
 
 use liasse_diag::ByteSpan;
 use liasse_value::Value;
@@ -52,6 +55,17 @@ impl TypedExpr {
     #[must_use]
     pub(crate) fn kind(&self) -> &TypedKind {
         &self.kind
+    }
+
+    /// Whether this expression is the literal `none`.
+    ///
+    /// The bare literal types as the widest optional (`optional<json>`, A.7);
+    /// per A.1 it is the absent value of *every* `optional<T>`, so the model
+    /// layer — which owns assignment typing — narrows it against the target
+    /// field's optional type. This query is what lets it recognise the literal.
+    #[must_use]
+    pub fn is_none_literal(&self) -> bool {
+        matches!(self.kind, TypedKind::Literal(Value::None))
     }
 }
 

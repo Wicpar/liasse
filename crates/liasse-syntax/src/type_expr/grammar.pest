@@ -1,0 +1,53 @@
+// Liasse type-expression grammar (SPEC.md Annex A.2). Syntax only: it fixes the
+// A.2 *shape* of a field's declared type and takes no position on which bare
+// names are primitives, which resolve against `$types`, or which forms are
+// deferred seams (`ref<...>`, `collection.$key`). That mapping from this spanned
+// tree to a `liasse_value::Type` is the model layer's concern.
+//
+// A type expression carries no comments and no string/`#` sigils beyond the A.2
+// `#surface.$key` path form, so only whitespace is implicit.
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+
+type_program = { SOI ~ type_expr ~ EOI }
+
+// A postfix `?` makes any base optional — A.2: `T?` is shorthand for
+// `optional<T>`.
+type_expr       = { base ~ optional_suffix? }
+optional_suffix = { "?" }
+
+// Ordered choice: the `<...>`-taking generic forms and the `{...}` struct are
+// tried before a bare `named`/`key_path`, so a name that merely shares a keyword
+// prefix (`setting`, `mapper`) still falls through to `named`.
+base = {
+    struct_type
+  | optional_type
+  | set_type
+  | view_type
+  | map_type
+  | ref_type
+  | key_path
+  | named
+}
+
+optional_type = { "optional" ~ "<" ~ type_expr ~ ">" }
+set_type      = { "set" ~ "<" ~ type_expr ~ ">" }
+view_type     = { "view" ~ "<" ~ type_expr ~ ">" }
+map_type      = { "map" ~ "<" ~ type_expr ~ "," ~ type_expr ~ ">" }
+ref_type      = { "ref" ~ "<" ~ ref_target ~ ">" }
+ref_target    = @{ ("/" | "#")? ~ ident ~ ("." ~ ident)* }
+
+struct_type  = { "{" ~ (struct_field ~ ("," ~ struct_field)* ~ ","?)? ~ "}" }
+struct_field = { field_name ~ optional_suffix? ~ ":" ~ type_expr }
+field_name   = @{ ident }
+
+// A.2 key-path type references: `collection.$key`, `/absolute.collection.$key`,
+// `#surface.$key`. The `.$key` suffix is what distinguishes a key path from a
+// plain dotted `named`, so it must terminate the path.
+key_path = @{ ("/" | "#")? ~ ident ~ ("." ~ ident)* ~ "." ~ "$key" }
+
+// A primitive keyword (`text`, `json`, …) or a `$types` reference, possibly
+// dotted (`accounting.money`). The model decides which.
+named = @{ ident ~ ("." ~ ident)* }
+
+ident      = @{ (ASCII_ALPHA | "_") ~ ident_cont* }
+ident_cont = _{ ASCII_ALPHANUMERIC | "_" }

@@ -191,6 +191,53 @@ fn return_statement() -> Check {
 }
 
 #[test]
+fn return_of_named_projection() -> Check {
+    // SPEC.md §3.2 uses `return task { id, title }` as a mutation's final
+    // statement. The `return` keyword must be recognised even when a bare
+    // identifier (not `.`/`/`) starts the returned expression: the atomic
+    // `return_kw` enforces the word boundary before whitespace is skipped.
+    let stmt = parse_ok("return task { id, title }")?.statement;
+    let StmtKind::Return(expr) = stmt.kind else {
+        return Err(format!("expected a return statement, got {:?}", stmt.kind));
+    };
+    // The returned expression is `task { id, title }`: a projection block whose
+    // base is the bare name `task`.
+    let ExprKind::Block { base, members } = expr.kind else {
+        return Err(format!("expected a projection block, got {:?}", expr.kind));
+    };
+    let ExprKind::Name(name) = &base.kind else {
+        return Err(format!("expected the base to be the name `task`, got {:?}", base.kind));
+    };
+    assert_eq!(name.text, "task");
+    assert_eq!(members.len(), 2);
+    Ok(())
+}
+
+#[test]
+fn returned_is_an_identifier_not_a_return() -> Check {
+    // `returned` shares the `return` prefix but continues with `ident_cont`
+    // characters, so the word boundary fails and the whole token is one name.
+    let expr = bare("returned")?;
+    let ExprKind::Name(name) = &expr.kind else {
+        return Err(format!("expected a bare name, got {:?}", expr.kind));
+    };
+    assert_eq!(name.text, "returned");
+    Ok(())
+}
+
+#[test]
+fn returnx_is_an_identifier_not_a_return() -> Check {
+    // `returnx` likewise fails the `return` word boundary and parses as a name,
+    // never as `return x`.
+    let expr = bare("returnx")?;
+    let ExprKind::Name(name) = &expr.kind else {
+        return Err(format!("expected a bare name, got {:?}", expr.kind));
+    };
+    assert_eq!(name.text, "returnx");
+    Ok(())
+}
+
+#[test]
 fn assignment_statement() -> Check {
     // `.done = true` — a mutation assignment (single `=`, not `==`).
     let stmt = parse_ok(".done = true")?.statement;

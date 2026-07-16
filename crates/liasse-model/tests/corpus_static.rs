@@ -169,15 +169,16 @@ const SKIP: &[(&str, &str)] = &[
         "23-host-contract/unavailable-component-fails-before-activation",
         "host component-availability resolution (§23/§9.2); host seam",
     ),
-    // --- Blocked by a liasse-syntax grammar bug (outside this task's edit scope) ---
-    // The package is valid per §21.1/§5.6, but the mutation `return t { id, project }`
-    // fails to parse: in the expr grammar `return_stmt = "return" ~ !ident_cont ~
-    // expression`, pest skips WHITESPACE before `!ident_cont`, so the lookahead
-    // sees the identifier that starts the returned expression and the keyword
-    // never matches. `return .field {…}` works; `return <name> …` does not.
+    // --- §18 blob-connector registry (host context) ---
+    // The expected rejection is "placement selects a store whose connector is
+    // not registered" against the case's `hosts.connectors` context, which this
+    // bridge never reads and the CORE model has no host registry to consult.
+    // The case previously *appeared* to pass only because its `return doc { id }`
+    // statement hit the since-fixed `return <name>` grammar bug and the package
+    // was rejected for the wrong reason.
     (
-        "21-deletion-erasure/deferred-ref-omits-on-delete-loads",
-        "liasse-syntax `return <name> …` parse bug (whitespace-skipped `!ident_cont`); crate out of edit scope",
+        "18-blobs/unregistered-connector-fails-load",
+        "host blob-connector registry resolution (§18.12/§2.1); host seam",
     ),
 ];
 
@@ -307,4 +308,5 @@ fn corpus_static_cases_match_expected_outcome() {
             failures.join("\n"),
         );
     }
+    println!("corpus static conformance: {passing} judged cases passing, {skipped} skipped");
 }

@@ -119,3 +119,14 @@ fn summing_a_non_numeric_field_is_rejected() {
     let diags = check_rejects(&model_scope(), "avg(.lines.id)");
     assert!(mentions(&diags, "numeric"));
 }
+
+#[test]
+fn nameless_shorthand_projection_output_is_rejected_with_a_diagnostic() {
+    // §7.1: a shorthand output takes its name from the projected member; an
+    // arbitrary expression has no derivable name and must be written
+    // `name: expression`. The rejection must carry a diagnostic — this path
+    // previously aborted with an *empty* diagnostics batch, silently.
+    let diags = check_rejects(&model_scope(), ".lines { debit + debit }");
+    assert!(diags.has_errors());
+    assert!(mentions(&diags, "no name"));
+}

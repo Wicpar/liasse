@@ -164,3 +164,103 @@ fn multiple_errors_accumulated() {
     assert!(built.has_code(code::KEY));
     assert!(built.has_code(code::ENUM));
 }
+
+#[test]
+fn param_inferred_from_assignment_target_with_optionality() {
+    // §8.3: "CEL typing infers a parameter from every use of `@name`" and
+    // "`@name` inherits `.name`'s type and optionality" — the spec's own
+    // `"rename": ".name = @name"` example against an optional text field.
+    let built = build(
+        r#"{
+          "$liasse": 1
+          "$app": "t.inferassign@1.0.0"
+          "$model": {
+            "people": {
+              "$key": "id"
+              "id": "text"
+              "name": "text?"
+              "$mut": { "rename": ".name = @name" }
+            }
+          }
+        }"#,
+    );
+    let model = built.expect_ok();
+    let rename = model
+        .mutations()
+        .iter()
+        .find(|m| m.name.as_str() == "rename")
+        .expect("rename present");
+    let name = rename
+        .params
+        .iter()
+        .find(|(name, _)| name == "name")
+        .expect("@name inferred");
+    // Optionality is inherited, not stripped: the contract type is `text?`.
+    assert_eq!(
+        name.1.as_scalar(),
+        Some(&liasse_value::Type::Optional(Box::new(liasse_value::Type::Text)))
+    );
+}
+
+#[test]
+fn param_inferred_from_collection_key_selector() {
+    // §8.3: "`@id` inherits `.tasks.$key`" — the spec's own
+    // `"complete": ".tasks[@id].done = true"` example.
+    let built = build(
+        r#"{
+          "$liasse": 1
+          "$app": "t.inferkey@1.0.0"
+          "$model": {
+            "tasks": {
+              "$key": "id"
+              "id": "text"
+              "done": "bool = false"
+            }
+            "$mut": { "complete": ".tasks[@id].done = true" }
+          }
+        }"#,
+    );
+    let model = built.expect_ok();
+    let complete = model
+        .mutations()
+        .iter()
+        .find(|m| m.name.as_str() == "complete")
+        .expect("complete present");
+    let id = complete
+        .params
+        .iter()
+        .find(|(name, _)| name == "id")
+        .expect("@id inferred");
+    assert_eq!(id.1.as_scalar(), Some(&liasse_value::Type::Text));
+}
+
+#[test]
+fn uninferable_unprototyped_param_rejected() {
+    // §8.3: "All uses of the same parameter MUST infer one compatible type",
+    // and "An explicit prototype resolves ambiguity or declares a structure
+    // that the body cannot uniquely infer." `return @value` constrains @value
+    // to no type, no prototype is declared, so no single contract type exists
+    // (the parameter shape "is part of the external surface contract") and the
+    // package must not load.
+    let built = build(
+        r#"{
+          "$liasse": 1
+          "$app": "t.noinfer@1.0.0"
+          "$model": {
+            "$mut": { "echo": "return @value" }
+          }
+        }"#,
+    );
+    assert!(built.has_code(code::MUTATION));
+    // The diagnostic names the parameter at its use...
+    assert!(built.points_at("@value"));
+    assert!(built
+        .expect_err()
+        .iter()
+        .any(|d| d.message().contains("@value") && d.message().contains("cannot be inferred")));
+    // ...and hints at the prototype form that §8.3 provides for this case.
+    assert!(built
+        .expect_err()
+        .iter()
+        .any(|d| d.helps().iter().any(|h| h.contains("prototype"))));
+}

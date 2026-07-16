@@ -17,7 +17,15 @@ program = { SOI ~ statement ~ EOI }
 // A `$mut` statement or a bare value/view expression. `return` and the two
 // `=` / trailing-`-` forms are the only shapes that are not also expressions.
 statement  = { return_stmt | tail_stmt }
-return_stmt = { "return" ~ !ident_cont ~ expression }
+// `return_kw` is atomic so the word-boundary check (`!ident_cont`) runs
+// immediately after the keyword. In a non-atomic rule pest inserts implicit
+// WHITESPACE between `"return"` and `!ident_cont`, which would move the
+// lookahead past the space onto the returned expression's first identifier and
+// defeat the boundary — `return task` would then fail to match. The atomic
+// keyword matches `return` only at a real word boundary; the expression that
+// follows is parsed normally (whitespace-skipping) by `return_stmt`.
+return_stmt = { return_kw ~ expression }
+return_kw   = @{ "return" ~ !ident_cont }
 tail_stmt   = { expression ~ (assign_tail | clear_tail)? }
 assign_tail = { "=" ~ !"=" ~ expression }
 clear_tail  = { "-" ~ &EOI }

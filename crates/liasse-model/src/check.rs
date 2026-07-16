@@ -11,13 +11,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::SourceMap;
 use liasse_expr::{check_statement, ExprType, Scope};
-use liasse_syntax::{parse_expression, Arg, Expr, ExprKind, Selector, SpannedExpression};
+use liasse_syntax::{parse_expression, Expr, ExprKind, SpannedExpression};
 use liasse_value::Type;
 
 use crate::report::{code, Reporter};
 use crate::resolve::Resolver;
 use crate::scope::ModelScope;
 use crate::state::{Check, ExprSource, Node, ScalarField, Shape};
+use crate::walk::child_exprs;
 
 /// Type-check every expression in the state tree.
 pub(crate) fn check_tree(
@@ -83,7 +84,7 @@ impl TreeChecker<'_, '_> {
         if let Some(default) = &field.default
             && let Some(typed) = self.check_value(&row_scope, default)
         {
-            self.expect_assignable(typed.ty(), &field.ty, default);
+            self.expect_assignable(&typed, &field.ty, default);
         }
         if let Some(computed) = &field.computed {
             self.check_pure_value(&row_scope, computed);
@@ -91,7 +92,7 @@ impl TreeChecker<'_, '_> {
         if let Some(normalize) = &field.normalize
             && let Some(typed) = self.check_pure_value(&value_scope, normalize)
         {
-            self.expect_assignable(typed.ty(), &field.ty, normalize);
+            self.expect_assignable(&typed, &field.ty, normalize);
         }
         for check in &field.checks {
             self.check_bool(&value_scope, check, "a field `$check` must be a `bool` condition");
@@ -185,14 +186,19 @@ impl TreeChecker<'_, '_> {
         }
     }
 
-    fn expect_assignable(&mut self, value: &ExprType, target: &Type, source: &ExprSource) {
-        if !assignable(value, target) {
+    fn expect_assignable(
+        &mut self,
+        value: &liasse_expr::TypedExpr,
+        target: &Type,
+        source: &ExprSource,
+    ) {
+        if !value_assignable(value, target) {
             self.reporter.reject_hint(
                 source.span,
                 code::EXPR,
                 format!(
                     "this expression has type `{}` but the field expects `{}`",
-                    value.describe(),
+                    value.ty().describe(),
                     target.name()
                 ),
                 "make the expression's result match the declared field type",
@@ -231,18 +237,59 @@ impl TreeChecker<'_, '_> {
     }
 }
 
-/// Lenient assignability of an expression result to a declared field type.
+/// Whether a *typed* expression result is assignable to a declared field type.
+///
+/// This adds the one value-sensitive rule on top of [`assignable`]: a literal
+/// `none` is the absent value of *every* `optional<T>` (A.1), so it is accepted
+/// against any optional target even though its static type is the widest
+/// optional (`optional<json>`, A.7 — liasse-expr types the bare literal at its
+/// widest and leaves this narrowing to the model layer).
+pub(crate) fn value_assignable(value: &liasse_expr::TypedExpr, target: &Type) -> bool {
+    if value.is_none_literal() && matches!(target, Type::Optional(_)) {
+        return true;
+    }
+    assignable(value.ty(), target)
+}
+
+/// Whether an expression result is assignable to a declared field type.
+///
+/// Assignment typing follows §5.3/§8: optionality is meaningful (a `none` is
+/// absence, A.1), so it widens but never silently narrows. A definite `T`
+/// assigns to `optional<T>`, but an `optional<T>` does **not** assign to a
+/// required `T` — that would let a `none` flow into a field the state model
+/// requires to be present (§8.3: a parameter "inherits … optionality"). Wrapped
+/// types are assignable only when their inner types are.
 pub(crate) fn assignable(value: &ExprType, target: &Type) -> bool {
     let Some(scalar) = value.as_scalar() else {
         return matches!(target, Type::View(_));
     };
-    if scalar == target || matches!(target, Type::Json) {
+    scalar_assignable(scalar, target)
+}
+
+/// Sound assignability between two scalar/structured types (see [`assignable`]).
+fn scalar_assignable(value: &Type, target: &Type) -> bool {
+    if value == target {
         return true;
     }
-    match (scalar, target) {
+    match (value, target) {
+        // An `optional<T>` never narrows to a non-optional target: the value may
+        // be `none`, which a required field cannot hold (§8.3, A.1).
+        (Type::Optional(_), other) if !matches!(other, Type::Optional(_)) => false,
+        // Optional widens: a definite `T` (or an `optional<T>`) is assignable to
+        // `optional<U>` exactly when its value type is assignable to `U`. This
+        // also governs `optional<T> -> optional<U>`, whose inners must match.
+        (_, Type::Optional(target_inner)) => {
+            let value_inner = match value {
+                Type::Optional(inner) => inner.as_ref(),
+                other => other,
+            };
+            scalar_assignable(value_inner, target_inner)
+        }
+        // `json` carries any *definite* value (A.1: `none` is not a `json`
+        // value, so an optional is excluded by the arm above).
+        (_, Type::Json) => true,
+        // Numeric widening: an `int` is assignable where a `decimal` is expected.
         (Type::Int, Type::Decimal) => true,
-        (inner, Type::Optional(opt)) => inner == opt.as_ref() || matches!(inner, Type::Optional(_)),
-        (Type::Optional(inner), other) => inner.as_ref() == other,
         _ => false,
     }
 }
@@ -259,7 +306,7 @@ fn generated_call(expr: &Expr) -> Option<&'static str> {
             _ => {}
         }
     }
-    for child in crate::mutation::child_exprs_of(expr) {
+    for child in child_exprs(expr) {
         if let Some(found) = generated_call(child) {
             return Some(found);
         }
@@ -290,61 +337,6 @@ fn collect_field_refs(expr: &Expr, siblings: &BTreeSet<&str>, out: &mut BTreeSet
     }
     for child in child_exprs(expr) {
         collect_field_refs(child, siblings, out);
-    }
-}
-
-fn child_exprs(expr: &Expr) -> Vec<&Expr> {
-    let mut out: Vec<&Expr> = Vec::new();
-    match &expr.kind {
-        ExprKind::Field { base, .. } | ExprKind::SameName { base, .. } => out.push(base),
-        ExprKind::Select { base, selector } => {
-            out.push(base);
-            match selector {
-                Selector::Keys(keys) => out.extend(keys.iter()),
-                Selector::Bind { condition, .. } => out.extend(condition.iter().map(|c| c.as_ref())),
-            }
-        }
-        ExprKind::Call { callee, args } => {
-            out.push(callee);
-            out.extend(args.iter().map(arg_expr));
-        }
-        ExprKind::Block { base, members } => {
-            out.push(base);
-            out.extend(members.iter().filter_map(member_expr));
-        }
-        ExprKind::Unary { operand, .. } => out.push(operand),
-        ExprKind::Binary { lhs, rhs, .. } => {
-            out.push(lhs);
-            out.push(rhs);
-        }
-        ExprKind::Ternary { cond, then, otherwise } => {
-            out.push(cond);
-            out.push(then);
-            out.push(otherwise);
-        }
-        ExprKind::List(items) => out.extend(items.iter()),
-        ExprKind::Object(members) => out.extend(members.iter().filter_map(member_expr)),
-        ExprKind::Combination { operands, .. } => out.extend(operands.iter()),
-        _ => {}
-    }
-    out
-}
-
-fn arg_expr(arg: &Arg) -> &Expr {
-    match arg {
-        Arg::Positional(value) => value,
-        Arg::Named { value, .. } => value,
-    }
-}
-
-fn member_expr(member: &liasse_syntax::BlockMember) -> Option<&Expr> {
-    use liasse_syntax::BlockMemberKind;
-    match &member.kind {
-        BlockMemberKind::Directive { value, .. }
-        | BlockMemberKind::Named { value: Some(value), .. }
-        | BlockMemberKind::Assign { value, .. }
-        | BlockMemberKind::Shorthand(value) => Some(value),
-        BlockMemberKind::Named { value: None, .. } | BlockMemberKind::Clear(_) => None,
     }
 }
 

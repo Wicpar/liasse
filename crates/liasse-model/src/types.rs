@@ -1,174 +1,163 @@
-//! The type-expression grammar (SPEC.md Annex A.2).
+//! Mapping a parsed A.2 type expression to a canonical [`Type`] (SPEC.md Annex
+//! A.2).
 //!
-//! A field's type is authored as a string — `"text"`, `"text?"`,
-//! `"optional<map<text, json>>"`. [`TypeParser`] turns that string into a
-//! canonical [`Type`], resolving bare identifiers against the reusable shapes
-//! declared in `$types` (§5.8). A parsed [`Type`] is proof the spelling was a
-//! well-formed A.2 type expression.
+//! Parsing the type-expression *syntax* is `liasse-syntax`'s job (it owns every
+//! Liasse grammar and builds them on `pest`); this module owns only the
+//! *semantics*: turning a spanned [`SpannedType`] tree into a canonical
+//! [`liasse_value::Type`], resolving bare identifiers against the reusable shapes
+//! declared in `$types` (§5.8). A produced [`Type`] is proof the spelling was a
+//! well-formed A.2 type expression whose names all resolve.
 //!
 //! Scope note (CORE pass): the string form `ref<target>` is deferred to the
 //! object form `{ "$ref": target }` (§5.6), which the state builder resolves
-//! against the model tree; a bare `collection.$key` type reference (A.2) is a
+//! against the model tree; the A.2 `collection.$key` key-path form is a
 //! documented seam for a later pass. Named references resolve only to
 //! *scalar-shaped* reusable types (enums and static structs); a named
 //! collection shape is resolved at the node layer, not here.
 
 use std::collections::BTreeMap;
 
+use liasse_diag::{Diagnostics, SourceMap};
+use liasse_expr::ExprType;
+use liasse_syntax::{parse_type_expression, SpannedType, TypeExprKind, TypeField};
 use liasse_value::{StructType, Type};
 
 /// A resolved-in-scope table of reusable scalar-shaped types (`$types`).
 pub(crate) type NamedTypes = BTreeMap<String, Type>;
 
-/// A recursive-descent parser over one A.2 type expression.
-pub(crate) struct TypeParser<'a> {
-    rest: &'a str,
-    named: &'a NamedTypes,
+/// Parses one A.2 type expression and resolves it to a canonical [`Type`].
+///
+/// This is the model-layer boundary over `liasse-syntax`'s pest type-expression
+/// parser: it registers `text` under a throwaway source (a type spelling has no
+/// standalone location — its rejection is anchored at the declaring member by the
+/// caller), parses it to a [`SpannedType`], then maps that tree to a [`Type`].
+pub(crate) struct TypeParser;
+
+impl TypeParser {
+    /// Parse `text` as a complete type expression, or explain the rejection.
+    pub(crate) fn parse(text: &str, named: &NamedTypes) -> Result<Type, String> {
+        let mut sources = SourceMap::new();
+        let id = sources.add_label("type", text.to_owned());
+        let spanned =
+            parse_type_expression(id, text).map_err(|diags| syntax_reason(&diags, text))?;
+        map_type(&spanned, named)
+    }
 }
 
-impl<'a> TypeParser<'a> {
-    /// Parse `text` as a complete type expression, or explain the rejection.
-    pub(crate) fn parse(text: &str, named: &'a NamedTypes) -> Result<Type, String> {
-        let mut parser = TypeParser {
-            rest: text,
-            named,
+/// Parses a §8.3 mutation-prototype object (`{ name: type, opt?: type }`) into
+/// its parameter contract. The prototype object is exactly an A.2 struct type,
+/// so it goes through the same pest grammar as every other type expression;
+/// only its interpretation (a parameter table rather than one struct value
+/// type) differs.
+pub(crate) fn parse_prototype(text: &str) -> Result<BTreeMap<String, ExprType>, String> {
+    let mut sources = SourceMap::new();
+    let id = sources.add_label("prototype", text.to_owned());
+    let spanned = parse_type_expression(id, text).map_err(|diags| syntax_reason(&diags, text))?;
+    let TypeExprKind::Struct(fields) = &spanned.kind else {
+        return Err(format!(
+            "a prototype declares its parameters as an object, e.g. `name({{ value: text }})` (§8.3); found `{text}`"
+        ));
+    };
+    let named = NamedTypes::new();
+    let mut params = BTreeMap::new();
+    for field in fields {
+        let inner = map_type(&field.ty, &named)?;
+        let ty = if field.optional {
+            Type::Optional(Box::new(inner))
+        } else {
+            inner
         };
-        let ty = parser.type_expr()?;
-        parser.skip_ws();
-        if !parser.rest.is_empty() {
-            return Err(format!(
-                "unexpected trailing text `{}` in type expression `{text}`",
-                parser.rest
-            ));
-        }
-        Ok(ty)
+        params.insert(field.name.clone(), ExprType::scalar(ty));
     }
+    Ok(params)
+}
 
-    fn skip_ws(&mut self) {
-        self.rest = self.rest.trim_start();
+/// The concise, single-line reason for a syntactic rejection, for callers that
+/// anchor it at the declaring member's span rather than within the type text.
+fn syntax_reason(diags: &Diagnostics, text: &str) -> String {
+    let Some(diag) = diags.iter().next() else {
+        return format!("`{text}` is not a well-formed type expression");
+    };
+    let mut reason = format!("`{text}` is not a valid type expression: {}", diag.message());
+    if let Some(help) = diag.helps().first() {
+        reason.push_str(" (");
+        reason.push_str(help);
+        reason.push(')');
     }
+    reason
+}
 
-    /// Consume `token` if it appears next (after whitespace), reporting whether
-    /// it did.
-    fn eat(&mut self, token: char) -> bool {
-        self.skip_ws();
-        if let Some(remainder) = self.rest.strip_prefix(token) {
-            self.rest = remainder;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn expect(&mut self, token: char) -> Result<(), String> {
-        if self.eat(token) {
-            Ok(())
-        } else {
-            Err(format!("expected `{token}` in type expression"))
-        }
-    }
-
-    /// A postfix `?` turns any base type into `optional<T>` (A.2).
-    fn type_expr(&mut self) -> Result<Type, String> {
-        let base = self.base()?;
-        if self.eat('?') {
-            if matches!(base, Type::Optional(_)) {
+/// Map a spanned A.2 type tree to a canonical [`Type`], resolving `$types` names.
+fn map_type(node: &SpannedType, named: &NamedTypes) -> Result<Type, String> {
+    match &node.kind {
+        TypeExprKind::Name(word) => map_name(word, named),
+        // A postfix `T?` (A.2). `optional<T>?` would nest optionals, which the
+        // type system does not represent — reject the redundant spelling.
+        TypeExprKind::OptionalSuffix(inner) => {
+            let inner = map_type(inner, named)?;
+            if matches!(inner, Type::Optional(_)) {
                 return Err("`optional<T>?` doubly declares an optional".to_owned());
             }
-            Ok(Type::Optional(Box::new(base)))
+            Ok(Type::Optional(Box::new(inner)))
+        }
+        TypeExprKind::Optional(inner) => Ok(Type::Optional(Box::new(map_type(inner, named)?))),
+        TypeExprKind::Set(inner) => Ok(Type::Set(Box::new(map_type(inner, named)?))),
+        TypeExprKind::View(inner) => Ok(Type::View(Box::new(map_type(inner, named)?))),
+        TypeExprKind::Map(key, value) => Ok(Type::Map(
+            Box::new(map_type(key, named)?),
+            Box::new(map_type(value, named)?),
+        )),
+        TypeExprKind::Ref { .. } => Err(ref_reason()),
+        TypeExprKind::KeyPath(path) => Err(format!(
+            "the `{path}` key-path type form (A.2) is resolved against the model tree in a later pass; declare the field's own type here"
+        )),
+        TypeExprKind::Struct(fields) => map_struct(fields, named),
+    }
+}
+
+/// Resolve a bare (possibly dotted) name: a primitive keyword, a generic keyword
+/// written without its argument, or a `$types` reference.
+fn map_name(word: &str, named: &NamedTypes) -> Result<Type, String> {
+    match word {
+        "text" => Ok(Type::Text),
+        "bool" => Ok(Type::Bool),
+        "int" => Ok(Type::Int),
+        "decimal" => Ok(Type::Decimal),
+        "bytes" => Ok(Type::Bytes),
+        "uuid" => Ok(Type::Uuid),
+        "date" => Ok(Type::Date),
+        "timestamp" => Ok(Type::timestamp()),
+        "duration" => Ok(Type::Duration),
+        "period" => Ok(Type::Period),
+        "json" => Ok(Type::Json),
+        "blob" => Ok(Type::Blob),
+        // A generic keyword spelled without its `<...>` argument.
+        "optional" | "set" | "view" => Err(format!("`{word}` requires a `<T>` argument")),
+        "map" => Err("`map` requires a `<K, V>` argument".to_owned()),
+        "ref" => Err(ref_reason()),
+        other => named
+            .get(other)
+            .cloned()
+            .ok_or_else(|| format!("`{other}` is not a known type or a declared `$types` name")),
+    }
+}
+
+/// Map a `{ field: T, optional_field?: U }` struct type (§5.3, A.2). A field
+/// marked optional with a `?` after its name wraps its type in `optional<T>`.
+fn map_struct(fields: &[TypeField], named: &NamedTypes) -> Result<Type, String> {
+    let mut mapped: Vec<(String, Type)> = Vec::with_capacity(fields.len());
+    for field in fields {
+        let inner = map_type(&field.ty, named)?;
+        let ty = if field.optional {
+            Type::Optional(Box::new(inner))
         } else {
-            Ok(base)
-        }
+            inner
+        };
+        mapped.push((field.name.clone(), ty));
     }
+    Ok(Type::Struct(StructType::new(mapped)))
+}
 
-    fn base(&mut self) -> Result<Type, String> {
-        self.skip_ws();
-        if self.rest.starts_with('{') {
-            return self.struct_type();
-        }
-        let word = self.ident()?;
-        match word.as_str() {
-            "text" => Ok(Type::Text),
-            "bool" => Ok(Type::Bool),
-            "int" => Ok(Type::Int),
-            "decimal" => Ok(Type::Decimal),
-            "bytes" => Ok(Type::Bytes),
-            "uuid" => Ok(Type::Uuid),
-            "date" => Ok(Type::Date),
-            "timestamp" => Ok(Type::timestamp()),
-            "duration" => Ok(Type::Duration),
-            "period" => Ok(Type::Period),
-            "json" => Ok(Type::Json),
-            "blob" => Ok(Type::Blob),
-            "optional" => Ok(Type::Optional(Box::new(self.one_arg("optional")?))),
-            "set" => Ok(Type::Set(Box::new(self.one_arg("set")?))),
-            "view" => Ok(Type::View(Box::new(self.one_arg("view")?))),
-            "map" => {
-                self.expect('<')?;
-                let key = self.type_expr()?;
-                self.expect(',')?;
-                let value = self.type_expr()?;
-                self.expect('>')?;
-                Ok(Type::Map(Box::new(key), Box::new(value)))
-            }
-            "ref" => Err(
-                "declare a reference with the object form `{ \"$ref\": target }` (§5.6) rather than the `ref<...>` string form".to_owned(),
-            ),
-            other => self.named.get(other).cloned().ok_or_else(|| {
-                format!("`{other}` is not a known type or a declared `$types` name")
-            }),
-        }
-    }
-
-    fn one_arg(&mut self, name: &str) -> Result<Type, String> {
-        self.expect('<')
-            .map_err(|_| format!("`{name}` requires a `<T>` argument"))?;
-        let inner = self.type_expr()?;
-        self.expect('>')?;
-        Ok(inner)
-    }
-
-    fn struct_type(&mut self) -> Result<Type, String> {
-        self.expect('{')?;
-        let mut fields: Vec<(String, Type)> = Vec::new();
-        if !self.eat('}') {
-            loop {
-                let name = self.ident()?;
-                let optional = self.eat('?');
-                self.expect(':')?;
-                let inner = self.type_expr()?;
-                let field_ty = if optional {
-                    Type::Optional(Box::new(inner))
-                } else {
-                    inner
-                };
-                fields.push((name, field_ty));
-                if self.eat('}') {
-                    break;
-                }
-                self.expect(',')?;
-                if self.eat('}') {
-                    break;
-                }
-            }
-        }
-        Ok(Type::Struct(StructType::new(fields)))
-    }
-
-    fn ident(&mut self) -> Result<String, String> {
-        self.skip_ws();
-        let end = self
-            .rest
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
-            .unwrap_or(self.rest.len());
-        if end == 0 {
-            return Err(format!(
-                "expected a type name in type expression, found `{}`",
-                self.rest
-            ));
-        }
-        let (word, rest) = self.rest.split_at(end);
-        self.rest = rest;
-        Ok(word.to_owned())
-    }
+fn ref_reason() -> String {
+    "declare a reference with the object form `{ \"$ref\": target }` (§5.6) rather than the `ref<...>` string form".to_owned()
 }

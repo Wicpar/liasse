@@ -307,7 +307,12 @@ impl Checker<'_> {
         operators: &[CombinatorOp],
     ) -> Option<TypedExpr> {
         let mut iter = operands.iter();
-        let first = iter.next()?;
+        // The grammar always parses at least one operand; an empty chain can
+        // only reach here through a hand-built AST. Still a diagnostic, never a
+        // silent None: every rejection explains itself.
+        let Some(first) = iter.next() else {
+            return self.error(expr, "a `|`/`&` view combination has no operands");
+        };
         let mut acc = self.check(first)?;
         let acc_row = match acc.ty() {
             ExprType::View(row) => row.clone(),

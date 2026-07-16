@@ -7,10 +7,10 @@
 use std::collections::BTreeMap;
 
 use liasse_expr::ExprType;
-use liasse_syntax::{Arg, Expr, ExprKind, Selector, SpannedExpression, Stmt, StmtKind};
+use liasse_syntax::{Expr, ExprKind, SpannedExpression, Stmt, StmtKind};
 
 use crate::state::{Node, Shape};
-use crate::types::{NamedTypes, TypeParser};
+use crate::walk::child_exprs;
 
 /// The receiver body shape at `path` from the model root (§8.2).
 pub(super) fn receiver_shape<'a>(root: &'a Shape, path: &[String]) -> &'a Shape {
@@ -30,46 +30,25 @@ pub(super) fn record(params: &mut BTreeMap<String, ExprType>, name: &str, ty: Ex
     params.entry(name.to_owned()).or_insert(ty);
 }
 
-/// Parse a `$mut` member name into its base name and optional prototype.
-pub(super) fn parse_name(raw: &str) -> (String, Option<BTreeMap<String, ExprType>>) {
-    let Some(open) = raw.find('(') else {
-        return (raw.trim().to_owned(), None);
+/// Parse a `$mut` member name into its base name and optional §8.3 prototype,
+/// or explain why the prototype is malformed. The prototype object is parsed by
+/// the shared A.2 type grammar ([`crate::types::parse_prototype`]).
+pub(super) fn parse_name(raw: &str) -> Result<(String, Option<BTreeMap<String, ExprType>>), String> {
+    let Some((base, rest)) = raw.split_once('(') else {
+        return Ok((raw.trim().to_owned(), None));
     };
-    let base = raw[..open].trim().to_owned();
-    let inner = raw[open + 1..].trim_end().trim_end_matches(')').trim();
-    let inner = inner.trim_start_matches('{').trim_end_matches('}');
-    let mut params = BTreeMap::new();
-    for part in split_top_level(inner) {
-        if let Some((name, ty)) = part.split_once(':')
-            && let Ok(parsed) = TypeParser::parse(ty.trim(), &NamedTypes::new())
-        {
-            params.insert(name.trim().to_owned(), ExprType::scalar(parsed));
-        }
+    let base = base.trim().to_owned();
+    let Some(inner) = rest.trim_end().strip_suffix(')') else {
+        return Err(format!(
+            "the prototype in `{raw}` is missing its closing `)`; a prototype is written `name({{ param: type }})` (§8.3)"
+        ));
+    };
+    let inner = inner.trim();
+    if inner.is_empty() {
+        return Ok((base, Some(BTreeMap::new())));
     }
-    (base, Some(params))
-}
-
-/// Split on top-level commas, honouring `<>` and `{}` nesting in type text.
-fn split_top_level(text: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut depth = 0i32;
-    let mut current = String::new();
-    for ch in text.chars() {
-        match ch {
-            '<' | '{' => depth += 1,
-            '>' | '}' => depth -= 1,
-            ',' if depth == 0 => {
-                parts.push(std::mem::take(&mut current));
-                continue;
-            }
-            _ => {}
-        }
-        current.push(ch);
-    }
-    if !current.trim().is_empty() {
-        parts.push(current);
-    }
-    parts
+    let params = crate::types::parse_prototype(inner)?;
+    Ok((base, Some(params)))
 }
 
 /// Whether an expression uses a state-changing operator the value checker
@@ -201,55 +180,5 @@ pub(super) fn wrap(expr: Expr) -> SpannedExpression {
             span: expr.span,
             kind: StmtKind::Bare(expr),
         },
-    }
-}
-
-pub(crate) fn child_exprs(expr: &Expr) -> Vec<&Expr> {
-    let mut out: Vec<&Expr> = Vec::new();
-    match &expr.kind {
-        ExprKind::Field { base, .. } | ExprKind::SameName { base, .. } => out.push(base),
-        ExprKind::Select { base, selector } => {
-            out.push(base);
-            match selector {
-                Selector::Keys(keys) => out.extend(keys.iter()),
-                Selector::Bind { condition, .. } => out.extend(condition.iter().map(|c| c.as_ref())),
-            }
-        }
-        ExprKind::Call { callee, args } => {
-            out.push(callee);
-            out.extend(args.iter().map(|arg| match arg {
-                Arg::Positional(value) | Arg::Named { value, .. } => value,
-            }));
-        }
-        ExprKind::Block { base, members } => {
-            out.push(base);
-            out.extend(members.iter().filter_map(block_member_expr));
-        }
-        ExprKind::Unary { operand, .. } => out.push(operand),
-        ExprKind::Binary { lhs, rhs, .. } => {
-            out.push(lhs);
-            out.push(rhs);
-        }
-        ExprKind::Ternary { cond, then, otherwise } => {
-            out.push(cond);
-            out.push(then);
-            out.push(otherwise);
-        }
-        ExprKind::List(items) => out.extend(items.iter()),
-        ExprKind::Object(members) => out.extend(members.iter().filter_map(block_member_expr)),
-        ExprKind::Combination { operands, .. } => out.extend(operands.iter()),
-        _ => {}
-    }
-    out
-}
-
-fn block_member_expr(member: &liasse_syntax::BlockMember) -> Option<&Expr> {
-    use liasse_syntax::BlockMemberKind;
-    match &member.kind {
-        BlockMemberKind::Directive { value, .. }
-        | BlockMemberKind::Named { value: Some(value), .. }
-        | BlockMemberKind::Assign { value, .. }
-        | BlockMemberKind::Shorthand(value) => Some(value),
-        BlockMemberKind::Named { value: None, .. } | BlockMemberKind::Clear(_) => None,
     }
 }

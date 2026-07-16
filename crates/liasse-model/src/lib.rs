@@ -75,6 +75,7 @@ mod seed;
 mod state;
 mod surface;
 mod types;
+mod walk;
 
 pub use header::{Header, Kind};
 pub use model::Model;

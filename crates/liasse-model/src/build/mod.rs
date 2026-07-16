@@ -8,10 +8,15 @@
 //! mutations, surfaces) are left to later phases, which read the raw sources
 //! collected here.
 //!
-//! Field-value node construction (the `"T = default"` / `$enum` / `$ref` / …
-//! forms) lives in the [`fields`] submodule.
+//! Member-node construction is split by concern: scalar-field forms
+//! (`"T = default"`, `$enum`, expanded fields, `$check`) in [`fields`], keyed
+//! collections (`$key`/`$unique`) in [`keys`], and object-form dispatch with
+//! the non-scalar nodes (structs, sets, views, refs, opaque feature
+//! declarations) in [`shapes`].
 
 mod fields;
+mod keys;
+mod shapes;
 
 use std::collections::BTreeMap;
 

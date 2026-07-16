@@ -59,8 +59,18 @@ impl Checker<'_> {
                     });
                 }
                 BlockMemberKind::Shorthand(inner) => {
+                    // §7.1: a shorthand output takes its name from the projected
+                    // member (`title` / `.title` / `@title`). Any other
+                    // expression has no derivable output name and must be given
+                    // one explicitly.
+                    let Some(name) = shorthand_name(inner) else {
+                        return self.error(
+                            inner,
+                            "this projection output has no name; write it as `name: expression` (§7.1)",
+                        );
+                    };
                     raw_outputs.push(RawOutput {
-                        name: shorthand_name(inner)?,
+                        name,
                         expr: inner.clone(),
                     });
                 }

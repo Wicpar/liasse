@@ -2,7 +2,7 @@
 //! strict-JSON built definition, and the Liasse expression/path grammar
 //! (SPEC.md Annex C). Produces spanned syntax trees only — no semantics.
 //!
-//! # Two entry points
+//! # Three entry points
 //!
 //! - [`parse_document`] parses the authoring/built *document* form into a
 //!   [`SpannedDocument`]: a tree of raw scalars, arrays, and objects, each node
@@ -12,6 +12,10 @@
 //!   into a [`SpannedExpression`]: a spanned AST covering roots, field access,
 //!   selectors, projections, view combinators, CEL operators, and mutation
 //!   statement forms. It resolves no name and checks no type.
+//! - [`parse_type_expression`] parses one Annex A.2 *type expression*
+//!   (`optional<map<text, json>>`, `text?`, a `{ field: T }` struct) into a
+//!   [`SpannedType`]. It fixes the A.2 shape only; the model layer maps the tree
+//!   to a canonical `liasse_value::Type` and resolves `$types` names.
 //!
 //! Both take the [`SourceId`](liasse_diag::SourceId) under which the caller has
 //! registered the text in a [`SourceMap`](liasse_diag::SourceMap), and return
@@ -46,6 +50,7 @@ mod error;
 mod expr;
 mod scan;
 mod text;
+mod type_expr;
 
 /// Saturating conversion of a `pest` byte offset into the `u32` span coordinate
 /// `liasse_diag` uses. This is the crate's single offset-narrowing point: every
@@ -65,3 +70,5 @@ pub use expr::ast::{
     SpannedExpression, Stmt, StmtKind, UnaryOp,
 };
 pub use expr::parse_expression;
+pub use type_expr::ast::{SpannedType, TypeExprKind, TypeField};
+pub use type_expr::parse_type_expression;
