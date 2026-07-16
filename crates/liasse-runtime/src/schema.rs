@@ -81,16 +81,38 @@ impl<'m> Schema<'m> {
     }
 
     fn shape_row(&self, shape: &Shape, key: Option<ExprType>, depth: u32) -> RowType {
-        let fields = shape
+        let mut fields: Vec<(String, ExprType)> = shape
             .members
             .iter()
-            .map(|member| (member.name.as_str().to_owned(), self.node_at(&member.node, depth + 1)));
+            .map(|member| (member.name.as_str().to_owned(), self.node_at(&member.node, depth + 1)))
+            .collect();
+        // §15.6: a row declaring a meter with `$limits` exposes that meter's
+        // accessor (`.<meter>.balance`, `.<meter>.pools`), mirroring the model
+        // resolver so a view/return reading remaining capacity type-checks. A
+        // same-named application field wins.
+        for meter in &shape.meters {
+            if fields.iter().all(|(name, _)| name != meter) {
+                fields.push((meter.clone(), ExprType::Row(meter_accessor_row())));
+            }
+        }
         RowType::new(fields, key)
     }
 
     fn collection_row(&self, collection: &Collection, depth: u32) -> RowType {
         let key = self.key_type(collection, depth);
-        self.shape_row(&collection.shape, Some(key), depth)
+        let mut row = self.shape_row(&collection.shape, Some(key), depth);
+        // §15.3/§15.6: a `$consumes` collection's rows expose `funding`, the fixed
+        // admission allocation recorded per spend (§15.3). A same-named application
+        // field wins.
+        if collection.consumes && row.field("funding").is_none() {
+            let fields = row
+                .fields()
+                .map(|(name, ty)| (name.clone(), ty.clone()))
+                .chain(std::iter::once(("funding".to_owned(), ExprType::View(funding_row()))))
+                .collect::<Vec<_>>();
+            row = RowType::new(fields, row.key().cloned());
+        }
+        row
     }
 
     fn node_at(&self, node: &Node, depth: u32) -> ExprType {
@@ -130,6 +152,26 @@ impl<'m> Schema<'m> {
             _ => ExprType::scalar(Type::Struct(StructType::new(components))),
         }
     }
+}
+
+/// The row shape of a §15.6 meter accessor (`.<meter>`): `balance` is the
+/// context-free current remaining capacity (a non-negative `decimal`), `pools`
+/// the eligible pool view. Mirrors the model resolver so the two agree.
+fn meter_accessor_row() -> RowType {
+    RowType::keyless([
+        ("balance".to_owned(), ExprType::scalar(Type::Decimal)),
+        ("pools".to_owned(), ExprType::View(RowType::keyless(std::iter::empty()))),
+    ])
+}
+
+/// The row shape of a spend's `funding` view (§15.3): source label, opaque pool
+/// identity (`json`), and allocated `decimal` amount.
+fn funding_row() -> RowType {
+    RowType::keyless([
+        ("source".to_owned(), ExprType::scalar(Type::Text)),
+        ("pool".to_owned(), ExprType::scalar(Type::Json)),
+        ("amount".to_owned(), ExprType::scalar(Type::Decimal)),
+    ])
 }
 
 /// Whether a value of type `from` may be assigned to a field of type `to`

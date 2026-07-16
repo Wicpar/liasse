@@ -5,11 +5,14 @@
 //! Two need only the volatile-state handoff [`SurfaceHost::into_parts`] exposes:
 //! a `restart` rebuilds a fresh host over the same engine (§22), and a
 //! `host_load` re-loads a new package version through [`Engine::update`] (§9.2,
-//! §20) and rebinds the router to the reloaded model. Every other op family —
-//! module lifecycle, blobs, keyrings, artifacts, operator transitions — needs a
-//! module host, blob engine, key provider, or artifact layer the surface host
-//! does not assemble, so it stays a precise [`AdapterError::unsupported`] skip
-//! (never a fabricated outcome) for a later phase to wire.
+//! §20) and rebinds the router to the reloaded model. A §23.5 `operator`
+//! transition also drives on this host: the load pass exposes every top-level
+//! `$mut` through a synthetic public surface so [`SurfaceHost::operator_call`]
+//! resolves the corpus's bare model-mutation name. Every other op family — module
+//! lifecycle, blobs, keyrings, export/import/reconcile, artifacts — hits a genuine
+//! adapter/surface seam ([`unsupported_reason`] names each precisely), so it stays
+//! a precise [`AdapterError::unsupported`] skip (never a fabricated outcome) for a
+//! later phase to wire.
 
 use liasse_store::InstanceStore;
 use liasse_surface::{SurfaceHost, VirtualClock as SurfaceClock};
@@ -74,8 +77,42 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
     pub(super) fn drive_op(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
         match request.kind {
             StepKind::HostLoad => self.drive_host_load(request),
+            StepKind::Operator => self.drive_operator(request),
             _ => Err(AdapterError::unsupported(unsupported_reason(&request.kind))),
         }
+    }
+
+    /// §23.5 trusted host-operator transition: admit a model mutation directly,
+    /// bypassing surface role authentication, through [`SurfaceHost::operator_call`].
+    ///
+    /// The corpus addresses the target by its bare model `$mut` name (`try_write`),
+    /// but `operator_call` resolves through the exposed router, which only routes
+    /// surface-declared mutations. The load pass injects a synthetic public surface
+    /// [`OPERATOR_SURFACE`](super::OPERATOR_SURFACE) that exposes every top-level
+    /// `$mut` as a call, so a bare root-mutation name resolves as
+    /// `public.<surface>.<mut>`. A collection-row target (`users.u1.spend`) names a
+    /// receiver the synthetic surface does not carry, so it stays a precise skip.
+    fn drive_operator(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let Some(call_name) = request.target.get("call").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`operator` step carries no `call` mutation name"));
+        };
+        if call_name.contains('.') {
+            return Err(AdapterError::unsupported(
+                "`operator` on a collection-row mutation (`path.key.mut`) needs the receiver-row \
+                 wiring the synthetic operator surface does not carry",
+            ));
+        }
+        let args = request.target.get("args").cloned().unwrap_or(serde_json::Value::Null);
+        let address_text = format!("{}.{call_name}", super::OPERATOR_SURFACE_PREFIX);
+        let loaded = self.loaded()?;
+        let address = liasse_surface::SurfaceAddress::parse(&address_text).map_err(|err| {
+            AdapterError::Host(format!("malformed operator address `{address_text}`: {err}"))
+        })?;
+        let types = loaded.routing.arg_types(&address_text);
+        let decoded = super::wire::decode_args(&args, &types);
+        let call = liasse_surface::SurfaceCall::new(address, decoded);
+        let outcome = loaded.host.operator_call(&call).map_err(super::host_fault)?;
+        Ok(super::observe_call(&outcome))
     }
 
     /// §9.2 host lifecycle `load(target)`: re-load the step's package into the
@@ -164,8 +201,13 @@ fn update_outcome(error: &liasse_runtime::UpdateError) -> Outcome {
     }
 }
 
-/// The precise reason an op family is not driven yet — what host machinery it
-/// needs beyond the surface host the adapter assembles.
+/// The precise reason an op family is not driven yet — naming the genuine
+/// adapter/surface seam each family hits, not merely "unsupported". The surface
+/// crate exposes a driver-facing entry for most of these (`ModuleDeployment`,
+/// `BlobHost`, `KeyringAdmin`, `SurfaceHost::{export,import,reconcile}`); the seam
+/// is that the corpus's step shape does not line up with the committed entry, or
+/// that a whole-run capability (sandbox isolation, per-sandbox store provisioning)
+/// the executor/adapter does not yet carry is required to reach it.
 fn unsupported_reason(kind: &StepKind) -> String {
     let need = match kind {
         StepKind::ModuleInstall
@@ -173,26 +215,49 @@ fn unsupported_reason(kind: &StepKind) -> String {
         | StepKind::ModuleDisable
         | StepKind::ModuleEnable
         | StepKind::ModuleUpdate
-        | StepKind::ModuleRename => "a `ModuleHost` over a `StoreFactory` the adapter does not provision",
-        StepKind::BlobPut | StepKind::BlobGet => "a `BlobEngine` with registered stores and connectors",
-        StepKind::KeyringAdmin | StepKind::ProviderSet => "a `Keyring` over a `KeyProvider` the adapter does not wire",
+        | StepKind::ModuleRename => {
+            "the corpus's row-scoped module spaces (`/co/acme/modules`), \
+             `.modules[..]::interface` addressing, and `$config`/`$use`/`$deps` peer bindings, \
+             which the surface `ModuleDeployment`'s flat name-keyed single-space model does not carry"
+        }
+        StepKind::BlobPut | StepKind::BlobGet => {
+            "a blob-parameter mutation admission that binds a verified §18 descriptor into a \
+             surface call backed by a `BlobEngine` and `hosts.connectors` — the surface `call` \
+             path admits no blob parameter, and the standalone `BlobHost` façade is field- not \
+             mutation-addressed"
+        }
+        StepKind::KeyringAdmin | StepKind::ProviderSet => {
+            "a managed `KeyringAdmin` over a host `KeyProvider` with the §17.9 fault-injection \
+             vocabulary the adapter does not provision from the case's `hosts` block"
+        }
         StepKind::Export
         | StepKind::Import
         | StepKind::Reconcile
-        | StepKind::RunReconciler => "cross-step artifact byte passing the harness binding layer does not carry",
+        | StepKind::RunReconciler => {
+            "sandbox-instance isolation (a driver host-stack the executor's flattened `in_sandbox` \
+             does not signal) and per-sandbox store provisioning the borrowed `build_with` \
+             provisioner does not retain; `reconcile` additionally needs an explicit base artifact \
+             the corpus step does not carry, plus `inspect_artifact`/`apply_correction`"
+        }
         StepKind::BuildArtifact
         | StepKind::LoadArtifact
         | StepKind::TamperArtifact
         | StepKind::RepackArtifact
         | StepKind::InspectArtifact
         | StepKind::ExtractArtifact
-        | StepKind::TamperExtract => "the `liasse-artifact`/`liasse-host` archive layer the adapter does not link",
-        StepKind::Operator => "a host-operator transition entry the surface host does not expose",
+        | StepKind::TamperExtract => {
+            "full `.liasse` archive assembly from a package plus resource files, with the \
+             deterministic entry/digest/manifest tamper ops and recursive Annex D.5 verification, \
+             via a `liasse-artifact` archive layer the adapter does not link"
+        }
         StepKind::Erase
         | StepKind::Reinsert
         | StepKind::ScrubScopeOfCascadedRow
-        | StepKind::ApplyCorrection => "the deletion/erasure host verbs the surface host does not expose",
-        StepKind::ConnectorSet | StepKind::BudgetSet => "a host connector/budget control the adapter does not wire",
+        | StepKind::ApplyCorrection => "the deletion/erasure/correction host verbs the surface host does not expose",
+        StepKind::ConnectorSet | StepKind::BudgetSet => {
+            "a host `BlobConnector`/component budget control provisioned from the case's `hosts` \
+             block, which the adapter does not wire"
+        }
         _ => "engine wiring the current layer does not expose",
     };
     format!("`{}` needs {need}", kind.key())

@@ -60,6 +60,19 @@ const EPOCH_MICROS: i128 = 1_767_225_600_000_000;
 /// The implicit connection the executor opens for a single-client case.
 const IMPLICIT_CONNECTION: &str = "$default";
 
+/// The synthetic public surface name the load pass injects into an operator case,
+/// exposing every top-level `$mut` so a §23.5 operator transition can resolve a
+/// bare model-mutation name through the ordinary router. Reserved (double-
+/// underscored, ASCII) so it never collides with a package-declared surface.
+/// A declaration name must begin with an ASCII letter (M-SURFACE), so the
+/// synthetic name starts with a letter and is otherwise reserved-looking to avoid
+/// colliding with a package-declared surface.
+const OPERATOR_SURFACE: &str = "hostoperator__";
+
+/// The `public.<surface>` prefix an operator target resolves under; the operator
+/// step's bare `call` name is appended as the call segment.
+pub(super) const OPERATOR_SURFACE_PREFIX: &str = "public.hostoperator__";
+
 /// Provisions a fresh, empty instance store for one scenario case. The memory
 /// runner uses [`MemoryProvision`]; the PostgreSQL runner implements this over a
 /// self-provisioning `PgStoreFactory`, so the *identical* scenario battery drives
@@ -156,7 +169,21 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
     }
 
     fn load<P: StoreProvision<Store = S>>(provision: &mut P, case: &Case) -> Result<Loaded<S>, String> {
-        let package = root_package(&case.packages).ok_or_else(|| "case declares no package".to_owned())?;
+        let base = root_package(&case.packages).ok_or_else(|| "case declares no package".to_owned())?;
+        // §23.5: an operator target is a bare model `$mut` name, which the router
+        // resolves only when it backs an exposed surface. Inject a synthetic public
+        // surface exposing every top-level `$mut` so the operator entry resolves,
+        // confined to cases that actually run an operator step so no other case's
+        // exposed-surface set changes.
+        let augmented;
+        let package: &serde_json::Value = if case_uses_operator(case) {
+            let mut owned = base.clone();
+            inject_operator_surface(&mut owned);
+            augmented = owned;
+            &augmented
+        } else {
+            base
+        };
         // §11 host wiring: reconstruct the authenticators/roles a host-free case
         // declares, and inject the synthetic views its `$actor`/`$members`
         // selections resolve through, before the engine compiles the model.
@@ -468,4 +495,48 @@ fn observe_subscription(subscription: &Subscription, singular: bool) -> Observat
 /// Map a surface transport fault to a harness skip.
 fn host_fault(error: SurfaceError) -> AdapterError {
     AdapterError::Host(error.to_string())
+}
+
+/// Whether `case`'s program runs any [`operator`](StepKind::Operator) step,
+/// including inside a nested `concurrently`/`in_sandbox` group.
+fn case_uses_operator(case: &Case) -> bool {
+    matches!(&case.body, crate::case::CaseBody::Scenario(steps) if steps_use_operator(steps))
+}
+
+/// Recursively scan `steps` (and their nested groups) for an operator step.
+fn steps_use_operator(steps: &[crate::step::Step]) -> bool {
+    steps.iter().any(|step| {
+        matches!(step.kind, crate::step_kind::StepKind::Operator)
+            || steps_use_operator(step.nested.steps())
+            || step.nested.branches().iter().any(|branch| steps_use_operator(branch))
+    })
+}
+
+/// Inject the synthetic [`OPERATOR_SURFACE`] into a package's `$model.$public`,
+/// exposing every top-level `$mut` as a same-named call (`<mut>: ".<mut>"`). Only
+/// root mutations declared at `$model.$mut` are exposed; a collection-scoped
+/// mutation is not addressable this way and is left out. A package with no
+/// `$model` object or no top-level `$mut` block is untouched.
+fn inject_operator_surface(package: &mut serde_json::Value) {
+    let Some(model) = package.get_mut("$model").and_then(serde_json::Value::as_object_mut) else {
+        return;
+    };
+    let mut_names: Vec<String> = model
+        .get("$mut")
+        .and_then(serde_json::Value::as_object)
+        .map(|muts| muts.keys().cloned().collect())
+        .unwrap_or_default();
+    if mut_names.is_empty() {
+        return;
+    }
+    let mut calls = serde_json::Map::new();
+    for name in mut_names {
+        calls.insert(name.clone(), serde_json::Value::String(format!(".{name}")));
+    }
+    let public = model
+        .entry("$public".to_owned())
+        .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(public) = public.as_object_mut() {
+        public.insert(OPERATOR_SURFACE.to_owned(), serde_json::json!({ "$mut": calls }));
+    }
 }

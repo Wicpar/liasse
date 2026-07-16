@@ -58,16 +58,26 @@
 //!   recurring calendar periods need period-to-timestamp arithmetic (zone/DST/
 //!   overflow) that `liasse-value` does not yet expose. Fixed-period recurrence
 //!   is unblocked but not yet built.
-//! - **Meters** (§15): `$limits`/`$consumes`/`$sources` allocation, `$eligible`,
-//!   `$order` draining, `spend.funding`, and the `.credits.balance`/`.pools`
-//!   accessors. The `$quantity` pool projection and the temporal selectors this
-//!   stage landed are the expression-layer prerequisites; the remaining blocker
-//!   is *nested* collections — every §15 spend/pool arrangement places the spend
-//!   and pool collections under an ancestor row (`spends`/`topups` inside
-//!   `users`/`accounts`), which the top-level-only materializer, interpreter, and
-//!   `Prospective` do not yet handle. Allocation must run inside atomic admission
-//!   so an exhausted meter rejects the whole transition and a failed program
-//!   releases every provisional allocation; that lands with nested collections.
+//! - **Meters** (§15) are implemented ([`meter`]): a compiled-meter pass reads
+//!   each `$limits`/`$consumes`/`$sources` declaration from the document (like
+//!   [`compile_buckets`](crate::compiled)); admission funds every new or changed
+//!   spend by resolving the reachable pools active at the spend `$time`,
+//!   coalescing duplicate identities, gating by `$eligible`, draining in `$order`,
+//!   and rejecting the whole transition on insufficient eligible capacity; the
+//!   allocation is frozen onto the spend row as an admission fact, so deleting a
+//!   spend releases it and updating it releases and reallocates. The §15.6
+//!   accessors (`.<meter>.balance`/`.pools`, `spend.funding`) are folded onto the
+//!   materialized row tree. Remaining meter seams: **recurring source-backed
+//!   pools** (§14.5, W3's `credit_periods`) need the bucket source/repeat
+//!   derivation; **bucketed pools** need §4.4's declared `timestamp_precision`
+//!   applied to bare `timestamp` fields (a liasse-model gap that misreads a
+//!   seconds bound as microseconds); a meter view that projects a **nested
+//!   collection** (`.accounts { balance }`, `spends: .spends { funding }`) needs a
+//!   richer `ViewRow` than the scalar-only one liasse-surface compares; and a
+//!   **nested-collection surface mutation** (`companies[c].accounts[a].consume`)
+//!   needs the surface lift the runtime cannot reach. Nested-collection seeding
+//!   (§5.5) and nested-collection keyed deletion, both prerequisites, are now
+//!   handled.
 //! - history export/import/reconcile (§19, `liasse-artifact` builders);
 //!   migrations (§20); and module composition (§13, multi-instance store).
 //!
@@ -108,6 +118,7 @@ mod history;
 mod interp;
 mod keyring;
 mod materialize;
+mod meter;
 mod migrate;
 mod modules;
 mod outcome;

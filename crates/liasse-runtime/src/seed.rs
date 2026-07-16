@@ -1,19 +1,21 @@
 //! Genesis seed admission (§9.1): `$data` rows pass through the same defaults,
 //! normalization, checks, and key/ref/uniqueness rules as mutation inserts.
 //!
-//! CORE scope covers top-level keyed collections whose rows carry scalar, ref,
-//! and set fields, keyed by a single `$key` field. Nested keyed collections in a
-//! seed row and composite seed keys are documented seams.
+//! CORE scope covers keyed collections whose rows carry scalar, ref, and set
+//! fields, keyed by a single `$key` field — including nested keyed collections in
+//! a seed row (§5.4/§5.5), which a meter's pool/spend arrangement (§15) seeds
+//! under an ancestor row. Composite seed keys remain a documented seam.
 
+use liasse_ident::NameSegment;
 use liasse_syntax::DocValue;
-use liasse_store::RowAddress;
+use liasse_store::{CollectionPath, KeyValue, RowAddress};
 use liasse_value::Type;
 
 use crate::compiled::{Compiled, CompiledCollection};
 use crate::doc;
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::EvalCtx;
-use crate::materialize::{self, FieldMap};
+use crate::materialize::FieldMap;
 use crate::rules;
 use crate::state::Prospective;
 
@@ -33,7 +35,8 @@ pub(crate) fn admit(
     let mut singleton = FieldMap::new();
     for member in collections {
         if let Some(collection) = compiled.collection(&member.name.text) {
-            admit_collection(ctx, prospective, touched, collection, &member.value)?;
+            let store_path = CollectionPath::top(NameSegment::new(member.name.text.clone()));
+            admit_rows(ctx, prospective, touched, collection, &store_path, &member.value)?;
             continue;
         }
         // §8.2/§9.1: a `$data` member naming a singleton root field seeds that
@@ -51,11 +54,16 @@ pub(crate) fn admit(
     Ok(())
 }
 
-fn admit_collection(
+/// Admit every seed row of the collection at `store_path` (top-level or nested,
+/// §5.4), then recurse into each row's nested-collection members (§5.5). The
+/// address of each row roots the store path of its children so a nested pool or
+/// spend keeps its ancestor identity (§15).
+fn admit_rows(
     ctx: &EvalCtx<'_>,
     prospective: &mut Prospective,
     touched: &mut Vec<RowAddress>,
     collection: &CompiledCollection,
+    store_path: &CollectionPath,
     rows: &DocValue,
 ) -> Result<(), Rejection> {
     let Some(entries) = doc::object(rows) else {
@@ -68,13 +76,26 @@ fn admit_collection(
         let mut fields = decode_row(collection, &entry.name.text, &entry.value)?;
         rules::apply_defaults(collection, &mut fields, ctx, prospective)?;
         rules::normalize_all(collection, &mut fields, ctx, prospective)?;
-        let address = key_address(ctx, collection, &fields)?;
+        let key = row_key(collection, &fields)?;
+        let address = store_path.row(key);
         if prospective.contains(&address) {
             return Err(Rejection::new(RejectionReason::DuplicateKey, "duplicate seed key")
                 .at(address.render()));
         }
         prospective.insert(address.clone(), fields);
-        touched.push(address);
+        touched.push(address.clone());
+        // §5.5: a seed row may carry nested-collection initializers, admitted
+        // under the parent address through the same pipeline.
+        let members = doc::object(&entry.value).into_iter().flatten();
+        for member in members {
+            if let Some(child) = collection.child(&member.name.text) {
+                let child_path = CollectionPath::nested(
+                    address.steps().cloned(),
+                    NameSegment::new(member.name.text.clone()),
+                );
+                admit_rows(ctx, prospective, touched, child, &child_path, &member.value)?;
+            }
+        }
     }
     Ok(())
 }
@@ -109,16 +130,19 @@ fn decode(ty: &Type, wire: &serde_json::Value, field: &str) -> Result<liasse_val
     })
 }
 
-fn key_address(
-    ctx: &EvalCtx<'_>,
-    collection: &CompiledCollection,
-    fields: &FieldMap,
-) -> Result<RowAddress, Rejection> {
-    let model = ctx
-        .schema
-        .top_collection(&collection.name)
-        .ok_or_else(|| Rejection::new(RejectionReason::Malformed, "unknown seed collection"))?;
-    let key = materialize::row_key(model, fields)
+/// The [`KeyValue`] of a seed row in `$key` order (§5.4), from the compiled
+/// collection's key field list.
+fn row_key(collection: &CompiledCollection, fields: &FieldMap) -> Result<KeyValue, Rejection> {
+    let mut components = collection.key.iter().map(|field| fields.get(field.as_str()).cloned());
+    let first = components
+        .next()
+        .flatten()
         .ok_or_else(|| Rejection::new(RejectionReason::Malformed, "seed row is missing a key field"))?;
-    Ok(materialize::top_address(&collection.name, key))
+    let mut rest = Vec::new();
+    for component in components {
+        rest.push(component.ok_or_else(|| {
+            Rejection::new(RejectionReason::Malformed, "seed row is missing a key field")
+        })?);
+    }
+    Ok(KeyValue::composite(first, rest))
 }

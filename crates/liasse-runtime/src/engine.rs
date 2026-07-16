@@ -12,9 +12,11 @@ use std::collections::BTreeMap;
 
 use liasse_diag::SourceMap;
 use liasse_expr::{check_expression, Cell};
-use liasse_ident::LineageId;
+use liasse_ident::{LineageId, NameSegment};
 use liasse_model::Model;
-use liasse_store::{CommitOutcome, CommitSeq, DefinitionText, InstanceStore, KeyValue, RowAddress, Transition};
+use liasse_store::{
+    AddressStep, CommitOutcome, CommitSeq, DefinitionText, InstanceStore, KeyValue, RowAddress, Transition,
+};
 use liasse_syntax::parse_document;
 use liasse_value::Timestamp;
 
@@ -300,6 +302,9 @@ impl<S: InstanceStore> Engine<S> {
                 .map_err(EngineError::Seed)?;
         }
         crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched).map_err(EngineError::Seed)?;
+        // §15.2: a seeded spend is funded through the same allocation as a mutation.
+        crate::meter::admit::enforce(&ctx, &self.compiled.meters, &mut prospective, &touched)
+            .map_err(EngineError::Seed)?;
 
         let changes = prospective.diff();
         let mut txn = self.store.begin();
@@ -329,7 +334,7 @@ impl<S: InstanceStore> Engine<S> {
         let ctx =
             EvalCtx { schema, compiled: &self.compiled, params, now: self.clock, seed: generator.next_seed() };
 
-        let receiver = match receiver_target(mutation, request) {
+        let receiver = match receiver_target(&self.compiled, mutation, request) {
             Ok(receiver) => receiver,
             Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
         };
@@ -354,6 +359,15 @@ impl<S: InstanceStore> Engine<S> {
         let receiver = interp.receiver.take();
 
         if let Err(rejection) = crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched) {
+            return Ok(CallOutcome::Rejected(rejection));
+        }
+
+        // §15.2: fund every new or changed spend from the reachable pools, freezing
+        // the allocation as an admission fact and rejecting the whole transition on
+        // insufficient eligible capacity.
+        if let Err(rejection) =
+            crate::meter::admit::enforce(&ctx, &self.compiled.meters, &mut prospective, &touched)
+        {
             return Ok(CallOutcome::Rejected(rejection));
         }
 
@@ -448,30 +462,43 @@ fn is_optional(ty: &liasse_expr::ExprType) -> bool {
 }
 
 /// The receiver row of a row mutation from the request key (§8.2), or `None`
-/// for a root/struct mutation.
+/// for a root/struct mutation. A nested-collection mutation (§5.4) addresses its
+/// receiver through the whole ancestor chain: the receiver key supplies each
+/// level's key components in declaration order, so the address descends
+/// `companies/co/accounts/a1` rather than a spurious top-level `accounts/co:a1`.
 fn receiver_target(
+    compiled: &Compiled,
     mutation: &CompiledMutation,
     request: &CallRequest,
 ) -> Result<Option<RowTarget>, Rejection> {
-    if mutation.receiver_is_root {
+    if mutation.receiver_is_root || mutation.path.is_empty() {
         return Ok(None);
     }
-    let Some(collection) = mutation.path.last().cloned() else {
-        return Ok(None);
-    };
-    let key = key_of(request.receiver_key())?;
-    let address = crate::materialize::top_address(&collection, key);
-    Ok(Some(RowTarget { address, path: vec![collection] }))
-}
-
-fn key_of(components: &[liasse_value::Value]) -> Result<KeyValue, Rejection> {
-    match components.split_first() {
-        Some((first, rest)) => Ok(KeyValue::composite(first.clone(), rest.iter().cloned())),
-        None => Err(Rejection::new(
-            RejectionReason::Malformed,
-            "a row mutation requires a receiver key",
-        )),
+    let mut remaining = request.receiver_key();
+    let mut address: Option<RowAddress> = None;
+    let mut prefix: Vec<String> = Vec::with_capacity(mutation.path.len());
+    for name in &mutation.path {
+        prefix.push(name.clone());
+        let arity = compiled.collection_at(&prefix).map_or(1, |c| c.key.len().max(1));
+        if remaining.len() < arity {
+            return Err(Rejection::new(RejectionReason::Malformed, "a row mutation requires a receiver key"));
+        }
+        let (components, rest) = remaining.split_at(arity);
+        remaining = rest;
+        let Some((first, tail)) = components.split_first() else {
+            return Err(Rejection::new(RejectionReason::Malformed, "a row mutation requires a receiver key"));
+        };
+        let key = KeyValue::composite(first.clone(), tail.iter().cloned());
+        let step = AddressStep::new(NameSegment::new(name.clone()), key);
+        address = Some(match address {
+            None => RowAddress::root(step),
+            Some(parent) => parent.child(step),
+        });
     }
+    let address = address.ok_or_else(|| {
+        Rejection::new(RejectionReason::Malformed, "a row mutation requires a receiver key")
+    })?;
+    Ok(Some(RowTarget { address, path: mutation.path.clone() }))
 }
 
 fn stage<T: Transition>(txn: &mut T, changes: Vec<Change>) -> Result<(), EngineError> {

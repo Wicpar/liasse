@@ -243,6 +243,21 @@ fn bound_cell(row: &Row, name: &str) -> Option<Timestamp> {
     }
 }
 
+/// The stable [`RowId`] a materialized row at `address` carries (§7.2, D.1): the
+/// key-derived identity of each address step, top to bottom — the same chain
+/// [`rows_at`] builds. Lets a later pass (meter accessors, §15.6) key extra cells
+/// by row identity and match them onto the materialized tree.
+#[must_use]
+pub(crate) fn row_id_of(address: &RowAddress) -> Option<RowId> {
+    let mut steps = address.steps();
+    let first = steps.next()?;
+    let mut id = RowId::keyed(row_id_text(first.key()));
+    for step in steps {
+        id = id.child_keyed(row_id_text(step.key()));
+    }
+    Some(id)
+}
+
 /// The canonical D.2 key text of a row's key — its stable identity component
 /// (Annex D.1). Key fields are validated key-eligible at build, so the D.2
 /// rendering succeeds; the join fallback keeps this total for the impossible

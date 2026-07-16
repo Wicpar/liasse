@@ -710,8 +710,37 @@ impl<'a> Interp<'a> {
             Value::Set(members) => members.into_iter().collect(),
             scalar => vec![scalar],
         };
+        // §5.4/§21.1: the cascade planner operates over the top-level graph; a
+        // nested collection's row (a meter spend/pool, §15) has no inbound refs in
+        // CORE scope, so it is removed directly with its descendant subtree.
+        if loc.decl.len() > 1 {
+            for key in targets {
+                self.remove_subtree(&loc.store_path.row(KeyValue::single(key)));
+            }
+            return Ok(());
+        }
         let initial: Vec<RowRef> = targets.into_iter().map(|key| RowRef::new(name.clone(), key)).collect();
         self.delete_rows(initial)
+    }
+
+    /// Remove the row at `address` and every descendant row beneath it (§5.4), a
+    /// direct nested-collection deletion.
+    fn remove_subtree(&mut self, address: &RowAddress) {
+        if !self.prospective.contains(address) {
+            return;
+        }
+        let depth = address.depth();
+        let descendants: Vec<RowAddress> = self
+            .prospective
+            .working()
+            .keys()
+            .filter(|other| other.depth() > depth && is_prefix(address, other))
+            .cloned()
+            .collect();
+        for descendant in descendants {
+            self.prospective.remove(&descendant);
+        }
+        self.prospective.remove(address);
     }
 
     /// `-selection` (§8): delete every row a selector picks. The operand is a

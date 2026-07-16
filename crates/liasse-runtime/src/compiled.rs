@@ -160,6 +160,9 @@ pub(crate) struct Compiled {
     pub(crate) mutations: Vec<CompiledMutation>,
     pub(crate) views: Vec<CompiledView>,
     pub(crate) buckets: Vec<CompiledBucket>,
+    /// Compiled `$limits`/`$consumes` meter declarations (§15): pool sources,
+    /// eligibility, order, and each spend collection's amount/time/metadata.
+    pub(crate) meters: crate::meter::CompiledMeters,
 }
 
 impl Compiled {
@@ -176,7 +179,8 @@ impl Compiled {
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc)?;
         let views = compile_views(sources, schema, &root_ty)?;
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc)?;
-        Ok(Self { collections, root_computed, mutations, views, buckets })
+        let meters = crate::meter::compile(sources, schema, &root_ty, model_doc)?;
+        Ok(Self { collections, root_computed, mutations, views, buckets, meters })
     }
 
     /// The compiled top-level collection named `name`, if any.
@@ -207,7 +211,7 @@ impl Compiled {
     }
 }
 
-fn compile_expr(
+pub(crate) fn compile_expr(
     sources: &mut SourceMap,
     scope: &dyn Scope,
     label: &str,
@@ -560,6 +564,13 @@ fn compile_buckets(
     model_doc: &liasse_syntax::DocValue,
 ) -> Result<Vec<CompiledBucket>, EngineError> {
     let mut out = Vec::new();
+    // Top-level buckets only. A nested bucketed collection (a §15 meter pool such
+    // as bucketed `topups`) is a documented seam: registering it would run the
+    // §14.2 interval check over seeded nested rows, but §4.4's declared
+    // `timestamp_precision` is not applied to bare `timestamp` fields (a
+    // liasse-model gap), so a seconds-valued bound reads as microseconds and a
+    // legitimately future expiry validates as an inverted interval. Until that is
+    // fixed, bucketed meter pools stay a seam rather than reject loading.
     for member in &schema.model().root().members {
         if !matches!(&member.node, Node::Collection(_)) {
             continue;
@@ -575,10 +586,9 @@ fn compile_buckets(
             .receiver_row_type(std::slice::from_ref(&name))
             .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
         let scope = RuntimeScope::new(row_ty, root_ty.clone());
-        let Some(bucket) = compile_bucket(sources, &scope, &name, bucket_doc)? else {
-            continue;
-        };
-        out.push(bucket);
+        if let Some(bucket) = compile_bucket(sources, &scope, &name, bucket_doc)? {
+            out.push(bucket);
+        }
     }
     Ok(out)
 }

@@ -33,6 +33,12 @@ pub(crate) struct EvalCtx<'a> {
 }
 
 impl EvalCtx<'_> {
+    /// The request's fixed `now()` instant (A.5) — the context-free clock a §15.6
+    /// meter accessor and a spend's default `$time` read.
+    pub(crate) const fn now(&self) -> Timestamp {
+        self.now
+    }
+
     /// The evaluation environment over the current prospective state (§8.12): the
     /// package root with bucketed collections filtered to the rows active at
     /// [`Self::now`] (§14.1), plus the full extant set of each bucketed collection
@@ -71,6 +77,9 @@ impl EvalCtx<'_> {
         let base = self.base_root(prospective);
         let base = self.expose_computed(prospective, base);
         let base = self.expose_root_computed(prospective, base);
+        // §15.6: fold the `.<meter>.balance`/`.pools` and `funding` accessor cells
+        // onto the row tree before views, so a `$view` may read remaining capacity.
+        let base = crate::meter::accessor::expose(self, prospective, base);
         self.expose_views(prospective, base)
     }
 
@@ -207,8 +216,14 @@ impl EvalCtx<'_> {
     /// Whether collection `name`'s row `fields` is currently readable: always for
     /// a non-bucketed collection, else its bucket activity at [`Self::now`].
     fn active(&self, name: &str, fields: &FieldMap) -> bool {
+        self.active_at(name, fields, self.now)
+    }
+
+    /// [`Self::active`] at an explicit instant — the meter pool resolution reads a
+    /// bucketed source in the temporal context of the spend (§15.1).
+    pub(crate) fn active_at(&self, name: &str, fields: &FieldMap, now: Timestamp) -> bool {
         match (self.compiled.bucket(name), self.compiled.collection(name)) {
-            (Some(bucket), Some(collection)) => bucket::is_active(bucket, collection, fields, self.now),
+            (Some(bucket), Some(collection)) => bucket::is_active(bucket, collection, fields, now),
             _ => true,
         }
     }
@@ -216,12 +231,80 @@ impl EvalCtx<'_> {
     /// Collection `name`'s row interval `[from, until)` at [`Self::now`], or
     /// `None` when it is not bucketed (§14.1).
     fn interval(&self, name: &str, fields: &FieldMap) -> Option<Interval> {
+        self.interval_at(name, fields, self.now)
+    }
+
+    /// [`Self::interval`] at an explicit instant (§15.1 spend-time pool context).
+    pub(crate) fn interval_at(&self, name: &str, fields: &FieldMap, now: Timestamp) -> Option<Interval> {
         match (self.compiled.bucket(name), self.compiled.collection(name)) {
-            (Some(bucket), Some(collection)) => {
-                Some(bucket::interval_bounds(bucket, collection, fields, self.now))
-            }
+            (Some(bucket), Some(collection)) => Some(bucket::interval_bounds(bucket, collection, fields, now)),
             _ => None,
         }
+    }
+
+    /// Materialize the single row at `address` (with its nested collections)
+    /// evaluated at instant `now` — the enforcing/spend row a meter resolves its
+    /// pools and metadata over in the temporal context of the spend (§15.1). Each
+    /// bucketed nested collection carries its `$from`/`$until` interval cells at
+    /// `now`, and computed values are folded (§5.2).
+    pub(crate) fn materialize_row_at(
+        &self,
+        prospective: &Prospective,
+        decl_path: &[String],
+        address: &liasse_store::RowAddress,
+        now: Timestamp,
+    ) -> Option<Row> {
+        let collection = self.schema.collection_at_path(decl_path)?;
+        let keep = |name: &str, fields: &FieldMap| self.active_at(name, fields, now);
+        let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
+        let temporal = Temporal { keep: &keep, interval: &interval };
+        let row = materialize::materialize_row(collection, address, prospective.working(), &temporal)?;
+        match self.compiled.collection_at(decl_path) {
+            Some(compiled) if !compiled.computed.is_empty() => {
+                let env = self.env_at(prospective, now);
+                Some(fold_computed(&env, &compiled.computed, row))
+            }
+            _ => Some(row),
+        }
+    }
+
+    /// An evaluation environment over the prospective state whose virtual clock is
+    /// `now` (a spend-time meter evaluation).
+    pub(crate) fn env_at(&self, prospective: &Prospective, now: Timestamp) -> RuntimeEnv {
+        self.env_at_full(prospective, now, BTreeMap::new(), BTreeMap::new())
+    }
+
+    /// [`Self::env_at`] carrying local `bindings` (`pool`/`spend`, §15.2) and
+    /// `structurals` (`$until`/`$from`/`$quantity` for a pool `$order` key).
+    pub(crate) fn env_at_full(
+        &self,
+        prospective: &Prospective,
+        now: Timestamp,
+        bindings: BTreeMap<String, Cell>,
+        structurals: BTreeMap<String, Cell>,
+    ) -> RuntimeEnv {
+        let keep = |name: &str, fields: &FieldMap| self.active_at(name, fields, now);
+        let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
+        let temporal = Temporal { keep: &keep, interval: &interval };
+        let root = materialize::materialize_root_filtered(self.schema, prospective.working(), &temporal);
+        let index = self.temporal_index_at(prospective, now);
+        RuntimeEnv::new(root, self.params.clone(), bindings, structurals, now, self.seed, index)
+    }
+
+    fn temporal_index_at(&self, prospective: &Prospective, now: Timestamp) -> Vec<Vec<Row>> {
+        let keep = |name: &str, fields: &FieldMap| self.active_at(name, fields, now);
+        let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
+        let temporal = Temporal { keep: &keep, interval: &interval };
+        let mut index = Vec::new();
+        for member in &self.schema.model().root().members {
+            if let Node::Collection(collection) = &member.node {
+                let name = member.name.as_str();
+                if self.compiled.bucket(name).is_some() {
+                    index.push(materialize::extant_bucketed_rows(collection, name, prospective.working(), &temporal));
+                }
+            }
+        }
+        index
     }
 
     /// Evaluate a typed expression with `current` as `.`, against the current
@@ -266,13 +349,18 @@ impl EvalCtx<'_> {
         let temporal = Temporal { keep: &keep, interval: &interval };
         let row = materialize::materialize_row(collection, address, prospective.working(), &temporal)?;
         let compiled = self.compiled.collection_at(decl_path);
-        match compiled {
+        let row = match compiled {
             Some(compiled) if !compiled.computed.is_empty() => {
                 let env = self.env(prospective);
-                Some(Cell::Row(Box::new(fold_computed(&env, &compiled.computed, row))))
+                fold_computed(&env, &compiled.computed, row)
             }
-            _ => Some(Cell::Row(Box::new(row))),
-        }
+            _ => row,
+        };
+        // §15.6: a `$consumes` spend row exposes `funding`; a meter-declaring row
+        // exposes its `.<meter>` accessor — folded here for a `return`/receiver
+        // read of that single row.
+        let row = crate::meter::accessor::augment_row(self, prospective, decl_path, address, row);
+        Some(Cell::Row(Box::new(row)))
     }
 
     /// A logical row cell for one collection row, with its computed values (§5.2)
