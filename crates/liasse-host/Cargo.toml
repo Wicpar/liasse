@@ -7,6 +7,17 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Canonical typed values and types at the host boundary: op arguments and
+# results, key material, and the `Type::decode` conformance check that the
+# checked-invocation guard uses to catch off-contract returns.
+liasse-value = { path = "../liasse-value" }
+# SHA-512 content hashing to verify connector reads against a blob's declared
+# digest (§18.9). Same vetted RustCrypto family the store already uses.
+sha2 = "0.10"
+# Lowercase-hex codec to render a computed SHA-512 into the canonical text
+# `liasse_value::Sha512::parse` accepts, matching liasse-value's own choice.
+data-encoding = "2.11"
+thiserror = "2"
 
 [lints]
 workspace = true
