@@ -29,13 +29,24 @@ pub(crate) fn admit(
     let Some(collections) = doc::object(data) else {
         return Err(Rejection::new(RejectionReason::Malformed, "`$data` must be an object"));
     };
+    let model = ctx.schema.model();
+    let mut singleton = FieldMap::new();
     for member in collections {
-        let Some(collection) = compiled.collection(&member.name.text) else {
-            // §9.1: only writable state can be seeded; unknown/computed members
-            // are not seedable. A non-collection seed key is a CORE seam.
+        if let Some(collection) = compiled.collection(&member.name.text) {
+            admit_collection(ctx, prospective, touched, collection, &member.value)?;
             continue;
-        };
-        admit_collection(ctx, prospective, touched, collection, &member.value)?;
+        }
+        // §8.2/§9.1: a `$data` member naming a singleton root field seeds that
+        // field; an unknown or computed member is not seedable.
+        if let Some(node) = model.root().member(&member.name.text).map(|m| &m.node)
+            && let Some(ty) = crate::singleton::member_type(model, node)
+        {
+            let value = decode(&ty, &doc::to_json(&member.value), &member.name.text)?;
+            singleton.insert(member.name.text.clone(), value);
+        }
+    }
+    if !singleton.is_empty() {
+        prospective.insert(crate::singleton::address(), singleton);
     }
     Ok(())
 }

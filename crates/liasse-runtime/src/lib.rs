@@ -118,6 +118,7 @@ mod rules;
 mod schema;
 mod scope;
 mod seed;
+mod singleton;
 mod state;
 mod view;
 

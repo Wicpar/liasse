@@ -34,6 +34,13 @@ pub(crate) struct RowTarget {
     pub(crate) collection: String,
 }
 
+/// The row(s) a patch base resolves to (§8.9): exactly one (a keyed selector or
+/// the receiver) or a whole filtered set (a bound `[:x | pred]` selection).
+enum PatchPlan {
+    Single(RowTarget),
+    Many(Vec<RowTarget>),
+}
+
 /// A lexical local a `name = …` statement bound (§8.1): either a row the
 /// statement inserted or selected (tracked by address so a later read observes
 /// the current committed fields, §8.10) or an evaluated scalar/value.
@@ -225,12 +232,87 @@ impl<'a> Interp<'a> {
             self.locals.insert(name, LocalBind::Row(target));
             return Ok(());
         }
+        // `name = .coll - keys` / `name = -.coll[…]` (§8.4): the deleted rows, as
+        // they existed immediately before removal, are captured in selector order
+        // and bound as a collection value, so `return name { … }` projects them.
+        if let ExprKind::Binary { op: BinaryOp::Sub, lhs, rhs } = &value.kind
+            && let Some((_path, collection)) = self.collection_ref(lhs)
+        {
+            let keys = self.delete_key_values(rhs, source)?;
+            return self.bind_deleted(name, collection, keys);
+        }
+        if let ExprKind::Unary { op: UnaryOp::Neg, operand } = &value.kind
+            && let ExprKind::Select { base, .. } = &operand.kind
+            && let Some((_path, collection)) = self.collection_ref(base)
+        {
+            let keys = self.selection_key_values(operand, source)?;
+            return self.bind_deleted(name, collection, keys);
+        }
         let current = self.current()?;
         let typed = check_expression(&self.scope(), source, value)
             .map_err(|_| Rejection::new(RejectionReason::Malformed, "the bound value did not type-check"))?;
         let ty = typed.ty().clone();
         let cell = self.ctx.eval_with(self.prospective, &typed, &current, self.binding_cells())?;
         self.locals.insert(name, LocalBind::Value(cell, ty));
+        Ok(())
+    }
+
+    /// The key values a `.coll - keys` delete targets, in order: a lone scalar,
+    /// or every member of a set operand (§8.4 selector order).
+    fn delete_key_values(&self, keys: &Expr, source: SourceId) -> Result<Vec<Value>, Rejection> {
+        let current = self.current()?;
+        Ok(match self.scalar_value(keys, source, &current)? {
+            Value::Set(members) => members.into_iter().collect(),
+            scalar => vec![scalar],
+        })
+    }
+
+    /// The key values a `-.coll[…]` selection targets, in the order the selection
+    /// yields them (§8.4): a filtered set in canonical order, a key list in the
+    /// order written (with duplicates naturally collapsed by the capture).
+    fn selection_key_values(&self, selection: &Expr, source: SourceId) -> Result<Vec<Value>, Rejection> {
+        let current = self.current()?;
+        Ok(match self.eval_value(selection, source, &current)? {
+            Cell::Collection(rows) => rows.iter().map(|row| row.key().clone()).collect(),
+            Cell::Row(row) => vec![row.key().clone()],
+            Cell::Scalar(_) => Vec::new(),
+        })
+    }
+
+    /// Capture the pre-delete rows for `keys` (deduplicated to first occurrence,
+    /// §8.4), delete them through the §21.1 cascade planner, and bind the captured
+    /// collection to `name` so a `return name { … }` projects the removed rows.
+    fn bind_deleted(&mut self, name: String, collection: String, keys: Vec<Value>) -> Result<(), Rejection> {
+        let mut seen = BTreeSet::new();
+        let mut ordered = Vec::new();
+        for key in keys {
+            if seen.insert(key.clone()) {
+                ordered.push(key);
+            }
+        }
+        let compiled = self.collection(&collection)?;
+        let rows: Vec<liasse_expr::Row> = ordered
+            .iter()
+            .filter_map(|key| {
+                let address = materialize::top_address(&collection, KeyValue::single(key.clone()));
+                let fields = self.prospective.get(&address)?;
+                match self.ctx.row_cell_of(self.prospective, compiled, fields) {
+                    Cell::Row(row) => Some(*row),
+                    _ => None,
+                }
+            })
+            .collect();
+        let ty = self
+            .ctx
+            .schema
+            .root_row_type()
+            .field(&collection)
+            .cloned()
+            .ok_or_else(|| Rejection::new(RejectionReason::Malformed, format!("unknown collection `{collection}`")))?;
+        let initial: Vec<RowRef> =
+            ordered.into_iter().map(|key| RowRef::new(collection.clone(), key)).collect();
+        self.delete_rows(initial)?;
+        self.locals.insert(name, LocalBind::Value(Cell::Collection(rows), ty));
         Ok(())
     }
 
@@ -510,17 +592,70 @@ impl<'a> Interp<'a> {
     }
 
     fn exec_patch(&mut self, base: &Expr, members: &[BlockMember], source: SourceId) -> Result<(), Rejection> {
+        match self.patch_plan(base, source)? {
+            // §8.9: a keyed row patch targets one existing row; a missing target rejects.
+            PatchPlan::Single(row) => {
+                let original = self.prospective.get(&row.address).cloned().ok_or_else(|| {
+                    Rejection::new(RejectionReason::MissingTarget, "the patched row does not exist")
+                        .at(row.address.render())
+                })?;
+                self.apply_patch(&row, original, members, source)
+            }
+            // §8.9: a filtered bulk patch patches each matched row; a zero-match
+            // selection stages nothing and the program completes unchanged.
+            PatchPlan::Many(rows) => {
+                for row in rows {
+                    let Some(original) = self.prospective.get(&row.address).cloned() else { continue };
+                    self.apply_patch(&row, original, members, source)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Resolve a patch base to the row(s) it targets: the receiver or a keyed
+    /// selector names exactly one row (§8.9, a missing one rejects); a bound
+    /// filtered selector `.coll[:x | pred]` names its whole matching set (§8.9
+    /// bulk patch), possibly empty.
+    fn patch_plan(&self, base: &Expr, source: SourceId) -> Result<PatchPlan, Rejection> {
+        if let ExprKind::Select { base: inner, selector: Selector::Bind { .. } } = &base.kind {
+            let Some((_path, name)) = self.collection_ref(inner) else {
+                return Err(Rejection::new(RejectionReason::Malformed, "a patch needs a row source"));
+            };
+            let current = self.current()?;
+            let keys: Vec<Value> = match self.eval_value(base, source, &current)? {
+                Cell::Collection(rows) => rows.iter().map(|row| row.key().clone()).collect(),
+                Cell::Row(row) => vec![row.key().clone()],
+                Cell::Scalar(_) => Vec::new(),
+            };
+            let targets = keys
+                .into_iter()
+                .map(|key| RowTarget {
+                    address: materialize::top_address(&name, KeyValue::single(key)),
+                    collection: name.clone(),
+                })
+                .collect();
+            return Ok(PatchPlan::Many(targets));
+        }
         let row = self
             .row_target(base, source)?
             .ok_or_else(|| Rejection::new(RejectionReason::Malformed, "a patch needs a row source"))?;
-        // §8.9: a keyed row patch targets one existing row; a missing target rejects.
-        let original = self.prospective.get(&row.address).cloned().ok_or_else(|| {
-            Rejection::new(RejectionReason::MissingTarget, "the patched row does not exist")
-                .at(row.address.render())
-        })?;
+        Ok(PatchPlan::Single(row))
+    }
+
+    /// Apply one patch to `row` whose current fields are `original` (§8.6): every
+    /// right-hand expression reads the row at the patch start, then the collected
+    /// updates are written, normalized, and the row re-placed (rekeying if a key
+    /// field changed, §5.4).
+    fn apply_patch(
+        &mut self,
+        row: &RowTarget,
+        original: FieldMap,
+        members: &[BlockMember],
+        source: SourceId,
+    ) -> Result<(), Rejection> {
         let start = row_cell(self.collection(&row.collection)?, &original);
         let scope = self.patch_scope(&row.collection);
-        // §8.6: every right-hand expression reads the row at the patch start.
         let mut updates: Vec<(String, Value)> = Vec::new();
         for member in members {
             if let Some(update) = self.patch_member(member, &scope, &start, source)? {

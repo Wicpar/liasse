@@ -414,10 +414,16 @@ fn collect_params(
     request: &CallRequest,
 ) -> Result<BTreeMap<String, Cell>, Rejection> {
     let mut params = BTreeMap::new();
-    for (name, _ty) in &mutation.params {
+    for (name, ty) in &mutation.params {
         match request.arg_value(name) {
             Some(value) => {
                 params.insert(name.clone(), Cell::Scalar(value.clone()));
+            }
+            // §8.3/§A.1: an omitted argument for an optional parameter binds the
+            // absent value `none` (assigning it clears an optional field, §8.5),
+            // rather than rejecting; a required parameter must be supplied.
+            None if is_optional(ty) => {
+                params.insert(name.clone(), Cell::Scalar(liasse_value::Value::None));
             }
             None => {
                 return Err(Rejection::new(
@@ -428,6 +434,12 @@ fn collect_params(
         }
     }
     Ok(params)
+}
+
+/// Whether a parameter's type is optional (§8.3): a missing argument for it
+/// binds `none` rather than rejecting.
+fn is_optional(ty: &liasse_expr::ExprType) -> bool {
+    matches!(ty.as_scalar(), Some(liasse_value::Type::Optional(_)))
 }
 
 /// The receiver row of a row mutation from the request key (§8.2), or `None`

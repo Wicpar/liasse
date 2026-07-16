@@ -120,6 +120,11 @@ pub(crate) fn materialize_root_filtered(
             cells.push((name.to_owned(), Cell::Collection(rows)));
         }
     }
+    // §8.2: the package root's singleton fields (scalars, structs, sets, refs)
+    // fold onto the root row as cells beside its collections.
+    let empty = FieldMap::new();
+    let singleton = working.get(&crate::singleton::address()).unwrap_or(&empty);
+    cells.extend(crate::singleton::cells(schema.model(), schema.model().root(), singleton));
     Row::keyless(RowId::leaf(0), cells)
 }
 

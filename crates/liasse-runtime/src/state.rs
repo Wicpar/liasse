@@ -53,6 +53,11 @@ impl Prospective {
                 }
             }
         }
+        // §8.2: the package root's singleton fields live in one reserved row.
+        for (address, row) in store.scan(&crate::singleton::path())? {
+            working.insert(address.clone(), materialize::fields_of(row.value()));
+            committed.insert(address, row.value().clone());
+        }
         Ok(Self { committed, working })
     }
 
@@ -69,6 +74,11 @@ impl Prospective {
                     committed.insert(address, row.value().clone());
                 }
             }
+        }
+        // §8.2: the package root's singleton fields live in one reserved row.
+        for (address, row) in snapshot.scan(&crate::singleton::path()) {
+            working.insert(address.clone(), materialize::fields_of(row.value()));
+            committed.insert(address, row.value().clone());
         }
         Self { committed, working }
     }
