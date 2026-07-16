@@ -71,22 +71,47 @@ impl Default for SurfaceBinding {
 }
 
 /// A surface `$view` binding: the runtime view it reads (§10.1).
+///
+/// The bound name is either a declared top-level view (`surface: false`) or the
+/// dotted address of a runtime *surface* view (`public.<s>` / `<role>.<s>`,
+/// `surface: true`). The runtime compiles a surface view with the surface's
+/// `$params` and the package's `$actor`/`$session` structurals in scope (§10.1,
+/// §11.1), so a `$view` reading `@param` or `$actor` — which cannot be lifted to a
+/// scope-free top-level view — is served through it. A surface-view binding's
+/// existence is proven by the surface's own exposure, so it is not re-checked
+/// against the model's top-level views when a router is built.
 #[derive(Debug, Clone)]
 pub struct ViewBinding {
     view: String,
+    surface: bool,
 }
 
 impl ViewBinding {
-    /// A view binding onto the runtime view named `view`.
+    /// A view binding onto the declared top-level runtime view named `view`.
     #[must_use]
     pub fn new(view: impl Into<String>) -> Self {
-        Self { view: view.into() }
+        Self { view: view.into(), surface: false }
     }
 
-    /// The runtime view name.
+    /// A view binding onto the runtime surface view at dotted `address`
+    /// (`public.<surface>` / `<role>.<surface>`), which the engine evaluates with
+    /// the surface's `$params`/`$actor`/`$session` in scope (§10.1, §11.1).
+    #[must_use]
+    pub fn surface(address: impl Into<String>) -> Self {
+        Self { view: address.into(), surface: true }
+    }
+
+    /// The runtime view name (a declared view name, or a surface-view address).
     #[must_use]
     pub fn view(&self) -> &str {
         &self.view
+    }
+
+    /// Whether this binds a runtime surface view addressed by its dotted surface
+    /// address, rather than a declared top-level view.
+    #[must_use]
+    pub fn is_surface(&self) -> bool {
+        self.surface
     }
 }
 

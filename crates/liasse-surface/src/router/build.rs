@@ -153,7 +153,12 @@ impl<'a> Exposure<'a> {
         if !self.exposes_surface(name, public) {
             return Err(RouterError::UnexposedSurface(name.to_owned()));
         }
-        if let Some(view) = surface.view() {
+        if let Some(view) = surface.view()
+            && !view.is_surface()
+        {
+            // A surface-view binding names the runtime's compiled surface view by
+            // its dotted address (§10.1); its existence is proven by this surface's
+            // own exposure (checked above), not by a declared top-level view.
             self.check_view_exists(view.view())?;
         }
         for call in surface.call_names() {

@@ -598,6 +598,19 @@ impl<S: InstanceStore> Engine<S> {
     pub fn surface_view_addresses(&self) -> impl Iterator<Item = &str> {
         self.compiled.surface_views.iter().map(|v| v.address.as_str())
     }
+
+    /// The declared `$params` of the surface `$view` at `address` as
+    /// `(name, scalar type)` pairs (§10.1) — the contract a client's `view`
+    /// arguments decode against before [`Engine::view_with`] binds them. Empty when
+    /// no surface view of that name is declared or it takes no parameters.
+    pub fn surface_view_params(&self, address: &str) -> Vec<(String, liasse_value::Type)> {
+        self.compiled
+            .surface_view(address)
+            .into_iter()
+            .flat_map(|view| view.params.iter())
+            .filter_map(|param| param.ty.as_scalar().map(|ty| (param.name.clone(), ty.clone())))
+            .collect()
+    }
 }
 
 fn rejected(reason: RejectionReason, message: impl Into<String>) -> CallOutcome {

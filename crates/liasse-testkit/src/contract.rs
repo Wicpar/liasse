@@ -58,6 +58,10 @@ pub struct WatchRequest {
     pub args: Value,
     /// The §12.2 bounded-window spec, verbatim, if any.
     pub window: Option<Value>,
+    /// A per-request authenticator selection, verbatim, if attached (§11.4): a
+    /// subscription that authenticates inline rather than reusing a connection
+    /// context.
+    pub auth: Option<Value>,
     /// The named authentication context on a multiplexed connection (§11.8), if
     /// the step selects one.
     pub context: Option<String>,

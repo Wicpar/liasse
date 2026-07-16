@@ -713,6 +713,7 @@ dependencies = [
 name = "liasse-runtime"
 version = "0.0.1"
 dependencies = [
+ "bigdecimal",
  "criterion",
  "liasse-artifact",
  "liasse-diag",
@@ -745,6 +746,7 @@ version = "0.0.1"
 dependencies = [
  "liasse-diag",
  "liasse-expr",
+ "liasse-host",
  "liasse-ident",
  "liasse-model",
  "liasse-runtime",
@@ -769,6 +771,7 @@ version = "0.0.1"
 dependencies = [
  "deser-hjson",
  "liasse-diag",
+ "liasse-expr",
  "liasse-ident",
  "liasse-model",
  "liasse-runtime",

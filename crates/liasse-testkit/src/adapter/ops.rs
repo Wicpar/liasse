@@ -35,6 +35,7 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             StepKind::Manifest => self.drive_manifest(request),
             StepKind::Resume => self.drive_resume(request),
             StepKind::Authenticate => self.drive_authenticate(request),
+            StepKind::ExpectClose => self.drive_expect_close(request),
             _ => Err(AdapterError::unsupported(unsupported_reason(&request.kind))),
         }
     }
@@ -76,6 +77,18 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             .map_or(liasse_runtime::CommitSeq::GENESIS, liasse_runtime::CommitSeq::from_stored);
         let (surface, watch_id) = (surface.to_owned(), watch_id.to_owned());
         self.active().resume(&connection, &surface, &watch_id, from)
+    }
+
+    /// §12.2 `expect_close`: report subscription `watch`'s close reason, so the
+    /// step can assert the runtime closed the live view when state removed its
+    /// authority. A still-live subscription yields a value-less `ok`, which the
+    /// executor judges as "expected close, none observed".
+    fn drive_expect_close(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let Some(watch_id) = request.target.get("watch").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`expect_close` step carries no subscription `watch`"));
+        };
+        let watch_id = watch_id.to_owned();
+        self.active().close_reason(&watch_id)
     }
 
     /// §11.4/§11.8 `authenticate`: bind (or refuse) an authentication context on the
@@ -180,8 +193,9 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             Err(_) => return Ok(None),
         };
         let plan = AuthPlan::derive(&ctx.package, ctx.hosts.as_ref());
-        let (router, routing) = router::build(engine.model(), &ctx.package, &plan, &ctx.lift)
+        let (router, mut routing) = router::build(engine.model(), &ctx.package, &plan, &ctx.lift)
             .map_err(|err| AdapterError::Host(format!("sandbox router rebuild failed: {err}")))?;
+        routing.load_view_param_types(&engine);
         Ok(Some(Loaded { host: SurfaceHost::new(engine, router, clock), routing }))
     }
 
@@ -198,8 +212,9 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         let store = MemoryStore::new(instance);
         let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
         let engine = Engine::load(store, &definition, &mut clock).map_err(|err| err.to_string())?;
-        let (router, routing) =
+        let (router, mut routing) =
             router::build(engine.model(), &ctx.package, &plan, &ctx.lift).map_err(|err| err.to_string())?;
+        routing.load_view_param_types(&engine);
         Ok(Loaded { host: SurfaceHost::new(engine, router, clock), routing })
     }
 

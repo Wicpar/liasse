@@ -128,3 +128,28 @@ fn keyring_unknown_selector_rejected() {
     );
     assert!(built.result.is_err());
 }
+
+/// §9.1 — a keyring-managed collection mirrors non-writable state (its versions
+/// derive only from provider transitions, §17.2), so naming it in `$data`
+/// is rejected. Seeding it would smuggle an attacker-controlled verification key
+/// past the provider. The ring is modelled as a view (build/shapes.rs), so the
+/// seed phase refuses it as non-writable derived state.
+#[test]
+fn keyring_managed_collection_not_seedable() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.k@1.0.0",
+            "$model": {
+              "session_keys": {
+                "$keyring": { "$provider": "test-kp", "$algorithm": "Ed25519", "$rotate": "P30D", "$retain": "P45D" }
+              }
+            },
+            "$data": {
+              "session_keys": {
+                "$versions": [ { "id": "attacker-v1", "algorithm": "Ed25519", "public_key": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a" } ]
+              }
+            }
+        }"#,
+    );
+    assert!(built.has_code("M-SEED"), "expected a seed rejection, got: {}", built.rendered());
+    assert!(built.rendered().contains("§9.1"));
+}

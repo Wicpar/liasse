@@ -169,6 +169,8 @@ pub struct SurfaceWatch {
     id: String,
     context: Option<String>,
     window: Option<Window>,
+    args: BTreeMap<String, Value>,
+    auth: Option<AuthSelection>,
 }
 
 impl SurfaceWatch {
@@ -176,7 +178,32 @@ impl SurfaceWatch {
     /// context and tracking the whole view.
     #[must_use]
     pub fn new(address: SurfaceAddress, id: impl Into<String>) -> Self {
-        Self { address, id: id.into(), context: None, window: None }
+        Self { address, id: id.into(), context: None, window: None, args: BTreeMap::new(), auth: None }
+    }
+
+    /// Attach a per-request authenticator selection (§11.4): the subscription
+    /// authorizes and re-authorizes from this credential rather than a
+    /// connection-stored context, so a client may open a role subscription without
+    /// a prior `authenticate` on the connection.
+    #[must_use]
+    pub fn with_auth(mut self, auth: AuthSelection) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    /// The per-request authenticator selection, if any (§11.4).
+    #[must_use]
+    pub fn auth(&self) -> Option<&AuthSelection> {
+        self.auth.as_ref()
+    }
+
+    /// Bind the surface `$params` arguments this subscription reads (§10.1, §12.1
+    /// `view` operation): each `@name` a parameterized `$view` reads resolves from
+    /// this map, an omitted declared parameter taking its declared default (§8.3).
+    #[must_use]
+    pub fn with_args(mut self, args: BTreeMap<String, Value>) -> Self {
+        self.args = args;
+        self
     }
 
     /// Select a named authentication context (§11.8).
@@ -216,6 +243,12 @@ impl SurfaceWatch {
     pub fn window(&self) -> Option<&Window> {
         self.window.as_ref()
     }
+
+    /// The surface `$params` arguments bound for this subscription (§10.1).
+    #[must_use]
+    pub fn args(&self) -> &BTreeMap<String, Value> {
+        &self.args
+    }
 }
 
 /// A request to resume a subscription from a retained frontier (§12.2). The
@@ -229,6 +262,7 @@ pub struct SurfaceResume {
     id: String,
     from: CommitSeq,
     context: Option<String>,
+    auth: Option<AuthSelection>,
 }
 
 impl SurfaceResume {
@@ -236,7 +270,21 @@ impl SurfaceResume {
     /// using the connection's default context.
     #[must_use]
     pub fn new(address: SurfaceAddress, id: impl Into<String>, from: CommitSeq) -> Self {
-        Self { address, id: id.into(), from, context: None }
+        Self { address, id: id.into(), from, context: None, auth: None }
+    }
+
+    /// Attach a per-request authenticator selection (§11.4): the resume authorizes
+    /// from this credential rather than a connection-stored context.
+    #[must_use]
+    pub fn with_auth(mut self, auth: AuthSelection) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    /// The per-request authenticator selection, if any (§11.4).
+    #[must_use]
+    pub fn auth(&self) -> Option<&AuthSelection> {
+        self.auth.as_ref()
     }
 
     /// Select a named authentication context (§11.8).

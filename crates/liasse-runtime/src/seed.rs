@@ -6,7 +6,7 @@
 //! a seed row (§5.4/§5.5), which a meter's pool/spend arrangement (§15) seeds
 //! under an ancestor row. Composite seed keys remain a documented seam.
 
-use liasse_ident::NameSegment;
+use liasse_ident::{KeyText, NameSegment};
 use liasse_syntax::DocValue;
 use liasse_store::{CollectionPath, KeyValue, RowAddress};
 use liasse_value::Type;
@@ -100,8 +100,11 @@ fn admit_rows(
     Ok(())
 }
 
-/// Decode a seed row's declared fields against their types, supplying the local
-/// key from the map member when the row omits it (§9.1).
+/// Decode a seed row's declared fields against their types, supplying each key
+/// field from the map member when the row omits it (§9.1). The member name is
+/// the D.2-escaped key text; for a composite key it joins one component per
+/// `$key` field (in key order), so an omitted key field takes its own decoded
+/// component — not the whole joined text.
 fn decode_row(
     collection: &CompiledCollection,
     key_text: &str,
@@ -109,19 +112,73 @@ fn decode_row(
 ) -> Result<FieldMap, Rejection> {
     let members = doc::object(row)
         .ok_or_else(|| Rejection::new(RejectionReason::Malformed, "a seed row must be an object"))?;
+    let key_components = decode_key_components(collection, key_text)?;
     let mut fields = FieldMap::new();
     for field in &collection.fields {
         let supplied = members.iter().find(|m| m.name.text == field.name);
         let value = match supplied {
             Some(member) => decode(&field.ty, &doc::to_json(&member.value), &field.name)?,
-            None if collection.key.first().is_some_and(|k| k == &field.name) => {
-                decode(&field.ty, &serde_json::Value::String(key_text.to_owned()), &field.name)?
-            }
-            None => continue,
+            None => match key_components.iter().find(|(name, _)| *name == &field.name) {
+                Some((_, component)) => {
+                    decode(&field.ty, &serde_json::Value::String(component.clone()), &field.name)?
+                }
+                None => continue,
+            },
         };
         fields.insert(field.name.clone(), value);
     }
+    // §5.3: a supplied static-struct member decodes its inner fields onto a
+    // `struct` value stored on the row, so a view/sort over the struct reads its
+    // components (B.4). Omitted-member struct defaults remain a documented seam.
+    for struct_meta in &collection.structs {
+        if let Some(member) = members.iter().find(|m| m.name.text == struct_meta.name) {
+            fields.insert(struct_meta.name.clone(), decode_struct(struct_meta, &member.value)?);
+        }
+    }
     Ok(fields)
+}
+
+/// Decode a supplied static-struct initializer (§5.3) into a `struct` value: each
+/// declared struct field decodes its supplied member against its type; an omitted
+/// member stays absent (its default resolution is a documented seam).
+fn decode_struct(
+    struct_meta: &crate::compiled::CompiledStruct,
+    body: &DocValue,
+) -> Result<liasse_value::Value, Rejection> {
+    let members = doc::object(body).ok_or_else(|| {
+        Rejection::new(RejectionReason::Malformed, format!("struct `{}` must be an object", struct_meta.name))
+    })?;
+    let mut entries = Vec::new();
+    for field in &struct_meta.fields {
+        if let Some(member) = members.iter().find(|m| m.name.text == field.name) {
+            let value = decode(&field.ty, &doc::to_json(&member.value), &field.name)?;
+            entries.push((liasse_value::Text::new(field.name.clone()), value));
+        }
+    }
+    Ok(liasse_value::Value::Struct(liasse_value::Struct::new(entries)))
+}
+
+/// The decoded (unescaped) key-text component for each `$key` field, in key
+/// order (§5.4, D.2): the member name is split on the unescaped `:` join
+/// separators and each component decoded, so a composite key supplies one value
+/// per key field and any escaped `:`/`/`/`%` inside a component survives.
+fn decode_key_components<'a>(
+    collection: &'a CompiledCollection,
+    key_text: &str,
+) -> Result<Vec<(&'a String, String)>, Rejection> {
+    let malformed = || Rejection::new(RejectionReason::Malformed, "seed key text is malformed");
+    let components = KeyText::parse(key_text.to_owned())
+        .and_then(|text| text.components())
+        .map_err(|_| malformed())?;
+    if components.len() != collection.key.len() {
+        return Err(malformed());
+    }
+    Ok(collection
+        .key
+        .iter()
+        .zip(components)
+        .map(|(name, component)| (name, component.as_str().to_owned()))
+        .collect())
 }
 
 fn decode(ty: &Type, wire: &serde_json::Value, field: &str) -> Result<liasse_value::Value, Rejection> {

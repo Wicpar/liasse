@@ -13,30 +13,53 @@
 //! emits `close` (§12.2). The host decides authority and drives [`Watch::close`];
 //! this type carries the view-tracking state and the close latch.
 
-use liasse_runtime::{CommitSeq, ViewDelta, ViewResult, ViewRow};
+use std::collections::BTreeMap;
 
+use liasse_runtime::{CommitSeq, ViewDelta, ViewResult, ViewRow};
+use liasse_value::Value;
+
+use crate::request::AuthSelection;
 use crate::window::{Window, WindowError};
 
 /// The authorization context a subscription re-checks at every frontier: which
 /// authentication context it belongs to (§11.8) and, for a role surface, the
 /// role whose membership must still hold (§12.2).
+///
+/// A role subscription re-authorizes at each outgoing frontier from either the
+/// connection's stored context (the usual case: a `connect { authenticate }`
+/// bound it) or, when the subscription supplied a per-request `auth` selection
+/// (§11.4) rather than naming a stored context, from that retained selection —
+/// so a subscription opened with an inline credential keeps re-verifying it as
+/// state advances, catching revocation and expiry exactly as a stored context
+/// does (§11.7).
 #[derive(Debug, Clone)]
 pub struct WatchAuthz {
     context: Option<String>,
     role: Option<String>,
+    selection: Option<AuthSelection>,
 }
 
 impl WatchAuthz {
     /// A public subscription: no context, no role re-check.
     #[must_use]
     pub fn public() -> Self {
-        Self { context: None, role: None }
+        Self { context: None, role: None, selection: None }
     }
 
-    /// A role subscription bound to authentication `context` and gated by `role`.
+    /// A role subscription bound to authentication `context` and gated by `role`,
+    /// re-authorized from the connection's stored context at each frontier.
     #[must_use]
     pub fn role(context: impl Into<String>, role: impl Into<String>) -> Self {
-        Self { context: Some(context.into()), role: Some(role.into()) }
+        Self { context: Some(context.into()), role: Some(role.into()), selection: None }
+    }
+
+    /// Retain the per-request `auth` selection this subscription opened under
+    /// (§11.4), so its frontiers re-authorize from the credential itself rather
+    /// than a connection-stored context.
+    #[must_use]
+    pub fn with_selection(mut self, selection: AuthSelection) -> Self {
+        self.selection = Some(selection);
+        self
     }
 
     /// The authentication context this subscription belongs to, if any.
@@ -50,6 +73,13 @@ impl WatchAuthz {
     pub fn role_name(&self) -> Option<&str> {
         self.role.as_deref()
     }
+
+    /// The retained per-request `auth` selection, if the subscription opened with
+    /// one instead of a connection-stored context (§11.4).
+    #[must_use]
+    pub fn selection(&self) -> Option<&AuthSelection> {
+        self.selection.as_ref()
+    }
 }
 
 /// A live subscription's tracked state.
@@ -60,6 +90,10 @@ impl WatchAuthz {
 pub struct Watch {
     view: String,
     authz: WatchAuthz,
+    /// The surface `$params` arguments bound at open (§10.1), re-supplied on every
+    /// re-evaluation so a parameterized `$view` sees the same arguments after each
+    /// commit and time advance (§12.2, §14.1).
+    args: BTreeMap<String, Value>,
     frontier: CommitSeq,
     last: Option<ViewResult>,
     window: Option<Window>,
@@ -72,7 +106,16 @@ impl Watch {
     /// under `authz`, before any result has been delivered.
     #[must_use]
     pub fn open(view: impl Into<String>, authz: WatchAuthz, frontier: CommitSeq) -> Self {
-        Self { view: view.into(), authz, frontier, last: None, window: None, windowed: None, closed: None }
+        Self {
+            view: view.into(),
+            authz,
+            args: BTreeMap::new(),
+            frontier,
+            last: None,
+            window: None,
+            windowed: None,
+            closed: None,
+        }
     }
 
     /// Open a bounded-window subscription (§12.2): the same view under a client
@@ -87,6 +130,7 @@ impl Watch {
         Self {
             view: view.into(),
             authz,
+            args: BTreeMap::new(),
             frontier,
             last: None,
             window: Some(window),
@@ -95,10 +139,24 @@ impl Watch {
         }
     }
 
+    /// Bind the surface `$params` arguments this subscription re-supplies on every
+    /// re-evaluation (§10.1).
+    #[must_use]
+    pub fn with_args(mut self, args: BTreeMap<String, Value>) -> Self {
+        self.args = args;
+        self
+    }
+
     /// The runtime view this subscription reads.
     #[must_use]
     pub fn view(&self) -> &str {
         &self.view
+    }
+
+    /// The surface `$params` arguments bound for this subscription (§10.1).
+    #[must_use]
+    pub fn args(&self) -> &BTreeMap<String, Value> {
+        &self.args
     }
 
     /// The subscription's authorization context.

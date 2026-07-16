@@ -275,8 +275,9 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
         let store = provision.provision(InstanceId::new(case.name.clone()))?;
         let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
         let engine = Engine::load(store, &definition, &mut clock).map_err(|err| err.to_string())?;
-        let (router, routing) =
+        let (router, mut routing) =
             router::build(engine.model(), package, plan, lift).map_err(|err| err.to_string())?;
+        routing.load_view_param_types(&engine);
         let host = SurfaceHost::new(engine, router, clock);
         Ok(Loaded { host, routing })
     }

@@ -34,18 +34,6 @@ use liasse_testkit::{Corpus, LoadedCase, Outcome, PackageSet, Suite};
 /// single-package model and that legitimately await a later phase. Each entry is
 /// `"<area>/<name>"` with a one-line reason. This list must only shrink.
 const SKIP: &[(&str, &str)] = &[
-    // --- §13 module composition (cross-package) ---
-    // The invalid outcome is a cross-package exposure rule (a child's private
-    // path/field is not reachable from the host root). Judging it needs
-    // multi-package composition, absent from the single-package CORE model.
-    (
-        "13-modules/private-child-field-not-exposed-invalid",
-        "cross-package module composition (§13); needs the composition phase",
-    ),
-    (
-        "13-modules/direct-child-private-path-call-invalid",
-        "cross-package module composition (§13); needs the composition phase",
-    ),
     // --- Surface-inline mutation programs (documented surface seam) ---
     // A program written directly in a surface `$mut` (not a `.name` reference) is
     // accepted structurally today (crates/liasse-model/src/surface.rs). Checking
@@ -116,10 +104,6 @@ const SKIP: &[(&str, &str)] = &[
     (
         "17-keyrings/provider-name-unicode-confusable-invalid",
         "provider-name identity/registry resolution (§17/Annex D); provider seam",
-    ),
-    (
-        "17-keyrings/seed-keyring-version-invalid",
-        "keyring-managed version seeding admission (§17/§9); provider seam",
     ),
     // --- §4 resource descriptors (need the built artifact) ---
     (

@@ -141,3 +141,54 @@ fn module_space_unknown_interface_rejected() {
     assert!(built.has_code("E-EXPR"));
     assert!(built.points_at(".modules::billing"));
 }
+
+/// §13.8 — a parent aggregation over an interface may project only the members
+/// the interface `$view` contract declares. The `templates` interface exposes
+/// `{ id, label }`; projecting `secret` (a member private to the child, absent
+/// from the boundary contract) is rejected against the interface view's row
+/// shape. This needs only the host package's own `$interfaces` declaration, so
+/// it is a single-package static check.
+#[test]
+fn interface_projection_of_unbound_field_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.mod.host@1.0.0", "$model": {
+            "companies": {
+              "$key": "id", "id": "text", "name": "text",
+              "modules": { "$modules": { "$interfaces": {
+                "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+              } } },
+              "catalog": { "$view": ".modules::templates { module: modules.$key, id, label, secret, $sort: [module, id] }" }
+            }
+        } }"#,
+    );
+    assert!(built.has_code("E-EXPR"), "expected a projection rejection, got: {}", built.rendered());
+    assert!(built.points_at("secret"));
+}
+
+/// §13.11 — a surface may bind an interface boundary member
+/// (`.modules[k]::templates.create`) but not dot past the instance boundary into
+/// a child's private model `$mut` (`.modules[k].create_template`). The private
+/// child mutation name is not a declared mutation reachable from the host, so the
+/// surface binding is rejected. Single-package: only the host's declarations are
+/// consulted.
+#[test]
+fn surface_binding_into_private_child_path_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.mod.host@1.0.0", "$model": {
+            "companies": {
+              "$key": "id", "id": "text", "name": "text",
+              "modules": { "$modules": { "$interfaces": {
+                "templates": {
+                  "$view": { "$key": "id", "id": "text", "label": "text" },
+                  "$mut": { "create({ id: text, label: text })": { "$return": { "id": "text", "label": "text" } } }
+                }
+              } } }
+            },
+            "$public": {
+              "admin": { "$mut": { "create": "/companies[\"acme\"].modules[\"kit\"].create_template" } }
+            }
+        } }"#,
+    );
+    assert!(built.has_code("M-SURFACE"), "expected a surface rejection, got: {}", built.rendered());
+    assert!(built.points_at("create_template"));
+}

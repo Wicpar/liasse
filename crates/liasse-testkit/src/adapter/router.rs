@@ -33,6 +33,10 @@ use super::shape::ViewShapes;
 #[derive(Debug, Clone, Default)]
 pub struct Routing {
     call_arg_types: BTreeMap<String, BTreeMap<String, Type>>,
+    /// Per-surface-view argument-type tables, keyed by surface address
+    /// (`<prefix>.<surface>`): the declared `$params` of a `$view` a `watch`
+    /// decodes its arguments against (§10.1, §12.1 `view` operation).
+    view_arg_types: BTreeMap<String, BTreeMap<String, Type>>,
     /// Surface addresses (`<prefix>.<surface>`) whose bound view delivers a
     /// single object rather than a row array (§12.2).
     singular_views: BTreeSet<String>,
@@ -48,6 +52,32 @@ impl Routing {
     #[must_use]
     pub fn arg_types(&self, address: &str) -> BTreeMap<String, Type> {
         self.call_arg_types.get(address).cloned().unwrap_or_default()
+    }
+
+    /// The declared `$params` types of the surface view at `address`
+    /// (`<prefix>.<surface>`), or an empty table when the view takes none — the
+    /// contract a `watch`'s arguments decode against (§10.1).
+    #[must_use]
+    pub fn view_arg_types(&self, address: &str) -> BTreeMap<String, Type> {
+        self.view_arg_types.get(address).cloned().unwrap_or_default()
+    }
+
+    /// Record each compiled surface view's declared `$params` types (§10.1) from
+    /// the engine, so a parameterized `watch` decodes its arguments against the
+    /// same contract the runtime type-checked. Keyed by surface address.
+    pub fn load_view_param_types<S: liasse_store::InstanceStore>(
+        &mut self,
+        engine: &liasse_runtime::Engine<S>,
+    ) {
+        let addresses: Vec<String> =
+            engine.surface_view_addresses().map(str::to_owned).collect();
+        for address in addresses {
+            let types: BTreeMap<String, Type> =
+                engine.surface_view_params(&address).into_iter().collect();
+            if !types.is_empty() {
+                self.view_arg_types.insert(address, types);
+            }
+        }
     }
 
     /// Whether the view surface at `address` (`<prefix>.<surface>`) delivers a
@@ -198,6 +228,13 @@ fn surface_binding(
         if catalog.shapes.is_singular(name) {
             routing.singular_views.insert(surface_address.clone());
         }
+    } else if definition.get("$view").and_then(J::as_str).is_some() {
+        // An inline `$view` that reads `@param` or `$actor`/`$session` cannot be
+        // lifted to a scope-free top-level view (§10.1, SPEC-ISSUES item 10). The
+        // runtime compiles it as a surface view keyed by this dotted address, with
+        // its `$params` and the package's `$actor`/`$session` in scope, so bind the
+        // surface view directly and let the param/actor-aware read serve it.
+        binding = binding.with_view(ViewBinding::surface(&surface_address));
     }
 
     if let Some(calls) = definition.get("$mut").and_then(J::as_object) {

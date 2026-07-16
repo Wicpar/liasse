@@ -111,3 +111,50 @@ fn undeclared_view_is_none() {
     let engine = app();
     assert!(engine.view_with("public.nope", engine.head(), &ViewQuery::new()).expect("ok").is_none());
 }
+
+/// §10.1: the declared `$params` of a surface view are exposed by name and scalar
+/// type, so a host can decode a client's `view` arguments against the same
+/// contract the runtime type-checked. The `roster` surface declares one `bool`
+/// parameter `archived`; the role `self.me` declares none.
+#[test]
+fn surface_view_params_are_exposed_by_name_and_type() {
+    let engine = app();
+    assert_eq!(
+        engine.surface_view_params("public.roster"),
+        vec![("archived".to_owned(), liasse_value::Type::Bool)]
+    );
+    assert!(engine.surface_view_params("self.me").is_empty());
+    assert!(engine.surface_view_params("public.nope").is_empty());
+}
+
+/// A bucketed collection under a parameterized surface `$view` (§14.1, §10.1): a
+/// `.$at(@t)` temporal selector reads its instant from a supplied argument, so the
+/// param- and actor-aware read observes exactly the rows active at that instant —
+/// present at the expiry-bounded interval, absent one microsecond past it.
+const BUCKET_APP: &str = r#"{
+  "$liasse": 1
+  "$app": "t.vqb@1.0.0"
+  "$model": {
+    "sessions": { "$key": "id", "$bucket": ".expires_at", "id": "text", "expires_at": "timestamp" }
+    "$public": { "at": { "$params": { "t": "timestamp" }, "$view": ".sessions.$at(@t) { id }" } }
+  }
+  "$data": { "sessions": { "s1": { "expires_at": "1767312000000000" } } }
+}"#;
+
+#[test]
+fn parameterized_bucket_view_reads_the_argument_instant() {
+    let mut generator = generator();
+    let engine = Engine::load(store("vqb"), BUCKET_APP, &mut generator).expect("load");
+    let head = engine.head();
+    let at = |micros: i128| {
+        let t = Value::Timestamp(liasse_value::Timestamp::new(micros, liasse_value::Precision::Micros));
+        let result = engine
+            .view_with("public.at", head, &ViewQuery::new().param("t", t))
+            .expect("view read ok")
+            .expect("view declared");
+        result.rows().len()
+    };
+    // Active from creation through the exclusive `expires_at` upper bound.
+    assert_eq!(at(1_767_311_999_999_999), 1, "active just before expiry");
+    assert_eq!(at(1_767_312_000_000_000), 0, "gone at the exclusive upper bound");
+}

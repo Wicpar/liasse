@@ -77,7 +77,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // The `authenticate` step drives through `SurfaceHost::authenticate`; the
     // residual case fails later — its `watch`/`call` name a multiplexed `context`
     // (§11.8) the adapter does not yet thread onto the surface watch/call.
-    ("12-clients-live-views/shared-connection-cross-context-isolation", "connection `context` multiplexing not threaded onto watch/call"),
     // --- `blob_put` step ---
     ("18-blobs/accepted-upload-commits-and-verifies", "`blob_put` step not driven this phase"),
     ("18-blobs/all-branch-verifies-every-copy-at-admission", "`blob_put` step not driven this phase"),
@@ -288,7 +287,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // `$actor` view rendering, a scoped-role session mutation, or a session
     // collection with no `expires`/bucket lower bound.
     ("11-auth-sessions/committed-request-final-after-revocation", "scoped-role session `revoke()` mutation not bound (denied)"),
-    ("11-auth-sessions/completion-barrier-spans-sessions", "role-scoped `$actor` view not rendered (no view value)"),
     ("11-auth-sessions/internal-call-preserves-actor", "role-scoped `$actor` view not rendered (no view value)"),
     ("11-auth-sessions/session-not-yet-active-denied", "session bucket lower-bound activation not observed at boundary"),
     ("14-buckets/between-window-spanning-rollover-returns-both-periods", "package does not load yet (upstream compile/model gap)"),
@@ -368,15 +366,10 @@ pub const SKIP: &[(&str, &str)] = &[
     ("annex-c-grammar/mutation-name-explicit-prototype-parses", "no value produced (unsupported call path)"),
     ("annex-c-grammar/noparam-call-paren-equals-empty-args", "no value produced (unsupported call path)"),
     ("annex-c-grammar/set-field-form-add-and-remove-members", "no value produced (unsupported call path)"),
-    ("annex-d-identity/percent-escape-not-double-encoded", "no value produced (unsupported call path)"),
-    ("annex-d-identity/seed-composite-key-joined-in-key-order", "no value produced (unsupported call path)"),
-    ("annex-d-identity/seed-key-text-escapes-slash-and-colon", "no value produced (unsupported call path)"),
     // --- fail:noview ---
     ("10-interfaces-roles/except-prunes-entire-branch", "no view value produced (unsupported view/watch path)"),
     ("10-interfaces-roles/recursive-coverage-nests-included-descendants", "no view value produced (unsupported view/watch path)"),
-    ("10-interfaces-roles/surface-params-defaults-apply", "no view value produced (unsupported view/watch path)"),
     ("10-interfaces-roles/view-filter-does-not-gate-receiver", "no view value produced (unsupported view/watch path)"),
-    ("14-buckets/backdated-interval-rewrites-at-window", "no view value produced (unsupported view/watch path)"),
     ("14-buckets/short-form-from-defaults-to-created", "no view value produced (unsupported view/watch path)"),
     ("15-meters/overlapping-credits-total-exhaustion-rejects", "no view value produced (unsupported view/watch path)"),
     ("16-host-namespaces/verifier-namespace-runs-at-admission", "no view value produced (unsupported view/watch path)"),
@@ -400,9 +393,7 @@ pub const SKIP: &[(&str, &str)] = &[
     ("11-auth-sessions/login-operation-id-replay-at-most-once", "outcome divergence: expected `ok` observed `rejected`"),
     ("11-auth-sessions/login-operation-id-reuse-different-request-rejected", "outcome divergence: expected `ok` observed `rejected`"),
     ("11-auth-sessions/login-token-immediately-usable", "outcome divergence: expected `ok` observed `rejected`"),
-    ("12-clients-live-views/authority-loss-emits-close", "outcome divergence: expected `ok` observed `denied`"),
     ("12-clients-live-views/parameter-normalization-and-checks", "outcome divergence: expected `ok` observed `denied`"),
-    ("12-clients-live-views/resume-after-authority-loss-denied", "outcome divergence: expected `ok` observed `denied`"),
     ("15-meters/accrual-unspent-capacity-does-not-roll-over", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/backdated-spend-consumes-expired-pool", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/expired-pool-does-not-fund-current-spend", "outcome divergence: expected `ok` observed `rejected`"),
@@ -425,7 +416,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("05-state-model/row-check-constrains-complete-row", "view result diverges from expectation"),
     ("05-state-model/set-of-enum-reads-in-declaration-order", "view result diverges from expectation"),
     ("09-loading-bootstrap/seed-default-observes-prospective-state", "view result diverges from expectation"),
-    ("09-loading-bootstrap/seed-percent-encoded-key-round-trip", "view result diverges from expectation"),
     ("12-clients-live-views/temporal-observation-advances-live-view", "view result diverges from expectation"),
     ("12-clients-live-views/window-anchor-survives-rekey", "view result diverges from expectation"),
     ("14-buckets/expiration-preserves-row-in-all", "view result diverges from expectation"),
@@ -436,14 +426,12 @@ pub const SKIP: &[(&str, &str)] = &[
     ("21-deletion-erasure/erased-row-unobservable-in-second-view", "view result diverges from expectation"),
     ("22-runtime-semantics/concurrent-appends-either-order-both-atomic", "view result diverges from expectation"),
     ("22-runtime-semantics/cross-connection-sequential-order-unspecified", "view result diverges from expectation"),
-    ("annex-b-total-order/composite-key-lexicographic-in-key-order", "view result diverges from expectation"),
     ("annex-b-total-order/composite-key-second-component-uses-int-order", "view result diverges from expectation"),
     ("annex-b-total-order/descending-reverses-with-none-first", "view result diverges from expectation"),
     ("annex-b-total-order/int-mathematical-order-with-negatives", "view result diverges from expectation"),
     ("annex-b-total-order/mixed-direction-keys-apply-per-key-direction", "view result diverges from expectation"),
     ("annex-b-total-order/optional-none-sorts-last-ascending", "view result diverges from expectation"),
     ("annex-b-total-order/secondary-sort-key-breaks-ties", "view result diverges from expectation"),
-    ("annex-b-total-order/struct-fields-compared-in-field-name-text-order", "view result diverges from expectation"),
     ("annex-c-grammar/patch-block-is-one-statement", "view result diverges from expectation"),
     // ========================================================================
     // CONCURRENT RUNTIME REGRESSION (not a testkit capability gap)

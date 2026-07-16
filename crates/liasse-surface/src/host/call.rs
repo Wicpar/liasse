@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use liasse_runtime::{CallOutcome, CallRequest, CommitSeq, Rejection, RejectionReason, Value};
+use liasse_runtime::{CallOutcome, CallRequest, CommitSeq, Rejection, RejectionReason, Value, ViewQuery};
 use liasse_store::InstanceStore;
 
 use crate::authn::AuthContext;
@@ -110,22 +110,33 @@ impl<S: InstanceStore> SurfaceHost<S> {
         }
     }
 
-    /// Settle commit `seq` on connection `id` (§12.3 step 8): advance its frontier
-    /// to at least `seq` and sweep every still-authorized subscription through the
-    /// connection's resulting frontier, returning that frontier. Sweeping at the
-    /// connection frontier (never below it) keeps a subscription that already led
-    /// `seq` — a replay of an older commit, or a connection past this write — from
+    /// Settle commit `seq` on connection `id` (§12.3 step 8): advance the calling
+    /// connection's frontier to at least `seq` and sweep its still-authorized
+    /// subscriptions, returning that frontier. Every other connection's commit is
+    /// an *outgoing frontier* too — §12.2 re-evaluates authority at every outgoing
+    /// frontier and emits `close` when state removes a subscription's authority — so
+    /// a commit that revokes a peer's membership closes that peer's subscriptions
+    /// here as well. What a peer commit does *not* do is advance a peer's rows:
+    /// §12.3's completion barrier drags a subscription's row frontier only on its
+    /// own connection, so a peer sees new rows no sooner than its own next commit
+    /// (the at-least-own-commit frontier guarantee). Peers therefore get an
+    /// authority-only sweep, the caller the full one. Sweeping at the connection
+    /// frontier (never below it) keeps a subscription that already led `seq` from
     /// regressing to a stale position.
     fn settle_commit(&mut self, id: &str, seq: CommitSeq) -> Result<CommitSeq, SurfaceError> {
         let now = self.clock.instant();
         let barrier = Barrier::new(&self.engine, &self.router, now);
-        let Some(connection) = self.connections.get_mut(id) else {
-            return Ok(seq);
-        };
-        connection.advance_frontier(seq);
-        let frontier = connection.frontier();
-        barrier.sweep(connection, frontier)?;
-        Ok(frontier)
+        let mut caller_frontier = seq;
+        for (conn_id, connection) in &mut self.connections {
+            if conn_id == id {
+                connection.advance_frontier(seq);
+                caller_frontier = connection.frontier();
+                barrier.sweep(connection, caller_frontier)?;
+            } else {
+                barrier.close_lost_authority(connection)?;
+            }
+        }
+        Ok(caller_frontier)
     }
 
     /// Resolve a call's target binding and the authenticated context that admitted
@@ -237,12 +248,23 @@ impl<S: InstanceStore> SurfaceHost<S> {
         if !self.connections.contains_key(id) {
             return Err(SurfaceError::NoConnection(id.to_owned()));
         }
-        let (view_name, authz) = match self.resolve_view(id, watch.address(), watch.context()) {
-            Ok(pair) => pair,
-            Err(denial) => return Ok(Subscription::Denied(denial)),
-        };
+        let (view_name, authz, context) =
+            match self.resolve_view(id, watch.address(), watch.context(), watch.auth()) {
+                Ok(triple) => triple,
+                Err(denial) => return Ok(Subscription::Denied(denial)),
+            };
         let frontier = self.connection_frontier(id);
-        self.open_subscription(id, watch.id(), view_name, authz, frontier, watch.window().cloned())
+        let query = view_query(watch.args().clone(), context.as_ref());
+        self.open_subscription(
+            id,
+            watch.id(),
+            view_name,
+            authz,
+            frontier,
+            watch.window().cloned(),
+            watch.args().clone(),
+            &query,
+        )
     }
 
     /// Resume subscription `resume` on connection `id` from a retained frontier
@@ -257,15 +279,28 @@ impl<S: InstanceStore> SurfaceHost<S> {
         if !self.connections.contains_key(id) {
             return Err(SurfaceError::NoConnection(id.to_owned()));
         }
-        let (view_name, authz) = match self.resolve_view(id, resume.address(), resume.context()) {
-            Ok(pair) => pair,
-            Err(denial) => return Ok(Subscription::Denied(denial)),
-        };
+        let (view_name, authz, context) =
+            match self.resolve_view(id, resume.address(), resume.context(), resume.auth()) {
+                Ok(triple) => triple,
+                Err(denial) => return Ok(Subscription::Denied(denial)),
+            };
         // The retained `from` is a resume hint; this implementation always
         // reconstructs a fresh init at the connection's current frontier, which
-        // covers `from` and yields the current authorized result (§12.2).
+        // covers `from` and yields the current authorized result (§12.2). A resume
+        // carries no fresh arguments, so a parameterized view resumes at its
+        // declared parameter defaults (§8.3).
         let frontier = self.connection_frontier(id);
-        self.open_subscription(id, resume.id(), view_name, authz, frontier, None)
+        let query = view_query(BTreeMap::new(), context.as_ref());
+        self.open_subscription(
+            id,
+            resume.id(),
+            view_name,
+            authz,
+            frontier,
+            None,
+            BTreeMap::new(),
+            &query,
+        )
     }
 
     /// The current frontier of connection `id`, or the engine head if it is gone.
@@ -276,6 +311,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
     /// Evaluate the resolved view at `frontier`, open a subscription (bounded by
     /// `window` when present), install it on connection `id`, and report the
     /// initial result (§12.2).
+    #[allow(clippy::too_many_arguments)]
     fn open_subscription(
         &mut self,
         id: &str,
@@ -284,8 +320,13 @@ impl<S: InstanceStore> SurfaceHost<S> {
         authz: WatchAuthz,
         frontier: liasse_runtime::CommitSeq,
         window: Option<Window>,
+        args: BTreeMap<String, Value>,
+        query: &ViewQuery,
     ) -> Result<Subscription, SurfaceError> {
-        let Some(result) = self.engine.view(&view_name, frontier)? else {
+        // §10.1: a parameterized `$view` and a role `$view` reading `$actor` are
+        // served through the param- and actor-aware read; a plain public view
+        // supplies an empty query, matching the argument-free read.
+        let Some(result) = self.engine.view_with(&view_name, frontier, query)? else {
             return Ok(Subscription::Denied(Denial::new(
                 DenialReason::Unresolved,
                 "the surface view is not declared",
@@ -293,7 +334,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
         };
         match window {
             Some(window) => {
-                let mut opened = Watch::windowed(view_name, authz, frontier, window);
+                let mut opened = Watch::windowed(view_name, authz, frontier, window).with_args(args);
                 if let Err(error) = opened.init(result, frontier) {
                     return Ok(Subscription::Failed(error));
                 }
@@ -302,7 +343,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 Ok(Subscription::Window(rows))
             }
             None => {
-                let mut opened = Watch::open(view_name, authz, frontier);
+                let mut opened = Watch::open(view_name, authz, frontier).with_args(args);
                 let _ = opened.init(result.clone(), frontier);
                 self.install_watch(id, watch_id, opened);
                 Ok(Subscription::Init(result))
@@ -317,30 +358,60 @@ impl<S: InstanceStore> SurfaceHost<S> {
         }
     }
 
-    /// Resolve a subscription's view and authorization context (§12.2).
+    /// Resolve a subscription's view and authorization context (§12.2). A role
+    /// subscription authorizes from its per-request `auth` selection (§11.4) when
+    /// one is supplied, otherwise from the connection's stored context.
     fn resolve_view(
         &self,
         id: &str,
         address: &crate::address::SurfaceAddress,
         context: Option<&str>,
-    ) -> Result<(String, WatchAuthz), Denial> {
+        selection: Option<&AuthSelection>,
+    ) -> Result<(String, WatchAuthz, Option<AuthContext>), Denial> {
         match self.router.resolve(address)? {
-            Resolved::PublicView(binding) => Ok((binding.view().to_owned(), WatchAuthz::public())),
+            Resolved::PublicView(binding) => {
+                Ok((binding.view().to_owned(), WatchAuthz::public(), None))
+            }
             Resolved::RoleView { role, binding } => {
-                let Some(connection) = self.connections.get(id) else {
-                    return Err(Denial::new(DenialReason::Unauthenticated, "the connection is not open"));
-                };
-                let Some(selection) = connection.select_context(context).cloned() else {
-                    return Err(Denial::new(
-                        DenialReason::Unauthenticated,
-                        "a role surface requires an authenticated actor",
-                    ));
+                // §11.4: a per-request `auth` selection admits the subscription
+                // without a connection-stored context; otherwise fall back to the
+                // context the connection bound at `authenticate`.
+                let inline = selection.cloned();
+                let selection = match inline.clone() {
+                    Some(selection) => selection,
+                    None => {
+                        let Some(connection) = self.connections.get(id) else {
+                            return Err(Denial::new(
+                                DenialReason::Unauthenticated,
+                                "the connection is not open",
+                            ));
+                        };
+                        match connection.select_context(context).cloned() {
+                            Some(selection) => selection,
+                            None => {
+                                return Err(Denial::new(
+                                    DenialReason::Unauthenticated,
+                                    "a role surface requires an authenticated actor",
+                                ));
+                            }
+                        }
+                    }
                 };
                 let now = self.clock.instant();
                 let reader = EngineReader::new(&self.engine, now);
-                self.authorize_role(role, &selection, &reader)?;
+                // §11.1/§11.3: resolve `$actor`/`$session` so a role `$view`
+                // reading them is served the authenticated identity, not the
+                // unbound (fail-closed) read.
+                let auth_context = self.authorize_role(role, &selection, &reader)?;
                 let context = context.unwrap_or(DEFAULT_CONTEXT).to_owned();
-                Ok((binding.view().to_owned(), WatchAuthz::role(context, role.name().to_owned())))
+                let mut authz = WatchAuthz::role(context, role.name().to_owned());
+                // §12.2: a subscription opened under a per-request selection
+                // re-authorizes from that credential at every frontier, since no
+                // connection context backs it.
+                if let Some(inline) = inline {
+                    authz = authz.with_selection(inline);
+                }
+                Ok((binding.view().to_owned(), authz, Some(auth_context)))
             }
             Resolved::PublicCall(_) | Resolved::RoleCall { .. } => Err(Denial::new(
                 DenialReason::Unresolved,
@@ -348,4 +419,22 @@ impl<S: InstanceStore> SurfaceHost<S> {
             )),
         }
     }
+}
+
+/// Build the runtime [`ViewQuery`] a subscription evaluates its `$view` under: the
+/// surface `$params` arguments (§10.1) plus, for a role subscription, the resolved
+/// `$actor`/`$session` identity (§11.1/§11.3). A public subscription with no
+/// parameters yields the empty query — the argument-free read.
+pub(crate) fn view_query(args: BTreeMap<String, Value>, context: Option<&AuthContext>) -> ViewQuery {
+    let mut query = ViewQuery::new();
+    for (name, value) in args {
+        query = query.param(name, value);
+    }
+    if let Some(context) = context {
+        query = query.actor(context.actor().key().clone());
+        if let Some(session) = context.session() {
+            query = query.session(session.key().clone());
+        }
+    }
+    query
 }

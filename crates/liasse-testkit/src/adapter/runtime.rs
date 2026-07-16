@@ -139,6 +139,10 @@ pub(super) trait Instance {
     fn watch(&mut self, request: WatchRequest) -> Result<Observation, AdapterError>;
     fn unwatch(&mut self, id: &WatchId) -> Result<Observation, AdapterError>;
     fn read_view(&mut self, id: &WatchId) -> Result<Observation, AdapterError>;
+    /// The close reason of subscription `watch_id` (§12.2): an `ok` observation
+    /// whose value is the reason string when the subscription has closed, or a
+    /// value-less `ok` when it is still live.
+    fn close_reason(&mut self, watch_id: &str) -> Result<Observation, AdapterError>;
     fn advance_time(&mut self, duration: &crate::clock::Iso8601Duration) -> Result<Observation, AdapterError>;
     fn restart(&mut self) -> Result<Observation, AdapterError>;
     fn host_load(&mut self, package: &serde_json::Value) -> Result<Observation, AdapterError>;
@@ -254,8 +258,21 @@ impl<S: InstanceStore> Instance for Runtime<S> {
             let address = SurfaceAddress::parse(&request.target)
                 .map_err(|err| AdapterError::Host(format!("malformed address `{}`: {err}", request.target)))?;
             let mut watch = SurfaceWatch::new(address, watch_id.clone());
+            // §10.1/§12.1: a parameterized `$view` reads its `$params` from the
+            // subscription's arguments, decoded against the view's declared types.
+            let arg_types = loaded.routing.view_arg_types(&request.target);
+            let args = wire::decode_args(&request.args, &arg_types);
+            if !args.is_empty() {
+                watch = watch.with_args(args);
+            }
             if let Some(window) = request.window.as_ref().and_then(build_window) {
                 watch = watch.with_window(window);
+            }
+            // §11.4: a subscription may carry its own authenticator selection,
+            // authorizing inline rather than reusing the connection's context — the
+            // §11.8 multiplex path where one connection carries several sessions.
+            if let Some(selection) = request.auth.as_ref().and_then(super::parse_auth_selection) {
+                watch = watch.with_auth(selection);
             }
             // §11.8: on a multiplexed connection the subscription names which
             // authenticated context it runs under, so it applies that context's
@@ -292,6 +309,17 @@ impl<S: InstanceStore> Instance for Runtime<S> {
                 .or_else(|| loaded.host.read_view(conn, &watch_id).map(|r| wire::view_to_json_shaped(r, singular)))
         });
         Ok(Observation::ok(value))
+    }
+
+    fn close_reason(&mut self, watch_id: &str) -> Result<Observation, AdapterError> {
+        let connection = self.watch_conns.get(watch_id).cloned();
+        let loaded = self.loaded()?;
+        // §12.2: the subscription's close reason, or absent while it is still live.
+        let reason = connection
+            .as_deref()
+            .and_then(|conn| loaded.host.close_reason(conn, watch_id))
+            .map(|reason| serde_json::Value::String(reason.to_owned()));
+        Ok(Observation::ok(reason))
     }
 
     fn advance_time(&mut self, duration: &crate::clock::Iso8601Duration) -> Result<Observation, AdapterError> {
@@ -498,7 +526,10 @@ fn apply_host_load<S: InstanceStore>(
                 let completion =
                     if engine.head() == before { Completion::Unchanged } else { Completion::Committed };
                 match super::router::build(engine.model(), package, plan, &attempt) {
-                    Ok((router, routing)) => return Ok((completion, router, routing)),
+                    Ok((router, mut routing)) => {
+                        routing.load_view_param_types(engine);
+                        return Ok((completion, router, routing));
+                    }
                     Err(_) => last = Outcome::Error,
                 }
             }

@@ -16,7 +16,7 @@ use crate::clock::VirtualClock;
 use crate::contract::{ConnectRequest, Driver, Observation, is_structural};
 use crate::corpus::{Area, LoadedCase, SuiteKind};
 use crate::id::ConnectionId;
-use crate::matcher::Bindings;
+use crate::matcher::{Bindings, Matcher};
 use crate::outcome::Outcome;
 use crate::report::{CaseResult, CaseVerdict, Verdict, check_expectation};
 use crate::request::Request;
@@ -207,6 +207,9 @@ impl<'d, D: Driver> Engine<'d, D> {
                 return into_result(verdict);
             }
         }
+        if step.kind == StepKind::ExpectClose {
+            return self.judge_close(step, observation);
+        }
         let assertion = match step.kind {
             StepKind::Watch => ViewAssertion::for_watch(step),
             StepKind::ExpectView => ViewAssertion::for_expect_view(step),
@@ -216,6 +219,29 @@ impl<'d, D: Driver> Engine<'d, D> {
             return into_result(assertion.judge(observation.value.as_ref(), &mut self.env));
         }
         StepResult::Pass
+    }
+
+    /// Judge an `expect_close` step (§12.2): the observation's value is the
+    /// subscription's close reason when it has closed, or absent while it is still
+    /// live. A pinned `reason` matcher (typically `$any`) is checked against that
+    /// reason; a live subscription always fails, since a close was expected.
+    fn judge_close(&mut self, step: &Step, observation: &Observation) -> StepResult {
+        let Some(observed) = observation.value.as_ref() else {
+            return StepResult::Fail {
+                reason: "expected the subscription to be closed, but it was still live".to_owned(),
+            };
+        };
+        let Some(reason) = step.target.get("reason") else {
+            return StepResult::Pass;
+        };
+        let mut trial = self.env.clone();
+        match Matcher::parse(reason).check(observed, &mut trial) {
+            Ok(()) => {
+                self.env = trial;
+                StepResult::Pass
+            }
+            Err(err) => StepResult::Fail { reason: format!("close reason mismatch: {err}") },
+        }
     }
 
     fn register(&mut self, connection: ConnectionId) {

@@ -135,3 +135,53 @@ fn unauthenticated_role_watch_is_denied() {
         other => panic!("an unauthenticated role watch must be denied, got {other:?}"),
     }
 }
+
+#[test]
+fn peer_commit_removing_authority_closes_a_cross_connection_subscription() {
+    // §12.2: a commit on one connection is an outgoing frontier for a subscription
+    // on another. Revoking alice's session from c2 must close her member
+    // subscription on c1, even though c1 issued no request of its own.
+    let mut host = host();
+    host.connect("c1");
+    host.connect("c2");
+    assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), liasse_surface::AuthResult::Bound));
+    let init = watch(&mut host, "c1", "member.tasks", "m1");
+    assert!(init.is_empty(), "the member subscription opens");
+
+    // The revoke commits on c2; c1 made no call, yet its subscription's authority
+    // is re-evaluated at that outgoing frontier and removed.
+    let revoke = host.call("c2", &call("public.session.revoke", [("id", text("s_alice"))])).expect("revoke");
+    assert!(revoke.commit().is_some(), "the revoke commits");
+    assert!(
+        host.close_reason("c1", "m1").is_some(),
+        "the cross-connection subscription is closed after its authority is revoked",
+    );
+}
+
+#[test]
+fn a_per_request_auth_selection_opens_and_re_authorizes_a_role_subscription() {
+    // §11.4: a subscription may carry its own `auth` selection instead of reusing a
+    // connection context, so a client opens a role subscription with no prior
+    // `authenticate`; §12.2 then re-authorizes from that retained credential, so a
+    // later revocation still closes it.
+    let mut host = host();
+    host.connect("c1");
+    let selection = liasse_surface::AuthSelection::new(
+        "token",
+        liasse_surface::Credential::new(text("s_alice")),
+    );
+    let request = SurfaceWatch::new(address("member.tasks"), "m1").with_auth(selection);
+    match host.watch("c1", &request).expect("watch") {
+        Subscription::Init(result) => assert!(result.is_empty(), "the inline-authenticated subscription opens"),
+        other => panic!("an inline-auth role watch must open, got {other:?}"),
+    }
+
+    // The retained selection is re-verified at the revoke's frontier, closing the
+    // subscription even though no connection context ever backed it.
+    let revoke = host.call("c1", &call("public.session.revoke", [("id", text("s_alice"))])).expect("revoke");
+    assert!(revoke.commit().is_some(), "the revoke commits");
+    assert!(
+        host.close_reason("c1", "m1").is_some(),
+        "a subscription opened under a per-request selection re-authorizes from that credential and closes on revocation",
+    );
+}
