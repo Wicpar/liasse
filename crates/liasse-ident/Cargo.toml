@@ -7,6 +7,15 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Canonical types and their D.2 scalar wire forms; a key component is rendered
+# from a liasse-value `Value`, never re-implemented here.
+liasse-value = { path = "../liasse-value" }
+# SHA-256 for the D.4 definition identifier, D.5 manifest checksums, and D.7
+# erasure stubs. Uses the vetted RustCrypto implementation — never hand-rolled.
+sha2 = "0.10"
+# Lowercase-hex codec for digest canonical text, matching liasse-value's choice.
+data-encoding = "2.11"
+thiserror = "2"
 
 [lints]
 workspace = true

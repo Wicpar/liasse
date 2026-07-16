@@ -1,0 +1,58 @@
+// Liasse authoring document form (a scoped subset of Hjson) unified with the
+// strict normalized JSON built form. Both surfaces produce the same spanned
+// value tree. SPEC.md §2.5, §4.2, Annex C.1.
+//
+// Supported Hjson conveniences (the ones the spec's own examples use):
+//   - `//`, `#`, and `/* */` comments
+//   - unquoted member names
+//   - optional / trailing commas
+//   - triple-quoted `'''...'''` multiline strings
+// Hjson quoteless *string values* are intentionally NOT accepted: the spec
+// never uses them and they make the value grammar ambiguous. A string value
+// must be quoted or a `'''` block. See the module docs.
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ line_comment | block_comment }
+line_comment  = _{ ("//" | "#") ~ (!NEWLINE ~ ANY)* }
+block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+document = { SOI ~ value ~ EOI }
+
+value = {
+    object
+  | array
+  | multiline
+  | string
+  | boolean
+  | null_kw
+  | number
+}
+
+object  = { "{" ~ (member ~ (","? ~ member)* ~ ","?)? ~ "}" }
+member  = { member_name ~ ":" ~ value }
+member_name = { string | ident_name }
+ident_name  = @{ ("$" | ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+array = { "[" ~ (value ~ (","? ~ value)* ~ ","?)? ~ "]" }
+
+string = ${ dquote | squote }
+dquote = { "\"" ~ dq_char* ~ "\"" }
+squote = { "'" ~ sq_char* ~ "'" }
+dq_char = { (!("\"" | "\\") ~ ANY) | ("\\" ~ escape) }
+sq_char = { (!("'" | "\\") ~ ANY) | ("\\" ~ escape) }
+escape  = { "\"" | "'" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" | unicode }
+unicode = { "u" ~ ASCII_HEX_DIGIT{4} }
+
+// Triple-quoted multiline. Compound-atomic so the raw body is one token with
+// no whitespace skipping inside it.
+multiline = ${ "'''" ~ multiline_body ~ "'''" }
+multiline_body = { (!"'''" ~ ANY)* }
+
+number   = @{ "-"? ~ int_part ~ frac? ~ exp? }
+int_part = _{ "0" | (ASCII_NONZERO_DIGIT ~ ASCII_DIGIT*) }
+frac     = _{ "." ~ ASCII_DIGIT+ }
+exp      = _{ ("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+ }
+
+boolean = @{ ("true" | "false") ~ !ident_cont }
+null_kw = @{ "null" ~ !ident_cont }
+ident_cont = _{ ASCII_ALPHANUMERIC | "_" }

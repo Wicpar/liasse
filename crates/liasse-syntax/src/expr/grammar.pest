@@ -1,0 +1,158 @@
+// Liasse expression / path / selector / projection / mutation-statement
+// grammar. SPEC.md §6, §7, Annex C.3-C.9. Syntax only: this grammar commits to
+// CEL scalar-operator precedence (§6.1) but takes no position on the semantics
+// of any construct, and — per SPEC-ISSUES item 25 — takes no position on the
+// relative precedence of the view combinators `|` and `&`, which it collects
+// into one flat `combination` node instead of nesting.
+
+// `#` is NOT a comment here — it introduces an imported binding (`#name`).
+// Only `//` and `/* */` are comments in expression source.
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ line_comment | block_comment }
+line_comment  = _{ "//" ~ (!NEWLINE ~ ANY)* }
+block_comment = _{ "/*" ~ (!"*/" ~ ANY)* ~ "*/" }
+
+program = { SOI ~ statement ~ EOI }
+
+// A `$mut` statement or a bare value/view expression. `return` and the two
+// `=` / trailing-`-` forms are the only shapes that are not also expressions.
+statement  = { return_stmt | tail_stmt }
+return_stmt = { "return" ~ !ident_cont ~ expression }
+tail_stmt   = { expression ~ (assign_tail | clear_tail)? }
+assign_tail = { "=" ~ !"=" ~ expression }
+clear_tail  = { "-" ~ &EOI }
+
+expression = { ternary }
+
+ternary = { combination ~ (ternary_tail)? }
+ternary_tail = { "?" ~ !"?" ~ expression ~ ":" ~ expression }
+
+// SPEC-ISSUES 25: `|` and `&` are gathered flat, no precedence imposed.
+combination  = { fallback ~ (combinator_op ~ fallback)* }
+combinator_op = { union_op | intersect_op }
+union_op     = { "|" ~ !"|" }
+intersect_op = { "&" ~ !"&" }
+
+fallback   = { logic_or ~ (fallback_op ~ logic_or)* }
+fallback_op = { "??" }
+
+logic_or  = { logic_and ~ (or_op ~ logic_and)* }
+or_op     = { "||" }
+logic_and = { equality ~ (and_op ~ equality)* }
+and_op    = { "&&" }
+
+equality   = { relational ~ (eq_op ~ relational)* }
+eq_op      = { eq | ne }
+eq = { "==" }
+ne = { "!=" }
+
+relational = { additive ~ (rel_op ~ additive)* }
+rel_op = { le | ge | lt | gt | in_op }
+le = { "<=" }
+ge = { ">=" }
+lt = { "<" }
+gt = { ">" }
+in_op = { "in" ~ !ident_cont }
+
+additive = { multiplicative ~ (add_op ~ multiplicative)* }
+add_op = { plus | minus }
+plus  = { "+" }
+minus = { "-" }
+
+multiplicative = { unary ~ (mul_op ~ unary)* }
+mul_op = { star | slash | percent }
+star    = { "*" }
+slash   = { "/" ~ !"/" }
+percent = { "%" }
+
+unary = { unary_op* ~ postfix }
+unary_op = { not_op | neg_op }
+not_op = { "!" }
+neg_op = { "-" }
+
+postfix = { primary ~ postfix_op* }
+postfix_op = { field_access | same_name | selector | call_args | block }
+
+field_access = { "." ~ member_ref }
+same_name    = { "::" ~ member_ref }
+member_ref   = ${ "$"? ~ ident }
+
+selector = { "[" ~ selector_body ~ "]" }
+selector_body = { bind_selector | key_list }
+bind_selector = { ":" ~ ident ~ (bind_filter)? }
+bind_filter   = { "|" ~ expression }
+key_list      = { expression ~ ("," ~ expression)* }
+
+call_args = { "(" ~ (arg ~ ("," ~ arg)*)? ~ ")" }
+arg = { named_arg | expression }
+named_arg = { ident ~ ":" ~ expression }
+
+block = { "{" ~ (block_member ~ (","? ~ block_member)* ~ ","?)? ~ "}" }
+block_member = {
+    directive
+  | clear_member
+  | named_member
+  | assign_member
+  | shorthand_member
+}
+directive     = { struct_name ~ ":" ~ expression }
+clear_member  = { "-" ~ member_ref }
+named_member  = { member_ref ~ ":" ~ (block | expression)? }
+assign_member = { member_ref ~ "=" ~ !"=" ~ expression }
+shorthand_member = { expression }
+
+primary = {
+    none_kw
+  | boolean
+  | decimal
+  | integer
+  | string
+  | multiline
+  | list
+  | object_literal
+  | root_ref
+  | implicit_field
+  | current_ref
+  | parent_ref
+  | import_ref
+  | param_ref
+  | struct_ref
+  | grouped
+  | name_ref
+}
+
+none_kw = @{ "none" ~ !ident_cont }
+boolean = @{ ("true" | "false") ~ !ident_cont }
+
+decimal = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ ~ (("e" | "E") ~ ("+" | "-")? ~ ASCII_DIGIT+)? }
+integer = @{ "-"? ~ ASCII_DIGIT+ }
+
+string = ${ dquote | squote }
+dquote = { "\"" ~ dq_char* ~ "\"" }
+squote = { "'" ~ sq_char* ~ "'" }
+dq_char = { (!("\"" | "\\") ~ ANY) | ("\\" ~ escape) }
+sq_char = { (!("'" | "\\") ~ ANY) | ("\\" ~ escape) }
+escape  = { "\"" | "'" | "\\" | "/" | "b" | "f" | "n" | "r" | "t" | unicode }
+unicode = { "u" ~ ASCII_HEX_DIGIT{4} }
+
+multiline = ${ "'''" ~ multiline_body ~ "'''" }
+multiline_body = { (!"'''" ~ ANY)* }
+
+list = { "[" ~ (expression ~ ("," ~ expression)* ~ ","?)? ~ "]" }
+object_literal = { "{" ~ (block_member ~ (","? ~ block_member)* ~ ","?)? ~ "}" }
+
+// `/` is the package root; `/name` is that member of the root (the spec writes
+// `/companies["acme"]`, never `/.companies`).
+root_ref   = { "/" ~ !"/" ~ member_ref? }
+current_ref = { "." ~ !(ident | "$") }
+implicit_field = { "." ~ member_ref }
+parent_ref = @{ "^"+ }
+import_ref = ${ "#" ~ ident }
+param_ref  = ${ "@" ~ ident }
+struct_ref = ${ "$" ~ ident }
+name_ref   = ${ ident }
+grouped    = { "(" ~ expression ~ ")" }
+
+struct_name = ${ "$" ~ ident }
+ident = @{ (ASCII_ALPHA | "_") ~ ident_cont* }
+ident_cont = _{ ASCII_ALPHANUMERIC | "_" }

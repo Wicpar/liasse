@@ -7,6 +7,35 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Arbitrary-precision decimal (exact base-10, preserves scale) for `decimal`
+# and `json` numbers; re-exports num-bigint for `int`. Chosen over rust_decimal
+# because A.1/A.6 require arbitrary precision (rust_decimal caps at 96 bits).
+bigdecimal = "0.4.10"
+# 128-bit UUID with byte-lexicographic Ord matching B.1.
+uuid = "1.24"
+# Gregorian civil date with real-calendar validation (parse-don't-validate)
+# and chronological Ord. Only `date` needs a calendar library: `timestamp` and
+# `duration` are signed integer counts per A.5/A.1, not wall-clock library
+# types, so no tzdb is pulled in. jiff is the actively maintained choice.
+jiff = { version = "0.2", default-features = false, features = ["std"] }
+# Canonical padded base64 (`bytes`) and lowercase hex (`blob $sha512`) from one
+# crate, RFC 4648, no config surprises.
+data-encoding = "2.11"
+# Wire JSON. arbitrary_precision keeps `json` numbers exact on decode. The
+# encoder sorts object keys explicitly (see `Value::canonical_object`) rather
+# than rely on the Map backing: workspace feature unification can turn on
+# `preserve_order` (a sibling crate enables it), which flips the Map from a
+# sorted BTreeMap to insertion order, so canonical A.7 key order must not depend
+# on the feature set.
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+thiserror = "2"
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "value_bench"
+harness = false
 
 [lints]
 workspace = true

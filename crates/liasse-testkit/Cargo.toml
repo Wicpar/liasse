@@ -7,6 +7,11 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.145", features = ["preserve_order"] }
+deser-hjson = "2.2.6"
+thiserror = "2.0.17"
+walkdir = "2.5.0"
 
 [lints]
 workspace = true

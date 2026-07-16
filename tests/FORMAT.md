@@ -29,6 +29,13 @@ tests/
 Files are Hjson (the spec's authoring form). Comments are allowed and
 encouraged — a red case should explain its attack in a comment.
 
+**Dialect note.** Case files use a *relaxed* Hjson dialect: a quoteless value
+token terminates at structural punctuation (`,` `}` `]`) rather than at
+end-of-line, so inline forms like `{ outcome: ok }` are valid. Stock Hjson
+parsers (which read quoteless strings greedily to end-of-line) reject this;
+readers must apply the semantics-preserving preprocessing the `liasse-testkit`
+loader implements (quoting value-position bare tokens) or an equivalent.
+
 ## Case shape
 
 ```hjson

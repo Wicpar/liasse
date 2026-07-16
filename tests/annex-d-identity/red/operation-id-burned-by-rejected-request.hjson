@@ -45,7 +45,7 @@ commit. No row is ever written under this identifier.'''
                 detail: "body fails the size check" } }
     // equivalent retry: re-observes the retained rejection, no execution
     { call: "public.notes.put", args: { id: "n1", body: "way-too-long" }, operation_id: "op-Q",
-      expect: { outcome: rejected, "...": true } }
+      expect: { outcome: rejected, violates: ["§8.8"], "...": true } }
     // corrected, DIFFERENT request under the burned identifier -> conflict
     { call: "public.notes.put", args: { id: "n1", body: "ok" }, operation_id: "op-Q",
       expect: { outcome: rejected, violates: ["§D.8", "§12"],
