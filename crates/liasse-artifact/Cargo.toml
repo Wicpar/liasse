@@ -7,6 +7,34 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+# D.4/D.5/D.7 SHA-256 digests, the `sha256:` canonical text, the definition
+# identifier, and the opaque instance/lineage/point identities the manifest
+# carries. Never re-implemented here.
+liasse-ident = { path = "../liasse-ident" }
+# ZIP64 container read/write (§4.1, §19.5, D.5). `default-features = false`
+# drops every codec except the pure-Rust `deflate` reader: the builder writes
+# STORED for byte-determinism, and reading must still decode a DEFLATE entry an
+# external repacker may have produced (tests/04 `repack_artifact` compression
+# knob). Dropping `time` also removes the wall-clock default timestamp.
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+# Strict JSON decode for `manifest.json` (§19.5) — canonical *encode* is
+# hand-rolled (see `canon`) because the workspace unifies serde_json's
+# `preserve_order` feature (liasse-testkit enables it), which makes
+# `serde_json::Value` object order insertion-defined rather than sorted, so D.5
+# canonical member order must not depend on it.
+serde_json = "1.0"
+thiserror = "2"
+
+[dev-dependencies]
+# Tests and benches construct manifests and points directly from the identity
+# types, so the dependency is needed at the integration-test crate boundary too.
+liasse-ident = { path = "../liasse-ident" }
+zip = { version = "2.4", default-features = false }
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "artifact_bench"
+harness = false
 
 [lints]
 workspace = true
