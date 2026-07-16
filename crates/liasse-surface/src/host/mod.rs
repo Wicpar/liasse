@@ -10,6 +10,8 @@
 
 mod barrier;
 mod call;
+mod history;
+mod operator;
 
 use std::collections::BTreeMap;
 
@@ -136,6 +138,27 @@ impl<S: InstanceStore> SurfaceHost<S> {
         self.engine.set_time(now);
         let barrier = barrier::Barrier::new(&self.engine, &self.router, now);
         for connection in self.connections.values_mut() {
+            let frontier = connection.frontier();
+            barrier.sweep(connection, frontier)?;
+        }
+        Ok(())
+    }
+
+    /// Drag every open subscription through the engine's current head at the
+    /// current instant, advancing each connection's frontier and sweeping its
+    /// still-authorized subscriptions. Used after a host-driven state change that
+    /// did not flow through a client `call` — an applied §19 `import` movement or a
+    /// §23.5 operator transition — so live clients observe the new committed state
+    /// coherently (§12.6, §22.6).
+    ///
+    /// # Errors
+    /// [`SurfaceError::Engine`] from a store or view fault while sweeping.
+    pub(super) fn sweep_all(&mut self) -> Result<(), SurfaceError> {
+        let now = self.clock.instant();
+        let head = self.engine.head();
+        let barrier = barrier::Barrier::new(&self.engine, &self.router, now);
+        for connection in self.connections.values_mut() {
+            connection.advance_frontier(head);
             let frontier = connection.frontier();
             barrier.sweep(connection, frontier)?;
         }

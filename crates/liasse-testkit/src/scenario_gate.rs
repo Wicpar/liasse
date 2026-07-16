@@ -408,7 +408,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // expects. Each is real conformance debt for the triage loop; none is edited away.
     // ========================================================================
     // --- fail:noval ---
-    ("05-state-model/ancestor-rekey-rewrites-descendant-identity", "no value produced (unsupported call path)"),
     ("08-mutations-validation/empty-args-call-forms-equivalent", "no value produced (unsupported call path)"),
     ("08-mutations-validation/inferred-param-target-normalization-applies", "no value produced (unsupported call path)"),
     ("10-interfaces-roles/surface-exposes-only-declared-members", "no value produced (unsupported call path)"),
@@ -444,7 +443,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("w-worked-examples/w3-unfunded-account-cannot-draw-other-accounts-pools", "no view value produced (unsupported view/watch path)"),
     // --- fail:outcome ---
     ("05-state-model/bulk-insert-defaults-see-prestatement-state", "outcome divergence: expected `ok` observed `rejected`"),
-    ("05-state-model/enum-unknown-label-rejected", "outcome divergence: expected `rejected` observed `ok`"),
     ("05-state-model/nested-initializer-failure-rejects-parent-insert", "outcome divergence: expected `ok` observed `rejected`"),
     ("05-state-model/rekey-constraint-failure-rejects-transition", "outcome divergence: expected `rejected` observed `ok`"),
     ("06-expressions/row-mutation-receiver-duplicate-occurrences-reject", "outcome divergence: expected `ok` observed `rejected`"),
@@ -463,9 +461,7 @@ pub const SKIP: &[(&str, &str)] = &[
     ("12-clients-live-views/parameter-normalization-and-checks", "outcome divergence: expected `ok` observed `denied`"),
     ("12-clients-live-views/resume-after-authority-loss-denied", "outcome divergence: expected `ok` observed `denied`"),
     ("12-clients-live-views/revoked-member-call-denied-at-admission", "outcome divergence: expected `ok` observed `denied`"),
-    ("12-clients-live-views/window-anchor-without-occurrence-error", "outcome divergence: expected `error` observed `ok`"),
     ("14-buckets/between-rejects-empty-or-reversed-range", "outcome divergence: expected `rejected` observed `ok`"),
-    ("14-buckets/until-equal-to-admission-instant-rejected", "outcome divergence: expected `rejected` observed `ok`"),
     ("15-meters/accrual-unspent-capacity-does-not-roll-over", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/amount-expression-overrides-default", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/backdated-spend-consumes-expired-pool", "outcome divergence: expected `ok` observed `rejected`"),
@@ -495,7 +491,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("22-runtime-semantics/actor-bound-for-authenticated-request", "outcome divergence: expected `ok` observed `denied`"),
     ("22-runtime-semantics/confusable-actor-names-provenance-stays-distinct", "outcome divergence: expected `ok` observed `denied`"),
     ("23-host-contract/restart-preserves-identity-values-and-view", "outcome divergence: expected `ok` observed `denied`"),
-    ("annex-c-grammar/enum-field-form-closed-label-set", "outcome divergence: expected `rejected` observed `ok`"),
     // --- fail:valdiff ---
     ("06-expressions/composite-selector-member-order-irrelevant", "value diverges from expectation"),
     ("06-expressions/empty-text-key-addressable", "value diverges from expectation"),
@@ -513,9 +508,7 @@ pub const SKIP: &[(&str, &str)] = &[
     ("09-loading-bootstrap/seed-nested-collection-map-form", "view result diverges from expectation"),
     ("09-loading-bootstrap/seed-percent-encoded-key-round-trip", "view result diverges from expectation"),
     ("12-clients-live-views/temporal-observation-advances-live-view", "view result diverges from expectation"),
-    ("12-clients-live-views/window-anchor-gap-and-reappearance", "view result diverges from expectation"),
     ("12-clients-live-views/window-anchor-survives-rekey", "view result diverges from expectation"),
-    ("12-clients-live-views/window-slide-centers-within-bounds", "view result diverges from expectation"),
     ("14-buckets/expiration-preserves-row-in-all", "view result diverges from expectation"),
     ("18-blobs/claimed-sha512-mismatch-rejected", "view result diverges from expectation"),
     ("18-blobs/no-writable-store-rejects-upload", "view result diverges from expectation"),

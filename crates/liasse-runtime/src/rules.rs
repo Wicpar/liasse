@@ -53,6 +53,77 @@ fn absent_value(ty: &liasse_value::Type) -> Value {
     }
 }
 
+/// Coerce every present enum-typed field value to a validated enum label (§5.9):
+/// the `$enum` array is a closed set, so a supplied value whose label is not
+/// declared rejects the transition, and an accepted label is carried as a
+/// positioned [`Value::Enum`] so ordering (B.1) and equality follow declaration
+/// order rather than raw text. A value that already parsed to the enum on the
+/// wire is left as is; `none` (an absent optional) is untouched.
+pub(crate) fn coerce_fields(
+    collection: &CompiledCollection,
+    fields: &mut FieldMap,
+    where_path: &str,
+) -> Result<(), Rejection> {
+    for field in &collection.fields {
+        if enum_of(&field.ty).is_none() {
+            continue;
+        }
+        let Some(value) = fields.get(&field.name) else { continue };
+        let coerced = coerce_value(&field.ty, value, &field.name, where_path)?;
+        fields.insert(field.name.clone(), coerced);
+    }
+    Ok(())
+}
+
+/// Coerce one value to an enum-typed field's declared label set (§5.9), or return
+/// it unchanged when the type is not an enum. A supplied `text`/`enum` value is
+/// parsed against the closed label set; an undeclared label rejects.
+pub(crate) fn coerce_value(
+    ty: &liasse_value::Type,
+    value: &Value,
+    field_name: &str,
+    where_path: &str,
+) -> Result<Value, Rejection> {
+    let Some(enum_ty) = enum_of(ty) else { return Ok(value.clone()) };
+    let label = match value {
+        Value::None | Value::Enum(_) => return Ok(value.clone()),
+        Value::Text(text) => text.as_str().to_owned(),
+        _ => {
+            return Err(Rejection::new(
+                RejectionReason::TypeError,
+                format!("field `{field_name}` is an enum and takes a declared label"),
+            )
+            .at(where_path.to_owned()));
+        }
+    };
+    let parsed = enum_ty.parse(&label).map_err(|_| {
+        Rejection::new(
+            RejectionReason::Evaluation,
+            format!(
+                "`{label}` is not a declared label of enum field `{field_name}` (accepted: {})",
+                enum_ty.labels().join(", "),
+            ),
+        )
+        .at(where_path.to_owned())
+    })?;
+    Ok(Value::Enum(parsed))
+}
+
+/// Whether a field's declared type is an enum (possibly optional).
+#[must_use]
+pub(crate) fn is_enum_field(ty: &liasse_value::Type) -> bool {
+    enum_of(ty).is_some()
+}
+
+/// The enum type a field's declared type resolves to, unwrapping `optional`.
+fn enum_of(ty: &liasse_value::Type) -> Option<&liasse_value::EnumType> {
+    match ty {
+        liasse_value::Type::Enum(en) => Some(en),
+        liasse_value::Type::Optional(inner) => enum_of(inner),
+        _ => None,
+    }
+}
+
 /// Normalize every field carrying a `$normalize` expression (§8.8): `.` is the
 /// field's own value.
 pub(crate) fn normalize_all(

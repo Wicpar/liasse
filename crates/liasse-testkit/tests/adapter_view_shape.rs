@@ -35,10 +35,12 @@ const APP: &str = r##"{
     $model: {
       title: "text"
       items: { $key: "id", id: "text", n: "int" }
+      head_view: { $view: ". { title }" }
       $public: {
         header: { $view: ". { title }" }
         list:   { $view: ".items { id }" }
         one:    { $view: ".items['a'] { id }" }
+        named:  { $view: ".head_view" }
       }
     }
     $data: {
@@ -86,6 +88,21 @@ fn collection_source_is_an_array_even_with_one_row() {
         r##"[
           { watch: "public.list", id: "l",
             expect_init: { value: [ { id: "a" } ] } }
+        ]"##,
+    );
+    assert_step(&result, 0);
+}
+
+#[test]
+fn bare_reference_to_declared_singular_view_is_one_object() {
+    // §12.2: a surface `$view` that is a bare reference to a declared root
+    // projection (`.head_view`) delivers that view's singular shape — one object.
+    // The reference must bind the declared view directly, not through a synthetic
+    // wrapper whose `.head_view` expression re-types as a row stream (array).
+    let result = run(
+        r##"[
+          { watch: "public.named", id: "n",
+            expect_init: { value: { title: "Hello" } } }
         ]"##,
     );
     assert_step(&result, 0);

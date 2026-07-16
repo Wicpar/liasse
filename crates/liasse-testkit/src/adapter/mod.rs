@@ -398,19 +398,38 @@ fn parse_authenticate(payload: &serde_json::Value) -> Option<Authenticate> {
 }
 
 /// Build a bounded window (§12.2) from a verbatim `window` spec. Handles the
-/// `$size` bound with a `$first`/`$last` anchor and the `$slide` flag; a concrete
-/// occurrence anchor (a row identity) is left unbuilt this phase, so the
-/// subscription tracks the whole view instead.
+/// `$size` bound with a `$first`/`$last` anchor, a concrete occurrence anchor (a
+/// row key identity), and the `$slide` flag. A concrete anchor is resolved to the
+/// row's stable [`RowId`] the same way the view materializer keys it (D.2): the
+/// anchor's canonical key text. The engine then requires that occurrence be
+/// present when the window opens (§12.2).
 fn build_window(spec: &serde_json::Value) -> Option<Window> {
     let object = spec.as_object()?;
     let size = usize::try_from(object.get("$size")?.as_u64()?).ok()?;
     let slide = object.get("$slide").and_then(serde_json::Value::as_bool).unwrap_or(false);
-    let window = match object.get("$anchor").and_then(serde_json::Value::as_str) {
-        None | Some("$first") => Window::first(size),
-        Some("$last") => Window::last(size),
+    let window = match object.get("$anchor") {
+        None => Window::first(size),
+        Some(serde_json::Value::String(anchor)) => match anchor.as_str() {
+            "$first" => Window::first(size),
+            "$last" => Window::last(size),
+            _ => Window::anchored(size, anchor_row_id(anchor)),
+        },
         Some(_) => return None,
     };
     Some(if slide { window.sliding() } else { window })
+}
+
+/// The stable [`RowId`] a concrete window anchor names. A top-level view row is
+/// keyed by its source row's canonical key text (Annex D.2); the anchor carries
+/// that key in wire form, so its [`KeyText`] over a `text` value reproduces the
+/// same identity the view materializer assigns. A key value carrying reserved
+/// characters is escaped identically on both sides through the one D.2 codec.
+fn anchor_row_id(anchor: &str) -> liasse_expr::RowId {
+    let value = Value::Text(Text::new(anchor.to_owned()));
+    let text = liasse_ident::KeyText::from_key_values(std::slice::from_ref(&value))
+        .map(|key| key.as_str().to_owned())
+        .unwrap_or_else(|_| anchor.to_owned());
+    liasse_expr::RowId::keyed(text)
 }
 
 /// Render a call outcome to a harness observation, projecting the response value

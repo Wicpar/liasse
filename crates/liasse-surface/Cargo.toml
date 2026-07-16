@@ -13,10 +13,9 @@ liasse-expr = { path = "../liasse-expr" }
 liasse-model = { path = "../liasse-model" }
 liasse-store = { path = "../liasse-store" }
 liasse-runtime = { path = "../liasse-runtime" }
-thiserror = "2"
-
-[dev-dependencies]
+liasse-host = { path = "../liasse-host" }
 liasse-ident = { path = "../liasse-ident" }
+thiserror = "2"
 
 [lints]
 workspace = true

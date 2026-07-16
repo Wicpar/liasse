@@ -224,16 +224,28 @@ impl<'a> Interp<'a> {
             _ => return Err(Rejection::new(RejectionReason::TypeError, "a field is assigned a scalar value")),
         };
         let collection = self.collection_at(&row.path)?;
-        if let Some(field_meta) = collection.field(&field)
-            && let Some(from) = typed.ty().as_scalar()
-            && !crate::schema::assignable(from, &field_meta.ty)
-        {
-            return Err(Rejection::new(
-                RejectionReason::TypeError,
-                format!("value of type `{}` is not assignable to `{}`", from.name(), field_meta.ty.name()),
-            )
-            .at(format!("{}/{}", row.address.render(), field)));
-        }
+        // An enum field takes a declared label (§5.9): coerce a `text` value to a
+        // positioned enum value, rejecting an undeclared label. Non-enum fields
+        // keep the ordinary static assignability check.
+        let scalar = if let Some(field_meta) = collection.field(&field) {
+            let where_path = format!("{}/{}", row.address.render(), field);
+            if crate::rules::is_enum_field(&field_meta.ty) {
+                crate::rules::coerce_value(&field_meta.ty, &scalar, &field, &where_path)?
+            } else {
+                if let Some(from) = typed.ty().as_scalar()
+                    && !crate::schema::assignable(from, &field_meta.ty)
+                {
+                    return Err(Rejection::new(
+                        RejectionReason::TypeError,
+                        format!("value of type `{}` is not assignable to `{}`", from.name(), field_meta.ty.name()),
+                    )
+                    .at(where_path));
+                }
+                scalar
+            }
+        } else {
+            scalar
+        };
         self.write_field(&row, &field, scalar)
     }
 
@@ -544,6 +556,7 @@ impl<'a> Interp<'a> {
         }
         rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective)?;
         rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
+        rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."))?;
         let address = self.key_address(&loc.store_path, &loc.decl, &fields)?;
         if self.prospective.contains(&address) {
             return Err(Rejection::new(RejectionReason::DuplicateKey, "a row with this key already exists")
@@ -595,6 +608,7 @@ impl<'a> Interp<'a> {
             }
             rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective)?;
             rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
+            rules::coerce_fields(compiled, &mut fields, &decl.join("."))?;
             let address = self.key_address(&store_path, &decl, &fields)?;
             if self.prospective.contains(&address) {
                 return Err(Rejection::new(RejectionReason::DuplicateKey, "a row with this key already exists")

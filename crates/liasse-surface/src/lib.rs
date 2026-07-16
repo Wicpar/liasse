@@ -57,9 +57,12 @@
 mod address;
 mod authn;
 mod binding;
+mod blobs;
 mod clock;
 mod connection;
 mod host;
+mod keyring;
+mod modules;
 mod operation;
 mod outcome;
 mod reader;
@@ -70,6 +73,9 @@ mod watch;
 mod window;
 
 pub use address::{AddressError, Authority, SurfaceAddress};
+pub use blobs::{BlobGetOutcome, BlobHost, BlobPutOutcome};
+pub use keyring::KeyringAdmin;
+pub use modules::{ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate};
 pub use authn::{
     Actor, AuthContext, Authenticator, Claims, Credential, RowLookup, RowSource, Session,
     SessionAuthenticator, SessionSource, Verifier, VerifyFailure,
@@ -94,6 +100,14 @@ pub use liasse_expr::RowId;
 /// Re-exported so callers build requests, read outcomes, and inspect views
 /// without a direct dependency edge on the runtime and value crates.
 pub use liasse_runtime::{
-    CommitSeq, Engine, Precision, Rejection, ResponseValue, Timestamp, Value, ViewDelta, ViewResult,
-    ViewRow,
+    AcceptedType, Blob, BlobEngine, CommitSeq, ConflictKind, CopyState, DeclaredDescriptor, Engine,
+    FetchError, ImportError, ImportRelation, ImportReport, KeyState, KeyVersion, Keyring,
+    KeyringError, KeyringPolicy, MergeConflict, MergeOutcome, ModuleError, ModuleHost, Placement,
+    Precision, Rejection, ResponseValue, RotationMode, RotationOutcome, RotationSchedule, SeedMerge,
+    SessionToken, Store, StoreId, Timestamp, UpdateReport, UploadError, Value, VerifyError,
+    VersionId, ViewDelta, ViewResult, ViewRow,
 };
+
+/// Re-exported so a driver builds keyring providers, blob connectors, and their
+/// fault-injection scripts without a direct dependency edge on the host crate.
+pub use liasse_host::{BlobConnector, ExternalKeyRef, KeyProvider};

@@ -90,6 +90,13 @@ pub(crate) fn interval_bounds(
 
 /// Reject a transition that produced an invalid finite interval (§14.2): a
 /// present, finite `$until` MUST be strictly after a present, finite `$from`.
+///
+/// A `$created`-defaulted (or omitted) `$from` carries no stored lower-bound
+/// expression, yet at admission the row's creation instant is the request's
+/// fixed `now()` (§A.5). The lower bound the new row will carry is therefore
+/// `now`, so a `$until` at or before `now` yields the empty interval `[now, now)`
+/// and MUST reject — this is the minimum-lifetime boundary (§14.2): a session
+/// whose `expires_at` equals its own admission instant is never active.
 pub(crate) fn check_interval(
     bucket: &CompiledBucket,
     collection: &CompiledCollection,
@@ -98,7 +105,8 @@ pub(crate) fn check_interval(
     where_path: &str,
 ) -> Result<(), Rejection> {
     let (from, until) = bounds(bucket, collection, fields, now).map_err(Rejection::from)?;
-    if let (Some(from), Some(until)) = (from, until)
+    let from = from.unwrap_or(now);
+    if let Some(until) = until
         && until <= from
     {
         return Err(Rejection::new(

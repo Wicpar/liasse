@@ -357,12 +357,20 @@ impl<S: InstanceStore> Engine<S> {
             return Ok(CallOutcome::Rejected(rejection));
         }
 
+        // §8.6/§8.10: the `return` is evaluated from the resulting state — the
+        // prospective state that will be committed. It is part of the admitted
+        // operation, so a genuine evaluation fault (e.g. `.$between`'s empty-range
+        // rejection, §14.1) rejects the whole transition and commits nothing,
+        // rather than silently yielding a valueless success.
+        let response = match eval_return(&ctx, &prospective, &receiver, &locals, mutation, ret.as_ref())
+        {
+            Ok(response) => response,
+            Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+        };
+
         let changes = prospective.diff();
         if changes.is_empty() {
-            // §8.9: no state change → `unchanged`; the response is evaluated from
-            // the unchanged state and the frontier does not advance.
-            let response =
-                eval_return(&ctx, &prospective, &receiver, &locals, mutation, ret.as_ref());
+            // §8.9: no state change → `unchanged`; the frontier does not advance.
             return Ok(CallOutcome::Unchanged { response });
         }
 
@@ -372,9 +380,6 @@ impl<S: InstanceStore> Engine<S> {
             CommitOutcome::Committed(seq) => seq,
             CommitOutcome::Unchanged => self.store.head(),
         };
-        // §8.6: the response is evaluated from the committed resulting state.
-        let post = Prospective::gather(&self.store, schema)?;
-        let response = eval_return(&ctx, &post, &receiver, &locals, mutation, ret.as_ref());
         Ok(CallOutcome::Committed { seq, response })
     }
 
@@ -483,6 +488,11 @@ fn stage<T: Transition>(txn: &mut T, changes: Vec<Change>) -> Result<(), EngineE
 }
 
 /// Evaluate a mutation's `return` from the admitted state (§8.6, §8.10).
+///
+/// `Ok(None)` means there is no `return` (or no receiver row to evaluate it
+/// over); `Ok(Some(_))` is the evaluated response; `Err` is a genuine evaluation
+/// fault, which is part of the admitted operation and rejects the whole
+/// transition (§14.1's `.$between` empty-range rejection is the canonical case).
 fn eval_return(
     ctx: &EvalCtx<'_>,
     prospective: &Prospective,
@@ -490,9 +500,9 @@ fn eval_return(
     locals: &BTreeMap<String, crate::interp::LocalBind>,
     mutation: &CompiledMutation,
     ret: Option<&(liasse_syntax::Expr, liasse_diag::SourceId)>,
-) -> Option<ResponseValue> {
-    let (expr, source) = ret?;
-    let current = current_cell(ctx, prospective, receiver)?;
+) -> Result<Option<ResponseValue>, Rejection> {
+    let Some((expr, source)) = ret else { return Ok(None) };
+    let Some(current) = current_cell(ctx, prospective, receiver) else { return Ok(None) };
     // The `return` may name a `name = …` local (§8.1); resolve every binding's
     // type and cell against the committed state it is evaluated over (§8.10).
     let (types, cells) = crate::interp::local_bindings(locals, ctx, prospective);
@@ -500,9 +510,9 @@ fn eval_return(
     for (name, ty) in types {
         scope = scope.with_binding(name, ty);
     }
-    let typed = check_expression(&scope, *source, expr).ok()?;
-    let cell = ctx.eval_with(prospective, &typed, &current, cells).ok()?;
-    Some(ResponseValue::new(cell))
+    let Ok(typed) = check_expression(&scope, *source, expr) else { return Ok(None) };
+    let cell = ctx.eval_with(prospective, &typed, &current, cells)?;
+    Ok(Some(ResponseValue::new(cell)))
 }
 
 fn current_cell(

@@ -49,9 +49,10 @@ impl SurfaceLift {
         let mut lift = Self::default();
         let Some(model) = package.get("$model") else { return lift };
         let declared = declared_mutations(model);
+        let declared_views = declared_views(model);
         if let Some(public) = model.get("$public").and_then(J::as_object) {
             for (surface, definition) in public {
-                lift.surface("public", surface, definition, &declared);
+                lift.surface("public", surface, definition, &declared, &declared_views);
             }
         }
         if let Some(roles) = model.get("$roles").and_then(J::as_object) {
@@ -61,7 +62,7 @@ impl SurfaceLift {
                     if surface.starts_with('$') {
                         continue;
                     }
-                    lift.surface(role, surface, member, &declared);
+                    lift.surface(role, surface, member, &declared, &declared_views);
                 }
             }
         }
@@ -70,10 +71,18 @@ impl SurfaceLift {
 
     /// Reconstruct one surface's inline `$view` and `$mut` members under the
     /// address prefix (`public`, or a role name).
-    fn surface(&mut self, prefix: &str, surface: &str, definition: &J, declared: &BTreeSet<String>) {
+    fn surface(
+        &mut self,
+        prefix: &str,
+        surface: &str,
+        definition: &J,
+        declared: &BTreeSet<String>,
+        declared_views: &BTreeSet<String>,
+    ) {
         let Some(members) = definition.as_object() else { return };
         if let Some(view) = members.get("$view").and_then(J::as_str)
             && liftable_view(view)
+            && !references_declared_view(view, declared_views)
         {
             let name = format!("liasse_lift_view_{}_{prefix}_{surface}", self.views.len());
             self.views.push((name.clone(), view.to_owned()));
@@ -243,6 +252,35 @@ fn arg_reads_request_scope(arg: &Arg) -> bool {
     match arg {
         Arg::Positional(expr) | Arg::Named { value: expr, .. } => reads_request_scope(expr),
     }
+}
+
+/// Whether a surface `$view` expression is exactly a bare reference `.name` to
+/// an already-declared top-level view. Such a reference must NOT be lifted into a
+/// synthetic wrapper view: the wrapper's expression (`.name`) re-types as a
+/// stream and loses the referenced view's singular delivery shape (§12.2). The
+/// router's bare-reference path binds the declared view directly, preserving its
+/// shape, so this member is left to that path.
+fn references_declared_view(text: &str, declared_views: &BTreeSet<String>) -> bool {
+    let Some(name) = text.strip_prefix('.') else { return false };
+    !name.is_empty()
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+        && declared_views.contains(name)
+}
+
+/// Every declared top-level view name of the model: a member (outside
+/// `$public`/`$roles`) whose value carries a `$view` key.
+fn declared_views(model: &J) -> BTreeSet<String> {
+    let mut names = BTreeSet::new();
+    let Some(object) = model.as_object() else { return names };
+    for (name, value) in object {
+        if name.starts_with('$') {
+            continue;
+        }
+        if value.as_object().is_some_and(|member| member.contains_key("$view")) {
+            names.insert(name.clone());
+        }
+    }
+    names
 }
 
 /// Whether a surface `$mut` member is an inline program to lift: an array

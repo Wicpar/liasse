@@ -183,7 +183,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
 
     /// Build the runtime [`CallRequest`] (bound receiver + parameters) and the
     /// §12.3 request model (the full verbatim arguments) for dedup equivalence.
-    fn build_request(
+    pub(super) fn build_request(
         binding: &CallBinding,
         args: &BTreeMap<String, Value>,
     ) -> Result<(CallRequest, RequestModel), Rejection> {

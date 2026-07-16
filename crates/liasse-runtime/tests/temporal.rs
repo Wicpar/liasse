@@ -82,6 +82,36 @@ fn at_selects_rows_active_at_the_queried_instant() {
     assert!(ids(&mut engine, after_both).is_empty());
 }
 
+/// §14.1: `.$between(a, b)` requires a non-empty range `b > a`. An empty (`b ==
+/// a`) or reversed (`b < a`) window rejects evaluation, and because the `return`
+/// is part of the admitted operation (§8.6) that fault rejects the whole call —
+/// a read-only mutation must not silently succeed with no value. A valid window
+/// over no matching rows still succeeds with the empty view.
+#[test]
+fn between_empty_or_reversed_range_rejects_the_call() {
+    let mut engine = two_sessions();
+
+    let empty = CallRequest::new("sessions_between")
+        .arg("a", at(NOW_MICROS + 1_000))
+        .arg("b", at(NOW_MICROS + 1_000));
+    let mut gens = generator();
+    let outcome = engine.call(&empty, &mut gens).expect("call resolves");
+    assert!(matches!(outcome, CallOutcome::Rejected(_)), "an empty range rejects, got {outcome:?}");
+
+    let reversed = CallRequest::new("sessions_between")
+        .arg("a", at(NOW_MICROS + 3_000))
+        .arg("b", at(NOW_MICROS + 1_000));
+    let mut gens = generator();
+    let outcome = engine.call(&reversed, &mut gens).expect("call resolves");
+    assert!(matches!(outcome, CallOutcome::Rejected(_)), "a reversed range rejects, got {outcome:?}");
+
+    // A valid, non-empty window that matches no active row still succeeds.
+    let valid = CallRequest::new("sessions_between")
+        .arg("a", at(NOW_MICROS + 100_000))
+        .arg("b", at(NOW_MICROS + 200_000));
+    assert!(ids(&mut engine, valid).is_empty(), "a valid empty-result window succeeds with []");
+}
+
 /// §14.2: `.$all` exposes every extant row independent of current activity, so an
 /// already-expired session still appears — and it appears even after the clock
 /// has advanced past its bound, where a bare read hides it (§14.1). Expiry is
