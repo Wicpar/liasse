@@ -15,9 +15,14 @@ use serde_json::{Map, Value as J};
 use crate::value_codec;
 
 /// The deterministic compact-JSON string of an address — its `rows` primary key.
-#[must_use]
-pub fn address_key(address: &RowAddress) -> String {
-    serde_json::to_string(&encode_address(address)).unwrap_or_default()
+///
+/// A serialization failure must never be swallowed into the empty string: that
+/// would make two distinct addresses share the primary key `""`, breaking the
+/// injectivity the `rows` table relies on. The error is propagated as a
+/// corruption instead.
+pub fn address_key(address: &RowAddress) -> Result<String, StoreError> {
+    serde_json::to_string(&encode_address(address))
+        .map_err(|error| corrupt(format!("address key could not be serialized: {error}")))
 }
 
 /// Encode a row address as a JSON array of `[name, [key-components…]]` steps.

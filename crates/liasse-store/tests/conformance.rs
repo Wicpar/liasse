@@ -26,6 +26,12 @@ fn aborted_staging_leaves_no_trace() {
 }
 
 #[test]
+fn abort_then_commit_keeps_positions_gapless() {
+    suite::abort_then_commit_keeps_positions_gapless(&mut MemoryStoreFactory::new())
+        .expect("abort then a different commit keeps positions gapless");
+}
+
+#[test]
 fn snapshot_at_frontier_ignores_later_commits() {
     suite::snapshot_at_frontier_ignores_later_commits(&mut MemoryStoreFactory::new())
         .expect("frontier snapshot ignores later commits");

@@ -23,7 +23,7 @@ use liasse_value::Sha512;
 use postgres::Client;
 use serde_json::{Map, Value as J};
 
-use crate::backend::{backend, corrupt};
+use crate::backend::{backend, cell, corrupt};
 use crate::record_codec::{decode_address, decode_op};
 use crate::schema::Schema;
 use crate::value_codec;
@@ -54,11 +54,14 @@ impl Projection {
                 &[],
             )
             .map_err(backend)?;
-        let head = seq_of(u64::try_from(meta.get::<_, i64>(0)).unwrap_or(0));
-        let next_incarnation = u64::try_from(meta.get::<_, i64>(1)).unwrap_or(0);
-        let definition = meta.get::<_, Option<String>>(2).map(DefinitionText::new);
-        let composition = meta
-            .get::<_, Option<J>>(3)
+        let head = seq_from(cell::<i64>(&meta, "instance_meta", "head")?, "instance_meta.head")?;
+        let next_incarnation = counter(
+            cell::<i64>(&meta, "instance_meta", "next_incarnation")?,
+            "instance_meta.next_incarnation",
+        )?;
+        let definition =
+            cell::<Option<String>>(&meta, "instance_meta", "definition_source")?.map(DefinitionText::new);
+        let composition = cell::<Option<J>>(&meta, "instance_meta", "composition")?
             .map(|wire| decode_composition(&wire))
             .transpose()?;
 
@@ -67,9 +70,10 @@ impl Projection {
             .query(&format!("SELECT seq, transaction_id, ops FROM {s}.commit_log ORDER BY seq"), &[])
             .map_err(backend)?
         {
-            let seq = seq_of(u64::try_from(row.get::<_, i64>(0)).unwrap_or(0));
-            let transaction = row.get::<_, Option<String>>(1).map(liasse_ident::TransactionId::new);
-            let ops_wire: J = row.get(2);
+            let seq = seq_from(cell::<i64>(&row, "commit_log", "seq")?, "commit_log.seq")?;
+            let transaction =
+                cell::<Option<String>>(&row, "commit_log", "transaction_id")?.map(liasse_ident::TransactionId::new);
+            let ops_wire: J = cell(&row, "commit_log", "ops")?;
             let ops = ops_wire
                 .as_array()
                 .ok_or_else(|| corrupt("commit_log ops is not an array"))?
@@ -86,12 +90,12 @@ impl Projection {
             .query(&format!("SELECT addr_key, incarnation, value FROM {s}.rows"), &[])
             .map_err(backend)?
         {
-            let addr_key: String = row.get(0);
+            let addr_key: String = cell(&row, "rows", "addr_key")?;
             let wire: J = serde_json::from_str(&addr_key)
                 .map_err(|error| corrupt(format!("stored address key is not JSON: {error}")))?;
             let address = decode_address(&wire)?;
-            let incarnation = RowIncarnation::new(row.get::<_, String>(1));
-            let value = value_codec::decode(&row.get::<_, J>(2))?;
+            let incarnation = RowIncarnation::new(cell::<String>(&row, "rows", "incarnation")?);
+            let value = value_codec::decode(&cell::<J>(&row, "rows", "value")?)?;
             current.insert(address, StoredRow::new(incarnation, value));
         }
 
@@ -101,10 +105,10 @@ impl Projection {
             .map_err(backend)?
         {
             let point = HistoryPoint::new(
-                LineageId::new(row.get::<_, String>(0)),
-                PointId::new(row.get::<_, String>(1)),
+                LineageId::new(cell::<String>(&row, "history_points", "lineage")?),
+                PointId::new(cell::<String>(&row, "history_points", "point")?),
             );
-            let at = seq_of(u64::try_from(row.get::<_, i64>(2)).unwrap_or(0));
+            let at = seq_from(cell::<i64>(&row, "history_points", "seq")?, "history_points.seq")?;
             points.insert(point, at);
         }
 
@@ -112,8 +116,8 @@ impl Projection {
         for row in
             client.query(&format!("SELECT digest, bytes FROM {s}.blobs"), &[]).map_err(backend)?
         {
-            let digest = Sha512::parse(&row.get::<_, String>(0)).map_err(corrupt_digest)?;
-            blobs.insert(digest, row.get::<_, Vec<u8>>(1));
+            let digest = Sha512::parse(&cell::<String>(&row, "blobs", "digest")?).map_err(corrupt_digest)?;
+            blobs.insert(digest, cell::<Vec<u8>>(&row, "blobs", "bytes")?);
         }
 
         Ok(Self { head, next_incarnation, current, log, points, blobs, definition, composition })
@@ -260,14 +264,21 @@ fn corrupt_digest(error: liasse_value::ValueError) -> StoreError {
     corrupt(format!("stored blob digest is malformed: {error}"))
 }
 
-/// Reconstruct the [`CommitSeq`] at ordinal `n`. The type exposes only genesis
-/// and successor, so a stored position is rebuilt by iterating from genesis —
-/// the same construction the write path performs, which keeps positions gapless
-/// by definition rather than by trusting a stored integer.
-fn seq_of(n: u64) -> CommitSeq {
-    let mut seq = CommitSeq::GENESIS;
-    for _ in 0..n {
-        seq = seq.next();
-    }
-    seq
+/// Rebuild the serial position stored as the durable `BIGINT` `raw` (from column
+/// `what`). A position is minted by [`CommitSeq::next`] and can never be
+/// negative; a negative durable value is a corruption to report, never a value
+/// to silently coerce to genesis. Reconstruction is O(1) via
+/// [`CommitSeq::from_stored`], which is what keeps [`Projection::load`] linear in
+/// the commit count rather than quadratic (it previously replayed `next` from
+/// genesis once per stored position).
+fn seq_from(raw: i64, what: &str) -> Result<CommitSeq, StoreError> {
+    let n = u64::try_from(raw).map_err(|_| corrupt(format!("{what} is negative ({raw})")))?;
+    Ok(CommitSeq::from_stored(n))
+}
+
+/// Rebuild a durable non-negative counter stored as the `BIGINT` `raw` (from
+/// column `what`). Like a position it can never legitimately be negative; a
+/// negative durable value is corruption rather than a silent zero.
+fn counter(raw: i64, what: &str) -> Result<u64, StoreError> {
+    u64::try_from(raw).map_err(|_| corrupt(format!("{what} is negative ({raw})")))
 }

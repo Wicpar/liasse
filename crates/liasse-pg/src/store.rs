@@ -16,7 +16,7 @@ use postgres::Client;
 use serde_json::Value as J;
 use sha2::{Digest as _, Sha512 as Sha512Hasher};
 
-use crate::backend::{backend, corrupt};
+use crate::backend::{backend, cell, corrupt};
 use crate::projection::{Projection, encode_composition};
 use crate::record_codec::{address_key, encode_op};
 use crate::schema::Schema;
@@ -110,7 +110,7 @@ impl PgStore {
         let locked = txn
             .query_one(&format!("SELECT head FROM {s}.instance_meta WHERE id = 1 FOR UPDATE"), &[])
             .map_err(backend)?;
-        let durable_head: i64 = locked.get(0);
+        let durable_head: i64 = cell(&locked, "instance_meta", "head")?;
         if durable_head != seq_num - 1 {
             return Err(corrupt(format!(
                 "projection head {} disagrees with durable head {durable_head}",
@@ -150,41 +150,46 @@ impl PgStore {
     ) -> Result<(), StoreError> {
         match op {
             CommittedRowOp::Insert { address, incarnation, value } => {
+                let key = address_key(address)?;
                 txn.execute(
                     &format!(
                         "INSERT INTO {schema}.rows (addr_key, incarnation, value) VALUES ($1, $2, $3)"
                     ),
-                    &[&address_key(address), &incarnation.as_str(), &value_codec::encode(value)],
+                    &[&key, &incarnation.as_str(), &value_codec::encode(value)],
                 )
                 .map_err(backend)?;
             }
             CommittedRowOp::Update { address, incarnation, value } => {
+                let key = address_key(address)?;
                 txn.execute(
                     &format!(
                         "UPDATE {schema}.rows SET incarnation = $2, value = $3 WHERE addr_key = $1"
                     ),
-                    &[&address_key(address), &incarnation.as_str(), &value_codec::encode(value)],
+                    &[&key, &incarnation.as_str(), &value_codec::encode(value)],
                 )
                 .map_err(backend)?;
             }
             CommittedRowOp::Delete { address, .. } => {
+                let key = address_key(address)?;
                 txn.execute(
                     &format!("DELETE FROM {schema}.rows WHERE addr_key = $1"),
-                    &[&address_key(address)],
+                    &[&key],
                 )
                 .map_err(backend)?;
             }
             CommittedRowOp::Rekey { from, to, incarnation, value } => {
+                let from_key = address_key(from)?;
+                let to_key = address_key(to)?;
                 txn.execute(
                     &format!("DELETE FROM {schema}.rows WHERE addr_key = $1"),
-                    &[&address_key(from)],
+                    &[&from_key],
                 )
                 .map_err(backend)?;
                 txn.execute(
                     &format!(
                         "INSERT INTO {schema}.rows (addr_key, incarnation, value) VALUES ($1, $2, $3)"
                     ),
-                    &[&address_key(to), &incarnation.as_str(), &value_codec::encode(value)],
+                    &[&to_key, &incarnation.as_str(), &value_codec::encode(value)],
                 )
                 .map_err(backend)?;
             }

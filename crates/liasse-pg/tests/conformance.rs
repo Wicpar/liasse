@@ -1,58 +1,36 @@
 //! The PostgreSQL backend driven through the reusable contract battery — the
 //! identical suite that checks the in-memory reference (`liasse-store`). Each
 //! contract guarantee is one isolated test so a failure names the violated
-//! invariant, and each runs in its own throwaway schema (a unique namespace)
-//! that is dropped afterwards.
+//! invariant, and each runs in its own throwaway schema (a unique namespace).
 //!
-//! Tests read `LIASSE_PG_TEST_DSN`, defaulting to a local unix-socket DSN. If the
-//! DSN cannot connect the tests **fail with an actionable message** — they never
-//! silently pass — because a green run must actually exercise PostgreSQL.
+//! The DSN and (if needed) a disposable cluster are resolved by [`support`];
+//! that module documents the resolution order and fails with an actionable
+//! message if no PostgreSQL can be reached — the suite never silently passes.
+//! Each test drops its throwaway schema through a [`support::SchemaGuard`], so
+//! cleanup happens even when an assertion panics.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::sync::atomic::{AtomicU32, Ordering};
+mod support;
 
 use liasse_ident::InstanceId;
 use liasse_pg::PgStoreFactory;
 use liasse_store::contract_tests as suite;
 use liasse_store::{InstanceStore, StoreError, StoreFactory, Transition};
 
+use support::SchemaGuard;
+
 /// The instance identity every `contract_tests` function uses.
 const SUITE_INSTANCE: &str = "instance-under-test";
 
-static NAMESPACE_COUNTER: AtomicU32 = AtomicU32::new(0);
-
-fn dsn() -> String {
-    std::env::var("LIASSE_PG_TEST_DSN")
-        .unwrap_or_else(|_| "host=/var/run/postgresql dbname=postgres".to_owned())
-}
-
-/// A factory over a namespace unique to this call, so parallel tests never share
-/// a schema. Preflights the connection and, if it fails, panics with the exact
-/// steps to make it work — the mandated "never silently pass" behaviour.
-fn factory() -> PgStoreFactory {
-    let dsn = dsn();
-    let namespace = format!("{}_{}", std::process::id(), NAMESPACE_COUNTER.fetch_add(1, Ordering::Relaxed));
-    let factory = PgStoreFactory::new(&dsn, namespace);
-    if let Err(error) = factory.connect() {
-        panic!(
-            "cannot reach PostgreSQL for liasse-pg integration tests.\n\
-             DSN tried: `{dsn}`\n\
-             error: {error}\n\
-             Set LIASSE_PG_TEST_DSN to a working DSN and re-run, e.g.\n  \
-             LIASSE_PG_TEST_DSN='host=/var/run/postgresql user=YOURUSER dbname=YOURDB' \
-             cargo test -p liasse-pg\n\
-             A local PostgreSQL 17 with a role for the current user satisfies the default."
-        );
-    }
-    factory
-}
-
-/// Run one battery function against a fresh throwaway schema, then drop it.
+/// Run one battery function against a fresh throwaway schema. A `SchemaGuard`
+/// drops the schema whether the test returns, errors, or panics on a failed
+/// assertion; the `PgHandle` keeps the shared cluster alive for the test's
+/// duration and lets it be torn down once the last test in the process finishes.
 fn run(test: fn(&mut PgStoreFactory) -> Result<(), StoreError>, what: &str) {
-    let mut factory = factory();
-    let result = test(&mut factory);
-    let _ = factory.drop_instance(&InstanceId::new(SUITE_INSTANCE));
-    result.expect(what);
+    let handle = support::acquire();
+    let mut factory = handle.factory("conf");
+    let _schema = SchemaGuard::new(&factory, InstanceId::new(SUITE_INSTANCE));
+    test(&mut factory).expect(what);
 }
 
 #[test]
@@ -68,6 +46,14 @@ fn commit_is_all_or_nothing() {
 #[test]
 fn aborted_staging_leaves_no_trace() {
     run(suite::aborted_staging_leaves_no_trace, "abort leaves no trace");
+}
+
+#[test]
+fn abort_then_commit_keeps_positions_gapless() {
+    run(
+        suite::abort_then_commit_keeps_positions_gapless,
+        "abort then a different commit keeps positions gapless",
+    );
 }
 
 #[test]
@@ -115,8 +101,10 @@ fn reopen_rebuilds_state_from_durable_tables() {
     };
     use liasse_value::{Integer, Text, Value};
 
-    let mut factory = factory();
+    let handle = support::acquire();
+    let mut factory = handle.factory("reopen");
     let instance = InstanceId::new(SUITE_INSTANCE);
+    let _schema = SchemaGuard::new(&factory, instance.clone());
 
     let address = |key: i64| {
         RowAddress::root(AddressStep::new(
@@ -161,6 +149,4 @@ fn reopen_rebuilds_state_from_durable_tables() {
         "blob bytes survive a reopen"
     );
     assert!(reopened.definition().is_some(), "definition survives a reopen");
-
-    let _ = factory.drop_instance(&instance);
 }

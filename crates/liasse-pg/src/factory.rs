@@ -9,7 +9,7 @@ use liasse_ident::InstanceId;
 use liasse_store::{StoreError, StoreFactory};
 use postgres::{Client, NoTls};
 
-use crate::backend::{backend, refuse};
+use crate::backend::{backend, cell, refuse};
 use crate::schema::{SCHEMA_VERSION, Schema};
 use crate::store::PgStore;
 
@@ -62,10 +62,10 @@ impl PgStoreFactory {
                 &[&SCHEMA_VERSION],
             )
             .map_err(backend)?;
-        let stamped: i32 = client
+        let version_row = client
             .query_one(&format!("SELECT version FROM {s}.schema_version WHERE id = 1"), &[])
-            .map_err(backend)?
-            .get(0);
+            .map_err(backend)?;
+        let stamped: i32 = cell(&version_row, "schema_version", "version")?;
         if stamped > SCHEMA_VERSION {
             return Err(refuse(format!(
                 "schema `{}` is version {stamped}, newer than this build ({SCHEMA_VERSION}); \

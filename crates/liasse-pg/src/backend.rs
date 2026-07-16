@@ -8,10 +8,29 @@
 //! infrastructure faults do.
 
 use liasse_store::StoreError;
+use postgres::Row;
+use postgres::types::FromSql;
 
 /// Map a driver error into the opaque [`StoreError::Backend`] category.
 pub fn backend<E: core::fmt::Display>(error: E) -> StoreError {
     StoreError::Backend { detail: error.to_string() }
+}
+
+/// Read column `column` of `table` from a durable `row`, mapping a type mismatch
+/// or an absent column to a [`StoreError::Corruption`] that names the offending
+/// table and column.
+///
+/// [`postgres::Row::get`] is the panicking accessor — it unwraps a `try_get`
+/// internally — so a durable value that no longer matches the expected Rust type
+/// would abort the process. AGENTS.md forbids panics on the read path (the rule
+/// covers a panicking method call, not just an explicit `unwrap`), so every read
+/// of a stored cell goes through this non-panicking form instead.
+pub fn cell<'a, T>(row: &'a Row, table: &str, column: &str) -> Result<T, StoreError>
+where
+    T: FromSql<'a>,
+{
+    row.try_get(column)
+        .map_err(|error| StoreError::Corruption { detail: format!("{table}.{column}: {error}") })
 }
 
 /// Report an operational refusal (a schema stamped newer than this build) as a

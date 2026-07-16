@@ -24,6 +24,24 @@ impl CommitSeq {
         Self(self.0 + 1)
     }
 
+    /// Reconstruct the position whose underlying number is `n`, for a store
+    /// reloading its own durable positions.
+    ///
+    /// A position is normally reachable only through [`CommitSeq::GENESIS`] and
+    /// [`CommitSeq::next`], which is what makes the sequence gapless and monotone
+    /// by construction. Reconstruction is the sole exception, and it carries an
+    /// invariant the caller owns: every `n` passed here was minted by `next` on a
+    /// prior run and persisted as a gapless serial (§22.3), so rebuilding it
+    /// directly is faithful to that provenance. It exists so a reload is O(1) per
+    /// position — the exact inverse of [`CommitSeq::get`] — instead of replaying
+    /// `next` `n` times, which would make loading a store quadratic in its commit
+    /// count. Code that mints *new* positions must still use `next`; this is only
+    /// for reading positions the store itself already minted.
+    #[must_use]
+    pub const fn from_stored(n: u64) -> Self {
+        Self(n)
+    }
+
     /// The underlying position number.
     #[must_use]
     pub const fn get(self) -> u64 {

@@ -9,13 +9,16 @@
 //! back equal. The expected values are built independently here, so a pass means
 //! the codec is a true inverse, not that the store agrees with itself.
 //!
-//! Like the conformance suite it reads `LIASSE_PG_TEST_DSN` (defaulting to a
-//! local socket) and fails with an actionable message if PostgreSQL is
-//! unreachable — it never silently passes.
+//! Like the conformance suite it resolves the test DSN through [`support`]
+//! (env override, default socket, or a bootstrapped disposable cluster) and
+//! fails with an actionable message if none is reachable — it never silently
+//! passes. Its throwaway schema is dropped through a [`support::SchemaGuard`],
+//! so cleanup happens even if an assertion panics.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+mod support;
+
 use liasse_ident::{InstanceId, NameSegment};
-use liasse_pg::PgStoreFactory;
 use liasse_store::{
     AddressStep, CollectionPath, InstanceStore, KeyValue, RowAddress, StoreFactory, Transition,
 };
@@ -70,23 +73,12 @@ fn every_variant() -> Vec<Value> {
     ]
 }
 
-fn factory() -> PgStoreFactory {
-    let dsn = std::env::var("LIASSE_PG_TEST_DSN")
-        .unwrap_or_else(|_| "host=/var/run/postgresql dbname=postgres".to_owned());
-    let factory = PgStoreFactory::new(&dsn, format!("wire_{}", std::process::id()));
-    if let Err(error) = factory.connect() {
-        panic!(
-            "cannot reach PostgreSQL: DSN `{dsn}` failed ({error}). \
-             Set LIASSE_PG_TEST_DSN to a working DSN and re-run."
-        );
-    }
-    factory
-}
-
 #[test]
 fn every_value_variant_round_trips_through_postgres() {
-    let mut factory = factory();
+    let handle = support::acquire();
+    let mut factory = handle.factory("wire");
     let instance = InstanceId::new("codec-instance");
+    let _schema = support::SchemaGuard::new(&factory, instance.clone());
     let collection = CollectionPath::top(NameSegment::new("v"));
     let variants = every_variant();
 
@@ -117,5 +109,5 @@ fn every_value_variant_round_trips_through_postgres() {
         .collect();
 
     assert_eq!(recovered, variants, "every variant decodes back equal");
-    let _ = factory.drop_instance(&instance);
+    // `_schema` drops the throwaway schema on scope exit (and on a panic).
 }

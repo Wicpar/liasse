@@ -118,6 +118,52 @@ pub fn aborted_staging_leaves_no_trace<F: StoreFactory>(
     Ok(())
 }
 
+/// Aborting a staged transition consumes no serial position and leaves no rows:
+/// a later, *different* commit takes exactly the successor of the pre-abort head
+/// (no gap swallowed by the abort), and none of the aborted writes surface in the
+/// new head snapshot (§22.2, §22.3). This nails down the combination the other
+/// cases only imply separately — that abort and a subsequent unrelated commit
+/// compose without leaking a position or a staged mutation.
+pub fn abort_then_commit_keeps_positions_gapless<F: StoreFactory>(
+    factory: &mut F,
+) -> Result<(), StoreError> {
+    let mut store = factory.create(instance())?;
+
+    // A baseline commit, so "prev + 1" is a genuine non-genesis successor.
+    let mut txn = store.begin();
+    txn.insert(address("items", 1), payload("base"))?;
+    txn.commit()?;
+    let prev = store.head();
+    assert_eq!(prev.get(), 1);
+
+    // Stage an insert and an update over the baseline row, then abort them all.
+    let mut txn = store.begin();
+    txn.insert(address("items", 2), payload("aborted-insert"))?;
+    txn.update(&address("items", 1), payload("aborted-edit"))?;
+    txn.abort();
+    // The abort neither advanced the head nor consumed a position.
+    assert_eq!(store.head(), prev);
+
+    // A different commit now takes exactly prev + 1 — the aborted transition did
+    // not swallow a serial position.
+    let mut txn = store.begin();
+    txn.insert(address("items", 3), payload("committed"))?;
+    let outcome = txn.commit()?;
+    assert_eq!(outcome, CommitOutcome::Committed(prev.next()));
+    assert_eq!(store.head(), prev.next());
+
+    // The aborted writes are absent from the new head snapshot: the aborted
+    // insert never appears, and the aborted update never perturbed the baseline.
+    let head = store.snapshot(store.head())?;
+    assert!(head.row(&address("items", 2)).is_none(), "aborted insert must not surface");
+    assert!(head.row(&address("items", 3)).is_some(), "the committed row must be present");
+    let base = head
+        .row(&address("items", 1))
+        .ok_or_else(|| StoreError::Corruption { detail: "baseline row vanished".to_owned() })?;
+    assert_eq!(base.value(), &payload("base"), "aborted update must not have taken effect");
+    Ok(())
+}
+
 /// A snapshot at an earlier frontier is blind to later commits (§22.7, §19.2).
 pub fn snapshot_at_frontier_ignores_later_commits<F: StoreFactory>(
     factory: &mut F,
@@ -326,6 +372,7 @@ pub fn run_all<F: StoreFactory>(factory: &mut F) -> Result<(), StoreError> {
     serial_positions_gapless_and_monotone(factory)?;
     commit_is_all_or_nothing(factory)?;
     aborted_staging_leaves_no_trace(factory)?;
+    abort_then_commit_keeps_positions_gapless(factory)?;
     snapshot_at_frontier_ignores_later_commits(factory)?;
     scan_order_matches_annex_b(factory)?;
     rekey_preserves_incarnation(factory)?;
