@@ -2,12 +2,66 @@
 //! outcome is deducible from FORMAT.md's matcher table, not from running the
 //! matcher, so the assertions are not tautological.
 
-use liasse_testkit::{Bindings, Matcher};
+use liasse_testkit::{Bindings, MatchError, Matcher};
 use serde_json::{json, Value};
 
 fn matches(expected: Value, observed: Value) -> bool {
     let mut env = Bindings::new();
     Matcher::parse(&expected).check(&observed, &mut env).is_ok()
+}
+
+/// The divergence report for a known mismatch, or an error if it unexpectedly
+/// matched. Paths follow FORMAT.md's `$.member[index]` convention, so the
+/// expected path is externally deducible, not read back from the matcher.
+fn diverge(expected: Value, observed: Value) -> Result<MatchError, String> {
+    let mut env = Bindings::new();
+    match Matcher::parse(&expected).check(&observed, &mut env) {
+        Ok(()) => Err(format!("expected a mismatch for {expected} vs {observed}")),
+        Err(err) => Ok(err),
+    }
+}
+
+#[test]
+fn divergence_reports_the_exact_failing_path() -> Result<(), String> {
+    // A nested literal mismatch is located at the offending array element.
+    let err = diverge(json!({"a": {"b": [1, 2]}}), json!({"a": {"b": [1, 3]}}))?;
+    assert_eq!(err.path, "$.a.b[1]", "got {err}");
+    assert!(err.reason.contains("literal value mismatch"), "got {err}");
+
+    // A missing expected member is located at that member.
+    let err = diverge(json!({"a": 1, "b": 2}), json!({"a": 1}))?;
+    assert_eq!(err.path, "$.b", "got {err}");
+    assert!(err.reason.contains("missing"), "got {err}");
+
+    // An unexpected extra member is reported at the enclosing object.
+    let err = diverge(json!({"a": 1}), json!({"a": 1, "extra": 2}))?;
+    assert_eq!(err.path, "$", "got {err}");
+    assert!(err.reason.contains("extra members"), "got {err}");
+
+    // An array-length divergence is reported at the array path.
+    let err = diverge(json!({"xs": [1, 2]}), json!({"xs": [1]}))?;
+    assert_eq!(err.path, "$.xs", "got {err}");
+    assert!(err.reason.contains("expected 2 elements, found 1"), "got {err}");
+
+    // A typed-shape mismatch (uuid) is located at the member.
+    let err = diverge(json!({"id": "$any:uuid"}), json!({"id": "nope"}))?;
+    assert_eq!(err.path, "$.id", "got {err}");
+    assert!(err.reason.contains("uuid"), "got {err}");
+    Ok(())
+}
+
+#[test]
+fn ref_divergence_names_the_binding() -> Result<(), String> {
+    let mut env = Bindings::new();
+    if Matcher::parse(&json!("$bind:t")).check(&json!("A"), &mut env).is_err() {
+        return Err("bind should succeed".into());
+    }
+    let Err(err) = Matcher::parse(&json!({"id": "$ref:t"})).check(&json!({"id": "B"}), &mut env) else {
+        return Err("a differing ref must diverge".into());
+    };
+    assert_eq!(err.path, "$.id", "got {err}");
+    assert!(err.reason.contains('t'), "reason should name the binding, got {err}");
+    Ok(())
 }
 
 #[test]

@@ -15,6 +15,12 @@ use crate::notes::ChapterNotes;
 pub struct Area(String);
 
 impl Area {
+    /// Name an area directly (for a synthetic run outside the on-disk corpus).
+    #[must_use]
+    pub fn new(name: impl Into<String>) -> Self {
+        Self(name.into())
+    }
+
     /// The directory name.
     #[must_use]
     pub fn as_str(&self) -> &str {

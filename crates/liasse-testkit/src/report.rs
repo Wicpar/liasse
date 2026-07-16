@@ -1,11 +1,20 @@
 //! The verdict and reporting model, plus the glue that scores an
 //! [`Observation`] against an [`Expect`].
+//!
+//! Three layers: [`check_expectation`] judges one expectation and yields a
+//! per-expectation [`Verdict`]; [`CaseResult`] rolls a case's [`StepTrace`]s up
+//! into a per-case [`CaseVerdict`] (pass / fail / skip / unspecified-
+//! observations); and [`ConformanceSummary`] aggregates a whole [`Report`] by
+//! area and suite — the conformance report a runner prints.
+
+use std::collections::BTreeMap;
 
 use crate::contract::Observation;
 use crate::corpus::{Area, SuiteKind};
 use crate::expect::Expect;
 use crate::matcher::{Bindings, Matcher};
 use crate::outcome::Outcome;
+use crate::trace::{StepResult, StepTrace};
 
 /// The result of checking one expectation.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,7 +41,60 @@ impl Verdict {
     }
 }
 
-/// The verdict for one whole case.
+/// The overall verdict for one whole case, aggregated from its step traces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaseVerdict {
+    /// Every step passed and none were left unspecified.
+    Pass,
+    /// At least one step failed.
+    Fail {
+        /// How many steps failed.
+        failures: usize,
+    },
+    /// The case could not be run to a judgement (e.g. a driver/transport error).
+    Skipped {
+        /// Why the case was skipped.
+        reason: String,
+    },
+    /// The case ran to completion with recorded-but-unjudged `unspecified`
+    /// steps and no failures.
+    UnspecifiedObservations {
+        /// How many steps were recorded without judgement.
+        count: usize,
+    },
+}
+
+impl CaseVerdict {
+    /// Aggregate a case verdict from its step traces. Precedence, most severe
+    /// first: any failure ⇒ `Fail`; else any skip ⇒ `Skipped`; else any
+    /// unspecified observation ⇒ `UnspecifiedObservations`; else `Pass`.
+    #[must_use]
+    pub fn from_steps(steps: &[StepTrace]) -> Self {
+        let failures = steps.iter().filter(|s| s.result.is_fail()).count();
+        if failures > 0 {
+            return Self::Fail { failures };
+        }
+        if let Some(reason) = steps.iter().find_map(|s| match &s.result {
+            StepResult::Skipped { reason } => Some(reason.clone()),
+            _ => None,
+        }) {
+            return Self::Skipped { reason };
+        }
+        let count = steps.iter().filter(|s| matches!(s.result, StepResult::Unspecified { .. })).count();
+        if count > 0 {
+            return Self::UnspecifiedObservations { count };
+        }
+        Self::Pass
+    }
+
+    /// Whether this verdict is a clean pass.
+    #[must_use]
+    pub fn is_pass(&self) -> bool {
+        matches!(self, Self::Pass)
+    }
+}
+
+/// The verdict for one whole case, with its per-step trace.
 #[derive(Debug, Clone)]
 pub struct CaseResult {
     /// The case's chapter.
@@ -42,7 +104,9 @@ pub struct CaseResult {
     /// The case name.
     pub name: String,
     /// The overall verdict.
-    pub verdict: Verdict,
+    pub verdict: CaseVerdict,
+    /// The per-step traces in run order.
+    pub steps: Vec<StepTrace>,
 }
 
 /// A run's accumulated case results.
@@ -64,7 +128,7 @@ impl Report {
         self.results.push(result);
     }
 
-    /// Count of passing cases.
+    /// Count of cleanly passing cases.
     #[must_use]
     pub fn passed(&self) -> usize {
         self.results.iter().filter(|r| r.verdict.is_pass()).count()
@@ -73,25 +137,88 @@ impl Report {
     /// Count of failing cases.
     #[must_use]
     pub fn failed(&self) -> usize {
-        self.results.iter().filter(|r| matches!(r.verdict, Verdict::Fail { .. })).count()
+        self.results.iter().filter(|r| matches!(r.verdict, CaseVerdict::Fail { .. })).count()
     }
 
-    /// Count of skipped cases.
-    #[must_use]
-    pub fn skipped(&self) -> usize {
-        self.results.iter().filter(|r| matches!(r.verdict, Verdict::Skipped { .. })).count()
-    }
-
-    /// Whether every recorded case passed.
+    /// Whether every recorded case passed cleanly.
     #[must_use]
     pub fn all_passed(&self) -> bool {
         !self.results.is_empty() && self.results.iter().all(|r| r.verdict.is_pass())
     }
+
+    /// Aggregate the whole report by area and suite.
+    #[must_use]
+    pub fn summarize(&self) -> ConformanceSummary {
+        let mut by_area: BTreeMap<String, AreaTally> = BTreeMap::new();
+        let mut total = AreaTally::default();
+        for result in &self.results {
+            let tally = by_area.entry(result.area.as_str().to_owned()).or_default();
+            tally.record(&result.verdict, result.suite_kind);
+            total.record(&result.verdict, result.suite_kind);
+        }
+        ConformanceSummary { total, by_area }
+    }
+}
+
+/// Running counts for one area (or the whole run).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AreaTally {
+    /// Cleanly passing cases.
+    pub passed: usize,
+    /// Failing cases.
+    pub failed: usize,
+    /// Skipped cases.
+    pub skipped: usize,
+    /// Cases with recorded unspecified observations.
+    pub unspecified: usize,
+    /// Cases from the `common` suite.
+    pub common: usize,
+    /// Cases from the `red` suite.
+    pub red: usize,
+}
+
+impl AreaTally {
+    fn record(&mut self, verdict: &CaseVerdict, suite: SuiteKind) {
+        match verdict {
+            CaseVerdict::Pass => self.passed += 1,
+            CaseVerdict::Fail { .. } => self.failed += 1,
+            CaseVerdict::Skipped { .. } => self.skipped += 1,
+            CaseVerdict::UnspecifiedObservations { .. } => self.unspecified += 1,
+        }
+        match suite {
+            SuiteKind::Common => self.common += 1,
+            SuiteKind::Red => self.red += 1,
+        }
+    }
+
+    /// Total cases counted.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.passed + self.failed + self.skipped + self.unspecified
+    }
+}
+
+/// A whole-corpus conformance summary: an overall tally plus a per-area
+/// breakdown, in deterministic area order.
+#[derive(Debug, Clone)]
+pub struct ConformanceSummary {
+    /// The tally across every case.
+    pub total: AreaTally,
+    /// Per-area tallies, keyed by area name.
+    pub by_area: BTreeMap<String, AreaTally>,
+}
+
+impl ConformanceSummary {
+    /// Whether the run has no failing cases.
+    #[must_use]
+    pub fn is_clean(&self) -> bool {
+        self.total.failed == 0
+    }
 }
 
 /// Score an observation against an `expect` block, threading `env` for
-/// `$bind:`/`$ref:` matchers. An `unspecified` expectation records the
-/// observation without judging its value.
+/// `$bind:`/`$ref:` matchers. An `unspecified` expectation is caught by the
+/// engine before this runs; here it records a pass without judging the value.
 #[must_use]
 pub fn check_expectation(expect: &Expect, observed: &Observation, env: &mut Bindings) -> Verdict {
     let expected_outcome = expect.outcome.unwrap_or(Outcome::Ok);

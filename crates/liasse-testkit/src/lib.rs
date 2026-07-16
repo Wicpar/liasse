@@ -11,9 +11,14 @@
 //! - **Corpus loader** ([`Corpus`]): walks `tests/<area>/{common,red}/*.hjson`,
 //!   tags each case with its area and suite class, and validates every step key
 //!   against the chapter's `NOTES.md` ([`ChapterNotes`]).
-//! - **Execution contract** ([`Executor`], [`Observation`], [`Verdict`],
-//!   [`Report`]): the trait a future runtime adapter implements, decoupled from
-//!   the loader so an executor can be written without touching it.
+//! - **Execution contract** ([`Driver`], [`Observation`], [`Request`]): the
+//!   trait a future runtime adapter implements, decoupled from the loader so an
+//!   executor can be written without touching it.
+//! - **Scenario executor** ([`Engine`], [`run_case`], [`StepTrace`],
+//!   [`CaseVerdict`], [`ConformanceSummary`]): interprets a loaded scenario case
+//!   step by step against a [`Driver`], judging every expectation with the
+//!   matcher language and producing a per-case verdict. [`fake::FakeDriver`] is
+//!   the scripted double the engine's own tests drive.
 //!
 //! ```no_run
 //! let corpus = liasse_testkit::Corpus::load()?;
@@ -25,29 +30,44 @@
 
 mod anchor;
 mod case;
+mod clock;
 mod contract;
 mod corpus;
+mod engine;
 mod error;
 mod expect;
+pub mod fake;
+mod hosts;
 mod id;
 mod matcher;
 mod notes;
 mod outcome;
 mod relax;
 mod report;
+mod request;
 mod step;
 mod step_kind;
+mod trace;
+mod view;
 
 pub use anchor::{AnchorKind, SpecAnchor};
 pub use case::{Case, CaseBody, PackageSet, Suite};
-pub use contract::{CallRequest, ConnectRequest, Executor, Observation, WatchRequest};
+pub use clock::{DurationParseError, Instant, Iso8601Duration, VirtualClock};
+pub use contract::{CallRequest, ConnectRequest, Driver, Observation, WatchRequest, is_structural};
 pub use corpus::{Area, Corpus, LoadedCase, SuiteKind};
+pub use engine::{run_case, run_loaded, Engine};
 pub use error::{Loc, LoadError};
 pub use expect::Expect;
+pub use hosts::{HostComponent, HostKind, HostsConfig};
 pub use id::{ArtifactLabel, BindName, ConnectionId, WatchId};
 pub use matcher::{Bindings, MatchError, Matcher};
 pub use notes::ChapterNotes;
 pub use outcome::{Completion, OperationStatus, Outcome};
-pub use report::{check_expectation, CaseResult, Report, Verdict};
+pub use report::{
+    check_expectation, AreaTally, CaseResult, CaseVerdict, ConformanceSummary, Report, Verdict,
+};
+pub use request::{LowerError, OpRequest, Request};
 pub use step::{Nested, Step};
 pub use step_kind::{StepKind, StepScope};
+pub use trace::{StepResult, StepTrace};
+pub use view::ViewAssertion;

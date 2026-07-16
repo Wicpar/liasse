@@ -1,20 +1,22 @@
 //! The harness-facing execution contract.
 //!
-//! A future runtime adapter implements [`Executor`] to drive a real runtime and
-//! store; the loader and matcher never depend on it, so an executor can be
-//! written against this trait alone. Requests carry typed handles with raw
-//! `serde_json` payloads at the boundary (arguments, authenticator selections,
-//! window specs are the language's concern, not the harness's). Every action
-//! yields an [`Observation`]: the spec-level outcome plus any observed value,
-//! which the caller matches against the case's expectations. A `Result::Err`
-//! is reserved for a harness/transport failure — a *denied* or *rejected*
-//! request is a successful observation of that outcome, not an error.
+//! A future runtime adapter implements [`Driver`] to drive a real runtime and
+//! store; the loader, matcher, and engine never depend on a concrete driver, so
+//! one can be written against this trait alone. Requests carry typed handles
+//! with raw `serde_json` payloads at the boundary (arguments, authenticator
+//! selections, window specs are the language's concern, not the harness's).
+//! Every action yields an [`Observation`]: the spec-level outcome plus any
+//! observed value, which the engine matches against a case's expectations. A
+//! `Result::Err` is reserved for a harness/transport failure — a *denied* or
+//! *rejected* request is a successful observation of that outcome, not an error.
 
 use serde_json::Value;
 
-use crate::id::{ConnectionId, WatchId};
+use crate::clock::Iso8601Duration;
+use crate::id::ConnectionId;
 use crate::outcome::{Completion, Outcome};
-use crate::step::Step;
+use crate::request::{OpRequest, Request};
+use crate::step_kind::StepKind;
 
 /// A request to open a logical client connection.
 #[derive(Debug, Clone)]
@@ -46,7 +48,7 @@ pub struct WatchRequest {
     /// The dotted surface address.
     pub target: String,
     /// The subscription handle.
-    pub id: WatchId,
+    pub id: crate::id::WatchId,
     /// The connection to open on; `None` uses the sole connection.
     pub on: Option<ConnectionId>,
     /// The view parameters, verbatim.
@@ -80,10 +82,22 @@ impl Observation {
     pub fn outcome(outcome: Outcome) -> Self {
         Self { outcome, value: None, completion: None, extra: serde_json::Map::new() }
     }
+
+    /// An additional observed member by name (`frontier`, `status`, ...).
+    #[must_use]
+    pub fn extra(&self, name: &str) -> Option<&Value> {
+        self.extra.get(name)
+    }
 }
 
-/// The runtime + store adapter a harness drives.
-pub trait Executor {
+/// The runtime + store adapter the engine drives.
+///
+/// The core client verbs are typed methods; the long tail of registry and
+/// chapter-local steps (`export`/`import`, `blob_*`, module lifecycle,
+/// `host_load`, `operator`, artifact `tamper`/`build`/`load`, ...) arrives as a
+/// typed [`OpRequest`] through [`Driver::op`]. The engine routes a lowered
+/// [`Request`] to the right method via [`Driver::dispatch`].
+pub trait Driver {
     /// The adapter's transport/host error type (not a spec outcome).
     type Error: std::error::Error;
 
@@ -100,20 +114,41 @@ pub trait Executor {
     fn watch(&mut self, request: WatchRequest) -> Result<Observation, Self::Error>;
 
     /// Close a subscription.
-    fn unwatch(&mut self, id: &WatchId) -> Result<Observation, Self::Error>;
+    fn unwatch(&mut self, id: &crate::id::WatchId) -> Result<Observation, Self::Error>;
 
     /// Read the current value of a subscription after prior commits settle.
-    fn read_view(&mut self, id: &WatchId) -> Result<Observation, Self::Error>;
+    fn read_view(&mut self, id: &crate::id::WatchId) -> Result<Observation, Self::Error>;
 
     /// Advance the virtual clock by an ISO-8601 duration.
-    fn advance_time(&mut self, duration: &str) -> Result<Observation, Self::Error>;
+    fn advance_time(&mut self, duration: &Iso8601Duration) -> Result<Observation, Self::Error>;
 
     /// Stop and replay the runtime; durable state must survive.
     fn restart(&mut self) -> Result<Observation, Self::Error>;
 
-    /// Perform any step outside the typed client set — every registry and
-    /// chapter-local step (`host_load`, `module_*`, `export`/`import`,
-    /// `blob_*`, `operator`, `tamper_artifact`, ...). The executor matches on
-    /// [`Step::kind`] and reads [`Step::target`]/[`Step::members`].
-    fn perform(&mut self, step: &Step) -> Result<Observation, Self::Error>;
+    /// Perform any step outside the typed client set. The executor matches on
+    /// [`OpRequest::kind`] and reads its target/members.
+    fn op(&mut self, request: &OpRequest) -> Result<Observation, Self::Error>;
+
+    /// Route a lowered request to the matching method. The default routing is
+    /// fixed by [`Request`]; a driver overrides individual methods, not this.
+    fn dispatch(&mut self, request: &Request) -> Result<Observation, Self::Error> {
+        match request {
+            Request::Connect(r) => self.connect(r.clone()),
+            Request::Disconnect(c) => self.disconnect(c),
+            Request::Call(r) => self.call(r.clone()),
+            Request::Watch(r) => self.watch(r.clone()),
+            Request::Unwatch(id) => self.unwatch(id),
+            Request::ReadView(id) => self.read_view(id),
+            Request::AdvanceTime(d) => self.advance_time(d),
+            Request::Restart => self.restart(),
+            Request::Op(op) => self.op(op),
+        }
+    }
+}
+
+/// The step kinds the engine treats as structural control flow rather than a
+/// leaf request to dispatch: their nested programs are run in place.
+#[must_use]
+pub fn is_structural(kind: &StepKind) -> bool {
+    matches!(kind, StepKind::Concurrently | StepKind::InSandbox)
 }
