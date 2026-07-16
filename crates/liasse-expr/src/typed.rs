@@ -206,6 +206,27 @@ pub(crate) enum TypedKind {
         base: Box<TypedExpr>,
         selector: KeyringSelector,
     },
+    /// A `blob` descriptor member selector (§18.1): `.$sha512`, `.$bytes`,
+    /// `.$media`, `.$name`. The base is a `blob` value; evaluation reads the
+    /// named member off its descriptor.
+    BlobMember {
+        base: Box<TypedExpr>,
+        member: BlobMember,
+    },
+}
+
+/// A `blob` descriptor member (§18.1). The complete descriptor is the
+/// application value; these are its readable members.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlobMember {
+    /// `$sha512` — the content hash, as its canonical lowercase-hex `text`.
+    Sha512,
+    /// `$bytes` — the non-negative `int` byte count.
+    Bytes,
+    /// `$media` — the canonical media type, as `text`.
+    Media,
+    /// `$name` — the optional file name (`optional<text>`).
+    Name,
 }
 
 /// A resolved temporal selector form (§14.1). The instant operands are typed

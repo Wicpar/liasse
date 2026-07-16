@@ -8,6 +8,7 @@
 //! except the projection-output dependency DFS in [`walk`], which recurses on
 //! output-name edges and carries its own bound: the projection's output count.
 
+mod blob;
 mod keyring;
 mod ops;
 mod project;

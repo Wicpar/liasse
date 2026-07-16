@@ -244,9 +244,10 @@ pub(crate) fn type_source_buckets(
 }
 
 /// The mutable node at an absolute model path (`["access_periods"]`), walking
-/// through struct and collection bodies. Used by the source-bucket pre-pass to
-/// write the computed row back onto its placeholder view node.
-fn node_at_mut<'a>(root: &'a mut Shape, path: &[String]) -> Option<&'a mut Node> {
+/// through struct and collection bodies. Used by the source-bucket pre-pass and
+/// the module-space pre-pass to write a computed row back onto a placeholder
+/// view node.
+pub(crate) fn node_at_mut<'a>(root: &'a mut Shape, path: &[String]) -> Option<&'a mut Node> {
     let (last, parents) = path.split_last()?;
     let mut shape = root;
     for segment in parents {

@@ -146,6 +146,27 @@ pub(crate) struct CompiledView {
     pub(crate) expr: TypedExpr,
 }
 
+/// One declared `$params` entry of a surface view (§10.1): its name, its
+/// contract type, and — when declared with a `= …` default — the typed default
+/// expression a read binds when the caller omits the argument (§8.3).
+pub(crate) struct CompiledParam {
+    pub(crate) name: String,
+    pub(crate) ty: ExprType,
+    pub(crate) default: Option<TypedExpr>,
+}
+
+/// A compiled surface `$view` (§10.1): a `$public` or role `$view` whose scope
+/// carries the surface `$params` (read as `@name`) and the request-scoped
+/// `$actor`/`$session` structurals (§11.1). Unlike a plain [`CompiledView`] this
+/// cannot be evaluated argument-free: its parameters and actor identity are
+/// supplied per read by [`Engine::view_with`](crate::Engine::view_with). It is
+/// addressed by its dotted surface path (`public.<name>`, `<role>.<name>`).
+pub(crate) struct CompiledSurfaceView {
+    pub(crate) address: String,
+    pub(crate) expr: TypedExpr,
+    pub(crate) params: Vec<CompiledParam>,
+}
+
 /// A compiled lifecycle bucket (§14): the collection it bounds and its optional
 /// `$from`/`$until` interval expressions over the collection row. An absent
 /// bound leaves that side of the interval unconstrained (`$from` = from
@@ -173,6 +194,11 @@ pub(crate) struct Compiled {
     pub(crate) root_computed: Vec<CompiledComputed>,
     pub(crate) mutations: Vec<CompiledMutation>,
     pub(crate) views: Vec<CompiledView>,
+    /// Compiled `$public`/role surface `$view`s (§10.1), each carrying its
+    /// `$params` and the `$actor`/`$session` structurals in scope so a
+    /// param-aware or role read type-checks. Served by
+    /// [`Engine::view_with`](crate::Engine::view_with), not folded into the root.
+    pub(crate) surface_views: Vec<CompiledSurfaceView>,
     pub(crate) buckets: Vec<CompiledBucket>,
     /// Compiled `$limits`/`$consumes` meter declarations (§15): pool sources,
     /// eligibility, order, and each spend collection's amount/time/metadata.
@@ -204,6 +230,7 @@ impl Compiled {
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth)?;
         let keyrings = compile_keyrings(schema, model_doc);
         let views = compile_views(sources, schema, &root_ty, &keyrings)?;
+        let surface_views = compile_surface_views(sources, schema, &root_ty, model_doc, &auth);
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc)?;
         let meters = crate::meter::compile(sources, schema, &root_ty, model_doc)?;
         Ok(Self {
@@ -211,6 +238,7 @@ impl Compiled {
             root_computed,
             mutations,
             views,
+            surface_views,
             buckets,
             meters,
             keyrings,
@@ -244,6 +272,12 @@ impl Compiled {
     /// The compiled bucket bounding collection `name`, if it is bucketed.
     pub(crate) fn bucket(&self, name: &str) -> Option<&CompiledBucket> {
         self.buckets.iter().find(|b| b.collection == name)
+    }
+
+    /// The compiled surface `$view` at dotted `address` (`public.<name>`,
+    /// `<role>.<name>`), if one is declared (§10.1).
+    pub(crate) fn surface_view(&self, address: &str) -> Option<&CompiledSurfaceView> {
+        self.surface_views.iter().find(|v| v.address == address)
     }
 }
 
@@ -767,4 +801,178 @@ fn compile_bucket(
         }
     }
     Ok(Some(CompiledBucket { collection: name.to_owned(), from, until }))
+}
+
+/// Compile every `$public` and role surface `$view` (§10.1) into a
+/// [`CompiledSurfaceView`] the param- and actor-aware read
+/// [`Engine::view_with`](crate::Engine::view_with) serves. The model validates
+/// these surfaces but retains only their call contracts (`liasse-model/src/surface.rs`),
+/// so — like buckets and meters — the declarations are read from the document.
+///
+/// The scope carries the surface `$params` (read as `@name`) and the package's
+/// `$actor`/`$session` structurals (§11.1), so a param-aware or role `$view`
+/// type-checks. A surface whose `$view` does not compile (an unrepresentable
+/// param type, or an expression the runtime cannot yet type) is dropped rather
+/// than failing the whole load, leaving that surface unserved.
+fn compile_surface_views(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+    model_doc: &liasse_syntax::DocValue,
+    auth: &AuthBindings,
+) -> Vec<CompiledSurfaceView> {
+    let mut out = Vec::new();
+    let structurals = auth.structurals();
+    if let Some(public) = doc::member(model_doc, "$public").and_then(doc::object) {
+        for surface in public {
+            compile_one_surface_view(
+                sources,
+                root_ty,
+                &format!("public.{}", surface.name.text),
+                &surface.value,
+                &structurals,
+                &mut out,
+            );
+        }
+    }
+    if let Some(roles) = doc::member(model_doc, "$roles").and_then(doc::object) {
+        for role in roles {
+            let Some(members) = doc::object(&role.value) else { continue };
+            for member in members {
+                // A role's `$`-members (`$members`/`$auth`/`$recursive`) are not
+                // granted surfaces; its plain members are (§10.4).
+                if member.name.text.starts_with('$') {
+                    continue;
+                }
+                compile_one_surface_view(
+                    sources,
+                    root_ty,
+                    &format!("{}.{}", role.name.text, member.name.text),
+                    &member.value,
+                    &structurals,
+                    &mut out,
+                );
+            }
+        }
+    }
+    let _ = schema;
+    out
+}
+
+/// Compile one surface declaration's `$view` (§10.1) at dotted `address`, adding
+/// it to `out` when it carries a compilable `$view`. A surface with only `$mut`
+/// calls contributes nothing here.
+fn compile_one_surface_view(
+    sources: &mut SourceMap,
+    root_ty: &ExprType,
+    address: &str,
+    surface: &liasse_syntax::DocValue,
+    structurals: &[(String, ExprType)],
+    out: &mut Vec<CompiledSurfaceView>,
+) {
+    let Some(members) = doc::object(surface) else { return };
+    let Some(view_text) = members.iter().find(|m| m.name.text == "$view").and_then(|m| doc::string(&m.value))
+    else {
+        return;
+    };
+    let params = match compile_surface_params(sources, root_ty, surface) {
+        Some(params) => params,
+        None => return,
+    };
+    let mut scope = RuntimeScope::new(root_ty.clone(), root_ty.clone());
+    for param in &params {
+        scope = scope.with_param(param.name.clone(), param.ty.clone());
+    }
+    for (name, ty) in structurals {
+        scope = scope.with_structural(name.clone(), ty.clone());
+    }
+    if let Ok((expr, _)) = compile_expr(sources, &scope, "surface-view", view_text) {
+        out.push(CompiledSurfaceView { address: address.to_owned(), expr, params });
+    }
+}
+
+/// Compile a surface's `$params` declarations (§10.1) into typed
+/// [`CompiledParam`]s, or `None` when a declared parameter type is
+/// unrepresentable (so the whole surface view is dropped rather than mis-typed).
+fn compile_surface_params(
+    sources: &mut SourceMap,
+    root_ty: &ExprType,
+    surface: &liasse_syntax::DocValue,
+) -> Option<Vec<CompiledParam>> {
+    let Some(params_member) = doc::member(surface, "$params") else {
+        return Some(Vec::new());
+    };
+    let members = doc::object(params_member)?;
+    let mut out = Vec::new();
+    for member in members {
+        let (ty, default_text) = param_type_and_default(&member.value)?;
+        let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone());
+        let default = match default_text {
+            Some(text) => Some(compile_expr(sources, &scope, "param-default", &text).ok()?.0),
+            None => None,
+        };
+        out.push(CompiledParam { name: member.name.text.clone(), ty, default });
+    }
+    Some(out)
+}
+
+/// The declared type and optional default text of one `$params` entry (§10.1):
+/// either a bare type string (`"bool = false"`, `"text?"`) or the expanded
+/// object form carrying `$type`/`$default`/`$optional` (A.3). `None` when the
+/// type is not representable as a scalar/optional/set contract.
+fn param_type_and_default(value: &liasse_syntax::DocValue) -> Option<(ExprType, Option<String>)> {
+    if let Some(text) = doc::string(value) {
+        let (type_str, default) = match text.split_once('=') {
+            Some((lhs, rhs)) => (lhs.trim(), Some(rhs.trim().to_owned())),
+            None => (text.trim(), None),
+        };
+        return Some((ExprType::scalar(lower_scalar_type(type_str)?), default));
+    }
+    let type_text = doc::string(doc::member(value, "$type")?)?;
+    let optional = doc::member(value, "$optional")
+        .and_then(doc::bool_value)
+        .unwrap_or(false);
+    let mut ty = lower_scalar_type(type_text.trim())?;
+    if optional {
+        ty = Type::Optional(Box::new(ty));
+    }
+    let default = doc::member(value, "$default").and_then(doc::string).map(str::to_owned);
+    Some((ExprType::scalar(ty), default))
+}
+
+/// Lower an A.2 scalar/optional/set type spelling to a [`Type`] for a surface
+/// parameter's contract. A named (`$types`) or `ref` parameter type is not
+/// resolved here (it is uncommon in `$params`), so it yields `None` and drops the
+/// surface view as a documented seam rather than mis-typing it.
+fn lower_scalar_type(text: &str) -> Option<Type> {
+    use liasse_syntax::{parse_type_expression, SpannedType, TypeExprKind};
+    fn lower(node: &SpannedType) -> Option<Type> {
+        match &node.kind {
+            TypeExprKind::Name(word) => match word.as_str() {
+                "text" => Some(Type::Text),
+                "bool" => Some(Type::Bool),
+                "int" => Some(Type::Int),
+                "decimal" => Some(Type::Decimal),
+                "bytes" => Some(Type::Bytes),
+                "uuid" => Some(Type::Uuid),
+                "date" => Some(Type::Date),
+                "timestamp" => Some(Type::timestamp()),
+                "duration" => Some(Type::Duration),
+                "period" => Some(Type::Period),
+                "json" => Some(Type::Json),
+                "blob" => Some(Type::Blob),
+                _ => None,
+            },
+            TypeExprKind::OptionalSuffix(inner) | TypeExprKind::Optional(inner) => {
+                let inner = lower(inner)?;
+                (!matches!(inner, Type::Optional(_))).then(|| Type::Optional(Box::new(inner)))
+            }
+            TypeExprKind::Set(inner) => Some(Type::Set(Box::new(lower(inner)?))),
+            _ => None,
+        }
+    }
+    let mut sources = SourceMap::new();
+    let id = sources.add_label("param-type", text.to_owned());
+    let spanned = parse_type_expression(id, text).ok()?;
+    lower(&spanned)
 }

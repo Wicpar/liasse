@@ -227,6 +227,11 @@ impl<S: InstanceStore> Instance for Runtime<S> {
             if let Some(selection) = selection {
                 call = call.with_auth(selection);
             }
+            // §11.8: on a multiplexed connection the call names which authenticated
+            // context it runs under, so the request binds the actor of that context.
+            if let Some(context) = &request.context {
+                call = call.with_context(context.clone());
+            }
             let outcome = loaded.host.call(&connection, &call).map_err(host_fault)?;
             let op_record = request
                 .operation_id
@@ -251,6 +256,12 @@ impl<S: InstanceStore> Instance for Runtime<S> {
             let mut watch = SurfaceWatch::new(address, watch_id.clone());
             if let Some(window) = request.window.as_ref().and_then(build_window) {
                 watch = watch.with_window(window);
+            }
+            // §11.8: on a multiplexed connection the subscription names which
+            // authenticated context it runs under, so it applies that context's
+            // authorization and projection independently of any other context.
+            if let Some(context) = &request.context {
+                watch = watch.with_context(context.clone());
             }
             // §12.2: a singular view delivers one object; a collection a row array.
             let singular = loaded.routing.is_singular_view(&request.target);

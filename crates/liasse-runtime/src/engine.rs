@@ -31,7 +31,7 @@ use crate::eval::EvalCtx;
 use crate::generator::Generators;
 use crate::interp::{Interp, RowTarget};
 use crate::outcome::CallOutcome;
-use crate::request::CallRequest;
+use crate::request::{CallRequest, ViewQuery};
 use crate::response::ResponseValue;
 use crate::schema::Schema;
 use crate::state::{Change, Prospective};
@@ -479,27 +479,66 @@ impl<S: InstanceStore> Engine<S> {
         Ok(CallOutcome::Committed { seq, response })
     }
 
-    /// Evaluate a named view against committed state at `frontier` (§7, §12.4).
-    /// Returns `None` when no view of that name is declared.
+    /// Evaluate a named view against committed state at `frontier` (§7, §12.4)
+    /// with no parameters bound and no actor identity — an unauthenticated,
+    /// argument-free read. A `$view` reading `@param` takes its declared default
+    /// and one reading `$actor`/`$session` faults unbound. Use [`Engine::view_with`]
+    /// to bind parameters and an actor/session identity. Returns `None` when no
+    /// view of that name is declared.
     pub fn view(&self, name: &str, frontier: CommitSeq) -> Result<Option<ViewResult>, EngineError> {
-        let Some(view) = self.compiled.view(name) else { return Ok(None) };
+        self.view_with(name, frontier, &ViewQuery::new())
+    }
+
+    /// Evaluate a named view against committed state at `frontier` with the
+    /// parameter bindings and actor/session identity `query` supplies (§10.1,
+    /// §11.1) — the param- and actor-aware read the surface layer calls to serve a
+    /// `$view` with `$params` or a role `$view` filtering on `$actor`.
+    ///
+    /// Each declared `$params` entry the view reads as `@name` resolves from the
+    /// query's parameters, taking its declared default when unbound (§8.3); a view
+    /// reading `$actor`/`$session` resolves the row the query's actor/session key
+    /// names, re-materialized from committed state at `frontier` (§10.3, §11.3), so
+    /// a role view observes state as of the read. The view is evaluated at the
+    /// virtual clock, so bucketed collections expose only the rows active at that
+    /// instant (§14). Returns `None` when no view of that name is declared.
+    pub fn view_with(
+        &self,
+        name: &str,
+        frontier: CommitSeq,
+        query: &ViewQuery,
+    ) -> Result<Option<ViewResult>, EngineError> {
+        // A plain top-level view (§7) takes no parameters; a `$public`/role surface
+        // view (§10.1) reads `$params`/`$actor`. Resolve the plain view first, then
+        // the surface view addressed by `name`.
+        let (expr, params) = match self.compiled.view(name) {
+            Some(view) => (&view.expr, None),
+            None => match self.compiled.surface_view(name) {
+                Some(surface) => (&surface.expr, Some(surface.params.as_slice())),
+                None => return Ok(None),
+            },
+        };
         let snapshot = self.store.snapshot(frontier)?;
         let schema = Schema::new(&self.model);
         let prospective = Prospective::from_snapshot(&snapshot, schema);
-        // §14: the view is evaluated at the virtual clock, so bucketed
-        // collections expose only the rows active at that instant.
         let keyrings = self.keyring_snapshots();
-        let ctx = EvalCtx {
+        let mut ctx = EvalCtx {
             schema,
             compiled: &self.compiled,
             params: BTreeMap::new(),
             now: self.clock,
             seed: 0,
             keyrings: &keyrings,
-            // A named-view read carries no actor; a role view's `$actor` filter is
-            // applied by the surface layer, not here (§11.1).
             context: BTreeMap::new(),
         };
+        // §10.1: bind each supplied argument, then fill an omitted declared
+        // parameter with its declared default (§8.3), so a `$view` reading `@name`
+        // resolves whether or not the caller supplied it.
+        ctx.params = self.bind_params(&ctx, &prospective, query, params)?;
+        // §11.1/§11.3: a role `$view` reads `$actor`/`$session`, bound to the row
+        // each key resolves at this frontier — the same re-materialization an
+        // authenticated admission performs, so the view sees state as of the read.
+        ctx.context =
+            bind_context(&self.compiled, &ctx, &prospective, query.actor_key(), query.session_key());
         let current = Cell::Row(Box::new(ctx.root(&prospective)));
         let env = ctx.env(&prospective);
         // §12.2: a `$view` delivers a row stream. Evaluate in view context so a
@@ -507,16 +546,57 @@ impl<S: InstanceStore> Engine<S> {
         // yields its 0/1-row view — one row when present, none when absent — rather
         // than a coerced single row or the one-row cardinality rejection an
         // ordinary evaluation raises (§6.3). A scalar/aggregate view stays a value.
-        let cell = view
-            .expr
+        let cell = expr
             .evaluate_view(&env, &current)
             .map_err(|error| EngineError::Internal(error.message()))?;
         Ok(Some(ViewResult::from_cell(&cell)))
     }
 
-    /// Evaluate a named view against current committed state (the head frontier).
+    /// The parameter cells a surface `$view` read runs against (§10.1): each
+    /// supplied argument, then each omitted declared parameter bound to its
+    /// declared default (or `none` when it declares none, §8.3). A plain view
+    /// declares no parameters, so it just carries whatever the query supplied.
+    fn bind_params(
+        &self,
+        ctx: &EvalCtx<'_>,
+        prospective: &Prospective,
+        query: &ViewQuery,
+        declared: Option<&[crate::compiled::CompiledParam]>,
+    ) -> Result<BTreeMap<String, Cell>, EngineError> {
+        let mut params: BTreeMap<String, Cell> = query
+            .params()
+            .iter()
+            .map(|(name, value)| (name.clone(), Cell::Scalar(value.clone())))
+            .collect();
+        for param in declared.unwrap_or(&[]) {
+            if params.contains_key(&param.name) {
+                continue;
+            }
+            let cell = match &param.default {
+                Some(default) => {
+                    let root = Cell::Row(Box::new(ctx.root(prospective)));
+                    ctx.eval(prospective, default, &root)
+                        .map_err(|rejection| EngineError::Internal(rejection.message().to_owned()))?
+                }
+                None => Cell::Scalar(liasse_value::Value::None),
+            };
+            params.insert(param.name.clone(), cell);
+        }
+        Ok(params)
+    }
+
+    /// Evaluate a named view against current committed state (the head frontier)
+    /// with no parameters or actor identity ([`Engine::view`]).
     pub fn view_at_head(&self, name: &str) -> Result<Option<ViewResult>, EngineError> {
         self.view(name, self.store.head())
+    }
+
+    /// The dotted addresses of every compiled `$public`/role surface `$view`
+    /// (`public.<name>`, `<role>.<name>`, §10.1) — the names [`Engine::view_with`]
+    /// serves. Lets the surface layer discover which of its declared surfaces the
+    /// runtime compiled a param- and actor-aware view for.
+    pub fn surface_view_addresses(&self) -> impl Iterator<Item = &str> {
+        self.compiled.surface_views.iter().map(|v| v.address.as_str())
     }
 }
 
@@ -536,6 +616,23 @@ fn auth_context(
     prospective: &Prospective,
     request: &CallRequest,
 ) -> BTreeMap<String, Cell> {
+    bind_context(compiled, ctx, prospective, request.actor_key(), request.session_key())
+}
+
+/// Bind the `$actor`/`$session` structural cells from the `actor_key`/`session_key`
+/// a request or view read supplies (§11.1). Each is the row that key names in the
+/// declared actor/session collection, re-materialized from committed state at the
+/// read position (§10.3, §11.3) as the same read-facing row cell a receiver
+/// observes. An absent collection or key, or a key that resolves no live row,
+/// binds nothing, so a program or view reading the binding faults exactly as an
+/// unbound structural — fail closed (§6.3).
+fn bind_context(
+    compiled: &Compiled,
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+    actor_key: Option<&liasse_value::Value>,
+    session_key: Option<&liasse_value::Value>,
+) -> BTreeMap<String, Cell> {
     let mut context = BTreeMap::new();
     let mut bind = |name: &str, path: &Option<Vec<String>>, key: Option<&liasse_value::Value>| {
         let (Some(path), Some(key)) = (path, key) else { return };
@@ -547,8 +644,8 @@ fn auth_context(
             context.insert(name.to_owned(), cell);
         }
     };
-    bind("actor", &compiled.actor_collection, request.actor_key());
-    bind("session", &compiled.session_collection, request.session_key());
+    bind("actor", &compiled.actor_collection, actor_key);
+    bind("session", &compiled.session_collection, session_key);
     context
 }
 

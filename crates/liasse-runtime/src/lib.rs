@@ -157,7 +157,7 @@ pub use keyring::{
     RotationSchedule, SessionToken, VerifyError, VersionId,
 };
 pub use outcome::CallOutcome;
-pub use request::CallRequest;
+pub use request::{CallRequest, ViewQuery};
 pub use response::ResponseValue;
 pub use view::{ViewDelta, ViewResult, ViewRow};
 

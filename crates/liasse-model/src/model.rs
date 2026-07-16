@@ -20,7 +20,7 @@ use crate::report::Reporter;
 use crate::resolve::Resolver;
 use crate::state::{Node, Shape};
 use crate::surface::{check_surfaces, Surface};
-use crate::{auth, blob, bucket, check, delete, infer, meter, migration, seed};
+use crate::{auth, blob, bucket, check, delete, infer, meter, migration, module, seed};
 
 /// A statically valid Liasse package model.
 #[derive(Debug, Clone)]
@@ -82,6 +82,10 @@ impl Model {
         // row before the tree/surface checks, so a temporal selector over the
         // bucket resolves against real output-field and structural-binding types.
         bucket::type_source_buckets(&mut reporter, sources, &resolver, &mut root, &build.source_bucket_decls);
+        // §13.8/§13.9: type each `$modules` space into its instance-keyed view of
+        // declared interface contracts before the tree/surface checks, so
+        // `.modules::iface` aggregation and `modules.$key` resolve.
+        module::type_module_spaces(&resolver, &mut root, &build.module_spaces);
         check::check_tree(&mut reporter, sources, &resolver, &root);
         let mutations = check_mutations(
             &mut reporter,

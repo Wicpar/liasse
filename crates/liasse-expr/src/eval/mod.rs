@@ -10,6 +10,7 @@
 //! The recursion bound is the AST's 512-deep syntax cap (see [`crate::typed`]).
 
 mod aggregate;
+mod blob;
 mod builtins;
 mod decimal;
 mod keyring;
@@ -184,6 +185,7 @@ impl Evaluator<'_> {
             TypedKind::Key(base) => self.eval_key(base),
             TypedKind::Temporal { base, query } => self.eval_temporal(base, query),
             TypedKind::Keyring { base, selector } => self.eval_keyring(expr, base, *selector),
+            TypedKind::BlobMember { base, member } => self.eval_blob_member(base, *member),
         }
     }
 

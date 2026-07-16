@@ -29,6 +29,14 @@ pub(crate) fn string(value: &DocValue) -> Option<&str> {
     }
 }
 
+/// The boolean of `value`, if it is a boolean scalar.
+pub(crate) fn bool_value(value: &DocValue) -> Option<bool> {
+    match &value.kind {
+        DocValueKind::Bool(b) => Some(*b),
+        _ => None,
+    }
+}
+
 /// The elements of `value`, if it is an array.
 pub(crate) fn array(value: &DocValue) -> Option<&[DocValue]> {
     match &value.kind {

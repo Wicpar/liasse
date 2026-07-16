@@ -88,6 +88,11 @@ pub(crate) struct StateBuild<'a> {
     /// collection object (its `$bucket`, `$key`, and output-field members), typed
     /// into a temporal-collection row by [`crate::bucket::type_source_buckets`].
     pub source_bucket_decls: Vec<RawDecl<'a>>,
+    /// Module spaces (§13.2, §13.8): the model path of each `$modules` node and
+    /// the per-instance shape built from its `$interfaces`. The deferred
+    /// [`crate::module::type_module_spaces`] pass projects each instance shape and
+    /// writes the instance-name-keyed view row onto the placeholder view node.
+    pub module_spaces: Vec<(Vec<String>, Shape)>,
 }
 
 /// The structural builder: accumulates the reusable type table and the raw
@@ -108,6 +113,7 @@ pub(crate) struct Builder<'a> {
     blob_storage: Vec<RawDecl<'a>>,
     source_buckets: Vec<String>,
     source_bucket_decls: Vec<RawDecl<'a>>,
+    module_spaces: Vec<(Vec<String>, Shape)>,
     /// Model-root paths a `$like: "^"` positional recursion resolves to (§5.8):
     /// the containing shape/collection each inline recursive field adopts. After
     /// the root is built, each target's node is registered in [`Self::types`]
@@ -136,6 +142,7 @@ impl<'a> Builder<'a> {
             blob_storage: Vec::new(),
             source_buckets: Vec::new(),
             source_bucket_decls: Vec::new(),
+            module_spaces: Vec::new(),
             recur_targets: std::collections::BTreeSet::new(),
         };
         if let Some(types_doc) = types_doc {
@@ -161,6 +168,7 @@ impl<'a> Builder<'a> {
             blob_storage: builder.blob_storage,
             source_buckets: builder.source_buckets,
             source_bucket_decls: builder.source_bucket_decls,
+            module_spaces: builder.module_spaces,
         }
     }
 

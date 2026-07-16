@@ -30,6 +30,7 @@ impl Checker<'_> {
         base: &Expr,
         selector: &str,
     ) -> Option<TypedExpr> {
+        use crate::typed::BlobMember;
         let keyring = match selector {
             "all" => return self.check_temporal_all(expr, base),
             "key" => return self.check_key_selector(expr, base),
@@ -37,13 +38,18 @@ impl Checker<'_> {
             "accepted" => KeyringSelector::Accepted,
             "public" => KeyringSelector::Public,
             "versions" => KeyringSelector::Versions,
+            "sha512" => return self.check_blob_selector(expr, base, BlobMember::Sha512),
+            "bytes" => return self.check_blob_selector(expr, base, BlobMember::Bytes),
+            "media" => return self.check_blob_selector(expr, base, BlobMember::Media),
+            "name" => return self.check_blob_selector(expr, base, BlobMember::Name),
             other => {
                 return self.error(
                     expr,
                     format!(
                         "`.${other}` is not a selector (row identity `.$key`, §6.3; temporal \
                          `.$all`, §14.2; keyring \
-                         `.$current`/`.$accepted`/`.$public`/`.$versions`, §17.2)"
+                         `.$current`/`.$accepted`/`.$public`/`.$versions`, §17.2; blob \
+                         `.$sha512`/`.$bytes`/`.$media`/`.$name`, §18.1)"
                     ),
                 );
             }

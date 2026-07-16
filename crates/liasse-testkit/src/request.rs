@@ -114,6 +114,7 @@ impl Request {
                 on: step.on.clone(),
                 operation_id: step.member("operation_id").and_then(Value::as_str).map(ToOwned::to_owned),
                 auth: step.member("auth").cloned(),
+                context: step.member("context").and_then(Value::as_str).map(ToOwned::to_owned),
             })),
             StepKind::Watch => Ok(Self::Watch(WatchRequest {
                 target: require_str(&step.target, action, "surface address")?.to_owned(),
@@ -121,6 +122,7 @@ impl Request {
                 on: step.on.clone(),
                 args: env.resolve(step.member("args").unwrap_or(&Value::Null)),
                 window: step.member("window").cloned(),
+                context: step.member("context").and_then(Value::as_str).map(ToOwned::to_owned),
             })),
             StepKind::Unwatch => Ok(Self::Unwatch(WatchId::new(require_str(&step.target, action, "subscription id")?))),
             StepKind::ExpectView => Ok(Self::ReadView(WatchId::new(target_member_str(&step.target, "watch", action)?))),

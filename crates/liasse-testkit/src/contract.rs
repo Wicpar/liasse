@@ -40,6 +40,9 @@ pub struct CallRequest {
     pub operation_id: Option<String>,
     /// A per-request authenticator selection, verbatim, if attached.
     pub auth: Option<Value>,
+    /// The named authentication context on a multiplexed connection (§11.8), if
+    /// the step selects one.
+    pub context: Option<String>,
 }
 
 /// A request to open a live subscription over a surface view.
@@ -55,6 +58,9 @@ pub struct WatchRequest {
     pub args: Value,
     /// The §12.2 bounded-window spec, verbatim, if any.
     pub window: Option<Value>,
+    /// The named authentication context on a multiplexed connection (§11.8), if
+    /// the step selects one.
+    pub context: Option<String>,
 }
 
 /// The observed result of performing an action.

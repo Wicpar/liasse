@@ -1,15 +1,17 @@
 //! Object-form member dispatch (SPEC.md Annex C.2) and the non-scalar node
-//! forms: static structs, sets, views, refs, `$like` recursion, and the opaque
-//! `$keyring`/`$modules`/`$bucket` declarations collected for their feature
-//! phases. Scalar-field forms live in [`super::fields`], keyed collections in
-//! [`super::keys`]. Continues the same [`Builder`] impl.
+//! forms: static structs, sets, views, refs, `$like` recursion, the `$keyring`
+//! version-view and `$modules` instance-space declarations (each projected as a
+//! typed view for its feature phase), and the `$bucket` source-collection
+//! declaration. Scalar-field forms live in [`super::fields`], keyed collections
+//! in [`super::keys`]. Continues the same [`Builder`] impl.
 
 use liasse_syntax::{DocMember, DocValue};
 use liasse_value::Type;
 
 use crate::doc::DocValueExt;
+use crate::names::DeclName;
 use crate::report::{code, Reporter};
-use crate::state::{ExprSource, Node, Reference, SetField};
+use crate::state::{ExprSource, Member, Node, Reference, SetField, Shape};
 
 use super::{absolute_path, placeholder, Builder};
 
@@ -124,10 +126,23 @@ impl<'a> Builder<'a> {
 
     /// A `$modules` module space (§13.2, C.15). The composition grammar
     /// (`$expose`/`$interfaces`/`$auth`) is validated for shape; instance
-    /// installation and cross-package resolution are runtime seams. The node is
-    /// opaque for ordinary field typing.
-    fn modules_node(&self, reporter: &mut Reporter, value: &DocValue, _path: &[String]) -> Node {
-        if let Some(space) = value.member("$modules") {
+    /// installation and cross-package resolution are runtime seams.
+    ///
+    /// §13.8/§13.9: an installed module space is a *keyed view of instances*.
+    /// Each instance exposes the space's declared `$interfaces` (§13.8) as nested
+    /// collections of their `$view` row shape, so `.modules::iface` interface
+    /// aggregation (§13.9), `modules.$key` (the instance name), and a whole
+    /// `.modules` view all type-check. The node is therefore projected as a view;
+    /// the instance shape (its interface members) is built here, and its
+    /// instance-name key plus the interface row types are attached in the
+    /// deferred [`crate::module::type_module_spaces`] pass, which runs with the
+    /// resolver so a nested-collection `$view` referencing a `$types` shape
+    /// resolves. Where an interface's exposed rows are only knowable from the
+    /// runtime composition set, the declared `$interfaces` `$view` is the typed
+    /// contract (§13.8: "A module space declares complete boundary contracts").
+    fn modules_node(&mut self, reporter: &mut Reporter, value: &'a DocValue, path: &[String]) -> Node {
+        let space = value.member("$modules");
+        if let Some(space) = space {
             crate::module::check_space(reporter, &space.value);
         }
         for member in value.as_object().unwrap_or(&[]) {
@@ -139,7 +154,64 @@ impl<'a> Builder<'a> {
                 );
             }
         }
-        Node::Scalar(placeholder(value.span))
+        let instance = self.module_instance_shape(reporter, space, path);
+        self.module_spaces.push((path.to_vec(), instance));
+        Node::View(crate::state::ViewDecl {
+            expr: ExprSource {
+                text: ".".to_owned(),
+                span: value.span,
+            },
+            row: liasse_expr::RowType::keyless(std::iter::empty::<(String, liasse_expr::ExprType)>()),
+        })
+    }
+
+    /// Build the per-instance shape of a module space (§13.8): one member per
+    /// declared `$interfaces` entry, its node the interface's `$view` row shape.
+    /// The `$mut` contracts are boundary *call* contracts, not readable state, so
+    /// only `$view` contributes to the instance's read shape.
+    fn module_instance_shape(
+        &mut self,
+        reporter: &mut Reporter,
+        space: Option<&'a DocMember>,
+        path: &[String],
+    ) -> Shape {
+        let mut shape = Shape::default();
+        let interfaces = space
+            .and_then(|space| space.value.member("$interfaces"))
+            .and_then(|m| m.value.as_object());
+        let Some(interfaces) = interfaces else {
+            return shape;
+        };
+        for interface in interfaces {
+            let Ok(name) = DeclName::parse(&interface.name.text) else {
+                continue;
+            };
+            let Some(view) = interface.value.member("$view") else {
+                continue;
+            };
+            let mut iface_path = path.to_vec();
+            iface_path.push(interface.name.text.clone());
+            let node = self.interface_node(reporter, &view.value, &iface_path);
+            shape.members.push(Member {
+                name,
+                span: interface.span,
+                node,
+            });
+        }
+        shape
+    }
+
+    /// The node of one module-space interface's `$view` shape (§13.8). With a
+    /// `$key` it is a keyed collection of interface rows (what `.modules::iface`
+    /// aggregates); without one it is a single struct row.
+    fn interface_node(&mut self, reporter: &mut Reporter, view: &'a DocValue, path: &[String]) -> Node {
+        if view.member("$key").is_some() {
+            Node::Collection(Box::new(self.collection(reporter, view, path)))
+        } else if let Some(members) = view.as_object() {
+            Node::Struct(self.build_shape(reporter, members, path, false))
+        } else {
+            Node::Scalar(placeholder(view.span))
+        }
     }
 
     fn set_node(&mut self, reporter: &mut Reporter, value: &DocValue, set: &DocMember) -> Node {

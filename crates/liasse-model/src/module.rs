@@ -15,10 +15,43 @@
 //! set; they are documented seams. Expression members are parsed for syntax but
 //! not typed, since they read `#handle` imports the standalone model lacks.
 
+use liasse_expr::{ExprType, RowType};
 use liasse_syntax::DocValue;
+use liasse_value::Type;
 
+use crate::bucket::node_at_mut;
 use crate::doc::DocValueExt;
 use crate::report::{code, Reporter};
+use crate::resolve::Resolver;
+use crate::state::{Node, Shape};
+
+/// Pre-pass (§13.8/§13.9): type each module space's placeholder view node into a
+/// keyed view of instances. Each instance shape's interface members are projected
+/// through the resolver (so a nested-collection `$view` referencing a `$types`
+/// shape resolves), and the row is keyed by the instance name — a non-empty text
+/// value that forms the local component of instance identity (§13.3). This lets
+/// `.modules::iface` interface aggregation (§13.9) and `modules.$key` type-check
+/// against the declared boundary contracts.
+pub(crate) fn type_module_spaces(
+    resolver: &Resolver,
+    root: &mut Shape,
+    spaces: &[(Vec<String>, Shape)],
+) {
+    let mut computed: Vec<(Vec<String>, RowType)> = Vec::new();
+    for (path, instance_shape) in spaces {
+        let fields = resolver.shape_row(instance_shape);
+        let keyed = RowType::new(
+            fields.fields().map(|(name, ty)| (name.clone(), ty.clone())).collect::<Vec<_>>(),
+            Some(ExprType::scalar(Type::Text)),
+        );
+        computed.push((path.clone(), keyed));
+    }
+    for (path, row) in computed {
+        if let Some(Node::View(view)) = node_at_mut(root, &path) {
+            view.row = row;
+        }
+    }
+}
 
 /// Validate a `$modules` space object.
 pub(crate) fn check_space(reporter: &mut Reporter, value: &DocValue) {
