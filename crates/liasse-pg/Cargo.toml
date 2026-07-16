@@ -30,8 +30,12 @@ sha2 = "0.10"
 data-encoding = "2.11"
 
 [dev-dependencies]
-# The integration test drives the shared `liasse_store::contract_tests` battery
-# against a live PostgreSQL instance; no extra harness needed.
+# The store-contract integration test drives the shared
+# `liasse_store::contract_tests` battery against a live PostgreSQL instance.
+# The scenario-conformance integration test additionally drives the file-based
+# corpus through the shared runtime/surface harness over this store, gating it
+# against the identical `scenario_gate::SKIP` ledger the in-memory runner uses.
+liasse-testkit = { path = "../liasse-testkit" }
 
 [lints]
 workspace = true

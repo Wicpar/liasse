@@ -17,6 +17,17 @@ pub(super) fn check_requires(reporter: &mut Reporter, value: &DocValue) {
         return;
     };
     for member in members {
+        // §2.5/§4.1: a `$requires` key is an application-defined namespace
+        // handle, so it must be a valid declaration name — not a `$`-reserved
+        // key smuggling a requirement into structural-member space.
+        if let Err(reason) = crate::names::DeclName::parse(&member.name.text) {
+            reporter.reject_hint(
+                member.name.span,
+                code::HEADER,
+                format!("`$requires` key `{}` is not a valid namespace handle: {reason}", member.name.text),
+                "name the requirement with a declaration name, e.g. `\"cbor\": \"liasse.cbor@1\"`",
+            );
+        }
         if member.value.as_string().is_none() {
             reporter.reject(
                 member.value.span,

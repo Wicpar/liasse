@@ -46,7 +46,9 @@ mod ty;
 mod typed;
 
 pub use check::{check_expression, check_statement};
-pub use env::{CallSite, Cell, Environment, Row, RowId, RowIdPart, TemporalQuery};
+pub use env::{
+    CallSite, Cell, Environment, KeyringSelector, Row, RowId, RowIdPart, TemporalQuery,
+};
 pub use error::EvalError;
 pub use scope::Scope;
 pub use ty::{ExprType, RowType};

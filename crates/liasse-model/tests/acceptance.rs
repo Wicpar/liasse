@@ -190,3 +190,58 @@ fn sets_refs_unique_enums_load() {
     );
     built.expect_ok();
 }
+
+#[test]
+fn set_of_inline_enum_element_loads_as_enum() {
+    // §5.5: "the value of `$set` is the shape of every member" — any scalar
+    // member shape is admissible, including an inline enum (§5.9). The element
+    // type is that enum, not a fallback.
+    use liasse_model::Node;
+    let built = build(
+        r#"{
+          "$liasse": 1
+          "$app": "t.enumset@1.0.0"
+          "$model": {
+            "tickets": {
+              "$key": "id"
+              "id": "text"
+              "levels": { "$set": { "$enum": ["low", "medium", "high"] } }
+            }
+          }
+        }"#,
+    );
+    let model = built.expect_ok();
+    let Node::Collection(tickets) = &model.root().member("tickets").expect("tickets").node else {
+        panic!("tickets is a collection");
+    };
+    let Node::Set(levels) = &tickets.shape.member("levels").expect("levels").node else {
+        panic!("levels is a set");
+    };
+    match &levels.element {
+        liasse_value::Type::Enum(en) => {
+            assert_eq!(en.labels().len(), 3, "the three declared labels are retained");
+        }
+        other => panic!("set element is the inline enum type, got {other:?}"),
+    }
+}
+
+#[test]
+fn set_of_non_type_object_still_rejected() {
+    // §5.5: a `$set` element must still be a scalar member shape; a view object
+    // is not one and is rejected, so the enum admission did not loosen the check.
+    let built = build(
+        r#"{
+          "$liasse": 1
+          "$app": "t.badset@1.0.0"
+          "$model": {
+            "docs": { "$key": "id", "id": "text" }
+            "bad": {
+              "$key": "id"
+              "id": "text"
+              "refs": { "$set": { "$view": ".docs { id }" } }
+            }
+          }
+        }"#,
+    );
+    assert!(built.has_code("M-TYPE"));
+}

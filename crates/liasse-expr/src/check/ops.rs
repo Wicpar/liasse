@@ -2,7 +2,7 @@
 //! the conditional/fallback forms, and view combinators (§6.1, §7.4).
 
 use liasse_syntax::{BinaryOp, CombinatorOp, Expr, UnaryOp};
-use liasse_value::Type;
+use liasse_value::{RefTarget, Type};
 
 use crate::check::Checker;
 use crate::ty::ExprType;
@@ -352,7 +352,12 @@ impl Checker<'_> {
 ///
 /// Equal types compare; `int` and `decimal` compare after promotion; a bare
 /// `none` (`optional<json>`) compares against any optional; two refs compare
-/// only when they name the same target relation (§6.3).
+/// only when they name the same target relation (§6.3); and a ref compares
+/// against a key of its own declared target — §6.3 "Equality between a row or
+/// ref and a key of the same declared target compares the current typed key",
+/// which is exactly the case where a key is supplied explicitly (a scalar key
+/// against a scalar-keyed ref, or the composite key tuple against a
+/// composite-keyed ref).
 fn comparable(a: &Type, b: &Type) -> bool {
     if a == b {
         return true;
@@ -363,6 +368,29 @@ fn comparable(a: &Type, b: &Type) -> bool {
             inner.as_ref() == other || matches!(other, Type::Json)
         }
         (Type::Ref(x), Type::Ref(y)) => x == y,
+        (Type::Ref(target), other) | (other, Type::Ref(target))
+            if !matches!(other, Type::Ref(_)) =>
+        {
+            ref_key_matches(target, other)
+        }
         _ => false,
+    }
+}
+
+/// Whether an explicitly supplied key value type is the declared key type of a
+/// ref's target (§6.3). A scalar-keyed target compares against its scalar key
+/// type; a composite-keyed target compares against the object/tuple of its
+/// component key types.
+fn ref_key_matches(target: &RefTarget, key: &Type) -> bool {
+    match target {
+        RefTarget::Scalar(inner) => inner.as_ref() == key,
+        RefTarget::Composite(components) => match key {
+            Type::Struct(struct_ty) => {
+                let declared: Vec<&Type> = struct_ty.fields().map(|(_, ty)| ty).collect();
+                declared.len() == components.len()
+                    && declared.into_iter().zip(components).all(|(a, b)| a == b)
+            }
+            _ => false,
+        },
     }
 }

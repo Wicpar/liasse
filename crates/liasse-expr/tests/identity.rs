@@ -9,11 +9,11 @@
 mod common;
 
 use common::{
-    collection, eval, keyed_row, keyless_row, row, row_ids, row_type, scalar, scell, vint, vtext,
-    view, FixedEnv, FixedScope,
+    as_scalar, check_rejects, collection, eval, keyed_row, keyless_row, row, row_ids, row_type,
+    scalar, scell, vint, vtext, view, FixedEnv, FixedScope,
 };
 use liasse_expr::{Cell, ExprType, Row, RowId, RowIdPart};
-use liasse_value::Type;
+use liasse_value::{Ref, RefTarget, Type, Value};
 
 fn scope_over(name: &str, row_ty: liasse_expr::RowType, rows: Vec<Row>) -> (FixedScope, FixedEnv, Cell) {
     let root_ty = row_type(vec![(name, view(row_ty))], None);
@@ -92,6 +92,41 @@ fn composite_group_identity_is_canonical_key_text() {
     let result = eval(&scope, &env, &dot, src);
     // account "a:b" escapes to "a%3Ab", joined with kind "x" by ":".
     assert_eq!(row_ids(&result), vec![RowId::keyed("a%3Ab:x")]);
+}
+
+/// §6.3: "Equality between a row or ref and a key of the same declared target
+/// compares the current typed key." A `ref<text-target>` is comparable with a
+/// `text` key, and the comparison reads the ref's current typed key — equal
+/// when the key matches, unequal otherwise.
+#[test]
+fn ref_compares_with_current_typed_key() {
+    let ref_ty = scalar(Type::Ref(RefTarget::Scalar(Box::new(Type::Text))));
+    let member_ty = row_type(vec![("team", ref_ty)], Some(scalar(Type::Text)));
+    let scope = FixedScope::new(ExprType::Row(member_ty));
+
+    let member = row(
+        1,
+        vtext("m1"),
+        vec![("team", scell(Value::Ref(Ref::scalar(vtext("good")))))],
+    );
+    let env = FixedEnv::new(member.clone());
+    let dot = Cell::Row(Box::new(member));
+
+    assert_eq!(as_scalar(&eval(&scope, &env, &dot, ".team == 'good'")), Value::Bool(true));
+    assert_eq!(as_scalar(&eval(&scope, &env, &dot, ".team == 'banned'")), Value::Bool(false));
+    assert_eq!(as_scalar(&eval(&scope, &env, &dot, ".team != 'banned'")), Value::Bool(true));
+}
+
+/// §6.3: a key of a *different* type than the ref's declared target key is not
+/// "a key of the same declared target", so the comparison is statically
+/// rejected rather than silently always-unequal.
+#[test]
+fn ref_comparison_with_foreign_key_type_is_rejected() {
+    let ref_ty = scalar(Type::Ref(RefTarget::Scalar(Box::new(Type::Text))));
+    let member_ty = row_type(vec![("team", ref_ty)], Some(scalar(Type::Text)));
+    let scope = FixedScope::new(ExprType::Row(member_ty));
+    // `5` is an `int`; the target key is `text`, so the two are incomparable.
+    assert!(check_rejects(&scope, ".team == 5").has_errors());
 }
 
 /// §7.2: a plain projection preserves inherited identity — each output row keeps

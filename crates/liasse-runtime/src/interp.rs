@@ -8,14 +8,18 @@
 //! bindings, view-sourced insert/replace, internal calls, and multi-row patch
 //! sources are documented seams.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use liasse_diag::SourceId;
 use liasse_expr::{check_expression, Cell, ExprType};
 use liasse_ident::NameSegment;
-use liasse_syntax::{Arg, BinaryOp, BlockMember, BlockMemberKind, Expr, ExprKind, Selector, Stmt, StmtKind};
+use liasse_syntax::{Arg, BinaryOp, BlockMember, BlockMemberKind, Expr, ExprKind, Selector, Stmt, StmtKind, UnaryOp};
 use liasse_store::{CollectionPath, KeyValue, RowAddress};
 use liasse_value::Value;
 
+use crate::cascade::{self, PlannedDeletion};
 use crate::compiled::{Compiled, CompiledCollection, CompiledMutation};
+use crate::deletion::RowRef;
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
 use crate::materialize::{self, FieldMap};
@@ -30,6 +34,50 @@ pub(crate) struct RowTarget {
     pub(crate) collection: String,
 }
 
+/// A lexical local a `name = …` statement bound (§8.1): either a row the
+/// statement inserted or selected (tracked by address so a later read observes
+/// the current committed fields, §8.10) or an evaluated scalar/value.
+#[derive(Clone)]
+pub(crate) enum LocalBind {
+    Row(RowTarget),
+    Value(Cell, ExprType),
+}
+
+/// The type and cell of every local binding, resolved against `prospective` so a
+/// row binding reads its current fields (§8.1 read-your-writes; §8.10 committed
+/// state for the response). Shared by the interpreter (mid-program) and the
+/// engine's `return` evaluation (post-commit).
+pub(crate) fn local_bindings(
+    locals: &BTreeMap<String, LocalBind>,
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+) -> (BTreeMap<String, ExprType>, BTreeMap<String, Cell>) {
+    let mut types = BTreeMap::new();
+    let mut cells = BTreeMap::new();
+    for (name, bind) in locals {
+        match bind {
+            LocalBind::Row(target) => {
+                let Some(ty) = ctx.schema.receiver_row_type(std::slice::from_ref(&target.collection))
+                else {
+                    continue;
+                };
+                let (Some(collection), Some(fields)) =
+                    (ctx.compiled.collection(&target.collection), prospective.get(&target.address))
+                else {
+                    continue;
+                };
+                types.insert(name.clone(), ty);
+                cells.insert(name.clone(), ctx.row_cell_of(prospective, collection, fields));
+            }
+            LocalBind::Value(cell, ty) => {
+                types.insert(name.clone(), ty.clone());
+                cells.insert(name.clone(), cell.clone());
+            }
+        }
+    }
+    (types, cells)
+}
+
 /// The mutation-program interpreter over one admission.
 pub(crate) struct Interp<'a> {
     pub(crate) compiled: &'a Compiled,
@@ -39,6 +87,9 @@ pub(crate) struct Interp<'a> {
     pub(crate) receiver: Option<RowTarget>,
     pub(crate) touched: Vec<RowAddress>,
     pub(crate) ret: Option<(Expr, SourceId)>,
+    /// Lexical locals bound by `name = …` statements (§8.1), in declaration
+    /// order, visible to later statements and to the `return`.
+    pub(crate) locals: BTreeMap<String, LocalBind>,
 }
 
 impl<'a> Interp<'a> {
@@ -76,7 +127,7 @@ impl<'a> Interp<'a> {
                     Rejection::new(RejectionReason::MissingTarget, "the selected row no longer exists")
                         .at(receiver.address.render())
                 })?;
-                Ok(row_cell(collection, fields))
+                Ok(self.ctx.row_cell_of(self.prospective, collection, fields))
             }
         }
     }
@@ -99,10 +150,26 @@ impl<'a> Interp<'a> {
         Ok(materialize::top_address(name, key))
     }
 
+    /// The mutation's scope extended with the current local bindings' types, so a
+    /// statement (or a value inside one) may reference a `name = …` binding.
+    fn scope(&self) -> RuntimeScope {
+        let (types, _) = local_bindings(&self.locals, self.ctx, self.prospective);
+        let mut scope = self.mutation.scope.clone();
+        for (name, ty) in types {
+            scope = scope.with_binding(name, ty);
+        }
+        scope
+    }
+
+    /// The current local bindings as evaluation cells.
+    fn binding_cells(&self) -> BTreeMap<String, Cell> {
+        local_bindings(&self.locals, self.ctx, self.prospective).1
+    }
+
     fn eval_value(&self, expr: &Expr, source: SourceId, current: &Cell) -> Result<Cell, Rejection> {
-        let typed = check_expression(&self.mutation.scope, source, expr)
+        let typed = check_expression(&self.scope(), source, expr)
             .map_err(|_| Rejection::new(RejectionReason::Malformed, "the request expression did not type-check"))?;
-        self.ctx.eval(self.prospective, &typed, current)
+        self.ctx.eval_with(self.prospective, &typed, current, self.binding_cells())
     }
 
     fn scalar_value(&self, expr: &Expr, source: SourceId, current: &Cell) -> Result<Value, Rejection> {
@@ -115,15 +182,20 @@ impl<'a> Interp<'a> {
     // ---- assignment -------------------------------------------------------
 
     fn exec_assign(&mut self, target: &Expr, value: &Expr, source: SourceId) -> Result<(), Rejection> {
+        // `name = <expr>` binds a lexical local (§8.1): the constructed/selected
+        // row or evaluated value becomes visible to later statements and the
+        // `return`, rather than staging a field write.
+        if let ExprKind::Name(id) = &target.kind {
+            return self.bind_local(id.text.clone(), value, source);
+        }
         let Some((row, field)) = self.field_target(target, source)? else {
-            // A local binding (`name = ...`) or collection replacement is a
-            // documented CORE seam: it stages no change.
+            // A collection replacement is a documented CORE seam: it stages nothing.
             return Ok(());
         };
         let current = self.current()?;
-        let typed = check_expression(&self.mutation.scope, source, value)
+        let typed = check_expression(&self.scope(), source, value)
             .map_err(|_| Rejection::new(RejectionReason::Malformed, "the assigned value did not type-check"))?;
-        let scalar = match self.ctx.eval(self.prospective, &typed, &current)? {
+        let scalar = match self.ctx.eval_with(self.prospective, &typed, &current, self.binding_cells())? {
             Cell::Scalar(value) => value,
             _ => return Err(Rejection::new(RejectionReason::TypeError, "a field is assigned a scalar value")),
         };
@@ -139,6 +211,27 @@ impl<'a> Interp<'a> {
             .at(format!("{}/{}", row.address.render(), field)));
         }
         self.write_field(&row, &field, scalar)
+    }
+
+    /// Bind a lexical local `name` to `value` (§8.1). An insert expression
+    /// (`.coll + { … }`) performs the insert and binds the constructed row, so
+    /// `name = .coll + { … }` then `return name { … }` returns the committed row
+    /// (§8.4, §8.10); any other right-hand side binds its evaluated value.
+    fn bind_local(&mut self, name: String, value: &Expr, source: SourceId) -> Result<(), Rejection> {
+        if let ExprKind::Binary { op: BinaryOp::Add, lhs, rhs } = &value.kind
+            && self.collection_ref(lhs).is_some()
+        {
+            let target = self.insert_row(lhs, rhs, source)?;
+            self.locals.insert(name, LocalBind::Row(target));
+            return Ok(());
+        }
+        let current = self.current()?;
+        let typed = check_expression(&self.scope(), source, value)
+            .map_err(|_| Rejection::new(RejectionReason::Malformed, "the bound value did not type-check"))?;
+        let ty = typed.ty().clone();
+        let cell = self.ctx.eval_with(self.prospective, &typed, &current, self.binding_cells())?;
+        self.locals.insert(name, LocalBind::Value(cell, ty));
+        Ok(())
     }
 
     /// Write `value` into `field` of the row at `row`, normalizing it, and
@@ -200,6 +293,10 @@ impl<'a> Interp<'a> {
             ExprKind::Call { callee, args } if is_assert(callee) => self.exec_assert(args, source),
             ExprKind::Binary { op: BinaryOp::Add, lhs, rhs } => self.exec_insert(lhs, rhs, source),
             ExprKind::Binary { op: BinaryOp::Sub, lhs, rhs } => self.exec_delete(lhs, rhs, source),
+            // `-selection` — a prefix-minus delete of the rows a selector picks
+            // (§8): `-.coll[:x | pred]` removes every matching row through the
+            // same §21.1 cascade planner as a keyed delete.
+            ExprKind::Unary { op: UnaryOp::Neg, operand } => self.exec_delete_selection(operand, source),
             ExprKind::Block { base, members } => self.exec_patch(base, members, source),
             // Internal mutation calls and other statement forms are CORE seams.
             _ => Ok(()),
@@ -222,9 +319,73 @@ impl<'a> Interp<'a> {
     }
 
     fn exec_insert(&mut self, collection: &Expr, object: &Expr, source: SourceId) -> Result<(), Rejection> {
-        let Some((_, name)) = self.collection_ref(collection) else {
-            // A set-member addition (`set + values`) is a documented CORE seam.
+        if self.collection_ref(collection).is_some() {
+            self.insert_row(collection, object, source)?;
             return Ok(());
+        }
+        // §8.5: `.set_field + values` is set union — adding an existing member
+        // leaves the set unchanged (a no-op that produces no state change).
+        if let Some((row, field)) = self.set_field_target(collection, source)? {
+            return self.set_mutate(&row, &field, object, source, true);
+        }
+        Ok(())
+    }
+
+    /// Resolve `expr` to `(row, field)` when it addresses a set-typed field of a
+    /// row — the target of a `+`/`-` set mutation (§8.5). Any other target is
+    /// `None`, leaving the statement a documented no-op.
+    fn set_field_target(&self, expr: &Expr, source: SourceId) -> Result<Option<(RowTarget, String)>, Rejection> {
+        let Some((row, field)) = self.field_target(expr, source)? else { return Ok(None) };
+        let is_set = self
+            .compiled
+            .collection(&row.collection)
+            .and_then(|c| c.field(&field))
+            .is_some_and(|f| matches!(f.ty, liasse_value::Type::Set(_)));
+        Ok(is_set.then_some((row, field)))
+    }
+
+    /// Apply a set `+`/`-` mutation to `field` of `row` (§8.5): union in (or
+    /// difference out) every incoming member. The incoming operand is a single
+    /// scalar or a set value; an unchanged result stages nothing (§8.9).
+    fn set_mutate(
+        &mut self,
+        row: &RowTarget,
+        field: &str,
+        value: &Expr,
+        source: SourceId,
+        add: bool,
+    ) -> Result<(), Rejection> {
+        let current = self.current()?;
+        let incoming: Vec<Value> = match self.eval_value(value, source, &current)? {
+            Cell::Scalar(Value::Set(members)) => members.into_iter().collect(),
+            Cell::Scalar(scalar) => vec![scalar],
+            _ => return Err(Rejection::new(RejectionReason::TypeError, "a set mutation takes a member or a set")),
+        };
+        let mut members: BTreeSet<Value> = match self.prospective.get(&row.address).and_then(|f| f.get(field)) {
+            Some(Value::Set(existing)) => existing.clone(),
+            _ => BTreeSet::new(),
+        };
+        for member in incoming {
+            if add {
+                members.insert(member);
+            } else {
+                members.remove(&member);
+            }
+        }
+        self.write_field(row, field, Value::Set(members))
+    }
+
+    /// Construct and stage one row from `collection + { … }` (§8.4), applying
+    /// insertion defaults and normalization, and return its address so a local
+    /// binding can name the inserted row.
+    fn insert_row(
+        &mut self,
+        collection: &Expr,
+        object: &Expr,
+        source: SourceId,
+    ) -> Result<RowTarget, Rejection> {
+        let Some((_, name)) = self.collection_ref(collection) else {
+            return Err(Rejection::new(RejectionReason::Malformed, "insert targets a top-level collection"));
         };
         let ExprKind::Object(members) = &object.kind else {
             return Err(Rejection::new(RejectionReason::Malformed, "insert takes a `{ field: value }` row"));
@@ -245,8 +406,8 @@ impl<'a> Interp<'a> {
                 .at(address.render()));
         }
         self.prospective.insert(address.clone(), fields);
-        self.mark(address);
-        Ok(())
+        self.mark(address.clone());
+        Ok(RowTarget { address, collection: name })
     }
 
     fn object_member(
@@ -276,7 +437,12 @@ impl<'a> Interp<'a> {
     }
 
     fn exec_delete(&mut self, collection: &Expr, keys: &Expr, source: SourceId) -> Result<(), Rejection> {
-        let Some((path, _)) = self.collection_ref(collection) else {
+        let Some((_path, name)) = self.collection_ref(collection) else {
+            // §8.5: `.set_field - values` is set difference — removing an absent
+            // member leaves the set unchanged.
+            if let Some((row, field)) = self.set_field_target(collection, source)? {
+                return self.set_mutate(&row, &field, keys, source, false);
+            }
             return Ok(());
         };
         let current = self.current()?;
@@ -284,10 +450,61 @@ impl<'a> Interp<'a> {
             Value::Set(members) => members.into_iter().collect(),
             scalar => vec![scalar],
         };
-        for key in targets {
-            // §8.9 / SPEC-ISSUES item 7: `collection - key` of an absent key is
-            // unassigned; the least-surprising choice is a no-op success.
-            self.prospective.remove(&path.row(KeyValue::single(key)));
+        let initial: Vec<RowRef> = targets.into_iter().map(|key| RowRef::new(name.clone(), key)).collect();
+        self.delete_rows(initial)
+    }
+
+    /// `-selection` (§8): delete every row a selector picks. The operand is a
+    /// collection selection (`.coll[:x | pred]`, `.coll[keys]`); it is evaluated
+    /// to its row set and each selected row is deleted by key through the §21.1
+    /// planner. A non-collection operand (a scalar negation) stages nothing.
+    fn exec_delete_selection(&mut self, operand: &Expr, source: SourceId) -> Result<(), Rejection> {
+        let base = match &operand.kind {
+            ExprKind::Select { base, .. } => base.as_ref(),
+            _ => operand,
+        };
+        let Some((_path, name)) = self.collection_ref(base) else {
+            return Ok(());
+        };
+        let current = self.current()?;
+        let keys: Vec<Value> = match self.eval_value(operand, source, &current)? {
+            Cell::Collection(rows) => rows.iter().map(|row| row.key().clone()).collect(),
+            Cell::Row(row) => vec![row.key().clone()],
+            Cell::Scalar(_) => return Ok(()),
+        };
+        let initial: Vec<RowRef> = keys.into_iter().map(|key| RowRef::new(name.clone(), key)).collect();
+        self.delete_rows(initial)
+    }
+
+    /// Plan and apply the deletion of `initial` (§21.1): a delete is a graph
+    /// operation, so the cascade closure and the surviving-row patches every
+    /// inbound `$on_delete` policy induces are planned from the pre-delete state
+    /// (an absent key stages nothing; a `restrict` block or conflicting patch
+    /// rejects) and then applied atomically.
+    fn delete_rows(&mut self, initial: Vec<RowRef>) -> Result<(), Rejection> {
+        let planned = cascade::plan(self.compiled, self.ctx, self.prospective, &initial)?;
+        self.apply_deletion(&planned)
+    }
+
+    /// Apply a planned deletion (§21.1): remove every closured row, then patch
+    /// each surviving referencing row (normalizing the written fields, §5.4).
+    fn apply_deletion(&mut self, planned: &PlannedDeletion) -> Result<(), Rejection> {
+        for row in planned.plan.deletes() {
+            if let Some(address) = planned.addresses.get(row) {
+                self.prospective.remove(address);
+            }
+        }
+        for (row, patch) in planned.plan.patches() {
+            let Some(address) = planned.addresses.get(row) else { continue };
+            let Some(mut fields) = self.prospective.get(address).cloned() else { continue };
+            for (field, value) in patch {
+                fields.insert(field.clone(), value.clone());
+            }
+            let collection = self.collection(&row.collection)?;
+            for field in patch.keys() {
+                rules::normalize_field(collection, field, &mut fields, self.ctx, self.prospective)?;
+            }
+            self.place(address, &row.collection, fields)?;
         }
         Ok(())
     }
@@ -332,6 +549,10 @@ impl<'a> Interp<'a> {
         for (name, ty) in &self.mutation.params {
             scope = scope.with_param(name.clone(), ty.clone());
         }
+        let (types, _) = local_bindings(&self.locals, self.ctx, self.prospective);
+        for (name, ty) in types {
+            scope = scope.with_binding(name, ty);
+        }
         scope
     }
 
@@ -345,7 +566,7 @@ impl<'a> Interp<'a> {
         let value_of = |expr: &Expr| -> Result<Value, Rejection> {
             let typed = check_expression(scope, source, expr)
                 .map_err(|_| Rejection::new(RejectionReason::Malformed, "a patch value did not type-check"))?;
-            match self.ctx.eval(self.prospective, &typed, start)? {
+            match self.ctx.eval_with(self.prospective, &typed, start, self.binding_cells())? {
                 Cell::Scalar(value) => Ok(value),
                 _ => Err(Rejection::new(RejectionReason::TypeError, "a patch assigns a scalar value")),
             }

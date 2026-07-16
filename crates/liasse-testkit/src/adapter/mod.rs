@@ -1,0 +1,413 @@
+//! The conformance adapter: a [`Driver`] over the real Liasse stack.
+//!
+//! [`ScenarioAdapter`] loads a case's package into a runtime [`Engine`] over an
+//! in-memory store and drives the core client verbs through a [`SurfaceHost`] —
+//! `connect`, `call` (with `operation_id`), `watch`/`expect_view`, and the
+//! virtual-clock `advance_time`. The adapter only translates: it decodes wire
+//! arguments to typed values, routes a dotted address, and renders the observed
+//! outcome back to the harness vocabulary; the engine decides every spec
+//! question. There is no case-specific special-casing.
+//!
+//! # Determinism
+//!
+//! The store starts empty, the clock is fixed at the FORMAT.md epoch
+//! (`2026-01-01T00:00:00Z`, micro-second precision), and generated identifiers
+//! come from the runtime's per-call-site derivation over a monotone seed, so a
+//! `$any:uuid`/`$bind` value is stable across a run and a re-run.
+//!
+//! # This phase's reach
+//!
+//! Public surfaces, calls, and named-view watches route end to end. The long tail
+//! — authenticated/role calls, artifact export/import/reconcile, blob and keyring
+//! operations, module lifecycle, the host-operator entry, restart durability —
+//! needs host wiring or store access the current layer does not expose, so those
+//! [`OpRequest`] kinds report a harness skip (never a panic), leaving the outcome
+//! for the triage loop to harden. Load failures likewise skip every step.
+
+mod auth;
+mod error;
+pub mod lift;
+mod router;
+mod wire;
+
+use std::collections::BTreeMap;
+
+use liasse_ident::InstanceId;
+use liasse_runtime::{Engine, Precision};
+use liasse_store::{InstanceStore, MemoryStore};
+use liasse_surface::{
+    AuthSelection, Authenticate, Credential, Subscription, SurfaceAddress, SurfaceCall,
+    SurfaceError, SurfaceHost, SurfaceWatch, Window, VirtualClock as SurfaceClock,
+};
+use liasse_value::{Text, Value};
+
+use crate::case::{Case, PackageSet};
+use crate::clock::VirtualClock;
+use crate::contract::{ConnectRequest, Driver, Observation};
+use crate::id::{ConnectionId, WatchId};
+use crate::outcome::{Completion, Outcome};
+use crate::request::OpRequest;
+
+pub use error::AdapterError;
+use router::Routing;
+
+/// Micro-seconds from the Unix epoch to `2026-01-01T00:00:00Z`, the FORMAT.md
+/// virtual-clock start.
+const EPOCH_MICROS: i128 = 1_767_225_600_000_000;
+
+/// The implicit connection the executor opens for a single-client case.
+const IMPLICIT_CONNECTION: &str = "$default";
+
+/// Provisions a fresh, empty instance store for one scenario case. The memory
+/// runner uses [`MemoryProvision`]; the PostgreSQL runner implements this over a
+/// self-provisioning `PgStoreFactory`, so the *identical* scenario battery drives
+/// both backends and any verdict divergence is a store-contract bug, not a
+/// harness difference.
+pub trait StoreProvision {
+    /// The store this provisioner creates.
+    type Store: InstanceStore;
+
+    /// Create a fresh, empty store at genesis for `instance`. A returned error
+    /// message becomes the case's load failure, so every step skips with it
+    /// (exactly as a compile failure does) rather than aborting the run.
+    fn provision(&mut self, instance: InstanceId) -> Result<Self::Store, String>;
+}
+
+/// The default in-memory provisioner: a `BTreeMap`-backed [`MemoryStore`] per
+/// instance, provisioning of which cannot fail.
+#[derive(Debug, Default)]
+pub struct MemoryProvision;
+
+impl StoreProvision for MemoryProvision {
+    type Store = MemoryStore;
+
+    fn provision(&mut self, instance: InstanceId) -> Result<Self::Store, String> {
+        Ok(MemoryStore::new(instance))
+    }
+}
+
+/// A loaded case's live stack: the surface host over the engine, and the routing
+/// tables the adapter decodes arguments against.
+struct Loaded<S: InstanceStore> {
+    host: SurfaceHost<S>,
+    routing: Routing,
+}
+
+/// Either the loaded stack or the reason the package did not load. The loaded
+/// arm is boxed: it holds the whole surface host, far larger than the failure
+/// message.
+enum State<S: InstanceStore> {
+    Loaded(Box<Loaded<S>>),
+    Failed(String),
+}
+
+/// A [`Driver`] that runs one scenario case against the real runtime and surface
+/// stack over a store the caller provisions (in-memory by default, or any
+/// [`StoreProvision`] backend such as PostgreSQL).
+pub struct ScenarioAdapter<S: InstanceStore> {
+    state: State<S>,
+    /// Which connection each open subscription lives on, so an `expect_view`
+    /// (which names only the subscription) reads the right connection's cache.
+    watch_conns: BTreeMap<String, String>,
+    /// The adapter-owned virtual clock, used to compute the absolute instant an
+    /// `advance_time` moves the surface clock to.
+    clock: VirtualClock,
+}
+
+impl ScenarioAdapter<MemoryStore> {
+    /// Build an adapter for `case` over a fresh in-memory store, loading its
+    /// (root) package into a fresh engine. A load failure is retained so every
+    /// step skips with its reason.
+    #[must_use]
+    pub fn build(case: &Case) -> Self {
+        Self::build_with(&mut MemoryProvision, case)
+    }
+}
+
+impl<S: InstanceStore> ScenarioAdapter<S> {
+    /// Build an adapter for `case` over a store obtained from `provision`,
+    /// loading its (root) package into a fresh engine. A load failure — whether
+    /// the store could not be provisioned or the definition did not compile — is
+    /// retained so every step skips with its reason. The provisioner is borrowed
+    /// only for the load, so one provisioner (a PostgreSQL factory, say) serves
+    /// every case in a run.
+    #[must_use]
+    pub fn build_with<P: StoreProvision<Store = S>>(provision: &mut P, case: &Case) -> Self {
+        let state = match Self::load(provision, case) {
+            Ok(loaded) => State::Loaded(Box::new(loaded)),
+            Err(message) => State::Failed(message),
+        };
+        Self { state, watch_conns: BTreeMap::new(), clock: VirtualClock::new() }
+    }
+
+    fn load<P: StoreProvision<Store = S>>(provision: &mut P, case: &Case) -> Result<Loaded<S>, String> {
+        let package = root_package(&case.packages).ok_or_else(|| "case declares no package".to_owned())?;
+        // §11 host wiring: reconstruct the authenticators/roles a host-free case
+        // declares, and inject the synthetic views its `$actor`/`$members`
+        // selections resolve through, before the engine compiles the model.
+        let plan = auth::AuthPlan::derive(package);
+        // §10.1/§10.2 host wiring: lift each inline surface `$view`/`$mut` into a
+        // synthetic top-level declaration the engine can compile, so the router
+        // binds a named runtime view/mutation rather than dropping the surface.
+        // Try the richest wiring first; if a lifted inline mutation is one the
+        // model cannot yet compile (e.g. an uninferrable parameter), fall back to
+        // fewer synthetic declarations rather than regress a case that loaded
+        // before — an unlifted inline call then resolves `denied`, as it did.
+        let lift = lift::SurfaceLift::derive(package);
+        let mut attempts = vec![lift.clone()];
+        if !lift.views_only().is_empty() {
+            attempts.push(lift.views_only());
+        }
+        if !lift.is_empty() {
+            attempts.push(lift::SurfaceLift::default());
+        }
+        let mut last_error = None;
+        for attempt in attempts {
+            match Self::load_with(provision, case, package, &plan, &attempt) {
+                Ok(loaded) => return Ok(loaded),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.unwrap_or_else(|| "case did not load".to_owned()))
+    }
+
+    /// Load `package` with a specific set of `lift`ed synthetic declarations.
+    fn load_with<P: StoreProvision<Store = S>>(
+        provision: &mut P,
+        case: &Case,
+        package: &serde_json::Value,
+        plan: &auth::AuthPlan,
+        lift: &lift::SurfaceLift,
+    ) -> Result<Loaded<S>, String> {
+        let mut definition_json = package.clone();
+        inject_synthetic_views(&mut definition_json, plan);
+        if let Some(model) = definition_json.get_mut("$model").and_then(serde_json::Value::as_object_mut) {
+            lift.inject(model);
+        }
+        let definition = serde_json::to_string(&definition_json).map_err(|err| err.to_string())?;
+        let store = provision.provision(InstanceId::new(case.name.clone()))?;
+        let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
+        let engine = Engine::load(store, &definition, &mut clock).map_err(|err| err.to_string())?;
+        let (router, routing) =
+            router::build(engine.model(), package, plan, lift).map_err(|err| err.to_string())?;
+        let host = SurfaceHost::new(engine, router, clock);
+        Ok(Loaded { host, routing })
+    }
+
+    fn loaded(&mut self) -> Result<&mut Loaded<S>, AdapterError> {
+        match &mut self.state {
+            State::Loaded(loaded) => Ok(&mut **loaded),
+            State::Failed(message) => Err(AdapterError::LoadFailed(message.clone())),
+        }
+    }
+}
+
+impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
+    type Error = AdapterError;
+
+    fn connect(&mut self, request: ConnectRequest) -> Result<Observation, Self::Error> {
+        let connection = request.connection.to_string();
+        let loaded = self.loaded()?;
+        loaded.host.connect(connection.clone());
+        // §11.4: bind the authenticated context on the connection so later role
+        // calls run under it. Only the host-free `{ role, auth, credential }`
+        // shape is honored; a payload the wiring does not cover (a host-namespace
+        // verifier, a `$session` flow) leaves the connection unauthenticated, so
+        // a later role call is denied rather than silently admitted. A refused
+        // authentication is not a connect failure — the denial surfaces on the
+        // call the case asserts against.
+        if let Some(request) = request.authenticate.as_ref().and_then(parse_authenticate) {
+            let _ = loaded.host.authenticate(&connection, &request);
+        }
+        Ok(Observation::ok(None))
+    }
+
+    fn disconnect(&mut self, connection: &ConnectionId) -> Result<Observation, Self::Error> {
+        let loaded = self.loaded()?;
+        loaded.host.disconnect(&connection.to_string());
+        Ok(Observation::ok(None))
+    }
+
+    fn call(&mut self, request: crate::contract::CallRequest) -> Result<Observation, Self::Error> {
+        let connection = connection_name(request.on.as_ref());
+        let loaded = self.loaded()?;
+        let address = SurfaceAddress::parse(&request.target)
+            .map_err(|err| AdapterError::Host(format!("malformed address `{}`: {err}", request.target)))?;
+        let types = loaded.routing.arg_types(&request.target);
+        let args = wire::decode_args(&request.args, &types);
+        let mut call = SurfaceCall::new(address, args);
+        if let Some(operation_id) = &request.operation_id {
+            call = call.with_operation_id(operation_id.clone());
+        }
+        let outcome = loaded.host.call(&connection, &call).map_err(host_fault)?;
+        Ok(observe_call(&outcome))
+    }
+
+    fn watch(&mut self, request: crate::contract::WatchRequest) -> Result<Observation, Self::Error> {
+        let connection = connection_name(request.on.as_ref());
+        let watch_id = request.id.to_string();
+        let observation = match &mut self.state {
+            State::Loaded(loaded) => {
+                let address = SurfaceAddress::parse(&request.target).map_err(|err| {
+                    AdapterError::Host(format!("malformed address `{}`: {err}", request.target))
+                })?;
+                let mut watch = SurfaceWatch::new(address, watch_id.clone());
+                if let Some(window) = request.window.as_ref().and_then(build_window) {
+                    watch = watch.with_window(window);
+                }
+                let subscription = loaded.host.watch(&connection, &watch).map_err(host_fault)?;
+                observe_subscription(&subscription)
+            }
+            State::Failed(message) => return Err(AdapterError::LoadFailed(message.clone())),
+        };
+        self.watch_conns.insert(watch_id, connection);
+        Ok(observation)
+    }
+
+    fn unwatch(&mut self, id: &WatchId) -> Result<Observation, Self::Error> {
+        self.watch_conns.remove(&id.to_string());
+        Ok(Observation::ok(None))
+    }
+
+    fn read_view(&mut self, id: &WatchId) -> Result<Observation, Self::Error> {
+        let connection = self.watch_conns.get(&id.to_string()).cloned();
+        let watch_id = id.to_string();
+        let loaded = self.loaded()?;
+        // A bounded subscription reports its windowed rows; an unbounded one its
+        // full current result (§12.2).
+        let value = connection.as_deref().and_then(|conn| {
+            loaded
+                .host
+                .read_window(conn, &watch_id)
+                .map(wire::rows_to_json)
+                .or_else(|| loaded.host.read_view(conn, &watch_id).map(wire::view_to_json))
+        });
+        Ok(Observation::ok(value))
+    }
+
+    fn advance_time(
+        &mut self,
+        duration: &crate::clock::Iso8601Duration,
+    ) -> Result<Observation, Self::Error> {
+        let instant = self.clock.advance(duration);
+        let loaded = self.loaded()?;
+        // Move the surface clock (§11.7 session expiry) to the new absolute
+        // instant. Bucket activity (§14) is judged against the engine's own
+        // clock, which the sealed host does not expose — a documented seam.
+        loaded.host.clock_mut().set(i128::from(instant.unix_micros()));
+        Ok(Observation::ok(None))
+    }
+
+    fn restart(&mut self) -> Result<Observation, Self::Error> {
+        Err(AdapterError::unsupported(
+            "restart requires rebuilding the engine from the store, which the surface host does not expose",
+        ))
+    }
+
+    fn op(&mut self, request: &OpRequest) -> Result<Observation, Self::Error> {
+        Err(AdapterError::unsupported(format!("`{}` is not driven this phase", request.action_key())))
+    }
+}
+
+/// The connection a call/watch runs on, defaulting to the implicit single-client
+/// connection when the executor left `on` unset.
+fn connection_name(on: Option<&ConnectionId>) -> String {
+    on.map_or_else(|| IMPLICIT_CONNECTION.to_owned(), ToString::to_string)
+}
+
+/// The root package definition of a case: the sole `package`, or the `root`
+/// label of a `packages` map (falling back to its first entry).
+fn root_package(packages: &PackageSet) -> Option<&serde_json::Value> {
+    match packages {
+        PackageSet::Single(package) => Some(package),
+        PackageSet::Multi { packages, root } => root
+            .as_ref()
+            .and_then(|label| packages.get(label))
+            .or_else(|| packages.values().next()),
+    }
+}
+
+/// Inject the plan's synthetic `$actor`/`$members` views into a package's
+/// `$model` block, so the surface layer's [`RowSource`]s resolve them by name.
+/// A package with no `$model` object (or an inactive plan) is left untouched.
+///
+/// [`RowSource`]: liasse_surface::RowSource
+fn inject_synthetic_views(package: &mut serde_json::Value, plan: &auth::AuthPlan) {
+    if !plan.is_active() {
+        return;
+    }
+    let Some(model) = package.get_mut("$model").and_then(serde_json::Value::as_object_mut) else {
+        return;
+    };
+    for (name, expr) in plan.synthetic_views() {
+        model.insert(name.clone(), serde_json::json!({ "$view": expr }));
+    }
+}
+
+/// Parse a verbatim `authenticate` payload into a surface [`Authenticate`]
+/// request. Only the host-free `{ role, auth, credential }` shape is recognized;
+/// a payload missing any of the three (a session/host-namespace flow) yields
+/// `None`, leaving the connection unauthenticated.
+fn parse_authenticate(payload: &serde_json::Value) -> Option<Authenticate> {
+    let object = payload.as_object()?;
+    let role = object.get("role")?.as_str()?;
+    let auth = object.get("auth")?.as_str()?;
+    let credential = object.get("credential")?.as_str()?;
+    let selection =
+        AuthSelection::new(auth, Credential::new(Value::Text(Text::new(credential.to_owned()))));
+    Some(Authenticate::new(role, selection))
+}
+
+/// Build a bounded window (§12.2) from a verbatim `window` spec. Handles the
+/// `$size` bound with a `$first`/`$last` anchor and the `$slide` flag; a concrete
+/// occurrence anchor (a row identity) is left unbuilt this phase, so the
+/// subscription tracks the whole view instead.
+fn build_window(spec: &serde_json::Value) -> Option<Window> {
+    let object = spec.as_object()?;
+    let size = usize::try_from(object.get("$size")?.as_u64()?).ok()?;
+    let slide = object.get("$slide").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    let window = match object.get("$anchor").and_then(serde_json::Value::as_str) {
+        None | Some("$first") => Window::first(size),
+        Some("$last") => Window::last(size),
+        Some(_) => return None,
+    };
+    Some(if slide { window.sliding() } else { window })
+}
+
+/// Render a call outcome to a harness observation, projecting the response value
+/// to canonical strict-JSON and reporting the success completion.
+fn observe_call(outcome: &liasse_surface::SurfaceOutcome) -> Observation {
+    use liasse_surface::SurfaceOutcome as S;
+    match outcome {
+        S::Committed { response, .. } => Observation {
+            outcome: Outcome::Ok,
+            value: response.as_ref().map(wire::response_to_json),
+            completion: Some(Completion::Committed),
+            extra: serde_json::Map::new(),
+        },
+        S::Unchanged { response, .. } => Observation {
+            outcome: Outcome::Ok,
+            value: response.as_ref().map(wire::response_to_json),
+            completion: Some(Completion::Unchanged),
+            extra: serde_json::Map::new(),
+        },
+        S::Rejected(_) => Observation::outcome(Outcome::Rejected),
+        S::Denied(_) => Observation::outcome(Outcome::Denied),
+    }
+}
+
+/// Render a subscription result to a harness observation: the initial view rows
+/// as strict-JSON, or the refusal class.
+fn observe_subscription(subscription: &Subscription) -> Observation {
+    match subscription {
+        Subscription::Init(result) => Observation::ok(Some(wire::view_to_json(result))),
+        Subscription::Window(rows) => Observation::ok(Some(wire::rows_to_json(rows))),
+        Subscription::Denied(_) => Observation::outcome(Outcome::Denied),
+        Subscription::Failed(_) => Observation::outcome(Outcome::Error),
+    }
+}
+
+/// Map a surface transport fault to a harness skip.
+fn host_fault(error: SurfaceError) -> AdapterError {
+    AdapterError::Host(error.to_string())
+}

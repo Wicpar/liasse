@@ -51,6 +51,13 @@ impl ModelScope {
         self.structurals.insert(name.into(), ty);
         self
     }
+
+    /// Add a lexical binding — a bare name introduced by a filter or a
+    /// `$recursive` `$bind` (§10.5) that names one candidate descendant row.
+    pub(crate) fn with_binding(mut self, name: impl Into<String>, ty: ExprType) -> Self {
+        self.bindings.insert(name.into(), ty);
+        self
+    }
 }
 
 impl Scope for ModelScope {

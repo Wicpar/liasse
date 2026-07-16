@@ -12,6 +12,14 @@ serde_json = { version = "1.0.145", features = ["preserve_order"] }
 deser-hjson = "2.2.6"
 thiserror = "2.0.17"
 walkdir = "2.5.0"
+liasse-value = { path = "../liasse-value" }
+liasse-ident = { path = "../liasse-ident" }
+liasse-diag = { path = "../liasse-diag" }
+liasse-syntax = { path = "../liasse-syntax" }
+liasse-model = { path = "../liasse-model" }
+liasse-store = { path = "../liasse-store" }
+liasse-runtime = { path = "../liasse-runtime" }
+liasse-surface = { path = "../liasse-surface" }
 
 [lints]
 workspace = true

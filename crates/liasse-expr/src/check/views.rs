@@ -91,18 +91,36 @@ impl Checker<'_> {
         member: &str,
     ) -> Option<TypedExpr> {
         let base = self.check(base)?;
+        if base.ty().as_view().is_none() {
+            return self.error(
+                expr,
+                format!("cannot traverse `::` a {}", base.ty().describe()),
+            );
+        }
+        self.traverse_view(expr, base, member)
+    }
+
+    /// Flatten the nested collection `member` across the rows of an already-typed
+    /// view `base` (§6.4). Shared by the `::` traversal and by ordinary
+    /// `view.member` field access — both expand to the same per-row flatten and
+    /// bind the traversed level to its field name.
+    pub(crate) fn traverse_view(
+        &mut self,
+        expr: &Expr,
+        base: TypedExpr,
+        member: &str,
+    ) -> Option<TypedExpr> {
         let base_row = match base.ty() {
             ExprType::View(row) => row,
-            other => {
-                return self.error(expr, format!("cannot traverse `::` a {}", other.describe()));
-            }
+            // The caller guarantees a view base.
+            _ => return self.error(expr, "expected a view to traverse"),
         };
         let inner = match base_row.field(member) {
             Some(ExprType::View(row)) => row.clone(),
             Some(other) => {
                 return self.error(
                     expr,
-                    format!("`::{member}` is a {}, not a nested collection", other.describe()),
+                    format!("`{member}` is a {}, not a nested collection", other.describe()),
                 );
             }
             None => return self.error(expr, format!("no nested collection `{member}` to traverse")),
@@ -117,8 +135,11 @@ impl Checker<'_> {
         ))
     }
 
-    /// Collect the row bindings a `::` chain contributes (§6.4): each traversed
-    /// collection binds to its own field name.
+    /// Collect the row bindings a selection/traversal chain contributes to a
+    /// projection body (§6.4): each traversed collection binds to its own field
+    /// name, and every `[:name]` binding along the chain stays visible. Walking
+    /// the whole left spine keeps outer bindings (`.companies[:c].offices[:o]`
+    /// exposes both `c` and `o`) in scope where the outputs are typed.
     pub(crate) fn traverse_binds(typed: &TypedExpr, out: &mut Vec<(String, ExprType)>) {
         match typed.kind() {
             TypedKind::Traverse { base, member } => {
@@ -127,7 +148,16 @@ impl Checker<'_> {
                     out.push((member.clone(), ExprType::Row(row.clone())));
                 }
             }
-            TypedKind::Field { name, .. } => {
+            TypedKind::Select { base, selector } => {
+                Self::traverse_binds(base, out);
+                if let TypedSelector::Bind { name, .. } = selector
+                    && let ExprType::View(row) | ExprType::Row(row) = typed.ty()
+                {
+                    out.push((name.clone(), ExprType::Row(row.clone())));
+                }
+            }
+            TypedKind::Field { base, name } => {
+                Self::traverse_binds(base, out);
                 if let ExprType::View(row) = typed.ty() {
                     out.push((name.clone(), ExprType::Row(row.clone())));
                 }

@@ -37,9 +37,20 @@ pub(crate) fn apply_defaults(
         }
     }
     for field in &collection.fields {
-        fields.entry(field.name.clone()).or_insert(Value::None);
+        fields.entry(field.name.clone()).or_insert_with(|| absent_value(&field.ty));
     }
     Ok(())
+}
+
+/// The value of a declared field that was neither supplied nor defaulted (§5.1,
+/// §5.5): an omitted `$set` starts empty, every other omitted field reads
+/// `none`. A distinct empty set (not `none`) is what makes an omitted child set
+/// project as `[]` and a later `+`/`-` union against the existing membership.
+fn absent_value(ty: &liasse_value::Type) -> Value {
+    match ty {
+        liasse_value::Type::Set(_) => Value::Set(std::collections::BTreeSet::new()),
+        _ => Value::None,
+    }
 }
 
 /// Normalize every field carrying a `$normalize` expression (§8.8): `.` is the

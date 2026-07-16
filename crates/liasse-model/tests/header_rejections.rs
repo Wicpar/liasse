@@ -23,6 +23,27 @@ fn unknown_top_level_member_rejected() {
 }
 
 #[test]
+fn requires_reserved_dollar_key_rejected() {
+    // §2.5/§4.1: a `$requires` key is an application-defined namespace handle
+    // and must be a valid declaration name; a `$`-reserved key (`$cbor`) is not.
+    let built = build(&app(
+        "\"$requires\": { \"$cbor\": \"liasse.cbor@1\" }, \"$model\": { \"n\": \"int = 0\" }",
+    ));
+    assert!(built.has_code(code::HEADER));
+    assert!(built.points_at("$cbor"));
+    assert!(built.has_hint());
+}
+
+#[test]
+fn requires_valid_key_accepted() {
+    // A `$requires` handle that is a valid declaration name loads (shape only).
+    let built = build(&app(
+        "\"$requires\": { \"cbor\": \"liasse.cbor@1\" }, \"$model\": { \"n\": \"int = 0\" }",
+    ));
+    built.expect_ok();
+}
+
+#[test]
 fn module_member_on_application_rejected() {
     // §4.1: `$config` is a module-only member.
     let built = build(&app("\"$config\": {}, \"$model\": { \"note\": \"text\" }"));

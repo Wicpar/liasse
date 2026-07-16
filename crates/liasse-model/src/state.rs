@@ -139,6 +139,10 @@ pub struct Shape {
     pub members: Vec<Member>,
     /// Struct/row-level `$check`s (§5.10).
     pub checks: Vec<Check>,
+    /// Meter names this row declares with `$limits` (§15.1). Each names a §15.6
+    /// meter accessor (`.<meter>.balance`, `.<meter>.pools`) the resolver
+    /// exposes on the row's shape. A same-named application field wins.
+    pub meters: Vec<String>,
 }
 
 impl Shape {

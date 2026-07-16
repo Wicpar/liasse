@@ -14,6 +14,7 @@ pub(crate) struct RuntimeScope {
     root: ExprType,
     params: BTreeMap<String, ExprType>,
     structurals: BTreeMap<String, ExprType>,
+    bindings: BTreeMap<String, ExprType>,
 }
 
 impl RuntimeScope {
@@ -24,12 +25,27 @@ impl RuntimeScope {
             root,
             params: BTreeMap::new(),
             structurals: BTreeMap::new(),
+            bindings: BTreeMap::new(),
         }
     }
 
     /// Bind a parameter `@name` to its contract type (§8.3).
     pub(crate) fn with_param(mut self, name: impl Into<String>, ty: ExprType) -> Self {
         self.params.insert(name.into(), ty);
+        self
+    }
+
+    /// Bind a lexical local `name` (a `name = …` statement binding, §8.1) to its
+    /// type, so a later statement or the `return` can reference it (§6.2).
+    pub(crate) fn with_binding(mut self, name: impl Into<String>, ty: ExprType) -> Self {
+        self.bindings.insert(name.into(), ty);
+        self
+    }
+
+    /// Bind a structural `$name` (e.g. the `$target` of an `$on_delete` patch,
+    /// §21.1) to its type in the current context (§6.2).
+    pub(crate) fn with_structural(mut self, name: impl Into<String>, ty: ExprType) -> Self {
+        self.structurals.insert(name.into(), ty);
         self
     }
 }
@@ -63,7 +79,7 @@ impl Scope for RuntimeScope {
         None
     }
 
-    fn binding(&self, _name: &str) -> Option<ExprType> {
-        None
+    fn binding(&self, name: &str) -> Option<ExprType> {
+        self.bindings.get(name).cloned()
     }
 }

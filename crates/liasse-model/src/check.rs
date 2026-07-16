@@ -101,16 +101,13 @@ impl TreeChecker<'_, '_> {
 
     fn view(&mut self, expr: &ExprSource, contexts: &[ExprType]) {
         let scope = ModelScope::nested(contexts.to_vec(), self.root.clone());
-        if let Some(typed) = self.check_pure_value(&scope, expr)
-            && typed.ty().as_view().is_none()
-        {
-            self.reporter.reject_hint(
-                expr.span,
-                code::EXPR,
-                "a `$view` must evaluate to a row stream",
-                "select a collection, e.g. `.tasks`, optionally with a projection",
-            );
-        }
+        // §7.1/§12.2: a view's result may be a row stream, a single row (a
+        // root or struct projection such as `. { a, b }` or `.invoice { ... }`),
+        // or a scalar (an aggregate or computed value like `= size(.docs)`).
+        // §12.2 delivers a single-row or scalar result as one object rather than
+        // a one-element array, so all three are valid read results; only the
+        // expression's well-formedness is enforced here.
+        self.check_pure_value(&scope, expr);
     }
 
     fn check_bool(&mut self, scope: &dyn Scope, check: &Check, message: &str) {

@@ -19,12 +19,11 @@ impl Evaluator<'_> {
         match expr.kind() {
             TypedKind::Traverse { base, member } => self.eval_traverse(base, member),
             TypedKind::Select { base, selector: TypedSelector::Bind { name, condition } } => {
-                let rows = self.eval(base)?;
-                let rows = match rows {
-                    Cell::Collection(rows) => rows,
-                    _ => return Err(EvalError::ShapeMismatch { expected: "a collection" }),
-                };
-                let kept = self.select_bind_scopes(rows, name, condition)?;
+                // §6.4: evaluate the base as a view so the bindings it introduced
+                // (an outer `[:name]` or a `::`/`.` traversal level) stay visible
+                // while this selector filters and binds each row.
+                let base_scopes = self.eval_view(base)?;
+                let kept = self.select_bind_scopes(base_scopes, name, condition)?;
                 Ok(kept)
             }
             _ => match self.eval(expr)? {
@@ -43,14 +42,20 @@ impl Evaluator<'_> {
 
     fn select_bind_scopes(
         &mut self,
-        rows: Vec<Row>,
+        base_scopes: Vec<RowScope>,
         name: &str,
         condition: &Option<Box<TypedExpr>>,
     ) -> Result<Vec<RowScope>, EvalError> {
         let mut kept = Vec::new();
-        for row in rows {
+        for scope in base_scopes {
+            let row = scope.row;
             if let Some(cond) = condition {
                 self.push(Cell::Row(Box::new(row.clone())));
+                // The filter sees every binding the base contributed, then the
+                // new `[:name]` binding for the row under test (§6.4).
+                for (bound, cell) in &scope.binds {
+                    self.bind(bound.clone(), cell.clone());
+                }
                 self.bind(name.to_owned(), Cell::Row(Box::new(row.clone())));
                 let verdict = self.eval(cond);
                 self.pop();
@@ -58,7 +63,9 @@ impl Evaluator<'_> {
                     continue;
                 }
             }
-            kept.push(RowScope { row: row.clone(), binds: vec![(name.to_owned(), Cell::Row(Box::new(row)))] });
+            let mut binds = scope.binds;
+            binds.push((name.to_owned(), Cell::Row(Box::new(row.clone()))));
+            kept.push(RowScope { row, binds });
         }
         Ok(kept)
     }

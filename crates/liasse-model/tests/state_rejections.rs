@@ -91,6 +91,28 @@ fn ref_to_existing_collection_accepted() {
 }
 
 #[test]
+fn ref_key_field_accepted() {
+    // §A.9/§10.3: a `$key` naming a required `$ref` field is valid — the ref's
+    // key type is the target collection's (already key-eligible) key type. This
+    // is the idiomatic scoped-membership shape (`$key: "account"` over a
+    // `{ $ref: "/accounts" }` field).
+    let built = build(&model(
+        "{ \"accounts\": { \"$key\": \"id\", \"id\": \"text\" }, \"members\": { \"$key\": \"account\", \"account\": { \"$ref\": \"/accounts\" }, \"admin\": \"bool = false\" } }",
+    ));
+    built.expect_ok();
+}
+
+#[test]
+fn optional_ref_key_field_rejected() {
+    // §A.8: optional types are excluded from row keys, so an optional ref is
+    // not a valid `$key` field.
+    let built = build(&model(
+        "{ \"accounts\": { \"$key\": \"id\", \"id\": \"text\" }, \"members\": { \"$key\": \"account\", \"account\": { \"$ref\": \"/accounts\", \"$optional\": true } } }",
+    ));
+    assert!(built.has_code(code::KEY));
+}
+
+#[test]
 fn default_dependency_cycle_rejected() {
     // §5.1: the default dependency graph must be acyclic.
     let built = build(&model(

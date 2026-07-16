@@ -21,7 +21,7 @@ use liasse_value::Timestamp;
 use crate::compiled::{Compiled, CompiledMutation};
 use crate::doc;
 use crate::error::{EngineError, Rejection, RejectionReason};
-use crate::eval::{row_cell, EvalCtx};
+use crate::eval::EvalCtx;
 use crate::generator::Generators;
 use crate::interp::{Interp, RowTarget};
 use crate::outcome::CallOutcome;
@@ -343,12 +343,14 @@ impl<S: InstanceStore> Engine<S> {
             receiver,
             touched: Vec::new(),
             ret: None,
+            locals: BTreeMap::new(),
         };
         if let Err(rejection) = interp.run() {
             return Ok(CallOutcome::Rejected(rejection));
         }
         let touched = std::mem::take(&mut interp.touched);
         let ret = interp.ret.take();
+        let locals = std::mem::take(&mut interp.locals);
         let receiver = interp.receiver.take();
 
         if let Err(rejection) = crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched) {
@@ -359,7 +361,8 @@ impl<S: InstanceStore> Engine<S> {
         if changes.is_empty() {
             // §8.9: no state change → `unchanged`; the response is evaluated from
             // the unchanged state and the frontier does not advance.
-            let response = eval_return(&self.compiled, &ctx, &prospective, &receiver, mutation, ret.as_ref());
+            let response =
+                eval_return(&self.compiled, &ctx, &prospective, &receiver, &locals, mutation, ret.as_ref());
             return Ok(CallOutcome::Unchanged { response });
         }
 
@@ -371,7 +374,7 @@ impl<S: InstanceStore> Engine<S> {
         };
         // §8.6: the response is evaluated from the committed resulting state.
         let post = Prospective::gather(&self.store, schema)?;
-        let response = eval_return(&self.compiled, &ctx, &post, &receiver, mutation, ret.as_ref());
+        let response = eval_return(&self.compiled, &ctx, &post, &receiver, &locals, mutation, ret.as_ref());
         Ok(CallOutcome::Committed { seq, response })
     }
 
@@ -473,13 +476,21 @@ fn eval_return(
     ctx: &EvalCtx<'_>,
     prospective: &Prospective,
     receiver: &Option<RowTarget>,
+    locals: &BTreeMap<String, crate::interp::LocalBind>,
     mutation: &CompiledMutation,
     ret: Option<&(liasse_syntax::Expr, liasse_diag::SourceId)>,
 ) -> Option<ResponseValue> {
     let (expr, source) = ret?;
     let current = current_cell(compiled, ctx, prospective, receiver)?;
-    let typed = check_expression(&mutation.scope, *source, expr).ok()?;
-    let cell = ctx.eval(prospective, &typed, &current).ok()?;
+    // The `return` may name a `name = …` local (§8.1); resolve every binding's
+    // type and cell against the committed state it is evaluated over (§8.10).
+    let (types, cells) = crate::interp::local_bindings(locals, ctx, prospective);
+    let mut scope = mutation.scope.clone();
+    for (name, ty) in types {
+        scope = scope.with_binding(name, ty);
+    }
+    let typed = check_expression(&scope, *source, expr).ok()?;
+    let cell = ctx.eval_with(prospective, &typed, &current, cells).ok()?;
     Some(ResponseValue::new(cell))
 }
 
@@ -494,7 +505,7 @@ fn current_cell(
         Some(receiver) => {
             let collection = compiled.collection(&receiver.collection)?;
             let fields = prospective.get(&receiver.address)?;
-            Some(row_cell(collection, fields))
+            Some(ctx.row_cell_of(prospective, collection, fields))
         }
     }
 }

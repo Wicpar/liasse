@@ -110,6 +110,10 @@ const SKIP: &[(&str, &str)] = &[
         "provider algorithm-capability check (§17); provider seam",
     ),
     (
+        "17-keyrings/inferred-usage-requires-sign-capability",
+        "inferred keyring usage vs provider operation-set check (§17.6/§17.1); provider seam",
+    ),
+    (
         "17-keyrings/provider-name-unicode-confusable-invalid",
         "provider-name identity/registry resolution (§17/Annex D); provider seam",
     ),
@@ -159,10 +163,34 @@ const SKIP: &[(&str, &str)] = &[
         "07-views/combinator-mismatched-identity-domain-invalid",
         "view-combinator identity-domain agreement (§7); needs expr-layer view domains",
     ),
+    // The composite-key selector arity rule (an object selector MUST name every
+    // `$key` component, §6.3) lives in the expr-layer selector checker, which
+    // does not yet enforce it. The case previously *appeared* to pass only
+    // because `.vat_rates[{ country }] { rate }` typed as a single row and the
+    // since-fixed over-strict "a `$view` must be a row stream" check rejected
+    // it for the wrong reason (a single-row projection is a valid view per
+    // §7.1/§12.2).
+    (
+        "06-expressions/composite-selector-missing-component-invalid",
+        "composite-key selector arity (§6.3); expr-layer selector seam",
+    ),
     // --- §10/§11 role/actor typing ---
     (
         "10-interfaces-roles/members-actor-type-mismatch-invalid",
         "$members-vs-authenticator $actor row-type agreement (§10/§11); $actor typing is a later pass",
+    ),
+    // --- §15 meter parameterless-accessor eligibility ---
+    // §15.6: a parameterless meter accessor (`.credits.balance`) is invalid when
+    // `$eligible` references spend metadata (`spend.feature`, `$amount`, `$time`)
+    // that the parameterless form cannot supply. Deciding this needs `$eligible`
+    // typing and spend-metadata reference analysis — a documented meter seam
+    // (crates/liasse-model/src/meter.rs). The case previously *appeared* to pass
+    // only because the meter accessor field was unmodelled and `.credits.balance`
+    // was rejected as an unknown field (the wrong reason); the accessor is now
+    // exposed per §15.6.
+    (
+        "15-meters/parameterless-balance-requires-eligibility-metadata",
+        "§15.6 parameterless-accessor eligibility-metadata rule; meter seam",
     ),
     // --- §23 host contract ---
     (

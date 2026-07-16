@@ -117,6 +117,12 @@ fn view_row(row: &liasse_expr::Row) -> ViewRow {
     let fields = row
         .cells()
         .filter_map(|(name, cell)| match cell {
+            // §A.9 / Annex A wire table: a `none` optional field is an *absent*
+            // optional value whose field-position wire form is an omitted member
+            // (SPEC "omitted optional field"), distinct from a present JSON
+            // `null` (`Value::Json(Json::Null)`). Drop it so a projected
+            // optional that is `none` does not appear as a member.
+            Cell::Scalar(Value::None) => None,
             Cell::Scalar(value) => Some((name.clone(), value.clone())),
             _ => None,
         })

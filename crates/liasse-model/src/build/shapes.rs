@@ -145,18 +145,32 @@ impl<'a> Builder<'a> {
         {
             return Type::Ref(liasse_value::RefTarget::Scalar(Box::new(reference.key_type)));
         }
+        // §5.5: "the value of `$set` is the shape of every member" — any scalar
+        // member shape is admissible, including an inline enum type. An `{ $enum:
+        // [...] }` element declares a set of enum labels (§5.9).
+        if let Some(en) = value.member("$enum") {
+            if let Node::Scalar(field) = self.enum_node(reporter, en) {
+                return field.ty;
+            }
+            return Type::Json;
+        }
         reporter.reject_hint(
             value.span,
             code::TYPE,
-            "a `$set` element must be a type or a `{ $ref: ... }`",
+            "a `$set` element must be a type, an inline `{ $enum: [...] }`, or a `{ $ref: ... }`",
             "e.g. `\"tags\": { \"$set\": \"text\" }`",
         );
         Type::Json
     }
 
     fn view_node(&mut self, _reporter: &mut Reporter, view: &DocMember) -> Node {
+        // A `$view` value is an expression; the optional leading `=` marker
+        // (§4.2) is accepted and stripped, so a scalar/aggregate view such as
+        // `"= size(.docs)"` reads the same as a bare `".docs { ... }"`.
+        let raw = view.value.as_string().unwrap_or_default();
+        let text = raw.trim_start().strip_prefix('=').map_or(raw, str::trim).to_owned();
         let expr = ExprSource {
-            text: view.value.as_string().unwrap_or_default().to_owned(),
+            text,
             span: view.value.span,
         };
         crate::state::Node::View(crate::state::ViewDecl {
@@ -193,18 +207,36 @@ impl<'a> Builder<'a> {
     }
 
     fn like_node(&mut self, reporter: &mut Reporter, value: &DocValue, path: &[String]) -> Node {
-        // `$like: "^"` is positional recursion (§5.8). Resolving the lexical
-        // target to a named shape is a documented CORE seam; the nearest named
-        // ancestor on `path` is used when available.
-        let _ = value;
-        match path.iter().rev().find(|seg| self.type_names.contains(*seg)) {
-            Some(name) => Node::Named(name.clone()),
+        // `$like: "^"` is positional recursion (§5.8): `^` names the immediately
+        // containing shape, `^^` its parent, and so on. The field adopts that
+        // shape's contract while keeping its own location and data.
+        let target = value.member("$like").and_then(|m| m.value.as_string()).unwrap_or_default();
+        let depth = target.chars().take_while(|c| *c == '^').count();
+        if depth == 0 || depth != target.trim().chars().count() {
+            reporter.reject_hint(
+                value.span,
+                code::TYPE,
+                format!("`$like` names a lexical shape by `^` depth, not `{target}`"),
+                "use `\"$like\": \"^\"` for the containing shape, `\"^^\"` for its parent",
+            );
+            return Node::Scalar(placeholder(value.span));
+        }
+        // A `$like` inside a named `$types` shape resolves against that name, so
+        // the `$types` node table already carries its contract.
+        if let Some(name) = path.iter().rev().find(|seg| self.type_names.contains(*seg)) {
+            return Node::Named(name.clone());
+        }
+        // Otherwise the containing shape is a model-tree declaration: `^` drops
+        // the field's own segment, each further `^` one more ancestor. Register
+        // that shape's path so it is projected lazily from the node table.
+        match path.len().checked_sub(depth).and_then(|cut| path.get(..cut)) {
+            Some(target) => Node::Named(self.recursion_target(target.to_vec())),
             None => {
                 reporter.reject_hint(
                     value.span,
                     code::TYPE,
-                    "`$like` positional recursion is only resolved against a `$types` shape in this pass",
-                    "declare the recursive shape under `$types` and reference it by name",
+                    format!("`$like: \"{target}\"` reaches above the model root"),
+                    "reduce the `^` depth to a shape that contains this field",
                 );
                 Node::Scalar(placeholder(value.span))
             }

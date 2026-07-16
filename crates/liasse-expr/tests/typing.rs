@@ -110,6 +110,24 @@ fn comparing_a_scalar_with_a_view_is_rejected() {
 }
 
 #[test]
+fn dotted_field_access_on_a_scalar_view_field_is_rejected() {
+    // §6.4: `view.member` flattens only a *nested collection* member. `account`
+    // is a scalar field of each `lines` row, so `.lines.account` (dotted field
+    // access on a view) is not a traversal and must be rejected — mirroring the
+    // `::` form's rule rather than silently mapping the field.
+    let diags = check_rejects(&model_scope(), ".lines.account");
+    assert!(mentions(&diags, "not a nested collection"));
+}
+
+#[test]
+fn structured_sort_entry_with_a_bad_direction_is_rejected() {
+    // §7.3: a structured `$sort` entry's `$dir` is `asc` or `desc`.
+    let diags =
+        check_rejects(&model_scope(), ".lines { id, $sort: [ { $by: id, $dir: sideways } ] }");
+    assert!(mentions(&diags, "`$dir` is `asc` or `desc`"));
+}
+
+#[test]
 fn summing_a_non_numeric_field_is_rejected() {
     // §7.5: `sum` returns the field's numeric type, so a `text` field has no
     // sum. Without this the checker would type `sum(.lines.account)` as `text`

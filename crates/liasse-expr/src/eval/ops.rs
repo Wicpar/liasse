@@ -6,7 +6,7 @@ use std::cmp::Ordering;
 
 use liasse_value::bigdecimal::{BigDecimal, RoundingMode, Zero};
 use liasse_value::num_bigint::BigInt;
-use liasse_value::{Decimal, Integer, Text, Value};
+use liasse_value::{Decimal, Integer, RefKey, Text, Value};
 
 use crate::env::Cell;
 use crate::error::EvalError;
@@ -243,6 +243,15 @@ fn is_zero_int(value: &BigInt) -> bool {
 /// `int`/`decimal` pair to decimal first (they are numerically comparable per
 /// §6.1 even though the cross-type value rank would separate them).
 fn compare(left: &Value, right: &Value) -> Ordering {
+    // §6.3: a ref compared with a key of its declared target compares the
+    // current typed key. When exactly one side is a scalar-keyed ref, compare
+    // its underlying key against the explicitly supplied key. Two refs keep
+    // their own key-ordering comparison (`Ref` `Ord` already compares keys).
+    match (ref_scalar_key(left), ref_scalar_key(right)) {
+        (Some(key), None) => return compare(key, right),
+        (None, Some(key)) => return compare(left, key),
+        _ => {}
+    }
     match (left, right) {
         (Value::Int(_), Value::Decimal(_)) | (Value::Decimal(_), Value::Int(_)) => {
             match (to_big_decimal(left), to_big_decimal(right)) {
@@ -251,5 +260,18 @@ fn compare(left: &Value, right: &Value) -> Ordering {
             }
         }
         _ => left.cmp(right),
+    }
+}
+
+/// The underlying scalar key of a scalar-keyed ref (§6.3, A.9): the value a ref
+/// exposes when compared against an explicitly supplied key. A composite-keyed
+/// ref is left intact — its comparison is handled by `Value`'s own ordering.
+fn ref_scalar_key(value: &Value) -> Option<&Value> {
+    match value {
+        Value::Ref(reference) => match reference.key() {
+            RefKey::Scalar(inner) => Some(inner),
+            RefKey::Composite(_) => None,
+        },
+        _ => None,
     }
 }

@@ -140,7 +140,15 @@ fn eval_bound(
     now: Timestamp,
 ) -> Result<Option<Timestamp>, EvalError> {
     let current = row_cell(collection, fields);
-    let env = RuntimeEnv::new(Row::keyless(RowId::leaf(0), Vec::new()), BTreeMap::new(), now, 0, Vec::new());
+    let env = RuntimeEnv::new(
+        Row::keyless(RowId::leaf(0), Vec::new()),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+        now,
+        0,
+        Vec::new(),
+    );
     match typed.evaluate(&env, &current)? {
         Cell::Scalar(Value::Timestamp(ts)) => Ok(Some(ts)),
         _ => Ok(None),

@@ -13,7 +13,7 @@ mod call;
 
 use std::collections::BTreeMap;
 
-use liasse_runtime::{Engine, EngineError, ViewResult, ViewRow};
+use liasse_runtime::{Engine, EngineError, Timestamp, ViewResult, ViewRow};
 use liasse_store::InstanceStore;
 
 use crate::authn::AuthContext;
@@ -96,6 +96,31 @@ impl<S: InstanceStore> SurfaceHost<S> {
     /// The virtual clock, for advancing time and reading the instant (§11.7).
     pub fn clock_mut(&mut self) -> &mut VirtualClock {
         &mut self.clock
+    }
+
+    /// Advance the virtual clock to `now` and reflect the resulting temporal
+    /// observations on every live view (§14.1, §22.6).
+    ///
+    /// Moving time forward is not a commit, yet a frontier "covers committed
+    /// application changes *and* temporal bucket observations" (§12.2): when a row
+    /// leaves its half-open active interval the runtime "MUST reflect the resulting
+    /// current logical view and emit a new live frontier" (§22.6). So this moves
+    /// both the session-expiry clock (§11.7) and the engine's bucket clock (§14),
+    /// then sweeps every open subscription — re-evaluating its authorized view at
+    /// the advanced instant and closing any whose authority a session expiry has
+    /// removed. No application state changes and no commit is produced.
+    ///
+    /// # Errors
+    /// [`SurfaceError::Engine`] from a store or view fault while sweeping.
+    pub fn advance_time(&mut self, now: Timestamp) -> Result<(), SurfaceError> {
+        self.clock.set(now.count());
+        self.engine.set_time(now);
+        let barrier = barrier::Barrier::new(&self.engine, &self.router, now);
+        for connection in self.connections.values_mut() {
+            let frontier = connection.frontier();
+            barrier.sweep(connection, frontier)?;
+        }
+        Ok(())
     }
 
     /// Open a logical connection named `id`, its frontier starting at the current

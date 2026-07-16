@@ -25,11 +25,30 @@ pub(crate) struct CompiledCheck {
     pub(crate) message: String,
 }
 
-/// A reference field's target (§5.6): the absolute target collection name and
-/// whether the ref is optional.
+/// A reference field's target (§5.6): the absolute target collection name,
+/// whether the ref is optional, and the `$on_delete` policy that governs the
+/// referencing row when its target is deleted (§21.1).
 pub(crate) struct RefInfo {
     pub(crate) target: String,
     pub(crate) optional: bool,
+    pub(crate) on_delete: OnDelete,
+}
+
+/// A compiled `$on_delete` policy on an inbound reference (§21.1, §5.6). `Patch`
+/// carries the typed patch object, evaluated per referencing row at delete time
+/// with `.` = the referencing row and `$target` = the deleted target row.
+pub(crate) enum OnDelete {
+    /// No policy declared — the model proved the target is not deletable, so this
+    /// edge is never exercised by a deletion.
+    Undecided,
+    /// Block the deletion while the referencing row survives.
+    Restrict,
+    /// Delete the referencing row too.
+    Cascade,
+    /// Clear this optional ref (`$on_delete: none`).
+    Clear,
+    /// Apply a `= { … }` patch to the surviving referencing row.
+    Patch(TypedExpr),
 }
 
 /// A compiled writable field of a collection row.
@@ -42,12 +61,22 @@ pub(crate) struct CompiledField {
     pub(crate) checks: Vec<CompiledCheck>,
 }
 
+/// A compiled read-only computed value of a collection row (§5.2): its name and
+/// the typed expression that derives it from the row (`.` = the row). It is not
+/// a writable field; the runtime evaluates it when materializing the row so a
+/// view, projection, or `return` reads it like any stored value.
+pub(crate) struct CompiledComputed {
+    pub(crate) name: String,
+    pub(crate) expr: TypedExpr,
+}
+
 /// A compiled top-level keyed collection: its identity, fields, and constraints.
 pub(crate) struct CompiledCollection {
     pub(crate) name: String,
     pub(crate) key: Vec<String>,
     pub(crate) unique: Vec<Vec<String>>,
     pub(crate) fields: Vec<CompiledField>,
+    pub(crate) computed: Vec<CompiledComputed>,
     pub(crate) row_checks: Vec<CompiledCheck>,
 }
 
@@ -165,6 +194,38 @@ fn compile_checks(
     Ok(out)
 }
 
+/// Compile a reference's `$on_delete` policy (§21.1). A `= { … }` patch is typed
+/// against the referencing row (`.`) with the deleted target bound as the
+/// structural `$target`, so a patch may copy fields off the vanishing row.
+fn compile_on_delete(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+    row_ty: &ExprType,
+    target: &str,
+    reference: &liasse_model::Reference,
+) -> Result<OnDelete, EngineError> {
+    let Some(source) = &reference.on_delete else {
+        return Ok(OnDelete::Undecided);
+    };
+    let text = source.text.trim();
+    match text {
+        "restrict" => Ok(OnDelete::Restrict),
+        "cascade" => Ok(OnDelete::Cascade),
+        "none" => Ok(OnDelete::Clear),
+        _ if text.starts_with('=') => {
+            let body = text[1..].trim();
+            let target_ty = schema
+                .receiver_row_type(std::slice::from_ref(&target.to_owned()))
+                .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
+            let scope = RuntimeScope::new(row_ty.clone(), root_ty.clone()).with_structural("target", target_ty);
+            let (patch, _) = compile_expr(sources, &scope, "on-delete", body)?;
+            Ok(OnDelete::Patch(patch))
+        }
+        other => Err(EngineError::Internal(format!("unrecognized `$on_delete` policy `{other}`"))),
+    }
+}
+
 fn compile_collections(
     sources: &mut SourceMap,
     schema: Schema<'_>,
@@ -192,6 +253,7 @@ fn compile_collection(
     let row_scope = RuntimeScope::new(row_ty.clone(), root_ty.clone());
 
     let mut fields = Vec::new();
+    let mut computed = Vec::new();
     let mut unique: Vec<Vec<String>> = collection
         .unique
         .iter()
@@ -201,8 +263,15 @@ fn compile_collection(
     for member in &collection.shape.members {
         let field = match &member.node {
             // A read-only computed value inside a row is not an insertable or
-            // assignable field (§5.2); it is a documented CORE seam.
-            Node::Scalar(scalar) if !scalar.is_writable() => continue,
+            // assignable field (§5.2): it is compiled once and evaluated per row
+            // at materialization, not staged as a writable field.
+            Node::Scalar(scalar) if !scalar.is_writable() => {
+                if let Some(source) = &scalar.computed {
+                    let (expr, _src) = compile_expr(sources, &row_scope, "computed", &source.text)?;
+                    computed.push(CompiledComputed { name: member.name.as_str().to_owned(), expr });
+                }
+                continue;
+            }
             Node::Scalar(scalar) => {
                 if scalar.unique {
                     unique.push(vec![member.name.as_str().to_owned()]);
@@ -226,17 +295,18 @@ fn compile_collection(
                     checks,
                 }
             }
-            Node::Reference(reference) => CompiledField {
-                name: member.name.as_str().to_owned(),
-                ty: Type::Ref(liasse_value::RefTarget::Scalar(Box::new(reference.key_type.clone()))),
-                reference: Some(RefInfo {
-                    target: reference.target.trim_start_matches('/').to_owned(),
-                    optional: reference.optional,
-                }),
-                default: None,
-                normalize: None,
-                checks: Vec::new(),
-            },
+            Node::Reference(reference) => {
+                let target = reference.target.trim_start_matches('/').to_owned();
+                let on_delete = compile_on_delete(sources, schema, root_ty, &row_ty, &target, reference)?;
+                CompiledField {
+                    name: member.name.as_str().to_owned(),
+                    ty: Type::Ref(liasse_value::RefTarget::Scalar(Box::new(reference.key_type.clone()))),
+                    reference: Some(RefInfo { target, optional: reference.optional, on_delete }),
+                    default: None,
+                    normalize: None,
+                    checks: Vec::new(),
+                }
+            }
             Node::Set(set) => CompiledField {
                 name: member.name.as_str().to_owned(),
                 ty: Type::Set(Box::new(set.element.clone())),
@@ -259,6 +329,7 @@ fn compile_collection(
         key: collection.key.iter().map(|f| f.as_str().to_owned()).collect(),
         unique,
         fields,
+        computed,
         row_checks,
     })
 }

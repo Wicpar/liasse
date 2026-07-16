@@ -20,6 +20,13 @@ use crate::materialize::row_interval;
 pub(crate) struct RuntimeEnv {
     root: Row,
     params: BTreeMap<String, Cell>,
+    /// Lexical local bindings `name` a mutation program introduced with a
+    /// `name = …` statement (§8.1), resolved by [`Environment::binding`].
+    bindings: BTreeMap<String, Cell>,
+    /// Structural bindings `$name` bound in the current context (e.g. the
+    /// `$target` of an `$on_delete` patch, §21.1), resolved by
+    /// [`Environment::structural`].
+    structurals: BTreeMap<String, Cell>,
     now: Timestamp,
     seed: u64,
     /// The full extant rows of each bucketed collection (§14.2), each carrying
@@ -35,11 +42,13 @@ impl RuntimeEnv {
     pub(crate) fn new(
         root: Row,
         params: BTreeMap<String, Cell>,
+        bindings: BTreeMap<String, Cell>,
+        structurals: BTreeMap<String, Cell>,
         now: Timestamp,
         seed: u64,
         temporal: Vec<Vec<Row>>,
     ) -> Self {
-        Self { root, params, now, seed, temporal }
+        Self { root, params, bindings, structurals, now, seed, temporal }
     }
 
     /// The working set a temporal selector ranges over (§14.1). When `base` is
@@ -70,8 +79,12 @@ impl Environment for RuntimeEnv {
         self.params.get(name).cloned()
     }
 
-    fn structural(&self, _name: &str) -> Option<Cell> {
-        None
+    fn binding(&self, name: &str) -> Option<Cell> {
+        self.bindings.get(name).cloned()
+    }
+
+    fn structural(&self, name: &str) -> Option<Cell> {
+        self.structurals.get(name).cloned()
     }
 
     fn import(&self, _name: &str) -> Option<Cell> {

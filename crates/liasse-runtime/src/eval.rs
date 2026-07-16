@@ -16,7 +16,7 @@ use liasse_value::{Timestamp, Value};
 use liasse_model::Node;
 
 use crate::bucket;
-use crate::compiled::{Compiled, CompiledCollection};
+use crate::compiled::{Compiled, CompiledCollection, CompiledComputed};
 use crate::env::RuntimeEnv;
 use crate::error::Rejection;
 use crate::materialize::{self, FieldMap, Interval, Temporal};
@@ -38,9 +38,23 @@ impl EvalCtx<'_> {
     /// [`Self::now`] (§14.1), plus the full extant set of each bucketed collection
     /// so a temporal selector can re-derive activity over inactive rows (§14.2).
     pub(crate) fn env(&self, prospective: &Prospective) -> RuntimeEnv {
+        self.env_with(prospective, BTreeMap::new(), BTreeMap::new())
+    }
+
+    /// The evaluation environment carrying `bindings` (the lexical locals a
+    /// `name = …` statement bound, §8.1) and `structurals` (context bindings such
+    /// as the `$target` of an `$on_delete` patch, §21.1).
+    pub(crate) fn env_with(
+        &self,
+        prospective: &Prospective,
+        bindings: BTreeMap<String, Cell>,
+        structurals: BTreeMap<String, Cell>,
+    ) -> RuntimeEnv {
         RuntimeEnv::new(
             self.root(prospective),
             self.params.clone(),
+            bindings,
+            structurals,
             self.now,
             self.seed,
             self.temporal_index(prospective),
@@ -49,12 +63,98 @@ impl EvalCtx<'_> {
 
     /// The temporal-aware package-root row: bucketed collections expose only the
     /// rows active at [`Self::now`] (each carrying its `$from`/`$until` interval
-    /// cells); every other collection is materialized in full (§8.2, §14.2).
+    /// cells); every other collection is materialized in full (§8.2, §14.2). Named
+    /// view members are then materialized as cells too, so an expression may read
+    /// one view through another (`.other_view`, §7.1) — the public-surface `$view`
+    /// forms lifted to `.view_name` resolve here.
     pub(crate) fn root(&self, prospective: &Prospective) -> Row {
+        let base = self.base_root(prospective);
+        let base = self.expose_computed(prospective, base);
+        self.expose_views(prospective, base)
+    }
+
+    /// Fold each collection row's computed values (§5.2) into the row as cells,
+    /// so a view, projection, or `return` reads a computed value like a stored
+    /// field. Evaluated against the base root (writable state); a computed value
+    /// reading `.field` sees the row, a computed value reading another computed
+    /// value in the same row is resolved by the per-row fixed point. Views are
+    /// exposed afterwards, so a view may read a computed value.
+    fn expose_computed(&self, prospective: &Prospective, base: Row) -> Row {
+        if self.compiled.collections.iter().all(|c| c.computed.is_empty()) {
+            return base;
+        }
+        let temporal = self.temporal_index(prospective);
+        let env = RuntimeEnv::new(
+            base.clone(),
+            self.params.clone(),
+            BTreeMap::new(),
+            BTreeMap::new(),
+            self.now,
+            self.seed,
+            temporal,
+        );
+        let cells: Vec<(String, Cell)> = base
+            .cells()
+            .map(|(name, cell)| match (cell, self.compiled.collection(name)) {
+                (Cell::Collection(rows), Some(collection)) if !collection.computed.is_empty() => {
+                    let folded = rows
+                        .iter()
+                        .map(|row| fold_computed(&env, &collection.computed, row.clone()))
+                        .collect();
+                    (name.clone(), Cell::Collection(folded))
+                }
+                _ => (name.clone(), cell.clone()),
+            })
+            .collect();
+        Row::new(base.id().clone(), base.key().clone(), cells)
+    }
+
+    fn base_root(&self, prospective: &Prospective) -> Row {
         let keep = |name: &str, fields: &FieldMap| self.active(name, fields);
         let interval = |name: &str, fields: &FieldMap| self.interval(name, fields);
         let temporal = Temporal { keep: &keep, interval: &interval };
         materialize::materialize_root_filtered(self.schema, prospective.working(), &temporal)
+    }
+
+    /// Evaluate each declared view against the root and fold its result into the
+    /// root row as a same-named cell (§7.1). Views are resolved to a fixed point
+    /// so one view may reference another regardless of declaration order; a view
+    /// that never resolves (its source is not yet materialized) is simply left
+    /// out, so an expression that reads it faults exactly as before.
+    fn expose_views(&self, prospective: &Prospective, mut root: Row) -> Row {
+        if self.compiled.views.is_empty() {
+            return root;
+        }
+        let temporal = self.temporal_index(prospective);
+        let mut pending: Vec<&crate::compiled::CompiledView> = self.compiled.views.iter().collect();
+        loop {
+            let mut progressed = false;
+            let mut still = Vec::new();
+            for view in pending {
+                let env = RuntimeEnv::new(
+                    root.clone(),
+                    self.params.clone(),
+                    BTreeMap::new(),
+                    BTreeMap::new(),
+                    self.now,
+                    self.seed,
+                    temporal.clone(),
+                );
+                let current = Cell::Row(Box::new(root.clone()));
+                match view.expr.evaluate(&env, &current) {
+                    Ok(cell) => {
+                        root = with_cell(root, &view.name, cell);
+                        progressed = true;
+                    }
+                    Err(_) => still.push(view),
+                }
+            }
+            pending = still;
+            if !progressed || pending.is_empty() {
+                break;
+            }
+        }
+        root
     }
 
     /// The full extant rows of every bucketed collection (§14.2), the working set
@@ -112,6 +212,108 @@ impl EvalCtx<'_> {
         let env = self.env(prospective);
         typed.evaluate(&env, current).map_err(Rejection::from)
     }
+
+    /// Evaluate `typed` with `current` as `.` and `bindings` in scope — the
+    /// lexical locals a mutation program's `name = …` statements introduced.
+    pub(crate) fn eval_with(
+        &self,
+        prospective: &Prospective,
+        typed: &TypedExpr,
+        current: &Cell,
+        bindings: BTreeMap<String, Cell>,
+    ) -> Result<Cell, Rejection> {
+        let env = self.env_with(prospective, bindings, BTreeMap::new());
+        typed.evaluate(&env, current).map_err(Rejection::from)
+    }
+
+    /// A logical row cell for one collection row, with its computed values (§5.2)
+    /// folded in — the read-facing form a `return`, a local `name = …` row
+    /// binding, or a row-receiver `.` observes. A collection with no computed
+    /// values reuses the bare [`row_cell`].
+    pub(crate) fn row_cell_of(
+        &self,
+        prospective: &Prospective,
+        collection: &CompiledCollection,
+        fields: &FieldMap,
+    ) -> Cell {
+        let base = row_cell(collection, fields);
+        if collection.computed.is_empty() {
+            return base;
+        }
+        let Cell::Row(row) = base else { return base };
+        let env = self.env(prospective);
+        Cell::Row(Box::new(fold_computed(&env, &collection.computed, *row)))
+    }
+
+    /// Evaluate `typed` with `current` as `.`, `bindings` as locals, and
+    /// `structurals` as context bindings (`$target`, …) — the `$on_delete` patch
+    /// evaluation path (§21.1).
+    pub(crate) fn eval_full(
+        &self,
+        prospective: &Prospective,
+        typed: &TypedExpr,
+        current: &Cell,
+        bindings: BTreeMap<String, Cell>,
+        structurals: BTreeMap<String, Cell>,
+    ) -> Result<Cell, Rejection> {
+        let env = self.env_with(prospective, bindings, structurals);
+        typed.evaluate(&env, current).map_err(Rejection::from)
+    }
+}
+
+/// Rebuild `row` with an extra (or replaced) `name` cell carrying `cell` — the
+/// step that folds an evaluated view into the package-root row.
+fn with_cell(row: Row, name: &str, cell: Cell) -> Row {
+    let cells = row
+        .cells()
+        .filter(|(existing, _)| existing.as_str() != name)
+        .map(|(existing, existing_cell)| (existing.clone(), existing_cell.clone()))
+        .chain(std::iter::once((name.to_owned(), cell)));
+    Row::new(row.id().clone(), row.key().clone(), cells)
+}
+
+/// Fold a row's computed values (§5.2) into it as cells, evaluated against
+/// `env` with the row itself as `.`. A computed value that faults or yields a
+/// non-scalar is left as an absent (`none`) cell — §5.2 makes a computed value
+/// yielding `none` an absent optional. Iterated to a fixed point (bounded by the
+/// number of computed values, since the model forbids cyclic dependencies) so
+/// one computed value may read another regardless of declaration order.
+fn fold_computed(env: &RuntimeEnv, computed: &[CompiledComputed], mut row: Row) -> Row {
+    if computed.is_empty() {
+        return row;
+    }
+    for _ in 0..computed.len() {
+        let current = Cell::Row(Box::new(row.clone()));
+        let mut cells: Vec<(String, Cell)> =
+            row.cells().map(|(name, cell)| (name.clone(), cell.clone())).collect();
+        let mut changed = false;
+        for comp in computed {
+            let value = match comp.expr.evaluate(env, &current) {
+                Ok(Cell::Scalar(value)) => value,
+                // A non-scalar computed result (a row/collection) is a documented
+                // CORE seam; leave it absent rather than guess a projection.
+                Ok(_) => continue,
+                Err(_) => Value::None,
+            };
+            let next = Cell::Scalar(value);
+            match cells.iter_mut().find(|(name, _)| name == &comp.name) {
+                Some(slot) if slot.1 == next => {}
+                Some(slot) => {
+                    slot.1 = next;
+                    changed = true;
+                }
+                None => {
+                    cells.push((comp.name.clone(), next));
+                    changed = true;
+                }
+            }
+        }
+        row = Row::new(row.id().clone(), row.key().clone(), cells);
+        if !changed {
+            break;
+        }
+    }
+    row
 }
 
 /// A logical row cell over a field map, for evaluating a default, normalizer, or

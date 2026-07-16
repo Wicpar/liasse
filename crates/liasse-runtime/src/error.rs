@@ -70,6 +70,9 @@ pub enum RejectionReason {
     TypeError,
     /// A keyed row patch, delete, or field write named an absent row (§8.9).
     MissingTarget,
+    /// A deletion was blocked by a live inbound `$on_delete: restrict` reference,
+    /// or two `$on_delete` patches assigned a field conflictingly (§21.1).
+    Restricted,
     /// A well-typed expression failed at run time during admission (a zero
     /// divisor, a scalar-row selector matching not-exactly-one row, …).
     Evaluation,

@@ -77,10 +77,20 @@ impl<'a> Resolver<'a> {
     }
 
     fn shape_at(&self, shape: &Shape, key: Option<ExprType>, depth: u32) -> RowType {
-        let fields = shape
+        let mut fields: Vec<(String, ExprType)> = shape
             .members
             .iter()
-            .map(|member| (member.name.as_str().to_owned(), self.node_at(&member.node, depth + 1)));
+            .map(|member| (member.name.as_str().to_owned(), self.node_at(&member.node, depth + 1)))
+            .collect();
+        // §15.6: a row that declares a meter with `$limits` exposes that meter's
+        // accessor (`.<meter>.balance`, `.<meter>.pools`) so a view or computed
+        // value reading remaining capacity type-checks. A same-named application
+        // field wins (it is already in `fields`).
+        for meter in &shape.meters {
+            if fields.iter().all(|(name, _)| name != meter) {
+                fields.push((meter.clone(), ExprType::Row(meter_accessor_row())));
+            }
+        }
         RowType::new(fields, key)
     }
 
@@ -123,6 +133,18 @@ impl<'a> Resolver<'a> {
             }
         }
     }
+}
+
+/// The row shape of a §15.6 meter accessor (`.<meter>`): the members an
+/// expression reads off it. `balance` is the context-free current remaining
+/// capacity (a non-negative `decimal`, §15.1/§15.2); `pools` is the eligible
+/// pool view. The parameterized `balance({...})`/`pools({...})` call forms
+/// (§15.6) are a documented runtime seam, not modelled here.
+fn meter_accessor_row() -> RowType {
+    RowType::keyless([
+        ("balance".to_owned(), ExprType::scalar(Type::Decimal)),
+        ("pools".to_owned(), ExprType::View(RowType::keyless(std::iter::empty()))),
+    ])
 }
 
 /// The row shape of a spend's `funding` view (§15.3): the members the returned

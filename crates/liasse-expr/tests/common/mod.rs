@@ -10,8 +10,8 @@ use std::collections::BTreeMap;
 
 use liasse_diag::{Diagnostics, SourceMap};
 use liasse_expr::{
-    CallSite, Cell, Environment, EvalError, ExprType, Row, RowId, RowType, Scope, TemporalQuery,
-    TypedExpr,
+    CallSite, Cell, Environment, EvalError, ExprType, KeyringSelector, Row, RowId, RowType, Scope,
+    TemporalQuery, TypedExpr,
 };
 use liasse_syntax::parse_expression;
 use liasse_value::{Decimal, Integer, Text, Timestamp, Type, Uuid, Value};
@@ -162,6 +162,38 @@ impl Environment for FixedEnv {
             .cloned()
             .collect();
         Ok(kept)
+    }
+
+    /// A test keyring index (§17.2–§17.3): each version row carries a `state`
+    /// text cell (`active`/`retired`/`revoked`/`destroyed`). `.$current` is the
+    /// active version; `.$accepted`/`.$public` are the active plus retired
+    /// versions still accepted for verification; `.$versions` is every version.
+    /// This is exactly §17.3's lifecycle: active is selected, retired remains
+    /// accepted, revoked/destroyed are rejected.
+    fn keyring(&self, base: &[Row], selector: KeyringSelector) -> Result<Vec<Row>, EvalError> {
+        let kept = base
+            .iter()
+            .filter(|row| {
+                let state = state_cell(row);
+                match selector {
+                    KeyringSelector::Current => state == "active",
+                    KeyringSelector::Accepted | KeyringSelector::Public => {
+                        state == "active" || state == "retired"
+                    }
+                    KeyringSelector::Versions => true,
+                }
+            })
+            .cloned()
+            .collect();
+        Ok(kept)
+    }
+}
+
+/// A version row's `state` lifecycle cell, or the empty string when absent.
+fn state_cell(row: &Row) -> &str {
+    match row.cell("state").and_then(Cell::as_scalar) {
+        Some(Value::Text(text)) => text.as_str(),
+        _ => "",
     }
 }
 

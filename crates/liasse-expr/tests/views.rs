@@ -5,8 +5,8 @@
 mod common;
 
 use common::{
-    as_scalar, collection, eval, ids, row, row_type, rows_fields, scalar, scell, vdec, vint,
-    vtext, view, FixedEnv, FixedScope,
+    as_scalar, collection, eval, ids, keyed_row, keyless_row, row, row_type, rows_fields, scalar,
+    scell, vdec, vint, vtext, view, FixedEnv, FixedScope,
 };
 use liasse_expr::{Cell, ExprType, Row};
 use liasse_value::{Type, Value};
@@ -69,6 +69,159 @@ fn projection_members_cross_reference_in_dependency_order() {
             ("shout".to_owned(), vtext("Ada!")),
         ]]
     );
+}
+
+#[test]
+fn named_selector_binding_visible_in_projection() {
+    // §6.4: a named selector `[:p]` binds each projected row to `p`, so the
+    // projection body reads `p.field` — the binding must be in scope where the
+    // outputs are typed and evaluated, not just inside a `[:p | …]` filter.
+    let ty = people_type(vec![("name", scalar(Type::Text))]);
+    let rows = vec![
+        krow(1, "a", vec![("name", scell(vtext("Ann")))]),
+        krow(2, "b", vec![("name", scell(vtext("Bo")))]),
+    ];
+    let (scope, env, dot) = one_collection("people", ty, rows);
+    let result = eval(&scope, &env, &dot, ".people[:p] { who: p.id, name: p.name }");
+    assert_eq!(
+        rows_fields(&result),
+        vec![
+            vec![("name".to_owned(), vtext("Ann")), ("who".to_owned(), vtext("a"))],
+            vec![("name".to_owned(), vtext("Bo")), ("who".to_owned(), vtext("b"))],
+        ]
+    );
+}
+
+#[test]
+fn nested_object_output_projects_source_struct() {
+    // §7.1 projection grammar `nested: { ... }`: a bare object output projects
+    // the same-named source struct field. `.company { name, address: { city } }`
+    // yields a nested `address` object exposing only `city`.
+    let address_ty = row_type(
+        vec![("city", scalar(Type::Text)), ("country", scalar(Type::Text))],
+        None,
+    );
+    let company_ty = row_type(
+        vec![("name", scalar(Type::Text)), ("address", ExprType::Row(address_ty))],
+        None,
+    );
+    let root_ty = row_type(vec![("company", ExprType::Row(company_ty))], None);
+    let scope = FixedScope::new(ExprType::Row(root_ty));
+
+    let address_row = common::keyless_row(
+        2,
+        vec![("city", scell(vtext("Paris"))), ("country", scell(vtext("FR")))],
+    );
+    let company_row = common::keyless_row(
+        1,
+        vec![
+            ("name", scell(vtext("Acme"))),
+            ("address", Cell::Row(Box::new(address_row))),
+        ],
+    );
+    let root = common::keyless_row(0, vec![("company", Cell::Row(Box::new(company_row)))]);
+    let dot = Cell::Row(Box::new(root.clone()));
+    let env = FixedEnv::new(root);
+
+    let result = eval(&scope, &env, &dot, ".company { name, address: { city } }");
+    let company = result.as_row().expect("a single company row");
+    assert_eq!(as_scalar(company.cell("name").expect("name")), vtext("Acme"));
+    let address = company.cell("address").expect("address").as_row().expect("nested struct");
+    assert_eq!(as_scalar(address.cell("city").expect("city")), vtext("Paris"));
+    // `country` was not projected, so it is absent from the nested object.
+    assert!(address.cell("country").is_none(), "only projected members appear");
+}
+
+#[test]
+fn field_access_through_view_flattens_nested_collection_and_keeps_outer_bind() {
+    // §6.4: `.companies[:c].offices[:o]` reads the nested `offices` collection of
+    // each company. Dotted field access on a view flattens exactly like `::`,
+    // and both the outer bind `c` and the inner bind `o` stay visible in the
+    // projection body. The same local office key `hq` under two parents yields
+    // two distinct rows.
+    let office_ty = row_type(
+        vec![("id", scalar(Type::Text)), ("name", scalar(Type::Text))],
+        Some(scalar(Type::Text)),
+    );
+    let company_ty = row_type(
+        vec![("id", scalar(Type::Text)), ("offices", view(office_ty))],
+        Some(scalar(Type::Text)),
+    );
+    let root_ty = row_type(vec![("companies", view(company_ty))], None);
+    let scope = FixedScope::new(ExprType::Row(root_ty));
+
+    let office = |key: &str, name: &str| {
+        keyed_row(key, vtext(key), vec![("id", scell(vtext(key))), ("name", scell(vtext(name)))])
+    };
+    let acme = keyed_row(
+        "acme",
+        vtext("acme"),
+        vec![("id", scell(vtext("acme"))), ("offices", collection(vec![office("hq", "Acme HQ")]))],
+    );
+    let globex = keyed_row(
+        "globex",
+        vtext("globex"),
+        vec![("id", scell(vtext("globex"))), ("offices", collection(vec![office("hq", "Globex HQ")]))],
+    );
+    let root = keyless_row(0, vec![("companies", collection(vec![acme, globex]))]);
+    let dot = Cell::Row(Box::new(root.clone()));
+    let env = FixedEnv::new(root);
+
+    let dotted = eval(
+        &scope,
+        &env,
+        &dot,
+        ".companies[:c].offices[:o] { company: c.id, office: o.id, name: o.name }",
+    );
+    assert_eq!(
+        rows_fields(&dotted),
+        vec![
+            vec![
+                ("company".to_owned(), vtext("acme")),
+                ("name".to_owned(), vtext("Acme HQ")),
+                ("office".to_owned(), vtext("hq")),
+            ],
+            vec![
+                ("company".to_owned(), vtext("globex")),
+                ("name".to_owned(), vtext("Globex HQ")),
+                ("office".to_owned(), vtext("hq")),
+            ],
+        ]
+    );
+
+    // §6.4: the dotted spelling denotes the same traversal as `::`, which
+    // auto-binds each traversed level to its field name.
+    let colons = eval(
+        &scope,
+        &env,
+        &dot,
+        ".companies::offices { company: companies.id, office: offices.id, name: offices.name }",
+    );
+    assert_eq!(rows_fields(&colons), rows_fields(&dotted));
+}
+
+#[test]
+fn structured_sort_form_matches_string_form() {
+    // §7.3: the structured `{ $by, $dir }` entry expresses the same order as the
+    // string form (`-n` / `n`). Both spellings must produce identical row order.
+    let ty = people_type(vec![("n", scalar(Type::Int))]);
+    let rows = vec![
+        krow(1, "a", vec![("n", scell(vint(10)))]),
+        krow(2, "b", vec![("n", scell(vint(30)))]),
+        krow(3, "c", vec![("n", scell(vint(20)))]),
+    ];
+    let (scope, env, dot) = one_collection("items", ty, rows);
+
+    let desc_string = eval(&scope, &env, &dot, ".items { id, n, $sort: [-n] }");
+    let desc_struct =
+        eval(&scope, &env, &dot, ".items { id, n, $sort: [ { $by: n, $dir: desc } ] }");
+    assert_eq!(ids(&desc_string, "id"), vec![vtext("b"), vtext("c"), vtext("a")]);
+    assert_eq!(ids(&desc_struct, "id"), ids(&desc_string, "id"));
+
+    let asc_string = eval(&scope, &env, &dot, ".items { id, n, $sort: [n] }");
+    let asc_struct = eval(&scope, &env, &dot, ".items { id, n, $sort: [ { $by: n, $dir: asc } ] }");
+    assert_eq!(ids(&asc_string, "id"), vec![vtext("a"), vtext("c"), vtext("b")]);
+    assert_eq!(ids(&asc_struct, "id"), ids(&asc_string, "id"));
 }
 
 #[test]

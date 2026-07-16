@@ -8,6 +8,7 @@
 //! except the projection-output dependency DFS in [`walk`], which recurses on
 //! output-name edges and carries its own bound: the projection's output count.
 
+mod keyring;
 mod ops;
 mod project;
 mod temporal;
@@ -180,7 +181,7 @@ impl<'a> Checker<'a> {
             ExprKind::Structural(name) => self.check_structural(expr, &name.text),
             ExprKind::Name(name) => self.check_name(expr, &name.text),
             ExprKind::Field { base, member } if member.structural => {
-                self.check_temporal_all(expr, base, &member.text)
+                self.check_structural_selector(expr, base, &member.text)
             }
             ExprKind::Field { base, member } => self.check_field(expr, base, &member.text),
             ExprKind::SameName { base, member } => self.check_traverse(expr, base, &member.text),
@@ -298,6 +299,10 @@ impl<'a> Checker<'a> {
         let base = self.check(base)?;
         let row = match base.ty() {
             ExprType::Row(row) => row,
+            // §6.4: `view.member` flattens the nested collection `member` across
+            // the view's rows, exactly as `view::member` does — the dotted and
+            // `::` spellings expand to the same traversal.
+            ExprType::View(_) => return self.traverse_view(expr, base, member),
             other => {
                 return self.error(
                     expr,

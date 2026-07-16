@@ -11,6 +11,7 @@
 
 mod aggregate;
 mod builtins;
+mod keyring;
 mod ops;
 mod temporal;
 mod views;
@@ -150,6 +151,7 @@ impl Evaluator<'_> {
                 self.env.uuid(crate::env::CallSite::new(expr.span())),
             ))),
             TypedKind::Temporal { base, query } => self.eval_temporal(base, query),
+            TypedKind::Keyring { base, selector } => self.eval_keyring(expr, base, *selector),
         }
     }
 

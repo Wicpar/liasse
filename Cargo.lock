@@ -702,6 +702,7 @@ dependencies = [
  "data-encoding",
  "liasse-ident",
  "liasse-store",
+ "liasse-testkit",
  "liasse-value",
  "postgres",
  "serde_json",
@@ -767,6 +768,14 @@ name = "liasse-testkit"
 version = "0.0.1"
 dependencies = [
  "deser-hjson",
+ "liasse-diag",
+ "liasse-ident",
+ "liasse-model",
+ "liasse-runtime",
+ "liasse-store",
+ "liasse-surface",
+ "liasse-syntax",
+ "liasse-value",
  "serde",
  "serde_json",
  "thiserror",

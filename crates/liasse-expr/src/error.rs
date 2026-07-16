@@ -65,6 +65,12 @@ pub enum EvalError {
     /// contract breach: a bucketed read must run against a bucket-aware
     /// environment.
     NoTemporalIndex,
+
+    /// A keyring selector (`.$current`/`.$accepted`/`.$public`/`.$versions`) was
+    /// evaluated against an environment that owns no keyring (§17.2). An
+    /// environment contract breach: a keyring read must run against a
+    /// keyring-aware environment.
+    NoKeyringIndex,
 }
 
 impl EvalError {
@@ -87,6 +93,9 @@ impl EvalError {
             }
             Self::NoTemporalIndex => {
                 "a temporal selector needs an environment with a temporal index".to_owned()
+            }
+            Self::NoKeyringIndex => {
+                "a keyring selector needs an environment that owns the keyring".to_owned()
             }
         }
     }

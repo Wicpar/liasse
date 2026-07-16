@@ -139,3 +139,39 @@ fn unknown_meter_member_rejected() {
     assert!(built.has_code("M-METER"));
     assert!(built.points_at("$cap"));
 }
+
+/// §15.6 — a row that declares a meter with `$limits` exposes the meter's
+/// accessor, so a view reading `.<meter>.balance` (context-free current
+/// capacity) type-checks. Without the accessor the view would be rejected with
+/// E-EXPR "no field `credits`".
+#[test]
+fn meter_accessor_balance_readable_in_view() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.m@1.0.0", "$model": {
+            "users": {
+              "$key": "id", "id": "text",
+              "topups": { "$key": "id", "id": "text", "amount": "decimal" }
+              "spends": { "$key": "id", "$consumes": "credits", "id": "text", "amount": "decimal" }
+              "$limits": { "credits": { "$sources": { "topup": ".topups { $quantity: .amount }" } } }
+            }
+            "$public": { "wallet": { "$view": ".users { id, balance: .credits.balance }" } }
+        } }"#,
+    );
+    built.expect_ok();
+}
+
+/// §15.6 — the meter accessor is scoped to the row that declares `$limits`: a
+/// row without that meter has no such field, so reading it is still rejected.
+#[test]
+fn meter_accessor_absent_without_limits() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.m@1.0.0", "$model": {
+            "users": {
+              "$key": "id", "id": "text",
+              "notes": { "$key": "id", "id": "text" }
+              "peek": { "$view": ".notes { id, b: .credits.balance }" }
+            }
+        } }"#,
+    );
+    built.expect_err();
+}

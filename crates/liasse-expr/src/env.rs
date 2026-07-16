@@ -230,6 +230,24 @@ pub enum TemporalQuery {
     All,
 }
 
+/// A keyring public version selector (§17.2). Unlike a temporal selector it
+/// carries no instant: it names a lifecycle role over a keyring's managed
+/// versions, which only the keyring-managing environment can resolve.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyringSelector {
+    /// `.$current` — the single active signing version's metadata (§17.2, §17.3:
+    /// at most one version is active at an admitted state position).
+    Current,
+    /// `.$accepted` — the versions accepted for verification (§17.2): the active
+    /// version plus every retired version still within its `$retain` window and
+    /// not revoked or destroyed (§17.1, §17.3).
+    Accepted,
+    /// `.$public` — the public key values for the accepted versions (§17.2).
+    Public,
+    /// `.$versions` — all retained version metadata (§17.2).
+    Versions,
+}
+
 /// The read-only, deterministic evaluation context an expression runs against.
 ///
 /// Every method is a pure lookup: two evaluations against an environment that
@@ -280,5 +298,22 @@ pub trait Environment {
     fn temporal(&self, base: &[Row], query: &TemporalQuery) -> Result<Vec<Row>, EvalError> {
         let _ = (base, query);
         Err(EvalError::NoTemporalIndex)
+    }
+
+    /// Resolve a keyring public version selector (§17.2) over a keyring's version
+    /// rows. `base` is the evaluated keyring's version metadata rows; the
+    /// environment returns the versions `selector` exposes according to the
+    /// lifecycle policy it owns — the active version for `.$current`, the accepted
+    /// set for `.$accepted`/`.$public`, every retained version for `.$versions`
+    /// (§17.1–§17.3).
+    ///
+    /// As with the temporal index, keeping version-lifecycle resolution in the
+    /// environment is what preserves purity: the evaluator hands over the base
+    /// rows and never computes acceptance, rotation, or retention itself. The
+    /// default owns no keyring and rejects, so only a keyring-aware environment
+    /// (the runtime) answers a keyring selector.
+    fn keyring(&self, base: &[Row], selector: KeyringSelector) -> Result<Vec<Row>, EvalError> {
+        let _ = (base, selector);
+        Err(EvalError::NoKeyringIndex)
     }
 }

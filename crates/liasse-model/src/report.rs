@@ -65,6 +65,8 @@ pub mod code {
     pub const MIGRATION: &str = "M-MIGRATE";
     /// A `$ref` `$on_delete` policy is missing or invalid (§21).
     pub const DELETE: &str = "M-DELETE";
+    /// A `$sort` declaration is malformed (§7.3).
+    pub const SORT: &str = "M-SORT";
 }
 
 /// Accumulates every static rejection against one definition source.

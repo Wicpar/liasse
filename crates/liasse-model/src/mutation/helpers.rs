@@ -7,10 +7,36 @@
 use std::collections::BTreeMap;
 
 use liasse_expr::ExprType;
-use liasse_syntax::{Expr, ExprKind, SpannedExpression, Stmt, StmtKind};
+use liasse_syntax::{BinaryOp, Expr, ExprKind, SpannedExpression, Stmt, StmtKind};
 
 use crate::state::{Node, Shape};
 use crate::walk::child_exprs;
+
+/// Row bindings in scope while inferring a mutation's parameters: a filtered
+/// selector `[:x | ...]` binds `x` to a row of the selected collection (§6.4),
+/// which the inference walk resolves `x.field` against.
+pub(super) type BindEnv = BTreeMap<String, ExprType>;
+
+/// Whether an operator relates its two operands to a single scalar type, so a
+/// bare `@p` operand inherits the sibling operand's type (§8.3): the comparison
+/// and arithmetic operators. `&&`/`||`/`in`/`??` are excluded — they do not make
+/// their operands share one scalar type.
+pub(super) fn is_scalar_binop(op: BinaryOp) -> bool {
+    matches!(
+        op,
+        BinaryOp::Eq
+            | BinaryOp::Ne
+            | BinaryOp::Lt
+            | BinaryOp::Le
+            | BinaryOp::Gt
+            | BinaryOp::Ge
+            | BinaryOp::Add
+            | BinaryOp::Sub
+            | BinaryOp::Mul
+            | BinaryOp::Div
+            | BinaryOp::Rem
+    )
+}
 
 /// The receiver body shape at `path` from the model root (§8.2).
 pub(super) fn receiver_shape<'a>(root: &'a Shape, path: &[String]) -> &'a Shape {
@@ -109,20 +135,6 @@ fn target_node<'t>(expr: &Expr, receiver: &'t Shape, root: &'t Shape) -> Option<
     resolve_node(expr, receiver, root)
 }
 
-/// Resolve an expression to a view/row type against the receiver row (for key
-/// inference). Only the direct-field and current cases are modelled.
-pub(super) fn resolve_target(expr: &Expr, receiver: &ExprType, root: &liasse_expr::RowType) -> Option<ExprType> {
-    match &expr.kind {
-        ExprKind::Current => Some(receiver.clone()),
-        ExprKind::Root => Some(ExprType::Row(root.clone())),
-        ExprKind::Field { base, member } => {
-            let base_ty = resolve_target(base, receiver, root)?;
-            base_ty.as_row().and_then(|r| r.field(&member.text)).cloned()
-        }
-        _ => None,
-    }
-}
-
 /// The absolute `/segment/...` path a write target addresses, with selectors
 /// dropped, resolved from the receiver `path`. `None` for a non-path target.
 pub(super) fn write_path(expr: &Expr, receiver: &[String]) -> Option<String> {
@@ -156,15 +168,58 @@ fn collect_segments(expr: &Expr, receiver: &[String], segments: &mut Vec<String>
     }
 }
 
-/// Collect every `@name` parameter reference reachable from `expr`, paired with
-/// the span of its use, for the §8.3 inferability check.
+/// Collect every `@name` parameter reference that must infer a type *here*,
+/// paired with the span of its use, for the §8.3 inferability check.
+///
+/// A parameter whose only occurrence is a call argument is deliberately not
+/// collected: as a call argument it inherits its type from the callee's declared
+/// signature (§8.3, "inherits ... type"), and the CORE model does not resolve
+/// host namespaces (§16.4) or cross-program mutation contracts (§8.11). Such a
+/// parameter's type is therefore *deferred* to that later resolution rather than
+/// rejected here, so the walk descends into a call's callee but not its
+/// arguments.
 pub(super) fn collect_param_refs<'e>(expr: &'e Expr, out: &mut Vec<(&'e str, liasse_diag::ByteSpan)>) {
     if let ExprKind::Param(id) = &expr.kind {
         out.push((&id.text, id.span));
     }
+    if let ExprKind::Call { callee, .. } = &expr.kind {
+        collect_param_refs(callee, out);
+        return;
+    }
     for child in child_exprs(expr) {
         collect_param_refs(child, out);
     }
+}
+
+/// The pure value/view builtins the expression checker types by name (§6.5): the
+/// generators, `size`/`has`/`assert`, the aggregates, and the `string.*`
+/// namespace functions. Every *other* call in a mutation program is an in-program
+/// mutation call (§8.11), a host-namespace call (§16.4), or a state operation
+/// such as `erase`/`reinsert` (§21) — none of which the value checker types.
+fn is_builtin_call(callee: &Expr) -> bool {
+    match &callee.kind {
+        ExprKind::Name(id) => matches!(
+            id.text.as_str(),
+            "size" | "has" | "assert" | "now" | "uuid" | "count" | "sum" | "avg" | "min" | "max"
+                | "distinct"
+        ),
+        // `string.lower/upper/trim` are the only namespace builtins the checker
+        // resolves; every other `ns.fn` is a host-namespace call (§16.4).
+        ExprKind::Field { base, member } if !member.structural => {
+            matches!(&base.kind, ExprKind::Name(ns) if ns.text == "string")
+                && matches!(member.text.as_str(), "lower" | "upper" | "trim")
+        }
+        _ => false,
+    }
+}
+
+/// Whether an expression is a program-level call the value checker cannot type:
+/// an in-program mutation call (§8.11), a host-namespace call (§16.4), or a state
+/// operation such as `erase`/`reinsert` (§21). The mutation phase accepts such a
+/// call structurally — its target and arguments are resolved by the referenced
+/// mutation, host contract, or operation, not by expression typing.
+pub(super) fn is_program_call(expr: &Expr) -> bool {
+    matches!(&expr.kind, ExprKind::Call { callee, .. } if !is_builtin_call(callee))
 }
 
 pub(super) fn stmt_exprs(stmt: &Stmt) -> Vec<&Expr> {

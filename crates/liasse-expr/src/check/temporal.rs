@@ -16,20 +16,11 @@ use crate::ty::{ExprType, RowType};
 use crate::typed::{TypedExpr, TypedKind, TypedTemporal};
 
 impl Checker<'_> {
-    /// `.base.$all` (§14.2): every extant row of the bucketed base view.
-    pub(crate) fn check_temporal_all(
-        &mut self,
-        expr: &Expr,
-        base: &Expr,
-        selector: &str,
-    ) -> Option<TypedExpr> {
-        if selector != "all" {
-            return self.error(
-                expr,
-                format!("`.${selector}` is not a temporal selector (expected `.$all`, §14.2)"),
-            );
-        }
-        let (base, row) = self.temporal_base(base)?;
+    /// `.base.$all` (§14.2): every extant row of the bucketed base view. The
+    /// selector-name dispatch ([`check_structural_selector`](Self::check_structural_selector))
+    /// has already established the `$all` spelling.
+    pub(crate) fn check_temporal_all(&mut self, expr: &Expr, base: &Expr) -> Option<TypedExpr> {
+        let (base, row) = self.selector_base(base, "a temporal selector")?;
         Some(self.temporal_node(expr, row, base, TypedTemporal::All))
     }
 
@@ -41,7 +32,7 @@ impl Checker<'_> {
         selector: &str,
         args: &[Arg],
     ) -> Option<TypedExpr> {
-        let (base, row) = self.temporal_base(base)?;
+        let (base, row) = self.selector_base(base, "a temporal selector")?;
         let query = match selector {
             "at" => {
                 let mut instants = self.instants(expr, args, 1)?;
@@ -66,9 +57,14 @@ impl Checker<'_> {
         Some(self.temporal_node(expr, row, base, query))
     }
 
-    /// Check a selector's base and require it to be a view (§14.1 applies to a
-    /// bucketed collection).
-    fn temporal_base(&mut self, base_expr: &Expr) -> Option<(TypedExpr, RowType)> {
+    /// Check a structural selector's base and require it to be a view: §14.1
+    /// applies to a bucketed collection and §17.2 to a keyring's version view.
+    /// `role` names the selector kind for the diagnostic.
+    pub(crate) fn selector_base(
+        &mut self,
+        base_expr: &Expr,
+        role: &str,
+    ) -> Option<(TypedExpr, RowType)> {
         let base = self.check(base_expr)?;
         match base.ty() {
             ExprType::View(row) => {
@@ -76,8 +72,7 @@ impl Checker<'_> {
                 Some((base, row))
             }
             other => {
-                let message =
-                    format!("a temporal selector applies to a view, not a {}", other.describe());
+                let message = format!("{role} applies to a view, not a {}", other.describe());
                 self.report(base_expr, message);
                 None
             }

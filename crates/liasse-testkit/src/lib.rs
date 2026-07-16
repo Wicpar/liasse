@@ -28,6 +28,7 @@
 //! # Ok::<(), liasse_testkit::LoadError>(())
 //! ```
 
+pub mod adapter;
 mod anchor;
 mod case;
 mod clock;
@@ -44,12 +45,14 @@ mod notes;
 mod outcome;
 mod relax;
 mod report;
+pub mod scenario_gate;
 mod request;
 mod step;
 mod step_kind;
 mod trace;
 mod view;
 
+pub use adapter::{AdapterError, MemoryProvision, ScenarioAdapter, StoreProvision};
 pub use anchor::{AnchorKind, SpecAnchor};
 pub use case::{Case, CaseBody, PackageSet, Suite};
 pub use clock::{DurationParseError, Instant, Iso8601Duration, VirtualClock};

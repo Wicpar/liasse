@@ -96,9 +96,23 @@ impl<'a> Builder<'a> {
         })?;
         let ty = match &member.node {
             Node::Scalar(field) if field.is_writable() => &field.ty,
+            // §A.9/§10.3: a `$ref` key field takes the exact key type of its
+            // target collection or keyed view — which the target's own `$key`
+            // already proved key-eligible — so a required ref is a valid key
+            // (the idiomatic scoped-membership `$key: "account"` over a
+            // `{ $ref: "/accounts" }` field). Only optionality excludes it.
+            Node::Reference(reference) => {
+                return if reference.optional {
+                    Err(format!(
+                        "key field `{name}` is an optional ref; optional types are excluded from row keys (A.8)"
+                    ))
+                } else {
+                    DeclName::parse(name).map_err(|_| format!("`{name}` is not a valid field name"))
+                };
+            }
             _ => {
                 return Err(format!(
-                    "`$key` field `{name}` must be a writable scalar field"
+                    "`$key` field `{name}` must be a writable scalar or a required ref field"
                 ));
             }
         };

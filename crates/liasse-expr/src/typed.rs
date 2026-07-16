@@ -21,6 +21,7 @@
 use liasse_diag::ByteSpan;
 use liasse_value::Value;
 
+use crate::env::KeyringSelector;
 use crate::ty::ExprType;
 
 /// A type-checked expression: its span, its resolved result type, and its
@@ -190,6 +191,15 @@ pub(crate) enum TypedKind {
     Temporal {
         base: Box<TypedExpr>,
         query: TypedTemporal,
+    },
+    /// A keyring public version selector over a keyring's version view (§17.2):
+    /// `.$current`, `.$accepted`, `.$public`, `.$versions`. Evaluation defers
+    /// version-lifecycle resolution to the environment's keyring index; the
+    /// resolved [`ExprType`](crate::ExprType) decides whether the result is the
+    /// single active version (`.$current`, a row) or a version stream.
+    Keyring {
+        base: Box<TypedExpr>,
+        selector: KeyringSelector,
     },
 }
 

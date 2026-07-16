@@ -4,7 +4,8 @@
 
 use std::collections::BTreeSet;
 
-use liasse_syntax::{BlockMember, BlockMemberKind, Expr, ExprKind};
+use liasse_diag::ByteSpan;
+use liasse_syntax::{BlockMember, BlockMemberKind, Expr, ExprKind, Ident};
 use liasse_value::{StructType, Type};
 
 use crate::check::Checker;
@@ -85,6 +86,10 @@ impl Checker<'_> {
         let grouped = !key_fields.is_empty();
         self.push_frame(ExprType::Row(source_row.clone()));
         let mut binds = Vec::new();
+        // §6.4: every `[:name]` binding and `::`/`.`-traversed level along the
+        // selection chain stays visible in the projection body, so the outputs
+        // may read `name.field`. Eval threads these through `RowScope`; the
+        // checker mirrors the whole chain here.
         Self::traverse_binds(&base, &mut binds);
         for (name, ty) in binds {
             self.bind(name, ty);
@@ -123,7 +128,24 @@ impl Checker<'_> {
                     ),
                 );
             }
-            let typed = match self.check(&raw.expr) {
+            // §7.1 `nested: { ... }`: a bare object output projects the
+            // same-named source struct or nested collection. `.` inside the
+            // block is that field, so rewrite it to `.name { ... }` and let the
+            // ordinary projection machinery type (and later evaluate) it.
+            let nested;
+            let to_check = match &raw.expr.kind {
+                ExprKind::Object(members)
+                    if matches!(
+                        source_row.field(&raw.name),
+                        Some(ExprType::Row(_) | ExprType::View(_))
+                    ) =>
+                {
+                    nested = nested_projection(&raw.name, members, raw.expr.span);
+                    &nested
+                }
+                _ => &raw.expr,
+            };
+            let typed = match self.check(to_check) {
                 Some(typed) => typed,
                 None => {
                     self.pop_frame();
@@ -239,14 +261,74 @@ impl Checker<'_> {
     fn check_sort(&mut self, members: &[&Expr]) -> Option<Vec<SortKey>> {
         let mut keys = Vec::with_capacity(members.len());
         for member in members {
-            let (descending, key_expr) = match &member.kind {
-                ExprKind::Unary { op: liasse_syntax::UnaryOp::Neg, operand } => (true, operand.as_ref()),
-                _ => (false, *member),
+            let key = match &member.kind {
+                // §7.3 structured form: `{ $by: field, $dir: asc|desc }` — the
+                // same ordering choice the string form spells with a leading `-`.
+                ExprKind::Object(entry) => self.structured_sort_key(member, entry)?,
+                // §7.3 string form: a leading `-` reverses one key; a bare key
+                // ascends.
+                ExprKind::Unary { op: liasse_syntax::UnaryOp::Neg, operand } => SortKey {
+                    expr: self.check(operand)?,
+                    descending: true,
+                },
+                _ => SortKey {
+                    expr: self.check(member)?,
+                    descending: false,
+                },
             };
-            let typed = self.check(key_expr)?;
-            keys.push(SortKey { expr: typed, descending });
+            keys.push(key);
         }
         Some(keys)
+    }
+
+    /// A structured `$sort` entry `{ $by: field, $dir: asc|desc }` (§7.3). `$by`
+    /// is the comparison key expression (checked like a string-form key); `$dir`
+    /// is `asc` (default) or `desc`. It denotes the same order as `field` /
+    /// `-field`.
+    fn structured_sort_key(&mut self, member: &Expr, entry: &[BlockMember]) -> Option<SortKey> {
+        let mut by: Option<&Expr> = None;
+        let mut descending = false;
+        for part in entry {
+            let BlockMemberKind::Directive { name, value } = &part.kind else {
+                self.report(member, "a structured `$sort` entry is `{ $by: field, $dir: asc|desc }`");
+                return None;
+            };
+            match name.text.as_str() {
+                "by" => by = Some(value),
+                "dir" => descending = self.sort_direction(value)?,
+                other => {
+                    self.report(member, format!("a `$sort` entry has `$by` and `$dir`, not `${other}`"));
+                    return None;
+                }
+            }
+        }
+        let Some(by) = by else {
+            self.report(member, "a structured `$sort` entry needs a `$by` key (§7.3)");
+            return None;
+        };
+        Some(SortKey {
+            expr: self.check(by)?,
+            descending,
+        })
+    }
+
+    /// A `$dir` value: `asc` (ascending, the default) or `desc` (descending).
+    fn sort_direction(&mut self, value: &Expr) -> Option<bool> {
+        // The bare `asc`/`desc` token parses as a name; the spec's quoted
+        // spelling parses as a text literal. Accept both.
+        let word = match &value.kind {
+            ExprKind::Name(name) => Some(name.text.as_str()),
+            ExprKind::Str(text) => Some(text.as_str()),
+            _ => None,
+        };
+        match word {
+            Some("asc") => Some(false),
+            Some("desc") => Some(true),
+            _ => {
+                self.report(value, "`$dir` is `asc` or `desc` (§7.3)");
+                None
+            }
+        }
     }
 
     fn projected_key(
@@ -275,5 +357,29 @@ impl Checker<'_> {
                 Some(ExprType::scalar(Type::Struct(StructType::new(components))))
             }
         }
+    }
+}
+
+/// Desugar a nested projection output `name: { members }` into `.name { members }`
+/// (§7.1): a `Block` whose base is the same-named field of the current source
+/// row, so `.` inside the block is that struct/collection.
+fn nested_projection(name: &str, members: &[BlockMember], span: ByteSpan) -> Expr {
+    let field = Expr {
+        span,
+        kind: ExprKind::Field {
+            base: Box::new(Expr::current(span)),
+            member: Ident {
+                span,
+                text: name.to_owned(),
+                structural: false,
+            },
+        },
+    };
+    Expr {
+        span,
+        kind: ExprKind::Block {
+            base: Box::new(field),
+            members: members.to_vec(),
+        },
     }
 }

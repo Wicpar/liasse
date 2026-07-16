@@ -12,6 +12,7 @@
 use liasse_diag::SourceMap;
 use liasse_expr::ExprType;
 use liasse_syntax::{parse_expression, Expr, ExprKind, StmtKind};
+use liasse_value::Type;
 
 use crate::build::RawSurface;
 use crate::doc::DocValueExt;
@@ -47,11 +48,18 @@ pub(crate) fn check_surfaces(
     let mut phase = SurfacePhase {
         reporter,
         sources,
-        root_row,
+        root_row: root_row.clone(),
+        receiver_row: root_row,
+        path: Vec::new(),
         mutations,
     };
     let mut surfaces = Vec::new();
     for block in raw {
+        // A nested `$roles` scopes `.` and its mutation references to the row at
+        // its declaration path (§10.3); a root `$public` uses the model root.
+        phase.receiver_row = crate::resolve::row_at(&phase.root_row, &block.path)
+            .unwrap_or_else(|| phase.root_row.clone());
+        phase.path = block.path.clone();
         if block.public {
             phase.public_block(block, &mut surfaces);
         } else {
@@ -64,7 +72,12 @@ pub(crate) fn check_surfaces(
 struct SurfacePhase<'a, 'b> {
     reporter: &'a mut Reporter<'b>,
     sources: &'a mut SourceMap,
+    /// The model-root row (`/`).
     root_row: ExprType,
+    /// The `.` receiver row for the block being checked (the row at `path`).
+    receiver_row: ExprType,
+    /// The receiver location of the block being checked (§10.3 role scope).
+    path: Vec<String>,
     mutations: &'a [Mutation],
 }
 
@@ -141,6 +154,10 @@ impl SurfacePhase<'_, '_> {
                     }
                 }
                 "$mut" => self.surface_muts(&member.value, &mut calls),
+                // §10.5: a scoped surface MAY propagate through a checked
+                // descendant relation. Its shape and predicate types are
+                // validated here; the runtime performs the actual traversal.
+                "$recursive" => self.check_recursive(&member.value, &params),
                 other if other.starts_with('$') => self.reporter.reject(
                     member.span,
                     code::SURFACE,
@@ -167,14 +184,198 @@ impl SurfacePhase<'_, '_> {
         };
         let mut params = Vec::new();
         for member in members {
-            let text = member.value.as_string().unwrap_or_default();
-            let type_str = text.split_once('=').map_or(text, |(lhs, _)| lhs).trim();
-            match TypeParser::parse(type_str, &NamedTypes::new()) {
-                Ok(ty) => params.push((member.name.text.clone(), ExprType::scalar(ty))),
-                Err(reason) => self.reporter.reject(member.value.span, code::SURFACE, reason),
+            if let Some(ty) = self.param_type(member) {
+                params.push((member.name.text.clone(), ty));
             }
         }
         params
+    }
+
+    /// The declared type of one `$params` entry (§10.1). A field declaration is
+    /// either a bare type string (`"text"`, `"text?"`, `"text = 'x'"`) or the
+    /// expanded object form (A.3) carrying `$type` alongside the request-scoped
+    /// `$normalize`/`$check`/`$default`/`$optional` behaviors §12.1 applies.
+    fn param_type(&mut self, member: &liasse_syntax::DocMember) -> Option<ExprType> {
+        if let Some(text) = member.value.as_string() {
+            let type_str = text.split_once('=').map_or(text, |(lhs, _)| lhs).trim();
+            return match TypeParser::parse(type_str, &NamedTypes::new()) {
+                Ok(ty) => Some(ExprType::scalar(ty)),
+                Err(reason) => {
+                    self.reporter.reject(member.value.span, code::SURFACE, reason);
+                    None
+                }
+            };
+        }
+        let Some(type_member) = member.value.member("$type") else {
+            self.reporter.reject_hint(
+                member.value.span,
+                code::SURFACE,
+                "a `$params` field declaration needs a type",
+                "e.g. `\"title\": \"text\"` or `{ \"$type\": \"text\", \"$normalize\": \"string.trim(.)\" }`",
+            );
+            return None;
+        };
+        let optional = member
+            .value
+            .member("$optional")
+            .and_then(|m| m.value.as_bool())
+            .unwrap_or(false);
+        let text = type_member.value.as_string().unwrap_or_default();
+        match TypeParser::parse(text.trim(), &NamedTypes::new()) {
+            Ok(ty) => {
+                let ty = if optional { Type::Optional(Box::new(ty)) } else { ty };
+                Some(ExprType::scalar(ty))
+            }
+            Err(reason) => {
+                self.reporter.reject(type_member.value.span, code::SURFACE, reason);
+                None
+            }
+        }
+    }
+
+    /// §10.5: validate a `$recursive` descendant-coverage block. `$field`,
+    /// `$through`, and `$bind` are required; `$where`/`$except` are optional bool
+    /// predicates that read the candidate through `$bind`. The checker verifies
+    /// the descendant relation resolves to a keyed row stream (descendant shape
+    /// and identity) and that each predicate is `bool`.
+    fn check_recursive(&mut self, value: &liasse_syntax::DocValue, params: &[(String, ExprType)]) {
+        let Some(members) = value.as_object() else {
+            self.reporter.reject(value.span, code::SURFACE, "`$recursive` must be an object");
+            return;
+        };
+        for member in members {
+            match member.name.text.as_str() {
+                "$field" | "$through" | "$bind" | "$where" | "$except" => {}
+                other => self.reporter.reject(
+                    member.span,
+                    code::SURFACE,
+                    format!("`{other}` is not a `$recursive` member (§10.5)"),
+                ),
+            }
+        }
+        let field = self.recursive_string(value, "$field");
+        let through = self.recursive_string(value, "$through");
+        let bind = self.recursive_string(value, "$bind");
+        let (Some(field), Some(through), Some(bind)) = (field, through, bind) else {
+            self.reporter.reject_hint(
+                value.span,
+                code::SURFACE,
+                "`$recursive` requires `$field`, `$through`, and `$bind` (§10.5)",
+                "e.g. `{ \"$field\": \"children\", \"$through\": \".children\", \"$bind\": \"child\" }`",
+            );
+            return;
+        };
+        // `$field` names where the nested descendant view appears; it is a field
+        // of the covered row.
+        if self.receiver_row.as_row().and_then(|r| r.field(&field)).is_none() {
+            self.reporter.reject_hint(
+                value.span,
+                code::SURFACE,
+                format!("`$recursive` `$field` `{field}` is not a field of the covered row (§10.5)"),
+                "name the descendant collection field the coverage nests under",
+            );
+        }
+        // `$through` yields strict descendants: it must resolve to a keyed row
+        // stream (descendant shape + identity).
+        let Some(descendant) = self.recursive_view(&through) else {
+            return;
+        };
+        if descendant.as_view().and_then(liasse_expr::RowType::key).is_none() {
+            self.reporter.reject_hint(
+                value.span,
+                code::SURFACE,
+                "`$recursive` `$through` must yield keyed descendants (§10.5)",
+                "traverse to a keyed collection so each descendant has identity",
+            );
+            return;
+        }
+        // `$where`/`$except` are bool predicates over one bound candidate.
+        let candidate = descendant
+            .as_view()
+            .map_or_else(|| descendant.clone(), |row| ExprType::Row(row.clone()));
+        for directive in ["$where", "$except"] {
+            if let Some(text) = self.recursive_string(value, directive) {
+                self.check_recursive_predicate(&bind, &candidate, params, &text);
+            }
+        }
+    }
+
+    /// A required string member of a `$recursive` block, stripped of surrounding
+    /// whitespace, or `None` (with no diagnostic — the caller reports the missing
+    /// required set together).
+    fn recursive_string(&self, value: &liasse_syntax::DocValue, name: &str) -> Option<String> {
+        value
+            .member(name)
+            .and_then(|m| m.value.as_string())
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty())
+    }
+
+    /// Type-check a `$recursive` `$through` expression against the covered row,
+    /// returning its result type. A non-stream result is rejected.
+    fn recursive_view(&mut self, text: &str) -> Option<ExprType> {
+        let scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone());
+        let sub = self.sources.add_label("recursive-through", text.to_owned());
+        let parsed = match parse_expression(sub, text) {
+            Ok(parsed) => parsed,
+            Err(diags) => {
+                self.reporter.emit_all(diags);
+                return None;
+            }
+        };
+        match liasse_expr::check_statement(&scope, sub, &parsed) {
+            Ok(typed) if typed.ty().as_view().is_some() => Some(typed.ty().clone()),
+            Ok(_) => {
+                self.reporter.reject_hint(
+                    parsed.statement().span,
+                    code::SURFACE,
+                    "`$recursive` `$through` must resolve to a descendant row stream (§10.5)",
+                    "traverse from `.` to a nested collection, e.g. `.subcompanies`",
+                );
+                None
+            }
+            Err(diags) => {
+                self.reporter.emit_all(diags);
+                None
+            }
+        }
+    }
+
+    /// Type-check a `$recursive` `$where`/`$except` predicate: the candidate row
+    /// is bound to `$bind`, and the predicate must be `bool` (§10.5).
+    fn check_recursive_predicate(
+        &mut self,
+        bind: &str,
+        candidate: &ExprType,
+        params: &[(String, ExprType)],
+        text: &str,
+    ) {
+        let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
+            .with_binding(bind.to_owned(), candidate.clone());
+        for (name, ty) in params {
+            scope = scope.with_param(name.clone(), ty.clone());
+        }
+        let sub = self.sources.add_label("recursive-predicate", text.to_owned());
+        let parsed = match parse_expression(sub, text) {
+            Ok(parsed) => parsed,
+            Err(diags) => {
+                self.reporter.emit_all(diags);
+                return;
+            }
+        };
+        match liasse_expr::check_statement(&scope, sub, &parsed) {
+            Ok(typed) if typed.ty().as_scalar() == Some(&Type::Bool) => {}
+            Ok(typed) => self.reporter.reject_hint(
+                parsed.statement().span,
+                code::SURFACE,
+                format!(
+                    "a `$recursive` predicate must be `bool`, not `{}` (§10.5)",
+                    typed.ty().describe()
+                ),
+                "compare or test a value to produce a boolean",
+            ),
+            Err(diags) => self.reporter.emit_all(diags),
+        }
     }
 
     fn check_view(&mut self, value: &liasse_syntax::DocValue, params: &[(String, ExprType)]) {
@@ -182,7 +383,7 @@ impl SurfacePhase<'_, '_> {
             self.reporter.reject(value.span, code::SURFACE, "`$view` must be an expression string");
             return;
         };
-        let mut scope = ModelScope::nested(vec![self.root_row.clone()], self.root_row.clone());
+        let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone());
         for (name, ty) in params {
             scope = scope.with_param(name.clone(), ty.clone());
         }
@@ -197,18 +398,13 @@ impl SurfacePhase<'_, '_> {
                 return;
             }
         };
-        match liasse_expr::check_statement(&scope, sub, &parsed) {
-            Ok(typed) => {
-                if typed.ty().as_view().is_none() {
-                    self.reporter.reject_hint(
-                        value.span,
-                        code::SURFACE,
-                        "a surface `$view` must evaluate to a row stream",
-                        "expose a collection or a projected view",
-                    );
-                }
-            }
-            Err(diags) => self.reporter.emit_all(diags),
+        // §7.1/§10.1/§12.2: a surface `$view` result may be a row stream, a
+        // single row (a root or struct projection like `. { exact_sum }`), or a
+        // scalar (an aggregate/computed value); §12.2 delivers a single-row or
+        // scalar result as one object. All three are valid external read
+        // results, so only the expression's well-formedness is enforced here.
+        if let Err(diags) = liasse_expr::check_statement(&scope, sub, &parsed) {
+            self.reporter.emit_all(diags);
         }
     }
 
@@ -254,7 +450,7 @@ impl SurfacePhase<'_, '_> {
             _ => return, // an inline program (insert/replace/patch/…).
         };
         if let ExprKind::Field { base, member } = &reference.kind
-            && let Some(path) = receiver_path(base)
+            && let Some(path) = self.resolve_path(base)
         {
             let exists = self
                 .mutations
@@ -289,12 +485,13 @@ impl SurfacePhase<'_, '_> {
         }
     }
 
-    /// The type a surface-mutation receiver base addresses against the model
-    /// root, so a bare-collection receiver (a row stream) can be distinguished
-    /// from a single selected row.
+    /// The type a surface-mutation receiver base addresses, so a bare-collection
+    /// receiver (a row stream) can be distinguished from a single selected row.
+    /// `.` is the block's scoped receiver row (§10.3); `/` is the model root.
     fn base_type(&self, expr: &Expr) -> Option<ExprType> {
         match &expr.kind {
-            ExprKind::Current | ExprKind::Root => Some(self.root_row.clone()),
+            ExprKind::Current => Some(self.receiver_row.clone()),
+            ExprKind::Root => Some(self.root_row.clone()),
             ExprKind::Field { base, member } => {
                 let base_ty = self.base_type(base)?;
                 base_ty.as_row().and_then(|row| row.field(&member.text)).cloned()
@@ -307,19 +504,22 @@ impl SurfacePhase<'_, '_> {
             _ => None,
         }
     }
-}
 
-/// The receiver path a mutation reference base addresses (selectors dropped).
-fn receiver_path(expr: &Expr) -> Option<Vec<String>> {
-    match &expr.kind {
-        ExprKind::Current => Some(Vec::new()),
-        ExprKind::Field { base, member } => {
-            let mut path = receiver_path(base)?;
-            path.push(member.text.clone());
-            Some(path)
+    /// The absolute receiver path a mutation reference base addresses (selectors
+    /// dropped). A `.`-rooted reference is relative to the block's scope path
+    /// (§10.3); a `/`-rooted reference is absolute from the model root.
+    fn resolve_path(&self, expr: &Expr) -> Option<Vec<String>> {
+        match &expr.kind {
+            ExprKind::Current => Some(self.path.clone()),
+            ExprKind::Root => Some(Vec::new()),
+            ExprKind::Field { base, member } => {
+                let mut path = self.resolve_path(base)?;
+                path.push(member.text.clone());
+                Some(path)
+            }
+            ExprKind::Select { base, .. } => self.resolve_path(base),
+            _ => None,
         }
-        ExprKind::Select { base, .. } => receiver_path(base),
-        _ => None,
     }
 }
 

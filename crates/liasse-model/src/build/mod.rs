@@ -17,6 +17,7 @@
 mod fields;
 mod keys;
 mod shapes;
+mod sort;
 
 use std::collections::BTreeMap;
 
@@ -43,6 +44,10 @@ pub(crate) struct RawMut<'a> {
 
 /// A `$public`/`$roles` member awaiting expression validation.
 pub(crate) struct RawSurface<'a> {
+    /// The receiver location from the model root where the block is declared
+    /// (empty = root). A nested `$roles` scopes its `.` and mutation references
+    /// to its containing row (§10.3).
+    pub path: Vec<String>,
     /// Whether the surfaces are public (unauthenticated) or role-scoped.
     pub public: bool,
     /// The `$public` or `$roles` object.
@@ -98,6 +103,12 @@ pub(crate) struct Builder<'a> {
     consumes: Vec<RawDecl<'a>>,
     blob_storage: Vec<RawDecl<'a>>,
     source_buckets: Vec<String>,
+    /// Model-root paths a `$like: "^"` positional recursion resolves to (§5.8):
+    /// the containing shape/collection each inline recursive field adopts. After
+    /// the root is built, each target's node is registered in [`Self::types`]
+    /// under its absolute-path key so the resolver projects it lazily (like a
+    /// `$types` name), with the resolver's depth cap terminating the recursion.
+    recur_targets: std::collections::BTreeSet<Vec<String>>,
 }
 
 impl<'a> Builder<'a> {
@@ -119,6 +130,7 @@ impl<'a> Builder<'a> {
             consumes: Vec::new(),
             blob_storage: Vec::new(),
             source_buckets: Vec::new(),
+            recur_targets: std::collections::BTreeSet::new(),
         };
         if let Some(types_doc) = types_doc {
             builder.build_types(reporter, types_doc);
@@ -130,6 +142,7 @@ impl<'a> Builder<'a> {
                 Shape::default()
             }
         };
+        builder.register_recursion_targets(&root);
         StateBuild {
             root,
             types: builder.types,
@@ -214,13 +227,18 @@ impl<'a> Builder<'a> {
                 span: member.span,
                 value: &member.value,
             }),
+            // §7.3: a collection or view MAY declare `$sort`. Its keys resolve
+            // against the row shape at runtime; here its form is validated.
+            "$sort" => sort::check(reporter, &member.value),
             "$check" => shape.checks.extend(self.checks(reporter, &member.value)),
             "$mut" => self.collect_muts(reporter, &member.value, path),
             "$public" if is_root => self.surfaces.push(RawSurface {
+                path: path.to_vec(),
                 public: true,
                 value: &member.value,
             }),
             "$roles" => self.surfaces.push(RawSurface {
+                path: path.to_vec(),
                 public: false,
                 value: &member.value,
             }),
@@ -229,11 +247,21 @@ impl<'a> Builder<'a> {
                 span: member.span,
                 value: &member.value,
             }),
-            "$limits" => self.limits.push(RawDecl {
-                path: path.to_vec(),
-                span: member.span,
-                value: &member.value,
-            }),
+            "$limits" => {
+                // Record each declared meter name so the resolver can expose
+                // its §15.6 accessor field on this row's shape; the meter's own
+                // static validation is deferred to `meter::check`.
+                if let Some(meters) = member.value.as_object() {
+                    shape
+                        .meters
+                        .extend(meters.iter().map(|m| m.name.text.clone()));
+                }
+                self.limits.push(RawDecl {
+                    path: path.to_vec(),
+                    span: member.span,
+                    value: &member.value,
+                });
+            }
             "$blob_storage" => self.blob_storage.push(RawDecl {
                 path: path.to_vec(),
                 span: member.span,
@@ -312,6 +340,46 @@ impl<'a> Builder<'a> {
             });
         }
     }
+}
+
+impl Builder<'_> {
+    /// Record the model-root path a `$like: "^"` field adopts (§5.8), returning
+    /// the absolute-path key under which its containing shape is registered so
+    /// the field can be represented as a lazily-resolved `Node::Named`.
+    pub(super) fn recursion_target(&mut self, target: Vec<String>) -> String {
+        let key = absolute_path(&target);
+        self.recur_targets.insert(target);
+        key
+    }
+
+    /// After the root is built, register each `$like: "^"` target shape's node in
+    /// the type table under its absolute-path key. The registered node is the
+    /// fully-built containing collection/struct, so its own recursive fields
+    /// (themselves `Node::Named` keys) resolve lazily and the resolver's depth
+    /// cap terminates the expansion.
+    fn register_recursion_targets(&mut self, root: &Shape) {
+        for target in std::mem::take(&mut self.recur_targets) {
+            if let Some(node) = node_at_path(root, &target) {
+                self.types.insert(absolute_path(&target), node.clone());
+            }
+        }
+    }
+}
+
+/// The node declared at a model-root path (`["categories"]` → the `categories`
+/// collection node), descending through collection/struct bodies for every
+/// segment before the last.
+fn node_at_path<'s>(root: &'s Shape, path: &[String]) -> Option<&'s Node> {
+    let (last, parents) = path.split_last()?;
+    let mut shape = root;
+    for segment in parents {
+        shape = match &shape.member(segment)?.node {
+            Node::Collection(collection) => &collection.shape,
+            Node::Struct(inner) => inner,
+            _ => return None,
+        };
+    }
+    shape.member(last).map(|member| &member.node)
 }
 
 /// A blank writable-`json` field used as a placeholder after a rejection so the
