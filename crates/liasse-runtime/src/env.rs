@@ -10,10 +10,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use liasse_expr::{CallSite, Cell, Environment, EvalError, Row, RowId, TemporalQuery};
+use liasse_expr::{CallSite, Cell, Environment, EvalError, KeyringSelector, Row, RowId, TemporalQuery};
 use liasse_value::{Timestamp, Uuid};
 
 use crate::generator::derive_uuid;
+use crate::keyring_view::{snapshot_for, KeyringSnapshot};
 use crate::materialize::row_interval;
 
 /// A read-only, deterministic evaluation context.
@@ -34,11 +35,19 @@ pub(crate) struct RuntimeEnv {
     /// full set so `.$all` and a back-dated `.$at` observe rows that have already
     /// left their active interval.
     temporal: Vec<Vec<Row>>,
+    /// The keyring version-view snapshots (§17.2) a keyring public selector
+    /// resolves against. Each names the versions active (`.$current`) and
+    /// accepted (`.$accepted`/`.$public`) at the read instant.
+    keyrings: Vec<KeyringSnapshot>,
 }
 
 impl RuntimeEnv {
     /// Build the context from a materialized `root`, the request `params`, the
-    /// fixed generative samples, and the bucketed-collection temporal index.
+    /// fixed generative samples, and the bucketed-collection temporal and keyring
+    /// version indices. The inputs are each a distinct, unrelated environment
+    /// slot rather than a bundle to abstract away, so the constructor takes them
+    /// positionally.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         root: Row,
         params: BTreeMap<String, Cell>,
@@ -47,8 +56,9 @@ impl RuntimeEnv {
         now: Timestamp,
         seed: u64,
         temporal: Vec<Vec<Row>>,
+        keyrings: Vec<KeyringSnapshot>,
     ) -> Self {
-        Self { root, params, bindings, structurals, now, seed, temporal }
+        Self { root, params, bindings, structurals, now, seed, temporal, keyrings }
     }
 
     /// The working set a temporal selector ranges over (§14.1). When `base` is
@@ -109,6 +119,20 @@ impl Environment for RuntimeEnv {
             .filter(|row| selects(row, query))
             .cloned()
             .collect())
+    }
+
+    /// Resolve a keyring public selector over the ring's version view (§17.2).
+    /// `base` is the ring's full version collection; the owning snapshot answers
+    /// the lifecycle subset: the active version for `.$current`, the accepted set
+    /// for `.$accepted`/`.$public`, every version for `.$versions`. An
+    /// environment that owns no matching keyring rejects (§17.2 contract breach).
+    fn keyring(&self, base: &[Row], selector: KeyringSelector) -> Result<Vec<Row>, EvalError> {
+        let snapshot = snapshot_for(&self.keyrings, base).ok_or(EvalError::NoKeyringIndex)?;
+        Ok(match selector {
+            KeyringSelector::Current => snapshot.current(),
+            KeyringSelector::Accepted | KeyringSelector::Public => snapshot.accepted_rows(),
+            KeyringSelector::Versions => snapshot.rows.clone(),
+        })
     }
 }
 

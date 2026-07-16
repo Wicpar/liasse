@@ -20,8 +20,12 @@ use liasse_store::{
 use liasse_syntax::parse_document;
 use liasse_value::Timestamp;
 
+use liasse_host::sim::SimKeyProvider;
+
 use crate::compiled::{Compiled, CompiledMutation};
 use crate::doc;
+use crate::keyring::Keyring;
+use crate::keyring_view::KeyringSnapshot;
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::eval::EvalCtx;
 use crate::generator::Generators;
@@ -82,6 +86,27 @@ pub struct Engine<S> {
     /// and an import can classify an incoming artifact against local history.
     lineage: LineageId,
     sources: SourceMap,
+    /// The live keyrings this package declares (§17): the version lifecycle over
+    /// the in-process key provider, bootstrapped at load and advanced by due
+    /// rotations as the virtual clock moves. A keyring public selector reads a
+    /// snapshot of these ([`Self::keyring_snapshots`]).
+    keyrings: Vec<Keyring<SimKeyProvider>>,
+}
+
+/// Bootstrap a live keyring per declaration (§17.3), over the in-process key
+/// provider, at the load clock. A ring whose provider fails the capability check
+/// is dropped rather than failing the whole load, leaving its selector to fault
+/// exactly as an unmaterialized member would.
+fn build_keyrings(compiled: &Compiled, clock: Timestamp) -> Vec<Keyring<SimKeyProvider>> {
+    let mut rings = Vec::new();
+    for decl in &compiled.keyrings {
+        let provider = crate::keyring_view::built_in_provider(&decl.policy);
+        if let Ok(mut ring) = Keyring::load(decl.name.clone(), provider, decl.policy.clone()) {
+            let _ = ring.bootstrap(clock);
+            rings.push(ring);
+        }
+    }
+    rings
 }
 
 impl<S: InstanceStore> Engine<S> {
@@ -101,7 +126,8 @@ impl<S: InstanceStore> Engine<S> {
         let Compilation { sources, model, compiled, data } = compile_definition(definition)?;
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
-        let mut engine = Self { store, model, compiled, clock, lineage, sources };
+        let keyrings = build_keyrings(&compiled, clock);
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
     }
@@ -121,7 +147,8 @@ impl<S: InstanceStore> Engine<S> {
         let Compilation { sources, model, compiled, .. } = compile_definition(definition)?;
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
-        let mut engine = Self { store, model, compiled, clock, lineage, sources };
+        let keyrings = build_keyrings(&compiled, clock);
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings };
         engine.install_state(definition, state)?;
         Ok(engine)
     }
@@ -239,6 +266,7 @@ impl<S: InstanceStore> Engine<S> {
         self.model = target.model;
         self.compiled = target.compiled;
         self.sources = target.sources;
+        self.keyrings = build_keyrings(&self.compiled, self.clock);
         Ok(seq)
     }
 
@@ -260,6 +288,7 @@ impl<S: InstanceStore> Engine<S> {
     /// interval without any commit. Time is expected to be non-decreasing.
     pub fn set_time(&mut self, now: Timestamp) {
         self.clock = now;
+        self.rotate_due();
     }
 
     /// Advance the virtual clock by `ticks` of its current precision (§14) — the
@@ -267,6 +296,25 @@ impl<S: InstanceStore> Engine<S> {
     pub fn advance(&mut self, ticks: i128) {
         let count = self.clock.count().saturating_add(ticks);
         self.clock = Timestamp::new(count, self.clock.precision());
+        self.rotate_due();
+    }
+
+    /// Perform any due keyring rotation before the next operation (§17.4): moving
+    /// the virtual clock past a cadence retires the prior active version and
+    /// activates a new one, and reaching the `$overlap` lead exposes a pending
+    /// version. A provider failure keeps the current version active (§17.9).
+    fn rotate_due(&mut self) {
+        let clock = self.clock;
+        for ring in &mut self.keyrings {
+            ring.ensure_current(clock);
+        }
+    }
+
+    /// A read-time snapshot of every live keyring's version view at the current
+    /// clock (§17.2), the keyring index an evaluation environment answers a
+    /// keyring public selector against.
+    fn keyring_snapshots(&self) -> Vec<KeyringSnapshot> {
+        self.keyrings.iter().map(|ring| KeyringSnapshot::of(ring, self.clock)).collect()
     }
 
     /// The validated package model.
@@ -288,12 +336,14 @@ impl<S: InstanceStore> Engine<S> {
         generator: &mut G,
     ) -> Result<(), EngineError> {
         let schema = Schema::new(&self.model);
+        let snapshots = self.keyring_snapshots();
         let ctx = EvalCtx {
             schema,
             compiled: &self.compiled,
             params: BTreeMap::new(),
             now: self.clock,
             seed: generator.next_seed(),
+            keyrings: &snapshots,
         };
         let mut prospective = Prospective::empty();
         let mut touched = Vec::new();
@@ -331,8 +381,15 @@ impl<S: InstanceStore> Engine<S> {
             Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
         };
         let schema = Schema::new(&self.model);
-        let ctx =
-            EvalCtx { schema, compiled: &self.compiled, params, now: self.clock, seed: generator.next_seed() };
+        let snapshots = self.keyring_snapshots();
+        let ctx = EvalCtx {
+            schema,
+            compiled: &self.compiled,
+            params,
+            now: self.clock,
+            seed: generator.next_seed(),
+            keyrings: &snapshots,
+        };
 
         let receiver = match receiver_target(&self.compiled, mutation, request) {
             Ok(receiver) => receiver,
@@ -376,14 +433,30 @@ impl<S: InstanceStore> Engine<S> {
         // operation, so a genuine evaluation fault (e.g. `.$between`'s empty-range
         // rejection, §14.1) rejects the whole transition and commits nothing,
         // rather than silently yielding a valueless success.
-        let response = match eval_return(&ctx, &prospective, &receiver, &locals, mutation, ret.as_ref())
-        {
+        //
+        // §6.3: a program that changes state and returns a keyed selection of an
+        // affected row returns that row as a single row (a `row-mutation receiver`
+        // is a one-row context). A program that changes nothing is a query, so a
+        // keyed-selection `return` is delivered as the row view it denotes — an
+        // array — exactly as a `$view` would (§12.2). `state_changed` distinguishes
+        // the two; the shape only differs for a scalar/composite-key selection,
+        // which types as a single `Row`.
+        let changes = prospective.diff();
+        let state_changed = !changes.is_empty();
+        let response = match eval_return(
+            &ctx,
+            &prospective,
+            &receiver,
+            &locals,
+            mutation,
+            ret.as_ref(),
+            state_changed,
+        ) {
             Ok(response) => response,
             Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
         };
 
-        let changes = prospective.diff();
-        if changes.is_empty() {
+        if !state_changed {
             // §8.9: no state change → `unchanged`; the frontier does not advance.
             return Ok(CallOutcome::Unchanged { response });
         }
@@ -406,13 +479,25 @@ impl<S: InstanceStore> Engine<S> {
         let prospective = Prospective::from_snapshot(&snapshot, schema);
         // §14: the view is evaluated at the virtual clock, so bucketed
         // collections expose only the rows active at that instant.
-        let ctx =
-            EvalCtx { schema, compiled: &self.compiled, params: BTreeMap::new(), now: self.clock, seed: 0 };
+        let keyrings = self.keyring_snapshots();
+        let ctx = EvalCtx {
+            schema,
+            compiled: &self.compiled,
+            params: BTreeMap::new(),
+            now: self.clock,
+            seed: 0,
+            keyrings: &keyrings,
+        };
         let current = Cell::Row(Box::new(ctx.root(&prospective)));
         let env = ctx.env(&prospective);
+        // §12.2: a `$view` delivers a row stream. Evaluate in view context so a
+        // scalar/composite-key selection the view wraps (`.people['a'] { … }`)
+        // yields its 0/1-row view — one row when present, none when absent — rather
+        // than a coerced single row or the one-row cardinality rejection an
+        // ordinary evaluation raises (§6.3). A scalar/aggregate view stays a value.
         let cell = view
             .expr
-            .evaluate(&env, &current)
+            .evaluate_view(&env, &current)
             .map_err(|error| EngineError::Internal(error.message()))?;
         Ok(Some(ViewResult::from_cell(&cell)))
     }
@@ -527,6 +612,7 @@ fn eval_return(
     locals: &BTreeMap<String, crate::interp::LocalBind>,
     mutation: &CompiledMutation,
     ret: Option<&(liasse_syntax::Expr, liasse_diag::SourceId)>,
+    state_changed: bool,
 ) -> Result<Option<ResponseValue>, Rejection> {
     let Some((expr, source)) = ret else { return Ok(None) };
     let Some(current) = current_cell(ctx, prospective, receiver) else { return Ok(None) };
@@ -538,8 +624,45 @@ fn eval_return(
         scope = scope.with_binding(name, ty);
     }
     let Ok(typed) = check_expression(&scope, *source, expr) else { return Ok(None) };
-    let cell = ctx.eval_with(prospective, &typed, &current, cells)?;
+    // §6.3: when the program changed nothing, a keyed-selection `return` is a query
+    // over unaffected state, so it is delivered as the row view it denotes (a
+    // collection). When the program changed state, the same selection names an
+    // affected row (a `row-mutation receiver`, a one-row context), delivered as
+    // that single row. Only a scalar/composite-key selection projection — one that
+    // statically types as a `Row` yet reaches a collection selector — differs
+    // between the two; every other shape delivers identically under both paths.
+    let deliver_as_view = !state_changed && returns_row_selection(expr);
+    let cell = if deliver_as_view {
+        ctx.eval_view_with(prospective, &typed, &current, cells)?
+    } else {
+        ctx.eval_with(prospective, &typed, &current, cells)?
+    };
     Ok(Some(ResponseValue::new(cell)))
+}
+
+/// Whether `expr` is a projection whose base spine reaches a collection selector
+/// (`.coll[k] { … }`), the one `return` shape whose delivered cardinality depends
+/// on whether the program changed state (§6.3). A root/struct projection
+/// (`. { … }`), a bare field, or an aggregate has no such selector and delivers
+/// identically either way, so it is left to the ordinary evaluation path.
+fn returns_row_selection(expr: &liasse_syntax::Expr) -> bool {
+    use liasse_syntax::ExprKind;
+    matches!(&expr.kind, ExprKind::Block { base, .. } if spine_reaches_selector(base))
+}
+
+/// Whether the projection spine of `expr` bottoms out at a collection selector,
+/// following field access, nested projection, and `::` traversal down the base
+/// chain (mirrors the adapter's `selectionless_spine`, inverted).
+fn spine_reaches_selector(expr: &liasse_syntax::Expr) -> bool {
+    use liasse_syntax::ExprKind;
+    match &expr.kind {
+        ExprKind::Select { .. } => true,
+        ExprKind::Field { base, .. }
+        | ExprKind::SameName { base, .. }
+        | ExprKind::Block { base, .. } => spine_reaches_selector(base),
+        ExprKind::Call { callee, .. } => spine_reaches_selector(callee),
+        _ => false,
+    }
 }
 
 fn current_cell(

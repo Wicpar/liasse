@@ -411,3 +411,50 @@ fn cose_namespace_off_contract_token_is_caught() {
         other => panic!("expected a conformance violation, got {other:?}"),
     }
 }
+
+/// §17.2/§17.3: a declared keyring materializes a version view under its name,
+/// so `/ring.$current`/`.$accepted`/`.$versions` selectors resolve through the
+/// engine at load. The bootstrapped ring exposes exactly one active version with
+/// present `activated_at` and no `retired_at`/`revoked_at`.
+#[test]
+fn keyring_selectors_materialize_bootstrapped_version() {
+    use liasse_runtime::{Engine, FixedGenerators};
+    use liasse_ident::InstanceId;
+    use liasse_store::MemoryStore;
+
+    let def = r#"{
+      "$liasse": 1,
+      "$app": "t.keyrings@1.0.0",
+      "$requires": { "cose": "liasse.cose@1" },
+      "$model": {
+        "session_keys": { "$keyring": { "$provider": "test-kp", "$algorithm": "Ed25519", "$rotate": "P30D", "$retain": "P45D" } },
+        "ring_current": { "$view": "/session_keys.$current" },
+        "ring_accepted": { "$view": "/session_keys.$accepted" },
+        "ring_versions": { "$view": "/session_keys.$versions" }
+      }
+    }"#;
+    let store = MemoryStore::new(InstanceId::new("i1"));
+    let mut generator = FixedGenerators::at(at(NOW));
+    let mut engine = Engine::load(store, def, &mut generator).expect("load");
+
+    let current = engine.view_at_head("ring_current").expect("view ok").expect("declared");
+    assert_eq!(current.len(), 1, "exactly one active version (§17.3)");
+    let row = &current.rows()[0];
+    assert_eq!(row.field("id"), Some(&Value::Int(liasse_value::Integer::from(1))));
+    assert_eq!(row.field("algorithm"), Some(&Value::Text(liasse_value::Text::new("Ed25519"))));
+    assert!(row.field("activated_at").is_some(), "an active version has an activation instant");
+    assert_eq!(row.field("retired_at"), None, "a bootstrapped active version is not retired");
+    assert_eq!(row.field("revoked_at"), None, "a bootstrapped active version is not revoked");
+
+    assert_eq!(engine.view_at_head("ring_accepted").expect("ok").expect("declared").len(), 1);
+    assert_eq!(engine.view_at_head("ring_versions").expect("ok").expect("declared").len(), 1);
+
+    // §17.4: past the 30-day cadence a due rotation retires v1 and activates a
+    // new version, so the version view grows to two while `.$current` stays one.
+    engine.advance(P30D + 1);
+    let versions = engine.view_at_head("ring_versions").expect("ok").expect("declared");
+    assert_eq!(versions.len(), 2, "a due rotation adds a version (§17.4)");
+    let current = engine.view_at_head("ring_current").expect("ok").expect("declared");
+    assert_eq!(current.len(), 1, "still exactly one active version after rotation");
+    assert_eq!(current.rows()[0].field("id"), Some(&Value::Int(liasse_value::Integer::from(2))));
+}

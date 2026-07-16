@@ -150,6 +150,14 @@ pub(crate) struct CompiledBucket {
     pub(crate) until: Option<TypedExpr>,
 }
 
+/// A compiled keyring declaration (§17.1): the ring name and its parsed policy.
+/// The live version lifecycle is engine state built from this at load; the
+/// declaration only carries the observable policy a provider must satisfy.
+pub(crate) struct CompiledKeyring {
+    pub(crate) name: String,
+    pub(crate) policy: crate::keyring::KeyringPolicy,
+}
+
 /// The compiled artefacts the engine reuses across requests.
 pub(crate) struct Compiled {
     pub(crate) collections: Vec<CompiledCollection>,
@@ -163,6 +171,9 @@ pub(crate) struct Compiled {
     /// Compiled `$limits`/`$consumes` meter declarations (§15): pool sources,
     /// eligibility, order, and each spend collection's amount/time/metadata.
     pub(crate) meters: crate::meter::CompiledMeters,
+    /// Declared keyrings (§17.1): the rings the engine bootstraps a live version
+    /// lifecycle for and materializes a version view under.
+    pub(crate) keyrings: Vec<CompiledKeyring>,
 }
 
 impl Compiled {
@@ -177,10 +188,11 @@ impl Compiled {
         let collections = compile_collections(sources, schema, &root_ty)?;
         let root_computed = compile_root_computed(sources, schema, &root_ty)?;
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc)?;
-        let views = compile_views(sources, schema, &root_ty)?;
+        let keyrings = compile_keyrings(schema, model_doc);
+        let views = compile_views(sources, schema, &root_ty, &keyrings)?;
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc)?;
         let meters = crate::meter::compile(sources, schema, &root_ty, model_doc)?;
-        Ok(Self { collections, root_computed, mutations, views, buckets, meters })
+        Ok(Self { collections, root_computed, mutations, views, buckets, meters, keyrings })
     }
 
     /// The compiled top-level collection named `name`, if any.
@@ -540,16 +552,46 @@ fn compile_views(
     sources: &mut SourceMap,
     schema: Schema<'_>,
     root_ty: &ExprType,
+    keyrings: &[CompiledKeyring],
 ) -> Result<Vec<CompiledView>, EngineError> {
     let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone());
     let mut out = Vec::new();
     for member in &schema.model().root().members {
         if let Node::View(view) = &member.node {
+            let name = member.name.as_str();
+            // §17.2: a keyring is projected as a `Node::View` for typing, but its
+            // rows are the version metadata the engine materializes directly, not
+            // its stand-in `.` expression. Skip it so the keyring materializer owns
+            // the ring member rather than an evaluated whole-root clone.
+            if keyrings.iter().any(|k| k.name == name) {
+                continue;
+            }
             let (expr, _source) = compile_expr(sources, &scope, "view", &view.expr.text)?;
-            out.push(CompiledView { name: member.name.as_str().to_owned(), expr });
+            out.push(CompiledView { name: name.to_owned(), expr });
         }
     }
     Ok(out)
+}
+
+/// Parse each `$keyring` declaration (§17.1) into its policy. The model projects
+/// a keyring as a `Node::View`, so the declaration is read from the source
+/// document (the model retains no policy); a declaration the parser cannot read
+/// is dropped, leaving the ring without a live lifecycle rather than failing the
+/// load.
+fn compile_keyrings(schema: Schema<'_>, model_doc: &liasse_syntax::DocValue) -> Vec<CompiledKeyring> {
+    let mut out = Vec::new();
+    for member in &schema.model().root().members {
+        if !matches!(&member.node, Node::View(_)) {
+            continue;
+        }
+        let name = member.name.as_str().to_owned();
+        let Some(shape) = doc::shape_at(model_doc, std::slice::from_ref(&name)) else { continue };
+        let Some(keyring) = doc::member(shape, "$keyring") else { continue };
+        if let Some(policy) = crate::keyring_view::policy_from_doc(keyring) {
+            out.push(CompiledKeyring { name, policy });
+        }
+    }
+    out
 }
 
 /// Compile each top-level keyed collection's `$bucket` interval expressions

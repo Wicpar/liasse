@@ -5,11 +5,11 @@
 mod common;
 
 use common::{
-    as_scalar, collection, eval, ids, keyed_row, keyless_row, row, row_type, rows_fields, scalar,
-    scell, vdec, vint, vtext, view, FixedEnv, FixedScope,
+    as_scalar, check, collection, eval, ids, keyed_row, keyless_row, row, row_type, rows_fields,
+    scalar, scell, try_eval, vdec, vint, vtext, view, FixedEnv, FixedScope,
 };
-use liasse_expr::{Cell, ExprType, Row};
-use liasse_value::{Type, Value};
+use liasse_expr::{Cell, EvalError, ExprType, Row};
+use liasse_value::{Ref, RefTarget, Type, Value};
 
 /// Build a keyed row whose `key` doubles as an `id` cell, plus extra cells.
 fn krow(seed: u64, key: &str, cells: Vec<(&str, Cell)>) -> Row {
@@ -285,6 +285,107 @@ fn scalar_key_selector_then_field_reads_one_row() {
     assert_eq!(as_scalar(&result), vtext("Ann"));
 }
 
+// §6.3 lines 700–702 make a projection's cardinality context-sensitive: a
+// projection whose base is a lone scalar/composite key is a one-row `Row` (a
+// value context — a `return`, a scalar row value, a mutation receiver —
+// consumes it as a single object and rejects zero or several occurrences),
+// while a projection over a filter, multi-key, or set selection is a multi-row
+// `View`. The distinction is carried by the base selector's own type; the view
+// counterpart is reached through `evaluate_view` (§12.2, the `$view` shape).
+// These tests lock both directions.
+
+#[test]
+fn scalar_key_projection_is_a_row_in_a_value_context() {
+    // §6.3 line 700: a lone scalar key contributes one row when present. In a
+    // value context that is delivered as the single `Row` (a JSON object), not a
+    // one-element collection.
+    let ty = people_type(vec![("name", scalar(Type::Text))]);
+    let rows = vec![
+        krow(1, "a", vec![("name", scell(vtext("Ann")))]),
+        krow(2, "b", vec![("name", scell(vtext("Bo")))]),
+    ];
+    let (scope, env, dot) = one_collection("people", ty, rows);
+    let source = r#".people['a'] { id, name }"#;
+    assert!(matches!(check(&scope, source).ty(), ExprType::Row(_)));
+    let result = eval(&scope, &env, &dot, source);
+    let Cell::Row(row) = &result else {
+        panic!("a scalar-key projection in a value context must be one row, got {result:?}");
+    };
+    assert_eq!(row.cell("id"), Some(&scell(vtext("a"))));
+    assert_eq!(row.cell("name"), Some(&scell(vtext("Ann"))));
+}
+
+#[test]
+fn scalar_key_projection_absent_key_rejects_in_a_value_context() {
+    // §6.3 line 702: a value context requires exactly one occurrence; an absent
+    // scalar key is zero occurrences and rejects the whole evaluation.
+    let ty = people_type(vec![("name", scalar(Type::Text))]);
+    let rows = vec![krow(1, "a", vec![("name", scell(vtext("Ann")))])];
+    let (scope, env, dot) = one_collection("people", ty, rows);
+    let result = try_eval(&scope, &env, &dot, r#".people['zz'] { id, name }"#);
+    assert!(
+        matches!(result, Err(EvalError::Cardinality { found: 0, .. })),
+        "an absent scalar key must reject, got {result:?}"
+    );
+}
+
+#[test]
+fn filter_projection_is_a_view() {
+    // §6.3: a filter selection is a multi-row view, so its projection is a `View`
+    // delivered as a collection regardless of context.
+    let ty = people_type(vec![("grp", scalar(Type::Text))]);
+    let rows = vec![
+        krow(1, "a", vec![("grp", scell(vtext("L")))]),
+        krow(2, "b", vec![("grp", scell(vtext("R")))]),
+        krow(3, "c", vec![("grp", scell(vtext("L")))]),
+    ];
+    let (scope, env, dot) = one_collection("people", ty, rows);
+    let source = r#".people[:p | p.grp == "L"] { id }"#;
+    assert!(matches!(check(&scope, source).ty(), ExprType::View(_)));
+    let result = eval(&scope, &env, &dot, source);
+    assert!(matches!(result, Cell::Collection(_)));
+    assert_eq!(ids(&result, "id"), vec![vtext("a"), vtext("c")]);
+}
+
+#[test]
+fn multi_key_projection_is_a_view() {
+    // §6.3: comma-separated key operands are concatenated into a multi-row view,
+    // so the projection is a `View` (an array), even for present keys.
+    let ty = people_type(vec![("name", scalar(Type::Text))]);
+    let rows = vec![
+        krow(1, "a", vec![("name", scell(vtext("Ann")))]),
+        krow(2, "b", vec![("name", scell(vtext("Bo")))]),
+    ];
+    let (scope, env, dot) = one_collection("people", ty, rows);
+    let source = r#".people['a', 'b'] { id }"#;
+    assert!(matches!(check(&scope, source).ty(), ExprType::View(_)));
+    let result = eval(&scope, &env, &dot, source);
+    assert_eq!(ids(&result, "id"), vec![vtext("a"), vtext("b")]);
+}
+
+#[test]
+fn scalar_key_projection_in_view_context_is_a_collection() {
+    // §12.2: the same lone-scalar-key projection, delivered in view context (a
+    // `$view`), is the 0/1-row view it denotes — one row present, none absent —
+    // never a coerced single row and never a cardinality rejection.
+    let ty = people_type(vec![("name", scalar(Type::Text))]);
+    let rows = vec![krow(1, "a", vec![("name", scell(vtext("Ann")))])];
+    let (scope, env, dot) = one_collection("people", ty, rows);
+
+    let present = check(&scope, r#".people['a'] { id, name }"#)
+        .evaluate_view(&env, &dot)
+        .expect("view-context evaluation must not reject a present key");
+    assert_eq!(
+        rows_fields(&present),
+        vec![vec![("id".to_owned(), vtext("a")), ("name".to_owned(), vtext("Ann"))]]
+    );
+
+    let absent = check(&scope, r#".people['zz'] { id, name }"#)
+        .evaluate_view(&env, &dot)
+        .expect("view-context evaluation must not reject an absent key");
+    assert_eq!(absent, Cell::Collection(Vec::new()));
+}
+
 #[test]
 fn filter_selects_matching_rows() {
     let ty = people_type(vec![("grp", scalar(Type::Text))]);
@@ -295,6 +396,47 @@ fn filter_selects_matching_rows() {
     ];
     let (scope, env, dot) = one_collection("people", ty, rows);
     let result = eval(&scope, &env, &dot, r#".people[:p | p.grp == "L"] { id }"#);
+    assert_eq!(ids(&result, "id"), vec![vtext("a"), vtext("c")]);
+}
+
+#[test]
+fn set_of_refs_selector_matches_targets_by_key_in_canonical_order() {
+    // §6.3: "a set contributes keys in the target collection's canonical order."
+    // §5.6: a ref's application-visible value is its target's current typed key,
+    // so a set of refs seeded out of order ({c, a}) selects rows a then c — the
+    // ref operands compare against the row key by that inner key, not by their
+    // wrapping ref identity.
+    use std::collections::BTreeSet;
+    let acct_row = row_type(vec![("id", scalar(Type::Text))], Some(scalar(Type::Text)));
+    let ref_ty = Type::Ref(RefTarget::Scalar(Box::new(Type::Text)));
+    let root_ty = row_type(
+        vec![
+            ("accounts", view(acct_row)),
+            ("reviewers", scalar(Type::Set(Box::new(ref_ty)))),
+        ],
+        None,
+    );
+    let scope = FixedScope::new(ExprType::Row(root_ty));
+    let mut members = BTreeSet::new();
+    members.insert(Value::Ref(Ref::scalar(vtext("c"))));
+    members.insert(Value::Ref(Ref::scalar(vtext("a"))));
+    let root = keyless_row(
+        0,
+        vec![
+            (
+                "accounts",
+                collection(vec![
+                    krow(1, "a", vec![]),
+                    krow(2, "b", vec![]),
+                    krow(3, "c", vec![]),
+                ]),
+            ),
+            ("reviewers", scell(Value::Set(members))),
+        ],
+    );
+    let dot = Cell::Row(Box::new(root.clone()));
+    let env = FixedEnv::new(root);
+    let result = eval(&scope, &env, &dot, "/accounts[/reviewers] { id }");
     assert_eq!(ids(&result, "id"), vec![vtext("a"), vtext("c")]);
 }
 

@@ -30,6 +30,10 @@ pub(crate) struct EvalCtx<'a> {
     pub(crate) params: BTreeMap<String, Cell>,
     pub(crate) now: Timestamp,
     pub(crate) seed: u64,
+    /// The keyring version-view snapshots (§17.2) an environment answers a
+    /// keyring public selector against, materialized under each ring name in the
+    /// package root. Empty when the package declares no keyring.
+    pub(crate) keyrings: &'a [crate::keyring_view::KeyringSnapshot],
 }
 
 impl EvalCtx<'_> {
@@ -64,6 +68,7 @@ impl EvalCtx<'_> {
             self.now,
             self.seed,
             self.temporal_index(prospective),
+            self.keyrings.to_vec(),
         )
     }
 
@@ -75,6 +80,10 @@ impl EvalCtx<'_> {
     /// forms lifted to `.view_name` resolve here.
     pub(crate) fn root(&self, prospective: &Prospective) -> Row {
         let base = self.base_root(prospective);
+        // §17.2: materialize each declared keyring's version metadata as a keyed
+        // collection under the ring name, before computed values and views, so a
+        // `/ring.$current` selector (and a view reading it) resolves its base.
+        let base = self.expose_keyrings(base);
         let base = self.expose_computed(prospective, base);
         let base = self.expose_root_computed(prospective, base);
         // §15.6: fold the `.<meter>.balance`/`.pools` and `funding` accessor cells
@@ -101,6 +110,7 @@ impl EvalCtx<'_> {
             self.now,
             self.seed,
             temporal,
+            self.keyrings.to_vec(),
         );
         fold_computed(&env, &self.compiled.root_computed, base)
     }
@@ -124,6 +134,7 @@ impl EvalCtx<'_> {
             self.now,
             self.seed,
             temporal,
+            self.keyrings.to_vec(),
         );
         let cells: Vec<(String, Cell)> = base
             .cells()
@@ -139,6 +150,19 @@ impl EvalCtx<'_> {
             })
             .collect();
         Row::new(base.id().clone(), base.key().clone(), cells)
+    }
+
+    /// Fold each declared keyring's version-metadata rows (§17.2) into the
+    /// package-root row as a keyed collection under the ring name, so a keyring
+    /// public selector's base (`/ring`) resolves to the same version rows the
+    /// environment's keyring index classifies. A package with no keyring is
+    /// unchanged.
+    fn expose_keyrings(&self, base: Row) -> Row {
+        let mut root = base;
+        for snapshot in self.keyrings {
+            root = with_cell(root, &snapshot.name, Cell::Collection(snapshot.rows.clone()));
+        }
+        root
     }
 
     fn base_root(&self, prospective: &Prospective) -> Row {
@@ -171,6 +195,7 @@ impl EvalCtx<'_> {
                     self.now,
                     self.seed,
                     temporal.clone(),
+                    self.keyrings.to_vec(),
                 );
                 let current = Cell::Row(Box::new(root.clone()));
                 match view.expr.evaluate(&env, &current) {
@@ -288,7 +313,16 @@ impl EvalCtx<'_> {
         let temporal = Temporal { keep: &keep, interval: &interval };
         let root = materialize::materialize_root_filtered(self.schema, prospective.working(), &temporal);
         let index = self.temporal_index_at(prospective, now);
-        RuntimeEnv::new(root, self.params.clone(), bindings, structurals, now, self.seed, index)
+        RuntimeEnv::new(
+            root,
+            self.params.clone(),
+            bindings,
+            structurals,
+            now,
+            self.seed,
+            index,
+            self.keyrings.to_vec(),
+        )
     }
 
     fn temporal_index_at(&self, prospective: &Prospective, now: Timestamp) -> Vec<Vec<Row>> {
@@ -330,6 +364,20 @@ impl EvalCtx<'_> {
     ) -> Result<Cell, Rejection> {
         let env = self.env_with(prospective, bindings, BTreeMap::new());
         typed.evaluate(&env, current).map_err(Rejection::from)
+    }
+
+    /// [`Self::eval_with`] in view context (§12.2): a keyed selection is delivered
+    /// as the 0/1-row view it denotes rather than coerced to a single row, so a
+    /// no-state-change `return .coll[@k] { … }` query yields a collection (§6.3).
+    pub(crate) fn eval_view_with(
+        &self,
+        prospective: &Prospective,
+        typed: &TypedExpr,
+        current: &Cell,
+        bindings: BTreeMap<String, Cell>,
+    ) -> Result<Cell, Rejection> {
+        let env = self.env_with(prospective, bindings, BTreeMap::new());
+        typed.evaluate_view(&env, current).map_err(Rejection::from)
     }
 
     /// A fully materialized row cell for the row at `address` in the collection

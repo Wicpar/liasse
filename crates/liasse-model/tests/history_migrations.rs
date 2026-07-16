@@ -72,3 +72,40 @@ fn migration_empty_program_rejected() {
     );
     assert!(built.has_code("M-MIGRATE"));
 }
+
+/// §20.1 — a collection MAY carry `$from` to rename an old collection, adopting
+/// its rows ("The same shorthand renames a collection"). The collection-level
+/// `$from` marker must load, not be rejected as an unknown reserved member;
+/// the two-model rename is a runtime concern the model does not evaluate.
+#[test]
+fn collection_from_rename_loads() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.mig.coll@2.0.0",
+            "$model": {
+                "clients": { "$from": "customers", "$key": "id", "id": "text", "name": "text" },
+                "$public": { "clients": { "$view": ".clients { id, name }" } }
+            }
+        }"#,
+    );
+    built.expect_ok();
+}
+
+/// §20.1/§20.2 — the expanded-field mapping form `{ $type, $from, $as, $back }`
+/// loads: the mapping members are accepted structurally and typed by the
+/// (runtime) migration phase, so a target field that adopts and transforms an
+/// old field is not statically rejected.
+#[test]
+fn field_from_as_back_mapping_loads() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.mig.field@2.0.0",
+            "$model": {
+                "rows": {
+                    "$key": "id",
+                    "id": "text",
+                    "encoded": { "$type": "text", "$from": "name", "$as": "base64.encode(string.bytes(.))", "$back": "string.from_bytes(base64.decode(.))" }
+                }
+            }
+        }"#,
+    );
+    built.expect_ok();
+}

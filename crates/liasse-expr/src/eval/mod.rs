@@ -19,7 +19,7 @@ mod views;
 
 use std::collections::BTreeMap;
 
-use liasse_value::{Text, Value};
+use liasse_value::{RefKey, Text, Value};
 
 use crate::env::{Cell, Environment, Row};
 use crate::error::EvalError;
@@ -40,7 +40,38 @@ impl TypedExpr {
         env: &dyn Environment,
         currents: &[Cell],
     ) -> Result<Cell, EvalError> {
-        let mut evaluator = Evaluator {
+        self.evaluator(env, currents).eval(self)
+    }
+
+    /// Evaluate against `env` in *view context*: the result is delivered as a row
+    /// view (a [`Cell::Collection`]), the shape a `$view` declaration returns
+    /// (§12.2). This is the counterpart to [`Self::evaluate`] for the one place a
+    /// selector's cardinality is fixed by the surrounding form rather than the
+    /// expression: a `$view` is a stream, so a scalar/composite-key selection it
+    /// wraps (`.people['a'] { … }`) yields its 0/1-row view — one row when the key
+    /// exists, none when it is absent — never a coerced single row or the one-row
+    /// cardinality rejection [`evaluate`](Self::evaluate) would raise (§6.3). A
+    /// scalar or aggregate view result (`= size(.docs)`) passes through as itself.
+    pub fn evaluate_view(&self, env: &dyn Environment, current: &Cell) -> Result<Cell, EvalError> {
+        self.evaluate_view_scoped(env, std::slice::from_ref(current))
+    }
+
+    /// [`Self::evaluate_view`] with an explicit lexical current chain (§6.2).
+    pub fn evaluate_view_scoped(
+        &self,
+        env: &dyn Environment,
+        currents: &[Cell],
+    ) -> Result<Cell, EvalError> {
+        // §12.2: a scalar/aggregate view is one value, not a row stream; only a
+        // row or view result is collected into the delivered collection.
+        if matches!(self.ty(), ExprType::Scalar(_)) {
+            return self.evaluate_scoped(env, currents);
+        }
+        self.evaluator(env, currents).collect_view(self)
+    }
+
+    fn evaluator<'a>(&self, env: &'a dyn Environment, currents: &[Cell]) -> Evaluator<'a> {
+        Evaluator {
             env,
             frames: currents
                 .iter()
@@ -49,8 +80,7 @@ impl TypedExpr {
                     bindings: BTreeMap::new(),
                 })
                 .collect(),
-        };
-        evaluator.eval(self)
+        }
     }
 }
 
@@ -206,7 +236,7 @@ impl Evaluator<'_> {
     }
 
     /// Resolve a selector to its concatenated matching rows (§6.3).
-    fn select_rows(
+    pub(crate) fn select_rows(
         &mut self,
         base: &TypedExpr,
         selector: &TypedSelector,
@@ -240,11 +270,13 @@ impl Evaluator<'_> {
             match wanted {
                 Value::Set(members) => {
                     for member in &members {
-                        selected.extend(rows.iter().filter(|row| row.key() == member).cloned());
+                        let wanted_key = ref_key_value(member);
+                        selected.extend(rows.iter().filter(|row| row.key() == wanted_key).cloned());
                     }
                 }
                 scalar => {
-                    selected.extend(rows.iter().filter(|row| row.key() == &scalar).cloned());
+                    let wanted_key = ref_key_value(&scalar);
+                    selected.extend(rows.iter().filter(|row| row.key() == wanted_key).cloned());
                 }
             }
         }
@@ -295,5 +327,20 @@ impl Evaluator<'_> {
             }
         }
         Ok(Cell::Scalar(Value::Struct(liasse_value::Struct::new(entries))))
+    }
+}
+
+/// The comparable key value a selector operand denotes (§5.6, §6.3). A ref's
+/// application-visible value is its target's current typed key, so a
+/// scalar-keyed ref compares as that inner scalar against a row's `key()`.
+/// Any non-ref value (or a composite ref, whose components carry no field
+/// names to rebuild the row's named-key struct) compares as itself.
+fn ref_key_value(value: &Value) -> &Value {
+    match value {
+        Value::Ref(reference) => match reference.key() {
+            RefKey::Scalar(inner) => inner,
+            RefKey::Composite(_) => value,
+        },
+        other => other,
     }
 }

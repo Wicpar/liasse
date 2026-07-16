@@ -180,7 +180,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("20-evolution-migrations/migration-program-splits-collection", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/minor-update-narrowing-despite-migration-rejected", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/missing-migration-for-active-source-version-rejected", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/rename-collection-via-from", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/replay-identical-version-update-unchanged", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/reversible-transform-roundtrip-commits", "`host_load` step not driven this phase"),
     ("annex-e-compatibility/downgrade-drops-populated-field-rejected", "`host_load` step not driven this phase"),
@@ -303,9 +302,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("annex-c-grammar/lone-quote-in-data-stores-empty-string", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/member-order-carries-no-semantics", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/plain-object-is-static-struct", "host environment row-field shaping gap (engine invariant)"),
-    // --- hostfault:scalar-card ---
-    ("06-expressions/selector-scalar-key-zero-or-one-row", "scalar row-selector cardinality gap (engine invariant)"),
-    ("07-views/ref-dereference-yields-target-row", "scalar row-selector cardinality gap (engine invariant)"),
     // ========================================================================
     // PACKAGE DOES NOT LOAD YET (UPSTREAM COMPILE/MODEL GAP)
     // The definition fails static validation or seed admission, so the case never
@@ -465,9 +461,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("22-runtime-semantics/confusable-actor-names-provenance-stays-distinct", "outcome divergence: expected `ok` observed `denied`"),
     ("23-host-contract/restart-preserves-identity-values-and-view", "outcome divergence: expected `ok` observed `denied`"),
     // --- fail:valdiff ---
-    ("06-expressions/composite-selector-member-order-irrelevant", "value diverges from expectation"),
-    ("06-expressions/empty-text-key-addressable", "value diverges from expectation"),
-    ("06-expressions/unicode-normalization-distinct-text-keys", "value diverges from expectation"),
     ("08-mutations-validation/replacement-validates-complete-collection", "value diverges from expectation"),
     // --- fail:viewdiff ---
     ("05-state-model/rekey-does-not-run-on-delete", "view result diverges from expectation"),

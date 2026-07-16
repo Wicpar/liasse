@@ -26,6 +26,24 @@ impl Evaluator<'_> {
                 let kept = self.select_bind_scopes(base_scopes, name, condition)?;
                 Ok(kept)
             }
+            TypedKind::Select { base, selector: selector @ TypedSelector::Keys(_) } => {
+                // §6.3: a key selector denotes a row view — zero or one row for a
+                // scalar/composite key, one row per existing set/ref occurrence.
+                // As a view it never coerces to a single row, so an absent key is
+                // an empty stream rather than a cardinality error.
+                let rows = self.select_rows(base, selector)?;
+                Ok(rows.into_iter().map(bare_scope).collect())
+            }
+            TypedKind::Project { source, projection } => {
+                // §7.1 in view context: project over the source's row view. A
+                // scalar/composite-key source that statically types as a single
+                // `Row` is still projected over its 0/1-row view here, so an absent
+                // key yields no rows rather than the one-row cardinality rejection
+                // `eval_select` raises. This is the shape a `$view` declaration
+                // (§12.2) delivers — a collection, never a coerced single row.
+                let rows = self.project_view(source, projection)?;
+                Ok(rows.into_iter().map(bare_scope).collect())
+            }
             _ => match self.eval(expr)? {
                 Cell::Collection(rows) => Ok(rows.into_iter().map(bare_scope).collect()),
                 Cell::Row(row) => Ok(vec![bare_scope(*row)]),
@@ -108,13 +126,25 @@ impl Evaluator<'_> {
             let projected = self.project_row(&RowScope { row: row.clone(), binds: Vec::new() }, projection, None)?;
             return Ok(Cell::Row(Box::new(projected)));
         }
+        Ok(Cell::Collection(self.project_view(source, projection)?))
+    }
+
+    /// Project over the source evaluated as a row view (§7.1), producing the
+    /// output rows without coercing to a single row. Shared by the view-typed
+    /// [`eval_project`] path and the view-context [`eval_view`] projection arm, so
+    /// a scalar/composite-key source projects to its 0/1-row view rather than
+    /// rejecting an absent key.
+    fn project_view(
+        &mut self,
+        source: &TypedExpr,
+        projection: &Projection,
+    ) -> Result<Vec<Row>, EvalError> {
         let scopes = self.eval_view(source)?;
-        let rows = if projection.key.is_empty() {
-            self.project_plain(scopes, projection)?
+        if projection.key.is_empty() {
+            self.project_plain(scopes, projection)
         } else {
-            self.project_grouped(scopes, projection)?
-        };
-        Ok(Cell::Collection(rows))
+            self.project_grouped(scopes, projection)
+        }
     }
 
     fn project_plain(

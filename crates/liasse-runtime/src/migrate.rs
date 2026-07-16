@@ -127,6 +127,10 @@ fn build_migrated<G: crate::generator::Generators>(
         params: BTreeMap::new(),
         now,
         seed: generator.next_seed(),
+        // Migration builds the target's rows; a keyring selector does not
+        // participate in state transforms, so the migrated-state context owns no
+        // keyring index (§20.1).
+        keyrings: &[],
     };
     let root_ty = ExprType::Row(schema.root_row_type());
     let mut sources = SourceMap::new();

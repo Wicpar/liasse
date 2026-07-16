@@ -23,6 +23,19 @@ impl Checker<'_> {
         members: &[BlockMember],
     ) -> Option<TypedExpr> {
         let base = self.check(base)?;
+        // §6.3: a projection carries the cardinality of the row source it maps
+        // over. A base that already denotes a single row — a lone scalar or
+        // composite key selection (`check_select` types it `Row`, per §6.3 line
+        // 700: "one scalar or composite key … one row when it exists") — projects
+        // to that one `Row`, which a one-row-requiring context (a single-row
+        // `return`, a scalar row value, a mutation receiver) renders as an object
+        // and which `eval_select` rejects when zero or several rows occur (§6.3
+        // line 702). A base that denotes a view — a filter (`[:name | …]`), a
+        // multi-key or set/ref selection, or a declared collection view — projects
+        // to a `View`, an ordinary multi-row result. This mirrors §8 (line 1014):
+        // an insertion of exactly one row returns that row (object) while a
+        // multi-row view returns the view (array). The source's own `ExprType`
+        // already encodes the distinction, so the projection simply propagates it.
         let (source_row, is_view) = match base.ty() {
             ExprType::View(row) => (row.clone(), true),
             ExprType::Row(row) => (row.clone(), false),

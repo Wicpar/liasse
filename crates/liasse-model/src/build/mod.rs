@@ -217,6 +217,14 @@ impl<'a> Builder<'a> {
         match member.name.text.as_str() {
             // $key/$unique are consumed where the collection is recognised.
             "$key" | "$unique" => {}
+            // §20.1: a collection MAY carry `$from` to rename an old collection,
+            // adopting its rows ("The same shorthand renames a collection"). This
+            // is the collection-level analogue of the field-level `$from`/`$as`/
+            // `$back` mapping members accepted structurally by the field builder;
+            // the two-model migration phase (a documented seam) types it. Accept
+            // it structurally here so a rename target is not rejected as an
+            // unknown reserved member.
+            "$from" => {}
             "$bucket" => self.buckets.push(RawDecl {
                 path: path.to_vec(),
                 span: member.span,

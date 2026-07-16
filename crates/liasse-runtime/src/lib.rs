@@ -117,6 +117,7 @@ mod generator;
 mod history;
 mod interp;
 mod keyring;
+mod keyring_view;
 mod materialize;
 mod meter;
 mod migrate;

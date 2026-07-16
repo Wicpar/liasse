@@ -156,6 +156,7 @@ fn eval_bound(
         now,
         0,
         Vec::new(),
+        Vec::new(),
     );
     match typed.evaluate(&env, &current)? {
         Cell::Scalar(Value::Timestamp(ts)) => Ok(Some(ts)),
