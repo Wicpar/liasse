@@ -1,0 +1,236 @@
+//! The surface host (SPEC.md §10–§12): the owned state that drives external
+//! requests over a runtime engine.
+//!
+//! A [`SurfaceHost`] owns the engine, the exposed [`SurfaceRouter`], the virtual
+//! clock, the logical connections (each with its subscriptions and the frontier
+//! completion barrier), and the retained operation records. It is plain owned
+//! state with no interior mutability — the future executor drives it
+//! single-threaded, one request at a time — and every external effect flows
+//! through the engine's public admission and view API.
+
+mod barrier;
+mod call;
+
+use std::collections::BTreeMap;
+
+use liasse_runtime::{Engine, EngineError, ViewResult};
+use liasse_store::InstanceStore;
+
+use crate::authn::AuthContext;
+use crate::clock::VirtualClock;
+use crate::connection::Connection;
+use crate::operation::{OperationKey, OperationLog, OperationStatus};
+use crate::outcome::{Denial, DenialReason};
+use crate::reader::EngineReader;
+use crate::request::{Authenticate, AuthSelection};
+use crate::role::Role;
+use crate::router::SurfaceRouter;
+
+/// A transport/host fault — never a spec outcome. A denied or rejected request
+/// is a successful observation of that outcome, returned in the outcome type;
+/// only a broken connection reference or a store fault is a [`SurfaceError`].
+#[derive(Debug, thiserror::Error)]
+pub enum SurfaceError {
+    /// A request named a connection that is not open.
+    #[error("no connection named `{0}` is open")]
+    NoConnection(String),
+    /// A store or engine fault surfaced from admission or a view.
+    #[error(transparent)]
+    Engine(#[from] EngineError),
+}
+
+/// The result of authenticating a context on a connection: bound, or denied.
+#[derive(Debug, Clone)]
+pub enum AuthResult {
+    /// The context verified and is now bound to the connection.
+    Bound,
+    /// Authentication was refused (§11).
+    Denied(Denial),
+}
+
+/// The result of opening a subscription (§12.1 `view`): the initial complete
+/// result at its frontier, or a denial.
+#[derive(Debug, Clone)]
+pub enum Subscription {
+    /// The subscription opened; carries the complete initial result.
+    Init(ViewResult),
+    /// Opening the subscription was refused (§10/§11).
+    Denied(Denial),
+}
+
+/// The owned surface state over one engine.
+pub struct SurfaceHost<S> {
+    engine: Engine<S>,
+    router: SurfaceRouter,
+    clock: VirtualClock,
+    connections: BTreeMap<String, Connection>,
+    operations: OperationLog,
+}
+
+impl<S: InstanceStore> SurfaceHost<S> {
+    /// Build a host over `engine`, exposing `router`, driven by `clock`.
+    #[must_use]
+    pub fn new(engine: Engine<S>, router: SurfaceRouter, clock: VirtualClock) -> Self {
+        Self {
+            engine,
+            router,
+            clock,
+            connections: BTreeMap::new(),
+            operations: OperationLog::new(),
+        }
+    }
+
+    /// The underlying engine, for reading committed state and views directly.
+    #[must_use]
+    pub fn engine(&self) -> &Engine<S> {
+        &self.engine
+    }
+
+    /// The virtual clock, for advancing time and reading the instant (§11.7).
+    pub fn clock_mut(&mut self) -> &mut VirtualClock {
+        &mut self.clock
+    }
+
+    /// Open a logical connection named `id`, its frontier starting at the current
+    /// head (§12).
+    pub fn connect(&mut self, id: impl Into<String>) {
+        let frontier = self.engine.head();
+        self.connections.insert(id.into(), Connection::new(frontier));
+    }
+
+    /// Close connection `id`, dropping its subscriptions.
+    pub fn disconnect(&mut self, id: &str) {
+        self.connections.remove(id);
+    }
+
+    /// The current frontier of connection `id`, if open.
+    #[must_use]
+    pub fn frontier(&self, id: &str) -> Option<liasse_runtime::CommitSeq> {
+        self.connections.get(id).map(Connection::frontier)
+    }
+
+    /// The current cached result of subscription `watch` on connection `id`
+    /// (§12.2), or `None` if the connection/subscription is absent or closed.
+    #[must_use]
+    pub fn read_view(&self, id: &str, watch: &str) -> Option<&ViewResult> {
+        self.connections.get(id)?.watch(watch)?.current()
+    }
+
+    /// The close reason of subscription `watch`, if it has been closed (§12.2).
+    #[must_use]
+    pub fn close_reason(&self, id: &str, watch: &str) -> Option<&str> {
+        self.connections.get(id)?.watch(watch)?.close_reason()
+    }
+
+    /// The retained status of the operation scoped by `key` (§12.3). The
+    /// high-entropy identifier inside `key` is the capability to read it.
+    #[must_use]
+    pub fn operation_status(&self, key: &OperationKey) -> OperationStatus {
+        self.operations.status(key)
+    }
+
+    /// Authenticate a context on connection `id` (§11.4, §11.8): verify the
+    /// selection against committed state, and — on success — retain it for reuse
+    /// on later requests and subscription frontiers.
+    ///
+    /// # Errors
+    /// [`SurfaceError::NoConnection`] if `id` is not open.
+    pub fn authenticate(
+        &mut self,
+        id: &str,
+        request: &Authenticate,
+    ) -> Result<AuthResult, SurfaceError> {
+        if !self.connections.contains_key(id) {
+            return Err(SurfaceError::NoConnection(id.to_owned()));
+        }
+        let now = self.clock.instant();
+        let reader = EngineReader::new(&self.engine, now);
+        let outcome = match self.router.role(request.role()) {
+            Some(role) => self.verify_selection(role, request.selection(), &reader),
+            None => Err(Denial::new(DenialReason::Unresolved, "the address names no exposed role")),
+        };
+        match outcome {
+            Ok(_) => {
+                if let Some(connection) = self.connections.get_mut(id) {
+                    connection.set_context(request.context().to_owned(), request.selection().clone());
+                }
+                Ok(AuthResult::Bound)
+            }
+            Err(denial) => Ok(AuthResult::Denied(denial)),
+        }
+    }
+
+    /// Verify one selection against a role (§11.4): the role must accept the
+    /// named authenticator, and the authenticator must resolve an actor/session.
+    /// Membership is *not* checked here — a resolved context may target several
+    /// roles (§11.8).
+    fn verify_selection(
+        &self,
+        role: &Role,
+        selection: &AuthSelection,
+        reader: &EngineReader<'_, S>,
+    ) -> Result<AuthContext, Denial> {
+        if !role.accepts(selection.auth()) {
+            return Err(Denial::new(
+                DenialReason::AuthenticatorNotAccepted,
+                "the targeted role does not accept this authenticator",
+            ));
+        }
+        let Some(authenticator) = self.router.authenticator(selection.auth()) else {
+            return Err(Denial::new(
+                DenialReason::AuthenticatorNotAccepted,
+                "the named authenticator is not declared",
+            ));
+        };
+        authenticator.resolve(selection.credential(), reader)
+    }
+
+    /// The surfaces granted to connection `id`'s context (§12.1 `manifest`):
+    /// every public surface, plus every role surface whose role accepts the
+    /// context's authenticator and holds its actor. Returns addresses sorted by
+    /// their canonical dotted form.
+    ///
+    /// # Errors
+    /// [`SurfaceError::NoConnection`] if `id` is not open; a store fault from
+    /// re-evaluating membership.
+    pub fn manifest(&self, id: &str, context: Option<&str>) -> Result<Vec<String>, SurfaceError> {
+        let connection = self.connections.get(id).ok_or_else(|| SurfaceError::NoConnection(id.to_owned()))?;
+        let mut surfaces: Vec<String> = self
+            .router
+            .public_surfaces()
+            .map(|name| format!("public.{name}"))
+            .collect();
+        if let Some(selection) = connection.select_context(context) {
+            self.append_role_surfaces(selection, &mut surfaces)?;
+        }
+        surfaces.sort();
+        Ok(surfaces)
+    }
+
+    fn append_role_surfaces(
+        &self,
+        selection: &AuthSelection,
+        surfaces: &mut Vec<String>,
+    ) -> Result<(), SurfaceError> {
+        let now = self.clock.instant();
+        let reader = EngineReader::new(&self.engine, now);
+        let Some(authenticator) = self.router.authenticator(selection.auth()) else {
+            return Ok(());
+        };
+        let Ok(context) = authenticator.resolve(selection.credential(), &reader) else {
+            return Ok(());
+        };
+        for role_name in self.router.role_names() {
+            let Some(role) = self.router.role(role_name) else { continue };
+            if !role.accepts(selection.auth()) {
+                continue;
+            }
+            if role.holds(context.actor().key(), &reader)? {
+                for surface in self.router.role_surfaces(role_name) {
+                    surfaces.push(format!("{role_name}.{surface}"));
+                }
+            }
+        }
+        Ok(())
+    }
+}

@@ -697,6 +697,19 @@ dependencies = [
 [[package]]
 name = "liasse-runtime"
 version = "0.0.1"
+dependencies = [
+ "criterion",
+ "liasse-diag",
+ "liasse-expr",
+ "liasse-host",
+ "liasse-ident",
+ "liasse-model",
+ "liasse-store",
+ "liasse-syntax",
+ "liasse-value",
+ "serde_json",
+ "thiserror",
+]
 
 [[package]]
 name = "liasse-store"
@@ -713,6 +726,16 @@ dependencies = [
 [[package]]
 name = "liasse-surface"
 version = "0.0.1"
+dependencies = [
+ "liasse-diag",
+ "liasse-expr",
+ "liasse-ident",
+ "liasse-model",
+ "liasse-runtime",
+ "liasse-store",
+ "liasse-value",
+ "thiserror",
+]
 
 [[package]]
 name = "liasse-syntax"

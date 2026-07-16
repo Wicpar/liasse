@@ -7,6 +7,16 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+liasse-diag = { path = "../liasse-diag" }
+liasse-value = { path = "../liasse-value" }
+liasse-expr = { path = "../liasse-expr" }
+liasse-model = { path = "../liasse-model" }
+liasse-store = { path = "../liasse-store" }
+liasse-runtime = { path = "../liasse-runtime" }
+thiserror = "2"
+
+[dev-dependencies]
+liasse-ident = { path = "../liasse-ident" }
 
 [lints]
 workspace = true
