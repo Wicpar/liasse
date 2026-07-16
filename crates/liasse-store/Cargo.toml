@@ -7,6 +7,24 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+# Canonical typed keys/values at the storage boundary — never bare strings for
+# identities. Rows are keyed by the Annex B `Value` order these crates define.
+liasse-value = { path = "../liasse-value" }
+liasse-ident = { path = "../liasse-ident" }
+# SHA-512 content hashing for content-addressed blob storage (§18). Same vetted
+# RustCrypto family liasse-ident already uses; never hand-rolled.
+sha2 = "0.10"
+# Lowercase-hex codec to render the computed SHA-512 into the canonical text
+# `liasse_value::Sha512::parse` accepts, matching liasse-value's own choice.
+data-encoding = "2.11"
+thiserror = "2"
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "store_bench"
+harness = false
 
 [lints]
 workspace = true

@@ -7,6 +7,31 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+# The storage contract this crate implements: traits, error taxonomy, and the
+# reusable conformance battery that also drives the in-memory reference.
+liasse-store = { path = "../liasse-store" }
+# Canonical typed keys/values and identities at the storage boundary. The store
+# round-trips these losslessly through JSONB, so the wire codec here is built
+# from these crates' public parse/render surface only.
+liasse-value = { path = "../liasse-value" }
+liasse-ident = { path = "../liasse-ident" }
+# The maintained *synchronous* facade over tokio-postgres. The contract is sync
+# and `&mut`-based (one writer per instance), so the blocking client is the
+# natural fit — no runtime, no async colouring. `with-serde_json-1` gives JSONB
+# columns a `serde_json::Value` binding, matching liasse-value's wire form.
+postgres = { version = "0.19", features = ["with-serde_json-1"] }
+# The wire form of a stored value/address is a `serde_json::Value` tagged tree
+# (self-describing so the schema-free store can decode it back to a typed value).
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+# SHA-512 content hashing for blob storage (§18), and the lowercase-hex codec
+# that renders it into the text `liasse_value::Sha512::parse` accepts — the same
+# vetted RustCrypto family and codec the in-memory reference store uses.
+sha2 = "0.10"
+data-encoding = "2.11"
+
+[dev-dependencies]
+# The integration test drives the shared `liasse_store::contract_tests` battery
+# against a live PostgreSQL instance; no extra harness needed.
 
 [lints]
 workspace = true
