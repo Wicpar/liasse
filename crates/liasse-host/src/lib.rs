@@ -45,6 +45,7 @@
 //! component is modelled as a typed budget-exhausting failure, not a real loop.
 
 mod checked;
+mod conform;
 mod connector;
 mod descriptor;
 mod integrity;
@@ -56,6 +57,7 @@ mod version;
 pub mod sim;
 
 pub use checked::{ConformanceGuard, ConformanceViolation, GuardError};
+pub use conform::{TypeConformance, TypeMismatch};
 pub use connector::{
     BlobConnector, ByteRange, Capability, CapabilityShortfall as ConnectorCapabilityShortfall,
     ConnectorCapabilities, ConnectorFailure, UsageObservation,

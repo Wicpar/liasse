@@ -17,6 +17,7 @@ use serde_json::Value as J;
 use sha2::{Digest as _, Sha512 as Sha512Hasher};
 
 use crate::backend::{backend, cell, corrupt};
+use crate::jsonb_text;
 use crate::projection::{Projection, encode_composition};
 use crate::record_codec::{address_key, encode_op};
 use crate::schema::Schema;
@@ -100,10 +101,13 @@ impl PgStore {
         let next_incarnation =
             i64::try_from(self.projection.next_incarnation()).map_err(|_| corrupt("incarnation counter exceeds i64"))?;
         let transaction_id = transaction.as_ref().map(|t| t.as_str().to_owned());
-        let ops_wire = J::Array(ops.iter().map(encode_op).collect());
+        // `jsonb` cannot hold a raw `U+0000`, which a valid `text` value or key may
+        // carry; make every string leaf NUL-safe before it reaches a jsonb column.
+        let ops_wire = jsonb_text::to_jsonb(&J::Array(ops.iter().map(encode_op).collect()));
         let definition_source = definition.as_ref().map(|d| d.source().to_owned());
         let definition_id = definition.as_ref().map(|d| d.identity().to_canonical_text());
-        let composition_wire = composition.as_ref().map(encode_composition);
+        let composition_wire =
+            composition.as_ref().map(|c| jsonb_text::to_jsonb(&encode_composition(c)));
 
         let mut txn = self.client.transaction().map_err(backend)?;
         // Take the per-instance write lock and read the authoritative head.
@@ -155,7 +159,7 @@ impl PgStore {
                     &format!(
                         "INSERT INTO {schema}.rows (addr_key, incarnation, value) VALUES ($1, $2, $3)"
                     ),
-                    &[&key, &incarnation.as_str(), &value_codec::encode(value)],
+                    &[&key, &incarnation.as_str(), &jsonb_text::to_jsonb(&value_codec::encode(value))],
                 )
                 .map_err(backend)?;
             }
@@ -165,7 +169,7 @@ impl PgStore {
                     &format!(
                         "UPDATE {schema}.rows SET incarnation = $2, value = $3 WHERE addr_key = $1"
                     ),
-                    &[&key, &incarnation.as_str(), &value_codec::encode(value)],
+                    &[&key, &incarnation.as_str(), &jsonb_text::to_jsonb(&value_codec::encode(value))],
                 )
                 .map_err(backend)?;
             }
@@ -189,7 +193,7 @@ impl PgStore {
                     &format!(
                         "INSERT INTO {schema}.rows (addr_key, incarnation, value) VALUES ($1, $2, $3)"
                     ),
-                    &[&to_key, &incarnation.as_str(), &value_codec::encode(value)],
+                    &[&to_key, &incarnation.as_str(), &jsonb_text::to_jsonb(&value_codec::encode(value))],
                 )
                 .map_err(backend)?;
             }

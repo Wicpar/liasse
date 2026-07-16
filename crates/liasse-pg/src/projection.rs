@@ -24,6 +24,7 @@ use postgres::Client;
 use serde_json::{Map, Value as J};
 
 use crate::backend::{backend, cell, corrupt};
+use crate::jsonb_text;
 use crate::record_codec::{decode_address, decode_op};
 use crate::schema::Schema;
 use crate::value_codec;
@@ -62,7 +63,7 @@ impl Projection {
         let definition =
             cell::<Option<String>>(&meta, "instance_meta", "definition_source")?.map(DefinitionText::new);
         let composition = cell::<Option<J>>(&meta, "instance_meta", "composition")?
-            .map(|wire| decode_composition(&wire))
+            .map(|wire| decode_composition(&jsonb_text::from_jsonb(&wire)))
             .transpose()?;
 
         let mut log = Vec::new();
@@ -73,7 +74,7 @@ impl Projection {
             let seq = seq_from(cell::<i64>(&row, "commit_log", "seq")?, "commit_log.seq")?;
             let transaction =
                 cell::<Option<String>>(&row, "commit_log", "transaction_id")?.map(liasse_ident::TransactionId::new);
-            let ops_wire: J = cell(&row, "commit_log", "ops")?;
+            let ops_wire = jsonb_text::from_jsonb(&cell::<J>(&row, "commit_log", "ops")?);
             let ops = ops_wire
                 .as_array()
                 .ok_or_else(|| corrupt("commit_log ops is not an array"))?
@@ -95,7 +96,7 @@ impl Projection {
                 .map_err(|error| corrupt(format!("stored address key is not JSON: {error}")))?;
             let address = decode_address(&wire)?;
             let incarnation = RowIncarnation::new(cell::<String>(&row, "rows", "incarnation")?);
-            let value = value_codec::decode(&cell::<J>(&row, "rows", "value")?)?;
+            let value = value_codec::decode(&jsonb_text::from_jsonb(&cell::<J>(&row, "rows", "value")?))?;
             current.insert(address, StoredRow::new(incarnation, value));
         }
 

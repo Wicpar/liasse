@@ -12,8 +12,9 @@
 
 use std::collections::BTreeMap;
 
-use liasse_value::{Type, Value, ValueError};
+use liasse_value::{Type, Value};
 
+use crate::conform::{TypeConformance, TypeMismatch};
 use crate::descriptor::EffectClass;
 use crate::namespace::{HostNamespace, InvocationFailure};
 
@@ -42,8 +43,10 @@ impl ConformanceGuard {
     /// dependency) is surfaced verbatim as [`GuardError::Invocation`]. A
     /// success is checked two ways:
     ///
-    /// 1. **Type conformance (item 15).** The returned value is re-decoded
-    ///    against the declared result type. A value that does not conform is a
+    /// 1. **Type conformance (item 15).** The returned value's variant is
+    ///    checked structurally against the declared result type. A value whose
+    ///    variant does not match — even one whose canonical wire spelling
+    ///    coincides with the declared type's — is a
     ///    [`ConformanceViolation::OffContractType`] — the component returned an
     ///    off-contract type.
     /// 2. **Effect conformance (items 15/16).** For a function declared `pure`,
@@ -69,9 +72,14 @@ impl ConformanceGuard {
             .invoke(function, args)
             .map_err(GuardError::Invocation)?;
 
-        // (1) The value must conform to the declared result type. A successful
-        // decode against that type is proof of conformance (parse-don't-validate).
-        if let Err(reason) = result_type.decode(&returned.to_wire()) {
+        // (1) The value's VARIANT must match the declared result type. We check
+        // the runtime value's structure directly rather than round-tripping it
+        // through its canonical wire form: distinct types share a wire spelling
+        // (a numeric `text`, a `uuid`, a `date`, an `enum` label all serialise
+        // to a JSON string an `int`/that type would accept), so a wire re-decode
+        // waves a wrong variant through. §16.2 pins a *typed* signature, so the
+        // returned value's type — its variant — is what must conform.
+        if let Err(reason) = result_type.conforms(&returned) {
             return Err(GuardError::Violation(Box::new(
                 ConformanceViolation::OffContractType {
                     function: function.to_owned(),
@@ -139,8 +147,8 @@ pub enum ConformanceViolation {
         declared: Type,
         /// The canonical wire form of the non-conforming value.
         returned: String,
-        /// Why the value failed to decode against the declared type.
-        reason: ValueError,
+        /// The structural discrepancy between the value's variant and the type.
+        reason: TypeMismatch,
     },
 
     /// A `pure` function returned different values for equal arguments

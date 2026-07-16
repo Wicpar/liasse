@@ -38,6 +38,7 @@
 
 mod backend;
 mod factory;
+mod jsonb_text;
 mod projection;
 mod record_codec;
 mod schema;

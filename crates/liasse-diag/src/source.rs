@@ -4,20 +4,45 @@
 
 use crate::span::ByteSpan;
 use core::ops::Range;
+use core::sync::atomic::{AtomicU64, Ordering};
+
+/// The process-unique identity of one [`SourceMap`], stamped into every
+/// [`SourceId`] it issues so an id can be told apart from an equal-looking index
+/// minted by a different map.
+///
+/// This is a plain owned token, not shared mutable state: it is copied by value
+/// into each id and compared by value at lookup. The only global is the
+/// monotone counter that hands out fresh tokens — a factory for unique values,
+/// deliberately kept out of the data model, which stays pure owned values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct MapId(u64);
+
+impl MapId {
+    /// Mints an identity never handed out before in this process.
+    fn mint() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, Ordering::Relaxed))
+    }
+}
 
 /// A stable, cheap-to-copy handle to a source registered in a [`SourceMap`].
 ///
 /// Ids are dense indices assigned in insertion order; they stay valid for the
-/// life of the map (sources are never removed). An id only resolves against the
-/// map that issued it.
+/// life of the map (sources are never removed). An id also carries the identity
+/// of its issuing map, so it only resolves against that map: passed to a
+/// different map, [`SourceMap::get`] returns `None` rather than resolving
+/// against whatever source happens to occupy the same slot.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub struct SourceId(u32);
+pub struct SourceId {
+    map: MapId,
+    index: u32,
+}
 
 impl SourceId {
     /// The raw index, exposed for stable ordering and debugging only.
     #[must_use]
     pub const fn index(self) -> u32 {
-        self.0
+        self.index
     }
 }
 
@@ -106,16 +131,23 @@ impl Source {
 ///
 /// Insertion returns a [`SourceId`] used to locate spans and to render them.
 /// The map owns every source text for the life of a diagnostics session.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceMap {
+    id: MapId,
     sources: Vec<Source>,
 }
 
+impl Default for SourceMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SourceMap {
-    /// An empty registry.
+    /// An empty registry with a fresh, process-unique identity.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        Self { id: MapId::mint(), sources: Vec::new() }
     }
 
     /// Registers a real file and returns its stable id.
@@ -129,14 +161,21 @@ impl SourceMap {
     }
 
     fn insert(&mut self, name: SourceName, text: String) -> SourceId {
-        let id = SourceId(self.sources.len() as u32);
+        let id = SourceId { map: self.id, index: self.sources.len() as u32 };
         self.sources.push(Source { name, text });
         id
     }
 
     /// The source behind `id`, or `None` if `id` was not issued by this map.
+    ///
+    /// An id carries its issuing map's identity, so a foreign id resolves to
+    /// `None` even when its index is in range here — it never quotes an
+    /// unrelated map's text.
     #[must_use]
     pub fn get(&self, id: SourceId) -> Option<&Source> {
+        if id.map != self.id {
+            return None;
+        }
         self.sources.get(id.index() as usize)
     }
 
