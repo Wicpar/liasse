@@ -10,13 +10,20 @@
 
 mod barrier;
 mod call;
+mod components;
 mod history;
 mod operator;
 
+pub use components::{HostComponentError, KeyringErrorOr, VerifyErrorOr};
+
 use std::collections::BTreeMap;
 
+use liasse_host::sim::{SimConnector, SimKeyProvider};
 use liasse_runtime::{Engine, EngineError, Timestamp, ViewResult, ViewRow};
 use liasse_store::InstanceStore;
+
+use crate::blobs::BlobHost;
+use crate::cose::CoseKeyring;
 
 use crate::authn::AuthContext;
 use crate::clock::VirtualClock;
@@ -74,6 +81,16 @@ pub struct SurfaceHost<S> {
     clock: VirtualClock,
     connections: BTreeMap<String, Connection>,
     operations: OperationLog,
+    /// The §17 keyrings composed into this host, by keyring name. A driver
+    /// provisions one per case `$keyring` declaration over a host key provider;
+    /// a `cose.sign`/`cose.verify` call resolves the ring by name here
+    /// (§17.7/§17.8). Empty until a driver registers one.
+    keyrings: BTreeMap<String, CoseKeyring<SimKeyProvider>>,
+    /// The §18 blob hosts composed into this host, by blob-field name. A driver
+    /// provisions one per accepted blob field over registered stores and
+    /// connectors; a blob-parameter mutation resolves it by name at admission.
+    /// Empty until a driver registers one.
+    blobs: BTreeMap<String, BlobHost<SimConnector>>,
 }
 
 impl<S: InstanceStore> SurfaceHost<S> {
@@ -86,6 +103,8 @@ impl<S: InstanceStore> SurfaceHost<S> {
             clock,
             connections: BTreeMap::new(),
             operations: OperationLog::new(),
+            keyrings: BTreeMap::new(),
+            blobs: BTreeMap::new(),
         }
     }
 

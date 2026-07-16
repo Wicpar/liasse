@@ -118,4 +118,22 @@ pub enum ValueError {
 
     #[error("type `{0}` is not eligible as a collection key component (A.8)")]
     NotKeyEligible(&'static str),
+
+    #[error(
+        "calendar-period time zone `{0}` is unavailable: no time-zone database is configured for \
+         this build"
+    )]
+    PeriodZoneUnavailable(String),
+
+    #[error("advancing a timestamp by this period overflows the representable calendar range")]
+    PeriodOutOfRange,
+
+    #[error("a recurrence period must advance strictly beyond the prior boundary (§14.5)")]
+    NonAdvancingPeriod,
+
+    #[error("a finite series bound must be strictly greater than its initial start (§14.5)")]
+    SeriesBoundNotAfterStart,
+
+    #[error("a recurring series exceeded the {0}-period generation bound before its horizon")]
+    SeriesTooLong(usize),
 }

@@ -116,6 +116,15 @@ impl SurfaceCall {
         self
     }
 
+    /// Bind or replace one argument value (§8.3). Used to inject a host-resolved
+    /// parameter — a §18.7 verified blob descriptor — into the call before
+    /// admission.
+    #[must_use]
+    pub fn with_arg(mut self, name: impl Into<String>, value: Value) -> Self {
+        self.args.insert(name.into(), value);
+        self
+    }
+
     /// Attach a per-request authenticator selection (§11.4).
     #[must_use]
     pub fn with_auth(mut self, auth: AuthSelection) -> Self {

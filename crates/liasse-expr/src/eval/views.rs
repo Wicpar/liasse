@@ -64,11 +64,16 @@ impl Evaluator<'_> {
         name: &str,
         condition: &Option<Box<TypedExpr>>,
     ) -> Result<Vec<RowScope>, EvalError> {
+        // §6.4: inside `[:name | condition]`, `.` stays the enclosing receiver and
+        // `name` binds the row under test — a meter source `/pools[:p | p.owner == .]`
+        // compares each pool against the enforcing row `.` (§15.3). Preserve the
+        // outer `.` for the filter rather than rebinding it to the row.
+        let outer = self.current_at(0).unwrap_or_else(|_| Cell::Row(Box::new(Row::keyless(RowId::leaf(0), []))));
         let mut kept = Vec::new();
         for scope in base_scopes {
             let row = scope.row;
             if let Some(cond) = condition {
-                self.push(Cell::Row(Box::new(row.clone())));
+                self.push(outer.clone());
                 // The filter sees every binding the base contributed, then the
                 // new `[:name]` binding for the row under test (§6.4).
                 for (bound, cell) in &scope.binds {

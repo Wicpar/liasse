@@ -141,6 +141,16 @@ impl<C: BlobConnector> BlobHost<C> {
         self.committed.get(digest).map(Blob::stored)
     }
 
+    /// The committed blob's complete descriptor as an application value
+    /// (§18.1), if `digest` is retained — the verified [`liasse_runtime::Value`]
+    /// a §18.7 upload binds to a mutation's blob parameter.
+    #[must_use]
+    pub fn descriptor_value(&self, digest: &str) -> Option<liasse_runtime::Value> {
+        self.committed
+            .get(digest)
+            .map(|blob| liasse_runtime::Value::Blob(Box::new(blob.descriptor().clone())))
+    }
+
     /// Mutable access to a registered connector, for the §18.12 `connector_set`
     /// fault-injection vocabulary a driver scripts (unavailability, corruption, a
     /// tampering read transport).

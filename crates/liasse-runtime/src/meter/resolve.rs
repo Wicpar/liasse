@@ -51,7 +51,12 @@ pub(crate) fn resolve_pools(
     else {
         return Ok(Vec::new());
     };
-    let intervals = interval_index(&enforcing);
+    let mut intervals = interval_index(&enforcing);
+    // §15.1: a pool drawn from a source-backed bucket (§14.4) lives in a root
+    // collection, not the enforcing row's subtree, so its `[from, until)` interval
+    // comes from the derived-row index at the spend instant. The projected pool row
+    // keeps the derived row's identity, so the same key resolves its interval.
+    intervals.extend(ctx.source_bucket_interval_index(prospective, context.time));
     let current = Cell::Row(Box::new(enforcing.clone()));
 
     let mut pools: Vec<Pool> = Vec::new();

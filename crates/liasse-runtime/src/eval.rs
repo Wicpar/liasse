@@ -102,6 +102,11 @@ impl EvalCtx<'_> {
         // collection under the ring name, before computed values and views, so a
         // `/ring.$current` selector (and a view reading it) resolves its base.
         let base = self.expose_keyrings(base);
+        // §14.4–§14.6: materialize each source-backed / recurring bucket collection
+        // from its `$source` view, before meters and views, so a pool source or a
+        // `.collection.$at`/`.$between` read resolves against the derived rows active
+        // at the clock.
+        let base = self.expose_source_buckets(base, self.now);
         let base = self.expose_computed(prospective, base);
         let base = self.expose_root_computed(prospective, base);
         // §15.6: fold the `.<meter>.balance`/`.pools` and `funding` accessor cells
@@ -190,6 +195,93 @@ impl EvalCtx<'_> {
         materialize::materialize_root_filtered(self.schema, prospective.working(), &temporal)
     }
 
+    /// Fold each source-backed / recurring bucket collection (§14.4–§14.6) into
+    /// `base` as a keyed collection cell, materialized from its `$source` view over
+    /// `base` and filtered to the rows active at `now` (§14.1, §15.1). A package
+    /// with no source-backed bucket is unchanged. `base` must not itself carry the
+    /// derived cells (a source view reads stored collections, not derived buckets),
+    /// so this runs on the base root before computed values, meters, and views.
+    fn expose_source_buckets(&self, base: Row, now: Timestamp) -> Row {
+        if self.compiled.source_buckets.is_empty() {
+            return base;
+        }
+        let inputs = self.bucket_inputs(&base, now);
+        let mut root = base.clone();
+        for bucket in &self.compiled.source_buckets {
+            let rows = bucket.materialize(&inputs, now, true);
+            root = with_cell(root, &bucket.name, Cell::Collection(rows));
+        }
+        root
+    }
+
+    /// The materialization inputs for the source-backed buckets: the base root
+    /// (stored collections, no derived cells) plus the request context.
+    fn bucket_inputs<'b>(&'b self, base_root: &'b Row, now: Timestamp) -> crate::source_bucket::BucketInputs<'b> {
+        crate::source_bucket::BucketInputs {
+            base_root,
+            params: &self.params,
+            context: &self.context,
+            now,
+            seed: self.seed,
+            keyrings: self.keyrings,
+        }
+    }
+
+    /// Validate every source-backed bucket's series for admission (§14.5): reject a
+    /// transition that would produce a non-advancing recurrence or a series bound at
+    /// or before its start, for any source row of any derived bucket. Evaluated over
+    /// the prospective state, so an insert, a source edit, or a change to referenced
+    /// period data (a plan's `period`) is caught before commit.
+    pub(crate) fn validate_source_series(&self, prospective: &Prospective) -> Result<(), Rejection> {
+        if self.compiled.source_buckets.is_empty() {
+            return Ok(());
+        }
+        let base = self.expose_keyrings(self.base_root(prospective));
+        let inputs = self.bucket_inputs(&base, self.now);
+        for bucket in &self.compiled.source_buckets {
+            bucket.validate(&inputs)?;
+        }
+        Ok(())
+    }
+
+    /// The full extant derived rows of every source-backed bucket at `now` (§14.2):
+    /// the working set a temporal selector re-derives activity over. Generated up to
+    /// `now` as the horizon for an unbounded recurring series (§14.5).
+    fn source_bucket_extant(&self, base_root: &Row, now: Timestamp) -> Vec<Vec<Row>> {
+        if self.compiled.source_buckets.is_empty() {
+            return Vec::new();
+        }
+        let inputs = self.bucket_inputs(base_root, now);
+        self.compiled
+            .source_buckets
+            .iter()
+            .map(|bucket| bucket.materialize(&inputs, now, false))
+            .collect()
+    }
+
+    /// The `[from, until)` interval of every materialized source-bucket row at
+    /// `now`, keyed by row identity — the index a meter reads to filter and order
+    /// bucketed pools drawn from a source-backed collection (§15.1, §15.2). Each
+    /// derived row carries its `$from`/`$until` cells, so the same identity a
+    /// projected pool row keeps resolves its interval.
+    pub(crate) fn source_bucket_interval_index(
+        &self,
+        prospective: &Prospective,
+        now: Timestamp,
+    ) -> BTreeMap<RowId, Interval> {
+        let mut index = BTreeMap::new();
+        if self.compiled.source_buckets.is_empty() {
+            return index;
+        }
+        let base = self.expose_keyrings(self.base_root(prospective));
+        for rows in self.source_bucket_extant(&base, now) {
+            for row in rows {
+                index.insert(row.id().clone(), materialize::row_interval(&row));
+            }
+        }
+        index
+    }
+
     /// Evaluate each declared view against the root and fold its result into the
     /// root row as a same-named cell (§7.1). Views are resolved to a fixed point
     /// so one view may reference another regardless of declaration order; a view
@@ -236,24 +328,7 @@ impl EvalCtx<'_> {
     /// [`RuntimeEnv`] substitutes when a temporal selector reads a bare bucketed
     /// collection, so `.$all` and a back-dated `.$at` observe inactive rows.
     fn temporal_index(&self, prospective: &Prospective) -> Vec<Vec<Row>> {
-        let keep = |name: &str, fields: &FieldMap| self.active(name, fields);
-        let interval = |name: &str, fields: &FieldMap| self.interval(name, fields);
-        let temporal = Temporal { keep: &keep, interval: &interval };
-        let mut index = Vec::new();
-        for member in &self.schema.model().root().members {
-            if let Node::Collection(collection) = &member.node {
-                let name = member.name.as_str();
-                if self.compiled.bucket(name).is_some() {
-                    index.push(materialize::extant_bucketed_rows(
-                        collection,
-                        name,
-                        prospective.working(),
-                        &temporal,
-                    ));
-                }
-            }
-        }
-        index
+        self.temporal_index_at(prospective, self.now)
     }
 
     /// Whether collection `name`'s row `fields` is currently readable: always for
@@ -265,7 +340,7 @@ impl EvalCtx<'_> {
     /// [`Self::active`] at an explicit instant — the meter pool resolution reads a
     /// bucketed source in the temporal context of the spend (§15.1).
     pub(crate) fn active_at(&self, name: &str, fields: &FieldMap, now: Timestamp) -> bool {
-        match (self.compiled.bucket(name), self.compiled.collection(name)) {
+        match (self.compiled.bucket(name), self.compiled.find_collection(name)) {
             (Some(bucket), Some(collection)) => bucket::is_active(bucket, collection, fields, now),
             _ => true,
         }
@@ -279,7 +354,7 @@ impl EvalCtx<'_> {
 
     /// [`Self::interval`] at an explicit instant (§15.1 spend-time pool context).
     pub(crate) fn interval_at(&self, name: &str, fields: &FieldMap, now: Timestamp) -> Option<Interval> {
-        match (self.compiled.bucket(name), self.compiled.collection(name)) {
+        match (self.compiled.bucket(name), self.compiled.find_collection(name)) {
             (Some(bucket), Some(collection)) => Some(bucket::interval_bounds(bucket, collection, fields, now)),
             _ => None,
         }
@@ -330,6 +405,10 @@ impl EvalCtx<'_> {
         let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
         let temporal = Temporal { keep: &keep, interval: &interval };
         let root = materialize::materialize_root_filtered(self.schema, prospective.working(), &temporal);
+        // §15.1: a meter source reads a bucketed pool in the temporal context of the
+        // spend, so the derived source-bucket collections are materialized (and
+        // active-filtered) at this evaluation instant `now`, not the request clock.
+        let root = self.expose_source_buckets(root, now);
         let index = self.temporal_index_at(prospective, now);
         RuntimeEnv::new(
             root,
@@ -355,6 +434,12 @@ impl EvalCtx<'_> {
                     index.push(materialize::extant_bucketed_rows(collection, name, prospective.working(), &temporal));
                 }
             }
+        }
+        // §14.4–§14.6: a source-backed bucket's full extant interval set is the
+        // working set its `.$at`/`.$between` selector re-derives activity over.
+        if !self.compiled.source_buckets.is_empty() {
+            let base = self.expose_keyrings(self.base_root(prospective));
+            index.extend(self.source_bucket_extant(&base, now));
         }
         index
     }

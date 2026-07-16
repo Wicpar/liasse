@@ -14,9 +14,11 @@ bigdecimal = "0.4.10"
 # 128-bit UUID with byte-lexicographic Ord matching B.1.
 uuid = "1.24"
 # Gregorian civil date with real-calendar validation (parse-don't-validate)
-# and chronological Ord. Only `date` needs a calendar library: `timestamp` and
-# `duration` are signed integer counts per A.5/A.1, not wall-clock library
-# types, so no tzdb is pulled in. jiff is the actively maintained choice.
+# and chronological Ord, plus calendar-period recurrence (§14.7): advancing a
+# timestamp by a zoned calendar step uses jiff's zoned arithmetic. `timestamp`
+# and `duration` themselves remain signed integer counts per A.5/A.1 — only
+# calendar-period arithmetic consults a zone. jiff is the actively maintained
+# choice.
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 # Canonical padded base64 (`bytes`) and lowercase hex (`blob $sha512`) from one
 # crate, RFC 4648, no config surprises.

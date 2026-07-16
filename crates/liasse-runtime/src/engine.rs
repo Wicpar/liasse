@@ -58,7 +58,14 @@ pub(crate) fn compile_definition(definition: &str) -> Result<Compilation, Engine
     let model_doc = doc::member(document.root(), "$model")
         .cloned()
         .ok_or_else(|| EngineError::Internal("definition has no `$model`".to_owned()))?;
-    let compiled = Compiled::build(&mut sources, &model, &model_doc)?;
+    // §4.4: the package's declared `timestamp_precision` governs how a bare
+    // `timestamp` field decodes its wire count; default microseconds when unset.
+    let precision = doc::member(document.root(), "$semantics")
+        .and_then(|semantics| doc::member(semantics, "timestamp_precision"))
+        .and_then(doc::string)
+        .and_then(liasse_value::Precision::parse)
+        .unwrap_or(liasse_value::Precision::DEFAULT);
+    let compiled = Compiled::build(&mut sources, &model, &model_doc, precision)?;
     let data = doc::member(document.root(), "$data").cloned();
     Ok(Compilation { sources, model, compiled, data })
 }
@@ -354,6 +361,9 @@ impl<S: InstanceStore> Engine<S> {
                 .map_err(EngineError::Seed)?;
         }
         crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched).map_err(EngineError::Seed)?;
+        // §14.5: reject seed data whose source-backed recurring bucket would generate
+        // a non-advancing or ill-bounded series.
+        ctx.validate_source_series(&prospective).map_err(EngineError::Seed)?;
         // §15.2: a seeded spend is funded through the same allocation as a mutation.
         crate::meter::admit::enforce(&ctx, &self.compiled.meters, &mut prospective, &touched)
             .map_err(EngineError::Seed)?;
@@ -425,6 +435,13 @@ impl<S: InstanceStore> Engine<S> {
         let receiver = interp.receiver.take();
 
         if let Err(rejection) = crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched) {
+            return Ok(CallOutcome::Rejected(rejection));
+        }
+
+        // §14.5: reject a transition (a source insert/edit, or a change to referenced
+        // period data) that would make a source-backed recurring bucket non-advancing
+        // or ill-bounded.
+        if let Err(rejection) = ctx.validate_source_series(&prospective) {
             return Ok(CallOutcome::Rejected(rejection));
         }
 

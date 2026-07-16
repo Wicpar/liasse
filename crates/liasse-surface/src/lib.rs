@@ -60,6 +60,7 @@ mod binding;
 mod blobs;
 mod clock;
 mod connection;
+mod cose;
 mod host;
 mod keyring;
 mod modules;
@@ -74,6 +75,7 @@ mod window;
 
 pub use address::{AddressError, Authority, SurfaceAddress};
 pub use blobs::{BlobGetOutcome, BlobHost, BlobPutOutcome};
+pub use cose::{CoseKeyring, CoseVerifyError};
 pub use keyring::KeyringAdmin;
 pub use modules::{ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate};
 pub use authn::{
@@ -83,7 +85,10 @@ pub use authn::{
 pub use binding::{CallBinding, SurfaceBinding, ViewBinding};
 pub use clock::VirtualClock;
 pub use connection::{Connection, DEFAULT_CONTEXT};
-pub use host::{AuthResult, Subscription, SurfaceError, SurfaceHost};
+pub use host::{
+    AuthResult, HostComponentError, KeyringErrorOr, Subscription, SurfaceError, SurfaceHost,
+    VerifyErrorOr,
+};
 pub use operation::{OperationKey, OperationLog, OperationStatus, RequestModel};
 pub use outcome::{Completion, Denial, DenialReason, SurfaceOutcome};
 pub use reader::{EngineReader, StateReader};
@@ -108,6 +113,9 @@ pub use liasse_runtime::{
     VersionId, ViewDelta, ViewResult, ViewRow,
 };
 
-/// Re-exported so a driver builds keyring providers, blob connectors, and their
-/// fault-injection scripts without a direct dependency edge on the host crate.
-pub use liasse_host::{BlobConnector, ExternalKeyRef, KeyProvider};
+/// Re-exported so a driver builds keyring providers, blob connectors, cose
+/// claims/tokens, and their fault-injection scripts without a direct dependency
+/// edge on the host crate.
+pub use liasse_host::{
+    cose_descriptor, BlobConnector, CoseClaims, CoseToken, ExternalKeyRef, KeyProvider,
+};

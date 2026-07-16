@@ -54,7 +54,12 @@ impl Checker<'_> {
                 ))
             }
             Selector::Bind { name, condition } => {
-                self.push_frame(ExprType::Row(row.clone()));
+                // §6.4: `[:name | condition]` names the row under test `name`; `.`
+                // inside the filter stays the enclosing receiver (so a meter source
+                // `/pools[:p | p.owner == .]` compares against the enforcing row,
+                // §15.3). Keep the outer `.` and bind only the new name.
+                let outer = self.current_at(0).unwrap_or_else(|| ExprType::Row(row.clone()));
+                self.push_frame(outer);
                 self.bind(name.text.clone(), ExprType::Row(row.clone()));
                 let condition = match condition {
                     Some(cond) => {

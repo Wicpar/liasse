@@ -193,16 +193,38 @@ fn compile_limits(
     let enforcing_ty = schema
         .receiver_row_type(path)
         .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
+    // §15.1: a meter source is evaluated in the temporal context of the spend, so a
+    // recurring source-backed pool (§14.5) is read at a bounded instant, never
+    // enumerated whole. Clear the unbounded marker on each source-bucket view in the
+    // root type used to type meter sources so a bare bucketed pool source type-checks
+    // (the enumeration guard applies to whole reads, not spend-time pool resolution).
+    let bounded_root = bounded_root(root_ty);
     for meter in meters {
         let name = meter.name.text.clone();
         // A meter whose pool source / `$eligible` / `$order` does not re-type in
-        // the runtime scope is a documented seam (§14.5 recurring pools): skip it
-        // rather than fail the package load.
-        if let Ok(compiled) = compile_meter(sources, schema, root_ty, path, &enforcing_ty, &name, &meter.value)
+        // the runtime scope is a documented seam: skip it rather than fail the load.
+        if let Ok(compiled) =
+            compile_meter(sources, schema, &bounded_root, path, &enforcing_ty, &name, &meter.value)
         {
             out.meters.push(compiled);
         }
     }
+}
+
+/// A copy of the package-root row type with the unbounded-recurring marker cleared
+/// on every source-backed bucket view (§14.5). Meter source expressions read a
+/// bucketed pool at the spend instant (§15.1), a bounded read, so the enumeration
+/// guard must not reject them.
+fn bounded_root(root_ty: &ExprType) -> ExprType {
+    let ExprType::Row(root) = root_ty else { return root_ty.clone() };
+    let fields = root.fields().map(|(name, ty)| {
+        let ty = match ty {
+            ExprType::View(row) if row.is_unbounded() => ExprType::View(row.clone().unbounded(false)),
+            other => other.clone(),
+        };
+        (name.clone(), ty)
+    });
+    ExprType::Row(RowType::new(fields, root.key().cloned()))
 }
 
 fn compile_meter(

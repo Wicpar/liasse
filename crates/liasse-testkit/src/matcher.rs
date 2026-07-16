@@ -119,7 +119,7 @@ impl Matcher {
                 None => Err(MatchError::at(path, format!("`$ref:{name}` is not bound"))),
             },
             Self::Absent => Err(MatchError::at(path, "expected member to be absent")),
-            Self::Scalar(expected) => require(expected == observed, path, "literal value mismatch"),
+            Self::Scalar(expected) => require(scalar_equal(expected, observed), path, "literal value mismatch"),
             Self::Array(items) => Self::check_array(items, observed, env, path),
             Self::Unordered(items) => Self::check_unordered(items, observed, env, path),
             Self::Object { members, open } => Self::check_object(members, *open, observed, env, path),
@@ -212,6 +212,39 @@ fn assign_unordered(items: &[Matcher], actual: &[Value], used: &mut [bool], env:
 
 fn require(ok: bool, path: &str, message: &str) -> Result<(), MatchError> {
     if ok { Ok(()) } else { Err(MatchError::at(path, message)) }
+}
+
+/// Whether an expected literal scalar matches an observed one. Exact JSON
+/// equality, widened by one canonicalization: an `int` renders on the wire as a
+/// JSON string of canonical base-10 digits (Annex A.1), but the Annex-B ordering
+/// corpus authors `int` expectations as bare Hjson numbers (`-10`, per that
+/// chapter's `NOTES.md` "Scalar wire forms"). An expected integer *number* and an
+/// observed *string* therefore denote the same `int` value when the string is the
+/// number's canonical base-10 spelling. Both directions are covered so a case may
+/// author either wire form. No other scalar coercion is performed.
+fn scalar_equal(expected: &Value, observed: &Value) -> bool {
+    if expected == observed {
+        return true;
+    }
+    match (expected, observed) {
+        (Value::Number(number), Value::String(text)) | (Value::String(text), Value::Number(number)) => {
+            is_canonical_int_string(text) && number.as_i128().is_some_and(|n| n.to_string() == *text)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `text` is the canonical base-10 spelling of an integer: an optional
+/// leading `-` then digits, with no leading zeros beyond a lone `"0"` and no
+/// `"-0"` (Annex A.1 canonical `int` form).
+fn is_canonical_int_string(text: &str) -> bool {
+    let digits = text.strip_prefix('-').unwrap_or(text);
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let no_leading_zero = digits == "0" || !digits.starts_with('0');
+    let not_negative_zero = !(text.starts_with('-') && digits == "0");
+    no_leading_zero && not_negative_zero
 }
 
 fn is_uuid(value: &Value) -> bool {

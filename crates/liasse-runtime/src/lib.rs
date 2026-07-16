@@ -53,11 +53,18 @@
 //! documented seams. So do the remaining feature families, each blocked on
 //! machinery outside this crate's current reach:
 //!
-//! - **Source-backed and recurring buckets** (§14.4–§14.6): deriving interval
-//!   rows from a `$source` view needs a source-materialization pass, and
-//!   recurring calendar periods need period-to-timestamp arithmetic (zone/DST/
-//!   overflow) that `liasse-value` does not yet expose. Fixed-period recurrence
-//!   is unblocked but not yet built.
+//! - **Source-backed and recurring buckets** (§14.4–§14.6) are implemented
+//!   ([`source_bucket`]): a compiled pass reads each `$source`/`$from`/`$until`/
+//!   `$repeat`/output declaration from the document, and materialization evaluates
+//!   the source view, generates the interval series with `liasse-value`'s period
+//!   arithmetic (`Period::advance`, `recurring_intervals`), and exposes each
+//!   derived row's `$source`/`$from`/`$until`/`$index` bindings. Admission rejects a
+//!   non-advancing or ill-bounded series (§14.5). Remaining seams: a **named
+//!   calendar time zone** needs a tzdb this offline build does not bundle (UTC and
+//!   fixed periods are exact); and a **future window over an unbounded series**
+//!   (`.$between(a, b)` with `b` beyond the read clock) is generated only to the
+//!   read horizon, so far-future periods of an unbounded series are not yet
+//!   enumerated.
 //! - **Meters** (§15) are implemented ([`meter`]): a compiled-meter pass reads
 //!   each `$limits`/`$consumes`/`$sources` declaration from the document (like
 //!   [`compile_buckets`](crate::compiled)); admission funds every new or changed
@@ -67,13 +74,12 @@
 //!   allocation is frozen onto the spend row as an admission fact, so deleting a
 //!   spend releases it and updating it releases and reallocates. The §15.6
 //!   accessors (`.<meter>.balance`/`.pools`, `spend.funding`) are folded onto the
-//!   materialized row tree. Remaining meter seams: **recurring source-backed
-//!   pools** (§14.5, W3's `credit_periods`) need the bucket source/repeat
-//!   derivation; **bucketed pools** need §4.4's declared `timestamp_precision`
-//!   applied to bare `timestamp` fields (a liasse-model gap that misreads a
-//!   seconds bound as microseconds); a meter view that projects a **nested
-//!   collection** (`.accounts { balance }`, `spends: .spends { funding }`) needs a
-//!   richer `ViewRow` than the scalar-only one liasse-surface compares; and a
+//!   materialized row tree. Recurring source-backed pools (§14.5, W3's
+//!   `credit_periods`) are funded through the [`source_bucket`] derivation, and
+//!   §4.4's declared `timestamp_precision` is applied to stored `timestamp` field
+//!   types at compile time so a bucketed pool bound and a spend `$time` compare at
+//!   the intended scale. Remaining meter seams: the **parameterized §15.6
+//!   accessor** (`.<meter>.balance({ $time })`) is context-free only; and a
 //!   **nested-collection surface mutation** (`companies[c].accounts[a].consume`)
 //!   needs the surface lift the runtime cannot reach. Nested-collection seeding
 //!   (§5.5) and nested-collection keyed deletion, both prerequisites, are now
@@ -131,6 +137,7 @@ mod schema;
 mod scope;
 mod seed;
 mod singleton;
+mod source_bucket;
 mod state;
 mod view;
 

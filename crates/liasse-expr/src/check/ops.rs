@@ -165,6 +165,11 @@ impl Checker<'_> {
     ) -> Option<TypedExpr> {
         let left = self.check(lhs)?;
         let right = self.check(rhs)?;
+        // §6.3: comparing a reference to a keyed row compares the ref to the row's
+        // identity key (a subscription's `account` ref against the enforcing account
+        // row, §15.3). Coerce the row side to its key value so the comparison is
+        // between the ref and the row's scalar key.
+        let (left, right) = coerce_ref_row_key(left, right);
         let (lt, rt) = match (left.ty().as_scalar(), right.ty().as_scalar()) {
             (Some(lt), Some(rt)) => (lt, rt),
             _ => return self.error(expr, "only scalar values are comparable"),
@@ -358,6 +363,36 @@ impl Checker<'_> {
 /// which is exactly the case where a key is supplied explicitly (a scalar key
 /// against a scalar-keyed ref, or the composite key tuple against a
 /// composite-keyed ref).
+/// Coerce a ref-vs-keyed-row comparison to a ref-vs-key comparison (§6.3): when
+/// exactly one side is a scalar `ref` and the other a keyed row, replace the row
+/// with its identity key value (`.$key`), so the two compare as a ref against the
+/// target's key type. Any other pairing is returned unchanged.
+fn coerce_ref_row_key(left: TypedExpr, right: TypedExpr) -> (TypedExpr, TypedExpr) {
+    fn key_type(expr: &TypedExpr) -> Option<ExprType> {
+        match expr.ty() {
+            ExprType::Row(row) => row.key().cloned(),
+            _ => None,
+        }
+    }
+    fn to_key(expr: TypedExpr, key: ExprType) -> TypedExpr {
+        let span = expr.span();
+        TypedExpr::new(span, key, TypedKind::Key(Box::new(expr)))
+    }
+    let left_ref = matches!(left.ty().as_scalar(), Some(Type::Ref(_)));
+    let right_ref = matches!(right.ty().as_scalar(), Some(Type::Ref(_)));
+    match (left_ref, right_ref) {
+        (true, false) => match key_type(&right) {
+            Some(key) => (left, to_key(right, key)),
+            None => (left, right),
+        },
+        (false, true) => match key_type(&left) {
+            Some(key) => (to_key(left, key), right),
+            None => (left, right),
+        },
+        _ => (left, right),
+    }
+}
+
 fn comparable(a: &Type, b: &Type) -> bool {
     if a == b {
         return true;

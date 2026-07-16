@@ -147,9 +147,17 @@ impl Evaluator<'_> {
             TypedKind::Current => self.current_at(0),
             TypedKind::Parent(depth) => self.current_at(*depth),
             TypedKind::Param(name) => self.out_of_band(self.env.param(name), "parameter", name),
-            TypedKind::Structural(name) => {
-                self.out_of_band(self.env.structural(name), "structural", name)
-            }
+            TypedKind::Structural(name) => match self.env.structural(name) {
+                // A feature-context binding (`$actor`/`$session`/`$target`, §6.2).
+                Some(cell) => Ok(cell),
+                // §14.4: inside a projection over a source-backed bucket the checker
+                // resolves `$index`/`$from`/`$until`/`$source` from the current row's
+                // structural bindings; the derived row carries them as `$name` cells,
+                // so read them off the current `.` when the environment has no binding.
+                None => self
+                    .row_structural(name)
+                    .ok_or_else(|| EvalError::UnboundName { kind: "structural", name: name.clone() }),
+            },
             TypedKind::Import(name) => self.out_of_band(self.env.import(name), "import", name),
             TypedKind::ScopeBinding(name) => {
                 self.out_of_band(self.env.binding(name), "binding", name)
@@ -187,6 +195,18 @@ impl Evaluator<'_> {
             TypedKind::Keyring { base, selector } => self.eval_keyring(expr, base, *selector),
             TypedKind::BlobMember { base, member } => self.eval_blob_member(base, *member),
         }
+    }
+
+    /// The `$name` structural cell of the nearest enclosing `.` row (§14.4): a
+    /// projection over a source-backed bucket reads the derived row's
+    /// `$from`/`$until`/`$index`/`$source` cells. Mirrors the checker's
+    /// `row_structural`, which types these off the current row's structural shape.
+    fn row_structural(&self, name: &str) -> Option<Cell> {
+        let cell_name = format!("${name}");
+        self.frames.iter().rev().find_map(|frame| match &frame.current {
+            Cell::Row(row) => row.cell(&cell_name).cloned(),
+            _ => None,
+        })
     }
 
     fn out_of_band(

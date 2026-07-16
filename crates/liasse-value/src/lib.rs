@@ -34,6 +34,7 @@ mod error;
 mod int;
 mod json;
 mod period;
+mod recur;
 mod scalars;
 mod temporal;
 mod ty;
@@ -49,6 +50,7 @@ pub use json::Json;
 pub use period::{
     Ambiguous, CalendarPeriod, CalendarPeriodBuilder, Missing, Overflow, Period,
 };
+pub use recur::{recurring_intervals, Interval};
 pub use scalars::{Bytes, Text, Uuid};
 pub use temporal::{Date, Precision, Timestamp};
 pub use ty::{RefTarget, StructType, Type};

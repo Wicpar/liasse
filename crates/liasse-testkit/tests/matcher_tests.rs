@@ -134,3 +134,32 @@ fn resolve_substitutes_bound_refs_in_outgoing_args() {
     let args = json!({"credential": "$ref:tok", "keep": "$ref:unbound"});
     assert_eq!(env.resolve(&args), json!({"credential": "secret", "keep": "$ref:unbound"}));
 }
+
+#[test]
+fn int_number_and_canonical_wire_string_denote_the_same_value() {
+    // Annex A.1 renders `int` as a canonical base-10 JSON string; the Annex-B
+    // ordering corpus authors int expectations as bare numbers (its NOTES.md
+    // "Scalar wire forms"). Both spellings of the same integer must match, in
+    // either authoring direction, including a negative value.
+    assert!(matches(json!(-10), json!("-10")));
+    assert!(matches(json!("-10"), json!(-10)));
+    assert!(matches(json!(0), json!("0")));
+    assert!(matches(json!(100), json!("100")));
+    // Nested inside a row object, as the view assertions deliver it.
+    assert!(matches(json!([{ "id": "d", "n": -10 }]), json!([{ "id": "d", "n": "-10" }])));
+}
+
+#[test]
+fn int_coercion_rejects_non_canonical_and_unequal_forms() {
+    // A non-canonical spelling (leading zero, `+`, negative zero) is not the
+    // canonical int wire form, so it does not coerce.
+    assert!(!matches(json!(10), json!("010")));
+    assert!(!matches(json!(0), json!("-0")));
+    // Different integer values never match across forms.
+    assert!(!matches(json!(2), json!("10")));
+    // A text field that happens to read as digits is not coerced to a number
+    // unless the number equals it exactly (distinct values stay distinct).
+    assert!(!matches(json!("abc"), json!(1)));
+    // A non-integer number is never coerced to a string.
+    assert!(!matches(json!(1.5), json!("1.5")));
+}

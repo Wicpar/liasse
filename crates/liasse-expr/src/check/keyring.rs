@@ -43,6 +43,12 @@ impl Checker<'_> {
             "media" => return self.check_blob_selector(expr, base, BlobMember::Media),
             "name" => return self.check_blob_selector(expr, base, BlobMember::Name),
             other => {
+                // §14.4: a source-backed bucket row exposes its structural bindings
+                // (`$source`/`$from`/`$until`/`$index`) as readable members, so
+                // `p.$source.account` and `pool.$until` resolve off the row.
+                if let Some(typed) = self.check_row_structural_member(expr, base, other) {
+                    return Some(typed);
+                }
                 return self.error(
                     expr,
                     format!(
@@ -55,6 +61,23 @@ impl Checker<'_> {
             }
         };
         self.check_keyring_selector(expr, base, keyring)
+    }
+
+    /// `base.$name` reading a source-backed bucket row's structural binding
+    /// (§14.4): when `base` types as a row exposing structural `name`, the access
+    /// resolves to that binding's value. The derived row carries it as a `$name`
+    /// cell, so this lowers to an ordinary field read of that cell.
+    fn check_row_structural_member(&mut self, expr: &Expr, base: &Expr, name: &str) -> Option<TypedExpr> {
+        let typed = self.check(base)?;
+        let structural = match typed.ty() {
+            ExprType::Row(row) | ExprType::View(row) => row.structural(name)?.clone(),
+            _ => return None,
+        };
+        Some(TypedExpr::new(
+            expr.span,
+            structural,
+            TypedKind::Field { base: Box::new(typed), name: format!("${name}") },
+        ))
     }
 
     /// `base.$key` (§6.3): the identity key value of a bound keyed row. The base

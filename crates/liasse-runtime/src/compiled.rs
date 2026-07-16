@@ -200,6 +200,9 @@ pub(crate) struct Compiled {
     /// [`Engine::view_with`](crate::Engine::view_with), not folded into the root.
     pub(crate) surface_views: Vec<CompiledSurfaceView>,
     pub(crate) buckets: Vec<CompiledBucket>,
+    /// Compiled source-backed / recurring bucket collections (§14.4–§14.6): each
+    /// derives its interval rows from a `$source` view rather than stored state.
+    pub(crate) source_buckets: Vec<crate::source_bucket::CompiledSourceBucket>,
     /// Compiled `$limits`/`$consumes` meter declarations (§15): pool sources,
     /// eligibility, order, and each spend collection's amount/time/metadata.
     pub(crate) meters: crate::meter::CompiledMeters,
@@ -221,17 +224,26 @@ impl Compiled {
         sources: &mut SourceMap,
         model: &Model,
         model_doc: &liasse_syntax::DocValue,
+        precision: liasse_value::Precision,
     ) -> Result<Self, EngineError> {
         let schema = Schema::new(model);
         let root_ty = ExprType::Row(schema.root_row_type());
         let auth = AuthBindings::derive(schema, model_doc);
-        let collections = compile_collections(sources, schema, &root_ty)?;
+        let mut collections = compile_collections(sources, schema, &root_ty)?;
+        // §4.4: apply the declared `timestamp_precision` to every stored `timestamp`
+        // field type, so a seed or mutation decodes a bare wire count at the package
+        // precision (the model keeps the default microsecond precision on field
+        // types). Interval bounds and meter times then compare at the intended scale.
+        for collection in &mut collections {
+            apply_precision(collection, precision);
+        }
         let root_computed = compile_root_computed(sources, schema, &root_ty)?;
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth)?;
         let keyrings = compile_keyrings(schema, model_doc);
-        let views = compile_views(sources, schema, &root_ty, &keyrings)?;
+        let views = compile_views(sources, schema, &root_ty, &keyrings, model_doc)?;
         let surface_views = compile_surface_views(sources, schema, &root_ty, model_doc, &auth);
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc)?;
+        let source_buckets = crate::source_bucket::compile(sources, schema, &root_ty, model_doc)?;
         let meters = crate::meter::compile(sources, schema, &root_ty, model_doc)?;
         Ok(Self {
             collections,
@@ -240,6 +252,7 @@ impl Compiled {
             views,
             surface_views,
             buckets,
+            source_buckets,
             meters,
             keyrings,
             actor_collection: auth.actor.map(|(path, _)| path),
@@ -272,6 +285,28 @@ impl Compiled {
     /// The compiled bucket bounding collection `name`, if it is bucketed.
     pub(crate) fn bucket(&self, name: &str) -> Option<&CompiledBucket> {
         self.buckets.iter().find(|b| b.collection == name)
+    }
+
+    /// The compiled collection named `name` at any depth (§5.4): the top-level
+    /// collection, else the first nested collection of that declaration name. Used
+    /// by the temporal machinery to evaluate a bucketed pool row's interval bounds
+    /// whether the bucket is top-level or a nested meter pool.
+    pub(crate) fn find_collection(&self, name: &str) -> Option<&CompiledCollection> {
+        if let Some(top) = self.collection(name) {
+            return Some(top);
+        }
+        fn descend<'a>(collection: &'a CompiledCollection, name: &str) -> Option<&'a CompiledCollection> {
+            for child in &collection.children {
+                if child.name == name {
+                    return Some(child);
+                }
+                if let Some(found) = descend(child, name) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+        self.collections.iter().find_map(|c| descend(c, name))
     }
 
     /// The compiled surface `$view` at dotted `address` (`public.<name>`,
@@ -340,6 +375,33 @@ fn compile_on_delete(
             Ok(OnDelete::Patch(Box::new(patch)))
         }
         other => Err(EngineError::Internal(format!("unrecognized `$on_delete` policy `{other}`"))),
+    }
+}
+
+/// Rewrite every stored `timestamp` field type of `collection` (and its structs
+/// and nested collections) to the declared package precision (§4.4).
+fn apply_precision(collection: &mut CompiledCollection, precision: liasse_value::Precision) {
+    for field in &mut collection.fields {
+        field.ty = retimestamp(&field.ty, precision);
+    }
+    for structure in &mut collection.structs {
+        for field in &mut structure.fields {
+            field.ty = retimestamp(&field.ty, precision);
+        }
+    }
+    for child in &mut collection.children {
+        apply_precision(child, precision);
+    }
+}
+
+/// A copy of `ty` with every `timestamp` (bare, optional, or set element) carrying
+/// `precision` (§4.4). Non-timestamp types are unchanged.
+fn retimestamp(ty: &Type, precision: liasse_value::Precision) -> Type {
+    match ty {
+        Type::Timestamp(_) => Type::Timestamp(precision),
+        Type::Optional(inner) => Type::Optional(Box::new(retimestamp(inner, precision))),
+        Type::Set(inner) => Type::Set(Box::new(retimestamp(inner, precision))),
+        other => other.clone(),
     }
 }
 
@@ -686,6 +748,7 @@ fn compile_views(
     schema: Schema<'_>,
     root_ty: &ExprType,
     keyrings: &[CompiledKeyring],
+    model_doc: &liasse_syntax::DocValue,
 ) -> Result<Vec<CompiledView>, EngineError> {
     let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone());
     let mut out = Vec::new();
@@ -697,6 +760,12 @@ fn compile_views(
             // its stand-in `.` expression. Skip it so the keyring materializer owns
             // the ring member rather than an evaluated whole-root clone.
             if keyrings.iter().any(|k| k.name == name) {
+                continue;
+            }
+            // §14.4: a source-backed bucket is also projected as a `Node::View`, but
+            // its rows are materialized from its `$source` view (not its placeholder
+            // `.` expression); the source-bucket materializer owns the member.
+            if crate::source_bucket::is_source_bucket(model_doc, name) {
                 continue;
             }
             let (expr, _source) = compile_expr(sources, &scope, "view", &view.expr.text)?;
@@ -739,33 +808,52 @@ fn compile_buckets(
     model_doc: &liasse_syntax::DocValue,
 ) -> Result<Vec<CompiledBucket>, EngineError> {
     let mut out = Vec::new();
-    // Top-level buckets only. A nested bucketed collection (a §15 meter pool such
-    // as bucketed `topups`) is a documented seam: registering it would run the
-    // §14.2 interval check over seeded nested rows, but §4.4's declared
-    // `timestamp_precision` is not applied to bare `timestamp` fields (a
-    // liasse-model gap), so a seconds-valued bound reads as microseconds and a
-    // legitimately future expiry validates as an inverted interval. Until that is
-    // fixed, bucketed meter pools stay a seam rather than reject loading.
+    // Lifecycle buckets at every level (§14.1–§14.2), top-level and nested. A nested
+    // bucketed collection is a §15 meter pool (bucketed `topups`): registering it is
+    // what lets a meter source read only the pool rows active at the spend instant
+    // (§15.1), so each bucketed pool row carries its `$from`/`$until` interval cells.
+    // Source-backed and recurring buckets (`$source`/`$repeat`) are compiled
+    // separately ([`crate::source_bucket`]).
     for member in &schema.model().root().members {
-        if !matches!(&member.node, Node::Collection(_)) {
-            continue;
-        }
-        let name = member.name.as_str().to_owned();
-        let Some(shape) = doc::shape_at(model_doc, std::slice::from_ref(&name)) else {
-            continue;
-        };
-        let Some(bucket_doc) = doc::member(shape, "$bucket") else {
-            continue;
-        };
-        let row_ty = schema
-            .receiver_row_type(std::slice::from_ref(&name))
-            .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
-        let scope = RuntimeScope::new(row_ty, root_ty.clone());
-        if let Some(bucket) = compile_bucket(sources, &scope, &name, bucket_doc)? {
-            out.push(bucket);
+        if let Node::Collection(collection) = &member.node {
+            let path = vec![member.name.as_str().to_owned()];
+            compile_buckets_at(sources, schema, root_ty, model_doc, &path, collection, &mut out)?;
         }
     }
     Ok(out)
+}
+
+/// Compile the `$bucket` of the collection at declaration `path`, then recurse
+/// into its nested collections (§5.4), so a bucketed pool at any depth registers.
+fn compile_buckets_at(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+    model_doc: &liasse_syntax::DocValue,
+    path: &[String],
+    collection: &Collection,
+    out: &mut Vec<CompiledBucket>,
+) -> Result<(), EngineError> {
+    let name = path.last().map_or("", String::as_str);
+    if let Some(shape) = doc::shape_at(model_doc, path)
+        && let Some(bucket_doc) = doc::member(shape, "$bucket")
+    {
+        let row_ty = schema
+            .receiver_row_type(path)
+            .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
+        let scope = RuntimeScope::new(row_ty, root_ty.clone());
+        if let Some(bucket) = compile_bucket(sources, &scope, name, bucket_doc)? {
+            out.push(bucket);
+        }
+    }
+    for member in &collection.shape.members {
+        if let Node::Collection(nested) = &member.node {
+            let mut child = path.to_vec();
+            child.push(member.name.as_str().to_owned());
+            compile_buckets_at(sources, schema, root_ty, model_doc, &child, nested, out)?;
+        }
+    }
+    Ok(())
 }
 
 /// Compile one `$bucket` declaration into its interval expressions, or `None`
