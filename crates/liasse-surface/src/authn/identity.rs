@@ -5,9 +5,23 @@
 //! These types are the resolved result, carried for the request's lifetime and
 //! re-derived from committed state at every admission.
 
-use liasse_runtime::{Timestamp, Value, ViewResult, ViewRow};
+use liasse_runtime::{RefKey, Timestamp, Value, ViewResult, ViewRow};
 
 use crate::reader::StateReader;
+
+/// A value's *application key* (§5.6): a ref's application value is its target's
+/// typed key, so a scalar-keyed ref dereferences to that key; every other value
+/// is its own key. This lets a `$session.account` ref (`Value::Ref`) match the
+/// accounts collection's scalar key when resolving `$actor` (§11.3).
+fn application_key(value: &Value) -> &Value {
+    match value {
+        Value::Ref(reference) => match reference.key() {
+            RefKey::Scalar(inner) => inner,
+            RefKey::Composite(_) => value,
+        },
+        _ => value,
+    }
+}
 
 /// The application row an authenticator selected as `$actor` (§11.3). Identity is
 /// the row's key value; role membership tests compare exactly this identity
@@ -172,9 +186,13 @@ impl RowSource {
     }
 
     fn match_rows(&self, result: &ViewResult, key: &Value) -> RowLookup {
+        // §5.6: compare application keys, so a ref-typed lookup value (a session's
+        // `account`, projected as `Value::Ref`) matches the target collection's
+        // scalar key it dereferences to.
+        let needle = application_key(key);
         let mut found: Option<&ViewRow> = None;
         for row in result.rows() {
-            if row.field(&self.key_field) == Some(key) {
+            if row.field(&self.key_field).map(application_key) == Some(needle) {
                 if found.is_some() {
                     return RowLookup::Ambiguous;
                 }

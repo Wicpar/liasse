@@ -8,6 +8,19 @@
 //! outcome back to the harness vocabulary; the engine decides every spec
 //! question. There is no case-specific special-casing.
 //!
+//! # Instances and sandboxes
+//!
+//! A case drives one *base* instance over its store. An `in_sandbox` group opens
+//! an isolated *sandbox* instance: the executor signals
+//! [`Driver::enter_sandbox`]/[`Driver::exit_sandbox`] around the group, so the
+//! adapter pushes a fresh in-memory instance on entry and pops it on exit — a
+//! §19.10 `restore` inside the group activates that throwaway instance and never
+//! touches the outer one. Both instances are a [`Runtime`], reached through the
+//! store-erased [`Instance`] trait, so every verb is written once. Exported
+//! `.liasse` bytes live in the adapter's [`artifacts`](ScenarioAdapter::artifacts)
+//! table (shared across the sandbox boundary), so an `export` step feeds a later
+//! `import`/`reconcile` step exactly as the §19.5 byte stream is the interchange.
+//!
 //! # Determinism
 //!
 //! The store starts empty, the clock is fixed at the FORMAT.md epoch
@@ -17,34 +30,32 @@
 //!
 //! # This phase's reach
 //!
-//! Public surfaces, calls, and named-view watches route end to end. The long tail
-//! — authenticated/role calls, artifact export/import/reconcile, blob and keyring
-//! operations, module lifecycle, the host-operator entry, restart durability —
-//! needs host wiring or store access the current layer does not expose, so those
-//! [`OpRequest`] kinds report a harness skip (never a panic), leaving the outcome
-//! for the triage loop to harden. Load failures likewise skip every step.
+//! Public surfaces, calls, named-view watches, `export`/`import`/`reconcile`, the
+//! host-operator entry, and §9.2 lifecycle loads route end to end. The long tail —
+//! blob and keyring operations, module lifecycle, full `.liasse` archive assembly
+//! and tampering — still needs host wiring the current layer does not expose, so
+//! those [`OpRequest`] kinds report a harness skip (never a panic), leaving the
+//! outcome for the triage loop to harden. Load failures likewise skip every step.
 
 mod auth;
 mod error;
 pub mod lift;
 mod ops;
 mod router;
+mod runtime;
 mod shape;
 mod wire;
 
-use std::collections::BTreeMap;
-
 use liasse_ident::InstanceId;
-use liasse_runtime::{Engine, Precision, Timestamp};
+use liasse_runtime::{Engine, Precision};
 use liasse_store::{InstanceStore, MemoryStore};
 use liasse_surface::{
-    AuthSelection, Authenticate, Credential, Subscription, SurfaceAddress, SurfaceCall,
-    SurfaceError, SurfaceHost, SurfaceWatch, Window, VirtualClock as SurfaceClock,
+    Authenticate, AuthSelection, Credential, SurfaceHost, Subscription, SurfaceError,
+    Window, VirtualClock as SurfaceClock,
 };
 use liasse_value::{Text, Value};
 
 use crate::case::{Case, PackageSet};
-use crate::clock::VirtualClock;
 use crate::contract::{ConnectRequest, Driver, Observation};
 use crate::id::{ConnectionId, WatchId};
 use crate::outcome::{Completion, Outcome};
@@ -52,6 +63,7 @@ use crate::request::OpRequest;
 
 pub use error::AdapterError;
 use router::Routing;
+use runtime::{Instance, Runtime};
 
 /// Micro-seconds from the Unix epoch to `2026-01-01T00:00:00Z`, the FORMAT.md
 /// virtual-clock start.
@@ -103,7 +115,7 @@ impl StoreProvision for MemoryProvision {
 
 /// A loaded case's live stack: the surface host over the engine, and the routing
 /// tables the adapter decodes arguments against.
-struct Loaded<S: InstanceStore> {
+pub(super) struct Loaded<S: InstanceStore> {
     host: SurfaceHost<S>,
     routing: Routing,
 }
@@ -111,29 +123,44 @@ struct Loaded<S: InstanceStore> {
 /// Either the loaded stack or the reason the package did not load. The loaded
 /// arm is boxed: it holds the whole surface host, far larger than the failure
 /// message.
-enum State<S: InstanceStore> {
+pub(super) enum State<S: InstanceStore> {
     Loaded(Box<Loaded<S>>),
     Failed(String),
+}
+
+/// The wiring a sandbox restore reproduces: the instance incarnation to restore
+/// as (so a restored artifact classifies against the base's history, §19.8), and
+/// the package plus successful surface lift the router rebinds against. Captured
+/// from the base load so a §19.10 restore reconstructs the identical routing over
+/// the artifact's definition.
+struct LoadContext {
+    instance: InstanceId,
+    package: serde_json::Value,
+    lift: lift::SurfaceLift,
 }
 
 /// A [`Driver`] that runs one scenario case against the real runtime and surface
 /// stack over a store the caller provisions (in-memory by default, or any
 /// [`StoreProvision`] backend such as PostgreSQL).
 pub struct ScenarioAdapter<S: InstanceStore> {
-    state: State<S>,
-    /// Which connection each open subscription lives on, so an `expect_view`
-    /// (which names only the subscription) reads the right connection's cache.
-    watch_conns: BTreeMap<String, String>,
-    /// Which open subscriptions watch a singular view (§12.2), so a later
-    /// `expect_view` renders that subscription's result as a JSON object.
-    watch_singular: BTreeMap<String, bool>,
-    /// The connection ids currently open on the host. A §9.2 `host_load` rebuilds
-    /// the host and re-opens these (a lifecycle load does not drop clients),
-    /// while a §22 restart clears them (its volatile connections are dropped).
-    open_connections: std::collections::BTreeSet<String>,
-    /// The adapter-owned virtual clock, used to compute the absolute instant an
-    /// `advance_time` moves the surface clock to.
-    clock: VirtualClock,
+    /// The base instance over the case's store.
+    base: Runtime<S>,
+    /// The stack of open `in_sandbox` instances, each over a throwaway in-memory
+    /// store; the last is the active one.
+    sandboxes: Vec<Runtime<MemoryStore>>,
+    /// The artifact each open sandbox was restored from, parallel to `sandboxes`
+    /// — the shared ancestor an artifact exported inside that sandbox diverged
+    /// from, so a later `reconcile` can name the §19.9 merge base the corpus step
+    /// leaves implicit.
+    sandbox_origins: Vec<Option<String>>,
+    /// Exported `.liasse` bytes by label, shared across the sandbox boundary so an
+    /// `export` feeds a later `import`/`reconcile` (§19.5).
+    artifacts: std::collections::BTreeMap<String, Vec<u8>>,
+    /// The §19.9 merge base of each exported artifact: the shared ancestor it
+    /// diverged from (the sandbox origin at export time), keyed by artifact label.
+    artifact_origin: std::collections::BTreeMap<String, String>,
+    /// The base load's wiring, replayed when a sandbox restores an artifact.
+    load_ctx: LoadContext,
 }
 
 impl ScenarioAdapter<MemoryStore> {
@@ -155,20 +182,33 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
     /// every case in a run.
     #[must_use]
     pub fn build_with<P: StoreProvision<Store = S>>(provision: &mut P, case: &Case) -> Self {
-        let state = match Self::load(provision, case) {
-            Ok(loaded) => State::Loaded(Box::new(loaded)),
-            Err(message) => State::Failed(message),
+        let instance = InstanceId::new(case.name.clone());
+        let (state, load_ctx) = match Self::load(provision, case) {
+            Ok((loaded, package, lift)) => {
+                (State::Loaded(Box::new(loaded)), LoadContext { instance, package, lift })
+            }
+            Err(message) => (
+                State::Failed(message),
+                LoadContext { instance, package: serde_json::Value::Null, lift: lift::SurfaceLift::default() },
+            ),
         };
         Self {
-            state,
-            watch_conns: BTreeMap::new(),
-            watch_singular: BTreeMap::new(),
-            open_connections: std::collections::BTreeSet::new(),
-            clock: VirtualClock::new(),
+            base: Runtime::new(state),
+            sandboxes: Vec::new(),
+            sandbox_origins: Vec::new(),
+            artifacts: std::collections::BTreeMap::new(),
+            artifact_origin: std::collections::BTreeMap::new(),
+            load_ctx,
         }
     }
 
-    fn load<P: StoreProvision<Store = S>>(provision: &mut P, case: &Case) -> Result<Loaded<S>, String> {
+    /// Load the case's root package, returning the loaded stack together with the
+    /// augmented package and the successful surface lift, so a sandbox restore can
+    /// replay the identical wiring.
+    fn load<P: StoreProvision<Store = S>>(
+        provision: &mut P,
+        case: &Case,
+    ) -> Result<(Loaded<S>, serde_json::Value, lift::SurfaceLift), String> {
         let base = root_package(&case.packages).ok_or_else(|| "case declares no package".to_owned())?;
         // §23.5: an operator target is a bare model `$mut` name, which the router
         // resolves only when it backs an exposed surface. Inject a synthetic public
@@ -206,7 +246,7 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
         let mut last_error = None;
         for attempt in attempts {
             match Self::load_with(provision, case, package, &plan, &attempt) {
-                Ok(loaded) => return Ok(loaded),
+                Ok(loaded) => return Ok((loaded, package.clone(), attempt)),
                 Err(error) => last_error = Some(error),
             }
         }
@@ -232,11 +272,13 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
         Ok(Loaded { host, routing })
     }
 
-    fn loaded(&mut self) -> Result<&mut Loaded<S>, AdapterError> {
-        match &mut self.state {
-            State::Loaded(loaded) => Ok(&mut **loaded),
-            State::Failed(message) => Err(AdapterError::LoadFailed(message.clone())),
+    /// The active instance every core verb drives: the top sandbox if one is open,
+    /// otherwise the base.
+    fn active(&mut self) -> &mut dyn Instance {
+        if let Some(sandbox) = self.sandboxes.last_mut() {
+            return sandbox;
         }
+        &mut self.base
     }
 }
 
@@ -244,112 +286,66 @@ impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
     type Error = AdapterError;
 
     fn connect(&mut self, request: ConnectRequest) -> Result<Observation, Self::Error> {
-        let connection = request.connection.to_string();
-        self.open_connections.insert(connection.clone());
-        let loaded = self.loaded()?;
-        loaded.host.connect(connection.clone());
-        // §11.4: bind the authenticated context on the connection so later role
-        // calls run under it. Only the host-free `{ role, auth, credential }`
-        // shape is honored; a payload the wiring does not cover (a host-namespace
-        // verifier, a `$session` flow) leaves the connection unauthenticated, so
-        // a later role call is denied rather than silently admitted. A refused
-        // authentication is not a connect failure — the denial surfaces on the
-        // call the case asserts against.
-        if let Some(request) = request.authenticate.as_ref().and_then(parse_authenticate) {
-            let _ = loaded.host.authenticate(&connection, &request);
-        }
-        Ok(Observation::ok(None))
+        self.active().connect(request)
     }
 
     fn disconnect(&mut self, connection: &ConnectionId) -> Result<Observation, Self::Error> {
-        self.open_connections.remove(&connection.to_string());
-        let loaded = self.loaded()?;
-        loaded.host.disconnect(&connection.to_string());
-        Ok(Observation::ok(None))
+        self.active().disconnect(connection)
     }
 
     fn call(&mut self, request: crate::contract::CallRequest) -> Result<Observation, Self::Error> {
-        let connection = connection_name(request.on.as_ref());
-        let loaded = self.loaded()?;
-        let address = SurfaceAddress::parse(&request.target)
-            .map_err(|err| AdapterError::Host(format!("malformed address `{}`: {err}", request.target)))?;
-        let types = loaded.routing.arg_types(&request.target);
-        let args = wire::decode_args(&request.args, &types);
-        let mut call = SurfaceCall::new(address, args);
-        if let Some(operation_id) = &request.operation_id {
-            call = call.with_operation_id(operation_id.clone());
-        }
-        let outcome = loaded.host.call(&connection, &call).map_err(host_fault)?;
-        Ok(observe_call(&outcome))
+        self.active().call(request)
     }
 
     fn watch(&mut self, request: crate::contract::WatchRequest) -> Result<Observation, Self::Error> {
-        let connection = connection_name(request.on.as_ref());
-        let watch_id = request.id.to_string();
-        let (observation, singular) = match &mut self.state {
-            State::Loaded(loaded) => {
-                let address = SurfaceAddress::parse(&request.target).map_err(|err| {
-                    AdapterError::Host(format!("malformed address `{}`: {err}", request.target))
-                })?;
-                let mut watch = SurfaceWatch::new(address, watch_id.clone());
-                if let Some(window) = request.window.as_ref().and_then(build_window) {
-                    watch = watch.with_window(window);
-                }
-                // §12.2: a singular view (a root/struct projection or an
-                // aggregate) delivers one object; a collection view a row array.
-                let singular = loaded.routing.is_singular_view(&request.target);
-                let subscription = loaded.host.watch(&connection, &watch).map_err(host_fault)?;
-                (observe_subscription(&subscription, singular), singular)
-            }
-            State::Failed(message) => return Err(AdapterError::LoadFailed(message.clone())),
-        };
-        self.watch_conns.insert(watch_id.clone(), connection);
-        self.watch_singular.insert(watch_id, singular);
-        Ok(observation)
+        self.active().watch(request)
     }
 
     fn unwatch(&mut self, id: &WatchId) -> Result<Observation, Self::Error> {
-        self.watch_conns.remove(&id.to_string());
-        self.watch_singular.remove(&id.to_string());
-        Ok(Observation::ok(None))
+        self.active().unwatch(id)
     }
 
     fn read_view(&mut self, id: &WatchId) -> Result<Observation, Self::Error> {
-        let connection = self.watch_conns.get(&id.to_string()).cloned();
-        let watch_id = id.to_string();
-        let singular = self.watch_singular.get(&watch_id).copied().unwrap_or(false);
-        let loaded = self.loaded()?;
-        // A bounded subscription reports its windowed rows; an unbounded one its
-        // full current result, rendered per its §12.2 delivery shape.
-        let value = connection.as_deref().and_then(|conn| {
-            loaded
-                .host
-                .read_window(conn, &watch_id)
-                .map(wire::rows_to_json)
-                .or_else(|| {
-                    loaded.host.read_view(conn, &watch_id).map(|r| wire::view_to_json_shaped(r, singular))
-                })
-        });
-        Ok(Observation::ok(value))
+        self.active().read_view(id)
     }
 
     fn advance_time(
         &mut self,
         duration: &crate::clock::Iso8601Duration,
     ) -> Result<Observation, Self::Error> {
-        let instant = self.clock.advance(duration);
-        let now = Timestamp::new(i128::from(instant.unix_micros()), Precision::Micros);
-        let loaded = self.loaded()?;
-        // §14.1/§22.6: advancing time is not a commit, yet a row leaving its
-        // half-open active interval must re-evaluate every live view at the new
-        // instant. `advance_time` moves both the session-expiry clock (§11.7) and
-        // the engine's bucket clock (§14) and sweeps every open subscription.
-        loaded.host.advance_time(now).map_err(host_fault)?;
-        Ok(Observation::ok(None))
+        self.active().advance_time(duration)
     }
 
     fn restart(&mut self) -> Result<Observation, Self::Error> {
-        self.drive_restart()
+        self.active().restart()
+    }
+
+    fn enter_sandbox(&mut self, _name: &str, fresh: bool) -> Result<(), Self::Error> {
+        // §19.10: an `in_sandbox` group runs on an isolated instance. A `fresh`
+        // group is an independent installation of the case package — its own
+        // genesis and incarnation, so an artifact it exports is `unrelated` to the
+        // base's history (§19.8). Otherwise push an empty slot a `restore` step
+        // activates over a throwaway in-memory store.
+        let state = if fresh {
+            let foreign = InstanceId::new(format!("{}#sandbox{}", self.load_ctx.instance.as_str(), self.sandboxes.len()));
+            match Self::fresh_stack(&self.load_ctx, foreign) {
+                Ok(loaded) => State::Loaded(Box::new(loaded)),
+                Err(message) => State::Failed(message),
+            }
+        } else {
+            State::Failed(
+                "sandbox instance not restored yet (an `in_sandbox` group must `restore` an artifact)".to_owned(),
+            )
+        };
+        self.sandboxes.push(Runtime::new(state));
+        self.sandbox_origins.push(None);
+        Ok(())
+    }
+
+    fn exit_sandbox(&mut self) -> Result<(), Self::Error> {
+        self.sandboxes.pop();
+        self.sandbox_origins.pop();
+        Ok(())
     }
 
     fn op(&mut self, request: &OpRequest) -> Result<Observation, Self::Error> {
@@ -359,7 +355,7 @@ impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
 
 /// The connection a call/watch runs on, defaulting to the implicit single-client
 /// connection when the executor left `on` unset.
-fn connection_name(on: Option<&ConnectionId>) -> String {
+pub(super) fn connection_name(on: Option<&ConnectionId>) -> String {
     on.map_or_else(|| IMPLICIT_CONNECTION.to_owned(), ToString::to_string)
 }
 
@@ -380,7 +376,7 @@ fn root_package(packages: &PackageSet) -> Option<&serde_json::Value> {
 /// and serialize to the definition string the engine loads or updates against.
 /// The initial load and a §9.2 `host_load` share this exact preparation, so both
 /// compile the same wiring. Returns `None` only if serialization fails.
-fn prepared_definition(
+pub(super) fn prepared_definition(
     package: &serde_json::Value,
     plan: &auth::AuthPlan,
     lift: &lift::SurfaceLift,
@@ -414,7 +410,7 @@ fn inject_synthetic_views(package: &mut serde_json::Value, plan: &auth::AuthPlan
 /// request. Only the host-free `{ role, auth, credential }` shape is recognized;
 /// a payload missing any of the three (a session/host-namespace flow) yields
 /// `None`, leaving the connection unauthenticated.
-fn parse_authenticate(payload: &serde_json::Value) -> Option<Authenticate> {
+pub(super) fn parse_authenticate(payload: &serde_json::Value) -> Option<Authenticate> {
     let object = payload.as_object()?;
     let role = object.get("role")?.as_str()?;
     let auth = object.get("auth")?.as_str()?;
@@ -430,7 +426,7 @@ fn parse_authenticate(payload: &serde_json::Value) -> Option<Authenticate> {
 /// row's stable [`RowId`] the same way the view materializer keys it (D.2): the
 /// anchor's canonical key text. The engine then requires that occurrence be
 /// present when the window opens (§12.2).
-fn build_window(spec: &serde_json::Value) -> Option<Window> {
+pub(super) fn build_window(spec: &serde_json::Value) -> Option<Window> {
     let object = spec.as_object()?;
     let size = usize::try_from(object.get("$size")?.as_u64()?).ok()?;
     let slide = object.get("$slide").and_then(serde_json::Value::as_bool).unwrap_or(false);
@@ -449,8 +445,7 @@ fn build_window(spec: &serde_json::Value) -> Option<Window> {
 /// The stable [`RowId`] a concrete window anchor names. A top-level view row is
 /// keyed by its source row's canonical key text (Annex D.2); the anchor carries
 /// that key in wire form, so its [`KeyText`] over a `text` value reproduces the
-/// same identity the view materializer assigns. A key value carrying reserved
-/// characters is escaped identically on both sides through the one D.2 codec.
+/// same identity the view materializer assigns.
 fn anchor_row_id(anchor: &str) -> liasse_expr::RowId {
     let value = Value::Text(Text::new(anchor.to_owned()));
     let text = liasse_ident::KeyText::from_key_values(std::slice::from_ref(&value))
@@ -461,7 +456,7 @@ fn anchor_row_id(anchor: &str) -> liasse_expr::RowId {
 
 /// Render a call outcome to a harness observation, projecting the response value
 /// to canonical strict-JSON and reporting the success completion.
-fn observe_call(outcome: &liasse_surface::SurfaceOutcome) -> Observation {
+pub(super) fn observe_call(outcome: &liasse_surface::SurfaceOutcome) -> Observation {
     use liasse_surface::SurfaceOutcome as S;
     match outcome {
         S::Committed { response, .. } => Observation {
@@ -483,7 +478,7 @@ fn observe_call(outcome: &liasse_surface::SurfaceOutcome) -> Observation {
 
 /// Render a subscription result to a harness observation: the initial view rows
 /// as strict-JSON (an object for a singular view, §12.2), or the refusal class.
-fn observe_subscription(subscription: &Subscription, singular: bool) -> Observation {
+pub(super) fn observe_subscription(subscription: &Subscription, singular: bool) -> Observation {
     match subscription {
         Subscription::Init(result) => Observation::ok(Some(wire::view_to_json_shaped(result, singular))),
         Subscription::Window(rows) => Observation::ok(Some(wire::rows_to_json(rows))),
@@ -493,7 +488,7 @@ fn observe_subscription(subscription: &Subscription, singular: bool) -> Observat
 }
 
 /// Map a surface transport fault to a harness skip.
-fn host_fault(error: SurfaceError) -> AdapterError {
+pub(super) fn host_fault(error: SurfaceError) -> AdapterError {
     AdapterError::Host(error.to_string())
 }
 

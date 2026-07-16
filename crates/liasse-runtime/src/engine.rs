@@ -344,6 +344,8 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: generator.next_seed(),
             keyrings: &snapshots,
+            // §11.1: genesis seeding executes with no actor.
+            context: BTreeMap::new(),
         };
         let mut prospective = Prospective::empty();
         let mut touched = Vec::new();
@@ -382,13 +384,14 @@ impl<S: InstanceStore> Engine<S> {
         };
         let schema = Schema::new(&self.model);
         let snapshots = self.keyring_snapshots();
-        let ctx = EvalCtx {
+        let mut ctx = EvalCtx {
             schema,
             compiled: &self.compiled,
             params,
             now: self.clock,
             seed: generator.next_seed(),
             keyrings: &snapshots,
+            context: BTreeMap::new(),
         };
 
         let receiver = match receiver_target(&self.compiled, mutation, request) {
@@ -397,6 +400,12 @@ impl<S: InstanceStore> Engine<S> {
         };
 
         let mut prospective = Prospective::gather(&self.store, schema)?;
+        // §11.1: an authenticated admission binds `$actor` (and `$session`, when
+        // the authenticator declared one) to the row the request resolved, so the
+        // program reads them. The row is re-materialized from committed state by
+        // key at this admission position (§10.3, §11.3), not carried from the
+        // authenticator, so a state change since resolution is observed.
+        ctx.context = auth_context(&self.compiled, &ctx, &prospective, request);
         let mut interp = Interp {
             compiled: &self.compiled,
             ctx: &ctx,
@@ -487,6 +496,9 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: 0,
             keyrings: &keyrings,
+            // A named-view read carries no actor; a role view's `$actor` filter is
+            // applied by the surface layer, not here (§11.1).
+            context: BTreeMap::new(),
         };
         let current = Cell::Row(Box::new(ctx.root(&prospective)));
         let env = ctx.env(&prospective);
@@ -510,6 +522,34 @@ impl<S: InstanceStore> Engine<S> {
 
 fn rejected(reason: RejectionReason, message: impl Into<String>) -> CallOutcome {
     CallOutcome::Rejected(Rejection::new(reason, message))
+}
+
+/// The request-scoped `$actor`/`$session` structural cells an authenticated
+/// admission binds (§11.1). Each is the row the request's resolved key names,
+/// re-materialized from committed state at the admission position (§10.3) as the
+/// same read-facing row cell a receiver observes. A key that resolves no live row
+/// (a race with a concurrent delete) binds nothing, so a program that reads the
+/// binding faults exactly as an unbound structural — fail closed (§6.3).
+fn auth_context(
+    compiled: &Compiled,
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+    request: &CallRequest,
+) -> BTreeMap<String, Cell> {
+    let mut context = BTreeMap::new();
+    let mut bind = |name: &str, path: &Option<Vec<String>>, key: Option<&liasse_value::Value>| {
+        let (Some(path), Some(key)) = (path, key) else { return };
+        let address = crate::materialize::top_address(
+            &path.join("/"),
+            liasse_store::KeyValue::single(key.clone()),
+        );
+        if let Some(cell) = ctx.materialize_row_cell(prospective, path, &address) {
+            context.insert(name.to_owned(), cell);
+        }
+    };
+    bind("actor", &compiled.actor_collection, request.actor_key());
+    bind("session", &compiled.session_collection, request.session_key());
+    context
 }
 
 /// Bind each declared parameter to its supplied argument (§8.3).

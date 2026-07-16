@@ -20,7 +20,7 @@ use crate::report::Reporter;
 use crate::resolve::Resolver;
 use crate::state::{Node, Shape};
 use crate::surface::{check_surfaces, Surface};
-use crate::{auth, blob, bucket, check, delete, meter, migration, seed};
+use crate::{auth, blob, bucket, check, delete, infer, meter, migration, seed};
 
 /// A statically valid Liasse package model.
 #[derive(Debug, Clone)]
@@ -73,6 +73,11 @@ impl Model {
         refs::resolve(&mut reporter, &mut root);
 
         let resolver = Resolver::new(&build.types);
+        // §5.1/§5.2: refine each model-root computed value's placeholder `json`
+        // type from its expression before the tree check, so a reference `.name`
+        // resolves to the value's real type (a `bool` condition, an `int` operand)
+        // rather than the widest `json`. Diagnostics are the tree check's job.
+        infer::root_computed_types(sources, &resolver, &mut root);
         check::check_tree(&mut reporter, sources, &resolver, &root);
         let mutations = check_mutations(
             &mut reporter,

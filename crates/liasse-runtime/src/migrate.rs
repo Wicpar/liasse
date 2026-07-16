@@ -131,6 +131,8 @@ fn build_migrated<G: crate::generator::Generators>(
         // participate in state transforms, so the migrated-state context owns no
         // keyring index (§20.1).
         keyrings: &[],
+        // A migration transform runs with no actor (§11.1).
+        context: BTreeMap::new(),
     };
     let root_ty = ExprType::Row(schema.root_row_type());
     let mut sources = SourceMap::new();

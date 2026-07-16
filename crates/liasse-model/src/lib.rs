@@ -60,6 +60,7 @@ mod delete;
 mod doc;
 mod header;
 mod history;
+mod infer;
 mod keyring;
 mod meter;
 mod migration;

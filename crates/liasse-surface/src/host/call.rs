@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use liasse_runtime::{CallOutcome, CallRequest, CommitSeq, Rejection, RejectionReason, Value};
 use liasse_store::InstanceStore;
 
+use crate::authn::AuthContext;
 use crate::binding::CallBinding;
 use crate::connection::{Connection, DEFAULT_CONTEXT};
 use crate::operation::{Dedup, OperationKey, RequestModel};
@@ -37,15 +38,16 @@ impl<S: InstanceStore> SurfaceHost<S> {
         if !self.connections.contains_key(id) {
             return Err(SurfaceError::NoConnection(id.to_owned()));
         }
-        let (binding, auth_name) = match self.resolve_call(id, call) {
+        let (binding, context) = match self.resolve_call(id, call) {
             Ok(pair) => pair,
             Err(denial) => return Ok(SurfaceOutcome::Denied(denial)),
         };
-        let (request, model) = match Self::build_request(&binding, call.args()) {
+        let (request, model) = match Self::build_request(&binding, call.args(), context.as_ref()) {
             Ok(pair) => pair,
             Err(rejection) => return Ok(SurfaceOutcome::Rejected(rejection)),
         };
 
+        let auth_name = context.as_ref().map(|c| c.auth_name().to_owned());
         let op_key = call
             .operation_id()
             .map(|opid| OperationKey::new(call.address().surface_prefix(), auth_name.clone(), opid));
@@ -126,17 +128,18 @@ impl<S: InstanceStore> SurfaceHost<S> {
         Ok(frontier)
     }
 
-    /// Resolve a call's target binding and the authenticator that admitted it
-    /// (the op-scope authenticator, `None` for a public call).
-    fn resolve_call(&self, id: &str, call: &SurfaceCall) -> Result<(CallBinding, Option<String>), Denial> {
+    /// Resolve a call's target binding and the authenticated context that admitted
+    /// it (`None` for a public call — no actor is introduced, §11.1). The context
+    /// carries the resolved `$actor`/`$session` the runtime binds for the program.
+    fn resolve_call(&self, id: &str, call: &SurfaceCall) -> Result<(CallBinding, Option<AuthContext>), Denial> {
         match self.router.resolve(call.address())? {
             Resolved::PublicCall(binding) => Ok((binding.clone(), None)),
             Resolved::RoleCall { role, binding } => {
                 let selection = self.call_selection(id, call)?;
                 let now = self.clock.instant();
                 let reader = EngineReader::new(&self.engine, now);
-                let auth_name = self.authorize_role(role, &selection, &reader)?;
-                Ok((binding.clone(), Some(auth_name)))
+                let context = self.authorize_role(role, &selection, &reader)?;
+                Ok((binding.clone(), Some(context)))
             }
             Resolved::PublicView(_) | Resolved::RoleView { .. } => {
                 Err(Denial::new(DenialReason::Unresolved, "the address targets a view, not a call"))
@@ -163,19 +166,20 @@ impl<S: InstanceStore> SurfaceHost<S> {
     }
 
     /// Verify a selection and confirm role membership at admission (§10.3, §11.4),
-    /// returning the admitting authenticator name.
+    /// returning the fully resolved [`AuthContext`] (actor, session, authenticator)
+    /// so the caller can bind `$actor`/`$session` for the admitted program (§11.1).
     pub(super) fn authorize_role(
         &self,
         role: &Role,
         selection: &AuthSelection,
         reader: &EngineReader<'_, S>,
-    ) -> Result<String, Denial> {
+    ) -> Result<AuthContext, Denial> {
         let context = self.verify_selection(role, selection, reader)?;
         let member = role
             .holds(context.actor().key(), reader)
             .map_err(|_| Denial::new(DenialReason::NotAMember, "membership is unreadable"))?;
         if member {
-            Ok(context.auth_name().to_owned())
+            Ok(context)
         } else {
             Err(Denial::new(DenialReason::NotAMember, "the actor is not a member of the role"))
         }
@@ -186,8 +190,18 @@ impl<S: InstanceStore> SurfaceHost<S> {
     pub(super) fn build_request(
         binding: &CallBinding,
         args: &BTreeMap<String, Value>,
+        context: Option<&AuthContext>,
     ) -> Result<(CallRequest, RequestModel), Rejection> {
         let mut request = CallRequest::new(binding.mutation());
+        // §11.1/§11.3: an authenticated call carries its resolved `$actor` (and
+        // `$session`, when the authenticator declared one) so the runtime binds
+        // them for the program. A public call carries neither.
+        if let Some(context) = context {
+            request = request.actor(context.actor().key().clone());
+            if let Some(session) = context.session() {
+                request = request.session(session.key().clone());
+            }
+        }
         let mut receiver = Vec::new();
         for name in binding.receiver() {
             let Some(value) = args.get(name) else {

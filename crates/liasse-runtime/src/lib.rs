@@ -164,4 +164,4 @@ pub use view::{ViewDelta, ViewResult, ViewRow};
 /// Re-exported so callers build typed requests and read outcomes without a
 /// direct dependency edge on the value and store crates.
 pub use liasse_store::CommitSeq;
-pub use liasse_value::{Precision, Timestamp, Value};
+pub use liasse_value::{Precision, RefKey, Timestamp, Value};

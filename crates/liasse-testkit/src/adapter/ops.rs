@@ -1,213 +1,204 @@
-//! Driving the registry and chapter-local [`OpRequest`] steps over the engine.
+//! Dispatching the registry and chapter-local [`OpRequest`] steps.
 //!
-//! The core client verbs (`connect`/`call`/`watch`/…) route through the surface
-//! host; the op steps here reach past it to the durable engine (§9, §20, §22).
-//! Two need only the volatile-state handoff [`SurfaceHost::into_parts`] exposes:
-//! a `restart` rebuilds a fresh host over the same engine (§22), and a
-//! `host_load` re-loads a new package version through [`Engine::update`] (§9.2,
-//! §20) and rebinds the router to the reloaded model. A §23.5 `operator`
-//! transition also drives on this host: the load pass exposes every top-level
-//! `$mut` through a synthetic public surface so [`SurfaceHost::operator_call`]
-//! resolves the corpus's bare model-mutation name. Every other op family — module
-//! lifecycle, blobs, keyrings, export/import/reconcile, artifacts — hits a genuine
-//! adapter/surface seam ([`unsupported_reason`] names each precisely), so it stays
-//! a precise [`AdapterError::unsupported`] skip (never a fabricated outcome) for a
-//! later phase to wire.
+//! The core client verbs (`connect`/`call`/`watch`/…) route through the active
+//! instance's surface host ([`Instance`]); the op steps here are the ones that
+//! either reach a §19 host operation or a family the current layer does not wire.
+//! `export`/`import`/`reconcile` move `.liasse` bytes through the adapter's shared
+//! [`artifacts`](super::ScenarioAdapter::artifacts) table; `restore` activates an
+//! isolated sandbox instance from an artifact (§19.10); `host_load` and `operator`
+//! drive on the active instance. Every remaining family ([`unsupported_reason`]
+//! names each precisely) stays a precise [`AdapterError::unsupported`] skip.
 
-use liasse_store::InstanceStore;
+use liasse_runtime::{Engine, ImportRelation, Precision};
+use liasse_store::{InstanceStore, MemoryStore};
 use liasse_surface::{SurfaceHost, VirtualClock as SurfaceClock};
 
 use crate::contract::Observation;
-use crate::outcome::{Completion, Outcome};
+use crate::outcome::Outcome;
 use crate::request::OpRequest;
 use crate::step_kind::StepKind;
 
-use super::auth::AuthPlan;
-use super::lift::SurfaceLift;
-use super::{AdapterError, Loaded, State};
+use super::{auth::AuthPlan, router, AdapterError, Loaded, EPOCH_MICROS};
 
 impl<S: InstanceStore> super::ScenarioAdapter<S> {
-    /// Take the loaded stack out of `state`, leaving a sentinel failure in its
-    /// place. The caller must restore a `Loaded` state before returning, or every
-    /// later step skips with the sentinel — used to move the owned host through
-    /// [`SurfaceHost::into_parts`].
-    fn take_loaded(&mut self) -> Result<Loaded<S>, AdapterError> {
-        let taken = std::mem::replace(&mut self.state, State::Failed("stack in transit".to_owned()));
-        match taken {
-            State::Loaded(loaded) => Ok(*loaded),
-            State::Failed(message) => {
-                self.state = State::Failed(message.clone());
-                Err(AdapterError::LoadFailed(message))
-            }
-        }
-    }
-
-    /// Restore the loaded stack after a handoff.
-    fn restore(&mut self, loaded: Loaded<S>) {
-        self.state = State::Loaded(Box::new(loaded));
-    }
-
-    /// §22 restart/durability: tear the running host down and rebuild a fresh one
-    /// over the same engine, router, and clock. Committed state survives; the
-    /// volatile connections, subscriptions, and operation records are dropped, so
-    /// the adapter forgets its open connections — a later step must reconnect.
-    pub(super) fn drive_restart(&mut self) -> Result<Observation, AdapterError> {
-        let loaded = self.take_loaded()?;
-        let routing = loaded.routing;
-        let (engine, router, clock) = loaded.host.into_parts();
-        self.restore(Loaded { host: SurfaceHost::new(engine, router, clock), routing });
-        self.open_connections.clear();
-        Ok(Observation::ok(None))
-    }
-
-    /// Re-open every tracked connection on the current host at its head frontier —
-    /// a §9.2 host lifecycle load rebuilds the host but does not drop clients, so
-    /// a connection open before the load still resolves after it.
-    fn reopen_connections(&mut self) {
-        let ids: Vec<String> = self.open_connections.iter().cloned().collect();
-        if let State::Loaded(loaded) = &mut self.state {
-            for id in ids {
-                loaded.host.connect(id);
-            }
-        }
-    }
-
-    /// Dispatch a non-core op step to its engine driver, or report a precise skip
-    /// for a family the current layer does not wire.
+    /// Dispatch a non-core op step to its driver, or report a precise skip for a
+    /// family the current layer does not wire.
     pub(super) fn drive_op(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
         match request.kind {
+            StepKind::Export => self.drive_export(request),
+            StepKind::Import => self.drive_import(request),
+            StepKind::Reconcile => self.drive_reconcile(request),
+            StepKind::Restore => self.drive_restore(request),
             StepKind::HostLoad => self.drive_host_load(request),
-            StepKind::Operator => self.drive_operator(request),
+            StepKind::Operator => self.active().operator(&request.target),
             _ => Err(AdapterError::unsupported(unsupported_reason(&request.kind))),
         }
     }
 
-    /// §23.5 trusted host-operator transition: admit a model mutation directly,
-    /// bypassing surface role authentication, through [`SurfaceHost::operator_call`].
-    ///
-    /// The corpus addresses the target by its bare model `$mut` name (`try_write`),
-    /// but `operator_call` resolves through the exposed router, which only routes
-    /// surface-declared mutations. The load pass injects a synthetic public surface
-    /// [`OPERATOR_SURFACE`](super::OPERATOR_SURFACE) that exposes every top-level
-    /// `$mut` as a call, so a bare root-mutation name resolves as
-    /// `public.<surface>.<mut>`. A collection-row target (`users.u1.spend`) names a
-    /// receiver the synthetic surface does not carry, so it stays a precise skip.
-    fn drive_operator(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
-        let Some(call_name) = request.target.get("call").and_then(serde_json::Value::as_str) else {
-            return Err(AdapterError::unsupported("`operator` step carries no `call` mutation name"));
+    /// §19.5 `export`: capture the active instance's committed boundary as verified
+    /// `.liasse` bytes and hold them under the step's `as` label, so a later
+    /// `import`/`reconcile` consumes them. When the export runs inside a sandbox,
+    /// its §19.9 merge base is the artifact the sandbox was restored from — the
+    /// shared ancestor the exported point diverged from — recorded here so a later
+    /// `reconcile` can name the base the corpus step leaves implicit.
+    fn drive_export(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let Some(label) = request.target.get("as").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`export` step carries no `as` label"));
         };
-        if call_name.contains('.') {
+        let label = label.to_owned();
+        let bytes = self.active().export()?;
+        if let Some(Some(origin)) = self.sandbox_origins.last() {
+            self.artifact_origin.insert(label.clone(), origin.clone());
+        }
+        self.artifacts.insert(label, bytes);
+        Ok(Observation::ok(None))
+    }
+
+    /// §19.8 `import`: classify the named artifact against the active instance's
+    /// history and, when the movement policy permits, activate it.
+    fn drive_import(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let bytes = self.artifact_bytes(&request.target, "import")?;
+        let policy = movement_policy(&request.target);
+        self.active().import(&bytes, &policy)
+    }
+
+    /// §19.9 `reconcile`: compute the three-way merge of the named incoming
+    /// artifact against the active instance's live state. The merge base is the
+    /// shared ancestor the incoming diverged from — the artifact the incoming's
+    /// producing sandbox was restored from — which the corpus step leaves implicit.
+    fn drive_reconcile(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let incoming = self.artifact_bytes(&request.target, "reconcile")?;
+        let Some(from) = request.target.get("from").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`reconcile` step carries no `from` artifact label"));
+        };
+        let Some(base) = self.artifact_origin.get(from).and_then(|origin| self.artifacts.get(origin)).cloned()
+        else {
             return Err(AdapterError::unsupported(
-                "`operator` on a collection-row mutation (`path.key.mut`) needs the receiver-row \
-                 wiring the synthetic operator surface does not carry",
+                "`reconcile` base artifact (the shared ancestor the incoming diverged from) is not in \
+                 scope: the incoming was not produced by a restored sandbox",
+            ));
+        };
+        let policy = movement_policy(&request.target);
+        self.active().reconcile(&base, &incoming, &policy)
+    }
+
+    /// §19.10 `restore`: activate the current sandbox instance over a throwaway
+    /// in-memory store from a verified artifact. Verification (§19.8) runs first,
+    /// so a tampered artifact observes `invalid` and no instance is activated. The
+    /// restored instance takes the base incarnation and its genesis lineage, so an
+    /// artifact it later exports classifies against the base's history.
+    fn drive_restore(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        if self.sandboxes.is_empty() {
+            return Err(AdapterError::unsupported(
+                "`restore` activates an isolated instance and is only driven inside an `in_sandbox` group",
             ));
         }
-        let args = request.target.get("args").cloned().unwrap_or(serde_json::Value::Null);
-        let address_text = format!("{}.{call_name}", super::OPERATOR_SURFACE_PREFIX);
-        let loaded = self.loaded()?;
-        let address = liasse_surface::SurfaceAddress::parse(&address_text).map_err(|err| {
-            AdapterError::Host(format!("malformed operator address `{address_text}`: {err}"))
-        })?;
-        let types = loaded.routing.arg_types(&address_text);
-        let decoded = super::wire::decode_args(&args, &types);
-        let call = liasse_surface::SurfaceCall::new(address, decoded);
-        let outcome = loaded.host.operator_call(&call).map_err(super::host_fault)?;
-        Ok(super::observe_call(&outcome))
+        let bytes = self.artifact_bytes(&request.target, "restore")?;
+        let Some(from) = request.target.get("from").and_then(serde_json::Value::as_str).map(ToOwned::to_owned)
+        else {
+            return Err(AdapterError::unsupported("`restore` step carries no `from` artifact label"));
+        };
+        let loaded = match Self::restore_stack(&self.load_ctx, &bytes) {
+            Ok(Some(loaded)) => loaded,
+            Ok(None) => return Ok(Observation::outcome(Outcome::Invalid)),
+            Err(error) => return Err(error),
+        };
+        let Some(top) = self.sandboxes.last_mut() else {
+            return Err(AdapterError::unsupported("`restore` requires an open `in_sandbox` group"));
+        };
+        top.install(loaded);
+        if let Some(origin) = self.sandbox_origins.last_mut() {
+            *origin = Some(from);
+        }
+        Ok(Observation::ok(None))
+    }
+
+    /// Build a sandbox stack by restoring a verified artifact over a fresh
+    /// in-memory store at the base incarnation, replaying the base wiring. `Ok(None)`
+    /// is a failed §19.8 verification (an `invalid` observation); `Err` is a harness
+    /// fault (the base package's router could not be rebuilt).
+    fn restore_stack(
+        ctx: &super::LoadContext,
+        bytes: &[u8],
+    ) -> Result<Option<Loaded<MemoryStore>>, AdapterError> {
+        let store = MemoryStore::new(ctx.instance.clone());
+        let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
+        let engine = match Engine::restore(store, bytes, &mut clock) {
+            Ok(engine) => engine,
+            Err(_) => return Ok(None),
+        };
+        let plan = AuthPlan::derive(&ctx.package);
+        let (router, routing) = router::build(engine.model(), &ctx.package, &plan, &ctx.lift)
+            .map_err(|err| AdapterError::Host(format!("sandbox router rebuild failed: {err}")))?;
+        Ok(Some(Loaded { host: SurfaceHost::new(engine, router, clock), routing }))
+    }
+
+    /// Load an independent installation of the case package into a fresh in-memory
+    /// instance (`in_sandbox` with `fresh: true`): its own genesis and incarnation,
+    /// so an artifact it exports shares no history point with the base (§19.8).
+    pub(super) fn fresh_stack(
+        ctx: &super::LoadContext,
+        instance: liasse_ident::InstanceId,
+    ) -> Result<Loaded<MemoryStore>, String> {
+        let plan = AuthPlan::derive(&ctx.package);
+        let definition = super::prepared_definition(&ctx.package, &plan, &ctx.lift)
+            .ok_or_else(|| "prepared definition did not serialize".to_owned())?;
+        let store = MemoryStore::new(instance);
+        let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
+        let engine = Engine::load(store, &definition, &mut clock).map_err(|err| err.to_string())?;
+        let (router, routing) =
+            router::build(engine.model(), &ctx.package, &plan, &ctx.lift).map_err(|err| err.to_string())?;
+        Ok(Loaded { host: SurfaceHost::new(engine, router, clock), routing })
     }
 
     /// §9.2 host lifecycle `load(target)`: re-load the step's package into the
-    /// running instance through [`Engine::update`], migrating committed state
-    /// (§20.1) and rebinding the router to the reloaded model so subsequent
-    /// watches read the new surfaces. A rejected migration leaves the instance
-    /// unchanged and reports the refusal class.
+    /// active instance through [`Engine::update`], migrating committed state (§20.1)
+    /// and rebinding the router. A rejected migration leaves the instance unchanged
+    /// and reports the refusal class.
     fn drive_host_load(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
         let Some(package) = request.target.get("package").cloned() else {
             return Err(AdapterError::unsupported("`host_load` step carries no `package` to load"));
         };
-        let loaded = self.take_loaded()?;
-        let old_routing = loaded.routing.clone();
-        let (mut engine, old_router, mut clock) = loaded.host.into_parts();
-
-        let plan = AuthPlan::derive(&package);
-        let outcome = Self::apply_host_load(&mut engine, &mut clock, &package, &plan);
-        match outcome {
-            Ok((completion, router, routing)) => {
-                self.restore(Loaded { host: SurfaceHost::new(engine, router, clock), routing });
-                self.reopen_connections();
-                Ok(Observation { outcome: Outcome::Ok, value: None, completion: Some(completion), extra: Default::default() })
-            }
-            Err(observed) => {
-                // The engine is unchanged (update is atomic); rebuild over the
-                // prior router so later steps still resolve the active package.
-                self.restore(Loaded {
-                    host: SurfaceHost::new(engine, old_router, clock),
-                    routing: old_routing,
-                });
-                self.reopen_connections();
-                Ok(Observation::outcome(observed))
-            }
-        }
+        self.active().host_load(&package)
     }
 
-    /// Run [`Engine::update`] for the reloaded `package`, injecting the same
-    /// synthetic views/mutations a fresh load would and rebinding the router.
-    /// Tries the richest surface lift first, falling back to fewer synthetic
-    /// declarations (exactly as the initial load does) before giving up.
-    fn apply_host_load(
-        engine: &mut liasse_runtime::Engine<S>,
-        clock: &mut SurfaceClock,
-        package: &serde_json::Value,
-        plan: &AuthPlan,
-    ) -> Result<(Completion, liasse_surface::SurfaceRouter, super::router::Routing), Outcome> {
-        let lift = SurfaceLift::derive(package);
-        let mut attempts = vec![lift.clone()];
-        if !lift.views_only().is_empty() {
-            attempts.push(lift.views_only());
-        }
-        if !lift.is_empty() {
-            attempts.push(SurfaceLift::default());
-        }
-        let mut last = Outcome::Error;
-        for attempt in attempts {
-            let Some(definition) = super::prepared_definition(package, plan, &attempt) else {
-                continue;
-            };
-            let before = engine.head();
-            match engine.update(&definition, clock) {
-                Ok(_) => {
-                    let completion =
-                        if engine.head() == before { Completion::Unchanged } else { Completion::Committed };
-                    match super::router::build(engine.model(), package, plan, &attempt) {
-                        Ok((router, routing)) => return Ok((completion, router, routing)),
-                        Err(_) => last = Outcome::Error,
-                    }
-                }
-                Err(error) => last = update_outcome(&error),
-            }
-        }
-        Err(last)
+    /// The `.liasse` bytes the step's `from` label names, or a precise skip when no
+    /// such artifact is in scope.
+    fn artifact_bytes(&self, target: &serde_json::Value, action: &str) -> Result<Vec<u8>, AdapterError> {
+        let Some(label) = target.get("from").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported(format!("`{action}` step carries no `from` artifact label")));
+        };
+        self.artifacts
+            .get(label)
+            .cloned()
+            .ok_or_else(|| AdapterError::unsupported(format!("`{action}` names no artifact `{label}` in scope")))
     }
 }
 
-/// Map an [`Engine::update`] failure to the harness outcome class (§9.4, §20):
-/// a refused migration is a `rejected`, an off-line or statically invalid target
-/// an `invalid`, a store fault an `error`.
-fn update_outcome(error: &liasse_runtime::UpdateError) -> Outcome {
-    use liasse_runtime::UpdateError as U;
-    match error {
-        U::Rejected(_) => Outcome::Rejected,
-        U::Incompatible(_) => Outcome::Rejected,
-        U::Engine(_) => Outcome::Invalid,
-    }
+/// The §19.8 movement policy a step permits, read from its `policy` array of
+/// canonical relation tokens. An unknown token is ignored.
+fn movement_policy(target: &serde_json::Value) -> Vec<ImportRelation> {
+    target
+        .get("policy")
+        .and_then(serde_json::Value::as_array)
+        .map(|tokens| tokens.iter().filter_map(|token| relation_from_token(token.as_str()?)).collect())
+        .unwrap_or_default()
+}
+
+/// Parse one canonical movement-relation token (§19.8).
+fn relation_from_token(token: &str) -> Option<ImportRelation> {
+    Some(match token {
+        "same_point" => ImportRelation::SamePoint,
+        "fast_forward" => ImportRelation::FastForward,
+        "rollback" => ImportRelation::Rollback,
+        "merge" => ImportRelation::Merge,
+        "unrelated" => ImportRelation::Unrelated,
+        _ => return None,
+    })
 }
 
 /// The precise reason an op family is not driven yet — naming the genuine
-/// adapter/surface seam each family hits, not merely "unsupported". The surface
-/// crate exposes a driver-facing entry for most of these (`ModuleDeployment`,
-/// `BlobHost`, `KeyringAdmin`, `SurfaceHost::{export,import,reconcile}`); the seam
-/// is that the corpus's step shape does not line up with the committed entry, or
-/// that a whole-run capability (sandbox isolation, per-sandbox store provisioning)
-/// the executor/adapter does not yet carry is required to reach it.
+/// adapter/surface seam each family hits, not merely "unsupported".
 fn unsupported_reason(kind: &StepKind) -> String {
     let need = match kind {
         StepKind::ModuleInstall
@@ -230,14 +221,10 @@ fn unsupported_reason(kind: &StepKind) -> String {
             "a managed `KeyringAdmin` over a host `KeyProvider` with the §17.9 fault-injection \
              vocabulary the adapter does not provision from the case's `hosts` block"
         }
-        StepKind::Export
-        | StepKind::Import
-        | StepKind::Reconcile
-        | StepKind::RunReconciler => {
-            "sandbox-instance isolation (a driver host-stack the executor's flattened `in_sandbox` \
-             does not signal) and per-sandbox store provisioning the borrowed `build_with` \
-             provisioner does not retain; `reconcile` additionally needs an explicit base artifact \
-             the corpus step does not carry, plus `inspect_artifact`/`apply_correction`"
+        StepKind::RunReconciler => {
+            "activation of a computed §19.9 merge into a new lineage, which the surface `reconcile` \
+             computes but never applies, plus the `apply_correction` conflict-resolution the host \
+             correction API the surface does not expose"
         }
         StepKind::BuildArtifact
         | StepKind::LoadArtifact
@@ -253,7 +240,9 @@ fn unsupported_reason(kind: &StepKind) -> String {
         StepKind::Erase
         | StepKind::Reinsert
         | StepKind::ScrubScopeOfCascadedRow
-        | StepKind::ApplyCorrection => "the deletion/erasure/correction host verbs the surface host does not expose",
+        | StepKind::ApplyCorrection => {
+            "the deletion/erasure/correction host verbs the surface host does not expose"
+        }
         StepKind::ConnectorSet | StepKind::BudgetSet => {
             "a host `BlobConnector`/component budget control provisioned from the case's `hosts` \
              block, which the adapter does not wire"

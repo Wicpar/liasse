@@ -34,6 +34,12 @@ pub(crate) struct EvalCtx<'a> {
     /// keyring public selector against, materialized under each ring name in the
     /// package root. Empty when the package declares no keyring.
     pub(crate) keyrings: &'a [crate::keyring_view::KeyringSnapshot],
+    /// Request-scoped structural bindings introduced by the admitting context —
+    /// `$actor` and, when the authenticator declared one, `$session` (§11.1).
+    /// Every environment this context builds carries them, so a mutation program,
+    /// its patches, and its `return` all resolve `$actor`/`$session`. Empty for a
+    /// public or internal call, and for genesis and view reads (§11.1).
+    pub(crate) context: BTreeMap<String, Cell>,
 }
 
 impl EvalCtx<'_> {
@@ -64,12 +70,24 @@ impl EvalCtx<'_> {
             self.root(prospective),
             self.params.clone(),
             bindings,
-            structurals,
+            self.with_context(structurals),
             self.now,
             self.seed,
             self.temporal_index(prospective),
             self.keyrings.to_vec(),
         )
+    }
+
+    /// Merge the request-scoped context bindings (`$actor`/`$session`, §11.1) with
+    /// the caller's own structurals. A caller-supplied name wins, so a feature that
+    /// rebinds a structural (none does in CORE) keeps precedence.
+    fn with_context(&self, structurals: BTreeMap<String, Cell>) -> BTreeMap<String, Cell> {
+        if self.context.is_empty() {
+            return structurals;
+        }
+        let mut merged = self.context.clone();
+        merged.extend(structurals);
+        merged
     }
 
     /// The temporal-aware package-root row: bucketed collections expose only the
@@ -317,7 +335,7 @@ impl EvalCtx<'_> {
             root,
             self.params.clone(),
             bindings,
-            structurals,
+            self.with_context(structurals),
             now,
             self.seed,
             index,

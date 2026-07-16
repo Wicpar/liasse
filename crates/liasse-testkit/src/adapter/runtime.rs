@@ -1,0 +1,427 @@
+//! One runtime instance: the surface host over a store plus the volatile client
+//! state a scenario drives against it.
+//!
+//! The scenario adapter runs one *base* instance over the case's store, and — for
+//! a §19.10 restore inside an `in_sandbox` group — one or more *sandbox* instances
+//! over a throwaway in-memory store. Both are a [`Runtime`]; the only difference is
+//! the store type, so every client verb (`connect`/`call`/`watch`/…) and every §19
+//! host operation (`export`/`import`/`reconcile`/`classify`) is written once,
+//! generic over the store, and reached through the object-safe [`Instance`] trait
+//! so the adapter can drive whichever instance is active without caring which
+//! backend sits underneath. Byte-level artifact passing and sandbox lifecycle stay
+//! in the adapter ([`super::ScenarioAdapter`]); a [`Runtime`] only ever touches its
+//! own host.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use liasse_runtime::{ImportError, ImportRelation, Precision, Timestamp};
+use liasse_store::InstanceStore;
+use liasse_surface::{SurfaceAddress, SurfaceCall, SurfaceHost, SurfaceWatch, VirtualClock as SurfaceClock};
+
+use crate::clock::VirtualClock;
+use crate::contract::{CallRequest, ConnectRequest, Observation, WatchRequest};
+use crate::id::{ConnectionId, WatchId};
+use crate::outcome::{Completion, Outcome};
+
+use super::auth::AuthPlan;
+use super::lift::SurfaceLift;
+use super::router::Routing;
+use super::{
+    build_window, connection_name, host_fault, observe_call, observe_subscription, parse_authenticate,
+    wire, AdapterError, Loaded, State,
+};
+
+/// One live runtime instance: the loaded surface host (or the reason it did not
+/// load) plus the volatile per-connection state a scenario builds up against it.
+pub(super) struct Runtime<S: InstanceStore> {
+    pub(super) state: State<S>,
+    /// Which connection each open subscription lives on.
+    pub(super) watch_conns: BTreeMap<String, String>,
+    /// Which open subscriptions watch a singular view (§12.2).
+    pub(super) watch_singular: BTreeMap<String, bool>,
+    /// The connection ids currently open on the host.
+    pub(super) open_connections: BTreeSet<String>,
+    /// The adapter-side virtual clock, used to compute the absolute instant an
+    /// `advance_time` moves this instance's surface clock to.
+    pub(super) clock: VirtualClock,
+}
+
+impl<S: InstanceStore> Runtime<S> {
+    /// Wrap a freshly loaded stack as a base runtime with no open connections.
+    pub(super) fn new(state: State<S>) -> Self {
+        Self {
+            state,
+            watch_conns: BTreeMap::new(),
+            watch_singular: BTreeMap::new(),
+            open_connections: BTreeSet::new(),
+            clock: VirtualClock::new(),
+        }
+    }
+
+    /// The loaded stack, or the load failure recorded in its place.
+    pub(super) fn loaded(&mut self) -> Result<&mut Loaded<S>, AdapterError> {
+        match &mut self.state {
+            State::Loaded(loaded) => Ok(&mut **loaded),
+            State::Failed(message) => Err(AdapterError::LoadFailed(message.clone())),
+        }
+    }
+
+    /// Take the loaded stack out, leaving a sentinel failure — used to move the
+    /// owned host through [`SurfaceHost::into_parts`]. The caller must restore a
+    /// `Loaded` state before returning.
+    fn take_loaded(&mut self) -> Result<Loaded<S>, AdapterError> {
+        let taken = std::mem::replace(&mut self.state, State::Failed("stack in transit".to_owned()));
+        match taken {
+            State::Loaded(loaded) => Ok(*loaded),
+            State::Failed(message) => {
+                self.state = State::Failed(message.clone());
+                Err(AdapterError::LoadFailed(message))
+            }
+        }
+    }
+
+    /// Restore the loaded stack after a handoff.
+    fn reinstate(&mut self, loaded: Loaded<S>) {
+        self.state = State::Loaded(Box::new(loaded));
+    }
+
+    /// Ensure `connection` is open on the host before a call/watch runs on it. The
+    /// executor resolves a step's connection against its own open set, which spans
+    /// the whole run; a freshly activated sandbox instance has not opened that
+    /// connection yet, so open it lazily at the head frontier on first use.
+    fn ensure_connection(&mut self, connection: &str) {
+        if !self.open_connections.insert(connection.to_owned()) {
+            return;
+        }
+        if let State::Loaded(loaded) = &mut self.state {
+            loaded.host.connect(connection.to_owned());
+        }
+    }
+
+    /// Replace this instance's loaded stack, dropping any prior connections — used
+    /// when a §19.10 `restore` activates a sandbox slot.
+    pub(super) fn install(&mut self, loaded: Loaded<S>) {
+        self.state = State::Loaded(Box::new(loaded));
+        self.open_connections.clear();
+        self.watch_conns.clear();
+        self.watch_singular.clear();
+    }
+
+    /// Re-open every tracked connection on the current host — a §9.2 lifecycle
+    /// load rebuilds the host but does not drop clients.
+    fn reopen_connections(&mut self) {
+        let ids: Vec<String> = self.open_connections.iter().cloned().collect();
+        if let State::Loaded(loaded) = &mut self.state {
+            for id in ids {
+                loaded.host.connect(id);
+            }
+        }
+    }
+}
+
+/// A store-erased view of a runtime instance the adapter drives, so the base
+/// instance (over the case's store) and a sandbox instance (over a throwaway
+/// in-memory store) present the identical surface. Every method mirrors one
+/// [`Driver`](crate::Driver) verb or one §19 host operation.
+pub(super) trait Instance {
+    fn connect(&mut self, request: ConnectRequest) -> Result<Observation, AdapterError>;
+    fn disconnect(&mut self, connection: &ConnectionId) -> Result<Observation, AdapterError>;
+    fn call(&mut self, request: CallRequest) -> Result<Observation, AdapterError>;
+    fn watch(&mut self, request: WatchRequest) -> Result<Observation, AdapterError>;
+    fn unwatch(&mut self, id: &WatchId) -> Result<Observation, AdapterError>;
+    fn read_view(&mut self, id: &WatchId) -> Result<Observation, AdapterError>;
+    fn advance_time(&mut self, duration: &crate::clock::Iso8601Duration) -> Result<Observation, AdapterError>;
+    fn restart(&mut self) -> Result<Observation, AdapterError>;
+    fn host_load(&mut self, package: &serde_json::Value) -> Result<Observation, AdapterError>;
+    fn operator(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError>;
+    /// Export the committed boundary as `.liasse` bytes (§19.5).
+    fn export(&mut self) -> Result<Vec<u8>, AdapterError>;
+    /// Import `bytes` under `policy` (§19.8), rendering the movement report.
+    fn import(&mut self, bytes: &[u8], policy: &[ImportRelation]) -> Result<Observation, AdapterError>;
+    /// Compute the §19.9 three-way merge of `base`/`incoming` against local state.
+    fn reconcile(
+        &mut self,
+        base: &[u8],
+        incoming: &[u8],
+        policy: &[ImportRelation],
+    ) -> Result<Observation, AdapterError>;
+}
+
+impl<S: InstanceStore> Instance for Runtime<S> {
+    fn connect(&mut self, request: ConnectRequest) -> Result<Observation, AdapterError> {
+        let connection = request.connection.to_string();
+        self.open_connections.insert(connection.clone());
+        let loaded = self.loaded()?;
+        loaded.host.connect(connection.clone());
+        // §11.4: bind the authenticated context on the connection so later role
+        // calls run under it. A payload the wiring does not cover leaves the
+        // connection unauthenticated; the denial surfaces on the asserted call.
+        if let Some(request) = request.authenticate.as_ref().and_then(parse_authenticate) {
+            let _ = loaded.host.authenticate(&connection, &request);
+        }
+        Ok(Observation::ok(None))
+    }
+
+    fn disconnect(&mut self, connection: &ConnectionId) -> Result<Observation, AdapterError> {
+        self.open_connections.remove(&connection.to_string());
+        let loaded = self.loaded()?;
+        loaded.host.disconnect(&connection.to_string());
+        Ok(Observation::ok(None))
+    }
+
+    fn call(&mut self, request: CallRequest) -> Result<Observation, AdapterError> {
+        let connection = connection_name(request.on.as_ref());
+        self.ensure_connection(&connection);
+        let loaded = self.loaded()?;
+        let address = SurfaceAddress::parse(&request.target)
+            .map_err(|err| AdapterError::Host(format!("malformed address `{}`: {err}", request.target)))?;
+        let types = loaded.routing.arg_types(&request.target);
+        let args = wire::decode_args(&request.args, &types);
+        let mut call = SurfaceCall::new(address, args);
+        if let Some(operation_id) = &request.operation_id {
+            call = call.with_operation_id(operation_id.clone());
+        }
+        let outcome = loaded.host.call(&connection, &call).map_err(host_fault)?;
+        Ok(observe_call(&outcome))
+    }
+
+    fn watch(&mut self, request: WatchRequest) -> Result<Observation, AdapterError> {
+        let connection = connection_name(request.on.as_ref());
+        self.ensure_connection(&connection);
+        let watch_id = request.id.to_string();
+        let (observation, singular) = {
+            let loaded = self.loaded()?;
+            let address = SurfaceAddress::parse(&request.target)
+                .map_err(|err| AdapterError::Host(format!("malformed address `{}`: {err}", request.target)))?;
+            let mut watch = SurfaceWatch::new(address, watch_id.clone());
+            if let Some(window) = request.window.as_ref().and_then(build_window) {
+                watch = watch.with_window(window);
+            }
+            // §12.2: a singular view delivers one object; a collection a row array.
+            let singular = loaded.routing.is_singular_view(&request.target);
+            let subscription = loaded.host.watch(&connection, &watch).map_err(host_fault)?;
+            (observe_subscription(&subscription, singular), singular)
+        };
+        self.watch_conns.insert(watch_id.clone(), connection);
+        self.watch_singular.insert(watch_id, singular);
+        Ok(observation)
+    }
+
+    fn unwatch(&mut self, id: &WatchId) -> Result<Observation, AdapterError> {
+        self.watch_conns.remove(&id.to_string());
+        self.watch_singular.remove(&id.to_string());
+        Ok(Observation::ok(None))
+    }
+
+    fn read_view(&mut self, id: &WatchId) -> Result<Observation, AdapterError> {
+        let connection = self.watch_conns.get(&id.to_string()).cloned();
+        let watch_id = id.to_string();
+        let singular = self.watch_singular.get(&watch_id).copied().unwrap_or(false);
+        let loaded = self.loaded()?;
+        let value = connection.as_deref().and_then(|conn| {
+            loaded
+                .host
+                .read_window(conn, &watch_id)
+                .map(wire::rows_to_json)
+                .or_else(|| loaded.host.read_view(conn, &watch_id).map(|r| wire::view_to_json_shaped(r, singular)))
+        });
+        Ok(Observation::ok(value))
+    }
+
+    fn advance_time(&mut self, duration: &crate::clock::Iso8601Duration) -> Result<Observation, AdapterError> {
+        let instant = self.clock.advance(duration);
+        let now = Timestamp::new(i128::from(instant.unix_micros()), Precision::Micros);
+        let loaded = self.loaded()?;
+        // §14.1/§22.6: advancing time re-evaluates every live view at the new
+        // instant and moves the session-expiry and bucket clocks.
+        loaded.host.advance_time(now).map_err(host_fault)?;
+        Ok(Observation::ok(None))
+    }
+
+    fn restart(&mut self) -> Result<Observation, AdapterError> {
+        // §22 restart/durability: tear the host down and rebuild a fresh one over
+        // the same engine, router, and clock. Committed state survives; volatile
+        // connections/subscriptions/operation records are dropped.
+        let loaded = self.take_loaded()?;
+        let routing = loaded.routing;
+        let (engine, router, clock) = loaded.host.into_parts();
+        self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing });
+        self.open_connections.clear();
+        Ok(Observation::ok(None))
+    }
+
+    fn host_load(&mut self, package: &serde_json::Value) -> Result<Observation, AdapterError> {
+        let loaded = self.take_loaded()?;
+        let old_routing = loaded.routing.clone();
+        let (mut engine, old_router, mut clock) = loaded.host.into_parts();
+        let plan = AuthPlan::derive(package);
+        match apply_host_load(&mut engine, &mut clock, package, &plan) {
+            Ok((completion, router, routing)) => {
+                self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing });
+                self.reopen_connections();
+                Ok(Observation {
+                    outcome: Outcome::Ok,
+                    value: None,
+                    completion: Some(completion),
+                    extra: Default::default(),
+                })
+            }
+            Err(observed) => {
+                // The engine is unchanged (update is atomic); rebuild over the
+                // prior router so later steps still resolve the active package.
+                self.reinstate(Loaded { host: SurfaceHost::new(engine, old_router, clock), routing: old_routing });
+                self.reopen_connections();
+                Ok(Observation::outcome(observed))
+            }
+        }
+    }
+
+    fn operator(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
+        let Some(call_name) = target.get("call").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`operator` step carries no `call` mutation name"));
+        };
+        if call_name.contains('.') {
+            return Err(AdapterError::unsupported(
+                "`operator` on a collection-row mutation (`path.key.mut`) needs the receiver-row \
+                 wiring the synthetic operator surface does not carry",
+            ));
+        }
+        let args = target.get("args").cloned().unwrap_or(serde_json::Value::Null);
+        let address_text = format!("{}.{call_name}", super::OPERATOR_SURFACE_PREFIX);
+        let loaded = self.loaded()?;
+        let address = SurfaceAddress::parse(&address_text)
+            .map_err(|err| AdapterError::Host(format!("malformed operator address `{address_text}`: {err}")))?;
+        let types = loaded.routing.arg_types(&address_text);
+        let decoded = wire::decode_args(&args, &types);
+        let call = SurfaceCall::new(address, decoded);
+        let outcome = loaded.host.operator_call(&call).map_err(host_fault)?;
+        Ok(observe_call(&outcome))
+    }
+
+    fn export(&mut self) -> Result<Vec<u8>, AdapterError> {
+        let loaded = self.loaded()?;
+        loaded.host.export().map_err(host_fault)
+    }
+
+    fn import(&mut self, bytes: &[u8], policy: &[ImportRelation]) -> Result<Observation, AdapterError> {
+        let loaded = self.loaded()?;
+        match loaded.host.import(bytes, policy) {
+            Ok(report) => Ok(Observation {
+                outcome: Outcome::Ok,
+                value: Some(import_value(report.relation, report.applied, None)),
+                completion: Some(if report.applied { Completion::Committed } else { Completion::Unchanged }),
+                extra: Default::default(),
+            }),
+            Err(error) => Ok(Observation::outcome(import_error_outcome(&error))),
+        }
+    }
+
+    fn reconcile(
+        &mut self,
+        base: &[u8],
+        incoming: &[u8],
+        _policy: &[ImportRelation],
+    ) -> Result<Observation, AdapterError> {
+        let loaded = self.loaded()?;
+        match loaded.host.reconcile(base, incoming) {
+            Ok(outcome) => {
+                // §19.9 `reconcile` computes but never activates the merge, so a
+                // clean merge reports `applied: true` as its computed disposition
+                // while committed state is left for a host correction to move.
+                let conflicts: Vec<serde_json::Value> = outcome
+                    .conflicts
+                    .iter()
+                    .map(|conflict| serde_json::json!({ "coordinate": conflict.coordinate }))
+                    .collect();
+                Ok(Observation {
+                    outcome: Outcome::Ok,
+                    value: Some(import_value(ImportRelation::Merge, outcome.is_clean(), Some(conflicts))),
+                    completion: Some(Completion::Unchanged),
+                    extra: Default::default(),
+                })
+            }
+            Err(error) => Ok(Observation::outcome(import_error_outcome(&error))),
+        }
+    }
+}
+
+/// Run [`Engine::update`] for a reloaded `package`, injecting the same synthetic
+/// views/mutations a fresh load would and rebinding the router. Tries the richest
+/// surface lift first, falling back to fewer synthetic declarations (exactly as
+/// the initial load does) before giving up.
+fn apply_host_load<S: InstanceStore>(
+    engine: &mut liasse_runtime::Engine<S>,
+    clock: &mut SurfaceClock,
+    package: &serde_json::Value,
+    plan: &AuthPlan,
+) -> Result<(Completion, liasse_surface::SurfaceRouter, Routing), Outcome> {
+    let lift = SurfaceLift::derive(package);
+    let mut attempts = vec![lift.clone()];
+    if !lift.views_only().is_empty() {
+        attempts.push(lift.views_only());
+    }
+    if !lift.is_empty() {
+        attempts.push(SurfaceLift::default());
+    }
+    let mut last = Outcome::Error;
+    for attempt in attempts {
+        let Some(definition) = super::prepared_definition(package, plan, &attempt) else {
+            continue;
+        };
+        let before = engine.head();
+        match engine.update(&definition, clock) {
+            Ok(_) => {
+                let completion =
+                    if engine.head() == before { Completion::Unchanged } else { Completion::Committed };
+                match super::router::build(engine.model(), package, plan, &attempt) {
+                    Ok((router, routing)) => return Ok((completion, router, routing)),
+                    Err(_) => last = Outcome::Error,
+                }
+            }
+            Err(error) => last = update_outcome(&error),
+        }
+    }
+    Err(last)
+}
+
+/// Map an [`Engine::update`] failure to the harness outcome class (§9.4, §20).
+fn update_outcome(error: &liasse_runtime::UpdateError) -> Outcome {
+    use liasse_runtime::UpdateError as U;
+    match error {
+        U::Rejected(_) | U::Incompatible(_) => Outcome::Rejected,
+        U::Engine(_) => Outcome::Invalid,
+    }
+}
+
+/// The `{ relation, applied, [conflicts] }` value an import/reconcile step renders
+/// (§19.8/§19.9 result shape). The relation is the canonical snake-case token.
+fn import_value(relation: ImportRelation, applied: bool, conflicts: Option<Vec<serde_json::Value>>) -> serde_json::Value {
+    let mut object = serde_json::Map::new();
+    object.insert("relation".to_owned(), serde_json::Value::String(relation_token(relation).to_owned()));
+    object.insert("applied".to_owned(), serde_json::Value::Bool(applied));
+    if let Some(conflicts) = conflicts {
+        object.insert("conflicts".to_owned(), serde_json::Value::Array(conflicts));
+    }
+    serde_json::Value::Object(object)
+}
+
+/// The canonical wire token for a movement relation (§19.8).
+fn relation_token(relation: ImportRelation) -> &'static str {
+    match relation {
+        ImportRelation::SamePoint => "same_point",
+        ImportRelation::FastForward => "fast_forward",
+        ImportRelation::Rollback => "rollback",
+        ImportRelation::Merge => "merge",
+        ImportRelation::Unrelated => "unrelated",
+    }
+}
+
+/// Map an artifact/import failure to the harness outcome class: a failed recursive
+/// `.liasse` verification (§19.8) or malformed section is a static `invalid`; a
+/// store/rebuild fault while moving state is an `error`.
+fn import_error_outcome(error: &ImportError) -> Outcome {
+    match error {
+        ImportError::Artifact(_) | ImportError::Corrupt(_) => Outcome::Invalid,
+        ImportError::Engine(_) => Outcome::Error,
+    }
+}

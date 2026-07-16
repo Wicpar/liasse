@@ -117,6 +117,16 @@ impl<'d, D: Driver> Engine<'d, D> {
                         self.run_program(branch);
                     }
                 }
+                StepKind::InSandbox => {
+                    // §19.10: the driver isolates an instance for the group so a
+                    // `restore`/`export` inside cannot perturb the outer one.
+                    let name = step.target.as_str().unwrap_or_default();
+                    let fresh = step.member("fresh").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                    if self.driver.enter_sandbox(name, fresh).is_ok() {
+                        self.run_program(step.nested.steps());
+                        let _ = self.driver.exit_sandbox();
+                    }
+                }
                 _ => self.run_program(step.nested.steps()),
             }
             return;

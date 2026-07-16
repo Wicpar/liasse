@@ -132,6 +132,11 @@ pub(crate) struct CompiledMutation {
     pub(crate) params: Vec<(String, ExprType)>,
     pub(crate) scope: RuntimeScope,
     pub(crate) program: Vec<CompiledStmt>,
+    /// The `$actor`/`$session` structural bindings in scope for this program when
+    /// admitted through an authenticated role (§11.1, §6.2), each a `(name, row
+    /// type)` pair. Empty when the package declares no `$auth`. Carried alongside
+    /// `scope` so a rebuilt patch scope re-registers them.
+    pub(crate) context_structurals: Vec<(String, ExprType)>,
 }
 
 /// A compiled view (§7): its name and its typed expression.
@@ -174,6 +179,13 @@ pub(crate) struct Compiled {
     /// Declared keyrings (§17.1): the rings the engine bootstraps a live version
     /// lifecycle for and materializes a version view under.
     pub(crate) keyrings: Vec<CompiledKeyring>,
+    /// The declaration-name path of the collection an authenticator selects as
+    /// `$actor` (§11.3), so an authenticated admission re-materializes that row by
+    /// key. `None` when no `$auth` declares a resolvable `$actor` collection.
+    pub(crate) actor_collection: Option<Vec<String>>,
+    /// The declaration-name path of the collection an authenticator selects as
+    /// `$session` (§11.3), or `None` when no authenticator declares one.
+    pub(crate) session_collection: Option<Vec<String>>,
 }
 
 impl Compiled {
@@ -185,14 +197,25 @@ impl Compiled {
     ) -> Result<Self, EngineError> {
         let schema = Schema::new(model);
         let root_ty = ExprType::Row(schema.root_row_type());
+        let auth = AuthBindings::derive(schema, model_doc);
         let collections = compile_collections(sources, schema, &root_ty)?;
         let root_computed = compile_root_computed(sources, schema, &root_ty)?;
-        let mutations = compile_mutations(sources, schema, &root_ty, model_doc)?;
+        let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth)?;
         let keyrings = compile_keyrings(schema, model_doc);
         let views = compile_views(sources, schema, &root_ty, &keyrings)?;
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc)?;
         let meters = crate::meter::compile(sources, schema, &root_ty, model_doc)?;
-        Ok(Self { collections, root_computed, mutations, views, buckets, meters, keyrings })
+        Ok(Self {
+            collections,
+            root_computed,
+            mutations,
+            views,
+            buckets,
+            meters,
+            keyrings,
+            actor_collection: auth.actor.map(|(path, _)| path),
+            session_collection: auth.session.map(|(path, _)| path),
+        })
     }
 
     /// The compiled top-level collection named `name`, if any.
@@ -460,12 +483,81 @@ fn compile_field(
     Ok(Some(field))
 }
 
+/// The `$actor`/`$session` bindings an authenticated admission introduces
+/// (§11.1), each the collection declaration path plus the row type a program
+/// reading `$actor`/`$session` type-checks against. Derived from the package's
+/// `$auth` declarations; the model validates those declarations but leaves the
+/// target-collection resolution a documented seam (`liasse-model/src/auth.rs`),
+/// so the runtime re-derives it from the definition document it already holds.
+struct AuthBindings {
+    actor: Option<(Vec<String>, ExprType)>,
+    session: Option<(Vec<String>, ExprType)>,
+}
+
+impl AuthBindings {
+    /// Resolve the actor/session collections from the first authenticator that
+    /// names each. Every authenticator a role accepts must resolve a compatible
+    /// `$actor` (§10.3), so one representative type is enough to type-check a
+    /// program; the actual row is re-materialized per request from the key the
+    /// request carries.
+    fn derive(schema: Schema<'_>, model_doc: &liasse_syntax::DocValue) -> Self {
+        let mut bindings = Self { actor: None, session: None };
+        let Some(auth) = doc::member(model_doc, "$auth").and_then(doc::object) else {
+            return bindings;
+        };
+        for authenticator in auth {
+            let def = &authenticator.value;
+            if bindings.actor.is_none() {
+                bindings.actor = resolve_selection(schema, doc::member(def, "$actor"));
+            }
+            if bindings.session.is_none() {
+                bindings.session = resolve_selection(schema, doc::member(def, "$session"));
+            }
+        }
+        bindings
+    }
+
+    /// The `(name, row type)` structurals a mutation program admitted through this
+    /// package's authenticators has in scope (§6.2).
+    fn structurals(&self) -> Vec<(String, ExprType)> {
+        let mut out = Vec::new();
+        if let Some((_, ty)) = &self.actor {
+            out.push(("actor".to_owned(), ty.clone()));
+        }
+        if let Some((_, ty)) = &self.session {
+            out.push(("session".to_owned(), ty.clone()));
+        }
+        out
+    }
+}
+
+/// The `(collection path, row type)` a `/collection[selector]` authenticator
+/// selection addresses, if it names a declared top-level collection. A selection
+/// the runtime cannot resolve to a collection (an absent member, a non-string, a
+/// nested or computed target) leaves that binding unavailable, so a program
+/// reading it fails to type-check — the same closed-world refusal as an unknown
+/// structural.
+fn resolve_selection(schema: Schema<'_>, selection: Option<&liasse_syntax::DocValue>) -> Option<(Vec<String>, ExprType)> {
+    let text = doc::string(selection?)?;
+    let rest = text.trim().strip_prefix('/')?;
+    let end = rest.find('[').unwrap_or(rest.len());
+    let name = rest.get(..end)?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let path = vec![name.to_owned()];
+    let ty = schema.receiver_row_type(&path)?;
+    matches!(ty, ExprType::Row(_)).then_some((path, ty))
+}
+
 fn compile_mutations(
     sources: &mut SourceMap,
     schema: Schema<'_>,
     root_ty: &ExprType,
     model_doc: &liasse_syntax::DocValue,
+    auth: &AuthBindings,
 ) -> Result<Vec<CompiledMutation>, EngineError> {
+    let context_structurals = auth.structurals();
     let mut out = Vec::new();
     for mutation in schema.model().mutations() {
         let receiver_ty = schema
@@ -474,6 +566,11 @@ fn compile_mutations(
         let mut scope = RuntimeScope::new(receiver_ty, root_ty.clone());
         for (name, ty) in &mutation.params {
             scope = scope.with_param(name.clone(), ty.clone());
+        }
+        // §11.1/§6.2: `$actor` (and `$session`, when declared) are in scope for a
+        // mutation program, resolved per request from the admitting authenticator.
+        for (name, ty) in &context_structurals {
+            scope = scope.with_structural(name.clone(), ty.clone());
         }
         let bodies = mutation_bodies(model_doc, mutation)?;
         let mut program = Vec::new();
@@ -489,6 +586,7 @@ fn compile_mutations(
             params: mutation.params.clone(),
             scope,
             program,
+            context_structurals: context_structurals.clone(),
         });
     }
     Ok(out)

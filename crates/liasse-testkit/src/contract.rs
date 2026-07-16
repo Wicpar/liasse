@@ -129,6 +129,21 @@ pub trait Driver {
     /// [`OpRequest::kind`] and reads its target/members.
     fn op(&mut self, request: &OpRequest) -> Result<Observation, Self::Error>;
 
+    /// Enter an `in_sandbox` group (§19.10): the driver isolates an instance so a
+    /// `restore`/`export` inside the group cannot perturb the outer one. `fresh`
+    /// requests an independent installation of the case package (its own genesis
+    /// and incarnation) rather than an instance a later `restore` activates. The
+    /// default is a no-op for a driver that does not model sandbox isolation.
+    fn enter_sandbox(&mut self, _name: &str, _fresh: bool) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
+    /// Exit the innermost `in_sandbox` group, discarding its isolated instance and
+    /// returning the outer one to the active position. The default is a no-op.
+    fn exit_sandbox(&mut self) -> Result<(), Self::Error> {
+        Ok(())
+    }
+
     /// Route a lowered request to the matching method. The default routing is
     /// fixed by [`Request`]; a driver overrides individual methods, not this.
     fn dispatch(&mut self, request: &Request) -> Result<Observation, Self::Error> {

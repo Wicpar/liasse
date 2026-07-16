@@ -199,7 +199,14 @@ impl<'a> Interp<'a> {
     fn scalar_value(&self, expr: &Expr, source: SourceId, current: &Cell) -> Result<Value, Rejection> {
         match self.eval_value(expr, source, current)? {
             Cell::Scalar(value) => Ok(value),
-            _ => Err(Rejection::new(RejectionReason::TypeError, "expected a scalar value here")),
+            // §6.3/§5.6: a single row used where a scalar is required — a ref value,
+            // a key selector — is its typed key. This is what makes `author: $actor`
+            // store the actor's account key (§11.3), and a `.coll[$actor]` selector
+            // resolve by the actor's identity.
+            Cell::Row(row) => Ok(row.key().clone()),
+            Cell::Collection(_) => {
+                Err(Rejection::new(RejectionReason::TypeError, "expected a scalar value here"))
+            }
         }
     }
 
@@ -888,6 +895,10 @@ impl<'a> Interp<'a> {
         let mut scope = RuntimeScope::new(current, root);
         for (name, ty) in &self.mutation.params {
             scope = scope.with_param(name.clone(), ty.clone());
+        }
+        // §6.2/§11.1: `$actor`/`$session` stay in scope for a patch value expression.
+        for (name, ty) in &self.mutation.context_structurals {
+            scope = scope.with_structural(name.clone(), ty.clone());
         }
         let (types, _) = local_bindings(&self.locals, self.ctx, self.prospective);
         for (name, ty) in types {
