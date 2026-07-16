@@ -1,0 +1,363 @@
+//! Typing of operators: arithmetic, comparison, logic, membership, negation,
+//! the conditional/fallback forms, and view combinators (§6.1, §7.4).
+
+use liasse_syntax::{BinaryOp, CombinatorOp, Expr, UnaryOp};
+use liasse_value::Type;
+
+use crate::check::Checker;
+use crate::ty::ExprType;
+use crate::typed::{ArithOp, CmpOp, CombineOp, LogicOp, NumClass, TypedExpr, TypedKind};
+
+impl Checker<'_> {
+    pub(crate) fn check_unary(
+        &mut self,
+        expr: &Expr,
+        op: UnaryOp,
+        operand: &Expr,
+    ) -> Option<TypedExpr> {
+        let operand = self.check(operand)?;
+        match op {
+            UnaryOp::Not => {
+                if operand.ty().as_scalar() != Some(&Type::Bool) {
+                    return self.error(expr, "`!` requires a `bool` operand");
+                }
+                Some(TypedExpr::new(
+                    expr.span,
+                    ExprType::scalar(Type::Bool),
+                    TypedKind::Not(Box::new(operand)),
+                ))
+            }
+            UnaryOp::Neg => {
+                let class = match operand.ty().as_scalar() {
+                    Some(Type::Int) => NumClass::Int,
+                    Some(Type::Decimal) => NumClass::Decimal,
+                    _ => return self.error(expr, "`-` requires an `int` or `decimal` operand"),
+                };
+                let ty = operand.ty().clone();
+                Some(TypedExpr::new(
+                    expr.span,
+                    ty,
+                    TypedKind::Neg {
+                        class,
+                        operand: Box::new(operand),
+                    },
+                ))
+            }
+        }
+    }
+
+    pub(crate) fn check_binary(
+        &mut self,
+        expr: &Expr,
+        op: BinaryOp,
+        lhs: &Expr,
+        rhs: &Expr,
+    ) -> Option<TypedExpr> {
+        match op {
+            BinaryOp::Add => self.check_arith(expr, ArithOp::Add, lhs, rhs),
+            BinaryOp::Sub => self.check_sub(expr, lhs, rhs),
+            BinaryOp::Mul => self.check_arith(expr, ArithOp::Mul, lhs, rhs),
+            BinaryOp::Div => self.check_arith(expr, ArithOp::Div, lhs, rhs),
+            BinaryOp::Rem => self.check_arith(expr, ArithOp::Rem, lhs, rhs),
+            BinaryOp::Eq => self.check_compare(expr, CmpOp::Eq, lhs, rhs),
+            BinaryOp::Ne => self.check_compare(expr, CmpOp::Ne, lhs, rhs),
+            BinaryOp::Lt => self.check_compare(expr, CmpOp::Lt, lhs, rhs),
+            BinaryOp::Le => self.check_compare(expr, CmpOp::Le, lhs, rhs),
+            BinaryOp::Gt => self.check_compare(expr, CmpOp::Gt, lhs, rhs),
+            BinaryOp::Ge => self.check_compare(expr, CmpOp::Ge, lhs, rhs),
+            BinaryOp::And => self.check_logic(expr, LogicOp::And, lhs, rhs),
+            BinaryOp::Or => self.check_logic(expr, LogicOp::Or, lhs, rhs),
+            BinaryOp::In => self.check_in(expr, lhs, rhs),
+            BinaryOp::Fallback => self.check_fallback(expr, lhs, rhs),
+        }
+    }
+
+    /// `-` is arithmetic subtraction on numbers and view difference on views
+    /// (§7.4). The operand kinds decide which.
+    fn check_sub(&mut self, expr: &Expr, lhs: &Expr, rhs: &Expr) -> Option<TypedExpr> {
+        let left = self.check(lhs)?;
+        let right = self.check(rhs)?;
+        if let (ExprType::View(row), ExprType::View(_)) = (left.ty(), right.ty()) {
+            let row = row.clone();
+            return Some(TypedExpr::new(
+                expr.span,
+                ExprType::View(row),
+                TypedKind::Combine {
+                    op: CombineOp::Difference,
+                    lhs: Box::new(left),
+                    rhs: Box::new(right),
+                },
+            ));
+        }
+        self.finish_arith(expr, ArithOp::Sub, left, right)
+    }
+
+    fn check_arith(
+        &mut self,
+        expr: &Expr,
+        op: ArithOp,
+        lhs: &Expr,
+        rhs: &Expr,
+    ) -> Option<TypedExpr> {
+        let left = self.check(lhs)?;
+        let right = self.check(rhs)?;
+        self.finish_arith(expr, op, left, right)
+    }
+
+    fn finish_arith(
+        &mut self,
+        expr: &Expr,
+        op: ArithOp,
+        left: TypedExpr,
+        right: TypedExpr,
+    ) -> Option<TypedExpr> {
+        let (lt, rt) = (left.ty().as_scalar(), right.ty().as_scalar());
+        // SPEC-ISSUES item 3: arithmetic over an optional operand is a static
+        // type error in this implementation (CEL static typing, §6.1) — the
+        // author coalesces with `?? …` first. Neither the spec nor A.6 pins
+        // none-propagation, so we reject rather than silently invent it.
+        if matches!(lt, Some(Type::Optional(_))) || matches!(rt, Some(Type::Optional(_))) {
+            return self.error(
+                expr,
+                "arithmetic operand is optional; coalesce it (`x ?? 0`) before the operator",
+            );
+        }
+        let class = match (op, lt, rt) {
+            (ArithOp::Add, Some(Type::Text), Some(Type::Text)) => NumClass::TextConcat,
+            (_, Some(Type::Int), Some(Type::Int)) => NumClass::Int,
+            (_, Some(Type::Decimal), Some(Type::Decimal))
+            | (_, Some(Type::Int), Some(Type::Decimal))
+            | (_, Some(Type::Decimal), Some(Type::Int)) => NumClass::Decimal,
+            _ => {
+                return self.error(
+                    expr,
+                    format!(
+                        "operator has no type for operands `{}` and `{}`",
+                        left.ty().describe(),
+                        right.ty().describe()
+                    ),
+                );
+            }
+        };
+        let result = match class {
+            NumClass::Int => Type::Int,
+            NumClass::Decimal => Type::Decimal,
+            NumClass::TextConcat => Type::Text,
+        };
+        Some(TypedExpr::new(
+            expr.span,
+            ExprType::scalar(result),
+            TypedKind::Arith {
+                op,
+                class,
+                lhs: Box::new(left),
+                rhs: Box::new(right),
+            },
+        ))
+    }
+
+    fn check_compare(
+        &mut self,
+        expr: &Expr,
+        op: CmpOp,
+        lhs: &Expr,
+        rhs: &Expr,
+    ) -> Option<TypedExpr> {
+        let left = self.check(lhs)?;
+        let right = self.check(rhs)?;
+        let (lt, rt) = match (left.ty().as_scalar(), right.ty().as_scalar()) {
+            (Some(lt), Some(rt)) => (lt, rt),
+            _ => return self.error(expr, "only scalar values are comparable"),
+        };
+        if !comparable(lt, rt) {
+            // §6.3: refs into different target relations are statically
+            // incomparable — a key-text collision must not leak across them.
+            if let (Type::Ref(_), Type::Ref(_)) = (lt, rt) {
+                return self.error(
+                    expr,
+                    "equality between refs targeting different relations is statically incomparable",
+                );
+            }
+            return self.error(
+                expr,
+                format!(
+                    "cannot compare `{}` with `{}`",
+                    left.ty().describe(),
+                    right.ty().describe()
+                ),
+            );
+        }
+        Some(TypedExpr::new(
+            expr.span,
+            ExprType::scalar(Type::Bool),
+            TypedKind::Compare {
+                op,
+                lhs: Box::new(left),
+                rhs: Box::new(right),
+            },
+        ))
+    }
+
+    fn check_logic(
+        &mut self,
+        expr: &Expr,
+        op: LogicOp,
+        lhs: &Expr,
+        rhs: &Expr,
+    ) -> Option<TypedExpr> {
+        let left = self.check(lhs)?;
+        let right = self.check(rhs)?;
+        if left.ty().as_scalar() != Some(&Type::Bool)
+            || right.ty().as_scalar() != Some(&Type::Bool)
+        {
+            return self.error(expr, "`&&`/`||` require `bool` operands");
+        }
+        Some(TypedExpr::new(
+            expr.span,
+            ExprType::scalar(Type::Bool),
+            TypedKind::Logic {
+                op,
+                lhs: Box::new(left),
+                rhs: Box::new(right),
+            },
+        ))
+    }
+
+    fn check_in(&mut self, expr: &Expr, lhs: &Expr, rhs: &Expr) -> Option<TypedExpr> {
+        let needle = self.check(lhs)?;
+        let haystack = self.check(rhs)?;
+        let ok = match haystack.ty() {
+            ExprType::Scalar(Type::Set(elem)) => Some(elem.as_ref()) == needle.ty().as_scalar(),
+            ExprType::View(_) => true,
+            _ => false,
+        };
+        if !ok {
+            return self.error(expr, "`in` requires a set or view on the right");
+        }
+        Some(TypedExpr::new(
+            expr.span,
+            ExprType::scalar(Type::Bool),
+            TypedKind::In {
+                needle: Box::new(needle),
+                haystack: Box::new(haystack),
+            },
+        ))
+    }
+
+    /// `a ?? b` — view fallback when `a` is empty, or scalar coalesce when `a`
+    /// is optional (§7.4). One resolved [`TypedKind::Fallback`] serves both.
+    fn check_fallback(&mut self, expr: &Expr, lhs: &Expr, rhs: &Expr) -> Option<TypedExpr> {
+        let primary = self.check(lhs)?;
+        let other = self.check(rhs)?;
+        let ty = match (primary.ty(), other.ty()) {
+            (ExprType::View(row), ExprType::View(_)) => ExprType::View(row.clone()),
+            (ExprType::Scalar(Type::Optional(inner)), _) => ExprType::scalar((**inner).clone()),
+            (ExprType::Scalar(_), _) => primary.ty().clone(),
+            _ => return self.error(expr, "`??` operands must be two views or an optional value"),
+        };
+        Some(TypedExpr::new(
+            expr.span,
+            ty,
+            TypedKind::Fallback {
+                primary: Box::new(primary),
+                other: Box::new(other),
+            },
+        ))
+    }
+
+    pub(crate) fn check_ternary(
+        &mut self,
+        expr: &Expr,
+        cond: &Expr,
+        then: &Expr,
+        otherwise: &Expr,
+    ) -> Option<TypedExpr> {
+        let cond = self.check(cond)?;
+        if cond.ty().as_scalar() != Some(&Type::Bool) {
+            return self.error(expr, "a `? :` condition must be `bool`");
+        }
+        let then = self.check(then)?;
+        let otherwise = self.check(otherwise)?;
+        let ty = match (then.ty(), otherwise.ty()) {
+            (ExprType::View(row), ExprType::View(_)) => ExprType::View(row.clone()),
+            (a, b) if a == b => a.clone(),
+            // §7.4: `cond ? view : []` — an empty view branch adopts the other.
+            (ExprType::View(row), _) | (_, ExprType::View(row)) => ExprType::View(row.clone()),
+            _ => return self.error(expr, "both `? :` branches must share a type"),
+        };
+        Some(TypedExpr::new(
+            expr.span,
+            ty,
+            TypedKind::Ternary {
+                cond: Box::new(cond),
+                then: Box::new(then),
+                otherwise: Box::new(otherwise),
+            },
+        ))
+    }
+
+    /// A flat `|` / `&` chain (§7.4). SPEC-ISSUES item 25 leaves relative
+    /// precedence and grouping unpinned, so this folds strictly left-to-right
+    /// and documents that as the chosen reading. Every operand must be a view
+    /// sharing the left's identity domain (key type).
+    pub(crate) fn check_combination(
+        &mut self,
+        expr: &Expr,
+        operands: &[Expr],
+        operators: &[CombinatorOp],
+    ) -> Option<TypedExpr> {
+        let mut iter = operands.iter();
+        let first = iter.next()?;
+        let mut acc = self.check(first)?;
+        let acc_row = match acc.ty() {
+            ExprType::View(row) => row.clone(),
+            _ => return self.error(first, "a `|`/`&` combinator operand must be a view"),
+        };
+        for (operand, op) in iter.zip(operators.iter()) {
+            let right = self.check(operand)?;
+            match right.ty() {
+                ExprType::View(row) if row.key() == acc_row.key() => {}
+                ExprType::View(_) => {
+                    return self.error(
+                        operand,
+                        "combined views must share one identity domain (§7.4)",
+                    );
+                }
+                _ => return self.error(operand, "a `|`/`&` combinator operand must be a view"),
+            }
+            let combine = match op {
+                CombinatorOp::Union => CombineOp::Union,
+                CombinatorOp::Intersect => CombineOp::Intersect,
+            };
+            acc = TypedExpr::new(
+                expr.span,
+                ExprType::View(acc_row.clone()),
+                TypedKind::Combine {
+                    op: combine,
+                    lhs: Box::new(acc),
+                    rhs: Box::new(right),
+                },
+            );
+        }
+        Some(acc)
+    }
+}
+
+/// Whether two scalar types can be compared through the Annex B order.
+///
+/// Equal types compare; `int` and `decimal` compare after promotion; a bare
+/// `none` (`optional<json>`) compares against any optional; two refs compare
+/// only when they name the same target relation (§6.3).
+fn comparable(a: &Type, b: &Type) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a, b) {
+        (Type::Int | Type::Decimal, Type::Int | Type::Decimal) => true,
+        (Type::Optional(inner), other) | (other, Type::Optional(inner)) => {
+            inner.as_ref() == other || matches!(other, Type::Json)
+        }
+        (Type::Ref(x), Type::Ref(y)) => x == y,
+        _ => false,
+    }
+}

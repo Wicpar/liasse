@@ -7,6 +7,27 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+liasse-diag = { path = "../liasse-diag" }
+liasse-syntax = { path = "../liasse-syntax" }
+liasse-value = { path = "../liasse-value" }
+liasse-ident = { path = "../liasse-ident" }
+liasse-expr = { path = "../liasse-expr" }
+# Strict-JSON wire values for decoding `$data` seeds against declared types via
+# `liasse_value::Type::decode`. `arbitrary_precision` keeps big int/decimal
+# seeds exact and matches the feature liasse-value already enables, so the
+# workspace unifies to one serde_json build.
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false }
+# The file-based conformance corpus loader, used by the `corpus_static` test to
+# drive every `suite: static` case through `Model::build`.
+liasse-testkit = { path = "../liasse-testkit" }
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+
+[[bench]]
+name = "model_bench"
+harness = false
 
 [lints]
 workspace = true

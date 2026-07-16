@@ -7,6 +7,19 @@ rust-version.workspace = true
 repository.workspace = true
 
 [dependencies]
+liasse-diag = { path = "../liasse-diag" }
+liasse-syntax = { path = "../liasse-syntax" }
+# Canonical values, types, arithmetic newtypes, and the Annex B total order the
+# evaluator sorts and compares with. `bigdecimal`/`num_bigint` are re-exported
+# from here so exact `int`/`decimal` arithmetic shares the wire number types.
+liasse-value = { path = "../liasse-value" }
+
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "expr_bench"
+harness = false
 
 [lints]
 workspace = true

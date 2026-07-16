@@ -412,6 +412,12 @@ dependencies = [
 [[package]]
 name = "liasse-expr"
 version = "0.0.1"
+dependencies = [
+ "criterion",
+ "liasse-diag",
+ "liasse-syntax",
+ "liasse-value",
+]
 
 [[package]]
 name = "liasse-host"
@@ -430,6 +436,16 @@ dependencies = [
 [[package]]
 name = "liasse-model"
 version = "0.0.1"
+dependencies = [
+ "criterion",
+ "liasse-diag",
+ "liasse-expr",
+ "liasse-ident",
+ "liasse-syntax",
+ "liasse-testkit",
+ "liasse-value",
+ "serde_json",
+]
 
 [[package]]
 name = "liasse-pg"
