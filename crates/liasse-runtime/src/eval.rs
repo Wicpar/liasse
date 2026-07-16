@@ -249,6 +249,32 @@ impl EvalCtx<'_> {
         typed.evaluate(&env, current).map_err(Rejection::from)
     }
 
+    /// A fully materialized row cell for the row at `address` in the collection
+    /// at declaration path `decl_path` — the read-facing form a `return`, a local
+    /// `name = …` row binding, or a row-receiver `.` observes (§8.1, §8.10). Unlike
+    /// [`Self::row_cell_of`] this includes nested collections and static structs
+    /// (§5.3, §5.4) and folds computed values. `None` when no row lives there.
+    pub(crate) fn materialize_row_cell(
+        &self,
+        prospective: &Prospective,
+        decl_path: &[String],
+        address: &liasse_store::RowAddress,
+    ) -> Option<Cell> {
+        let collection = self.schema.collection_at_path(decl_path)?;
+        let keep = |name: &str, fields: &FieldMap| self.active(name, fields);
+        let interval = |name: &str, fields: &FieldMap| self.interval(name, fields);
+        let temporal = Temporal { keep: &keep, interval: &interval };
+        let row = materialize::materialize_row(collection, address, prospective.working(), &temporal)?;
+        let compiled = self.compiled.collection_at(decl_path);
+        match compiled {
+            Some(compiled) if !compiled.computed.is_empty() => {
+                let env = self.env(prospective);
+                Some(Cell::Row(Box::new(fold_computed(&env, &compiled.computed, row))))
+            }
+            _ => Some(Cell::Row(Box::new(row))),
+        }
+    }
+
     /// A logical row cell for one collection row, with its computed values (§5.2)
     /// folded in — the read-facing form a `return`, a local `name = …` row
     /// binding, or a row-receiver `.` observes. A collection with no computed

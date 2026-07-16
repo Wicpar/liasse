@@ -16,6 +16,7 @@ liasse-value = { path = "../liasse-value" }
 liasse-ident = { path = "../liasse-ident" }
 liasse-diag = { path = "../liasse-diag" }
 liasse-syntax = { path = "../liasse-syntax" }
+liasse-expr = { path = "../liasse-expr" }
 liasse-model = { path = "../liasse-model" }
 liasse-store = { path = "../liasse-store" }
 liasse-runtime = { path = "../liasse-runtime" }

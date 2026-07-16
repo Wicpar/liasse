@@ -128,6 +128,22 @@ pub(crate) fn materialize_root_filtered(
     Row::keyless(RowId::leaf(0), cells)
 }
 
+/// Materialize the single row at `address` (top-level or nested) with its
+/// nested collections and struct cells (§5.4), for a row receiver / local-row
+/// binding read (§8.1, §8.10). `None` when no row lives there.
+pub(crate) fn materialize_row(
+    collection: &Collection,
+    address: &RowAddress,
+    working: &BTreeMap<RowAddress, FieldMap>,
+    temporal: &Temporal<'_>,
+) -> Option<Row> {
+    let fields = working.get(address)?;
+    let step = address.steps().last()?;
+    let key = key_identity(collection, step.key());
+    let id = RowId::keyed(row_id_text(step.key()));
+    Some(build_row(collection, fields, key, id, address, working, temporal))
+}
+
 /// The full extant row set of one bucketed collection (§14.2), ignoring current
 /// activity — the working set a temporal selector re-derives from. Each row
 /// carries its `$from`/`$until` interval cells.
@@ -152,6 +168,24 @@ fn collection_rows(
     filter_active: bool,
 ) -> Vec<Row> {
     let path = CollectionPath::top(NameSegment::new(name));
+    rows_at(&path, collection, working, temporal, filter_active, None)
+}
+
+/// The rows of one collection at `path` in key-ascending order (B.5), each built
+/// with its nested collections materialized (§5.4). `parent_id` is `None` for a
+/// top-level collection (a key-derived leaf identity) and the containing row's
+/// identity for a nested collection, so a nested row extends its ancestor's
+/// identity path (§7.2, Annex D.1). `filter_active` drops a bucketed collection's
+/// inactive rows; nested collections are read in full.
+fn rows_at(
+    path: &CollectionPath,
+    collection: &Collection,
+    working: &BTreeMap<RowAddress, FieldMap>,
+    temporal: &Temporal<'_>,
+    filter_active: bool,
+    parent_id: Option<&RowId>,
+) -> Vec<Row> {
+    let name = path.name().as_str();
     working
         .iter()
         .filter(|(address, _)| path.contains(address))
@@ -161,8 +195,12 @@ fn collection_rows(
             let key = key_identity(collection, step.key());
             // §12.4 / Annex D.1: a view row's identity derives from its key, not
             // its materialized position, so it survives sibling deletions.
-            let id = RowId::keyed(row_id_text(step.key()));
-            let mut row = build_row(collection, fields, key, id);
+            let key_text = row_id_text(step.key());
+            let id = match parent_id {
+                None => RowId::keyed(key_text),
+                Some(parent) => parent.child_keyed(key_text),
+            };
+            let mut row = build_row(collection, fields, key, id, address, working, temporal);
             if let Some(interval) = (temporal.interval)(name, fields) {
                 row = with_interval_cells(row, interval);
             }
@@ -222,15 +260,34 @@ fn row_id_text(key: &KeyValue) -> String {
 }
 
 /// One collection row as a logical [`Row`]: its key, and a cell per declared
-/// field (§5.4). Fields absent from storage read as `none`.
-fn build_row(collection: &Collection, fields: &FieldMap, key: Value, id: RowId) -> Row {
-    let cells = collection.shape.members.iter().map(|member| {
-        let name = member.name.as_str();
-        let cell = match &member.node {
-            Node::Collection(_) => Cell::Collection(Vec::new()),
-            _ => Cell::Scalar(fields.get(name).cloned().unwrap_or(Value::None)),
-        };
-        (name.to_owned(), cell)
-    });
+/// field (§5.4). A nested keyed collection member is materialized from the rows
+/// living under this row's `address` (§5.4), extending its identity; every other
+/// field reads its stored value (absent reads as `none`).
+fn build_row(
+    collection: &Collection,
+    fields: &FieldMap,
+    key: Value,
+    id: RowId,
+    address: &RowAddress,
+    working: &BTreeMap<RowAddress, FieldMap>,
+    temporal: &Temporal<'_>,
+) -> Row {
+    let cells: Vec<(String, Cell)> = collection
+        .shape
+        .members
+        .iter()
+        .map(|member| {
+            let name = member.name.as_str();
+            let cell = match &member.node {
+                Node::Collection(nested) => {
+                    let nested_path =
+                        CollectionPath::nested(address.steps().cloned(), NameSegment::new(name));
+                    Cell::Collection(rows_at(&nested_path, nested, working, temporal, false, Some(&id)))
+                }
+                _ => Cell::Scalar(fields.get(name).cloned().unwrap_or(Value::None)),
+            };
+            (name.to_owned(), cell)
+        })
+        .collect();
     Row::new(id, key, cells)
 }

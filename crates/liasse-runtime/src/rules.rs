@@ -95,10 +95,11 @@ pub(crate) fn finalize(
 ) -> Result<(), Rejection> {
     for address in touched {
         let Some(fields) = prospective.get(address) else { continue };
-        let Some(name) = address.steps().last().map(|s| s.name().as_str().to_owned()) else {
-            continue;
-        };
-        let Some(collection) = compiled.collection(&name) else { continue };
+        // The declaration-name path of the touched row resolves its compiled
+        // collection, top-level or nested (§5.4).
+        let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
+        let Some(name) = decl.last().cloned() else { continue };
+        let Some(collection) = compiled.collection_at(&decl) else { continue };
         check_fields(collection, fields, address, ctx, prospective)?;
         check_row(collection, fields, address, ctx, prospective)?;
         check_refs(prospective, collection, fields, address)?;
@@ -207,7 +208,10 @@ fn check_uniqueness(
     if collection.unique.is_empty() {
         return Ok(());
     }
-    let path = CollectionPath::top(NameSegment::new(collection.name.as_str()));
+    // §5.7: nested uniqueness is scoped to the parent row — the candidate set is
+    // the siblings under this row's own collection path (ancestors included), so
+    // the same value under a different parent does not conflict.
+    let path = address.collection();
     let others: Vec<RowAddress> = prospective
         .addresses_in(&path)
         .into_iter()

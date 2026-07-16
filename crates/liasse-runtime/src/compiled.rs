@@ -10,7 +10,7 @@
 
 use liasse_diag::{SourceId, SourceMap};
 use liasse_expr::{check_statement, ExprType, RowType, Scope, TypedExpr};
-use liasse_model::{Collection, Model, Node};
+use liasse_model::{Collection, Model, Node, Shape};
 use liasse_syntax::{parse_expression, Stmt};
 use liasse_value::Type;
 
@@ -70,7 +70,10 @@ pub(crate) struct CompiledComputed {
     pub(crate) expr: TypedExpr,
 }
 
-/// A compiled top-level keyed collection: its identity, fields, and constraints.
+/// A compiled keyed collection: its identity, fields, constraints, and — for a
+/// nested collection (§5.4) — the child collections declared under its rows. A
+/// top-level collection is the root of one such tree; `children` holds the
+/// collections nested one level deeper, each compiled the same way.
 pub(crate) struct CompiledCollection {
     pub(crate) name: String,
     pub(crate) key: Vec<String>,
@@ -78,12 +81,40 @@ pub(crate) struct CompiledCollection {
     pub(crate) fields: Vec<CompiledField>,
     pub(crate) computed: Vec<CompiledComputed>,
     pub(crate) row_checks: Vec<CompiledCheck>,
+    /// Static struct members (§5.3): a plain nested object whose fields resolve
+    /// their own defaults/normalizers during the containing insertion.
+    pub(crate) structs: Vec<CompiledStruct>,
+    /// Keyed collections nested directly under this collection's rows (§5.4).
+    pub(crate) children: Vec<CompiledCollection>,
+}
+
+/// A compiled static struct member (§5.3): a plain nested object sharing the
+/// containing row's identity and lifecycle. Its fields carry their own defaults
+/// and normalizers, resolved during the containing insertion (§5.1).
+pub(crate) struct CompiledStruct {
+    pub(crate) name: String,
+    pub(crate) fields: Vec<CompiledField>,
+    pub(crate) row_checks: Vec<CompiledCheck>,
 }
 
 impl CompiledCollection {
     /// The field descriptor named `name`, if declared.
     pub(crate) fn field(&self, name: &str) -> Option<&CompiledField> {
         self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// The nested child collection named `name`, if declared under this row.
+    pub(crate) fn child(&self, name: &str) -> Option<&CompiledCollection> {
+        self.children.iter().find(|c| c.name == name)
+    }
+
+    /// Descend a declaration-name path from this collection to a nested one. An
+    /// empty tail is this collection; each further segment names a child.
+    pub(crate) fn at<'a>(&'a self, path: &[String]) -> Option<&'a CompiledCollection> {
+        match path.split_first() {
+            None => Some(self),
+            Some((head, rest)) => self.child(head)?.at(rest),
+        }
     }
 }
 
@@ -148,9 +179,16 @@ impl Compiled {
         Ok(Self { collections, root_computed, mutations, views, buckets })
     }
 
-    /// The compiled collection named `name`, if any.
+    /// The compiled top-level collection named `name`, if any.
     pub(crate) fn collection(&self, name: &str) -> Option<&CompiledCollection> {
         self.collections.iter().find(|c| c.name == name)
+    }
+
+    /// The compiled collection at a declaration-name path (`["companies"]` or
+    /// `["companies", "offices"]`), descending nested collections (§5.4).
+    pub(crate) fn collection_at(&self, path: &[String]) -> Option<&CompiledCollection> {
+        let (head, rest) = path.split_first()?;
+        self.collection(head)?.at(rest)
     }
 
     /// The compiled mutation named `name`, if any.
@@ -239,7 +277,8 @@ fn compile_collections(
     let mut out = Vec::new();
     for member in &schema.model().root().members {
         if let Node::Collection(collection) = &member.node {
-            out.push(compile_collection(sources, schema, root_ty, member.name.as_str(), collection)?);
+            let path = vec![member.name.as_str().to_owned()];
+            out.push(compile_collection(sources, schema, root_ty, &path, collection)?);
         }
     }
     Ok(out)
@@ -249,16 +288,19 @@ fn compile_collection(
     sources: &mut SourceMap,
     schema: Schema<'_>,
     root_ty: &ExprType,
-    name: &str,
+    path: &[String],
     collection: &Collection,
 ) -> Result<CompiledCollection, EngineError> {
+    let name = path.last().map_or("", String::as_str);
     let row_ty = schema
-        .receiver_row_type(std::slice::from_ref(&name.to_owned()))
+        .receiver_row_type(path)
         .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
     let row_scope = RuntimeScope::new(row_ty.clone(), root_ty.clone());
 
     let mut fields = Vec::new();
     let mut computed = Vec::new();
+    let mut structs = Vec::new();
+    let mut children = Vec::new();
     let mut unique: Vec<Vec<String>> = collection
         .unique
         .iter()
@@ -266,65 +308,29 @@ fn compile_collection(
         .collect();
 
     for member in &collection.shape.members {
-        let field = match &member.node {
-            // A read-only computed value inside a row is not an insertable or
-            // assignable field (§5.2): it is compiled once and evaluated per row
-            // at materialization, not staged as a writable field.
-            Node::Scalar(scalar) if !scalar.is_writable() => {
-                if let Some(source) = &scalar.computed {
-                    let (expr, _src) = compile_expr(sources, &row_scope, "computed", &source.text)?;
-                    computed.push(CompiledComputed { name: member.name.as_str().to_owned(), expr });
-                }
-                continue;
+        let name = member.name.as_str();
+        match &member.node {
+            // A static struct member (§5.3): compiled so its own field defaults,
+            // normalizers, and checks run during the containing insertion (§5.1).
+            Node::Struct(shape) => {
+                let mut child_path = path.to_vec();
+                child_path.push(name.to_owned());
+                structs.push(compile_struct(sources, schema, root_ty, &child_path, name, shape)?);
             }
-            Node::Scalar(scalar) => {
-                if scalar.unique {
-                    unique.push(vec![member.name.as_str().to_owned()]);
-                }
-                let default = match &scalar.default {
-                    Some(source) => Some(compile_expr(sources, &row_scope, "default", &source.text)?),
-                    None => None,
-                };
-                let field_scope = RuntimeScope::new(ExprType::scalar(scalar.ty.clone()), root_ty.clone());
-                let normalize = match &scalar.normalize {
-                    Some(source) => Some(compile_expr(sources, &field_scope, "normalize", &source.text)?),
-                    None => None,
-                };
-                let checks = compile_checks(sources, &field_scope, "check", &scalar.checks)?;
-                CompiledField {
-                    name: member.name.as_str().to_owned(),
-                    ty: scalar.ty.clone(),
-                    reference: None,
-                    default,
-                    normalize,
-                    checks,
+            // A nested keyed collection (§5.4): compiled recursively into a child.
+            Node::Collection(nested) => {
+                let mut child_path = path.to_vec();
+                child_path.push(name.to_owned());
+                children.push(compile_collection(sources, schema, root_ty, &child_path, nested)?);
+            }
+            _ => {
+                if let Some(field) =
+                    compile_field(sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed)?
+                {
+                    fields.push(field);
                 }
             }
-            Node::Reference(reference) => {
-                let target = reference.target.trim_start_matches('/').to_owned();
-                let on_delete = compile_on_delete(sources, schema, root_ty, &row_ty, &target, reference)?;
-                CompiledField {
-                    name: member.name.as_str().to_owned(),
-                    ty: Type::Ref(liasse_value::RefTarget::Scalar(Box::new(reference.key_type.clone()))),
-                    reference: Some(RefInfo { target, optional: reference.optional, on_delete }),
-                    default: None,
-                    normalize: None,
-                    checks: Vec::new(),
-                }
-            }
-            Node::Set(set) => CompiledField {
-                name: member.name.as_str().to_owned(),
-                ty: Type::Set(Box::new(set.element.clone())),
-                reference: None,
-                default: None,
-                normalize: None,
-                checks: Vec::new(),
-            },
-            // Nested structs/collections, computed values, and views inside a row
-            // are documented CORE seams (not insertable/patchable fields here).
-            _ => continue,
-        };
-        fields.push(field);
+        }
     }
 
     let row_checks = compile_checks(sources, &row_scope, "row-check", &collection.shape.checks)?;
@@ -336,7 +342,106 @@ fn compile_collection(
         fields,
         computed,
         row_checks,
+        structs,
+        children,
     })
+}
+
+/// Compile a static struct member (§5.3): its writable fields (with defaults,
+/// normalizers, and checks) and its struct-level `$check`s, so a supplied struct
+/// initializer resolves omitted defaults and is validated with the row (§5.1,
+/// §5.10). Nested collections inside a struct remain a documented seam.
+fn compile_struct(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+    path: &[String],
+    name: &str,
+    shape: &Shape,
+) -> Result<CompiledStruct, EngineError> {
+    let row_ty = schema
+        .receiver_row_type(path)
+        .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
+    let row_scope = RuntimeScope::new(row_ty.clone(), root_ty.clone());
+    let mut fields = Vec::new();
+    let mut unique = Vec::new();
+    let mut computed = Vec::new();
+    for member in &shape.members {
+        if let Node::Scalar(_) | Node::Reference(_) | Node::Set(_) = &member.node
+            && let Some(field) =
+                compile_field(sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed)?
+        {
+            fields.push(field);
+        }
+    }
+    let row_checks = compile_checks(sources, &row_scope, "struct-check", &shape.checks)?;
+    Ok(CompiledStruct { name: name.to_owned(), fields, row_checks })
+}
+
+/// Compile one writable field (scalar, reference, or set) of a row or struct
+/// shape, or `None` for a read-only computed value (which is accumulated into
+/// `computed` instead). A `$unique: true` scalar appends a single-field
+/// candidate key to `unique`.
+#[allow(clippy::too_many_arguments)]
+fn compile_field(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+    row_ty: &ExprType,
+    row_scope: &RuntimeScope,
+    member: &liasse_model::Member,
+    unique: &mut Vec<Vec<String>>,
+    computed: &mut Vec<CompiledComputed>,
+) -> Result<Option<CompiledField>, EngineError> {
+    let name = member.name.as_str().to_owned();
+    let field = match &member.node {
+        // A read-only computed value is not an insertable field (§5.2).
+        Node::Scalar(scalar) if !scalar.is_writable() => {
+            if let Some(source) = &scalar.computed {
+                let (expr, _src) = compile_expr(sources, row_scope, "computed", &source.text)?;
+                computed.push(CompiledComputed { name, expr });
+            }
+            return Ok(None);
+        }
+        Node::Scalar(scalar) => {
+            if scalar.unique {
+                unique.push(vec![name.clone()]);
+            }
+            let default = match &scalar.default {
+                Some(source) => Some(compile_expr(sources, row_scope, "default", &source.text)?),
+                None => None,
+            };
+            let field_scope = RuntimeScope::new(ExprType::scalar(scalar.ty.clone()), root_ty.clone());
+            let normalize = match &scalar.normalize {
+                Some(source) => Some(compile_expr(sources, &field_scope, "normalize", &source.text)?),
+                None => None,
+            };
+            let checks = compile_checks(sources, &field_scope, "check", &scalar.checks)?;
+            CompiledField { name, ty: scalar.ty.clone(), reference: None, default, normalize, checks }
+        }
+        Node::Reference(reference) => {
+            let target = reference.target.trim_start_matches('/').to_owned();
+            let on_delete = compile_on_delete(sources, schema, root_ty, row_ty, &target, reference)?;
+            CompiledField {
+                name,
+                ty: Type::Ref(liasse_value::RefTarget::Scalar(Box::new(reference.key_type.clone()))),
+                reference: Some(RefInfo { target, optional: reference.optional, on_delete }),
+                default: None,
+                normalize: None,
+                checks: Vec::new(),
+            }
+        }
+        Node::Set(set) => CompiledField {
+            name,
+            ty: Type::Set(Box::new(set.element.clone())),
+            reference: None,
+            default: None,
+            normalize: None,
+            checks: Vec::new(),
+        },
+        _ => return Ok(None),
+    };
+    Ok(Some(field))
 }
 
 fn compile_mutations(

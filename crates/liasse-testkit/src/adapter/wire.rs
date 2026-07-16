@@ -50,26 +50,30 @@ pub fn response_to_json(response: &ResponseValue) -> J {
     response.to_wire()
 }
 
-/// Render a view result to a strict-JSON array of row objects — the shape a
-/// `watch`/`expect_view` value matcher is written against.
+/// Render a view result per its delivered shape (§12.2): a singular view (a
+/// root/struct projection or an aggregate) is one JSON object, a collection view
+/// a JSON array. A singular view materializes to exactly one row, whose fields
+/// are that object; anything else falls back to the array form.
 #[must_use]
-pub fn view_to_json(result: &ViewResult) -> J {
-    rows_to_json(result.rows())
+pub fn view_to_json_shaped(result: &ViewResult, singular: bool) -> J {
+    match (singular, result.rows()) {
+        (true, [row]) => row_to_json(row),
+        _ => rows_to_json(result.rows()),
+    }
+}
+
+/// Render one view row to a strict-JSON object of its output fields.
+fn row_to_json(row: &ViewRow) -> J {
+    let mut object = serde_json::Map::new();
+    for (name, value) in row.fields() {
+        object.insert(name.clone(), value.to_wire());
+    }
+    J::Object(object)
 }
 
 /// Render a slice of view rows to the same strict-JSON array shape (a windowed
 /// subscription delivers rows directly rather than a full [`ViewResult`]).
 #[must_use]
 pub fn rows_to_json(rows: &[ViewRow]) -> J {
-    J::Array(
-        rows.iter()
-            .map(|row| {
-                let mut object = serde_json::Map::new();
-                for (name, value) in row.fields() {
-                    object.insert(name.clone(), value.to_wire());
-                }
-                J::Object(object)
-            })
-            .collect(),
-    )
+    J::Array(rows.iter().map(row_to_json).collect())
 }

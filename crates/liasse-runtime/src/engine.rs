@@ -362,7 +362,7 @@ impl<S: InstanceStore> Engine<S> {
             // §8.9: no state change → `unchanged`; the response is evaluated from
             // the unchanged state and the frontier does not advance.
             let response =
-                eval_return(&self.compiled, &ctx, &prospective, &receiver, &locals, mutation, ret.as_ref());
+                eval_return(&ctx, &prospective, &receiver, &locals, mutation, ret.as_ref());
             return Ok(CallOutcome::Unchanged { response });
         }
 
@@ -374,7 +374,7 @@ impl<S: InstanceStore> Engine<S> {
         };
         // §8.6: the response is evaluated from the committed resulting state.
         let post = Prospective::gather(&self.store, schema)?;
-        let response = eval_return(&self.compiled, &ctx, &post, &receiver, &locals, mutation, ret.as_ref());
+        let response = eval_return(&ctx, &post, &receiver, &locals, mutation, ret.as_ref());
         Ok(CallOutcome::Committed { seq, response })
     }
 
@@ -456,7 +456,7 @@ fn receiver_target(
     };
     let key = key_of(request.receiver_key())?;
     let address = crate::materialize::top_address(&collection, key);
-    Ok(Some(RowTarget { address, collection }))
+    Ok(Some(RowTarget { address, path: vec![collection] }))
 }
 
 fn key_of(components: &[liasse_value::Value]) -> Result<KeyValue, Rejection> {
@@ -484,7 +484,6 @@ fn stage<T: Transition>(txn: &mut T, changes: Vec<Change>) -> Result<(), EngineE
 
 /// Evaluate a mutation's `return` from the admitted state (§8.6, §8.10).
 fn eval_return(
-    compiled: &Compiled,
     ctx: &EvalCtx<'_>,
     prospective: &Prospective,
     receiver: &Option<RowTarget>,
@@ -493,7 +492,7 @@ fn eval_return(
     ret: Option<&(liasse_syntax::Expr, liasse_diag::SourceId)>,
 ) -> Option<ResponseValue> {
     let (expr, source) = ret?;
-    let current = current_cell(compiled, ctx, prospective, receiver)?;
+    let current = current_cell(ctx, prospective, receiver)?;
     // The `return` may name a `name = …` local (§8.1); resolve every binding's
     // type and cell against the committed state it is evaluated over (§8.10).
     let (types, cells) = crate::interp::local_bindings(locals, ctx, prospective);
@@ -507,17 +506,12 @@ fn eval_return(
 }
 
 fn current_cell(
-    compiled: &Compiled,
     ctx: &EvalCtx<'_>,
     prospective: &Prospective,
     receiver: &Option<RowTarget>,
 ) -> Option<Cell> {
     match receiver {
         None => Some(Cell::Row(Box::new(ctx.root(prospective)))),
-        Some(receiver) => {
-            let collection = compiled.collection(&receiver.collection)?;
-            let fields = prospective.get(&receiver.address)?;
-            Some(ctx.row_cell_of(prospective, collection, fields))
-        }
+        Some(receiver) => ctx.materialize_row_cell(prospective, &receiver.path, &receiver.address),
     }
 }

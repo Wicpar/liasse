@@ -58,6 +58,21 @@ impl<'m> Schema<'m> {
         Self::collection_member(self.model.root(), name)
     }
 
+    /// The model collection at a declaration-name path, descending nested
+    /// collections (§5.4): `["companies"]` top-level, `["companies", "offices"]`
+    /// nested.
+    pub(crate) fn collection_at_path(&self, path: &[String]) -> Option<&'m Collection> {
+        let (head, rest) = path.split_first()?;
+        let mut current = self.top_collection(head)?;
+        for segment in rest {
+            current = match current.shape.member(segment).map(|m| &m.node) {
+                Some(Node::Collection(nested)) => nested,
+                _ => return None,
+            };
+        }
+        Some(current)
+    }
+
     fn collection_member<'a>(shape: &'a Shape, name: &str) -> Option<&'a Collection> {
         match shape.member(name).map(|m| &m.node) {
             Some(Node::Collection(collection)) => Some(collection),

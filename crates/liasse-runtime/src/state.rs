@@ -10,12 +10,18 @@
 use std::collections::BTreeMap;
 
 use liasse_ident::NameSegment;
-use liasse_model::Node;
-use liasse_store::{CollectionPath, InstanceStore, RowAddress, StoreError};
+use liasse_model::{Collection, Node};
+use liasse_store::{CollectionPath, InstanceStore, RowAddress, Snapshot, StoreError};
 use liasse_value::Value;
 
 use crate::materialize::{self, FieldMap};
 use crate::schema::Schema;
+
+/// Scans a collection path for its direct committed rows: the primitive a
+/// [`Prospective`] gathers from, backed by either the live store or a frontier
+/// [`Snapshot`]. The recursion in [`Prospective::gather_from`] descends nested
+/// collections (§5.4) by re-scanning under each parent address.
+type Scan<'a> = dyn Fn(&CollectionPath) -> Result<Vec<(RowAddress, Value)>, StoreError> + 'a;
 
 /// One resolved change between the committed base and the admitted working
 /// state, ready to stage into a store transition.
@@ -37,50 +43,44 @@ pub(crate) struct Prospective {
 }
 
 impl Prospective {
-    /// Gather committed rows of every top-level collection into a working copy.
+    /// Gather committed rows of every collection — top-level and nested (§5.4) —
+    /// into a working copy.
     pub(crate) fn gather<S: InstanceStore>(
         store: &S,
         schema: Schema<'_>,
     ) -> Result<Self, StoreError> {
-        let mut committed = BTreeMap::new();
-        let mut working = BTreeMap::new();
-        for member in &schema.model().root().members {
-            if let Node::Collection(_) = &member.node {
-                let path = CollectionPath::top(NameSegment::new(member.name.as_str()));
-                for (address, row) in store.scan(&path)? {
-                    working.insert(address.clone(), materialize::fields_of(row.value()));
-                    committed.insert(address, row.value().clone());
-                }
-            }
-        }
-        // §8.2: the package root's singleton fields live in one reserved row.
-        for (address, row) in store.scan(&crate::singleton::path())? {
-            working.insert(address.clone(), materialize::fields_of(row.value()));
-            committed.insert(address, row.value().clone());
-        }
-        Ok(Self { committed, working })
+        Self::gather_from(
+            &|path| Ok(store.scan(path)?.into_iter().map(|(a, r)| (a, r.value().clone())).collect()),
+            schema,
+        )
     }
 
     /// Gather the committed rows visible at a frontier snapshot into a
     /// read-only working copy (used for view evaluation at a frontier).
-    pub(crate) fn from_snapshot(snapshot: &liasse_store::Snapshot, schema: Schema<'_>) -> Self {
+    pub(crate) fn from_snapshot(snapshot: &Snapshot, schema: Schema<'_>) -> Self {
+        // A snapshot scan is infallible, so this cannot error.
+        Self::gather_from(
+            &|path| Ok(snapshot.scan(path).into_iter().map(|(a, r)| (a, r.value().clone())).collect()),
+            schema,
+        )
+        .unwrap_or_else(|_| Self::empty())
+    }
+
+    fn gather_from(scan: &Scan<'_>, schema: Schema<'_>) -> Result<Self, StoreError> {
         let mut committed = BTreeMap::new();
         let mut working = BTreeMap::new();
         for member in &schema.model().root().members {
-            if let Node::Collection(_) = &member.node {
+            if let Node::Collection(collection) = &member.node {
                 let path = CollectionPath::top(NameSegment::new(member.name.as_str()));
-                for (address, row) in snapshot.scan(&path) {
-                    working.insert(address.clone(), materialize::fields_of(row.value()));
-                    committed.insert(address, row.value().clone());
-                }
+                gather_tree(scan, collection, &path, &mut committed, &mut working)?;
             }
         }
         // §8.2: the package root's singleton fields live in one reserved row.
-        for (address, row) in snapshot.scan(&crate::singleton::path()) {
-            working.insert(address.clone(), materialize::fields_of(row.value()));
-            committed.insert(address, row.value().clone());
+        for (address, value) in scan(&crate::singleton::path())? {
+            working.insert(address.clone(), materialize::fields_of(&value));
+            committed.insert(address, value);
         }
-        Self { committed, working }
+        Ok(Self { committed, working })
     }
 
     /// An empty prospective state (genesis, before any seed).
@@ -148,4 +148,28 @@ impl Prospective {
         }
         changes
     }
+}
+
+/// Gather every direct row of the collection at `path`, then recurse into each
+/// row's nested keyed collections (§5.4), so the whole subtree of committed rows
+/// enters the working copy.
+fn gather_tree(
+    scan: &Scan<'_>,
+    collection: &Collection,
+    path: &CollectionPath,
+    committed: &mut BTreeMap<RowAddress, Value>,
+    working: &mut BTreeMap<RowAddress, FieldMap>,
+) -> Result<(), StoreError> {
+    for (address, value) in scan(path)? {
+        working.insert(address.clone(), materialize::fields_of(&value));
+        for member in &collection.shape.members {
+            if let Node::Collection(nested) = &member.node {
+                let nested_path =
+                    CollectionPath::nested(address.steps().cloned(), NameSegment::new(member.name.as_str()));
+                gather_tree(scan, nested, &nested_path, committed, working)?;
+            }
+        }
+        committed.insert(address, value);
+    }
+    Ok(())
 }

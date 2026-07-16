@@ -11,14 +11,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::SourceId;
-use liasse_expr::{check_expression, Cell, ExprType};
+use liasse_expr::{check_expression, Cell, ExprType, Row, RowId};
 use liasse_ident::NameSegment;
 use liasse_syntax::{Arg, BinaryOp, BlockMember, BlockMemberKind, Expr, ExprKind, Selector, Stmt, StmtKind, UnaryOp};
 use liasse_store::{CollectionPath, KeyValue, RowAddress};
-use liasse_value::Value;
+use liasse_value::{Struct, Text, Value};
 
 use crate::cascade::{self, PlannedDeletion};
-use crate::compiled::{Compiled, CompiledCollection, CompiledMutation};
+use crate::compiled::{Compiled, CompiledCollection, CompiledMutation, CompiledStruct};
 use crate::deletion::RowRef;
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
@@ -27,11 +27,22 @@ use crate::rules;
 use crate::scope::RuntimeScope;
 use crate::state::Prospective;
 
-/// A row-source location: the selected row's address and its collection name.
+/// A row-source location: the selected row's address and the declaration-name
+/// path of its collection (`["companies"]` top-level, `["companies", "offices"]`
+/// nested, §5.4). The path resolves the compiled collection and the receiver
+/// row type; the address locates the row (ancestor identity included).
 #[derive(Clone)]
 pub(crate) struct RowTarget {
     pub(crate) address: RowAddress,
-    pub(crate) collection: String,
+    pub(crate) path: Vec<String>,
+}
+
+/// A resolved collection location: where its rows live in the store
+/// ([`CollectionPath`], ancestor identity included) and the declaration-name
+/// path that resolves its compiled shape (§5.4).
+struct CollectionLoc {
+    store_path: CollectionPath,
+    decl: Vec<String>,
 }
 
 /// The row(s) a patch base resolves to (§8.9): exactly one (a keyed selector or
@@ -64,17 +75,14 @@ pub(crate) fn local_bindings(
     for (name, bind) in locals {
         match bind {
             LocalBind::Row(target) => {
-                let Some(ty) = ctx.schema.receiver_row_type(std::slice::from_ref(&target.collection))
-                else {
+                let Some(ty) = ctx.schema.receiver_row_type(&target.path) else {
                     continue;
                 };
-                let (Some(collection), Some(fields)) =
-                    (ctx.compiled.collection(&target.collection), prospective.get(&target.address))
-                else {
+                let Some(cell) = ctx.materialize_row_cell(prospective, &target.path, &target.address) else {
                     continue;
                 };
                 types.insert(name.clone(), ty);
-                cells.insert(name.clone(), ctx.row_cell_of(prospective, collection, fields));
+                cells.insert(name.clone(), cell);
             }
             LocalBind::Value(cell, ty) => {
                 types.insert(name.clone(), ty.clone());
@@ -129,32 +137,41 @@ impl<'a> Interp<'a> {
         match &self.receiver {
             None => Ok(Cell::Row(Box::new(self.ctx.root(self.prospective)))),
             Some(receiver) => {
-                let collection = self.collection(&receiver.collection)?;
-                let fields = self.prospective.get(&receiver.address).ok_or_else(|| {
-                    Rejection::new(RejectionReason::MissingTarget, "the selected row no longer exists")
-                        .at(receiver.address.render())
-                })?;
-                Ok(self.ctx.row_cell_of(self.prospective, collection, fields))
+                self.ctx.materialize_row_cell(self.prospective, &receiver.path, &receiver.address).ok_or_else(
+                    || {
+                        Rejection::new(RejectionReason::MissingTarget, "the selected row no longer exists")
+                            .at(receiver.address.render())
+                    },
+                )
             }
         }
     }
 
-    fn collection(&self, name: &str) -> Result<&'a CompiledCollection, Rejection> {
-        self.compiled
-            .collection(name)
-            .ok_or_else(|| Rejection::new(RejectionReason::Malformed, format!("unknown collection `{name}`")))
+    /// The compiled collection at a declaration-name path (top-level or nested).
+    fn collection_at(&self, path: &[String]) -> Result<&'a CompiledCollection, Rejection> {
+        self.compiled.collection_at(path).ok_or_else(|| {
+            Rejection::new(RejectionReason::Malformed, format!("unknown collection `{}`", path.join("/")))
+        })
     }
 
-    /// The address of the row `fields` occupies in collection `name`, by key.
-    fn key_address(&self, name: &str, fields: &FieldMap) -> Result<RowAddress, Rejection> {
-        let model = self
-            .ctx
-            .schema
-            .top_collection(name)
-            .ok_or_else(|| Rejection::new(RejectionReason::Malformed, format!("unknown collection `{name}`")))?;
-        let key = materialize::row_key(model, fields)
+    /// The key of `fields` in `collection`, in `$key` order (§5.4).
+    fn key_of(collection: &CompiledCollection, fields: &FieldMap) -> Option<KeyValue> {
+        let mut components = collection.key.iter().map(|field| fields.get(field.as_str()).cloned());
+        let first = components.next().flatten()?;
+        let mut rest = Vec::new();
+        for component in components {
+            rest.push(component?);
+        }
+        Some(KeyValue::composite(first, rest))
+    }
+
+    /// The address `fields` occupy in the collection at declaration path `path`,
+    /// rooted under `store_path` so a nested row keeps its ancestor identity.
+    fn key_address(&self, store_path: &CollectionPath, path: &[String], fields: &FieldMap) -> Result<RowAddress, Rejection> {
+        let collection = self.collection_at(path)?;
+        let key = Self::key_of(collection, fields)
             .ok_or_else(|| Rejection::new(RejectionReason::Malformed, "the row is missing a key field"))?;
-        Ok(materialize::top_address(name, key))
+        Ok(store_path.row(key))
     }
 
     /// The mutation's scope extended with the current local bindings' types, so a
@@ -206,7 +223,7 @@ impl<'a> Interp<'a> {
             Cell::Scalar(value) => value,
             _ => return Err(Rejection::new(RejectionReason::TypeError, "a field is assigned a scalar value")),
         };
-        let collection = self.collection(&row.collection)?;
+        let collection = self.collection_at(&row.path)?;
         if let Some(field_meta) = collection.field(&field)
             && let Some(from) = typed.ty().as_scalar()
             && !crate::schema::assignable(from, &field_meta.ty)
@@ -226,7 +243,7 @@ impl<'a> Interp<'a> {
     /// (§8.4, §8.10); any other right-hand side binds its evaluated value.
     fn bind_local(&mut self, name: String, value: &Expr, source: SourceId) -> Result<(), Rejection> {
         if let ExprKind::Binary { op: BinaryOp::Add, lhs, rhs } = &value.kind
-            && self.collection_ref(lhs).is_some()
+            && self.collection_ref(lhs, source)?.is_some()
         {
             let target = self.insert_row(lhs, rhs, source)?;
             self.locals.insert(name, LocalBind::Row(target));
@@ -236,17 +253,17 @@ impl<'a> Interp<'a> {
         // they existed immediately before removal, are captured in selector order
         // and bound as a collection value, so `return name { … }` projects them.
         if let ExprKind::Binary { op: BinaryOp::Sub, lhs, rhs } = &value.kind
-            && let Some((_path, collection)) = self.collection_ref(lhs)
+            && let Some(loc) = self.collection_ref(lhs, source)?
         {
             let keys = self.delete_key_values(rhs, source)?;
-            return self.bind_deleted(name, collection, keys);
+            return self.bind_deleted(name, loc.decl, keys);
         }
         if let ExprKind::Unary { op: UnaryOp::Neg, operand } = &value.kind
             && let ExprKind::Select { base, .. } = &operand.kind
-            && let Some((_path, collection)) = self.collection_ref(base)
+            && let Some(loc) = self.collection_ref(base, source)?
         {
             let keys = self.selection_key_values(operand, source)?;
-            return self.bind_deleted(name, collection, keys);
+            return self.bind_deleted(name, loc.decl, keys);
         }
         let current = self.current()?;
         let typed = check_expression(&self.scope(), source, value)
@@ -282,7 +299,10 @@ impl<'a> Interp<'a> {
     /// Capture the pre-delete rows for `keys` (deduplicated to first occurrence,
     /// §8.4), delete them through the §21.1 cascade planner, and bind the captured
     /// collection to `name` so a `return name { … }` projects the removed rows.
-    fn bind_deleted(&mut self, name: String, collection: String, keys: Vec<Value>) -> Result<(), Rejection> {
+    fn bind_deleted(&mut self, name: String, decl: Vec<String>, keys: Vec<Value>) -> Result<(), Rejection> {
+        // Cascade deletion planning is scoped to top-level collections (§21.1);
+        // nested-collection deletion is a documented seam.
+        let collection = decl.last().cloned().unwrap_or_default();
         let mut seen = BTreeSet::new();
         let mut ordered = Vec::new();
         for key in keys {
@@ -290,7 +310,7 @@ impl<'a> Interp<'a> {
                 ordered.push(key);
             }
         }
-        let compiled = self.collection(&collection)?;
+        let compiled = self.collection_at(&decl)?;
         let rows: Vec<liasse_expr::Row> = ordered
             .iter()
             .filter_map(|key| {
@@ -324,32 +344,56 @@ impl<'a> Interp<'a> {
                 .at(row.address.render())
         })?;
         fields.insert(field.to_owned(), value);
-        let collection = self.collection(&row.collection)?;
+        let collection = self.collection_at(&row.path)?;
         rules::normalize_field(collection, field, &mut fields, self.ctx, self.prospective)?;
-        self.place(&row.address, &row.collection, fields)
+        self.place(&row.address, &row.path, fields)
     }
 
-    /// Place `fields` for the row currently at `address`, moving it to a new
-    /// address when its key changed (an atomic rekey, §5.4).
-    fn place(&mut self, address: &RowAddress, collection: &str, fields: FieldMap) -> Result<(), Rejection> {
-        let new_address = self.key_address(collection, &fields)?;
-        if &new_address != address {
-            if self.prospective.contains(&new_address) {
-                return Err(Rejection::new(RejectionReason::DuplicateKey, "rekey target already exists")
-                    .at(new_address.render()));
-            }
-            self.prospective.remove(address);
-            self.prospective.insert(new_address.clone(), fields);
-            if let Some(receiver) = &mut self.receiver
-                && &receiver.address == address
-            {
-                receiver.address = new_address.clone();
-            }
-            self.mark(new_address);
-        } else {
+    /// Place `fields` for the row currently at `address` (whose collection is at
+    /// declaration path `path`), moving it — and its whole descendant subtree — to
+    /// the new address when a key field changed (an atomic rekey, §5.4). A nested
+    /// row keeps its ancestor identity; an ancestor rekey re-roots every descendant
+    /// under the new ancestor key so no ghost subtree survives at the old address.
+    fn place(&mut self, address: &RowAddress, path: &[String], fields: FieldMap) -> Result<(), Rejection> {
+        let new_address = self.key_address(&address.collection(), path, &fields)?;
+        if &new_address == address {
             self.prospective.replace(address, fields);
             self.mark(address.clone());
+            return Ok(());
         }
+        if self.prospective.contains(&new_address) {
+            return Err(Rejection::new(RejectionReason::DuplicateKey, "rekey target already exists")
+                .at(new_address.render()));
+        }
+        // Re-root every descendant subtree row under the new ancestor address, then
+        // move the row itself. Collision on any moved descendant rejects (§5.4).
+        let old_depth = address.depth();
+        let descendants: Vec<RowAddress> = self
+            .prospective
+            .working()
+            .keys()
+            .filter(|other| other.depth() > old_depth && is_prefix(address, other))
+            .cloned()
+            .collect();
+        for descendant in descendants {
+            let moved = reroot(&new_address, &descendant, old_depth);
+            if self.prospective.contains(&moved) {
+                return Err(Rejection::new(RejectionReason::DuplicateKey, "rekey descendant target already exists")
+                    .at(moved.render()));
+            }
+            let Some(sub) = self.prospective.get(&descendant).cloned() else { continue };
+            self.prospective.remove(&descendant);
+            self.prospective.insert(moved.clone(), sub);
+            self.mark(moved);
+        }
+        self.prospective.remove(address);
+        self.prospective.insert(new_address.clone(), fields);
+        if let Some(receiver) = &mut self.receiver
+            && &receiver.address == address
+        {
+            receiver.address = new_address.clone();
+        }
+        self.mark(new_address);
         Ok(())
     }
 
@@ -401,7 +445,7 @@ impl<'a> Interp<'a> {
     }
 
     fn exec_insert(&mut self, collection: &Expr, object: &Expr, source: SourceId) -> Result<(), Rejection> {
-        if self.collection_ref(collection).is_some() {
+        if self.collection_ref(collection, source)?.is_some() {
             self.insert_row(collection, object, source)?;
             return Ok(());
         }
@@ -420,7 +464,7 @@ impl<'a> Interp<'a> {
         let Some((row, field)) = self.field_target(expr, source)? else { return Ok(None) };
         let is_set = self
             .compiled
-            .collection(&row.collection)
+            .collection_at(&row.path)
             .and_then(|c| c.field(&field))
             .is_some_and(|f| matches!(f.ty, liasse_value::Type::Set(_)));
         Ok(is_set.then_some((row, field)))
@@ -458,38 +502,157 @@ impl<'a> Interp<'a> {
     }
 
     /// Construct and stage one row from `collection + { … }` (§8.4), applying
-    /// insertion defaults and normalization, and return its address so a local
-    /// binding can name the inserted row.
+    /// insertion defaults, normalization, static-struct defaults (§5.3), and any
+    /// supplied nested-collection initializers (§5.5), returning its address so a
+    /// local binding can name the inserted row. A nested initializer's rows are
+    /// staged under the parent address and validated atomically (§5.5): a failure
+    /// there rejects the whole insertion, parent included.
     fn insert_row(
         &mut self,
         collection: &Expr,
         object: &Expr,
         source: SourceId,
     ) -> Result<RowTarget, Rejection> {
-        let Some((_, name)) = self.collection_ref(collection) else {
-            return Err(Rejection::new(RejectionReason::Malformed, "insert targets a top-level collection"));
+        let Some(loc) = self.collection_ref(collection, source)? else {
+            return Err(Rejection::new(RejectionReason::Malformed, "insert targets a collection"));
         };
         let ExprKind::Object(members) = &object.kind else {
             return Err(Rejection::new(RejectionReason::Malformed, "insert takes a `{ field: value }` row"));
         };
+        let compiled = self.collection_at(&loc.decl)?;
         let current = self.current()?;
+        // Partition the object members: scalar/ref/set fields and static structs
+        // stage onto this row; a member naming a child collection is a nested
+        // initializer staged after the parent address is known.
         let mut fields = FieldMap::new();
+        let mut initializers: Vec<(String, &Expr)> = Vec::new();
         for member in members {
+            if let Some((field, value_expr)) = named_member(member) {
+                if compiled.child(&field).is_some() {
+                    initializers.push((field, value_expr));
+                    continue;
+                }
+                if let Some(struct_meta) = compiled.structs.iter().find(|s| s.name == field) {
+                    let value = self.struct_value(struct_meta, value_expr, source, &current)?;
+                    fields.insert(field, value);
+                    continue;
+                }
+            }
             if let Some((field, value)) = self.object_member(member, &current, source)? {
                 fields.insert(field, value);
             }
         }
-        let collection = self.collection(&name)?;
-        rules::apply_defaults(collection, &mut fields, self.ctx, self.prospective)?;
-        rules::normalize_all(collection, &mut fields, self.ctx, self.prospective)?;
-        let address = self.key_address(&name, &fields)?;
+        rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective)?;
+        rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
+        let address = self.key_address(&loc.store_path, &loc.decl, &fields)?;
         if self.prospective.contains(&address) {
             return Err(Rejection::new(RejectionReason::DuplicateKey, "a row with this key already exists")
                 .at(address.render()));
         }
         self.prospective.insert(address.clone(), fields);
         self.mark(address.clone());
-        Ok(RowTarget { address, collection: name })
+        for (child, value_expr) in initializers {
+            self.stage_initializer(&address, &loc.decl, &child, value_expr, source)?;
+        }
+        Ok(RowTarget { address, path: loc.decl })
+    }
+
+    /// Stage the rows of a supplied nested-collection initializer (§5.5) under
+    /// the parent `address`: the initializer is a keyed row view, each row of
+    /// which is inserted into the child collection through the ordinary defaults,
+    /// normalization, and duplicate-key rules. Rows are validated atomically with
+    /// the parent by the shared final rule pass over the touched set.
+    fn stage_initializer(
+        &mut self,
+        parent: &RowAddress,
+        parent_decl: &[String],
+        child: &str,
+        value_expr: &Expr,
+        source: SourceId,
+    ) -> Result<(), Rejection> {
+        let mut decl = parent_decl.to_vec();
+        decl.push(child.to_owned());
+        let store_path =
+            CollectionPath::nested(parent.steps().cloned(), NameSegment::new(child.to_owned()));
+        let current = self.current()?;
+        let rows = match self.eval_value(value_expr, source, &current)? {
+            Cell::Collection(rows) => rows,
+            Cell::Row(row) => vec![*row],
+            Cell::Scalar(_) => {
+                return Err(Rejection::new(
+                    RejectionReason::TypeError,
+                    format!("child collection `{child}` initializer must be a keyed row view"),
+                ));
+            }
+        };
+        let compiled = self.collection_at(&decl)?;
+        for row in rows {
+            let mut fields = FieldMap::new();
+            for (name, cell) in row.cells() {
+                if let Cell::Scalar(value) = cell {
+                    fields.insert(name.clone(), value.clone());
+                }
+            }
+            rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective)?;
+            rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
+            let address = self.key_address(&store_path, &decl, &fields)?;
+            if self.prospective.contains(&address) {
+                return Err(Rejection::new(RejectionReason::DuplicateKey, "a row with this key already exists")
+                    .at(address.render()));
+            }
+            self.prospective.insert(address.clone(), fields);
+            self.mark(address);
+        }
+        Ok(())
+    }
+
+    /// Build a static-struct field value from its supplied initializer object
+    /// (§5.3): every supplied member decodes onto the struct, then the struct's
+    /// own field defaults resolve (§5.1) and its normalizers run. An omitted
+    /// optional struct member stays absent. Returns the struct as a value that
+    /// shares the containing row's lifecycle.
+    fn struct_value(
+        &self,
+        struct_meta: &CompiledStruct,
+        value_expr: &Expr,
+        source: SourceId,
+        current: &Cell,
+    ) -> Result<Value, Rejection> {
+        let ExprKind::Object(members) = &value_expr.kind else {
+            // A non-object struct initializer (a view/ref) is a documented seam;
+            // evaluate it verbatim as a scalar value.
+            return self.scalar_value(value_expr, source, current);
+        };
+        let mut fields = FieldMap::new();
+        for member in members {
+            if let Some((field, value)) = self.object_member(member, current, source)? {
+                fields.insert(field, value);
+            }
+        }
+        for field in &struct_meta.fields {
+            if fields.contains_key(&field.name) {
+                continue;
+            }
+            if let Some((typed, _)) = &field.default {
+                let struct_cell = struct_row_cell(struct_meta, &fields);
+                let value = match self.ctx.eval(self.prospective, typed, &struct_cell)? {
+                    Cell::Scalar(value) => value,
+                    _ => Value::None,
+                };
+                fields.insert(field.name.clone(), value);
+            }
+        }
+        // §5.10: a struct `$check` constrains the complete struct after defaults,
+        // with `.` the prospective struct; a failure rejects the containing insert.
+        let struct_cell = struct_row_cell(struct_meta, &fields);
+        for check in &struct_meta.row_checks {
+            if !matches!(self.ctx.eval(self.prospective, &check.condition, &struct_cell)?, Cell::Scalar(Value::Bool(true))) {
+                return Err(Rejection::new(RejectionReason::Check, check.message.clone()));
+            }
+        }
+        Ok(Value::Struct(Struct::new(
+            fields.into_iter().map(|(name, value)| (Text::new(name), value)),
+        )))
     }
 
     fn object_member(
@@ -519,7 +682,7 @@ impl<'a> Interp<'a> {
     }
 
     fn exec_delete(&mut self, collection: &Expr, keys: &Expr, source: SourceId) -> Result<(), Rejection> {
-        let Some((_path, name)) = self.collection_ref(collection) else {
+        let Some(loc) = self.collection_ref(collection, source)? else {
             // §8.5: `.set_field - values` is set difference — removing an absent
             // member leaves the set unchanged.
             if let Some((row, field)) = self.set_field_target(collection, source)? {
@@ -527,6 +690,7 @@ impl<'a> Interp<'a> {
             }
             return Ok(());
         };
+        let name = loc.decl.last().cloned().unwrap_or_default();
         let current = self.current()?;
         let targets: Vec<Value> = match self.scalar_value(keys, source, &current)? {
             Value::Set(members) => members.into_iter().collect(),
@@ -545,9 +709,10 @@ impl<'a> Interp<'a> {
             ExprKind::Select { base, .. } => base.as_ref(),
             _ => operand,
         };
-        let Some((_path, name)) = self.collection_ref(base) else {
+        let Some(loc) = self.collection_ref(base, source)? else {
             return Ok(());
         };
+        let name = loc.decl.last().cloned().unwrap_or_default();
         let current = self.current()?;
         let keys: Vec<Value> = match self.eval_value(operand, source, &current)? {
             Cell::Collection(rows) => rows.iter().map(|row| row.key().clone()).collect(),
@@ -582,11 +747,12 @@ impl<'a> Interp<'a> {
             for (field, value) in patch {
                 fields.insert(field.clone(), value.clone());
             }
-            let collection = self.collection(&row.collection)?;
+            let decl = std::slice::from_ref(&row.collection);
+            let collection = self.collection_at(decl)?;
             for field in patch.keys() {
                 rules::normalize_field(collection, field, &mut fields, self.ctx, self.prospective)?;
             }
-            self.place(address, &row.collection, fields)?;
+            self.place(address, decl, fields)?;
         }
         Ok(())
     }
@@ -619,7 +785,7 @@ impl<'a> Interp<'a> {
     /// bulk patch), possibly empty.
     fn patch_plan(&self, base: &Expr, source: SourceId) -> Result<PatchPlan, Rejection> {
         if let ExprKind::Select { base: inner, selector: Selector::Bind { .. } } = &base.kind {
-            let Some((_path, name)) = self.collection_ref(inner) else {
+            let Some(loc) = self.collection_ref(inner, source)? else {
                 return Err(Rejection::new(RejectionReason::Malformed, "a patch needs a row source"));
             };
             let current = self.current()?;
@@ -631,8 +797,8 @@ impl<'a> Interp<'a> {
             let targets = keys
                 .into_iter()
                 .map(|key| RowTarget {
-                    address: materialize::top_address(&name, KeyValue::single(key)),
-                    collection: name.clone(),
+                    address: loc.store_path.row(KeyValue::single(key)),
+                    path: loc.decl.clone(),
                 })
                 .collect();
             return Ok(PatchPlan::Many(targets));
@@ -654,8 +820,8 @@ impl<'a> Interp<'a> {
         members: &[BlockMember],
         source: SourceId,
     ) -> Result<(), Rejection> {
-        let start = row_cell(self.collection(&row.collection)?, &original);
-        let scope = self.patch_scope(&row.collection);
+        let start = row_cell(self.collection_at(&row.path)?, &original);
+        let scope = self.patch_scope(&row.path);
         let mut updates: Vec<(String, Value)> = Vec::new();
         for member in members {
             if let Some(update) = self.patch_member(member, &scope, &start, source)? {
@@ -667,19 +833,15 @@ impl<'a> Interp<'a> {
             fields.insert(field.clone(), value.clone());
         }
         for (field, _) in &updates {
-            let collection = self.collection(&row.collection)?;
+            let collection = self.collection_at(&row.path)?;
             rules::normalize_field(collection, field, &mut fields, self.ctx, self.prospective)?;
         }
-        self.place(&row.address, &row.collection, fields)
+        self.place(&row.address, &row.path, fields)
     }
 
-    fn patch_scope(&self, collection: &str) -> RuntimeScope {
+    fn patch_scope(&self, path: &[String]) -> RuntimeScope {
         let root = ExprType::Row(self.ctx.schema.root_row_type());
-        let current = self
-            .ctx
-            .schema
-            .receiver_row_type(std::slice::from_ref(&collection.to_owned()))
-            .unwrap_or_else(|| root.clone());
+        let current = self.ctx.schema.receiver_row_type(path).unwrap_or_else(|| root.clone());
         let mut scope = RuntimeScope::new(current, root);
         for (name, ty) in &self.mutation.params {
             scope = scope.with_param(name.clone(), ty.clone());
@@ -732,37 +894,151 @@ impl<'a> Interp<'a> {
         Ok(self.row_target(base, source)?.map(|row| (row, member.text.clone())))
     }
 
-    /// Resolve an expression denoting one row to its address and collection.
+    /// Resolve an expression denoting one row to its address and collection path.
+    /// A keyed selector over a collection (top-level or nested) locates one row;
+    /// `.` is the receiver. The row need not exist — a stale ancestor address is
+    /// still resolvable but reads/patches against it reject (§6.3).
     fn row_target(&self, expr: &Expr, source: SourceId) -> Result<Option<RowTarget>, Rejection> {
         match &expr.kind {
             ExprKind::Current => Ok(self.receiver.clone()),
             ExprKind::Select { base, selector: Selector::Keys(keys) } => {
-                let Some((path, name)) = self.collection_ref(base) else {
+                let Some(loc) = self.collection_ref(base, source)? else {
                     return Ok(None);
                 };
                 let Some(key_expr) = keys.first() else { return Ok(None) };
                 let current = self.current()?;
-                let key = self.scalar_value(key_expr, source, &current)?;
-                Ok(Some(RowTarget { address: path.row(KeyValue::single(key)), collection: name }))
+                let collection = self.collection_at(&loc.decl)?;
+                let key = self.key_from_expr(collection, key_expr, source, &current)?;
+                Ok(Some(RowTarget { address: loc.store_path.row(key), path: loc.decl }))
             }
             _ => Ok(None),
         }
     }
 
-    /// Resolve a collection expression (`.name`, `/name`, bare `name`) to its
-    /// path and name, or `None` when it is not a known top-level collection.
-    fn collection_ref(&self, expr: &Expr) -> Option<(CollectionPath, String)> {
-        let name = match &expr.kind {
-            ExprKind::Field { member, .. } => member.text.clone(),
-            ExprKind::Name(id) => id.text.clone(),
-            _ => return None,
-        };
-        self.compiled
-            .collection(&name)
-            .map(|_| (CollectionPath::top(NameSegment::new(name.clone())), name))
+    /// A keyed selector's key value as a [`KeyValue`] (§5.4): a lone scalar for a
+    /// single-field key, or the composite components in `$key` order read from a
+    /// struct selector value.
+    fn key_from_expr(
+        &self,
+        collection: &CompiledCollection,
+        key_expr: &Expr,
+        source: SourceId,
+        current: &Cell,
+    ) -> Result<KeyValue, Rejection> {
+        let value = self.scalar_value(key_expr, source, current)?;
+        match (collection.key.as_slice(), value) {
+            ([_], scalar) => Ok(KeyValue::single(scalar)),
+            (_, Value::Struct(fields)) => {
+                let mut components = collection.key.iter().map(|field| {
+                    fields
+                        .fields()
+                        .find(|(name, _)| name.as_str() == field.as_str())
+                        .map(|(_, v)| v.clone())
+                });
+                let first = components.next().flatten().ok_or_else(|| {
+                    Rejection::new(RejectionReason::Malformed, "composite key selector is missing a component")
+                })?;
+                let mut rest = Vec::new();
+                for component in components {
+                    rest.push(component.ok_or_else(|| {
+                        Rejection::new(RejectionReason::Malformed, "composite key selector is missing a component")
+                    })?);
+                }
+                Ok(KeyValue::composite(first, rest))
+            }
+            (_, scalar) => Ok(KeyValue::single(scalar)),
+        }
+    }
+
+    /// Resolve a collection expression to its store path and declaration path.
+    /// A bare/top-level name (`.companies`) resolves to a top-level collection; a
+    /// member of a resolved parent row (`.companies[@c].offices`) resolves to that
+    /// nested collection scoped under the parent's address (§5.4). `None` when the
+    /// expression is not a known collection.
+    fn collection_ref(&self, expr: &Expr, source: SourceId) -> Result<Option<CollectionLoc>, Rejection> {
+        match &expr.kind {
+            ExprKind::Name(id) => Ok(self.top_loc(&id.text)),
+            ExprKind::Field { base, member } => {
+                if let Some(loc) = self.top_loc(&member.text) {
+                    return Ok(Some(loc));
+                }
+                // Nested: the base resolves to a parent row whose compiled shape
+                // declares `member` as a child collection.
+                let Some(parent) = self.row_target(base, source)? else {
+                    return Ok(None);
+                };
+                let Some(parent_collection) = self.compiled.collection_at(&parent.path) else {
+                    return Ok(None);
+                };
+                if parent_collection.child(&member.text).is_none() {
+                    return Ok(None);
+                }
+                let mut decl = parent.path.clone();
+                decl.push(member.text.clone());
+                let store_path = CollectionPath::nested(
+                    parent.address.steps().cloned(),
+                    NameSegment::new(member.text.clone()),
+                );
+                Ok(Some(CollectionLoc { store_path, decl }))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// A top-level collection location, if `name` names one.
+    fn top_loc(&self, name: &str) -> Option<CollectionLoc> {
+        self.compiled.collection(name).map(|_| CollectionLoc {
+            store_path: CollectionPath::top(NameSegment::new(name)),
+            decl: vec![name.to_owned()],
+        })
     }
 }
 
 fn is_assert(callee: &Expr) -> bool {
     matches!(&callee.kind, ExprKind::Name(id) if id.text == "assert")
+}
+
+/// The `name: value` pair of an insert-object member when it is an explicit
+/// named or assignment member, so the interpreter can route a nested-collection
+/// or static-struct member before decoding it as a scalar field.
+fn named_member(member: &BlockMember) -> Option<(String, &Expr)> {
+    match &member.kind {
+        BlockMemberKind::Named { name, value: Some(value) } => Some((name.text.clone(), value)),
+        BlockMemberKind::Assign { target, value } => Some((target.text.clone(), value)),
+        _ => None,
+    }
+}
+
+/// A logical row cell over a static struct's provisional fields, for evaluating
+/// a struct field's default (`.` = the struct, §5.1). Every declared struct
+/// field is present (absent reads as `none`).
+fn struct_row_cell(struct_meta: &CompiledStruct, fields: &FieldMap) -> Cell {
+    let cells = struct_meta.fields.iter().map(|field| {
+        (field.name.clone(), Cell::Scalar(fields.get(&field.name).cloned().unwrap_or(Value::None)))
+    });
+    Cell::Row(Box::new(Row::new(RowId::leaf(0), Value::None, cells)))
+}
+
+/// Whether `prefix`'s steps are the leading steps of `address` (an ancestor
+/// address prefix). Combined with a strict-depth check by the caller, this
+/// identifies the descendant subtree of a rekeyed ancestor (§5.4).
+fn is_prefix(prefix: &RowAddress, address: &RowAddress) -> bool {
+    let mut steps = address.steps();
+    prefix.steps().all(|step| steps.next() == Some(step))
+}
+
+/// Re-root a descendant address under `new_ancestor`: keep the new ancestor's
+/// first `old_depth` levels and append the descendant's tail below that depth
+/// (the descendant retains its own key, its ancestor identity is rewritten).
+fn reroot(new_ancestor: &RowAddress, descendant: &RowAddress, old_depth: usize) -> RowAddress {
+    let mut ancestor = new_ancestor.steps().cloned();
+    let Some(first) = ancestor.next() else { return descendant.clone() };
+    let mut address = RowAddress::root(first);
+    for step in ancestor {
+        address = address.child(step);
+    }
+    for step in descendant.steps().skip(old_depth).cloned() {
+        address = address.child(step);
+    }
+    address
 }

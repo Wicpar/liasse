@@ -27,13 +27,15 @@
 mod auth;
 mod error;
 pub mod lift;
+mod ops;
 mod router;
+mod shape;
 mod wire;
 
 use std::collections::BTreeMap;
 
 use liasse_ident::InstanceId;
-use liasse_runtime::{Engine, Precision};
+use liasse_runtime::{Engine, Precision, Timestamp};
 use liasse_store::{InstanceStore, MemoryStore};
 use liasse_surface::{
     AuthSelection, Authenticate, Credential, Subscription, SurfaceAddress, SurfaceCall,
@@ -109,6 +111,13 @@ pub struct ScenarioAdapter<S: InstanceStore> {
     /// Which connection each open subscription lives on, so an `expect_view`
     /// (which names only the subscription) reads the right connection's cache.
     watch_conns: BTreeMap<String, String>,
+    /// Which open subscriptions watch a singular view (§12.2), so a later
+    /// `expect_view` renders that subscription's result as a JSON object.
+    watch_singular: BTreeMap<String, bool>,
+    /// The connection ids currently open on the host. A §9.2 `host_load` rebuilds
+    /// the host and re-opens these (a lifecycle load does not drop clients),
+    /// while a §22 restart clears them (its volatile connections are dropped).
+    open_connections: std::collections::BTreeSet<String>,
     /// The adapter-owned virtual clock, used to compute the absolute instant an
     /// `advance_time` moves the surface clock to.
     clock: VirtualClock,
@@ -137,7 +146,13 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
             Ok(loaded) => State::Loaded(Box::new(loaded)),
             Err(message) => State::Failed(message),
         };
-        Self { state, watch_conns: BTreeMap::new(), clock: VirtualClock::new() }
+        Self {
+            state,
+            watch_conns: BTreeMap::new(),
+            watch_singular: BTreeMap::new(),
+            open_connections: std::collections::BTreeSet::new(),
+            clock: VirtualClock::new(),
+        }
     }
 
     fn load<P: StoreProvision<Store = S>>(provision: &mut P, case: &Case) -> Result<Loaded<S>, String> {
@@ -179,12 +194,8 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
         plan: &auth::AuthPlan,
         lift: &lift::SurfaceLift,
     ) -> Result<Loaded<S>, String> {
-        let mut definition_json = package.clone();
-        inject_synthetic_views(&mut definition_json, plan);
-        if let Some(model) = definition_json.get_mut("$model").and_then(serde_json::Value::as_object_mut) {
-            lift.inject(model);
-        }
-        let definition = serde_json::to_string(&definition_json).map_err(|err| err.to_string())?;
+        let definition = prepared_definition(package, plan, lift)
+            .ok_or_else(|| "prepared definition did not serialize".to_owned())?;
         let store = provision.provision(InstanceId::new(case.name.clone()))?;
         let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
         let engine = Engine::load(store, &definition, &mut clock).map_err(|err| err.to_string())?;
@@ -207,6 +218,7 @@ impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
 
     fn connect(&mut self, request: ConnectRequest) -> Result<Observation, Self::Error> {
         let connection = request.connection.to_string();
+        self.open_connections.insert(connection.clone());
         let loaded = self.loaded()?;
         loaded.host.connect(connection.clone());
         // §11.4: bind the authenticated context on the connection so later role
@@ -223,6 +235,7 @@ impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
     }
 
     fn disconnect(&mut self, connection: &ConnectionId) -> Result<Observation, Self::Error> {
+        self.open_connections.remove(&connection.to_string());
         let loaded = self.loaded()?;
         loaded.host.disconnect(&connection.to_string());
         Ok(Observation::ok(None))
@@ -246,7 +259,7 @@ impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
     fn watch(&mut self, request: crate::contract::WatchRequest) -> Result<Observation, Self::Error> {
         let connection = connection_name(request.on.as_ref());
         let watch_id = request.id.to_string();
-        let observation = match &mut self.state {
+        let (observation, singular) = match &mut self.state {
             State::Loaded(loaded) => {
                 let address = SurfaceAddress::parse(&request.target).map_err(|err| {
                     AdapterError::Host(format!("malformed address `{}`: {err}", request.target))
@@ -255,32 +268,40 @@ impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
                 if let Some(window) = request.window.as_ref().and_then(build_window) {
                     watch = watch.with_window(window);
                 }
+                // §12.2: a singular view (a root/struct projection or an
+                // aggregate) delivers one object; a collection view a row array.
+                let singular = loaded.routing.is_singular_view(&request.target);
                 let subscription = loaded.host.watch(&connection, &watch).map_err(host_fault)?;
-                observe_subscription(&subscription)
+                (observe_subscription(&subscription, singular), singular)
             }
             State::Failed(message) => return Err(AdapterError::LoadFailed(message.clone())),
         };
-        self.watch_conns.insert(watch_id, connection);
+        self.watch_conns.insert(watch_id.clone(), connection);
+        self.watch_singular.insert(watch_id, singular);
         Ok(observation)
     }
 
     fn unwatch(&mut self, id: &WatchId) -> Result<Observation, Self::Error> {
         self.watch_conns.remove(&id.to_string());
+        self.watch_singular.remove(&id.to_string());
         Ok(Observation::ok(None))
     }
 
     fn read_view(&mut self, id: &WatchId) -> Result<Observation, Self::Error> {
         let connection = self.watch_conns.get(&id.to_string()).cloned();
         let watch_id = id.to_string();
+        let singular = self.watch_singular.get(&watch_id).copied().unwrap_or(false);
         let loaded = self.loaded()?;
         // A bounded subscription reports its windowed rows; an unbounded one its
-        // full current result (§12.2).
+        // full current result, rendered per its §12.2 delivery shape.
         let value = connection.as_deref().and_then(|conn| {
             loaded
                 .host
                 .read_window(conn, &watch_id)
                 .map(wire::rows_to_json)
-                .or_else(|| loaded.host.read_view(conn, &watch_id).map(wire::view_to_json))
+                .or_else(|| {
+                    loaded.host.read_view(conn, &watch_id).map(|r| wire::view_to_json_shaped(r, singular))
+                })
         });
         Ok(Observation::ok(value))
     }
@@ -290,22 +311,22 @@ impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
         duration: &crate::clock::Iso8601Duration,
     ) -> Result<Observation, Self::Error> {
         let instant = self.clock.advance(duration);
+        let now = Timestamp::new(i128::from(instant.unix_micros()), Precision::Micros);
         let loaded = self.loaded()?;
-        // Move the surface clock (§11.7 session expiry) to the new absolute
-        // instant. Bucket activity (§14) is judged against the engine's own
-        // clock, which the sealed host does not expose — a documented seam.
-        loaded.host.clock_mut().set(i128::from(instant.unix_micros()));
+        // §14.1/§22.6: advancing time is not a commit, yet a row leaving its
+        // half-open active interval must re-evaluate every live view at the new
+        // instant. `advance_time` moves both the session-expiry clock (§11.7) and
+        // the engine's bucket clock (§14) and sweeps every open subscription.
+        loaded.host.advance_time(now).map_err(host_fault)?;
         Ok(Observation::ok(None))
     }
 
     fn restart(&mut self) -> Result<Observation, Self::Error> {
-        Err(AdapterError::unsupported(
-            "restart requires rebuilding the engine from the store, which the surface host does not expose",
-        ))
+        self.drive_restart()
     }
 
     fn op(&mut self, request: &OpRequest) -> Result<Observation, Self::Error> {
-        Err(AdapterError::unsupported(format!("`{}` is not driven this phase", request.action_key())))
+        self.drive_op(request)
     }
 }
 
@@ -325,6 +346,24 @@ fn root_package(packages: &PackageSet) -> Option<&serde_json::Value> {
             .and_then(|label| packages.get(label))
             .or_else(|| packages.values().next()),
     }
+}
+
+/// Prepare a package for compilation: clone it, inject the plan's synthetic
+/// `$actor`/`$members` views, splice in the lifted inline surface declarations,
+/// and serialize to the definition string the engine loads or updates against.
+/// The initial load and a §9.2 `host_load` share this exact preparation, so both
+/// compile the same wiring. Returns `None` only if serialization fails.
+fn prepared_definition(
+    package: &serde_json::Value,
+    plan: &auth::AuthPlan,
+    lift: &lift::SurfaceLift,
+) -> Option<String> {
+    let mut definition = package.clone();
+    inject_synthetic_views(&mut definition, plan);
+    if let Some(model) = definition.get_mut("$model").and_then(serde_json::Value::as_object_mut) {
+        lift.inject(model);
+    }
+    serde_json::to_string(&definition).ok()
 }
 
 /// Inject the plan's synthetic `$actor`/`$members` views into a package's
@@ -397,10 +436,10 @@ fn observe_call(outcome: &liasse_surface::SurfaceOutcome) -> Observation {
 }
 
 /// Render a subscription result to a harness observation: the initial view rows
-/// as strict-JSON, or the refusal class.
-fn observe_subscription(subscription: &Subscription) -> Observation {
+/// as strict-JSON (an object for a singular view, §12.2), or the refusal class.
+fn observe_subscription(subscription: &Subscription, singular: bool) -> Observation {
     match subscription {
-        Subscription::Init(result) => Observation::ok(Some(wire::view_to_json(result))),
+        Subscription::Init(result) => Observation::ok(Some(wire::view_to_json_shaped(result, singular))),
         Subscription::Window(rows) => Observation::ok(Some(wire::rows_to_json(rows))),
         Subscription::Denied(_) => Observation::outcome(Outcome::Denied),
         Subscription::Failed(_) => Observation::outcome(Outcome::Error),

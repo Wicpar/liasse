@@ -26,12 +26,16 @@ use serde_json::Value as J;
 
 use super::auth::AuthPlan;
 use super::lift::SurfaceLift;
+use super::shape::ViewShapes;
 
 /// The argument-type tables the adapter decodes `args` against, keyed by the full
 /// dotted call address (`public.<surface>.<call>`).
 #[derive(Debug, Clone, Default)]
 pub struct Routing {
     call_arg_types: BTreeMap<String, BTreeMap<String, Type>>,
+    /// Surface addresses (`<prefix>.<surface>`) whose bound view delivers a
+    /// single object rather than a row array (§12.2).
+    singular_views: BTreeSet<String>,
 }
 
 impl Routing {
@@ -40,6 +44,13 @@ impl Routing {
     #[must_use]
     pub fn arg_types(&self, address: &str) -> BTreeMap<String, Type> {
         self.call_arg_types.get(address).cloned().unwrap_or_default()
+    }
+
+    /// Whether the view surface at `address` (`<prefix>.<surface>`) delivers a
+    /// single object per §12.2, so its watch result renders as an object.
+    #[must_use]
+    pub fn is_singular_view(&self, address: &str) -> bool {
+        self.singular_views.contains(address)
     }
 }
 
@@ -57,6 +68,16 @@ struct MutInfo {
     receiver_types: Vec<Type>,
 }
 
+/// The model-derived lookup tables a surface binding resolves against: the
+/// declared mutations and views, the inline-surface lift, and the view result
+/// shapes (§12.2). Bundled so the binding functions thread one context.
+struct Catalog<'a> {
+    muts: BTreeMap<String, MutInfo>,
+    views: BTreeSet<String>,
+    lift: &'a SurfaceLift,
+    shapes: ViewShapes,
+}
+
 /// Build the public router for `model`/`package` and the argument-type tables the
 /// adapter decodes against. `plan` carries the host-free authentication wiring
 /// (§11): its authenticators and roles are registered, and each wired role's
@@ -67,8 +88,12 @@ pub fn build(
     plan: &AuthPlan,
     lift: &SurfaceLift,
 ) -> Result<(SurfaceRouter, Routing), RouterError> {
-    let muts = mutation_index(model);
-    let views = declared_views(model);
+    let catalog = Catalog {
+        muts: mutation_index(model),
+        views: declared_views(model),
+        lift,
+        shapes: ViewShapes::derive(model),
+    };
     let state = package.get("$model");
     let public = state.and_then(|m| m.get("$public")).and_then(J::as_object);
     let roles = state.and_then(|m| m.get("$roles")).and_then(J::as_object);
@@ -79,7 +104,7 @@ pub fn build(
     if let Some(public) = public {
         for (surface, definition) in public {
             let (binding, arg_types) =
-                surface_binding("public", surface, definition, &muts, &views, lift);
+                surface_binding("public", surface, definition, &catalog, &mut routing);
             for (address, types) in arg_types {
                 routing.call_arg_types.insert(address, types);
             }
@@ -94,7 +119,7 @@ pub fn build(
         let name = role.name().to_owned();
         let surfaces = roles
             .and_then(|roles| roles.get(&name))
-            .map(|definition| role_surfaces(&name, definition, &muts, &views, lift, &mut routing))
+            .map(|definition| role_surfaces(&name, definition, &catalog, &mut routing))
             .unwrap_or_default();
         builder = builder.role(role, surfaces);
     }
@@ -108,9 +133,7 @@ pub fn build(
 fn role_surfaces(
     role: &str,
     definition: &J,
-    muts: &BTreeMap<String, MutInfo>,
-    views: &BTreeSet<String>,
-    lift: &SurfaceLift,
+    catalog: &Catalog<'_>,
     routing: &mut Routing,
 ) -> Vec<(String, SurfaceBinding)> {
     let Some(members) = definition.as_object() else { return Vec::new() };
@@ -119,7 +142,7 @@ fn role_surfaces(
         if name.starts_with('$') {
             continue;
         }
-        let (binding, arg_types) = surface_binding(role, name, surface, muts, views, lift);
+        let (binding, arg_types) = surface_binding(role, name, surface, catalog, routing);
         for (address, types) in arg_types {
             routing.call_arg_types.insert(address, types);
         }
@@ -134,29 +157,37 @@ fn surface_binding(
     address_prefix: &str,
     surface: &str,
     definition: &J,
-    muts: &BTreeMap<String, MutInfo>,
-    views: &BTreeSet<String>,
-    lift: &SurfaceLift,
+    catalog: &Catalog<'_>,
+    routing: &mut Routing,
 ) -> (SurfaceBinding, SurfaceArgTypes) {
     let mut binding = SurfaceBinding::new();
     let mut arg_types = Vec::new();
     let surface_address = format!("{address_prefix}.{surface}");
 
     // An inline `$view` was lifted to a synthetic top-level view; a bare
-    // reference to an already-declared view binds directly.
-    if let Some(name) = lift.view_name(&surface_address) {
+    // reference to an already-declared view binds directly. Either way, record
+    // whether the bound view delivers a single object (§12.2) so its watch
+    // renders as an object rather than a one-element array.
+    if let Some(name) = catalog.lift.view_name(&surface_address) {
         binding = binding.with_view(ViewBinding::new(name));
+        if catalog.shapes.is_singular(name) {
+            routing.singular_views.insert(surface_address.clone());
+        }
     } else if let Some(view) = definition.get("$view").and_then(J::as_str)
         && let Some(name) = bare_reference(view)
-        && views.contains(name)
+        && catalog.views.contains(name)
     {
         binding = binding.with_view(ViewBinding::new(name));
+        if catalog.shapes.is_singular(name) {
+            routing.singular_views.insert(surface_address.clone());
+        }
     }
 
     if let Some(calls) = definition.get("$mut").and_then(J::as_object) {
         for call in calls.keys() {
             let call_address = format!("{address_prefix}.{surface}.{call}");
-            let Some((call_binding, types)) = call_binding(&calls[call], &call_address, muts, lift)
+            let Some((call_binding, types)) =
+                call_binding(&calls[call], &call_address, &catalog.muts, catalog.lift)
             else {
                 continue;
             };

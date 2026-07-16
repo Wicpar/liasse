@@ -199,14 +199,15 @@ impl<S: InstanceStore> SurfaceHost<S> {
             request = request.receiver(value.clone());
             receiver.push(value.clone());
         }
+        // A declared parameter the caller omitted is not bound here: the runtime
+        // binds an absent optional parameter to `none` (§8.3/§A.1) and rejects an
+        // omitted required one (`collect_params`). Enforcing presence at the
+        // surface would wrongly deny a call that clears an optional field by
+        // omission, so pass omitted parameters through untouched.
         for name in binding.params() {
-            let Some(value) = args.get(name) else {
-                return Err(Rejection::new(
-                    RejectionReason::Malformed,
-                    format!("missing argument `@{name}`"),
-                ));
-            };
-            request = request.arg(name.clone(), value.clone());
+            if let Some(value) = args.get(name) {
+                request = request.arg(name.clone(), value.clone());
+            }
         }
         let model = RequestModel::new(binding.mutation(), receiver, args.clone());
         Ok((request, model))
