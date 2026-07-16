@@ -36,6 +36,10 @@ pub struct Routing {
     /// Surface addresses (`<prefix>.<surface>`) whose bound view delivers a
     /// single object rather than a row array (§12.2).
     singular_views: BTreeSet<String>,
+    /// Each wired authenticator name → a wired role that accepts it (§11.4), so a
+    /// bare `authenticate { auth, credential }` (no role named) can target a role
+    /// that accepts the selection.
+    authenticator_roles: BTreeMap<String, String>,
 }
 
 impl Routing {
@@ -51,6 +55,13 @@ impl Routing {
     #[must_use]
     pub fn is_singular_view(&self, address: &str) -> bool {
         self.singular_views.contains(address)
+    }
+
+    /// A wired role that accepts the authenticator named `auth`, for a bare
+    /// `authenticate` payload that names no role (§11.4).
+    #[must_use]
+    pub fn role_for_auth(&self, auth: &str) -> Option<&str> {
+        self.authenticator_roles.get(auth).map(String::as_str)
     }
 }
 
@@ -117,6 +128,12 @@ pub fn build(
     }
     for role in plan.roles() {
         let name = role.name().to_owned();
+        // §11.4: record which authenticators this role accepts, so a bare
+        // `authenticate { auth }` (no role) can target it. First role wins; the
+        // targeted call re-checks the actual role named in its address.
+        for auth in role.accepted_names() {
+            routing.authenticator_roles.entry(auth.clone()).or_insert_with(|| name.clone());
+        }
         let surfaces = roles
             .and_then(|roles| roles.get(&name))
             .map(|definition| role_surfaces(&name, definition, &catalog, &mut routing))

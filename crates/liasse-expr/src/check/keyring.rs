@@ -32,6 +32,7 @@ impl Checker<'_> {
     ) -> Option<TypedExpr> {
         let keyring = match selector {
             "all" => return self.check_temporal_all(expr, base),
+            "key" => return self.check_key_selector(expr, base),
             "current" => KeyringSelector::Current,
             "accepted" => KeyringSelector::Accepted,
             "public" => KeyringSelector::Public,
@@ -40,13 +41,41 @@ impl Checker<'_> {
                 return self.error(
                     expr,
                     format!(
-                        "`.${other}` is not a selector (temporal `.$all`, §14.2; keyring \
+                        "`.${other}` is not a selector (row identity `.$key`, §6.3; temporal \
+                         `.$all`, §14.2; keyring \
                          `.$current`/`.$accepted`/`.$public`/`.$versions`, §17.2)"
                     ),
                 );
             }
         };
         self.check_keyring_selector(expr, base, keyring)
+    }
+
+    /// `base.$key` (§6.3): the identity key value of a bound keyed row. The base
+    /// is a single row (`$actor`, a `login`/`session` binding, a keyed selection),
+    /// and the result is that row's key value — the same value a key selector
+    /// `collection[key]` matches against. A keyless row (a static struct or a
+    /// projected group without a synthetic `$key`) has no identity key, so `.$key`
+    /// on it is a static error.
+    fn check_key_selector(&mut self, expr: &Expr, base: &Expr) -> Option<TypedExpr> {
+        let base = self.check(base)?;
+        let key = match base.ty() {
+            ExprType::Row(row) => row.key().cloned(),
+            other => {
+                return self.error(
+                    expr,
+                    format!("`.$key` reads the identity key of a row, not a {}", other.describe()),
+                );
+            }
+        };
+        match key {
+            Some(key) => Some(TypedExpr::new(
+                expr.span,
+                key,
+                TypedKind::Key(Box::new(base)),
+            )),
+            None => self.error(expr, "`.$key` needs a keyed row, but this row has no identity key"),
+        }
     }
 
     /// A keyring public version selector (§17.2) over a keyring's version view.

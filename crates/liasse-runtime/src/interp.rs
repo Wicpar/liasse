@@ -15,7 +15,7 @@ use liasse_expr::{check_expression, Cell, ExprType, Row, RowId};
 use liasse_ident::NameSegment;
 use liasse_syntax::{Arg, BinaryOp, BlockMember, BlockMemberKind, Expr, ExprKind, Selector, Stmt, StmtKind, UnaryOp};
 use liasse_store::{CollectionPath, KeyValue, RowAddress};
-use liasse_value::{Struct, Text, Value};
+use liasse_value::{Ref, RefKey, Struct, Text, Value};
 
 use crate::cascade::{self, PlannedDeletion};
 use crate::compiled::{Compiled, CompiledCollection, CompiledMutation, CompiledStruct};
@@ -412,8 +412,57 @@ impl<'a> Interp<'a> {
         {
             receiver.address = new_address.clone();
         }
+        // §5.4: an atomic rekey rewrites every inbound reference to the new key in
+        // the same transition, then leaves each rewritten referencing row in the
+        // touched set so its checks and reference integrity are re-validated — a
+        // rewritten ref that violates a target row's check or resolves nowhere
+        // rejects the complete transition. Refs target top-level collections, so a
+        // top-level key change is the only one that moves an inbound target.
+        if address.depth() == 1
+            && let (Some(name), Some(old), Some(new)) =
+                (path.first().cloned(), address.steps().last(), new_address.steps().last())
+        {
+            let old_key = old.key().clone();
+            let new_key = new.key().clone();
+            self.rewrite_inbound_refs(&name, &old_key, &new_key);
+        }
         self.mark(new_address);
         Ok(())
+    }
+
+    /// Rewrite every inbound reference into top-level collection `target` whose key
+    /// matches `old`, to point at `new` (§5.4), marking each rewritten row touched
+    /// so the final rule pass re-validates it. Composite keys are rewritten by
+    /// component; the new ref value is rebuilt from the new key in `$key` order.
+    fn rewrite_inbound_refs(&mut self, target: &str, old: &KeyValue, new: &KeyValue) {
+        let old_components: Vec<Value> = old.components().cloned().collect();
+        let new_components: Vec<Value> = new.components().cloned().collect();
+        let new_ref = ref_from_components(&new_components);
+        let candidates: Vec<RowAddress> = self.prospective.working().keys().cloned().collect();
+        for address in candidates {
+            let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
+            let Some(collection) = self.compiled.collection_at(&decl) else { continue };
+            let Some(existing) = self.prospective.get(&address) else { continue };
+            let mut fields = existing.clone();
+            let mut changed = false;
+            for field in &collection.fields {
+                let Some(info) = &field.reference else { continue };
+                if info.target != target {
+                    continue;
+                }
+                let Some(rewritten) =
+                    rewrite_ref_value(fields.get(&field.name), &old_components, &new_components, &new_ref)
+                else {
+                    continue;
+                };
+                fields.insert(field.name.clone(), rewritten);
+                changed = true;
+            }
+            if changed {
+                self.prospective.replace(&address, fields);
+                self.mark(address);
+            }
+        }
     }
 
     fn mark(&mut self, address: RowAddress) {
@@ -1079,6 +1128,47 @@ fn struct_row_cell(struct_meta: &CompiledStruct, fields: &FieldMap) -> Cell {
 fn is_prefix(prefix: &RowAddress, address: &RowAddress) -> bool {
     let mut steps = address.steps();
     prefix.steps().all(|step| steps.next() == Some(step))
+}
+
+/// The key components of a reference value, in `$key` order (§A.9).
+fn ref_components(reference: &Ref) -> Vec<Value> {
+    match reference.key() {
+        RefKey::Scalar(value) => vec![(**value).clone()],
+        RefKey::Composite(values) => values.clone(),
+    }
+}
+
+/// If `value` is a reference to the row keyed `old` (a `Ref`, or a stored scalar
+/// key for a single-component key), the value it becomes when that target is
+/// rekeyed to `new` — preserving the stored representation. `None` when it does
+/// not point at `old` (§5.4 inbound-ref rewrite).
+fn rewrite_ref_value(
+    value: Option<&Value>,
+    old: &[Value],
+    new: &[Value],
+    new_ref: &Ref,
+) -> Option<Value> {
+    match value {
+        Some(Value::Ref(reference)) if ref_components(reference) == old => {
+            Some(Value::Ref(new_ref.clone()))
+        }
+        // A single-component reference stored as its bare scalar key (§6.3 ref/key
+        // equality): rewrite the scalar to the new single-component key.
+        Some(scalar) => match (old, new) {
+            ([single_old], [single_new]) if scalar == single_old => Some(single_new.clone()),
+            _ => None,
+        },
+        None => None,
+    }
+}
+
+/// Build a reference value from key components in `$key` order: a lone component
+/// is a scalar-keyed ref, several a composite-keyed ref (§A.9).
+fn ref_from_components(components: &[Value]) -> Ref {
+    match components {
+        [single] => Ref::scalar(single.clone()),
+        many => Ref::composite(many.to_vec()),
+    }
 }
 
 /// Re-root a descendant address under `new_ancestor`: keep the new ancestor's

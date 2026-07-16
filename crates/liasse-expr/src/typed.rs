@@ -192,6 +192,11 @@ pub(crate) enum TypedKind {
         base: Box<TypedExpr>,
         query: TypedTemporal,
     },
+    /// `base.$key` — the identity key value of a bound keyed row (§6.2, §6.3).
+    /// The base is a single keyed row (`$actor`, a `login`/`session` binding, a
+    /// keyed selection); the result is that row's canonical key value. Boxed so
+    /// the node stays finite-sized.
+    Key(Box<TypedExpr>),
     /// A keyring public version selector over a keyring's version view (§17.2):
     /// `.$current`, `.$accepted`, `.$public`, `.$versions`. Evaluation defers
     /// version-lifecycle resolution to the environment's keyring index; the

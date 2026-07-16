@@ -127,7 +127,7 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             Ok(engine) => engine,
             Err(_) => return Ok(None),
         };
-        let plan = AuthPlan::derive(&ctx.package);
+        let plan = AuthPlan::derive(&ctx.package, ctx.hosts.as_ref());
         let (router, routing) = router::build(engine.model(), &ctx.package, &plan, &ctx.lift)
             .map_err(|err| AdapterError::Host(format!("sandbox router rebuild failed: {err}")))?;
         Ok(Some(Loaded { host: SurfaceHost::new(engine, router, clock), routing }))
@@ -140,7 +140,7 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         ctx: &super::LoadContext,
         instance: liasse_ident::InstanceId,
     ) -> Result<Loaded<MemoryStore>, String> {
-        let plan = AuthPlan::derive(&ctx.package);
+        let plan = AuthPlan::derive(&ctx.package, ctx.hosts.as_ref());
         let definition = super::prepared_definition(&ctx.package, &plan, &ctx.lift)
             .ok_or_else(|| "prepared definition did not serialize".to_owned())?;
         let store = MemoryStore::new(instance);

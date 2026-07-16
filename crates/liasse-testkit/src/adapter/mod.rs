@@ -136,6 +136,9 @@ pub(super) enum State<S: InstanceStore> {
 struct LoadContext {
     instance: InstanceId,
     package: serde_json::Value,
+    /// The case's `hosts` block (§11.3 verifier tables), replayed so a sandbox
+    /// restore reconstructs the identical authentication wiring.
+    hosts: Option<serde_json::Value>,
     lift: lift::SurfaceLift,
 }
 
@@ -184,12 +187,18 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
     pub fn build_with<P: StoreProvision<Store = S>>(provision: &mut P, case: &Case) -> Self {
         let instance = InstanceId::new(case.name.clone());
         let (state, load_ctx) = match Self::load(provision, case) {
-            Ok((loaded, package, lift)) => {
-                (State::Loaded(Box::new(loaded)), LoadContext { instance, package, lift })
-            }
+            Ok((loaded, package, lift)) => (
+                State::Loaded(Box::new(loaded)),
+                LoadContext { instance, package, hosts: case.hosts.clone(), lift },
+            ),
             Err(message) => (
                 State::Failed(message),
-                LoadContext { instance, package: serde_json::Value::Null, lift: lift::SurfaceLift::default() },
+                LoadContext {
+                    instance,
+                    package: serde_json::Value::Null,
+                    hosts: None,
+                    lift: lift::SurfaceLift::default(),
+                },
             ),
         };
         Self {
@@ -227,7 +236,7 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
         // §11 host wiring: reconstruct the authenticators/roles a host-free case
         // declares, and inject the synthetic views its `$actor`/`$members`
         // selections resolve through, before the engine compiles the model.
-        let plan = auth::AuthPlan::derive(package);
+        let plan = auth::AuthPlan::derive(package, case.hosts.as_ref());
         // §10.1/§10.2 host wiring: lift each inline surface `$view`/`$mut` into a
         // synthetic top-level declaration the engine can compile, so the router
         // binds a named runtime view/mutation rather than dropping the surface.
@@ -407,17 +416,39 @@ fn inject_synthetic_views(package: &mut serde_json::Value, plan: &auth::AuthPlan
 }
 
 /// Parse a verbatim `authenticate` payload into a surface [`Authenticate`]
-/// request. Only the host-free `{ role, auth, credential }` shape is recognized;
-/// a payload missing any of the three (a session/host-namespace flow) yields
-/// `None`, leaving the connection unauthenticated.
-pub(super) fn parse_authenticate(payload: &serde_json::Value) -> Option<Authenticate> {
+/// request. `auth` and `credential` are required; the targeted `role` is the one
+/// the payload names, or — when it names none (§11.4 lets a client select an
+/// authenticator without naming a role) — a wired role that accepts the selected
+/// authenticator, resolved through `routing`. A payload naming an authenticator
+/// no wired role accepts yields `None`, leaving the connection unauthenticated;
+/// the denial then surfaces on the asserted call.
+pub(super) fn parse_authenticate(
+    payload: &serde_json::Value,
+    routing: &router::Routing,
+) -> Option<Authenticate> {
     let object = payload.as_object()?;
-    let role = object.get("role")?.as_str()?;
     let auth = object.get("auth")?.as_str()?;
     let credential = object.get("credential")?.as_str()?;
+    let role = object
+        .get("role")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| routing.role_for_auth(auth).map(ToOwned::to_owned))?;
     let selection =
         AuthSelection::new(auth, Credential::new(Value::Text(Text::new(credential.to_owned()))));
     Some(Authenticate::new(role, selection))
+}
+
+/// Parse a per-request `auth` selection (§11.4) attached to a `call` step into a
+/// surface [`AuthSelection`]. Both `auth` (the authenticator name) and
+/// `credential` are required; a payload missing either — a credential with no
+/// authenticator named, which §11.4 requires — yields `None`, so the request
+/// carries no selection and is denied when it targets a role surface.
+pub(super) fn parse_auth_selection(payload: &serde_json::Value) -> Option<AuthSelection> {
+    let object = payload.as_object()?;
+    let auth = object.get("auth")?.as_str()?;
+    let credential = object.get("credential")?.as_str()?;
+    Some(AuthSelection::new(auth, Credential::new(Value::Text(Text::new(credential.to_owned())))))
 }
 
 /// Build a bounded window (§12.2) from a verbatim `window` spec. Handles the

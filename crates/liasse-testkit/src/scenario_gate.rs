@@ -289,21 +289,14 @@ pub const SKIP: &[(&str, &str)] = &[
     // ========================================================================
     // --- load ---
     ("10-interfaces-roles/duplicate-membership-no-extra-authority", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/authenticated-call-resolves-actor", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/committed-request-final-after-revocation", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/completion-barrier-spans-sessions", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/cross-authenticator-proof-binding-denied", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/expired-session-denied", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/explicit-authenticator-selection-required", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/internal-call-preserves-actor", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/membership-reevaluated-at-admission", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/multiple-credentials-one-connection", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/role-auth-list-accepts-any-listed", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/session-bucket-authoritative-over-token-claim", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/session-expiry-half-open-boundary", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/session-not-yet-active-denied", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/session-state-survives-restart", "package does not load yet (upstream compile/model gap)"),
-    ("11-auth-sessions/undeclared-authenticator-name-denied", "package does not load yet (upstream compile/model gap)"),
+    // 11-auth session/host-verifier wiring is live (adapter/auth.rs); these
+    // residual cases need a seam the auth wiring does not reach: a role-scoped
+    // `$actor` view rendering, a scoped-role session mutation, or a session
+    // collection with no `expires`/bucket lower bound.
+    ("11-auth-sessions/committed-request-final-after-revocation", "scoped-role session `revoke()` mutation not bound (denied)"),
+    ("11-auth-sessions/completion-barrier-spans-sessions", "role-scoped `$actor` view not rendered (no view value)"),
+    ("11-auth-sessions/internal-call-preserves-actor", "role-scoped `$actor` view not rendered (no view value)"),
+    ("11-auth-sessions/session-not-yet-active-denied", "session bucket lower-bound activation not observed at boundary"),
     ("14-buckets/between-intersects-half-open", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/between-window-spanning-rollover-returns-both-periods", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/calendar-monthly-clamp-preserves-anchor", "package does not load yet (upstream compile/model gap)"),
@@ -403,7 +396,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- fail:outcome ---
     ("05-state-model/bulk-insert-defaults-see-prestatement-state", "outcome divergence: expected `ok` observed `rejected`"),
     ("05-state-model/nested-initializer-failure-rejects-parent-insert", "outcome divergence: expected `ok` observed `rejected`"),
-    ("05-state-model/rekey-constraint-failure-rejects-transition", "outcome divergence: expected `rejected` observed `ok`"),
     ("06-expressions/row-mutation-receiver-duplicate-occurrences-reject", "outcome divergence: expected `ok` observed `rejected`"),
     ("08-mutations-validation/internal-call-failure-rejects-caller-writes", "outcome divergence: expected `rejected` observed `ok`"),
     ("08-mutations-validation/replacement-restrict-ref-rejects-transition", "outcome divergence: expected `rejected` observed `ok`"),
@@ -419,7 +411,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("12-clients-live-views/authority-loss-emits-close", "outcome divergence: expected `ok` observed `denied`"),
     ("12-clients-live-views/parameter-normalization-and-checks", "outcome divergence: expected `ok` observed `denied`"),
     ("12-clients-live-views/resume-after-authority-loss-denied", "outcome divergence: expected `ok` observed `denied`"),
-    ("12-clients-live-views/revoked-member-call-denied-at-admission", "outcome divergence: expected `ok` observed `denied`"),
     ("14-buckets/between-rejects-empty-or-reversed-range", "outcome divergence: expected `rejected` observed `ok`"),
     ("15-meters/accrual-unspent-capacity-does-not-roll-over", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/backdated-spend-consumes-expired-pool", "outcome divergence: expected `ok` observed `rejected`"),
@@ -440,12 +431,8 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- fail:valdiff ---
     ("08-mutations-validation/replacement-validates-complete-collection", "value diverges from expectation"),
     // --- fail:viewdiff ---
-    ("05-state-model/rekey-does-not-run-on-delete", "view result diverges from expectation"),
-    ("05-state-model/rekey-updates-inbound-refs", "view result diverges from expectation"),
     ("05-state-model/row-check-constrains-complete-row", "view result diverges from expectation"),
     ("05-state-model/set-of-enum-reads-in-declaration-order", "view result diverges from expectation"),
-    ("06-expressions/rekey-redirects-ref-key-equality", "view result diverges from expectation"),
-    ("08-mutations-validation/rekey-rewrites-inbound-refs-atomically", "view result diverges from expectation"),
     ("09-loading-bootstrap/seed-default-observes-prospective-state", "view result diverges from expectation"),
     ("09-loading-bootstrap/seed-percent-encoded-key-round-trip", "view result diverges from expectation"),
     ("12-clients-live-views/temporal-observation-advances-live-view", "view result diverges from expectation"),
@@ -456,7 +443,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("18-blobs/oversize-upload-rejected", "view result diverges from expectation"),
     ("18-blobs/replay-operation-id-upload-at-most-once", "view result diverges from expectation"),
     ("21-deletion-erasure/erased-row-unobservable-in-second-view", "view result diverges from expectation"),
-    ("21-deletion-erasure/rekey-target-does-not-run-on-delete-cascade", "view result diverges from expectation"),
     ("22-runtime-semantics/concurrent-appends-either-order-both-atomic", "view result diverges from expectation"),
     ("22-runtime-semantics/cross-connection-sequential-order-unspecified", "view result diverges from expectation"),
     ("annex-b-total-order/composite-key-lexicographic-in-key-order", "view result diverges from expectation"),

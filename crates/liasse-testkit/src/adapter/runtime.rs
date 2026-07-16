@@ -27,8 +27,8 @@ use super::auth::AuthPlan;
 use super::lift::SurfaceLift;
 use super::router::Routing;
 use super::{
-    build_window, connection_name, host_fault, observe_call, observe_subscription, parse_authenticate,
-    wire, AdapterError, Loaded, State,
+    build_window, connection_name, host_fault, observe_call, observe_subscription, parse_auth_selection,
+    parse_authenticate, wire, AdapterError, Loaded, State,
 };
 
 /// One live runtime instance: the loaded surface host (or the reason it did not
@@ -156,8 +156,10 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         // §11.4: bind the authenticated context on the connection so later role
         // calls run under it. A payload the wiring does not cover leaves the
         // connection unauthenticated; the denial surfaces on the asserted call.
-        if let Some(request) = request.authenticate.as_ref().and_then(parse_authenticate) {
-            let _ = loaded.host.authenticate(&connection, &request);
+        if let Some(payload) = request.authenticate.as_ref()
+            && let Some(auth) = parse_authenticate(payload, &loaded.routing)
+        {
+            let _ = loaded.host.authenticate(&connection, &auth);
         }
         Ok(Observation::ok(None))
     }
@@ -180,6 +182,11 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         let mut call = SurfaceCall::new(address, args);
         if let Some(operation_id) = &request.operation_id {
             call = call.with_operation_id(operation_id.clone());
+        }
+        // §11.4: a per-request authenticator selection on the call overrides the
+        // connection's stored context for this one request.
+        if let Some(selection) = request.auth.as_ref().and_then(parse_auth_selection) {
+            call = call.with_auth(selection);
         }
         let outcome = loaded.host.call(&connection, &call).map_err(host_fault)?;
         Ok(observe_call(&outcome))
@@ -254,7 +261,10 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         let loaded = self.take_loaded()?;
         let old_routing = loaded.routing.clone();
         let (mut engine, old_router, mut clock) = loaded.host.into_parts();
-        let plan = AuthPlan::derive(package);
+        // §9.2 host lifecycle reload: a `load(target)` step carries no `hosts`
+        // block, so its verifier tables are unchanged from the base load. A
+        // host-namespace authenticator therefore stays as wired before.
+        let plan = AuthPlan::derive(package, None);
         match apply_host_load(&mut engine, &mut clock, package, &plan) {
             Ok((completion, router, routing)) => {
                 self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing });

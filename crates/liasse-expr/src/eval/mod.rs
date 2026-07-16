@@ -181,6 +181,7 @@ impl Evaluator<'_> {
             TypedKind::Uuid => Ok(Cell::Scalar(Value::Uuid(
                 self.env.uuid(crate::env::CallSite::new(expr.span())),
             ))),
+            TypedKind::Key(base) => self.eval_key(base),
             TypedKind::Temporal { base, query } => self.eval_temporal(base, query),
             TypedKind::Keyring { base, selector } => self.eval_keyring(expr, base, *selector),
         }
@@ -196,6 +197,16 @@ impl Evaluator<'_> {
             kind,
             name: name.to_owned(),
         })
+    }
+
+    /// `base.$key` (§6.3): the identity key value of a bound keyed row. The
+    /// checker has already proven the base is a keyed row, so evaluation reads the
+    /// row's key value directly.
+    fn eval_key(&mut self, base: &TypedExpr) -> Result<Cell, EvalError> {
+        match self.eval(base)? {
+            Cell::Row(row) => Ok(Cell::Scalar(row.key().clone())),
+            _ => Err(EvalError::ShapeMismatch { expected: "a keyed row" }),
+        }
     }
 
     fn eval_field(&mut self, base: &TypedExpr, name: &str) -> Result<Cell, EvalError> {
