@@ -32,21 +32,21 @@
         }
         credits: "= /plans[$source.plan].credits"
       }
-      $data: {
-        plans: {
-          weekly: { credits: "30", period: "P7D" }
-        }
-        subscriptions: {
-          // anchor 2026-01-01T00:00:00Z, no series end: indefinite generation.
-          // b1 = 2026-01-08T00:00:00Z = 1767830400000000
-          s1: { plan: "weekly", starts_at: "1767225600000000" }
-        }
-      }
       $public: {
         periods: {
           $params: { a: "timestamp", b: "timestamp" }
           $view: '.credit_periods.$between(@a, @b) { index: $index, from: $from, until: $until, $sort: ["from"] }'
         }
+      }
+    }
+    $data: {
+      plans: {
+        weekly: { credits: "30", period: "P7D" }
+      }
+      subscriptions: {
+        // anchor 2026-01-01T00:00:00Z, no series end: indefinite generation.
+        // b1 = 2026-01-08T00:00:00Z = 1767830400000000
+        s1: { plan: "weekly", starts_at: "1767225600000000" }
       }
     }
   }

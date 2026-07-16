@@ -37,7 +37,7 @@
       }
     }
     $data: {
-      docs: { "d1": { version: "0", accepted: "false" } }
+      docs: { "d1": { version: "0", accepted: false } }
     }
   }
 

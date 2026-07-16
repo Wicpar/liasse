@@ -32,23 +32,23 @@
         }
         credits: "= /plans[$source.plan].credits"
       }
-      $data: {
-        plans: {
-          monthly_paris: {
-            credits: "100"
-            period: { months: 1, zone: "Europe/Paris", overflow: "clamp", ambiguous: "earlier" }
-          }
-        }
-        subscriptions: {
-          // anchor 2026-09-25T02:30:00+02:00 = 2026-09-25T00:30:00Z, unbounded
-          s1: { plan: "monthly_paris", starts_at: "1790296200000000" }
-        }
-      }
       $public: {
         periods_at: {
           $params: { t: "timestamp" }
           $view: ".credit_periods.$at(@t) { index: $index, from: $from, until: $until }"
         }
+      }
+    }
+    $data: {
+      plans: {
+        monthly_paris: {
+          credits: "100"
+          period: { months: 1, zone: "Europe/Paris", overflow: "clamp", ambiguous: "earlier" }
+        }
+      }
+      subscriptions: {
+        // anchor 2026-09-25T02:30:00+02:00 = 2026-09-25T00:30:00Z, unbounded
+        s1: { plan: "monthly_paris", starts_at: "1790296200000000" }
       }
     }
   }

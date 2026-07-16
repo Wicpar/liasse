@@ -80,7 +80,7 @@
         // Row expires 2026-01-02, regardless of any token claim.
         "5e551000-0000-4000-8000-000000000001": {
           account: "aaaaaaaa-0000-4000-8000-000000000001"
-          expires_at: "2026-01-02T00:00:00Z"
+          expires_at: "1767312000000000"  // 2026-01-02T00:00:00Z
         }
       }
     }

@@ -16,13 +16,13 @@
         credits: "decimal"
         period: "period?"
       }
-      $data: {
-        plans: {
-          broken: {
-            credits: "100"
-            // all magnitude components zero: not a valid period value
-            period: { months: 0, zone: "UTC" }
-          }
+    }
+    $data: {
+      plans: {
+        broken: {
+          credits: "100"
+          // all magnitude components zero: not a valid period value
+          period: { months: 0, zone: "UTC" }
         }
       }
     }

@@ -32,20 +32,20 @@
         }
         credits: "= /plans[$source.plan].credits"
       }
-      $data: {
-        plans: {
-          lifetime: { credits: "1000" }   // period omitted: none
-        }
-        subscriptions: {
-          // starts 2026-01-01T01:00Z, no series end
-          s1: { plan: "lifetime", starts_at: "1767229200000000" }
-        }
-      }
       $public: {
         periods: {
           $params: { a: "timestamp", b: "timestamp" }
           $view: ".credit_periods.$between(@a, @b) { index: $index, from: $from, until: $until, credits }"
         }
+      }
+    }
+    $data: {
+      plans: {
+        lifetime: { credits: "1000" }   // period omitted: none
+      }
+      subscriptions: {
+        // starts 2026-01-01T01:00Z, no series end
+        s1: { plan: "lifetime", starts_at: "1767229200000000" }
       }
     }
   }

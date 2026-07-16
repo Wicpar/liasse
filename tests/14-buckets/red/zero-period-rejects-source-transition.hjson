@@ -32,12 +32,6 @@
         }
         credits: "= /plans[$source.plan].credits"
       }
-      $data: {
-        plans: {
-          zero: { credits: "30", period: "PT0S" }    // valid duration value, non-advancing step
-          weekly: { credits: "30", period: "P7D" }
-        }
-      }
       $public: {
         subs: {
           $mut: {
@@ -47,6 +41,12 @@
             ]
           }
         }
+      }
+    }
+    $data: {
+      plans: {
+        zero: { credits: "30", period: "PT0S" }    // valid duration value, non-advancing step
+        weekly: { credits: "30", period: "P7D" }
       }
     }
   }

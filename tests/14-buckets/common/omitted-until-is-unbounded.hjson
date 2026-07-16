@@ -16,11 +16,6 @@
         id: "text"
         starts_at: "timestamp"
       }
-      $data: {
-        licenses: {
-          l1: { starts_at: "1767225600000000" }  // 2026-01-01T00:00:00Z
-        }
-      }
       $public: {
         active: { $view: ".licenses { id }" }
         q: {
@@ -28,6 +23,11 @@
             between: "return .licenses.$between(@a, @b) { id }"
           }
         }
+      }
+    }
+    $data: {
+      licenses: {
+        l1: { starts_at: "1767225600000000" }  // 2026-01-01T00:00:00Z
       }
     }
   }

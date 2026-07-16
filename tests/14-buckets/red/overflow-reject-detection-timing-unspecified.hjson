@@ -32,12 +32,6 @@
         }
         credits: "= /plans[$source.plan].credits"
       }
-      $data: {
-        plans: {
-          // months:1, reject when the destination day is missing
-          strict_monthly: { credits: "100", period: { months: 1, zone: "UTC", overflow: "reject" } }
-        }
-      }
       $public: {
         subs: {
           $mut: {
@@ -47,6 +41,12 @@
             ]
           }
         }
+      }
+    }
+    $data: {
+      plans: {
+        // months:1, reject when the destination day is missing
+        strict_monthly: { credits: "100", period: { months: 1, zone: "UTC", overflow: "reject" } }
       }
     }
   }
