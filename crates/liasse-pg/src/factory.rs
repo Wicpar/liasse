@@ -66,6 +66,11 @@ impl PgStoreFactory {
     /// version and refuses a schema newer than this build.
     fn ensure(client: &mut Client, schema: &Schema, instance: &InstanceId) -> Result<(), StoreError> {
         reconcile(client, schema)?;
+        // An `InstanceId` is an unvalidated opaque token (D.1); NUL-safe-encode it so
+        // a `U+0000` does not break the seed INSERT into the `text` column. The
+        // column is informational (the live instance identity is passed to `open`,
+        // never read back from here), so it needs no matching decode.
+        let instance_id = crate::jsonb_text::encode_text(instance.as_str());
         client
             .execute(
                 &format!(
@@ -73,7 +78,7 @@ impl PgStoreFactory {
                      VALUES (1, 0, 0, $1) ON CONFLICT (id) DO NOTHING",
                     schema.quoted()
                 ),
-                &[&instance.as_str()],
+                &[&instance_id],
             )
             .map_err(backend)?;
         Ok(())

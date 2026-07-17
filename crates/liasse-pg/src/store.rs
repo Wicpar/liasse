@@ -100,11 +100,12 @@ impl PgStore {
         let seq_num = i64::try_from(seq.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
         let next_incarnation =
             i64::try_from(self.projection.next_incarnation()).map_err(|_| corrupt("incarnation counter exceeds i64"))?;
-        let transaction_id = transaction.as_ref().map(|t| t.as_str().to_owned());
-        // `jsonb` cannot hold a raw `U+0000`, which a valid `text` value or key may
-        // carry; make every string leaf NUL-safe before it reaches a jsonb column.
+        // Neither `jsonb` nor a raw `text` column can hold a `U+0000`, which a valid
+        // `text` value/key or an unvalidated D.5 token (transaction id) or D.4 source
+        // may carry; NUL-safe-encode every string leaf before it reaches a column.
+        let transaction_id = transaction.as_ref().map(|t| jsonb_text::encode_text(t.as_str()));
         let ops_wire = jsonb_text::to_jsonb(&J::Array(ops.iter().map(encode_op).collect()));
-        let definition_source = definition.as_ref().map(|d| d.source().to_owned());
+        let definition_source = definition.as_ref().map(|d| jsonb_text::encode_text(d.source()));
         let definition_id = definition.as_ref().map(|d| d.identity().to_canonical_text());
         let composition_wire =
             composition.as_ref().map(|c| jsonb_text::to_jsonb(&encode_composition(c)));
@@ -255,6 +256,11 @@ impl InstanceStore for PgStore {
             )));
         }
         let at_num = i64::try_from(at.get()).map_err(|_| corrupt("position exceeds i64"))?;
+        // Lineage and point are unvalidated opaque D.5 tokens that may carry a
+        // `U+0000` a `text` column rejects; NUL-safe-encode both. The escape is a
+        // bijection, so equal points still collide on the `(lineage, point)` key.
+        let lineage = jsonb_text::encode_text(point.lineage().as_str());
+        let point_id = jsonb_text::encode_text(point.point().as_str());
         self.client
             .execute(
                 &format!(
@@ -262,7 +268,7 @@ impl InstanceStore for PgStore {
                      ON CONFLICT (lineage, point) DO UPDATE SET seq = EXCLUDED.seq",
                     self.schema.quoted()
                 ),
-                &[&point.lineage().as_str(), &point.point().as_str(), &at_num],
+                &[&lineage, &point_id, &at_num],
             )
             .map_err(backend)?;
         self.projection.insert_point(point, at);

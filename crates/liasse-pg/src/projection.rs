@@ -60,8 +60,8 @@ impl Projection {
             cell::<i64>(&meta, "instance_meta", "next_incarnation")?,
             "instance_meta.next_incarnation",
         )?;
-        let definition =
-            cell::<Option<String>>(&meta, "instance_meta", "definition_source")?.map(DefinitionText::new);
+        let definition = cell::<Option<String>>(&meta, "instance_meta", "definition_source")?
+            .map(|source| DefinitionText::new(jsonb_text::decode_text(&source)));
         let composition = cell::<Option<J>>(&meta, "instance_meta", "composition")?
             .map(|wire| decode_composition(&jsonb_text::from_jsonb(&wire)))
             .transpose()?;
@@ -72,8 +72,8 @@ impl Projection {
             .map_err(backend)?
         {
             let seq = seq_from(cell::<i64>(&row, "commit_log", "seq")?, "commit_log.seq")?;
-            let transaction =
-                cell::<Option<String>>(&row, "commit_log", "transaction_id")?.map(liasse_ident::TransactionId::new);
+            let transaction = cell::<Option<String>>(&row, "commit_log", "transaction_id")?
+                .map(|id| liasse_ident::TransactionId::new(jsonb_text::decode_text(&id)));
             let ops_wire = jsonb_text::from_jsonb(&cell::<J>(&row, "commit_log", "ops")?);
             let ops = ops_wire
                 .as_array()
@@ -106,8 +106,8 @@ impl Projection {
             .map_err(backend)?
         {
             let point = HistoryPoint::new(
-                LineageId::new(cell::<String>(&row, "history_points", "lineage")?),
-                PointId::new(cell::<String>(&row, "history_points", "point")?),
+                LineageId::new(jsonb_text::decode_text(&cell::<String>(&row, "history_points", "lineage")?)),
+                PointId::new(jsonb_text::decode_text(&cell::<String>(&row, "history_points", "point")?)),
             );
             let at = seq_from(cell::<i64>(&row, "history_points", "seq")?, "history_points.seq")?;
             points.insert(point, at);

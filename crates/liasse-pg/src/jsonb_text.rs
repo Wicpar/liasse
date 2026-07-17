@@ -1,17 +1,23 @@
-//! NUL-safe text encoding for the store's `jsonb` columns.
+//! NUL-safe text encoding for the store's `jsonb` **and** raw `text` columns.
 //!
 //! Annex A.1 defines `text` as a sequence of Unicode scalar values and does not
 //! exclude `U+0000` (NUL); `Text::new` is total, so `Value::Text("a\0b")` is a
 //! well-formed Liasse value the in-memory reference persists verbatim. The
 //! contract binds both backends to *identical* observable results, but PostgreSQL
-//! `jsonb` cannot hold a raw `U+0000` (`ERROR: unsupported Unicode escape
-//! sequence`, SQLSTATE 22P05), so the value/op/composition trees this crate stores
-//! in `jsonb` columns must not carry one. SPEC-ISSUES item 32 tracks the spec gap;
+//! rejects a raw `U+0000` in **either** storage form — inside `jsonb` (`ERROR:
+//! unsupported Unicode escape sequence`, SQLSTATE 22P05) and inside a `text`/
+//! `varchar` value (`ERROR: invalid byte sequence for encoding "UTF8": 0x00`,
+//! SQLSTATE 22021). So neither the value/op/composition trees this crate stores in
+//! `jsonb` columns nor the opaque-token identities it stores in `text` columns
+//! (`commit_log.transaction_id`, `history_points.lineage`/`point`,
+//! `instance_meta.definition_source`/`instance_id` — all unvalidated D.5 tokens or
+//! D.4 source text) may carry one. SPEC-ISSUES item 32 tracks the spec gap;
 //! regardless of how it resolves, the two backends must agree, which is what this
-//! module guarantees.
+//! module guarantees for both column kinds.
 //!
-//! [`to_jsonb`] rewrites every JSON string leaf so no `U+0000` survives, using a
-//! C-style escape that is a total inverse of [`from_jsonb`]:
+//! [`to_jsonb`] (for `jsonb` leaves) and [`encode_text`] (for a bare `text` token)
+//! share one reversible escape that is a total inverse of [`from_jsonb`] /
+//! [`decode_text`]:
 //!
 //! - `U+0000` becomes `\0` (reverse solidus then `0`),
 //! - `\` (reverse solidus) becomes `\\`,
@@ -20,7 +26,10 @@
 //! Escaping the escape character keeps the mapping unambiguous, so decode is
 //! deterministic and lossless for any Unicode text. Only strings that actually
 //! contain `U+0000` or `\` change shape; all other stored text — canonical ints,
-//! base64, uuids — is untouched.
+//! base64, uuids, `row-N` tokens — is untouched. The escape is a bijection, so it
+//! also preserves the equality lookups a `text` column is queried by (the
+//! `history_points (lineage, point)` primary key: equal tokens escape to equal
+//! stored text, distinct to distinct).
 //!
 //! **Scan order is unaffected.** The store never orders rows by the stored `jsonb`
 //! text: [`crate::projection::Projection`] holds a `BTreeMap` keyed by the decoded
@@ -46,6 +55,24 @@ pub fn to_jsonb(value: &J) -> J {
 #[must_use]
 pub fn from_jsonb(value: &J) -> J {
     map_strings(value, unescape)
+}
+
+/// NUL-safe encode a bare opaque token for storage in a raw `text` column — the
+/// same reversible escape [`to_jsonb`] applies to `jsonb` string leaves. An
+/// identity token (`TransactionId`, `LineageId`, `PointId`) or definition source
+/// is arbitrary A.1 text and may carry a `U+0000` a PostgreSQL `text` value cannot
+/// hold. Symmetric with [`decode_text`]; write every such column through this and
+/// read every one back through [`decode_text`].
+#[must_use]
+pub fn encode_text(token: &str) -> String {
+    escape(token)
+}
+
+/// Invert [`encode_text`]: recover an opaque token (including any `U+0000`) from a
+/// `text` column written by it.
+#[must_use]
+pub fn decode_text(stored: &str) -> String {
+    unescape(stored)
 }
 
 /// Rebuild `value`, applying `f` to every string leaf and recursing through
