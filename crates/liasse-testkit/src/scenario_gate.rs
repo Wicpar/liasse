@@ -292,7 +292,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("14-buckets/calendar-monthly-clamp-preserves-anchor", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/dst-fall-back-ambiguous-earlier", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/recurring-rollover-at-exact-boundary", "package does not load yet (upstream compile/model gap)"),
-    ("14-buckets/unbounded-until-sorts-after-finite", "package does not load yet (upstream compile/model gap)"),
     ("16-host-namespaces/generated-default-fixed-and-recorded", "package does not load yet (upstream compile/model gap)"),
     ("16-host-namespaces/pinned-descriptor-drift-fails-reopen", "package does not load yet (upstream compile/model gap)"),
     ("16-host-namespaces/required-namespace-pure-function-runs-in-view", "package does not load yet (upstream compile/model gap)"),

@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use liasse_diag::ByteSpan;
-use liasse_syntax::{BlockMember, BlockMemberKind, Expr, ExprKind, Ident};
+use liasse_syntax::{parse_expression, BlockMember, BlockMemberKind, Expr, ExprKind, Ident, StmtKind};
 use liasse_value::{StructType, Type};
 
 use crate::check::Checker;
@@ -287,8 +287,20 @@ impl Checker<'_> {
                 // §7.3 structured form: `{ $by: field, $dir: asc|desc }` — the
                 // same ordering choice the string form spells with a leading `-`.
                 ExprKind::Object(entry) => self.structured_sort_key(member, entry)?,
-                // §7.3 string form: a leading `-` reverses one key; a bare key
-                // ascends.
+                // §7.3 canonical wire form: a `$sort` entry is a *string* holding
+                // the key expression, optionally prefixed by `-` for descending
+                // (Annex B: `["-created_at", "id"]`, `["string.casefold(name)",
+                // "name"]`). The string content is a sort-key expression, not a
+                // constant, so re-parse and check it in the projection frame.
+                ExprKind::Str(text) => {
+                    let (descending, body) = match text.strip_prefix('-') {
+                        Some(rest) => (true, rest),
+                        None => (false, text.as_str()),
+                    };
+                    SortKey { expr: self.parse_sort_key(member, body)?, descending }
+                }
+                // §7.3 compact DSL form: a leading `-` reverses one key; a bare
+                // key ascends.
                 ExprKind::Unary { op: liasse_syntax::UnaryOp::Neg, operand } => SortKey {
                     expr: self.check(operand)?,
                     descending: true,
@@ -328,10 +340,45 @@ impl Checker<'_> {
             self.report(member, "a structured `$sort` entry needs a `$by` key (§7.3)");
             return None;
         };
-        Some(SortKey {
-            expr: self.check(by)?,
-            descending,
-        })
+        // `$by` may be spelled as a bare key expression (compact DSL) or, in the
+        // canonical wire form, as a string holding that expression (`$by: "name"`,
+        // `$by: "string.casefold(name)"`). A string is the key expression, not a
+        // text constant.
+        let expr = match &by.kind {
+            ExprKind::Str(text) => self.parse_sort_key(by, text)?,
+            _ => self.check(by)?,
+        };
+        Some(SortKey { expr, descending })
+    }
+
+    /// Parse the expression a `$sort` string entry carries and check it in the
+    /// current projection frame (so a bare column name resolves to the projected
+    /// output, §7.3). The canonical wire form spells every sort key as a string;
+    /// its content is a full sort-key expression, never a text literal.
+    fn parse_sort_key(&mut self, member: &Expr, body: &str) -> Option<TypedExpr> {
+        let parsed = match parse_expression(self.source, body) {
+            Ok(parsed) => parsed,
+            Err(_) => {
+                self.report(
+                    member,
+                    "a `$sort` string entry must hold a sort-key expression (§7.3)",
+                );
+                return None;
+            }
+        };
+        match &parsed.statement().kind {
+            StmtKind::Bare(inner) | StmtKind::Return(inner) => {
+                let inner = inner.clone();
+                self.check(&inner)
+            }
+            _ => {
+                self.report(
+                    member,
+                    "a `$sort` string entry must hold a sort-key expression (§7.3)",
+                );
+                None
+            }
+        }
     }
 
     /// A `$dir` value: `asc` (ascending, the default) or `desc` (descending).

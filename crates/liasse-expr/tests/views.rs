@@ -225,6 +225,58 @@ fn structured_sort_form_matches_string_form() {
 }
 
 #[test]
+fn sort_string_form_denotes_column_expression() {
+    // §7.3 / Annex B canonical wire form: every `$sort` entry is a *string*
+    // holding the key expression (`["name", "id"]`, `["-created_at", "id"]`,
+    // `["string.casefold(name)", "name"]`), optionally prefixed by `-` for
+    // descending. The string is the column expression, not a text constant, so
+    // it must reorder exactly as the compact bare form does. Externally derived:
+    // n = {a:10, b:30, c:20}, so ascending is a,c,b and descending is b,c,a.
+    let ty = people_type(vec![("n", scalar(Type::Int))]);
+    let rows = vec![
+        krow(1, "a", vec![("n", scell(vint(10)))]),
+        krow(2, "b", vec![("n", scell(vint(30)))]),
+        krow(3, "c", vec![("n", scell(vint(20)))]),
+    ];
+    let (scope, env, dot) = one_collection("items", ty, rows);
+
+    let asc = eval(&scope, &env, &dot, ".items { id, n, $sort: [\"n\"] }");
+    assert_eq!(ids(&asc, "id"), vec![vtext("a"), vtext("c"), vtext("b")]);
+
+    let desc = eval(&scope, &env, &dot, ".items { id, n, $sort: [\"-n\"] }");
+    assert_eq!(ids(&desc, "id"), vec![vtext("b"), vtext("c"), vtext("a")]);
+
+    // The string carries a full expression, not just a bare name: `0 - n`
+    // ascends by the negated value, which is descending by n.
+    let expr = eval(&scope, &env, &dot, ".items { id, n, $sort: [\"0 - n\"] }");
+    assert_eq!(ids(&expr, "id"), vec![vtext("b"), vtext("c"), vtext("a")]);
+
+    // A string `$by` in the structured form is likewise the key expression.
+    let by = eval(&scope, &env, &dot, ".items { id, n, $sort: [ { $by: \"n\", $dir: desc } ] }");
+    assert_eq!(ids(&by, "id"), vec![vtext("b"), vtext("c"), vtext("a")]);
+}
+
+#[test]
+fn sort_string_form_places_none_by_direction() {
+    // §7.3 / B.2 through the canonical string spelling: present-then-none
+    // ascending, none-then-present descending. Externally derived from the
+    // absence-placement rule, independent of the bare-form path.
+    let ty = people_type(vec![("score", scalar(Type::Optional(Box::new(Type::Int))))]);
+    let rows = vec![
+        krow(1, "s1", vec![("score", scell(vint(2)))]),
+        krow(2, "s2", vec![("score", scell(Value::None))]),
+        krow(3, "s3", vec![("score", scell(vint(1)))]),
+    ];
+    let (scope, env, dot) = one_collection("items", ty, rows);
+
+    let asc = eval(&scope, &env, &dot, ".items { id, score, $sort: [\"score\"] }");
+    assert_eq!(ids(&asc, "id"), vec![vtext("s3"), vtext("s1"), vtext("s2")]);
+
+    let desc = eval(&scope, &env, &dot, ".items { id, score, $sort: [\"-score\"] }");
+    assert_eq!(ids(&desc, "id"), vec![vtext("s2"), vtext("s1"), vtext("s3")]);
+}
+
+#[test]
 fn sort_ascending_places_none_last() {
     // §7.3 / B.2: present ascending, then none.
     let ty = people_type(vec![("score", scalar(Type::Optional(Box::new(Type::Int))))]);
