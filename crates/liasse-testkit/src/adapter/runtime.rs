@@ -48,6 +48,9 @@ pub(super) struct Runtime<S: InstanceStore> {
     /// `operation_status` step reconstructs the exact key the call recorded under
     /// (the identifier is the capability; an unknown identifier maps to no key).
     pub(super) op_keys: BTreeMap<String, OperationKey>,
+    /// The last committed §18 blob digest per blob field, so a `blob_get` fetches
+    /// by digest and a `connector_set { corrupt }` targets the blob under test.
+    pub(super) blob_digests: BTreeMap<String, String>,
     /// The adapter-side virtual clock, used to compute the absolute instant an
     /// `advance_time` moves this instance's surface clock to.
     pub(super) clock: VirtualClock,
@@ -62,6 +65,7 @@ impl<S: InstanceStore> Runtime<S> {
             watch_singular: BTreeMap::new(),
             open_connections: BTreeSet::new(),
             op_keys: BTreeMap::new(),
+            blob_digests: BTreeMap::new(),
             clock: VirtualClock::new(),
         }
     }
@@ -114,6 +118,7 @@ impl<S: InstanceStore> Runtime<S> {
         self.watch_conns.clear();
         self.watch_singular.clear();
         self.op_keys.clear();
+        self.blob_digests.clear();
     }
 
     /// Re-open every tracked connection on the current host — a §9.2 lifecycle
@@ -181,6 +186,12 @@ pub(super) trait Instance {
         incoming: &[u8],
         policy: &[ImportRelation],
     ) -> Result<Observation, AdapterError>;
+    /// §18.7 `blob_put`: stage and verify a blob parameter, then admit the
+    /// containing mutation over the composed §18 blob host.
+    fn blob_put(&mut self, spec: &super::blobs::BlobPutSpec) -> Result<Observation, AdapterError>;
+    /// §18.12 `connector_set`: reconfigure a simulated connector from this step
+    /// onward (unavailability, per-operation failure, stored-object corruption).
+    fn connector_set(&mut self, spec: &super::blobs::ConnectorSetSpec) -> Result<Observation, AdapterError>;
 }
 
 impl<S: InstanceStore> Instance for Runtime<S> {
@@ -338,8 +349,9 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         // connections/subscriptions/operation records are dropped.
         let loaded = self.take_loaded()?;
         let routing = loaded.routing;
+        let blobs = loaded.blobs;
         let (engine, router, clock) = loaded.host.into_parts();
-        self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing });
+        self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs });
         self.open_connections.clear();
         Ok(Observation::ok(None))
     }
@@ -347,6 +359,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
     fn host_load(&mut self, package: &serde_json::Value) -> Result<Observation, AdapterError> {
         let loaded = self.take_loaded()?;
         let old_routing = loaded.routing.clone();
+        let blobs = loaded.blobs;
         let (mut engine, old_router, mut clock) = loaded.host.into_parts();
         // §9.2 host lifecycle reload: a `load(target)` step carries no `hosts`
         // block, so its verifier tables are unchanged from the base load. A
@@ -354,7 +367,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         let plan = AuthPlan::derive(package, None);
         match apply_host_load(&mut engine, &mut clock, package, &plan) {
             Ok((completion, router, routing)) => {
-                self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing });
+                self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs });
                 self.reopen_connections();
                 Ok(Observation {
                     outcome: Outcome::Ok,
@@ -366,7 +379,11 @@ impl<S: InstanceStore> Instance for Runtime<S> {
             Err(observed) => {
                 // The engine is unchanged (update is atomic); rebuild over the
                 // prior router so later steps still resolve the active package.
-                self.reinstate(Loaded { host: SurfaceHost::new(engine, old_router, clock), routing: old_routing });
+                self.reinstate(Loaded {
+                    host: SurfaceHost::new(engine, old_router, clock),
+                    routing: old_routing,
+                    blobs,
+                });
                 self.reopen_connections();
                 Ok(Observation::outcome(observed))
             }
@@ -493,6 +510,21 @@ impl<S: InstanceStore> Instance for Runtime<S> {
                 })
             }
             Err(error) => Ok(Observation::outcome(import_error_outcome(&error))),
+        }
+    }
+
+    fn blob_put(&mut self, spec: &super::blobs::BlobPutSpec) -> Result<Observation, AdapterError> {
+        self.ensure_connection(&spec.connection);
+        match &mut self.state {
+            State::Loaded(loaded) => super::blobs::put(loaded, &mut self.blob_digests, spec),
+            State::Failed(message) => Err(AdapterError::LoadFailed(message.clone())),
+        }
+    }
+
+    fn connector_set(&mut self, spec: &super::blobs::ConnectorSetSpec) -> Result<Observation, AdapterError> {
+        match &mut self.state {
+            State::Loaded(loaded) => super::blobs::connector_set(loaded, &self.blob_digests, spec),
+            State::Failed(message) => Err(AdapterError::LoadFailed(message.clone())),
         }
     }
 }

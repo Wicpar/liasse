@@ -38,6 +38,7 @@
 //! outcome for the triage loop to harden. Load failures likewise skip every step.
 
 mod auth;
+mod blobs;
 mod error;
 pub mod lift;
 mod ops;
@@ -118,6 +119,9 @@ impl StoreProvision for MemoryProvision {
 pub(super) struct Loaded<S: InstanceStore> {
     host: SurfaceHost<S>,
     routing: Routing,
+    /// The §18 blob wiring (registered field names, store→connector map) the
+    /// blob steps resolve connectors and fields through.
+    blobs: blobs::BlobWiring,
 }
 
 /// Either the loaded stack or the reason the package did not load. The loaded
@@ -278,8 +282,12 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
         let (router, mut routing) =
             router::build(engine.model(), package, plan, lift).map_err(|err| err.to_string())?;
         routing.load_view_param_types(&engine);
-        let host = SurfaceHost::new(engine, router, clock);
-        Ok(Loaded { host, routing })
+        let mut host = SurfaceHost::new(engine, router, clock);
+        // §18: compose a blob host per declared blob field over the case's
+        // `hosts.connectors` and `$data` store rows, so a `blob_put`/`blob_get`
+        // step drives the real §18 upload/fetch through the surface call path.
+        let blobs = blobs::provision(&mut host, package, case.hosts.as_ref());
+        Ok(Loaded { host, routing, blobs })
     }
 
     /// The active instance every core verb drives: the top sandbox if one is open,

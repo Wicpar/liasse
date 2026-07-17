@@ -772,6 +772,7 @@ dependencies = [
  "deser-hjson",
  "liasse-diag",
  "liasse-expr",
+ "liasse-host",
  "liasse-ident",
  "liasse-model",
  "liasse-runtime",

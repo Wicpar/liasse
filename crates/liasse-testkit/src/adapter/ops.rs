@@ -36,8 +36,73 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             StepKind::Resume => self.drive_resume(request),
             StepKind::Authenticate => self.drive_authenticate(request),
             StepKind::ExpectClose => self.drive_expect_close(request),
+            StepKind::BlobPut => self.drive_blob_put(request),
+            StepKind::BlobGet => self.drive_blob_get(request),
+            StepKind::ConnectorSet => self.drive_connector_set(request),
             _ => Err(AdapterError::unsupported(unsupported_reason(&request.kind))),
         }
+    }
+
+    /// §18.7 `blob_put`: stage a §18 descriptor and admit its mutation through the
+    /// composed blob host, converting a lying/oversize/unaccepted descriptor into a
+    /// pre-admission rejection (§18.1/§18.2).
+    fn drive_blob_put(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let target = &request.target;
+        let Some(call) = target.get("call").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`blob_put` step carries no `call` mutation address"));
+        };
+        let Some(param) = target.get("param").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`blob_put` step carries no blob `param` name"));
+        };
+        let content = target.get("content").and_then(serde_json::Value::as_str).unwrap_or_default();
+        let media = target.get("media").and_then(serde_json::Value::as_str).unwrap_or_default();
+        let connection = target
+            .get("on")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| super::connection_name(request.on.as_ref()));
+        let spec = super::blobs::BlobPutSpec {
+            call: call.to_owned(),
+            param: param.to_owned(),
+            args: target.get("args").cloned().unwrap_or(serde_json::Value::Null),
+            content: content.as_bytes().to_vec(),
+            media: media.to_owned(),
+            name: target.get("name").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
+            claim: target.get("claim").cloned(),
+            operation_id: target.get("operation_id").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
+            connection,
+        };
+        self.active().blob_put(&spec)
+    }
+
+    /// §18.12 `connector_set`: reconfigure a simulated connector from this step on.
+    fn drive_connector_set(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let target = &request.target;
+        let fail = target
+            .get("fail")
+            .and_then(serde_json::Value::as_array)
+            .map(|list| list.iter().filter_map(|op| connector_op(op.as_str()?)).collect())
+            .unwrap_or_default();
+        let spec = super::blobs::ConnectorSetSpec {
+            connector: target.get("connector").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
+            available: target.get("available").and_then(serde_json::Value::as_bool),
+            fail,
+            corrupt: target.get("corrupt").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
+        };
+        self.active().connector_set(&spec)
+    }
+
+    /// §18.8/§18.9 `blob_get`: a precise seam. Fetch visibility is the §18.8
+    /// authorization over the caller's surface projection, and the corpus's fetch
+    /// cases resolve it through role-scoped/filtered surface views (or a blob-value
+    /// view the model layer does not yet compile) — a projection evaluation the
+    /// composed blob host, keyed only by digest, does not perform.
+    fn drive_blob_get(&mut self, _request: &OpRequest) -> Result<Observation, AdapterError> {
+        Err(AdapterError::unsupported(
+            "`blob_get` needs the §18.8 fetch-visibility decision over the caller's surface \
+             projection (role-scoped/filtered views, or a blob-value view the model does not \
+             compile), which the digest-keyed composed blob host does not evaluate",
+        ))
     }
 
     /// §12.3 `operation_status`: query the retained status of the operation whose
@@ -196,7 +261,9 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         let (router, mut routing) = router::build(engine.model(), &ctx.package, &plan, &ctx.lift)
             .map_err(|err| AdapterError::Host(format!("sandbox router rebuild failed: {err}")))?;
         routing.load_view_param_types(&engine);
-        Ok(Some(Loaded { host: SurfaceHost::new(engine, router, clock), routing }))
+        let mut host = SurfaceHost::new(engine, router, clock);
+        let blobs = super::blobs::provision(&mut host, &ctx.package, ctx.hosts.as_ref());
+        Ok(Some(Loaded { host, routing, blobs }))
     }
 
     /// Load an independent installation of the case package into a fresh in-memory
@@ -215,7 +282,9 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         let (router, mut routing) =
             router::build(engine.model(), &ctx.package, &plan, &ctx.lift).map_err(|err| err.to_string())?;
         routing.load_view_param_types(&engine);
-        Ok(Loaded { host: SurfaceHost::new(engine, router, clock), routing })
+        let mut host = SurfaceHost::new(engine, router, clock);
+        let blobs = super::blobs::provision(&mut host, &ctx.package, ctx.hosts.as_ref());
+        Ok(Loaded { host, routing, blobs })
     }
 
     /// §9.2 host lifecycle `load(target)`: re-load the step's package into the
@@ -252,6 +321,18 @@ fn movement_policy(target: &serde_json::Value) -> Vec<ImportRelation> {
         .unwrap_or_default()
 }
 
+/// Parse one `connector_set { fail }` operation token (§18.12).
+fn connector_op(token: &str) -> Option<liasse_host::sim::ConnectorOp> {
+    use liasse_host::sim::ConnectorOp;
+    Some(match token {
+        "upload" => ConnectorOp::Upload,
+        "download" => ConnectorOp::Download,
+        "copy" => ConnectorOp::Copy,
+        "delete" => ConnectorOp::Delete,
+        _ => return None,
+    })
+}
+
 /// Parse one canonical movement-relation token (§19.8).
 fn relation_from_token(token: &str) -> Option<ImportRelation> {
     Some(match token {
@@ -278,15 +359,12 @@ fn unsupported_reason(kind: &StepKind) -> String {
              `.modules[..]::interface` addressing, and `$config`/`$use`/`$deps` peer bindings, \
              which the surface `ModuleDeployment`'s flat name-keyed single-space model does not carry"
         }
-        StepKind::BlobPut | StepKind::BlobGet => {
-            "a blob-parameter mutation admission that binds a verified §18 descriptor into a \
-             surface call backed by a `BlobEngine` and `hosts.connectors` — the surface `call` \
-             path admits no blob parameter, and the standalone `BlobHost` façade is field- not \
-             mutation-addressed"
-        }
         StepKind::KeyringAdmin | StepKind::ProviderSet => {
-            "a managed `KeyringAdmin` over a host `KeyProvider` with the §17.9 fault-injection \
-             vocabulary the adapter does not provision from the case's `hosts` block"
+            "admin/fault-injection over the engine's *internal* §17 keyring: the runtime engine \
+             self-provisions each `$keyring` and owns the `/ring.$current`/`.$accepted` views a \
+             case asserts, but exposes no bind/rotate/provider-fault entry, and never evaluates \
+             `cose.sign(/ring, …)` in a mutation — so the surface's separately-composed keyring \
+             cannot drive them (a liasse-runtime/liasse-surface seam, not a testkit gap)"
         }
         StepKind::RunReconciler => {
             "activation of a computed §19.9 merge into a new lineage, which the surface `reconcile` \
@@ -310,9 +388,9 @@ fn unsupported_reason(kind: &StepKind) -> String {
         | StepKind::ApplyCorrection => {
             "the deletion/erasure/correction host verbs the surface host does not expose"
         }
-        StepKind::ConnectorSet | StepKind::BudgetSet => {
-            "a host `BlobConnector`/component budget control provisioned from the case's `hosts` \
-             block, which the adapter does not wire"
+        StepKind::BudgetSet => {
+            "a host component budget control provisioned from the case's `hosts` block, which the \
+             adapter does not wire"
         }
         _ => "engine wiring the current layer does not expose",
     };

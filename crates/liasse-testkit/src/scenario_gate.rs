@@ -77,29 +77,26 @@ pub const SKIP: &[(&str, &str)] = &[
     // The `authenticate` step drives through `SurfaceHost::authenticate`; the
     // residual case fails later — its `watch`/`call` name a multiplexed `context`
     // (§11.8) the adapter does not yet thread onto the surface watch/call.
-    // --- `blob_put` step ---
-    ("18-blobs/accepted-upload-commits-and-verifies", "`blob_put` step not driven this phase"),
-    ("18-blobs/all-branch-verifies-every-copy-at-admission", "`blob_put` step not driven this phase"),
-    ("18-blobs/artifact-blob-inclusion-selection-unspecified", "`blob_put` step not driven this phase"),
-    ("18-blobs/at-max-bytes-boundary-accepted", "`blob_put` step not driven this phase"),
-    ("18-blobs/claimed-byte-count-mismatch-rejected", "`blob_put` step not driven this phase"),
-    ("18-blobs/confusable-media-type-not-accepted", "`blob_put` step not driven this phase"),
-    ("18-blobs/descriptor-bytes-encoding-unspecified", "`blob_put` step not driven this phase"),
-    ("18-blobs/disabled-store-excluded-from-placement", "`blob_put` step not driven this phase"),
-    ("18-blobs/fetch-reevaluates-revoked-membership-denied", "`blob_put` step not driven this phase"),
-    ("18-blobs/known-hash-without-visibility-no-fetch", "`blob_put` step not driven this phase"),
-    ("18-blobs/max-bytes-boundary-plus-one-rejected", "`blob_put` step not driven this phase"),
-    ("18-blobs/media-compared-case-insensitively", "`blob_put` step not driven this phase"),
-    ("18-blobs/media-declaration-without-params-accepts-any-params", "`blob_put` step not driven this phase"),
-    ("18-blobs/media-parameter-mismatch-rejected", "`blob_put` step not driven this phase"),
-    ("18-blobs/media-parameter-reordering-accepted", "`blob_put` step not driven this phase"),
-    ("18-blobs/negative-byte-count-rejected", "`blob_put` step not driven this phase"),
-    ("18-blobs/same-content-different-metadata-distinct-descriptors", "`blob_put` step not driven this phase"),
-    ("18-blobs/unaccepted-media-rejected", "`blob_put` step not driven this phase"),
-    ("18-blobs/uppercase-hex-sha512-handling-unspecified", "`blob_put` step not driven this phase"),
-    ("18-blobs/zero-byte-blob-accepted", "`blob_put` step not driven this phase"),
-    ("23-host-contract/connector-failure-preserves-committed-state", "`blob_put` step not driven this phase"),
-    ("23-host-contract/connector-tampered-read-refetched-from-verified-holder", "`blob_put` step not driven this phase"),
+    // --- §18 blob steps drive the composed blob host, but these do not yet pass ---
+    // The blob-parameter upload (`blob_put`), fetch (`blob_get`), and connector
+    // fault-injection (`connector_set`) now run against a real §18 `BlobHost`
+    // composed from the case's `hosts.connectors` + `$data` stores. The residual
+    // debt below is a genuine seam, not a missing driver: a §18.5 placement
+    // observation (`.file.$satisfied`/`.file.$stored`) the runtime does not track on
+    // a surface-bound descriptor; a declared descriptor member (`$name`, a verifying
+    // `claim`) the honest `call_with_blob` blob parameter cannot bind into the call;
+    // a role-scoped §18.8 fetch visibility the digest-keyed host does not resolve; or
+    // a `.liasse` archive step the adapter does not link.
+    ("18-blobs/accepted-upload-commits-and-verifies", "§18.5 placement observation (`.file.$satisfied`/`$stored`) not tracked on a surface-bound blob descriptor"),
+    ("18-blobs/all-branch-verifies-every-copy-at-admission", "§18.5 placement observation not tracked on a surface-bound blob descriptor"),
+    ("18-blobs/disabled-store-excluded-from-placement", "§18.5 placement observation not tracked on a surface-bound blob descriptor"),
+    ("18-blobs/same-content-different-metadata-distinct-descriptors", "a declared `$name` must bind into the mutation call, which the honest `call_with_blob` blob parameter drops"),
+    ("18-blobs/descriptor-bytes-encoding-unspecified", "a verifying client-declared descriptor must bind into the mutation call, which the honest-only blob parameter does not expose"),
+    ("18-blobs/fetch-reevaluates-revoked-membership-denied", "role-scoped blob surface authorization / §18.8 fetch visibility not resolved (denied)"),
+    ("18-blobs/known-hash-without-visibility-no-fetch", "role-scoped §18.8 fetch visibility over the surface projection not resolved (denied)"),
+    ("18-blobs/artifact-blob-inclusion-selection-unspecified", "reuses `inspect_artifact`; needs full `.liasse` archive assembly not linked"),
+    ("23-host-contract/connector-failure-preserves-committed-state", "§18.5 placement observation not tracked on a surface-bound blob descriptor"),
+    ("23-host-contract/connector-tampered-read-refetched-from-verified-holder", "role-scoped §18.8 fetch / §18.5 placement observation not resolved on a surface-bound descriptor"),
     // --- `budget_set` step ---
     ("23-host-contract/budget-backpressure-or-reject-choice-unspecified", "`budget_set` step not driven this phase"),
     ("23-host-contract/budget-exhaustion-never-partial-transition", "`budget_set` step not driven this phase"),
@@ -113,9 +110,8 @@ pub const SKIP: &[(&str, &str)] = &[
     ("04-package-structure/resource-bytes-tampered-digest-mismatch-rejected", "`build_artifact` step not driven this phase"),
     ("04-package-structure/resource-digest-mismatch-rejected", "`build_artifact` step not driven this phase"),
     ("04-package-structure/resource-digest-verified-at-load", "`build_artifact` step not driven this phase"),
-    // --- `connector_set` step ---
-    ("18-blobs/any-branch-selects-first-fulfillable", "`connector_set` step not driven this phase"),
-    ("18-blobs/copies-fewer-than-n-rejected", "`connector_set` step not driven this phase"),
+    // --- `connector_set` drives §18.12 fault injection; this residual is a seam ---
+    ("18-blobs/any-branch-selects-first-fulfillable", "§18.5 placement observation not tracked on a surface-bound blob descriptor"),
     // --- `erase` step ---
     ("annex-d-identity/erase-removes-live-row-and-rechecksums-history", "`erase` step not driven this phase"),
     ("annex-d-identity/erasure-extract-replay-foreign-instance-rejected", "`erase` step not driven this phase"),
