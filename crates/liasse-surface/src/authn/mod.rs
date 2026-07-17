@@ -16,6 +16,7 @@ mod identity;
 mod session;
 
 pub use identity::{Actor, AuthContext, RowLookup, RowSource, Session};
+pub(crate) use identity::application_key;
 pub use session::{SessionAuthenticator, SessionSource};
 
 use liasse_value::Value;

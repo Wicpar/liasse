@@ -13,7 +13,7 @@ use crate::reader::StateReader;
 /// typed key, so a scalar-keyed ref dereferences to that key; every other value
 /// is its own key. This lets a `$session.account` ref (`Value::Ref`) match the
 /// accounts collection's scalar key when resolving `$actor` (§11.3).
-fn application_key(value: &Value) -> &Value {
+pub(crate) fn application_key(value: &Value) -> &Value {
     match value {
         Value::Ref(reference) => match reference.key() {
             RefKey::Scalar(inner) => inner,
