@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use liasse_value::{
-    BlobDescriptor, Bytes, CalendarPeriodBuilder, Date, Decimal, Duration, EnumType, Integer,
+    BlobDescriptor, Bytes, CalendarPeriodBuilder, Date, Decimal, Duration, EnumValue, Integer,
     Json, MediaType, Period, Precision, Ref, RefKey, Sha512, Struct, Text, Timestamp, Uuid, Value,
 };
 use liasse_store::StoreError;
@@ -249,16 +249,6 @@ fn decode_blob(payload: &J) -> Result<BlobDescriptor, StoreError> {
     Ok(BlobDescriptor::new(sha512, bytes, media, name))
 }
 
-/// The largest enum ordinal the schema-free store will reconstruct.
-///
-/// A stored ordinal is a label's declaration-order position, so a genuine one is
-/// tiny. `EnumValue` has no public constructor, so reconstruction below has to
-/// rebuild a synthetic declaration `ordinal + 1` labels long — which means a
-/// corrupt stored ordinal (a `u32` reaches ~4.3e9) would otherwise force that
-/// many placeholder allocations. This bound caps the work: an ordinal at or
-/// beyond it is treated as corruption rather than materialized.
-const MAX_ENUM_ORDINAL: u32 = 1 << 16;
-
 fn decode_enum(payload: &J) -> Result<Value, StoreError> {
     let items = as_array(payload)?;
     let ordinal = items
@@ -266,23 +256,13 @@ fn decode_enum(payload: &J) -> Result<Value, StoreError> {
         .and_then(J::as_u64)
         .and_then(|n| u32::try_from(n).ok())
         .ok_or_else(|| corrupt("enum ordinal is not a u32"))?;
-    if ordinal >= MAX_ENUM_ORDINAL {
-        return Err(corrupt(format!(
-            "enum ordinal {ordinal} exceeds the reconstructable maximum {MAX_ENUM_ORDINAL}"
-        )));
-    }
     let label = items.get(1).and_then(J::as_str).ok_or_else(|| corrupt("enum missing label"))?;
-    // `EnumValue` has no public constructor: the only way to mint one is
-    // `EnumType::parse`, which assigns the ordinal from the label's declaration
-    // position. We rebuild a synthetic declaration whose Nth label is exactly
-    // this one (earlier slots filled with unique, unusable placeholders) so the
-    // parsed value carries the recorded (ordinal, label) pair — the pair on
-    // which `EnumValue` equality and Annex B order are defined. The `MAX_ENUM_ORDINAL`
-    // guard above bounds how many placeholders this can allocate.
-    let mut labels: Vec<String> = (0..ordinal).map(|i| format!("\u{0}#{i}")).collect();
-    labels.push(label.to_owned());
-    let declaration = EnumType::new(labels).map_err(malformed)?;
-    declaration.parse(label).map(Value::Enum).map_err(malformed)
+    // An `EnumValue` *is* its recorded `(ordinal, label)` pair — the pair on which
+    // its equality and Annex B order are defined — so rebuild it directly from the
+    // two parts. Reconstructing through a fabricated declaration would let a label
+    // that is itself a synthetic placeholder collide, and a label is arbitrary A.1
+    // text (`U+0000` included), so no synthetic-declaration scheme is collision-free.
+    Ok(Value::Enum(EnumValue::from_parts(ordinal, label)))
 }
 
 fn encode_ref(reference: &Ref) -> J {

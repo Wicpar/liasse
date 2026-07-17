@@ -61,6 +61,22 @@ pub struct EnumValue {
 }
 
 impl EnumValue {
+    /// Reconstruct an enum value directly from its `(ordinal, label)` parts.
+    ///
+    /// An `EnumValue` *is* the `(ordinal, label)` pair — the declaration-order
+    /// position and the label text on which its [`PartialEq`] and Annex B [`Ord`]
+    /// are defined, and nothing else. A schema-free store that durably recorded
+    /// exactly this pair reconstructs the value from it directly, without the
+    /// originating [`EnumType`]: this is the faithful inverse of reading
+    /// [`ordinal`](Self::ordinal) and [`label`](Self::label) back out. A label is
+    /// arbitrary A.1 text (including `U+0000`), so reconstruction must not route
+    /// through a fabricated declaration whose synthetic labels could collide with
+    /// it.
+    #[must_use]
+    pub fn from_parts(ordinal: u32, label: impl Into<String>) -> Self {
+        Self { ordinal, label: label.into() }
+    }
+
     /// The label string (A.1 wire / D.2 key text).
     #[must_use]
     pub fn label(&self) -> &str {
