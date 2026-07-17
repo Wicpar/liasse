@@ -42,6 +42,7 @@
 //! [`OpRequest`] kinds report a harness skip (never a panic), leaving the outcome
 //! for the triage loop to harden. Load failures likewise skip every step.
 
+mod artifacts;
 mod auth;
 mod blobs;
 mod error;
@@ -50,6 +51,7 @@ pub mod lift;
 mod modules;
 mod namespaces;
 mod ops;
+mod rawzip;
 mod router;
 mod runtime;
 mod shape;
@@ -183,6 +185,10 @@ pub struct ScenarioAdapter<S: InstanceStore> {
     /// The case's live §13 module deployment, built lazily on the first module op
     /// (or the cached reason its root package did not load).
     module: Option<Result<modules::ModuleState, String>>,
+    /// Subscriptions the adapter routed to the module deployment's `.modules`
+    /// aggregation (§13.9), keyed by watch id, so a later `expect_view` re-evaluates
+    /// the module-aware read against the deployment's current state.
+    module_watches: std::collections::BTreeMap<String, modules::ModuleWatch>,
 }
 
 impl ScenarioAdapter<MemoryStore> {
@@ -229,6 +235,7 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
             load_ctx,
             packages: child_packages(&case.packages),
             module: None,
+            module_watches: std::collections::BTreeMap::new(),
         }
     }
 
@@ -316,6 +323,72 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
         }
         &mut self.base
     }
+
+    /// Route a `call` addressing a child's `$expose`d mutation through a
+    /// `::`-interface reference to the deployment (§13.10), or `Ok(None)` when the
+    /// call is not interface-addressed (it stays on the base host). Only a live §13
+    /// deployment carries interface bindings, so a non-module case never routes here.
+    fn try_interface_call(
+        &mut self,
+        request: &crate::contract::CallRequest,
+    ) -> Result<Option<Observation>, AdapterError> {
+        let Some(iface) = self
+            .module
+            .as_ref()
+            .and_then(|module| module.as_ref().ok())
+            .and_then(|state| state.interface_ref(&request.target).cloned())
+        else {
+            return Ok(None);
+        };
+        Ok(Some(self.module_state()?.interface_call(&iface, &request.args)?))
+    }
+
+    /// Route a plain `watch` on a root surface that aggregates `.modules::iface` to
+    /// the deployment's module-aware read (§13.9), recording it for a later
+    /// `expect_view`. `None` when no deployment is live, the watch is not a plain
+    /// surface read, or the deployment declares no such surface view — the caller
+    /// then falls back to the base host.
+    fn try_module_watch(&mut self, request: &crate::contract::WatchRequest) -> Option<Observation> {
+        if request.window.is_some() || request.auth.is_some() || request.context.is_some() {
+            return None;
+        }
+        if !matches!(&self.module, Some(Ok(_))) {
+            return None;
+        }
+        let singular = self.base_singular_view(&request.target);
+        let state = self.module.as_ref()?.as_ref().ok()?;
+        let observation = state.root_view(&request.target, &request.args, singular)?;
+        self.module_watches.insert(
+            request.id.to_string(),
+            modules::ModuleWatch {
+                address: request.target.clone(),
+                args: request.args.clone(),
+                singular,
+            },
+        );
+        Some(observation)
+    }
+
+    /// Re-evaluate a module-routed subscription for an `expect_view` (§13.9), or
+    /// `None` when the id names no module-routed watch (it reads from the base host).
+    fn try_module_read(&mut self, id: &WatchId) -> Option<Observation> {
+        let watch = self.module_watches.get(&id.to_string())?.clone();
+        let state = self.module.as_ref()?.as_ref().ok()?;
+        Some(
+            state
+                .root_view(&watch.address, &watch.args, watch.singular)
+                .unwrap_or_else(|| Observation::ok(None)),
+        )
+    }
+
+    /// Whether the base host binds the surface view at `address` as a singular view
+    /// (§12.2) — the shape the module-aware read renders its result in.
+    fn base_singular_view(&mut self, address: &str) -> bool {
+        match self.base.loaded() {
+            Ok(loaded) => loaded.routing.is_singular_view(address),
+            Err(_) => false,
+        }
+    }
 }
 
 impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
@@ -330,18 +403,34 @@ impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
     }
 
     fn call(&mut self, request: crate::contract::CallRequest) -> Result<Observation, Self::Error> {
+        // §13.10: a call addressing a child's `$expose`d mutation through a
+        // `::`-interface reference routes to the deployment, not the base host.
+        if let Some(observation) = self.try_interface_call(&request)? {
+            return Ok(observation);
+        }
         self.active().call(request)
     }
 
     fn watch(&mut self, request: crate::contract::WatchRequest) -> Result<Observation, Self::Error> {
+        // §13.9: a watch on a root surface aggregating `.modules::iface` routes to
+        // the deployment's module-aware read; a plain surface stays on the base host.
+        if let Some(observation) = self.try_module_watch(&request) {
+            return Ok(observation);
+        }
         self.active().watch(request)
     }
 
     fn unwatch(&mut self, id: &WatchId) -> Result<Observation, Self::Error> {
+        self.module_watches.remove(&id.to_string());
         self.active().unwatch(id)
     }
 
     fn read_view(&mut self, id: &WatchId) -> Result<Observation, Self::Error> {
+        // §13.9: a module-routed subscription re-evaluates against the deployment's
+        // current state, so a disable/enable between `watch` and `expect_view` shows.
+        if let Some(observation) = self.try_module_read(id) {
+            return Ok(observation);
+        }
         self.active().read_view(id)
     }
 

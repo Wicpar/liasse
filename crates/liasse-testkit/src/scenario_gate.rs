@@ -94,22 +94,14 @@ pub const SKIP: &[(&str, &str)] = &[
     ("18-blobs/descriptor-bytes-encoding-unspecified", "a verifying client-declared descriptor must bind into the mutation call, which the honest-only blob parameter does not expose"),
     ("18-blobs/fetch-reevaluates-revoked-membership-denied", "role-scoped blob surface authorization / §18.8 fetch visibility not resolved (denied)"),
     ("18-blobs/known-hash-without-visibility-no-fetch", "role-scoped §18.8 fetch visibility over the surface projection not resolved (denied)"),
-    ("18-blobs/artifact-blob-inclusion-selection-unspecified", "reuses `inspect_artifact`; needs full `.liasse` archive assembly not linked"),
     ("23-host-contract/connector-failure-preserves-committed-state", "§18.5 placement observation not tracked on a surface-bound blob descriptor"),
     ("23-host-contract/connector-tampered-read-refetched-from-verified-holder", "role-scoped §18.8 fetch / §18.5 placement observation not resolved on a surface-bound descriptor"),
     // --- `budget_set` step ---
     ("23-host-contract/budget-backpressure-or-reject-choice-unspecified", "`budget_set` step not driven this phase"),
     ("23-host-contract/budget-exhaustion-never-partial-transition", "`budget_set` step not driven this phase"),
-    // --- `build_artifact` step ---
-    ("04-package-structure/definition-swap-after-build-rejected", "`build_artifact` step not driven this phase"),
-    ("04-package-structure/duplicate-archive-entry-rejected", "`build_artifact` step not driven this phase"),
-    ("04-package-structure/duplicate-resource-entry-rejected", "`build_artifact` step not driven this phase"),
-    ("04-package-structure/liasse-json-duplicate-member-rejected", "`build_artifact` step not driven this phase"),
-    ("04-package-structure/manifest-checksum-mismatch-rejected", "`build_artifact` step not driven this phase"),
-    ("04-package-structure/manifest-unknown-member-rejected", "`build_artifact` step not driven this phase"),
-    ("04-package-structure/resource-bytes-tampered-digest-mismatch-rejected", "`build_artifact` step not driven this phase"),
-    ("04-package-structure/resource-digest-mismatch-rejected", "`build_artifact` step not driven this phase"),
-    ("04-package-structure/resource-digest-verified-at-load", "`build_artifact` step not driven this phase"),
+    // (§4 `build_artifact`/`repack_artifact`/`load_artifact` now drive the real
+    // `liasse-artifact` archive layer — adapter/artifacts.rs — so every
+    // 04-package-structure case passes.)
     // --- `connector_set` drives §18.12 fault injection; this residual is a seam ---
     ("18-blobs/any-branch-selects-first-fulfillable", "§18.5 placement observation not tracked on a surface-bound blob descriptor"),
     // --- `erase` step ---
@@ -117,18 +109,13 @@ pub const SKIP: &[(&str, &str)] = &[
     ("annex-d-identity/erasure-extract-replay-foreign-instance-rejected", "`erase` step not driven this phase"),
     // --- `export` step ---
     ("19-history-artifacts/displaced-lineage-reimport-is-merge", "`export` step not driven this phase"),
-    ("19-history-artifacts/duplicate-archive-entry-invalid", "`export` step not driven this phase"),
-    ("19-history-artifacts/export-artifact-structure-and-mimetype", "`export` step not driven this phase"),
     ("19-history-artifacts/forged-state-consistent-checksums-unspecified", "`export` step not driven this phase"),
-    ("19-history-artifacts/history-index-genesis-lineage", "`export` step not driven this phase"),
     ("19-history-artifacts/history-index-overlapping-ranges-invalid", "`export` step not driven this phase"),
     ("19-history-artifacts/import-fast-forward-applies-continuation", "`export` step not driven this phase"),
     ("19-history-artifacts/import-policy-gates-activation", "`export` step not driven this phase"),
     ("19-history-artifacts/import-replay-idempotent", "`export` step not driven this phase"),
     ("19-history-artifacts/imported-state-survives-restart", "`export` step not driven this phase"),
-    ("19-history-artifacts/manifest-entries-cover-required-entries", "`export` step not driven this phase"),
     ("19-history-artifacts/manifest-extra-member-invalid", "`export` step not driven this phase"),
-    ("19-history-artifacts/manifest-included-range-statement-unspecified", "`export` step not driven this phase"),
     ("19-history-artifacts/manifest-index-selection-mismatch-invalid", "`export` step not driven this phase"),
     ("19-history-artifacts/merge-combined-uniqueness-violation-conflict", "`export` step not driven this phase"),
     ("19-history-artifacts/merge-compatible-separate-coordinates", "`export` step not driven this phase"),
@@ -138,18 +125,12 @@ pub const SKIP: &[(&str, &str)] = &[
     ("19-history-artifacts/missing-required-entry-invalid", "`export` step not driven this phase"),
     ("19-history-artifacts/point-id-aliasing-unrelated-history-unspecified", "`export` step not driven this phase"),
     ("19-history-artifacts/restore-reexport-preserves-selection-identity", "`export` step not driven this phase"),
-    ("19-history-artifacts/rollback-preserves-displaced-future-lineage", "`export` step not driven this phase"),
     ("19-history-artifacts/spliced-state-selection-mismatch-invalid", "`export` step not driven this phase"),
     ("19-history-artifacts/tampered-state-checksum-mismatch-invalid", "`export` step not driven this phase"),
-    ("19-history-artifacts/unchanged-mutation-creates-no-history-point", "`export` step not driven this phase"),
     ("19-history-artifacts/unknown-extra-entry-unspecified", "`export` step not driven this phase"),
     ("19-history-artifacts/zip-path-traversal-entry-invalid", "`export` step not driven this phase"),
     ("20-evolution-migrations/downgrade-preserves-history-order", "`export` step not driven this phase"),
-    ("annex-d-identity/definition-identity-independent-of-selected-state", "`export` step not driven this phase"),
     ("annex-d-identity/display-path-key-slash-escaped-in-correction", "`export` step not driven this phase"),
-    ("annex-d-identity/duplicate-entry-breaks-exists-exactly-once", "`export` step not driven this phase"),
-    ("annex-d-identity/liasse-json-byte-tamper-fails-entry-checksum", "`export` step not driven this phase"),
-    ("annex-d-identity/liasse-json-swap-with-fixed-checksums-stale-identity-unspecified", "`export` step not driven this phase"),
     // --- `host_load` step ---
     ("20-evolution-migrations/confusable-from-source-name-nonexistent-rejected", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/downgrade-drops-unrepresentable-field-rejected", "`host_load` step not driven this phase"),
@@ -165,14 +146,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("20-evolution-migrations/replay-identical-version-update-unchanged", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/reversible-transform-roundtrip-commits", "`host_load` step not driven this phase"),
     ("annex-e-compatibility/downgrade-drops-populated-field-rejected", "`host_load` step not driven this phase"),
-    ("annex-e-compatibility/enum-result-confusable-label-swap-rejected", "`host_load` step not driven this phase"),
-    ("annex-e-compatibility/exposed-view-identity-change-rejected", "`host_load` step not driven this phase"),
-    ("annex-e-compatibility/minor-adds-required-parameter-rejected", "`host_load` step not driven this phase"),
-    ("annex-e-compatibility/minor-makes-required-output-optional-rejected", "`host_load` step not driven this phase"),
-    ("annex-e-compatibility/minor-narrows-input-enum-domain-rejected", "`host_load` step not driven this phase"),
-    ("annex-e-compatibility/minor-narrows-relative-to-active-intermediate-release-rejected", "`host_load` step not driven this phase"),
-    ("annex-e-compatibility/minor-removes-output-member-rejected", "`host_load` step not driven this phase"),
-    ("annex-e-compatibility/patch-narrowing-response-rejected", "`host_load` step not driven this phase"),
     // --- `keyring_admin` manual `bind_activate` (§17.4 manual policy) ---
     // `keyring_admin` now drives the engine's self-provisioned ring through
     // `Engine::keyring_admin` (adapter/keyrings.rs) — `revoke`/`destroy` on an
@@ -196,14 +169,11 @@ pub const SKIP: &[(&str, &str)] = &[
     // end; the entries below are blocked on a runtime/surface seam the current
     // `ModuleDeployment` does not close, named per case.
     //
-    // Parent-surface interface addressing: installed children live in the external
-    // `ModuleHost`, invisible to the root engine the base surface host reads, so a
-    // parent `.modules::iface` / `.modules[k]::iface(.mut)` surface never reaches
-    // them.
-    ("13-modules/aggregation-skips-disabled-instance", "§13.9/§13.12 the parent `.modules::iface` aggregation is served by the base surface host over the root engine, which cannot observe children in the external ModuleHost (and faults evaluating `.modules::` with no module data) — the surface/runtime bridge is unlanded"),
-    ("13-modules/interface-aggregation-inherited-identity", "§13.9 the parent `.modules::iface` aggregation read is served over the root engine, which cannot observe the children installed in the external ModuleHost — the surface/runtime bridge is unlanded"),
-    ("13-modules/interface-mutation-contract-shapes", "§13.10/§13.11 interface-addressed mutation dispatch through a parent surface is unlanded — the base surface host routes `.modules[k]::iface.mut` to the root engine, which cannot reach the installed child"),
-    ("13-modules/module-space-instances-independent", "§13.11 interface-addressed mutation dispatch through a parent surface is unlanded (the root engine the parent surface reads cannot reach the installed child)"),
+    // Parent-surface interface addressing: a root read/call addressing `.modules`
+    // now routes through the deployment (adapter/modules.rs `root_view`/
+    // `interface_call`), so the §13.9 aggregation and §13.10 interface mutation
+    // reach the installed children. The entries below stay blocked on a distinct
+    // seam named per case.
     ("13-modules/cross-module-atomic-transition", "§13.10 the root package's interface-addressed `$public` surfaces do not compile in a fresh engine, so the deployment cannot be built; cross-module atomic mutation dispatch is unlanded"),
     ("13-modules/parent-exposed-surface-row-local", "§13.4 `$parent` capability projection and interface-addressed `$public` surfaces are unlanded, so the root package does not compile in a fresh engine"),
     ("13-modules/rename-instance-stale-name-not-addressable", "the root's interface-addressed `$public` surfaces (`.modules[k]::iface`, `.modules::` aggregation) do not compile in a fresh engine, so the deployment cannot be built"),
@@ -218,9 +188,10 @@ pub const SKIP: &[(&str, &str)] = &[
     ("13-modules/install-config-type-mismatch-invalid", "§13.1 installation `$config` is recorded but not type-checked against the child's declared `$config` struct, so a type mismatch is admitted"),
     ("13-modules/install-config-unknown-member-invalid", "§13.1/§2.5 installation `$config` is recorded but its members are not validated against the declared struct, so an unknown member is admitted"),
     ("13-modules/module-config-values-read-through-binding", "§13.1 `$config` read-through in child expressions is unlanded (the expression language has no `$config` binding), so the child fails to compile at install"),
-    // Installation `$data` overlay (§13.3): InstallRequest carries no `$data`.
-    ("13-modules/install-data-check-failure-rejected", "§13.3 the installation `$data` overlay is unlanded (InstallRequest carries no `$data`), so the overlay row and its `$check` never run"),
-    ("13-modules/install-data-overlay-merge", "§13.3 the installation `$data` overlay is unlanded and the §13.9 `.modules::` aggregation read is not served over the root engine"),
+    // Installation `$data` overlay (§13.3): the overlay is recorded on the install
+    // request (adapter/modules.rs), so a fresh-row overlay and its `$check` now run;
+    // the three-way *merge* onto an already-seeded row is a runtime seam.
+    ("13-modules/install-data-overlay-merge", "§13.3 the installation `$data` overlay's three-way merge onto an existing package-`$data`-seeded row is not landed in the runtime, so the overlay over a seeded row is rejected rather than merged"),
     // Module-space existence (§13.2): the containing-row check is a documented seam.
     ("13-modules/install-into-nonexistent-space-rejected", "§13.2 the containing-row existence check for a module space is unlanded, so an install into a ghost row is admitted"),
     // Peer/`$deps` resolution (§13.5/§13.6): the consumer child fails a standalone

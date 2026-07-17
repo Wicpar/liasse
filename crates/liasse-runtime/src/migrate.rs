@@ -26,6 +26,7 @@ use liasse_syntax::{parse_document, parse_expression};
 use liasse_value::Value;
 
 use crate::compiled::{Compiled, CompiledCollection};
+use crate::contract::BoundaryContract;
 use crate::doc;
 use crate::engine::{compile_definition, Compilation, Engine};
 use crate::error::{EngineError, Rejection, RejectionReason};
@@ -82,6 +83,17 @@ impl<S: InstanceStore> Engine<S> {
         let compilation =
             compile_definition(target, &crate::host::HostSignatures::default()).map_err(UpdateError::Engine)?;
         let decision = compatibility(self.model(), &compilation.model)?;
+        // §13.14/§20.3/Annex E: a same-major forward move (minor or patch) MUST
+        // preserve or widen every exposed boundary contract. Reject a narrowing
+        // release before activation (E.9) so the current package stays active.
+        if decision.is_line_forward()
+            && let Some(reason) = self.boundary_narrowing(target, &compilation)
+        {
+            return Err(UpdateError::Rejected(Rejection::new(
+                RejectionReason::Compatibility,
+                format!("update narrows the boundary contract: {reason}"),
+            )));
+        }
         let plan = MigrationPlan::read(target).map_err(UpdateError::Engine)?;
         let old_state =
             StateSection::capture(self.schema(), self.store()).map_err(|e| UpdateError::Engine(EngineError::Store(e)))?;
@@ -92,6 +104,31 @@ impl<S: InstanceStore> Engine<S> {
             .map_err(UpdateError::Engine)?;
         Ok(UpdateReport { relation: decision.relation, commit })
     }
+
+    /// The first boundary-contract narrowing the `target` release makes relative
+    /// to the active one (Annex E.2), or `None` when it preserves or widens every
+    /// exposed contract. The active contract is read from the currently active
+    /// definition, so the comparison is against the release in force (E.9), and a
+    /// two-hop widen-then-narrow is caught at the second hop. A definition whose
+    /// `$model` cannot be re-parsed yields `None` (the migration then fails its
+    /// ordinary pipeline instead).
+    fn boundary_narrowing(&self, target: &str, candidate: &Compilation) -> Option<String> {
+        let active_definition = self.definition_source()?;
+        let active_doc = model_document(&active_definition)?;
+        let candidate_doc = model_document(target)?;
+        let active = BoundaryContract::extract(self.compiled(), &active_doc);
+        let candidate = BoundaryContract::extract(&candidate.compiled, &candidate_doc);
+        active.narrowing(&candidate)
+    }
+}
+
+/// Re-parse a definition text and return its `$model` document, or `None` when it
+/// does not parse or declares no `$model`.
+fn model_document(definition: &str) -> Option<liasse_syntax::DocValue> {
+    let mut sources = SourceMap::new();
+    let src = sources.add_file("liasse.json", definition.to_owned());
+    let document = parse_document(src, definition).ok()?;
+    doc::member(document.root(), "$model").cloned()
 }
 
 /// Classify the update from the active package to the target (Annex E, §20.3).

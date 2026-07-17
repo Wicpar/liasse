@@ -16,29 +16,60 @@
 //! [`SurfaceHost`](liasse_surface::SurfaceHost): the runtime keeps installed
 //! children external to the root engine (they live inside the
 //! [`ModuleHost`](liasse_runtime::ModuleHost), not in the root's own committed
-//! state), so the root's own `$public` surfaces and `.modules::iface` views
-//! cannot observe them. Every §13 case that reads installed-module data back
-//! *through a parent surface* — the `.modules::templates` aggregation, a
-//! `.modules[name]::iface` interface read, a `.modules[name]::iface.mut`
-//! interface mutation — therefore sees an empty module space on the base host and
-//! stays blocked on that surface/runtime integration seam. The install request's
-//! `$data` overlay (§13.3), `$config` type-checking (§13.1), peer/`$deps`
-//! resolution (§13.5/§13.6), and the §13.15 update-report assembly are further
-//! runtime seams the current [`ModuleDeployment`] does not yet close. Each is
-//! recorded per case in `scenario_gate`. The lifecycle *outcomes* (name
-//! validation, duplicate detection, disable/enable/uninstall/rename admission)
-//! route end to end.
+//! state), so the base host's `$public` surfaces cannot observe them. The
+//! adapter therefore *routes a root read or call that addresses `.modules`
+//! through the deployment* rather than the base host: a `watch`/`expect_view` on a
+//! surface whose view aggregates `.modules::iface` (§13.9) evaluates through
+//! [`ModuleDeployment::root_view`], which folds the enabled children into the read
+//! ([`ModuleState::root_view`]); a `call` on a surface whose `$mut` is a
+//! `::`-interface reference (§13.10) — one the base router leaves unbound, so it
+//! would resolve `denied` — dispatches through [`ModuleDeployment::interface_call`]
+//! ([`ModuleState::interface_call`]). The installation `$data` overlay (§13.3) is
+//! now recorded on the [`InstallRequest`], so an overlay row failing a `$check` is
+//! an admission `rejected`.
+//!
+//! The remaining seams stay blocked and recorded per case in `scenario_gate`:
+//! `$config` type-checking (§13.1), peer/`$deps` resolution (§13.5/§13.6), the
+//! interface-contract satisfaction check at install (§13.8), and the §13.15
+//! update-report assembly — all runtime/surface work the current
+//! [`ModuleDeployment`] does not yet close. A parent surface that mixes a base-host
+//! root mutation with a `.modules` aggregation would also need the two engines
+//! reconciled; no §13 case does, since every §13 mutation is an install or an
+//! interface call, both routed to the deployment.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use liasse_diag::SourceMap;
 use liasse_ident::InstanceId;
-use liasse_runtime::{Engine, InstallRequest, ModuleHost, ModuleSpace, Precision};
+use liasse_runtime::{
+    CallOutcome, CallRequest, Engine, InstallRequest, ModuleError, ModuleHost, ModuleSpace,
+    Precision, ViewQuery,
+};
 use liasse_store::{InstanceStore, MemoryStore, MemoryStoreFactory};
-use liasse_surface::{ModuleDeployment, ModuleObservation, ModuleUpdate, VirtualClock as SurfaceClock};
-use liasse_value::{Json, Text, Value};
+use liasse_surface::{
+    ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate, VirtualClock as SurfaceClock,
+};
+use liasse_syntax::{parse_expression, Expr, ExprKind, Selector, StmtKind};
+use liasse_value::{Json, Text, Type, Value};
 
 use crate::contract::Observation;
-use crate::outcome::Outcome;
+use crate::outcome::{Completion, Outcome};
 
-use super::{AdapterError, EPOCH_MICROS};
+use super::{wire, AdapterError, EPOCH_MICROS};
+
+/// A recorded module-routed subscription (§13.9): the root surface view address
+/// and its arguments, replayed by a later `expect_view` so the module-aware read
+/// re-evaluates against the deployment's current state (a disable/enable between
+/// the `watch` and the `expect_view` changes what the aggregation observes).
+#[derive(Debug, Clone)]
+pub(super) struct ModuleWatch {
+    /// The surface view address (`public.<surface>`) the watch subscribed.
+    pub(super) address: String,
+    /// The subscription's view arguments, verbatim.
+    pub(super) args: serde_json::Value,
+    /// Whether the bound view delivers a single object (§12.2).
+    pub(super) singular: bool,
+}
 
 /// The live §13 module deployment for one case: a root engine plus the child
 /// instances installed into its module spaces, together with the case's package
@@ -47,6 +78,12 @@ pub(super) struct ModuleState {
     deployment: ModuleDeployment<MemoryStoreFactory>,
     /// Label → raw child package definition, resolved by each entry's `$module`.
     packages: serde_json::Map<String, serde_json::Value>,
+    /// Interface-addressed surface `$mut` bindings (§13.10), keyed by call address
+    /// (`public.<surface>.<call>`): the base surface router cannot bind a
+    /// `::`-interface reference (`/companies["acme"].modules["kit"]::templates.create`),
+    /// so a `call` on such a surface routes here to [`ModuleDeployment::interface_call`]
+    /// rather than resolving `denied` on the base host.
+    interface_calls: BTreeMap<String, InterfaceRef>,
 }
 
 impl ModuleState {
@@ -58,12 +95,17 @@ impl ModuleState {
         instance: &str,
         definition: &str,
         packages: &serde_json::Map<String, serde_json::Value>,
+        package: &serde_json::Value,
     ) -> Result<Self, String> {
         let store = MemoryStore::new(InstanceId::new(format!("{instance}#modroot")));
         let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
         let root = Engine::load(store, definition, &mut clock).map_err(|err| err.to_string())?;
         let host = ModuleHost::new(MemoryStoreFactory::new(), root);
-        Ok(Self { deployment: ModuleDeployment::new(host, clock), packages: packages.clone() })
+        Ok(Self {
+            deployment: ModuleDeployment::new(host, clock),
+            packages: packages.clone(),
+            interface_calls: interface_call_bindings(package),
+        })
     }
 
     /// §13.3 `modules.install`: resolve the child `$module` package, build an
@@ -90,13 +132,13 @@ impl ModuleState {
         install = record_uses(install, package.get("$use"));
         install = record_deps(install, package.get("$deps"));
         install = record_config(install, request.get("$config"));
+        // §13.3: the installation `$data` overlays onto the child genesis after the
+        // package `$data` seed; every resulting value passes ordinary insertion and
+        // load validation, so a row whose field fails a `$check` refuses the install.
+        install = record_data(install, request.get("$data"));
         match self.deployment.install(&space, install) {
             Ok(observation) => Ok(observe(observation)),
-            // §13.3: "Loading validates the definition, the configuration, and the
-            // interface contract before the instance becomes active." A child whose
-            // definition fails static validation is refused before it becomes
-            // active — a static `invalid`.
-            Err(_) => Ok(Observation::outcome(Outcome::Invalid)),
+            Err(fault) => Ok(Observation::outcome(install_fault_outcome(&fault))),
         }
     }
 
@@ -164,6 +206,79 @@ impl ModuleState {
                 "`module_update` migration was refused and collapsed into an engine fault by the \
                  runtime host — surfacing the §13.14/§13.15 outcome is a runtime seam: {fault}"
             ))),
+        }
+    }
+
+    /// Evaluate a root package surface view that reads its installed children
+    /// through `.modules::iface` (§13.9), folding the enabled instances into the
+    /// read via [`ModuleDeployment::root_view`]. This is the entry a `watch`/
+    /// `expect_view` on a `.modules`-aggregating root surface routes through: the
+    /// base surface host reads the root engine alone, which cannot observe the
+    /// children installed in the deployment (and faults on a `.modules::` read with
+    /// no module data), so the aggregation is served here instead. `None` when the
+    /// deployment declares no surface view of that name — the caller then falls back
+    /// to the base host.
+    pub(super) fn root_view(
+        &self,
+        address: &str,
+        args: &serde_json::Value,
+        singular: bool,
+    ) -> Option<Observation> {
+        let types: BTreeMap<String, Type> =
+            self.deployment.root().surface_view_params(address).into_iter().collect();
+        let mut query = ViewQuery::new();
+        for (name, value) in wire::decode_args(args, &types) {
+            query = query.param(name, value);
+        }
+        match self.deployment.root_view(address, &query) {
+            Ok(Some(result)) => Some(Observation::ok(Some(wire::view_to_json_shaped(&result, singular)))),
+            _ => None,
+        }
+    }
+
+    /// The interface-addressed binding of the surface call at `address`
+    /// (`public.<surface>.<call>`), if the surface routes to a child's `$expose`d
+    /// mutation through a `::`-interface reference (§13.10).
+    pub(super) fn interface_ref(&self, address: &str) -> Option<&InterfaceRef> {
+        self.interface_calls.get(address)
+    }
+
+    /// Dispatch an interface-addressed call to a child's `$expose`d mutation
+    /// (§13.10): resolve the module space and instance from the call `args`, forward
+    /// the child mutation's own arguments, and admit it against the enabled child.
+    pub(super) fn interface_call(
+        &mut self,
+        iface: &InterfaceRef,
+        args: &serde_json::Value,
+    ) -> Result<Observation, AdapterError> {
+        let Some(resolved) = iface.resolve(args) else {
+            return Err(AdapterError::unsupported(
+                "an interface-addressed call could not resolve its module space/instance from the \
+                 call arguments",
+            ));
+        };
+        // §13.10: the child mutation receives every argument the selector did not
+        // consume (the space/instance `@param`s address the instance, not the child).
+        let forwarded = forward_args(args, &resolved.consumed);
+        let mut request = CallRequest::new(String::new());
+        for (name, value) in wire::decode_args(&forwarded, &BTreeMap::new()) {
+            request = request.arg(name, value);
+        }
+        match self.deployment.interface_call(
+            &resolved.space,
+            &resolved.instance,
+            &resolved.interface,
+            &resolved.mutation,
+            &request,
+        ) {
+            Ok(outcome) => Ok(observe_call_outcome(&outcome)),
+            // §13.3/§13.12: an absent/disabled instance, or an interface that binds
+            // no such routable mutation, refuses the addressed transition — an
+            // admission `rejected`, not a store fault.
+            Err(ModuleError::Unknown(_) | ModuleError::Disabled(_) | ModuleError::InterfaceContract(..)) => {
+                Ok(Observation::outcome(Outcome::Rejected))
+            }
+            Err(fault) => Err(AdapterError::Host(format!("interface call fault: {fault}"))),
         }
     }
 
@@ -288,6 +403,236 @@ fn decode_config_value(wire: &serde_json::Value) -> Value {
     }
 }
 
+/// Record the installation `$data` overlay onto an install request (§13.3), as the
+/// JSON text of the `$data` object. Absent or non-serializable `$data` is left off.
+fn record_data(install: InstallRequest, data: Option<&serde_json::Value>) -> InstallRequest {
+    match data.and_then(|data| serde_json::to_string(data).ok()) {
+        Some(text) => install.data(text),
+        None => install,
+    }
+}
+
+/// Classify a module install fault the surface collapses into a [`ModuleFault`]
+/// (§13.3). `ModuleFault` erases the distinct §13.3 failure classes, exposing only
+/// its diagnostic text: a seed/overlay admission refusal (an installation `$data`
+/// row failing ordinary insertion validation) is an admission `rejected`, while a
+/// static definition/`$config`/interface-contract validation failure is `invalid`
+/// (the FORMAT.md build/load-vs-admission split, tests/13-modules/NOTES.md).
+/// Reading the class off the fault text is a surface seam — `ModuleFault` should
+/// carry the classified outcome but does not expose the inner error.
+fn install_fault_outcome(fault: &ModuleFault) -> Outcome {
+    if fault.to_string().contains("seed rejected") {
+        Outcome::Rejected
+    } else {
+        Outcome::Invalid
+    }
+}
+
+/// Render a child mutation [`CallOutcome`] to a harness observation (§13.10): a
+/// committed/unchanged transition carries its `$return` projection (`None` for a
+/// response-free mutation, §13.8), a rejected transition its outcome class.
+fn observe_call_outcome(outcome: &CallOutcome) -> Observation {
+    match outcome {
+        CallOutcome::Committed { response, .. } => Observation {
+            outcome: Outcome::Ok,
+            value: response.as_ref().map(wire::response_to_json),
+            completion: Some(Completion::Committed),
+            extra: serde_json::Map::new(),
+        },
+        CallOutcome::Unchanged { response } => Observation {
+            outcome: Outcome::Ok,
+            value: response.as_ref().map(wire::response_to_json),
+            completion: Some(Completion::Unchanged),
+            extra: serde_json::Map::new(),
+        },
+        CallOutcome::Rejected(_) => Observation::outcome(Outcome::Rejected),
+    }
+}
+
+/// The call `args` restricted to the members the space/instance selectors did not
+/// consume — the arguments forwarded to the child mutation (§13.10).
+fn forward_args(args: &serde_json::Value, consumed: &BTreeSet<String>) -> serde_json::Value {
+    let Some(map) = args.as_object() else {
+        return serde_json::Value::Object(serde_json::Map::new());
+    };
+    let forwarded: serde_json::Map<String, serde_json::Value> =
+        map.iter().filter(|(name, _)| !consumed.contains(*name)).map(|(k, v)| (k.clone(), v.clone())).collect();
+    serde_json::Value::Object(forwarded)
+}
+
+/// The interface-addressed surface `$mut` bindings of a root package, keyed by call
+/// address (`public.<surface>.<call>` / `<role>.<surface>.<call>`): each `$mut`
+/// value that is a `::`-interface reference the base surface router cannot bind.
+fn interface_call_bindings(package: &serde_json::Value) -> BTreeMap<String, InterfaceRef> {
+    let mut map = BTreeMap::new();
+    let Some(model) = package.get("$model").and_then(serde_json::Value::as_object) else {
+        return map;
+    };
+    if let Some(public) = model.get("$public").and_then(serde_json::Value::as_object) {
+        collect_surface_interface_calls("public", public, &mut map);
+    }
+    if let Some(roles) = model.get("$roles").and_then(serde_json::Value::as_object) {
+        for (role, definition) in roles {
+            if let Some(surfaces) = definition.as_object() {
+                collect_surface_interface_calls(role, surfaces, &mut map);
+            }
+        }
+    }
+    map
+}
+
+/// Record each surface's interface-addressed `$mut` calls under `prefix`.
+fn collect_surface_interface_calls(
+    prefix: &str,
+    surfaces: &serde_json::Map<String, serde_json::Value>,
+    map: &mut BTreeMap<String, InterfaceRef>,
+) {
+    for (surface, definition) in surfaces {
+        if surface.starts_with('$') {
+            continue;
+        }
+        let Some(calls) = definition.get("$mut").and_then(serde_json::Value::as_object) else {
+            continue;
+        };
+        for (call, body) in calls {
+            if let Some(iface) = body.as_str().and_then(InterfaceRef::parse) {
+                map.insert(format!("{prefix}.{surface}.{call}"), iface);
+            }
+        }
+    }
+}
+
+/// A component of an interface-addressed reference's module-space/instance path:
+/// either a literal key or a `@param` resolved from the call arguments.
+#[derive(Debug, Clone)]
+enum PathSeg {
+    Lit(String),
+    Param(String),
+}
+
+/// A parsed interface-addressed surface `$mut` reference (§13.10), e.g.
+/// `/companies[@company].modules[@module]::templates.create`: the module-space path
+/// template, the instance-name selector, the interface, and the routed mutation.
+#[derive(Debug, Clone)]
+pub(super) struct InterfaceRef {
+    space: Vec<PathSeg>,
+    instance: PathSeg,
+    interface: String,
+    mutation: String,
+}
+
+/// An [`InterfaceRef`] resolved against a call's arguments.
+struct ResolvedInterfaceCall {
+    space: ModuleSpace,
+    instance: String,
+    interface: String,
+    mutation: String,
+    /// The argument names the space/instance selectors consumed.
+    consumed: BTreeSet<String>,
+}
+
+impl InterfaceRef {
+    /// Parse a surface `$mut` reference into an interface-addressed binding, or
+    /// `None` when it is not a `[<instance>]::<interface>.<mutation>` reference the
+    /// base surface router already binds (a plain receiver-and-parameters call).
+    fn parse(text: &str) -> Option<Self> {
+        let mut sources = SourceMap::new();
+        let source = sources.add_label("iface-ref", text.to_owned());
+        let parsed = parse_expression(source, text).ok()?;
+        let StmtKind::Bare(expr) = &parsed.statement().kind else {
+            return None;
+        };
+        // A bare `.…::iface.mut` reference, or an explicit `.…::iface.mut()` call.
+        let field = match &expr.kind {
+            ExprKind::Field { .. } => expr,
+            ExprKind::Call { callee, args } if args.is_empty() => callee.as_ref(),
+            _ => return None,
+        };
+        let ExprKind::Field { base, member: mutation } = &field.kind else {
+            return None;
+        };
+        let ExprKind::SameName { base: selected, member: interface } = &base.kind else {
+            return None;
+        };
+        let ExprKind::Select { base: space_expr, selector: Selector::Keys(keys) } = &selected.kind else {
+            return None;
+        };
+        let [instance_key] = keys.as_slice() else {
+            return None;
+        };
+        Some(Self {
+            space: walk_space(space_expr)?,
+            instance: key_seg(instance_key)?,
+            interface: interface.text.clone(),
+            mutation: mutation.text.clone(),
+        })
+    }
+
+    /// Resolve the module space and instance name against the call `args`.
+    fn resolve(&self, args: &serde_json::Value) -> Option<ResolvedInterfaceCall> {
+        let mut consumed = BTreeSet::new();
+        let mut path = String::new();
+        for seg in &self.space {
+            path.push('/');
+            path.push_str(&resolve_seg(seg, args, &mut consumed)?);
+        }
+        let instance = resolve_seg(&self.instance, args, &mut consumed)?;
+        let space = ModuleSpace::new(&path).ok()?;
+        Some(ResolvedInterfaceCall {
+            space,
+            instance,
+            interface: self.interface.clone(),
+            mutation: self.mutation.clone(),
+            consumed,
+        })
+    }
+}
+
+/// The path segment a selector key expression names: a string literal or a
+/// `@param`. A computed or non-scalar key is unsupported here.
+fn key_seg(expr: &Expr) -> Option<PathSeg> {
+    match &expr.kind {
+        ExprKind::Str(text) => Some(PathSeg::Lit(text.clone())),
+        ExprKind::Param(id) => Some(PathSeg::Param(id.text.clone())),
+        _ => None,
+    }
+}
+
+/// Walk a module-space reference expression (`/companies["acme"].modules`) into its
+/// display-path segments, in order. Each field access is a literal component and
+/// each key selector a literal or `@param` component.
+fn walk_space(expr: &Expr) -> Option<Vec<PathSeg>> {
+    match &expr.kind {
+        ExprKind::Root | ExprKind::Current => Some(Vec::new()),
+        ExprKind::Field { base, member } => {
+            let mut segs = walk_space(base)?;
+            segs.push(PathSeg::Lit(member.text.clone()));
+            Some(segs)
+        }
+        ExprKind::Select { base, selector: Selector::Keys(keys) } => {
+            let [key] = keys.as_slice() else {
+                return None;
+            };
+            let mut segs = walk_space(base)?;
+            segs.push(key_seg(key)?);
+            Some(segs)
+        }
+        _ => None,
+    }
+}
+
+/// Resolve one path segment to its display-path component, recording a consumed
+/// `@param`. A `@param` resolves to its `text` argument.
+fn resolve_seg(seg: &PathSeg, args: &serde_json::Value, consumed: &mut BTreeSet<String>) -> Option<String> {
+    match seg {
+        PathSeg::Lit(text) => Some(text.clone()),
+        PathSeg::Param(name) => {
+            consumed.insert(name.clone());
+            args.get(name).and_then(serde_json::Value::as_str).map(ToOwned::to_owned)
+        }
+    }
+}
+
 impl<S: InstanceStore> super::ScenarioAdapter<S> {
     /// The case's live module deployment, built lazily on first module op from the
     /// case's prepared root definition and its package map. A build failure (the
@@ -297,9 +642,12 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         if self.module.is_none() {
             let plan = super::auth::AuthPlan::derive(&self.load_ctx.package, self.load_ctx.hosts.as_ref());
             let built = match super::prepared_definition(&self.load_ctx.package, &plan, &self.load_ctx.lift) {
-                Some(definition) => {
-                    ModuleState::build(self.load_ctx.instance.as_str(), &definition, &self.packages)
-                }
+                Some(definition) => ModuleState::build(
+                    self.load_ctx.instance.as_str(),
+                    &definition,
+                    &self.packages,
+                    &self.load_ctx.package,
+                ),
                 None => Err("prepared root definition did not serialize".to_owned()),
             };
             self.module = Some(built);

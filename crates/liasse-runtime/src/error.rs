@@ -84,6 +84,12 @@ pub enum RejectionReason {
     /// or the returned value did not conform to the pinned contract. No
     /// application effect is committed.
     Host,
+    /// A package update narrows the exposed boundary contract within one major
+    /// (Annex E, §20.3): a removed surface or operation, a removed or
+    /// type-narrowed output member, a changed exhaustive enum result, an added
+    /// required parameter, or a narrowed accepted input domain. `load` and update
+    /// reject the narrowing release before activation (E.1, E.9).
+    Compatibility,
 }
 
 /// An admission refusal: the class, a human message, and the state path it

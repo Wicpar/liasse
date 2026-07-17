@@ -12,6 +12,8 @@ serde_json = { version = "1.0.145", features = ["preserve_order"] }
 deser-hjson = "2.2.6"
 thiserror = "2.0.17"
 walkdir = "2.5.0"
+crc32fast = "1.5.0"
+liasse-artifact = { path = "../liasse-artifact" }
 liasse-value = { path = "../liasse-value" }
 liasse-host = { path = "../liasse-host" }
 liasse-ident = { path = "../liasse-ident" }

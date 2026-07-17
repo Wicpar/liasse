@@ -102,9 +102,14 @@ impl Step {
             )),
             None => None,
         };
+        // The artifact steps carry their assertion *inside* the action target
+        // (`load_artifact: { from, expect }`, `inspect_artifact: { artifact, expect }`,
+        // per tests/04 and tests/annex-d NOTES), not as a sibling. Hoist that nested
+        // `expect` so the executor judges it uniformly; an `inspect_artifact`'s value
+        // assertion lives under `manifest`, which maps to the observed manifest value.
         let expect = match map.get("expect") {
             Some(v) => Some(Expect::parse(v, &loc.member("expect"))?),
-            None => None,
+            None => nested_target_expect(&kind, &target, loc)?,
         };
         let members = map
             .iter()
@@ -145,4 +150,29 @@ impl Step {
         let items = value.as_array().ok_or_else(|| loc.error("expected an array of steps"))?;
         items.iter().enumerate().map(|(i, item)| Step::parse(item, &loc.index(i), allowed)).collect()
     }
+}
+
+/// The `expect` assertion an artifact step nests inside its action target, hoisted
+/// so the executor judges it like any sibling `expect`. `load_artifact` asserts an
+/// outcome; `inspect_artifact` additionally asserts a `manifest` value, which maps
+/// to the observed manifest so the standard `value` matcher (with `$bind`/`$ref`)
+/// applies. Other step kinds carry no nested expect.
+fn nested_target_expect(kind: &StepKind, target: &Value, loc: &Loc<'_>) -> Result<Option<Expect>, LoadError> {
+    if !matches!(kind, StepKind::LoadArtifact | StepKind::InspectArtifact) {
+        return Ok(None);
+    }
+    let Some(inner) = target.get("expect") else {
+        return Ok(None);
+    };
+    let normalized = match (kind, inner.as_object()) {
+        (StepKind::InspectArtifact, Some(object)) => {
+            let mut renamed = object.clone();
+            if let Some(manifest) = renamed.remove("manifest") {
+                renamed.insert("value".to_owned(), manifest);
+            }
+            Value::Object(renamed)
+        }
+        _ => inner.clone(),
+    };
+    Ok(Some(Expect::parse(&normalized, &loc.member("expect"))?))
 }

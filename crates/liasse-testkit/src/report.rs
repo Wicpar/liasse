@@ -242,6 +242,16 @@ pub fn check_expectation(expect: &Expect, observed: &Observation, env: &mut Bind
 
 fn check_value(expect: &Expect, observed: &Observation, env: &mut Bindings) -> Verdict {
     if let Some(matcher) = &expect.value {
+        // A top-level `value: "$absent"` asserts the action produced no value — a
+        // response-free mutation (§13.8, omission of `$return`), which passes exactly
+        // when no response value is observed (as an object *member* `$absent` still
+        // means "this member is absent", handled inside `Matcher::check`).
+        if matches!(matcher, Matcher::Absent) {
+            return match &observed.value {
+                None => Verdict::Pass,
+                Some(_) => Verdict::Fail { reason: "expected no response value, one observed".to_owned() },
+            };
+        }
         return match &observed.value {
             Some(value) => match matcher.check(value, env) {
                 Ok(()) => Verdict::Pass,

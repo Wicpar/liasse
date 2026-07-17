@@ -769,7 +769,9 @@ dependencies = [
 name = "liasse-testkit"
 version = "0.0.1"
 dependencies = [
+ "crc32fast",
  "deser-hjson",
+ "liasse-artifact",
  "liasse-diag",
  "liasse-expr",
  "liasse-host",

@@ -36,6 +36,11 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             StepKind::ModuleUninstall => self.module_state()?.uninstall(&request.target),
             StepKind::ModuleRename => self.module_state()?.rename(&request.target),
             StepKind::ModuleUpdate => self.module_state()?.update(&request.target),
+            StepKind::BuildArtifact => self.drive_build_artifact(request),
+            StepKind::RepackArtifact => self.drive_repack_artifact(request),
+            StepKind::LoadArtifact => self.drive_load_artifact(request),
+            StepKind::TamperArtifact => self.drive_tamper_artifact(request),
+            StepKind::InspectArtifact => self.drive_inspect_artifact(request),
             StepKind::Operator => self.active().operator(&request.target),
             StepKind::OperationStatus => self.drive_operation_status(request),
             StepKind::Manifest => self.drive_manifest(request),
@@ -382,16 +387,9 @@ fn unsupported_reason(kind: &StepKind) -> String {
              computes but never applies, plus the `apply_correction` conflict-resolution the host \
              correction API the surface does not expose"
         }
-        StepKind::BuildArtifact
-        | StepKind::LoadArtifact
-        | StepKind::TamperArtifact
-        | StepKind::RepackArtifact
-        | StepKind::InspectArtifact
-        | StepKind::ExtractArtifact
-        | StepKind::TamperExtract => {
-            "full `.liasse` archive assembly from a package plus resource files, with the \
-             deterministic entry/digest/manifest tamper ops and recursive Annex D.5 verification, \
-             via a `liasse-artifact` archive layer the adapter does not link"
+        StepKind::ExtractArtifact | StepKind::TamperExtract => {
+            "child-module `.liasse` extraction and extract-then-tamper (§19 embedded artifacts), \
+             which needs the runtime's module-artifact embedding the export path does not yet emit"
         }
         StepKind::Erase
         | StepKind::Reinsert

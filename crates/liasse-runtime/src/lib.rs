@@ -138,6 +138,7 @@ mod blobs;
 mod bucket;
 mod cascade;
 mod compiled;
+mod contract;
 mod deletion;
 mod doc;
 mod engine;
