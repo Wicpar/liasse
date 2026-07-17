@@ -339,7 +339,7 @@ impl CompiledSourceBucket {
     /// extended with `$from` (and its start value) when the bucket recurs.
     fn identity(
         &self,
-        env: &RuntimeEnv,
+        env: &RuntimeEnv<'_>,
         current: &Cell,
         source_row: &Row,
         from: Timestamp,
@@ -371,7 +371,7 @@ impl CompiledSourceBucket {
     /// A [`RuntimeEnv`] over the base root carrying the given `structurals` merged
     /// with the request context (`$actor`/`$session`). The temporal index is empty:
     /// a source view reads stored collections, never a bucketed base, in CORE scope.
-    fn env(&self, inputs: &BucketInputs<'_>, structurals: BTreeMap<String, Cell>) -> RuntimeEnv {
+    fn env(&self, inputs: &BucketInputs<'_>, structurals: BTreeMap<String, Cell>) -> RuntimeEnv<'static> {
         let mut merged = inputs.context.clone();
         merged.extend(structurals);
         RuntimeEnv::new(
@@ -383,6 +383,9 @@ impl CompiledSourceBucket {
             inputs.seed,
             Vec::new(),
             inputs.keyrings.to_vec(),
+            // A source view / derived-row key is a pure expression (§14.4–§14.6);
+            // it resolves no host call, so it needs no live dispatch.
+            crate::host::HostDispatch::none(inputs.now),
         )
     }
 

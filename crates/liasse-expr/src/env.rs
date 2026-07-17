@@ -316,4 +316,25 @@ pub trait Environment {
         let _ = (base, selector);
         Err(EvalError::NoKeyringIndex)
     }
+
+    /// Invoke a resolved host-namespace function `namespace.function` with the
+    /// evaluated `args` (§16.2/§16.3). The checker has already validated the call
+    /// against the pinned signature, so the environment only performs it — through
+    /// the host component the runtime bound, guarded so a nonconforming return, a
+    /// verifier rejection, or an unavailable dependency is a typed [`EvalError`].
+    ///
+    /// The call is *pure-recomputable* (§16.3): a pure function evaluated in a
+    /// view/default recomputes deterministically, so "same environment ⇒ same
+    /// result" holds. The default owns no host dispatch and rejects, so only a
+    /// host-aware environment (the runtime) answers a host call; a pure expression
+    /// checked in a scope with no host requirements never emits one.
+    fn host_call(
+        &self,
+        namespace: &str,
+        function: &str,
+        args: &[Value],
+    ) -> Result<Value, EvalError> {
+        let _ = (namespace, function, args);
+        Err(EvalError::NoHostDispatch)
+    }
 }

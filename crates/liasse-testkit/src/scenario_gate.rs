@@ -176,10 +176,22 @@ pub const SKIP: &[(&str, &str)] = &[
     ("annex-e-compatibility/minor-narrows-relative-to-active-intermediate-release-rejected", "`host_load` step not driven this phase"),
     ("annex-e-compatibility/minor-removes-output-member-rejected", "`host_load` step not driven this phase"),
     ("annex-e-compatibility/patch-narrowing-response-rejected", "`host_load` step not driven this phase"),
-    // --- `keyring_admin` step ---
-    ("17-keyrings/bind-algorithm-mismatch-rejected", "`keyring_admin` step not driven this phase"),
-    ("17-keyrings/manual-activation-enables-dependent-surface", "`keyring_admin` step not driven this phase"),
-    ("17-keyrings/manual-second-activation-retires-prior", "`keyring_admin` step not driven this phase"),
+    // --- `keyring_admin` step (§17.3/§17.4 lifecycle transition) ---
+    // The `provider_set` fault vocabulary now drives against the engine's
+    // self-provisioned ring (adapter/keyrings.rs), but a keyring *lifecycle*
+    // transition — `bind_activate`/`revoke`/`destroy` — has no engine entry point:
+    // `Engine` lends its ring only immutably (`keyring()`) plus its backing
+    // provider mutably (`keyring_provider_mut()`), and `Keyring::{bind_activate,
+    // revoke, destroy}` cannot be reached through that. The surface's separately
+    // composed `CoseKeyring` admin is a *different* ring than the one `cose.sign`
+    // mutations and `/ring.$*` views read, so it cannot stand in. A liasse-runtime
+    // API seam, not a testkit gap.
+    ("17-keyrings/bind-algorithm-mismatch-rejected", "keyring lifecycle transition (bind_activate) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
+    ("17-keyrings/manual-activation-enables-dependent-surface", "keyring lifecycle transition (bind_activate) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
+    ("17-keyrings/manual-second-activation-retires-prior", "keyring lifecycle transition (bind_activate) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
+    ("17-keyrings/retain-omitted-accepts-until-revoked", "keyring lifecycle transition (revoke) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
+    ("17-keyrings/revocation-overrides-retain-window", "keyring lifecycle transition (revoke) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
+    ("17-keyrings/destroyed-version-no-longer-accepted", "keyring lifecycle transition (destroy) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
     // --- `module_install` step ---
     ("13-modules/aggregation-skips-disabled-instance", "`module_install` step not driven this phase"),
     ("13-modules/cross-boundary-ref-missing-on-delete-invalid", "`module_install` step not driven this phase"),
@@ -236,10 +248,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // distinct reason the operator wiring does not resolve.
     ("23-host-contract/operator-bypasses-role-authentication", "role-authenticated client call is denied without host `$verify` wiring"),
     ("23-host-contract/operator-retains-meter-capacity", "`operator` on a collection-row mutation needs receiver-row wiring"),
-    ("23-host-contract/provider-error-rejects-preserving-committed-state", "`keyring_admin`/`provider_set` steps not driven this phase"),
-    // --- `provider_set` step ---
-    ("17-keyrings/sign-failure-rejects-mutation-without-effect", "`provider_set` step not driven this phase"),
-    ("23-host-contract/no-time-budget-hanging-provider-unspecified", "`provider_set` step not driven this phase"),
     // --- `restart` step ---
     // ========================================================================
     // HOST-ENVIRONMENT SHAPING INVARIANTS (ENGINE)
@@ -247,12 +255,21 @@ pub const SKIP: &[(&str, &str)] = &[
     // evaluation environment (a row/collection the runtime could not present in the
     // expected shape). A runtime gap, surfaced as a host fault and skipped.
     // ========================================================================
-    // --- hostfault:conn ---
-    ("17-keyrings/cross-authenticator-token-escalation-denied", "connection-lifecycle gap: named connection not open"),
-    ("17-keyrings/direct-token-roundtrip-authenticates", "connection-lifecycle gap: named connection not open"),
-    ("17-keyrings/retain-window-bounds-retired-acceptance", "connection-lifecycle gap: named connection not open"),
-    ("17-keyrings/stolen-token-survives-rotations-until-session-revoked", "connection-lifecycle gap: named connection not open"),
-    ("17-keyrings/wrong-keyring-token-denied", "connection-lifecycle gap: named connection not open"),
+    // --- cose session authentication (§17.7/§17.8 token round-trip) ---
+    // The engine now mints tokens through `cose.sign(/ring, …)` in a mutation and
+    // exposes acceptance-based `cose.verify` — the adapter could gate a credential
+    // against `Engine::cose_verify` (an immutable `&self` read) at authenticate.
+    // But each of these packages declares an *expiry-less* session (isolating the
+    // keyring rule from session expiry, per the case notes), and the surface's
+    // `SessionSource` denies any session that resolves no `Value::Timestamp`
+    // expiry instant (§11.7). So the session authenticator denies before the
+    // keyring token rule is ever exercised — a liasse-surface seam, not a testkit
+    // or keyring gap.
+    ("17-keyrings/cross-authenticator-token-escalation-denied", "cose session auth: surface SessionSource requires a session-expiry instant the expiry-less keyring package omits (§11.7)"),
+    ("17-keyrings/direct-token-roundtrip-authenticates", "cose session auth: surface SessionSource requires a session-expiry instant the expiry-less keyring package omits (§11.7)"),
+    ("17-keyrings/retain-window-bounds-retired-acceptance", "cose session auth: surface SessionSource requires a session-expiry instant the expiry-less keyring package omits (§11.7)"),
+    ("17-keyrings/stolen-token-survives-rotations-until-session-revoked", "cose session auth: surface SessionSource requires a session-expiry instant the expiry-less keyring package omits (§11.7)"),
+    ("17-keyrings/wrong-keyring-token-denied", "cose session auth: surface SessionSource requires a session-expiry instant the expiry-less keyring package omits (§11.7)"),
     // --- hostfault:nested ---
     ("05-state-model/like-recursion-adopts-containing-shape", "host environment nested-collection shaping gap (engine invariant)"),
     // --- hostfault:row-field ---
@@ -291,12 +308,7 @@ pub const SKIP: &[(&str, &str)] = &[
     ("16-host-namespaces/pinned-descriptor-drift-fails-reopen", "package does not load yet (upstream compile/model gap)"),
     ("16-host-namespaces/required-namespace-pure-function-runs-in-view", "package does not load yet (upstream compile/model gap)"),
     ("16-host-namespaces/required-namespace-removed-fails-reopen", "package does not load yet (upstream compile/model gap)"),
-    ("17-keyrings/destroyed-version-no-longer-accepted", "package does not load yet (upstream compile/model gap)"),
-    ("17-keyrings/due-rotation-commits-once-under-concurrency", "package does not load yet (upstream compile/model gap)"),
-    ("17-keyrings/retain-omitted-accepts-until-revoked", "package does not load yet (upstream compile/model gap)"),
-    ("17-keyrings/revocation-overrides-retain-window", "package does not load yet (upstream compile/model gap)"),
-    ("17-keyrings/rotation-failure-keeps-current-active", "package does not load yet (upstream compile/model gap)"),
-    ("17-keyrings/verification-survives-provider-outage", "package does not load yet (upstream compile/model gap)"),
+    ("17-keyrings/due-rotation-commits-once-under-concurrency", "`concurrently` branch watch does not name `on` and several connections are open, which the executor does not disambiguate across branches"),
     ("18-blobs/all-holders-corrupt-fetch-outcome-unspecified", "package does not load yet (upstream compile/model gap)"),
     ("18-blobs/billing-sum-over-stored-descriptors", "package does not load yet (upstream compile/model gap)"),
     ("18-blobs/corrupt-copy-demoted-and-repaired", "package does not load yet (upstream compile/model gap)"),

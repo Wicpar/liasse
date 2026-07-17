@@ -5,6 +5,7 @@ use liasse_syntax::{Arg, BlockMember, BlockMemberKind, Expr, ExprKind, Selector}
 use liasse_value::{StructType, Type};
 
 use crate::check::Checker;
+use crate::host::HostOp;
 use crate::ty::ExprType;
 use crate::typed::{AggFunc, BuiltinFn, TypedExpr, TypedKind, TypedSelector};
 
@@ -219,18 +220,90 @@ impl Checker<'_> {
         function: &str,
         args: &[Arg],
     ) -> Option<TypedExpr> {
-        let func = match (namespace, function) {
-            ("string", "lower") => BuiltinFn::StringLower,
-            ("string", "upper") => BuiltinFn::StringUpper,
-            ("string", "trim") => BuiltinFn::StringTrim,
-            _ => {
+        // §16.1: the core `string` utilities resolve before any host namespace.
+        if let Some(func) = core_string_fn(namespace, function) {
+            return self.check_builtin(expr, func, args, ExprType::scalar(Type::Text));
+        }
+        // §16.2: a declared `$requires` host namespace supplies a pinned signature
+        // the call site is type-checked against. An undeclared namespace resolves
+        // nothing, so the function name fails validation (a host call must name an
+        // explicit requirement — availability in the context does not substitute).
+        match self.scope.namespace_op(namespace, function) {
+            Some(op) => self.check_host_call(expr, namespace, function, args, &op),
+            None => self.error(expr, format!("unknown function `{namespace}.{function}`")),
+        }
+    }
+
+    /// Type-check a resolved host-namespace call against its pinned signature and
+    /// the current position's effect policy (§16.2/§16.3, §8.8).
+    fn check_host_call(
+        &mut self,
+        expr: &Expr,
+        namespace: &str,
+        function: &str,
+        args: &[Arg],
+        op: &HostOp,
+    ) -> Option<TypedExpr> {
+        // §16.3/§8.8: only an effect class the position admits may run here — a
+        // generated or verifier function in a view/check is rejected at load.
+        let position = self.scope.host_position();
+        if !position.permits(op.effect()) {
+            return self.error(
+                expr,
+                format!(
+                    "`{namespace}.{function}` is a {} host function, which cannot run in {} (§16.3)",
+                    op.effect().describe(),
+                    position.describe(),
+                ),
+            );
+        }
+        // §16.2: the argument count and each argument's type must match the
+        // pinned signature — a mismatch is a static type error, not a runtime one.
+        if args.len() != op.params().len() {
+            return self.error(
+                expr,
+                format!(
+                    "`{namespace}.{function}` takes {} argument(s), but {} were supplied",
+                    op.params().len(),
+                    args.len(),
+                ),
+            );
+        }
+        let mut typed = Vec::with_capacity(args.len());
+        for (arg, param) in args.iter().zip(op.params()) {
+            let value = arg_value(arg);
+            let checked = self.check(value)?;
+            let actual = match checked.ty().as_scalar() {
+                Some(ty) => ty,
+                None => {
+                    return self.error(
+                        value,
+                        format!("`{namespace}.{function}` takes scalar arguments"),
+                    );
+                }
+            };
+            if !arg_conforms(actual, param, &checked) {
                 return self.error(
-                    expr,
-                    format!("unknown function `{namespace}.{function}`"),
+                    value,
+                    format!(
+                        "`{namespace}.{function}` expects `{}` here, but a `{}` was supplied \
+                         (pinned signature, §16.2)",
+                        param.name(),
+                        actual.name(),
+                    ),
                 );
             }
-        };
-        self.check_builtin(expr, func, args, ExprType::scalar(Type::Text))
+            typed.push(checked);
+        }
+        Some(TypedExpr::new(
+            expr.span,
+            ExprType::scalar(op.result().clone()),
+            TypedKind::HostCall {
+                namespace: namespace.to_owned(),
+                function: function.to_owned(),
+                args: typed,
+            },
+        ))
     }
 
     fn check_builtin(
@@ -369,6 +442,38 @@ impl Checker<'_> {
             ExprType::scalar(Type::Struct(StructType::new(types))),
             TypedKind::Struct(fields),
         ))
+    }
+}
+
+/// The core `string` utility (§16.1) a `namespace.function` names, if any.
+fn core_string_fn(namespace: &str, function: &str) -> Option<BuiltinFn> {
+    match (namespace, function) {
+        ("string", "lower") => Some(BuiltinFn::StringLower),
+        ("string", "upper") => Some(BuiltinFn::StringUpper),
+        ("string", "trim") => Some(BuiltinFn::StringTrim),
+        _ => None,
+    }
+}
+
+/// The value expression of a call argument (a host call's arguments carry no
+/// keyword semantics; the name is decorative, §16.4).
+fn arg_value(arg: &Arg) -> &Expr {
+    match arg {
+        Arg::Positional(value) | Arg::Named { value, .. } => value,
+    }
+}
+
+/// Whether an argument of type `actual` satisfies a pinned parameter type
+/// `declared` (§16.2). Exact type identity, plus the two widenings assignment
+/// already allows: the bare `none` literal fills any `optional<T>`, and a present
+/// value fills an `optional<T>` whose inner type it matches (A.1).
+fn arg_conforms(actual: &Type, declared: &Type, checked: &TypedExpr) -> bool {
+    if actual == declared {
+        return true;
+    }
+    match declared {
+        Type::Optional(inner) => checked.is_none_literal() || arg_conforms(actual, inner, checked),
+        _ => false,
     }
 }
 

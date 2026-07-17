@@ -47,7 +47,7 @@ pub(crate) struct EvalCtx<'a> {
     pub(crate) hosts: crate::host::HostDispatch<'a>,
 }
 
-impl EvalCtx<'_> {
+impl<'a> EvalCtx<'a> {
     /// The request's fixed `now()` instant (A.5) — the context-free clock a §15.6
     /// meter accessor and a spend's default `$time` read.
     pub(crate) const fn now(&self) -> Timestamp {
@@ -58,7 +58,7 @@ impl EvalCtx<'_> {
     /// package root with bucketed collections filtered to the rows active at
     /// [`Self::now`] (§14.1), plus the full extant set of each bucketed collection
     /// so a temporal selector can re-derive activity over inactive rows (§14.2).
-    pub(crate) fn env(&self, prospective: &Prospective) -> RuntimeEnv {
+    pub(crate) fn env(&self, prospective: &Prospective) -> RuntimeEnv<'a> {
         self.env_with(prospective, BTreeMap::new(), BTreeMap::new())
     }
 
@@ -70,7 +70,7 @@ impl EvalCtx<'_> {
         prospective: &Prospective,
         bindings: BTreeMap<String, Cell>,
         structurals: BTreeMap<String, Cell>,
-    ) -> RuntimeEnv {
+    ) -> RuntimeEnv<'a> {
         RuntimeEnv::new(
             self.root(prospective),
             self.params.clone(),
@@ -80,6 +80,7 @@ impl EvalCtx<'_> {
             self.seed,
             self.temporal_index(prospective),
             self.keyrings.to_vec(),
+            self.hosts,
         )
     }
 
@@ -139,6 +140,7 @@ impl EvalCtx<'_> {
             self.seed,
             temporal,
             self.keyrings.to_vec(),
+            self.hosts,
         );
         fold_computed(&env, &self.compiled.root_computed, base)
     }
@@ -163,6 +165,7 @@ impl EvalCtx<'_> {
             self.seed,
             temporal,
             self.keyrings.to_vec(),
+            self.hosts,
         );
         let cells: Vec<(String, Cell)> = base
             .cells()
@@ -311,6 +314,7 @@ impl EvalCtx<'_> {
                     self.seed,
                     temporal.clone(),
                     self.keyrings.to_vec(),
+                    self.hosts,
                 );
                 let current = Cell::Row(Box::new(root.clone()));
                 match view.expr.evaluate(&env, &current) {
@@ -393,7 +397,7 @@ impl EvalCtx<'_> {
 
     /// An evaluation environment over the prospective state whose virtual clock is
     /// `now` (a spend-time meter evaluation).
-    pub(crate) fn env_at(&self, prospective: &Prospective, now: Timestamp) -> RuntimeEnv {
+    pub(crate) fn env_at(&self, prospective: &Prospective, now: Timestamp) -> RuntimeEnv<'a> {
         self.env_at_full(prospective, now, BTreeMap::new(), BTreeMap::new())
     }
 
@@ -405,7 +409,7 @@ impl EvalCtx<'_> {
         now: Timestamp,
         bindings: BTreeMap<String, Cell>,
         structurals: BTreeMap<String, Cell>,
-    ) -> RuntimeEnv {
+    ) -> RuntimeEnv<'a> {
         let keep = |name: &str, fields: &FieldMap| self.active_at(name, fields, now);
         let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
         let temporal = Temporal { keep: &keep, interval: &interval };
@@ -424,6 +428,7 @@ impl EvalCtx<'_> {
             self.seed,
             index,
             self.keyrings.to_vec(),
+            self.hosts,
         )
     }
 
@@ -571,7 +576,7 @@ fn with_cell(row: Row, name: &str, cell: Cell) -> Row {
 /// yielding `none` an absent optional. Iterated to a fixed point (bounded by the
 /// number of computed values, since the model forbids cyclic dependencies) so
 /// one computed value may read another regardless of declaration order.
-fn fold_computed(env: &RuntimeEnv, computed: &[CompiledComputed], mut row: Row) -> Row {
+fn fold_computed(env: &RuntimeEnv<'_>, computed: &[CompiledComputed], mut row: Row) -> Row {
     if computed.is_empty() {
         return row;
     }

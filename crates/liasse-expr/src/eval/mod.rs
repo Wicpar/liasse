@@ -186,6 +186,9 @@ impl Evaluator<'_> {
             TypedKind::List(items) => self.eval_list(items),
             TypedKind::Struct(fields) => self.eval_struct(fields),
             TypedKind::Builtin { func, args } => self.eval_builtin(*func, args),
+            TypedKind::HostCall { namespace, function, args } => {
+                self.eval_host_call(namespace, function, args)
+            }
             TypedKind::Now => Ok(Cell::Scalar(Value::Timestamp(self.env.now()))),
             TypedKind::Uuid => Ok(Cell::Scalar(Value::Uuid(
                 self.env.uuid(crate::env::CallSite::new(expr.span())),

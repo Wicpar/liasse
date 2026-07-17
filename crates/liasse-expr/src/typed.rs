@@ -180,6 +180,17 @@ pub(crate) enum TypedKind {
         func: BuiltinFn,
         args: Vec<TypedExpr>,
     },
+    /// A resolved host-namespace call `namespace.function(args)` (§16.2/§16.3):
+    /// the local `$requires` namespace, the function, and the typed arguments,
+    /// already checked against the pinned signature and the position's effect
+    /// policy. The result type is this node's [`ExprType`](crate::ExprType);
+    /// evaluation defers the call to the environment's host-call hook, which
+    /// recomputes it purely (§16.3).
+    HostCall {
+        namespace: String,
+        function: String,
+        args: Vec<TypedExpr>,
+    },
     /// `now()` — the fixed transaction sample (A.5).
     Now,
     /// `uuid()` — a generated UUID (§8.12); carries its call site so the

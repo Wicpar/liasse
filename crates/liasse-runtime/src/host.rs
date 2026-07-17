@@ -26,16 +26,40 @@
 
 use std::collections::BTreeMap;
 
-use liasse_expr::ExprType;
+use liasse_expr::{EvalError, ExprType, HostEffect, HostOp};
 use liasse_host::sim::SimKeyProvider;
 use liasse_host::{
-    cose_descriptor, ConformanceGuard, ContractRef, CoseClaims, CoseToken, GuardError,
+    cose_descriptor, ConformanceGuard, ContractRef, CoseClaims, CoseToken, EffectClass, GuardError,
     HostNamespace, InvocationFailure, NamespaceDescriptor, Registry, ResolutionError,
 };
 use liasse_value::{Timestamp, Value};
 
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::keyring::Keyring;
+
+/// The resolved `$requires` namespaces' function signatures for the expression
+/// checker (§16.2), keyed by local namespace then function. The built-in cose
+/// contract is excluded — its `sign`/`verify` are served through the managed
+/// keyring, not value-callable host ops — so a view/default host call type-checks
+/// only against a package's declared, value-callable namespaces.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct HostSignatures(BTreeMap<String, BTreeMap<String, HostOp>>);
+
+impl HostSignatures {
+    /// The pinned op of `namespace.function`, if the package declares it.
+    pub(crate) fn op(&self, namespace: &str, function: &str) -> Option<&HostOp> {
+        self.0.get(namespace)?.get(function)
+    }
+}
+
+/// Translate a §16.3 [`EffectClass`] into the expr checker's [`HostEffect`].
+const fn effect_of(effect: EffectClass) -> HostEffect {
+    match effect {
+        EffectClass::Pure => HostEffect::Pure,
+        EffectClass::Verifier => HostEffect::Verifier,
+        EffectClass::Generated => HostEffect::Generated,
+    }
+}
 
 /// The semantic contract the runtime implements natively through its
 /// internally-provisioned keyrings (§17.7/§17.8), so a package requiring it
@@ -114,6 +138,38 @@ impl HostBinding {
         Ok(resolved)
     }
 
+    /// The resolved namespaces' function signatures as expr-checker [`HostOp`]s
+    /// (§16.2), keyed by local namespace then function — the descriptors a
+    /// view/default/computed host call is type-checked against. The built-in cose
+    /// namespace is excluded: its `sign`/`verify` are served through the managed
+    /// keyring, not as generic value calls, so they are dispatched specially, not
+    /// type-checked as host calls (see [`HostDispatch::eval_call`]).
+    pub(crate) fn expr_signatures(&self) -> HostSignatures {
+        let mut namespaces = BTreeMap::new();
+        for (local, contract) in &self.requires {
+            if contract.name().as_str() == COSE_CONTRACT {
+                continue;
+            }
+            let Some(namespace) = self.namespace(local) else { continue };
+            let mut functions = BTreeMap::new();
+            for (name, func) in namespace.descriptor().functions() {
+                let signature = func.signature();
+                functions.insert(
+                    name.clone(),
+                    HostOp::new(
+                        signature.params().iter().cloned(),
+                        signature.result().clone(),
+                        effect_of(func.effect()),
+                    ),
+                );
+            }
+            if !functions.is_empty() {
+                namespaces.insert(local.clone(), functions);
+            }
+        }
+        HostSignatures(namespaces)
+    }
+
     /// The resolved contract a `$requires` local key names, if any.
     fn contract(&self, local: &str) -> Option<&ContractRef> {
         self.requires.get(local)
@@ -179,7 +235,11 @@ impl HostNamespace for CoseNamespace {
 
 /// The per-admission host-call dispatch the interpreter runs a `ns.fn(args)`
 /// call against (§16.4, §17.7). Borrows the engine's [`HostBinding`] and live
-/// keyrings; a `none` dispatch answers no namespace.
+/// keyrings; a `none` dispatch answers no namespace. It is a cheap borrow bundle
+/// (a reference pair plus a clock), so it is `Copy` and an evaluation
+/// [`Environment`](liasse_expr::Environment) can carry it for a view/default
+/// host call as well as the interpreter.
+#[derive(Clone, Copy)]
 pub(crate) struct HostDispatch<'a> {
     binding: Option<&'a HostBinding>,
     keyrings: &'a [Keyring<SimKeyProvider>],
@@ -243,6 +303,31 @@ impl<'a> HostDispatch<'a> {
         guard.invoke(namespace, function, args).map_err(|error| host_rejection(local, function, &error))
     }
 
+    /// Invoke a host-namespace function for an *expression* position — a view, a
+    /// field default, or a computed value (§16.2/§16.3) — returning a typed
+    /// [`EvalError`] instead of a [`Rejection`], so a pure evaluation surfaces a
+    /// nonconforming return, a verifier rejection, or an unavailable dependency
+    /// through the ordinary evaluation-failure channel. The call runs through the
+    /// same [`ConformanceGuard`] as the mutation path, so a component is never
+    /// trusted to honour its declared contract. An environment with no live
+    /// binding (genesis with no hosts, a migration transform) is a contract breach
+    /// for a call the checker already resolved: [`EvalError::NoHostDispatch`].
+    pub(crate) fn eval_call(
+        &self,
+        local: &str,
+        function: &str,
+        args: &[Value],
+    ) -> Result<Value, EvalError> {
+        let namespace = self
+            .binding
+            .and_then(|b| b.namespace(local))
+            .ok_or(EvalError::NoHostDispatch)?;
+        let mut guard = ConformanceGuard::new();
+        guard.invoke(namespace, function, args).map_err(|error| EvalError::HostCall {
+            detail: host_detail(local, function, &error),
+        })
+    }
+
     /// Sign `claims` through keyring `ring`'s active version (§17.7/§17.8),
     /// returning the token value. A provider outage rejects (§17.9) and mints no
     /// token. The signature is bound to the claims by the deterministic key
@@ -270,7 +355,14 @@ impl<'a> HostDispatch<'a> {
 /// verifier rejection, an unavailable dependency, and a conformance violation are
 /// each a host refusal that commits no effect.
 fn host_rejection(local: &str, function: &str, error: &GuardError) -> Rejection {
-    let detail = match error {
+    Rejection::new(RejectionReason::Host, host_detail(local, function, error))
+}
+
+/// The sanitized diagnostic detail of a guarded host-call failure (§16.3, §23.8),
+/// shared by the mutation-path [`Rejection`] and the expression-path
+/// [`EvalError`](liasse_expr::EvalError).
+fn host_detail(local: &str, function: &str, error: &GuardError) -> String {
+    match error {
         GuardError::Invocation(InvocationFailure::Verification { detail }) => {
             format!("`{local}.{function}` verification failed: {detail}")
         }
@@ -278,8 +370,7 @@ fn host_rejection(local: &str, function: &str, error: &GuardError) -> Rejection 
         GuardError::Violation(violation) => {
             format!("`{local}.{function}` returned a nonconforming value: {violation}")
         }
-    };
-    Rejection::new(RejectionReason::Host, detail)
+    }
 }
 
 /// Why a [`cose_verify`](crate::Engine::cose_verify) refused a token (§17.7).

@@ -39,6 +39,8 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             StepKind::BlobPut => self.drive_blob_put(request),
             StepKind::BlobGet => self.drive_blob_get(request),
             StepKind::ConnectorSet => self.drive_connector_set(request),
+            StepKind::ProviderSet => self.drive_provider_set(request),
+            StepKind::KeyringAdmin => self.drive_keyring_admin(request),
             _ => Err(AdapterError::unsupported(unsupported_reason(&request.kind))),
         }
     }
@@ -73,6 +75,25 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             connection,
         };
         self.active().blob_put(&spec)
+    }
+
+    /// §17.9 `provider_set`: reconfigure the engine keyring's backing provider from
+    /// this step onward, so a later `cose.sign` mutation or due rotation fails per
+    /// the injected fault.
+    fn drive_provider_set(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let Some(spec) = super::keyrings::ProviderSetSpec::parse(&request.target) else {
+            return Err(AdapterError::unsupported("`provider_set` step carries no provider configuration"));
+        };
+        self.active().provider_set(&spec)
+    }
+
+    /// §17.3/§17.4 `keyring_admin`: a keyring lifecycle transition against the
+    /// engine's self-provisioned ring.
+    fn drive_keyring_admin(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let Some(spec) = super::keyrings::KeyringAdminSpec::parse(&request.target) else {
+            return Err(AdapterError::unsupported("`keyring_admin` step carries no `ring`/`op`"));
+        };
+        self.active().keyring_admin(&spec)
     }
 
     /// §18.12 `connector_set`: reconfigure a simulated connector from this step on.
@@ -278,7 +299,8 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             .ok_or_else(|| "prepared definition did not serialize".to_owned())?;
         let store = MemoryStore::new(instance);
         let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
-        let engine = Engine::load(store, &definition, &mut clock).map_err(|err| err.to_string())?;
+        let engine = super::load_engine(store, &definition, &mut clock, &ctx.package)
+            .map_err(|err| err.to_string())?;
         let (router, mut routing) =
             router::build(engine.model(), &ctx.package, &plan, &ctx.lift).map_err(|err| err.to_string())?;
         routing.load_view_param_types(&engine);
@@ -358,13 +380,6 @@ fn unsupported_reason(kind: &StepKind) -> String {
             "the corpus's row-scoped module spaces (`/co/acme/modules`), \
              `.modules[..]::interface` addressing, and `$config`/`$use`/`$deps` peer bindings, \
              which the surface `ModuleDeployment`'s flat name-keyed single-space model does not carry"
-        }
-        StepKind::KeyringAdmin | StepKind::ProviderSet => {
-            "admin/fault-injection over the engine's *internal* §17 keyring: the runtime engine \
-             self-provisions each `$keyring` and owns the `/ring.$current`/`.$accepted` views a \
-             case asserts, but exposes no bind/rotate/provider-fault entry, and never evaluates \
-             `cose.sign(/ring, …)` in a mutation — so the surface's separately-composed keyring \
-             cannot drive them (a liasse-runtime/liasse-surface seam, not a testkit gap)"
         }
         StepKind::RunReconciler => {
             "activation of a computed §19.9 merge into a new lineage, which the surface `reconcile` \

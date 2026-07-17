@@ -71,6 +71,22 @@ pub enum EvalError {
     /// environment contract breach: a keyring read must run against a
     /// keyring-aware environment.
     NoKeyringIndex,
+
+    /// A resolved host-namespace call refused the operation (§16.2/§16.3): the
+    /// component returned a value that does not conform to its pinned result
+    /// type, a verifier rejected its input, or a bound dependency was
+    /// unavailable. No application effect is committed. Carries a sanitized,
+    /// call-local detail (§23.8).
+    HostCall {
+        /// A sanitized explanation, safe to surface.
+        detail: String,
+    },
+
+    /// A host-namespace call was evaluated against an environment that owns no
+    /// host dispatch (§16.4). An environment contract breach: a resolved host
+    /// call must run against a host-aware environment (the runtime), never a bare
+    /// pure environment.
+    NoHostDispatch,
 }
 
 impl EvalError {
@@ -96,6 +112,10 @@ impl EvalError {
             }
             Self::NoKeyringIndex => {
                 "a keyring selector needs an environment that owns the keyring".to_owned()
+            }
+            Self::HostCall { detail } => format!("host-namespace call failed: {detail}"),
+            Self::NoHostDispatch => {
+                "a host-namespace call needs an environment with host dispatch".to_owned()
             }
         }
     }

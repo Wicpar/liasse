@@ -25,7 +25,7 @@ use liasse_host::Registry;
 
 use crate::compiled::{Compiled, CompiledMutation};
 use crate::doc;
-use crate::host::{HostBinding, HostDispatch};
+use crate::host::{HostBinding, HostDispatch, HostSignatures};
 use crate::keyring::Keyring;
 use crate::keyring_view::KeyringSnapshot;
 use crate::error::{EngineError, Rejection, RejectionReason};
@@ -56,7 +56,16 @@ pub(crate) struct Compilation {
 /// Parse a definition text and compile its model, statements, views, and buckets
 /// (§9.2 steps 1–6), returning the reusable [`Compilation`] without admitting any
 /// genesis. A static failure is [`EngineError::Invalid`].
-pub(crate) fn compile_definition(definition: &str) -> Result<Compilation, EngineError> {
+///
+/// `hosts` supplies the resolved `$requires` namespaces' pinned signatures
+/// (§16.2), so a host-namespace call in a view/default/computed value type-checks
+/// against its declared contract. A caller managing no host components passes
+/// [`HostSignatures::default`] (empty), leaving a host-call expression to fault as
+/// an unknown function — the deferred-requirement behaviour of [`Engine::load`].
+pub(crate) fn compile_definition(
+    definition: &str,
+    hosts: &HostSignatures,
+) -> Result<Compilation, EngineError> {
     let mut sources = SourceMap::new();
     let src = sources.add_file("liasse.json", definition.to_owned());
     let document = parse_document(src, definition).map_err(|d| EngineError::Invalid(Box::new(d)))?;
@@ -71,10 +80,21 @@ pub(crate) fn compile_definition(definition: &str) -> Result<Compilation, Engine
         .and_then(doc::string)
         .and_then(liasse_value::Precision::parse)
         .unwrap_or(liasse_value::Precision::DEFAULT);
-    let compiled = Compiled::build(&mut sources, &model, &model_doc, precision)?;
+    let compiled = Compiled::build(&mut sources, &model, &model_doc, precision, hosts)?;
     let data = doc::member(document.root(), "$data").cloned();
     let requires = read_requires(document.root());
     Ok(Compilation { sources, model, compiled, data, requires })
+}
+
+/// Parse a definition's `$requires` declarations (§16.2) without building its
+/// model — the cheap front step a host-managing load performs before compiling,
+/// so the resolved namespace signatures are available to type-check the package's
+/// host-call views and defaults.
+fn requires_of(definition: &str) -> Result<Vec<(String, String)>, EngineError> {
+    let mut sources = SourceMap::new();
+    let src = sources.add_file("liasse.json", definition.to_owned());
+    let document = parse_document(src, definition).map_err(|d| EngineError::Invalid(Box::new(d)))?;
+    Ok(read_requires(document.root()))
 }
 
 /// The package's `$requires` declarations as `(local namespace, "name@major")`
@@ -160,7 +180,12 @@ impl<S: InstanceStore> Engine<S> {
         definition: &str,
         generator: &mut G,
     ) -> Result<Self, EngineError> {
-        let Compilation { sources, model, compiled, data, requires } = compile_definition(definition)?;
+        // The default load manages no host components (only the built-in cose
+        // namespace), so a `$requires` entry is resolved leniently and its
+        // signatures are empty — a host-call view/default in a package loaded this
+        // way faults as an unknown function until the host wiring lands.
+        let Compilation { sources, model, compiled, data, requires } =
+            compile_definition(definition, &HostSignatures::default())?;
         let host = HostBinding::resolve(Registry::new(), &requires, false)?;
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
@@ -190,8 +215,15 @@ impl<S: InstanceStore> Engine<S> {
         generator: &mut G,
         registry: Registry,
     ) -> Result<Self, EngineError> {
-        let Compilation { sources, model, compiled, data, requires } = compile_definition(definition)?;
+        // §16.2: resolve the package's requirements against the registry *before*
+        // compiling, so a host-namespace call in a view/default type-checks against
+        // the pinned descriptor. A missing/incompatible/ambiguous requirement fails
+        // here, before activation; only a resolved namespace's signatures are
+        // supplied to the checker.
+        let requires = requires_of(definition)?;
         let host = HostBinding::resolve(registry, &requires, true)?;
+        let Compilation { sources, model, compiled, data, .. } =
+            compile_definition(definition, &host.expr_signatures())?;
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
@@ -212,7 +244,11 @@ impl<S: InstanceStore> Engine<S> {
         state: &crate::portable::StateSection,
         generator: &mut G,
     ) -> Result<Self, EngineError> {
-        let Compilation { sources, model, compiled, requires, .. } = compile_definition(definition)?;
+        // A restore manages no host components (§19.10 rebuilds over a bare
+        // registry), so requirements are deferred and host-call expressions carry
+        // empty signatures — the same as the default load.
+        let Compilation { sources, model, compiled, requires, .. } =
+            compile_definition(definition, &HostSignatures::default())?;
         let host = HostBinding::resolve(Registry::new(), &requires, false)?;
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
@@ -462,10 +498,10 @@ impl<S: InstanceStore> Engine<S> {
             keyrings: &snapshots,
             // §11.1: genesis seeding executes with no actor.
             context: BTreeMap::new(),
-            // A `$data` seed's defaults flow through the pure expression checker,
-            // which does not resolve a host-namespace call, so genesis carries no
-            // live host dispatch (a host-call-in-default is a cross-crate seam).
-            hosts: HostDispatch::none(self.clock),
+            // §16.3/§8.8: a `$data` seed's field default may call a resolved host
+            // namespace (a pure or generated function), so genesis carries the live
+            // dispatch the same way a mutation admission does.
+            hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
         };
         let mut prospective = Prospective::empty();
         let mut touched = Vec::new();
@@ -663,10 +699,11 @@ impl<S: InstanceStore> Engine<S> {
             seed: 0,
             keyrings: &keyrings,
             context: BTreeMap::new(),
-            // A `$view` reads through the pure expression checker, which does not
-            // resolve a host-namespace call, so a view read carries no live host
-            // dispatch (a host-call-in-view is a cross-crate seam).
-            hosts: HostDispatch::none(self.clock),
+            // §16.3: a `$view` may call a resolved *pure* host namespace (the
+            // checker admits only pure functions in a read position), so a view
+            // read carries the live dispatch to evaluate it. Signing (cose) and
+            // effectful namespaces never reach a view — they are rejected at load.
+            hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
         };
         // §10.1: bind each supplied argument, then fill an omitted declared
         // parameter with its declared default (§8.3), so a `$view` reading `@name`

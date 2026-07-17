@@ -73,7 +73,14 @@ impl<S: InstanceStore> Engine<S> {
         target: &str,
         generator: &mut G,
     ) -> Result<UpdateReport, UpdateError> {
-        let compilation = compile_definition(target).map_err(UpdateError::Engine)?;
+        // §16.2/§20: the target keeps the context's registered components but
+        // declares its own `$requires`, re-resolved by [`apply_migration`]. The
+        // target compilation itself does not re-type its host-call views/defaults
+        // against the live registry here — a target whose views call an unregistered
+        // namespace fails to compile as an unknown function, which is the correct
+        // load rejection (a resolvable host-call view under migration is a seam).
+        let compilation =
+            compile_definition(target, &crate::host::HostSignatures::default()).map_err(UpdateError::Engine)?;
         let decision = compatibility(self.model(), &compilation.model)?;
         let plan = MigrationPlan::read(target).map_err(UpdateError::Engine)?;
         let old_state =

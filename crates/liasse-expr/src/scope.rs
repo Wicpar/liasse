@@ -12,6 +12,7 @@
 //! `::` traversal, a projection self-reference) are the checker's own concern
 //! and never reach the scope.
 
+use crate::host::{HostOp, HostPosition};
 use crate::ty::ExprType;
 
 /// Resolves the roots and bindings of §6.2 to static types.
@@ -44,4 +45,24 @@ pub trait Scope {
     /// enclosing declaration (§6.2). Bindings introduced *within* the
     /// expression are resolved by the checker before it consults the scope.
     fn binding(&self, name: &str) -> Option<ExprType>;
+
+    /// Resolve a declared host-namespace function's pinned signature (§16.2):
+    /// `namespace` is the local `$requires` key (the expression namespace),
+    /// `function` the called function. `None` when the package declares no such
+    /// namespace or the namespace declares no such function — the checker turns
+    /// that into an "unknown function" diagnostic (a host call must name an
+    /// explicitly declared requirement, §16.2). The default resolves nothing, so
+    /// a scope that carries no host requirements sees only the core namespaces.
+    fn namespace_op(&self, namespace: &str, function: &str) -> Option<HostOp> {
+        let _ = (namespace, function);
+        None
+    }
+
+    /// Which host effect classes this checking position admits (§16.3, §8.8).
+    /// The default is the most restrictive — a pure read/replay position — so
+    /// any scope that permits an effect (a field default, a mutation value, an
+    /// admission verifier) opts in explicitly.
+    fn host_position(&self) -> HostPosition {
+        HostPosition::Pure
+    }
 }

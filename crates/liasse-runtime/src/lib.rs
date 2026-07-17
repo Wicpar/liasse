@@ -63,10 +63,19 @@
 //! (a nonconforming return is a rejection), or `cose.sign(/ring, claims)` through
 //! the internally-provisioned [`Keyring`] (§17.7/§17.8: signing exercises the
 //! active version, so a §17.9 outage rejects and mints no token) — is dispatched
-//! by the interpreter (`host` module). A host-namespace call in a *view*,
-//! *default*, or `$verify` position flows through the pure expression checker
-//! (liasse-expr), which types only the core language namespaces — resolving a
-//! host call *there* is a documented cross-crate seam (see the crate-level report).
+//! by the interpreter (`host` module). A host-namespace call in an *expression*
+//! position is now typed and evaluated too: the runtime threads the resolved
+//! `$requires` signatures into its checking [`scope`] (§16.2) and its evaluation
+//! [`env`] dispatches a resolved call through the same [`ConformanceGuard`], with
+//! the position's effect policy (§16.3/§8.8) deciding where each effect class may
+//! run — pure in a view/computed, generated in a default/mutation value, verifier
+//! at admission. The remaining seam is upstream in **liasse-model**: its Phase-2
+//! `check_tree`/`ModelScope` type-checks view/default/computed/`$check`/`$normalize`
+//! expressions and rejects a host-namespace call as an unknown function *before*
+//! the runtime's checker runs (unlike the mutation checker's `type_value`, which
+//! already skips `is_program_call` host calls). Until `ModelScope` exposes the
+//! resolved descriptors, a host call is only reachable in a `$mut` operator value
+//! (an insert object member), which the model accepts structurally.
 //!
 //! - **Source-backed and recurring buckets** (§14.4–§14.6) are implemented
 //!   ([`source_bucket`]): a compiled pass reads each `$source`/`$from`/`$until`/

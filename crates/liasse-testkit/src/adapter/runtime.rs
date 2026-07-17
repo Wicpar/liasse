@@ -42,6 +42,10 @@ pub(super) struct Runtime<S: InstanceStore> {
     pub(super) watch_conns: BTreeMap<String, String>,
     /// Which open subscriptions watch a singular view (§12.2).
     pub(super) watch_singular: BTreeMap<String, bool>,
+    /// The full request each open subscription opened with, so a host rebuild that
+    /// reaches `&mut Engine` (the §17.9 `provider_set` fault path) can re-establish
+    /// every live subscription over the rebuilt host rather than lose it.
+    pub(super) watch_specs: BTreeMap<String, WatchRequest>,
     /// The connection ids currently open on the host.
     pub(super) open_connections: BTreeSet<String>,
     /// The §12.3 operation key each submitted `operation_id` scoped to, so a later
@@ -63,6 +67,7 @@ impl<S: InstanceStore> Runtime<S> {
             state,
             watch_conns: BTreeMap::new(),
             watch_singular: BTreeMap::new(),
+            watch_specs: BTreeMap::new(),
             open_connections: BTreeSet::new(),
             op_keys: BTreeMap::new(),
             blob_digests: BTreeMap::new(),
@@ -117,6 +122,7 @@ impl<S: InstanceStore> Runtime<S> {
         self.open_connections.clear();
         self.watch_conns.clear();
         self.watch_singular.clear();
+        self.watch_specs.clear();
         self.op_keys.clear();
         self.blob_digests.clear();
     }
@@ -130,6 +136,83 @@ impl<S: InstanceStore> Runtime<S> {
                 loaded.host.connect(id);
             }
         }
+    }
+
+    /// Open subscription `request` on its connection over the current host,
+    /// recording which connection it lives on and whether it is singular, and
+    /// return the observed init. Shared by the first `watch` and a rebuild replay.
+    fn open_watch(&mut self, request: &WatchRequest) -> Result<Observation, AdapterError> {
+        let connection = connection_name(request.on.as_ref());
+        self.ensure_connection(&connection);
+        let watch_id = request.id.to_string();
+        let (observation, singular) = {
+            let loaded = self.loaded()?;
+            let address = SurfaceAddress::parse(&request.target)
+                .map_err(|err| AdapterError::Host(format!("malformed address `{}`: {err}", request.target)))?;
+            let mut watch = SurfaceWatch::new(address, watch_id.clone());
+            // §10.1/§12.1: a parameterized `$view` reads its `$params` from the
+            // subscription's arguments, decoded against the view's declared types.
+            let arg_types = loaded.routing.view_arg_types(&request.target);
+            let args = wire::decode_args(&request.args, &arg_types);
+            if !args.is_empty() {
+                watch = watch.with_args(args);
+            }
+            if let Some(window) = request.window.as_ref().and_then(build_window) {
+                watch = watch.with_window(window);
+            }
+            // §11.4: a subscription may carry its own authenticator selection,
+            // authorizing inline rather than reusing the connection's context — the
+            // §11.8 multiplex path where one connection carries several sessions.
+            if let Some(selection) = request.auth.as_ref().and_then(super::parse_auth_selection) {
+                watch = watch.with_auth(selection);
+            }
+            // §11.8: on a multiplexed connection the subscription names which
+            // authenticated context it runs under, so it applies that context's
+            // authorization and projection independently of any other context.
+            if let Some(context) = &request.context {
+                watch = watch.with_context(context.clone());
+            }
+            // §12.2: a singular view delivers one object; a collection a row array.
+            let singular = loaded.routing.is_singular_view(&request.target);
+            let subscription = loaded.host.watch(&connection, &watch).map_err(host_fault)?;
+            (observe_subscription(&subscription, singular), singular)
+        };
+        self.watch_conns.insert(watch_id.clone(), connection);
+        self.watch_singular.insert(watch_id, singular);
+        Ok(observation)
+    }
+
+    /// Re-establish every retained subscription over the current host — after a
+    /// rebuild that reached `&mut Engine`, the rebuilt host carries no
+    /// subscriptions. Each is re-opened at its connection's current frontier; a
+    /// subscription that no longer authorizes is simply not re-established.
+    fn replay_watches(&mut self) {
+        let specs: Vec<WatchRequest> = self.watch_specs.values().cloned().collect();
+        for spec in specs {
+            let _ = self.open_watch(&spec);
+        }
+    }
+
+    /// Rebuild the host over its engine after applying `mutate` to the engine — the
+    /// only way to reach `&mut Engine` while keeping the durable store and clock,
+    /// used by the §17.9 `provider_set` fault path (the engine keyring's provider
+    /// is reconfigured here). Committed state, connections, and live subscriptions
+    /// are preserved: the store and clock are retained across
+    /// [`SurfaceHost::into_parts`], and connections and subscriptions are
+    /// re-established over the rebuilt host.
+    fn rebuild_engine(
+        &mut self,
+        mutate: impl FnOnce(&mut liasse_runtime::Engine<S>),
+    ) -> Result<(), AdapterError> {
+        let loaded = self.take_loaded()?;
+        let routing = loaded.routing;
+        let blobs = loaded.blobs;
+        let (mut engine, router, clock) = loaded.host.into_parts();
+        mutate(&mut engine);
+        self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs });
+        self.reopen_connections();
+        self.replay_watches();
+        Ok(())
     }
 }
 
@@ -192,6 +275,14 @@ pub(super) trait Instance {
     /// §18.12 `connector_set`: reconfigure a simulated connector from this step
     /// onward (unavailability, per-operation failure, stored-object corruption).
     fn connector_set(&mut self, spec: &super::blobs::ConnectorSetSpec) -> Result<Observation, AdapterError>;
+    /// §17.9 `provider_set`: reconfigure the engine keyring's backing provider from
+    /// this step onward (total outage, per-operation clean failure, hang, or an
+    /// invalid public key), so a later `cose.sign` mutation or due rotation fails.
+    fn provider_set(&mut self, spec: &super::keyrings::ProviderSetSpec) -> Result<Observation, AdapterError>;
+    /// §17.3/§17.4 `keyring_admin`: a keyring lifecycle transition
+    /// (`bind_activate`/`revoke`/`destroy`) against the engine's self-provisioned
+    /// ring.
+    fn keyring_admin(&mut self, spec: &super::keyrings::KeyringAdminSpec) -> Result<Observation, AdapterError>;
 }
 
 impl<S: InstanceStore> Instance for Runtime<S> {
@@ -261,49 +352,17 @@ impl<S: InstanceStore> Instance for Runtime<S> {
     }
 
     fn watch(&mut self, request: WatchRequest) -> Result<Observation, AdapterError> {
-        let connection = connection_name(request.on.as_ref());
-        self.ensure_connection(&connection);
-        let watch_id = request.id.to_string();
-        let (observation, singular) = {
-            let loaded = self.loaded()?;
-            let address = SurfaceAddress::parse(&request.target)
-                .map_err(|err| AdapterError::Host(format!("malformed address `{}`: {err}", request.target)))?;
-            let mut watch = SurfaceWatch::new(address, watch_id.clone());
-            // §10.1/§12.1: a parameterized `$view` reads its `$params` from the
-            // subscription's arguments, decoded against the view's declared types.
-            let arg_types = loaded.routing.view_arg_types(&request.target);
-            let args = wire::decode_args(&request.args, &arg_types);
-            if !args.is_empty() {
-                watch = watch.with_args(args);
-            }
-            if let Some(window) = request.window.as_ref().and_then(build_window) {
-                watch = watch.with_window(window);
-            }
-            // §11.4: a subscription may carry its own authenticator selection,
-            // authorizing inline rather than reusing the connection's context — the
-            // §11.8 multiplex path where one connection carries several sessions.
-            if let Some(selection) = request.auth.as_ref().and_then(super::parse_auth_selection) {
-                watch = watch.with_auth(selection);
-            }
-            // §11.8: on a multiplexed connection the subscription names which
-            // authenticated context it runs under, so it applies that context's
-            // authorization and projection independently of any other context.
-            if let Some(context) = &request.context {
-                watch = watch.with_context(context.clone());
-            }
-            // §12.2: a singular view delivers one object; a collection a row array.
-            let singular = loaded.routing.is_singular_view(&request.target);
-            let subscription = loaded.host.watch(&connection, &watch).map_err(host_fault)?;
-            (observe_subscription(&subscription, singular), singular)
-        };
-        self.watch_conns.insert(watch_id.clone(), connection);
-        self.watch_singular.insert(watch_id, singular);
+        let observation = self.open_watch(&request)?;
+        // Retain the opening request so a host rebuild (the §17.9 `provider_set`
+        // path) can re-establish this subscription over the rebuilt host.
+        self.watch_specs.insert(request.id.to_string(), request);
         Ok(observation)
     }
 
     fn unwatch(&mut self, id: &WatchId) -> Result<Observation, AdapterError> {
         self.watch_conns.remove(&id.to_string());
         self.watch_singular.remove(&id.to_string());
+        self.watch_specs.remove(&id.to_string());
         Ok(Observation::ok(None))
     }
 
@@ -526,6 +585,22 @@ impl<S: InstanceStore> Instance for Runtime<S> {
             State::Loaded(loaded) => super::blobs::connector_set(loaded, &self.blob_digests, spec),
             State::Failed(message) => Err(AdapterError::LoadFailed(message.clone())),
         }
+    }
+
+    fn provider_set(&mut self, spec: &super::keyrings::ProviderSetSpec) -> Result<Observation, AdapterError> {
+        // §17.9: reconfigure the engine keyring's backing provider. Reaching
+        // `&mut Engine` requires rebuilding the host over its engine; committed
+        // state, connections, and live subscriptions are preserved across it, so a
+        // subscription opened before the fault (a keyring metadata watch) still
+        // reads after it.
+        self.rebuild_engine(|engine| spec.apply(engine))?;
+        Ok(Observation::ok(None))
+    }
+
+    fn keyring_admin(&mut self, spec: &super::keyrings::KeyringAdminSpec) -> Result<Observation, AdapterError> {
+        // The engine self-provisions the ring and exposes no mutable
+        // keyring-lifecycle transition, so this reports the precise seam (skip).
+        Err(spec.unsupported())
     }
 }
 

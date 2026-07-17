@@ -9,13 +9,14 @@
 //! result is an owned [`Compiled`] the engine holds beside the model and store.
 
 use liasse_diag::{SourceId, SourceMap};
-use liasse_expr::{check_statement, ExprType, RowType, Scope, TypedExpr};
+use liasse_expr::{check_statement, ExprType, HostPosition, RowType, Scope, TypedExpr};
 use liasse_model::{Collection, Model, Node, Shape};
 use liasse_syntax::{parse_expression, Stmt};
 use liasse_value::Type;
 
 use crate::doc;
 use crate::error::EngineError;
+use crate::host::HostSignatures;
 use crate::schema::Schema;
 use crate::scope::RuntimeScope;
 
@@ -225,11 +226,12 @@ impl Compiled {
         model: &Model,
         model_doc: &liasse_syntax::DocValue,
         precision: liasse_value::Precision,
+        hosts: &HostSignatures,
     ) -> Result<Self, EngineError> {
         let schema = Schema::new(model);
         let root_ty = ExprType::Row(schema.root_row_type());
         let auth = AuthBindings::derive(schema, model_doc);
-        let mut collections = compile_collections(sources, schema, &root_ty)?;
+        let mut collections = compile_collections(sources, schema, &root_ty, hosts)?;
         // §4.4: apply the declared `timestamp_precision` to every stored `timestamp`
         // field type, so a seed or mutation decodes a bare wire count at the package
         // precision (the model keeps the default microsecond precision on field
@@ -237,11 +239,11 @@ impl Compiled {
         for collection in &mut collections {
             apply_precision(collection, precision);
         }
-        let root_computed = compile_root_computed(sources, schema, &root_ty)?;
-        let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth)?;
+        let root_computed = compile_root_computed(sources, schema, &root_ty, hosts)?;
+        let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth, hosts)?;
         let keyrings = compile_keyrings(schema, model_doc);
-        let views = compile_views(sources, schema, &root_ty, &keyrings, model_doc)?;
-        let surface_views = compile_surface_views(sources, schema, &root_ty, model_doc, &auth);
+        let views = compile_views(sources, schema, &root_ty, &keyrings, model_doc, hosts)?;
+        let surface_views = compile_surface_views(sources, schema, &root_ty, model_doc, &auth, hosts);
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc)?;
         let source_buckets = crate::source_bucket::compile(sources, schema, &root_ty, model_doc)?;
         let meters = crate::meter::compile(sources, schema, &root_ty, model_doc)?;
@@ -409,12 +411,13 @@ fn compile_collections(
     sources: &mut SourceMap,
     schema: Schema<'_>,
     root_ty: &ExprType,
+    hosts: &HostSignatures,
 ) -> Result<Vec<CompiledCollection>, EngineError> {
     let mut out = Vec::new();
     for member in &schema.model().root().members {
         if let Node::Collection(collection) = &member.node {
             let path = vec![member.name.as_str().to_owned()];
-            out.push(compile_collection(sources, schema, root_ty, &path, collection)?);
+            out.push(compile_collection(sources, schema, root_ty, &path, collection, hosts)?);
         }
     }
     Ok(out)
@@ -426,12 +429,13 @@ fn compile_collection(
     root_ty: &ExprType,
     path: &[String],
     collection: &Collection,
+    hosts: &HostSignatures,
 ) -> Result<CompiledCollection, EngineError> {
     let name = path.last().map_or("", String::as_str);
     let row_ty = schema
         .receiver_row_type(path)
         .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
-    let row_scope = RuntimeScope::new(row_ty.clone(), root_ty.clone());
+    let row_scope = RuntimeScope::new(row_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
 
     let mut fields = Vec::new();
     let mut computed = Vec::new();
@@ -451,17 +455,17 @@ fn compile_collection(
             Node::Struct(shape) => {
                 let mut child_path = path.to_vec();
                 child_path.push(name.to_owned());
-                structs.push(compile_struct(sources, schema, root_ty, &child_path, name, shape)?);
+                structs.push(compile_struct(sources, schema, root_ty, &child_path, name, shape, hosts)?);
             }
             // A nested keyed collection (§5.4): compiled recursively into a child.
             Node::Collection(nested) => {
                 let mut child_path = path.to_vec();
                 child_path.push(name.to_owned());
-                children.push(compile_collection(sources, schema, root_ty, &child_path, nested)?);
+                children.push(compile_collection(sources, schema, root_ty, &child_path, nested, hosts)?);
             }
             _ => {
                 if let Some(field) =
-                    compile_field(sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed)?
+                    compile_field(sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed, hosts)?
                 {
                     fields.push(field);
                 }
@@ -494,18 +498,19 @@ fn compile_struct(
     path: &[String],
     name: &str,
     shape: &Shape,
+    hosts: &HostSignatures,
 ) -> Result<CompiledStruct, EngineError> {
     let row_ty = schema
         .receiver_row_type(path)
         .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
-    let row_scope = RuntimeScope::new(row_ty.clone(), root_ty.clone());
+    let row_scope = RuntimeScope::new(row_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
     let mut fields = Vec::new();
     let mut unique = Vec::new();
     let mut computed = Vec::new();
     for member in &shape.members {
         if let Node::Scalar(_) | Node::Reference(_) | Node::Set(_) = &member.node
             && let Some(field) =
-                compile_field(sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed)?
+                compile_field(sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed, hosts)?
         {
             fields.push(field);
         }
@@ -528,10 +533,12 @@ fn compile_field(
     member: &liasse_model::Member,
     unique: &mut Vec<Vec<String>>,
     computed: &mut Vec<CompiledComputed>,
+    hosts: &HostSignatures,
 ) -> Result<Option<CompiledField>, EngineError> {
     let name = member.name.as_str().to_owned();
     let field = match &member.node {
-        // A read-only computed value is not an insertable field (§5.2).
+        // A read-only computed value is not an insertable field (§5.2). A computed
+        // value is a read/replay position, so its `row_scope` stays `Pure`.
         Node::Scalar(scalar) if !scalar.is_writable() => {
             if let Some(source) = &scalar.computed {
                 let (expr, _src) = compile_expr(sources, row_scope, "computed", &source.text)?;
@@ -543,11 +550,19 @@ fn compile_field(
             if scalar.unique {
                 unique.push(vec![name.clone()]);
             }
+            // §8.8: a field default is a write-time position, so a generated host
+            // function MAY run there (a pure one always may). The `row_scope`
+            // already carries the resolved host signatures; opt this one into the
+            // write effect policy.
             let default = match &scalar.default {
-                Some(source) => Some(compile_expr(sources, row_scope, "default", &source.text)?),
+                Some(source) => {
+                    let default_scope = row_scope.clone().with_host_position(HostPosition::Write);
+                    Some(compile_expr(sources, &default_scope, "default", &source.text)?)
+                }
                 None => None,
             };
-            let field_scope = RuntimeScope::new(ExprType::scalar(scalar.ty.clone()), root_ty.clone());
+            let field_scope =
+                RuntimeScope::new(ExprType::scalar(scalar.ty.clone()), root_ty.clone()).with_host_ops(hosts.clone());
             let normalize = match &scalar.normalize {
                 Some(source) => Some(compile_expr(sources, &field_scope, "normalize", &source.text)?),
                 None => None,
@@ -653,6 +668,7 @@ fn compile_mutations(
     root_ty: &ExprType,
     model_doc: &liasse_syntax::DocValue,
     auth: &AuthBindings,
+    hosts: &HostSignatures,
 ) -> Result<Vec<CompiledMutation>, EngineError> {
     let context_structurals = auth.structurals();
     let mut out = Vec::new();
@@ -660,7 +676,11 @@ fn compile_mutations(
         let receiver_ty = schema
             .receiver_row_type(&mutation.path)
             .ok_or_else(|| EngineError::Internal(format!("mutation `{}` has no receiver", mutation.name.as_str())))?;
-        let mut scope = RuntimeScope::new(receiver_ty, root_ty.clone());
+        // §16.3/§8.8: a mutation-program value is a write-time position, so a
+        // resolved generated (or pure) host call may appear in a value expression.
+        let mut scope = RuntimeScope::new(receiver_ty, root_ty.clone())
+            .with_host_ops(hosts.clone())
+            .with_host_position(HostPosition::Write);
         for (name, ty) in &mutation.params {
             scope = scope.with_param(name.clone(), ty.clone());
         }
@@ -729,8 +749,9 @@ fn compile_root_computed(
     sources: &mut SourceMap,
     schema: Schema<'_>,
     root_ty: &ExprType,
+    hosts: &HostSignatures,
 ) -> Result<Vec<CompiledComputed>, EngineError> {
-    let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone());
+    let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
     let mut out = Vec::new();
     for member in &schema.model().root().members {
         if let Node::Scalar(scalar) = &member.node
@@ -749,8 +770,9 @@ fn compile_views(
     root_ty: &ExprType,
     keyrings: &[CompiledKeyring],
     model_doc: &liasse_syntax::DocValue,
+    hosts: &HostSignatures,
 ) -> Result<Vec<CompiledView>, EngineError> {
-    let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone());
+    let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
     let mut out = Vec::new();
     for member in &schema.model().root().members {
         if let Node::View(view) = &member.node {
@@ -908,6 +930,7 @@ fn compile_surface_views(
     root_ty: &ExprType,
     model_doc: &liasse_syntax::DocValue,
     auth: &AuthBindings,
+    hosts: &HostSignatures,
 ) -> Vec<CompiledSurfaceView> {
     let mut out = Vec::new();
     let structurals = auth.structurals();
@@ -919,6 +942,7 @@ fn compile_surface_views(
                 &format!("public.{}", surface.name.text),
                 &surface.value,
                 &structurals,
+                hosts,
                 &mut out,
             );
         }
@@ -938,6 +962,7 @@ fn compile_surface_views(
                     &format!("{}.{}", role.name.text, member.name.text),
                     &member.value,
                     &structurals,
+                    hosts,
                     &mut out,
                 );
             }
@@ -956,6 +981,7 @@ fn compile_one_surface_view(
     address: &str,
     surface: &liasse_syntax::DocValue,
     structurals: &[(String, ExprType)],
+    hosts: &HostSignatures,
     out: &mut Vec<CompiledSurfaceView>,
 ) {
     let Some(members) = doc::object(surface) else { return };
@@ -967,7 +993,7 @@ fn compile_one_surface_view(
         Some(params) => params,
         None => return,
     };
-    let mut scope = RuntimeScope::new(root_ty.clone(), root_ty.clone());
+    let mut scope = RuntimeScope::new(root_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
     for param in &params {
         scope = scope.with_param(param.name.clone(), param.ty.clone());
     }

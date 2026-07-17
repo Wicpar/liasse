@@ -11,14 +11,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_expr::{CallSite, Cell, Environment, EvalError, KeyringSelector, Row, RowId, TemporalQuery};
-use liasse_value::{Timestamp, Uuid};
+use liasse_value::{Timestamp, Uuid, Value};
 
 use crate::generator::derive_uuid;
+use crate::host::HostDispatch;
 use crate::keyring_view::{snapshot_for, KeyringSnapshot};
 use crate::materialize::row_interval;
 
 /// A read-only, deterministic evaluation context.
-pub(crate) struct RuntimeEnv {
+pub(crate) struct RuntimeEnv<'a> {
     root: Row,
     params: BTreeMap<String, Cell>,
     /// Lexical local bindings `name` a mutation program introduced with a
@@ -39,14 +40,20 @@ pub(crate) struct RuntimeEnv {
     /// resolves against. Each names the versions active (`.$current`) and
     /// accepted (`.$accepted`/`.$public`) at the read instant.
     keyrings: Vec<KeyringSnapshot>,
+    /// The host-namespace dispatch a resolved `namespace.function(...)` call in a
+    /// view/default/computed value runs through (§16.2/§16.3). A [`HostDispatch::none`]
+    /// answers no namespace, so a host call in a position with no live binding
+    /// faults as a contract breach; only a mutation admission, a genesis seed, and
+    /// a view read carry a live dispatch.
+    hosts: HostDispatch<'a>,
 }
 
-impl RuntimeEnv {
+impl<'a> RuntimeEnv<'a> {
     /// Build the context from a materialized `root`, the request `params`, the
-    /// fixed generative samples, and the bucketed-collection temporal and keyring
-    /// version indices. The inputs are each a distinct, unrelated environment
-    /// slot rather than a bundle to abstract away, so the constructor takes them
-    /// positionally.
+    /// fixed generative samples, the bucketed-collection temporal and keyring
+    /// version indices, and the host-call dispatch. The inputs are each a
+    /// distinct, unrelated environment slot rather than a bundle to abstract away,
+    /// so the constructor takes them positionally.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         root: Row,
@@ -57,8 +64,9 @@ impl RuntimeEnv {
         seed: u64,
         temporal: Vec<Vec<Row>>,
         keyrings: Vec<KeyringSnapshot>,
+        hosts: HostDispatch<'a>,
     ) -> Self {
-        Self { root, params, bindings, structurals, now, seed, temporal, keyrings }
+        Self { root, params, bindings, structurals, now, seed, temporal, keyrings, hosts }
     }
 
     /// The working set a temporal selector ranges over (§14.1). When `base` is
@@ -67,7 +75,7 @@ impl RuntimeEnv {
     /// from that collection's *full* extant set, so `.$all` and a back-dated
     /// `.$at` see inactive rows (§14.2). Otherwise (a filtered or projected base)
     /// the query ranges over `base` as given, using each row's carried interval.
-    fn working_set<'a>(&'a self, base: &'a [Row]) -> &'a [Row] {
+    fn working_set<'w>(&'w self, base: &'w [Row]) -> &'w [Row] {
         let base_ids: BTreeSet<&RowId> = base.iter().map(Row::id).collect();
         for extant in &self.temporal {
             let active: BTreeSet<&RowId> =
@@ -80,7 +88,7 @@ impl RuntimeEnv {
     }
 }
 
-impl Environment for RuntimeEnv {
+impl Environment for RuntimeEnv<'_> {
     fn root(&self) -> &Row {
         &self.root
     }
@@ -133,6 +141,16 @@ impl Environment for RuntimeEnv {
             KeyringSelector::Accepted | KeyringSelector::Public => snapshot.accepted_rows(),
             KeyringSelector::Versions => snapshot.rows.clone(),
         })
+    }
+
+    /// Invoke a resolved host-namespace function in a view/default/computed value
+    /// (§16.2/§16.3): dispatch to the bound host component through the conformance
+    /// guard, so a nonconforming return or a verifier rejection is a typed
+    /// evaluation failure that commits no effect. The call is pure-recomputable —
+    /// the checker admitted it only where the effect class permits (a pure
+    /// function in a read/replay position), so re-evaluation is deterministic.
+    fn host_call(&self, namespace: &str, function: &str, args: &[Value]) -> Result<Value, EvalError> {
+        self.hosts.eval_call(namespace, function, args)
     }
 }
 

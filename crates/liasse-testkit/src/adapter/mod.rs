@@ -40,6 +40,7 @@
 mod auth;
 mod blobs;
 mod error;
+mod keyrings;
 pub mod lift;
 mod ops;
 mod router;
@@ -48,7 +49,7 @@ mod shape;
 mod wire;
 
 use liasse_ident::InstanceId;
-use liasse_runtime::{Engine, Precision};
+use liasse_runtime::{Engine, Precision, Registry};
 use liasse_store::{InstanceStore, MemoryStore};
 use liasse_surface::{
     Authenticate, AuthSelection, Credential, SurfaceHost, Subscription, SurfaceError,
@@ -278,7 +279,7 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
             .ok_or_else(|| "prepared definition did not serialize".to_owned())?;
         let store = provision.provision(InstanceId::new(case.name.clone()))?;
         let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
-        let engine = Engine::load(store, &definition, &mut clock).map_err(|err| err.to_string())?;
+        let engine = load_engine(store, &definition, &mut clock, package).map_err(|err| err.to_string())?;
         let (router, mut routing) =
             router::build(engine.model(), package, plan, lift).map_err(|err| err.to_string())?;
         routing.load_view_param_types(&engine);
@@ -375,6 +376,50 @@ impl<S: InstanceStore> Driver for ScenarioAdapter<S> {
 /// connection when the executor left `on` unset.
 pub(super) fn connection_name(on: Option<&ConnectionId>) -> String {
     on.map_or_else(|| IMPLICIT_CONNECTION.to_owned(), ToString::to_string)
+}
+
+/// Load `definition` into `store` (§9.2), choosing the requirement-resolution
+/// discipline from the package's `$requires`. When every requirement names the
+/// runtime's built-in `liasse.cose` contract — the one the engine seeds and
+/// serves through its self-provisioned keyrings with no registered component —
+/// resolve *strictly* through [`Engine::load_with_hosts`] (§16.2: a missing,
+/// incompatible, or ambiguous requirement fails load before activation).
+/// Otherwise keep the lenient [`Engine::load`], which defers an unresolved
+/// requirement rather than failing it: the §11/§12/§16 host-verifier namespaces a
+/// case requires are reconstructed at the auth layer (adapter/auth.rs), not
+/// registered as engine components, so the lenient default is the safe path for
+/// them (the runtime kept it lenient for exactly this). The keyring op families
+/// the strict path enables are driven through the engine's self-provisioned rings
+/// (adapter/keyrings.rs), not a registered provider.
+fn load_engine<S: InstanceStore, G: liasse_runtime::Generators>(
+    store: S,
+    definition: &str,
+    generator: &mut G,
+    package: &serde_json::Value,
+) -> Result<Engine<S>, liasse_runtime::EngineError> {
+    if requires_only_builtin_cose(package) {
+        Engine::load_with_hosts(store, definition, generator, Registry::new())
+    } else {
+        Engine::load(store, definition, generator)
+    }
+}
+
+/// Whether the package's `$requires` names only the built-in `liasse.cose`
+/// contract — the requirement set the engine resolves with no registered
+/// component (it seeds a cose namespace when the registry carries none). `false`
+/// when there is no `$requires` (nothing to resolve strictly) or any requirement
+/// names another contract (which the adapter does not register, so strict
+/// resolution would wrongly fail the load).
+fn requires_only_builtin_cose(package: &serde_json::Value) -> bool {
+    package
+        .get("$requires")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|requires| {
+            !requires.is_empty()
+                && requires
+                    .values()
+                    .all(|spec| spec.as_str().is_some_and(|s| s.trim().starts_with("liasse.cose@")))
+        })
 }
 
 /// The root package definition of a case: the sole `package`, or the `root`

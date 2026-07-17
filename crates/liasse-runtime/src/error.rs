@@ -130,6 +130,13 @@ impl Rejection {
 
 impl From<EvalError> for Rejection {
     fn from(error: EvalError) -> Self {
-        Self::new(RejectionReason::Evaluation, error.message())
+        // §16.3: a host-namespace call refusal in an expression position (a
+        // nonconforming return, a verifier rejection, an unavailable dependency)
+        // is a host refusal, not an ordinary evaluation fault.
+        let reason = match &error {
+            EvalError::HostCall { .. } | EvalError::NoHostDispatch => RejectionReason::Host,
+            _ => RejectionReason::Evaluation,
+        };
+        Self::new(reason, error.message())
     }
 }

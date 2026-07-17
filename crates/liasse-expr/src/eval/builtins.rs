@@ -74,4 +74,31 @@ impl Evaluator<'_> {
             _ => Err(EvalError::ShapeMismatch { expected: "a text argument" }),
         }
     }
+
+    /// A resolved host-namespace call (§16.2/§16.3): evaluate each argument to a
+    /// scalar value and defer the call to the environment's host-call hook, which
+    /// performs it through the bound host component. The checker has already
+    /// checked the arguments against the pinned signature, so a non-scalar
+    /// argument here is an environment/type contract breach.
+    pub(crate) fn eval_host_call(
+        &mut self,
+        namespace: &str,
+        function: &str,
+        args: &[TypedExpr],
+    ) -> Result<Cell, EvalError> {
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args {
+            match self.eval(arg)? {
+                Cell::Scalar(value) => values.push(value),
+                // §6.3/§5.6: a single row where a scalar is required is its key.
+                Cell::Row(row) => values.push(row.key().clone()),
+                Cell::Collection(_) => {
+                    return Err(EvalError::ShapeMismatch { expected: "a scalar host-call argument" });
+                }
+            }
+        }
+        self.env
+            .host_call(namespace, function, &values)
+            .map(Cell::Scalar)
+    }
 }

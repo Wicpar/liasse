@@ -41,6 +41,7 @@ mod check;
 mod env;
 mod error;
 mod eval;
+mod host;
 mod scope;
 mod ty;
 mod typed;
@@ -50,6 +51,7 @@ pub use env::{
     CallSite, Cell, Environment, KeyringSelector, Row, RowId, RowIdPart, TemporalQuery,
 };
 pub use error::EvalError;
+pub use host::{HostEffect, HostOp, HostPosition};
 pub use scope::Scope;
 pub use ty::{ExprType, RowType};
 pub use typed::TypedExpr;

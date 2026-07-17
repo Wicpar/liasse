@@ -157,6 +157,9 @@ fn eval_bound(
         0,
         Vec::new(),
         Vec::new(),
+        // A bucket bound is a pure expression (row fields and `now()`); it resolves
+        // no host call, so it needs no live dispatch.
+        crate::host::HostDispatch::none(now),
     );
     match typed.evaluate(&env, &current)? {
         Cell::Scalar(Value::Timestamp(ts)) => Ok(Some(ts)),
