@@ -21,6 +21,7 @@ use crate::deletion::{DeleteError, DeletePolicy, DeletionPlan, Graph, RefEdge, R
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
 use crate::materialize;
+use crate::refid::identity_of;
 use crate::state::Prospective;
 
 /// A planned deletion (§21.1): the fixed-point plan plus the live address of
@@ -132,18 +133,28 @@ fn row_cell_at(
     row: &RowRef,
 ) -> Option<liasse_expr::Cell> {
     let compiled = compiled.collection(collection)?;
-    let address = address_of(prospective, row)?;
+    let address = address_of(prospective, compiled.key.as_slice(), row)?;
     let fields = prospective.get(&address)?;
     Some(row_cell(compiled, fields))
 }
 
-/// The live address of `row`, located by scanning its collection for the key.
-fn address_of(prospective: &Prospective, row: &RowRef) -> Option<RowAddress> {
+/// The live address of `row`, located by scanning its collection for the row
+/// whose application-visible key identity (§5.4) equals `row.key`.
+///
+/// `row.key` is already an application identity — a bare scalar for a single-field
+/// `$key`, or the name-sorted key struct for a composite one (the `from` edge
+/// carries `materialize::key_identity`, the `to` edge the ref's typed key). So the
+/// stored row's positional `$key`-order `components` must be normalized through the
+/// SAME `refid::identity_of` the reference-resolution and restrict/cascade/clear
+/// paths use before comparing; a positional/arity-limited match would resolve only
+/// single-field keys and silently drop a composite-keyed `$on_delete` patch edge
+/// (§21.1).
+fn address_of(prospective: &Prospective, key_names: &[String], row: &RowRef) -> Option<RowAddress> {
     let path = CollectionPath::top(NameSegment::new(row.collection.clone()));
     prospective.addresses_in(&path).into_iter().find(|address| {
         address.steps().last().is_some_and(|step| {
-            let mut components = step.key().components();
-            matches!((components.next(), components.next()), (Some(value), None) if *value == row.key)
+            let components: Vec<Value> = step.key().components().cloned().collect();
+            identity_of(key_names, &components) == row.key
         })
     })
 }
