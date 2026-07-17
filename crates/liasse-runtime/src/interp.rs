@@ -645,17 +645,40 @@ impl<'a> Interp<'a> {
             let mut fields = existing.clone();
             let mut changed = false;
             for field in &collection.fields {
-                let Some(info) = &field.reference else { continue };
-                if info.target != target {
-                    continue;
+                // A scalar `$ref` field: rewrite its single value to the new key.
+                if let Some(info) = &field.reference
+                    && info.target == target
+                    && let Some(rewritten) =
+                        rewrite_ref_value(fields.get(&field.name), &old_components, &new_components, &new_ref)
+                {
+                    fields.insert(field.name.clone(), rewritten);
+                    changed = true;
                 }
-                let Some(rewritten) =
-                    rewrite_ref_value(fields.get(&field.name), &old_components, &new_components, &new_ref)
-                else {
-                    continue;
-                };
-                fields.insert(field.name.clone(), rewritten);
-                changed = true;
+                // §5.5/§5.4: a `$set` of `$ref` holds many inbound references —
+                // rewrite every member that targeted the rekeyed row, preserving the
+                // rest of the membership.
+                if let Some(info) = &field.element_reference
+                    && info.target == target
+                    && let Some(Value::Set(members)) = fields.get(&field.name)
+                {
+                    let mut rebuilt = BTreeSet::new();
+                    let mut member_changed = false;
+                    for member in members {
+                        match rewrite_ref_value(Some(member), &old_components, &new_components, &new_ref) {
+                            Some(rewritten) => {
+                                rebuilt.insert(rewritten);
+                                member_changed = true;
+                            }
+                            None => {
+                                rebuilt.insert(member.clone());
+                            }
+                        }
+                    }
+                    if member_changed {
+                        fields.insert(field.name.clone(), Value::Set(rebuilt));
+                        changed = true;
+                    }
+                }
             }
             if changed {
                 self.prospective.replace(&address, fields);

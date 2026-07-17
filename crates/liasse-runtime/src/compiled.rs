@@ -57,7 +57,16 @@ pub(crate) enum OnDelete {
 pub(crate) struct CompiledField {
     pub(crate) name: String,
     pub(crate) ty: Type,
+    /// The reference target when this field is a scalar `$ref` (§5.6): its value
+    /// is one target key that must resolve.
     pub(crate) reference: Option<RefInfo>,
+    /// The reference target when this field is a `$set` of `$ref` (§5.5): each
+    /// set member is a reference that must resolve (§5.6). The model flattens a
+    /// set element to a bare `ref<T>` type and drops the target relation, so the
+    /// target is recovered from the definition document at compile time and kept
+    /// here — the set analogue of [`Self::reference`] for member-level integrity
+    /// and atomic-rekey rewrite (§5.4).
+    pub(crate) element_reference: Option<RefInfo>,
     pub(crate) default: Option<(TypedExpr, SourceId)>,
     pub(crate) normalize: Option<(TypedExpr, SourceId)>,
     pub(crate) checks: Vec<CompiledCheck>,
@@ -250,6 +259,13 @@ pub(crate) struct CompiledKeyring {
 /// The compiled artefacts the engine reuses across requests.
 pub(crate) struct Compiled {
     pub(crate) collections: Vec<CompiledCollection>,
+    /// The root singleton row (§8.2) compiled as a pseudo-collection over the
+    /// root's writable members, so the admission pipeline validates it exactly
+    /// like a keyed row — field/row checks, reference integrity (scalar and
+    /// set-of-ref members), and uniqueness all hold on the singleton row (§22.1).
+    /// Resolved by [`Self::collection_at`] under the reserved `$root` path for the
+    /// final rule pass and the atomic-rekey inbound-ref rewrite (§5.4).
+    pub(crate) root_singleton: CompiledCollection,
     /// Root-level computed values (§5.2) declared directly under `$model`, folded
     /// onto the package-root row at materialization so a view or projection reads
     /// them like any collection or stored value.
@@ -327,6 +343,7 @@ impl Compiled {
             apply_precision(collection, precision);
         }
         let root_computed = compile_root_computed(sources, schema, &root_ty, hosts)?;
+        let root_singleton = compile_root_singleton(sources, schema, &root_ty, model_doc, hosts)?;
         let root_singleton_defaults = compile_root_singleton_defaults(sources, schema, &root_ty, hosts)?;
         let root_singleton_normalizes = compile_root_singleton_normalizes(sources, schema, &root_ty, hosts)?;
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth, hosts)?;
@@ -340,6 +357,7 @@ impl Compiled {
         let module_spaces = compile_module_spaces(model_doc, &[]);
         Ok(Self {
             collections,
+            root_singleton,
             root_computed,
             root_singleton_defaults,
             root_singleton_normalizes,
@@ -365,6 +383,14 @@ impl Compiled {
     /// The compiled collection at a declaration-name path (`["companies"]` or
     /// `["companies", "offices"]`), descending nested collections (§5.4).
     pub(crate) fn collection_at(&self, path: &[String]) -> Option<&CompiledCollection> {
+        // §8.2: the reserved `$root` row is the singleton pseudo-collection, so the
+        // final rule pass and the inbound-ref rewrite resolve it here rather than
+        // among the application collections (it never carries an application name).
+        if let [only] = path
+            && only == crate::singleton::ROOT_NAME
+        {
+            return Some(&self.root_singleton);
+        }
         let (head, rest) = path.split_first()?;
         self.collection(head)?.at(rest)
     }
@@ -572,7 +598,7 @@ fn compile_collection(
             Node::Struct(shape) => {
                 let mut child_path = path.to_vec();
                 child_path.push(name.to_owned());
-                structs.push(compile_struct(sources, schema, root_ty, &child_path, name, shape, hosts)?);
+                structs.push(compile_struct(sources, schema, root_ty, model_doc, &child_path, name, shape, hosts)?);
             }
             // A nested keyed collection (§5.4): compiled recursively into a child.
             Node::Collection(nested) => {
@@ -594,9 +620,11 @@ fn compile_collection(
                 }
             }
             _ => {
-                if let Some(field) =
-                    compile_field(sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed, hosts)?
-                {
+                let member_doc =
+                    doc::shape_at(model_doc, path).and_then(|shape| doc::member(shape, name));
+                if let Some(field) = compile_field(
+                    sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed, member_doc, hosts,
+                )? {
                     fields.push(field);
                 }
             }
@@ -646,10 +674,12 @@ fn compile_nested_view(
 /// normalizers, and checks) and its struct-level `$check`s, so a supplied struct
 /// initializer resolves omitted defaults and is validated with the row (§5.1,
 /// §5.10). Nested collections inside a struct remain a documented seam.
+#[allow(clippy::too_many_arguments)]
 fn compile_struct(
     sources: &mut SourceMap,
     schema: Schema<'_>,
     root_ty: &ExprType,
+    model_doc: &liasse_syntax::DocValue,
     path: &[String],
     name: &str,
     shape: &Shape,
@@ -663,11 +693,14 @@ fn compile_struct(
     let mut unique = Vec::new();
     let mut computed = Vec::new();
     for member in &shape.members {
-        if let Node::Scalar(_) | Node::Reference(_) | Node::Set(_) = &member.node
-            && let Some(field) =
-                compile_field(sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed, hosts)?
-        {
-            fields.push(field);
+        if let Node::Scalar(_) | Node::Reference(_) | Node::Set(_) = &member.node {
+            let member_doc =
+                doc::shape_at(model_doc, path).and_then(|s| doc::member(s, member.name.as_str()));
+            if let Some(field) = compile_field(
+                sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed, member_doc, hosts,
+            )? {
+                fields.push(field);
+            }
         }
     }
     let row_checks = compile_checks(sources, &row_scope, "struct-check", &shape.checks)?;
@@ -688,6 +721,7 @@ fn compile_field(
     member: &liasse_model::Member,
     unique: &mut Vec<Vec<String>>,
     computed: &mut Vec<CompiledComputed>,
+    member_doc: Option<&liasse_syntax::DocValue>,
     hosts: &HostSignatures,
 ) -> Result<Option<CompiledField>, EngineError> {
     let name = member.name.as_str().to_owned();
@@ -723,7 +757,15 @@ fn compile_field(
                 None => None,
             };
             let checks = compile_checks(sources, &field_scope, "check", &scalar.checks)?;
-            CompiledField { name, ty: scalar.ty.clone(), reference: None, default, normalize, checks }
+            CompiledField {
+                name,
+                ty: scalar.ty.clone(),
+                reference: None,
+                element_reference: None,
+                default,
+                normalize,
+                checks,
+            }
         }
         Node::Reference(reference) => {
             let target = reference.target.trim_start_matches('/').to_owned();
@@ -732,22 +774,44 @@ fn compile_field(
                 name,
                 ty: Type::Ref(liasse_value::RefTarget::Scalar(Box::new(reference.key_type.clone()))),
                 reference: Some(RefInfo { target, optional: reference.optional, on_delete }),
+                element_reference: None,
                 default: None,
                 normalize: None,
                 checks: Vec::new(),
             }
         }
-        Node::Set(set) => CompiledField {
-            name,
-            ty: Type::Set(Box::new(set.element.clone())),
-            reference: None,
-            default: None,
-            normalize: None,
-            checks: Vec::new(),
-        },
+        // §5.5: a `$set` of `$ref` carries per-member references (§5.6). The model
+        // keeps only the element key type, so the target relation is recovered from
+        // the field's definition document; every member then resolves through the
+        // same integrity check and atomic-rekey rewrite as a scalar ref.
+        Node::Set(set) => {
+            let element_reference = matches!(set.element, Type::Ref(_))
+                .then(|| set_ref_target(member_doc))
+                .flatten()
+                .map(|target| RefInfo { target, optional: false, on_delete: OnDelete::Undecided });
+            CompiledField {
+                name,
+                ty: Type::Set(Box::new(set.element.clone())),
+                reference: None,
+                element_reference,
+                default: None,
+                normalize: None,
+                checks: Vec::new(),
+            }
+        }
         _ => return Ok(None),
     };
     Ok(Some(field))
+}
+
+/// The target relation of a `$set` of `$ref` member (§5.5/§5.6), read from the
+/// field's definition document `{ "$set": { "$ref": "/accounts" } }` because the
+/// model flattens a set element to a bare key type and drops the target name. The
+/// leading `/` of the absolute target path is stripped to the collection name.
+fn set_ref_target(member_doc: Option<&liasse_syntax::DocValue>) -> Option<String> {
+    let set = doc::member(member_doc?, "$set")?;
+    let target = doc::string(doc::member(set, "$ref")?)?;
+    Some(target.trim().trim_start_matches('/').to_owned())
 }
 
 /// The `$actor`/`$session` bindings an authenticated admission introduces
@@ -917,6 +981,46 @@ fn compile_root_computed(
         }
     }
     Ok(out)
+}
+
+/// Compile the root singleton row as a pseudo-collection (§8.2): each writable
+/// scalar / reference / set member declared directly under `$model` becomes a
+/// [`CompiledField`] carrying its checks, its scalar-ref target, and — for a
+/// `$set` of `$ref` — its element target. The reserved `$root` row has no key, so
+/// the final rule pass (`rules::finalize`) and the atomic-rekey inbound-ref
+/// rewrite validate/rewrite the singleton row exactly like a keyed row (§5.4,
+/// §5.6, §22.1). Field checks type with the member's own value as `.`, so a
+/// negative `count` under `$check: [(. >= 0), …]` rejects (§8.8).
+fn compile_root_singleton(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+    model_doc: &liasse_syntax::DocValue,
+    hosts: &HostSignatures,
+) -> Result<CompiledCollection, EngineError> {
+    let row_scope = RuntimeScope::new(root_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
+    let mut fields = Vec::new();
+    let mut unique = Vec::new();
+    let mut computed = Vec::new();
+    for member in &schema.model().root().members {
+        let member_doc = doc::member(model_doc, member.name.as_str());
+        if let Some(field) = compile_field(
+            sources, schema, root_ty, root_ty, &row_scope, member, &mut unique, &mut computed, member_doc, hosts,
+        )? {
+            fields.push(field);
+        }
+    }
+    Ok(CompiledCollection {
+        name: crate::singleton::ROOT_NAME.to_owned(),
+        key: Vec::new(),
+        unique,
+        fields,
+        computed: Vec::new(),
+        row_checks: Vec::new(),
+        structs: Vec::new(),
+        children: Vec::new(),
+        views: Vec::new(),
+    })
 }
 
 /// Compile the insertion default of each writable singleton root field (§8.2). A

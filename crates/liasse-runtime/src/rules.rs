@@ -249,29 +249,58 @@ fn check_refs(
     address: &RowAddress,
 ) -> Result<(), Rejection> {
     for field in &collection.fields {
-        let Some(info) = &field.reference else { continue };
-        match fields.get(&field.name) {
-            None | Some(Value::None) if info.optional => {}
-            None | Some(Value::None) => {
-                return Err(Rejection::new(
-                    RejectionReason::DanglingRef,
-                    format!("required reference `{}` has no target", field.name),
-                )
-                .at(address.render()));
-            }
-            Some(Value::Ref(reference)) => {
-                if !target_present(prospective, &info.target, reference.key()) {
+        if let Some(info) = &field.reference {
+            match fields.get(&field.name) {
+                None | Some(Value::None) if info.optional => {}
+                None | Some(Value::None) => {
                     return Err(Rejection::new(
                         RejectionReason::DanglingRef,
-                        format!("reference `{}` does not resolve to a live row", field.name),
+                        format!("required reference `{}` has no target", field.name),
+                    )
+                    .at(address.render()));
+                }
+                Some(Value::Ref(reference)) => {
+                    if !target_present(prospective, &info.target, reference.key()) {
+                        return Err(Rejection::new(
+                            RejectionReason::DanglingRef,
+                            format!("reference `{}` does not resolve to a live row", field.name),
+                        )
+                        .at(address.render()));
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        // §5.5/§5.6: every member of a `$set` of `$ref` is a reference that MUST
+        // resolve to a live row, exactly like a scalar ref field — a dangling
+        // member rejects the whole transition (§22.1 reference validity).
+        if let Some(info) = &field.element_reference
+            && let Some(Value::Set(members)) = fields.get(&field.name)
+        {
+            for member in members {
+                let Some(key) = member_ref_key(member) else { continue };
+                if !target_present(prospective, &info.target, &key) {
+                    return Err(Rejection::new(
+                        RejectionReason::DanglingRef,
+                        format!("a member of reference set `{}` does not resolve to a live row", field.name),
                     )
                     .at(address.render()));
                 }
             }
-            Some(_) => {}
         }
     }
     Ok(())
+}
+
+/// The target key a `$set`-of-`$ref` member carries (§5.6): a `Ref` exposes its
+/// key directly; a member stored as its bare scalar key (§6.3 ref/key equality)
+/// is that single-component key. A `none` member carries no target.
+fn member_ref_key(value: &Value) -> Option<RefKey> {
+    match value {
+        Value::Ref(reference) => Some(reference.key().clone()),
+        Value::None => None,
+        other => Some(RefKey::Scalar(Box::new(other.clone()))),
+    }
 }
 
 /// Whether the target collection holds a live row whose key matches `key`.

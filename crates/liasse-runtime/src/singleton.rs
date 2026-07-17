@@ -21,7 +21,7 @@ use crate::materialize::FieldMap;
 /// Reserved collection name of the singleton root row. A model member can never
 /// carry this name — `$`-prefixed keys are directives, not declared members —
 /// so it never collides with an application collection.
-const ROOT_NAME: &str = "$root";
+pub(crate) const ROOT_NAME: &str = "$root";
 
 /// The reserved address of the singleton root row.
 #[must_use]

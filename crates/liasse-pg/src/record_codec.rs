@@ -26,6 +26,12 @@ pub fn address_key(address: &RowAddress) -> Result<String, StoreError> {
 }
 
 /// Encode a row address as a JSON array of `[name, [key-components…]]` steps.
+///
+/// Key components go through [`value_codec::encode_key`], not the plain value
+/// encoder: an address key is a durable *identity*, so it must collapse
+/// Annex-B-equal keys (scale-variant decimals, precision-variant timestamps) to
+/// one string — otherwise a committed update/delete addressed by a numerically
+/// equal key would target a different row than its insert.
 #[must_use]
 pub fn encode_address(address: &RowAddress) -> J {
     J::Array(
@@ -34,7 +40,7 @@ pub fn encode_address(address: &RowAddress) -> J {
             .map(|step| {
                 J::Array(vec![
                     J::String(step.name().as_str().to_owned()),
-                    J::Array(step.key().components().map(value_codec::encode).collect()),
+                    J::Array(step.key().components().map(value_codec::encode_key).collect()),
                 ])
             })
             .collect(),

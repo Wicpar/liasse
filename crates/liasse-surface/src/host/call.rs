@@ -287,10 +287,12 @@ impl<S: InstanceStore> SurfaceHost<S> {
         // The retained `from` is a resume hint; this implementation always
         // reconstructs a fresh init at the connection's current frontier, which
         // covers `from` and yields the current authorized result (§12.2). A resume
-        // carries no fresh arguments, so a parameterized view resumes at its
-        // declared parameter defaults (§8.3).
+        // continues the same stream, so it carries the surface `$params` the
+        // original subscription was opened with (§10.1): re-binding them keeps a
+        // parameterized subscription on its filtered result instead of collapsing
+        // to declared parameter defaults (§8.3).
         let frontier = self.connection_frontier(id);
-        let query = view_query(BTreeMap::new(), context.as_ref());
+        let query = view_query(resume.args().clone(), context.as_ref());
         self.open_subscription(
             id,
             resume.id(),
@@ -298,7 +300,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
             authz,
             frontier,
             None,
-            BTreeMap::new(),
+            resume.args().clone(),
             &query,
         )
     }

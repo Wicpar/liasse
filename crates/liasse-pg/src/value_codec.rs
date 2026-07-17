@@ -26,6 +26,90 @@ use liasse_value::{
 use liasse_store::StoreError;
 use serde_json::{Map, Value as J};
 
+/// Encode a key component in its Annex B canonical form.
+///
+/// A key's identity is Annex B numeric order (B.1), which is *coarser* than a
+/// value's exact wire incarnation. Two axes make Annex-B-equal values render to
+/// distinct wire text: a `decimal`'s scale (`1.0` and `1.00` are one key value)
+/// and a `timestamp`'s precision (counts that normalize to the same instant are
+/// one key value). The value column preserves those (incarnation-for-incarnation,
+/// per [`encode`]), but a durable *address key* must collapse Annex-B-equal
+/// values to one identity, or a committed update/delete addressed by a
+/// scale/precision-variant key targets a different durable row than the insert —
+/// diverging from the in-memory reference, whose [`RowAddress`] `Ord` is Annex B.
+///
+/// The canonicalization recurses, since a composite or `ref` key can nest a
+/// decimal or timestamp, then delegates to [`encode`] so the result stays a
+/// well-formed, decodable wire value.
+///
+/// [`RowAddress`]: liasse_store::RowAddress
+#[must_use]
+pub fn encode_key(value: &Value) -> J {
+    encode(&canonical_key(value))
+}
+
+/// Map a key value to its Annex B canonical representative: decimals lose their
+/// trailing-zero scale, timestamps reduce to the coarsest exact precision, and
+/// composite/nested keys are rewritten component-wise. Every other value is its
+/// own representative.
+fn canonical_key(value: &Value) -> Value {
+    match value {
+        Value::Decimal(d) => {
+            Value::Decimal(Decimal::from_big_decimal(d.as_big_decimal().normalized()))
+        }
+        Value::Timestamp(ts) => Value::Timestamp(canonical_timestamp(*ts)),
+        Value::Ref(r) => Value::Ref(canonical_ref(r)),
+        Value::Struct(s) => Value::Struct(Struct::new(
+            s.fields().map(|(name, field)| (name.clone(), canonical_key(field))),
+        )),
+        Value::Set(members) => Value::Set(members.iter().map(canonical_key).collect()),
+        Value::Map(entries) => Value::Map(
+            entries.iter().map(|(k, v)| (canonical_key(k), canonical_key(v))).collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Reduce a timestamp to the coarsest precision that represents it exactly, so
+/// that every count/precision pair denoting the same instant (B.1 "signed order
+/// after exact precision normalization") maps to a single representative — e.g.
+/// `1000` millis and `1` second both become `(1, seconds)`.
+fn canonical_timestamp(ts: Timestamp) -> Timestamp {
+    let Ok(mut count) = ts.to_canonical_text().parse::<i128>() else {
+        return ts;
+    };
+    let mut precision = ts.precision();
+    while let Some(coarser) = coarser_precision(precision) {
+        if count % 1000 != 0 {
+            break;
+        }
+        count /= 1000;
+        precision = coarser;
+    }
+    Timestamp::new(count, precision)
+}
+
+/// The next-coarser precision (each step is a factor of 1000), or `None` at the
+/// coarsest (`seconds`).
+fn coarser_precision(precision: Precision) -> Option<Precision> {
+    match precision {
+        Precision::Nanos => Some(Precision::Micros),
+        Precision::Micros => Some(Precision::Millis),
+        Precision::Millis => Some(Precision::Seconds),
+        Precision::Seconds => None,
+    }
+}
+
+/// Canonicalize the key components a `ref` carries as its target key.
+fn canonical_ref(reference: &Ref) -> Ref {
+    match reference.key() {
+        RefKey::Scalar(value) => Ref::scalar(canonical_key(value)),
+        RefKey::Composite(components) => {
+            Ref::composite(components.iter().map(canonical_key).collect())
+        }
+    }
+}
+
 /// Encode a [`Value`] into its tagged, self-describing wire form.
 #[must_use]
 pub fn encode(value: &Value) -> J {

@@ -265,21 +265,39 @@ impl SurfaceWatch {
 /// authorized declared view at the current frontier — as later patches or a fresh
 /// `init` — with authentication and role membership re-evaluated, so a resume
 /// that has since lost authority delivers no rows.
+///
+/// A resume reconstructs *the same stream* the client opened (§12.2), so it
+/// carries the same surface `$params` arguments the original subscription was
+/// opened with (§10.1). The client re-supplies them here — the retained frontier
+/// alone does not encode them — so a parameterized subscription resumes to its
+/// filtered result rather than silently collapsing to declared parameter
+/// defaults (§8.3).
 #[derive(Debug, Clone)]
 pub struct SurfaceResume {
     address: SurfaceAddress,
     id: String,
     from: CommitSeq,
     context: Option<String>,
+    args: BTreeMap<String, Value>,
     auth: Option<AuthSelection>,
 }
 
 impl SurfaceResume {
     /// Resume subscription `id` over `address` from the retained frontier `from`,
-    /// using the connection's default context.
+    /// using the connection's default context and no surface arguments.
     #[must_use]
     pub fn new(address: SurfaceAddress, id: impl Into<String>, from: CommitSeq) -> Self {
-        Self { address, id: id.into(), from, context: None, auth: None }
+        Self { address, id: id.into(), from, context: None, args: BTreeMap::new(), auth: None }
+    }
+
+    /// Re-supply the surface `$params` arguments the resumed subscription was
+    /// opened with (§10.1, §12.2): a resume continues the same stream, so the
+    /// same `@name` bindings must be restored. An omitted declared parameter
+    /// takes its declared default (§8.3), exactly as on the original `view`.
+    #[must_use]
+    pub fn with_args(mut self, args: BTreeMap<String, Value>) -> Self {
+        self.args = args;
+        self
     }
 
     /// Attach a per-request authenticator selection (§11.4): the resume authorizes
@@ -319,6 +337,13 @@ impl SurfaceResume {
     #[must_use]
     pub fn from(&self) -> CommitSeq {
         self.from
+    }
+
+    /// The surface `$params` arguments restored for the resumed subscription
+    /// (§10.1), the same map the original `view` was opened with.
+    #[must_use]
+    pub fn args(&self) -> &BTreeMap<String, Value> {
+        &self.args
     }
 
     /// The selected context name, if any.
