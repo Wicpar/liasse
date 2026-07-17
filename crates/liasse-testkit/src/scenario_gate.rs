@@ -151,9 +151,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("annex-d-identity/liasse-json-byte-tamper-fails-entry-checksum", "`export` step not driven this phase"),
     ("annex-d-identity/liasse-json-swap-with-fixed-checksums-stale-identity-unspecified", "`export` step not driven this phase"),
     // --- `host_load` step ---
-    ("09-loading-bootstrap/rejected-update-leaves-prior-active", "`host_load` step not driven this phase"),
-    ("09-loading-bootstrap/update-added-check-rejected-against-existing-state", "`host_load` step not driven this phase"),
-    ("09-loading-bootstrap/update-missing-namespace-keeps-prior-active", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/confusable-from-source-name-nonexistent-rejected", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/downgrade-drops-unrepresentable-field-rejected", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/downgrade-via-inverse-restores-value", "`host_load` step not driven this phase"),
@@ -194,56 +191,74 @@ pub const SKIP: &[(&str, &str)] = &[
     ("17-keyrings/bind-algorithm-mismatch-rejected", "no-`$rotate` ring bootstraps as automatic and its provider carries no bindable external key with the corpus algorithm — a runtime policy / liasse-host provider-provisioning seam"),
     ("17-keyrings/manual-activation-enables-dependent-surface", "no-`$rotate` ring bootstraps as automatic (auto-activates v1) and its provider offers no bindable external handle, so manual `bind_activate` rejects — a runtime no-`$rotate`=manual / provider-provisioning seam"),
     ("17-keyrings/manual-second-activation-retires-prior", "no-`$rotate` ring bootstraps as automatic and its provider offers no bindable external handle, so manual `bind_activate` rejects — a runtime no-`$rotate`=manual / provider-provisioning seam"),
-    // --- `module_install` step ---
-    ("13-modules/aggregation-skips-disabled-instance", "`module_install` step not driven this phase"),
-    ("13-modules/cross-boundary-ref-missing-on-delete-invalid", "`module_install` step not driven this phase"),
-    ("13-modules/cross-module-atomic-transition", "`module_install` step not driven this phase"),
-    ("13-modules/empty-instance-name-invalid", "`module_install` step not driven this phase"),
-    ("13-modules/explicit-peer-binding-cross-space-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/expose-binding-contract-mismatch-invalid", "`module_install` step not driven this phase"),
-    ("13-modules/expose-view-missing-interface-field-invalid", "`module_install` step not driven this phase"),
-    ("13-modules/if-module-guarded-state-preserved", "`module_install` step not driven this phase"),
-    ("13-modules/install-config-type-mismatch-invalid", "`module_install` step not driven this phase"),
-    ("13-modules/install-config-unknown-member-invalid", "`module_install` step not driven this phase"),
-    ("13-modules/install-data-check-failure-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/install-data-overlay-merge", "`module_install` step not driven this phase"),
-    ("13-modules/install-duplicate-instance-name-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/install-into-nonexistent-space-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/interface-aggregation-inherited-identity", "`module_install` step not driven this phase"),
-    ("13-modules/interface-mutation-contract-shapes", "`module_install` step not driven this phase"),
-    ("13-modules/interface-mutation-param-contract-mismatch-invalid", "`module_install` step not driven this phase"),
-    ("13-modules/minor-update-narrowing-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/module-config-values-read-through-binding", "`module_install` step not driven this phase"),
-    ("13-modules/module-space-instances-independent", "`module_install` step not driven this phase"),
-    ("13-modules/optional-peer-absent-valid", "`module_install` step not driven this phase"),
-    ("13-modules/parent-exposed-surface-row-local", "`module_install` step not driven this phase"),
-    ("13-modules/peer-incompatible-major-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/peer-lookup-stays-in-sibling-space-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/peer-multiple-candidates-need-explicit-binding", "`module_install` step not driven this phase"),
-    ("13-modules/peer-single-candidate-auto-binds", "`module_install` step not driven this phase"),
-    ("13-modules/peer-zero-candidates-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/private-deps-isolated-per-consumer", "`module_install` step not driven this phase"),
-    ("13-modules/rename-instance-stale-name-not-addressable", "`module_install` step not driven this phase"),
-    ("13-modules/required-peer-disabled-candidate-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/sibling-cannot-address-private-dep-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/unexposed-parent-authenticator-invalid", "`module_install` step not driven this phase"),
-    ("13-modules/uninstall-blocked-by-cross-boundary-restrict-ref", "`module_install` step not driven this phase"),
-    ("13-modules/uninstall-unbinds-optional-peer", "`module_install` step not driven this phase"),
-    ("13-modules/update-narrowing-view-field-rejected", "`module_install` step not driven this phase"),
-    ("13-modules/update-result-report", "`module_install` step not driven this phase"),
-    ("13-modules/update-seed-three-way-merge", "`module_install` step not driven this phase"),
-    ("19-history-artifacts/child-export-matches-embedded-artifact", "`module_install` step not driven this phase"),
-    ("19-history-artifacts/child-module-artifact-embedded-and-extractable", "`module_install` step not driven this phase"),
-    ("19-history-artifacts/tampered-child-artifact-invalid", "`module_install` step not driven this phase"),
-    ("annex-e-compatibility/module-minor-rebinds-interface-implementation-accepted", "`module_install` step not driven this phase"),
-    ("annex-e-compatibility/module-removes-interface-binding-rejected", "`module_install` step not driven this phase"),
-    ("w-worked-examples/w4-confusable-instance-names-both-install-distinct", "`module_install` step not driven this phase"),
-    ("w-worked-examples/w4-host-imports-exposed-template-across-boundary", "`module_install` step not driven this phase"),
-    ("w-worked-examples/w4-import-disabled-template-across-boundary-rejected", "`module_install` step not driven this phase"),
-    ("w-worked-examples/w4-install-exposes-enabled-template-to-parent", "`module_install` step not driven this phase"),
-    ("w-worked-examples/w4-plan-gates-template-disabled-not-exposed", "`module_install` step not driven this phase"),
-    ("w-worked-examples/w4-seed-computed-enabled-reevaluation-unspecified", "`module_install` step not driven this phase"),
-    ("w-worked-examples/w4-uninstall-removes-aggregated-templates", "`module_install` step not driven this phase"),
+    // --- §13 module lifecycle (driven via `ModuleDeployment`, adapter/modules.rs) ---
+    // The lifecycle outcomes (name validation, duplicate detection) route end to
+    // end; the entries below are blocked on a runtime/surface seam the current
+    // `ModuleDeployment` does not close, named per case.
+    //
+    // Parent-surface interface addressing: installed children live in the external
+    // `ModuleHost`, invisible to the root engine the base surface host reads, so a
+    // parent `.modules::iface` / `.modules[k]::iface(.mut)` surface never reaches
+    // them.
+    ("13-modules/aggregation-skips-disabled-instance", "§13.9/§13.12 the parent `.modules::iface` aggregation is served by the base surface host over the root engine, which cannot observe children in the external ModuleHost (and faults evaluating `.modules::` with no module data) — the surface/runtime bridge is unlanded"),
+    ("13-modules/interface-aggregation-inherited-identity", "§13.9 the parent `.modules::iface` aggregation read is served over the root engine, which cannot observe the children installed in the external ModuleHost — the surface/runtime bridge is unlanded"),
+    ("13-modules/interface-mutation-contract-shapes", "§13.10/§13.11 interface-addressed mutation dispatch through a parent surface is unlanded — the base surface host routes `.modules[k]::iface.mut` to the root engine, which cannot reach the installed child"),
+    ("13-modules/module-space-instances-independent", "§13.11 interface-addressed mutation dispatch through a parent surface is unlanded (the root engine the parent surface reads cannot reach the installed child)"),
+    ("13-modules/cross-module-atomic-transition", "§13.10 the root package's interface-addressed `$public` surfaces do not compile in a fresh engine, so the deployment cannot be built; cross-module atomic mutation dispatch is unlanded"),
+    ("13-modules/parent-exposed-surface-row-local", "§13.4 `$parent` capability projection and interface-addressed `$public` surfaces are unlanded, so the root package does not compile in a fresh engine"),
+    ("13-modules/rename-instance-stale-name-not-addressable", "the root's interface-addressed `$public` surfaces (`.modules[k]::iface`, `.modules::` aggregation) do not compile in a fresh engine, so the deployment cannot be built"),
+    ("13-modules/uninstall-blocked-by-cross-boundary-restrict-ref", "§13.12 cross-boundary `$on_delete: restrict` blocking plus interface-addressed surfaces are unlanded, so the root package does not compile in a fresh engine"),
+    ("13-modules/uninstall-unbinds-optional-peer", "§13.5/§13.12 optional-peer unbinding plus interface-addressed surfaces are unlanded, so the root package does not compile in a fresh engine"),
+    // Interface-contract satisfaction: the child's exposed view/mutation vs the
+    // parent's declared `$interfaces` is not checked at install.
+    ("13-modules/expose-binding-contract-mismatch-invalid", "§13.8/§13.10 interface-contract satisfaction (the child exposed `$mut`/`$view` binding vs the parent's declared interface) is not checked at install, so the mismatch is admitted"),
+    ("13-modules/expose-view-missing-interface-field-invalid", "§13.8 structural interface-view satisfaction (the child exposed `$view` vs the parent's declared interface fields) is not checked at install"),
+    ("13-modules/interface-mutation-param-contract-mismatch-invalid", "§13.10 interface mutation parameter-contract satisfaction is not checked at install"),
+    // `$config` (§13.1): recorded on the install request, but neither type-checked
+    // against the declared struct nor readable through child expressions.
+    ("13-modules/install-config-type-mismatch-invalid", "§13.1 installation `$config` is recorded but not type-checked against the child's declared `$config` struct, so a type mismatch is admitted"),
+    ("13-modules/install-config-unknown-member-invalid", "§13.1/§2.5 installation `$config` is recorded but its members are not validated against the declared struct, so an unknown member is admitted"),
+    ("13-modules/module-config-values-read-through-binding", "§13.1 `$config` read-through in child expressions is unlanded (the expression language has no `$config` binding), so the child fails to compile at install"),
+    // Installation `$data` overlay (§13.3): InstallRequest carries no `$data`.
+    ("13-modules/install-data-check-failure-rejected", "§13.3 the installation `$data` overlay is unlanded (InstallRequest carries no `$data`), so the overlay row and its `$check` never run"),
+    ("13-modules/install-data-overlay-merge", "§13.3 the installation `$data` overlay is unlanded and the §13.9 `.modules::` aggregation read is not served over the root engine"),
+    // Module-space existence (§13.2): the containing-row check is a documented seam.
+    ("13-modules/install-into-nonexistent-space-rejected", "§13.2 the containing-row existence check for a module space is unlanded, so an install into a ghost row is admitted"),
+    // Peer/`$deps` resolution (§13.5/§13.6): the consumer child fails a standalone
+    // compile (an unresolved `#peer` handle, or no `$model`) before peer/dep
+    // binding can run, so a peer-admission `rejected` is observed as a static
+    // `invalid` instead.
+    ("13-modules/peer-zero-candidates-rejected", "§13.5 peer resolution is unlanded; the consumer child (no `$model`, unresolved `#peer`) fails standalone compile, observed `invalid` rather than the peer-admission `rejected`"),
+    ("13-modules/peer-single-candidate-auto-binds", "§13.5 peer auto-binding and `#handle` read-through are unlanded"),
+    ("13-modules/peer-multiple-candidates-need-explicit-binding", "§13.5 peer resolution against the sibling set is unlanded, so the root/child does not build a resolvable deployment"),
+    ("13-modules/peer-incompatible-major-rejected", "§13.5 peer major-compatibility resolution is unlanded; the consumer child fails standalone compile before a candidate can be rejected"),
+    ("13-modules/peer-lookup-stays-in-sibling-space-rejected", "§13.5 peer resolution scoping to the sibling space is unlanded; the consumer child fails standalone compile"),
+    ("13-modules/required-peer-disabled-candidate-rejected", "§13.5/§13.12 peer resolution that skips disabled candidates is unlanded; the consumer child fails standalone compile"),
+    ("13-modules/explicit-peer-binding-cross-space-rejected", "§13.5 peer/`$use` explicit-binding resolution is unlanded; the consumer child fails standalone compile before a cross-space binding can be rejected"),
+    ("13-modules/optional-peer-absent-valid", "§13.5 optional-peer `#handle` read-through is unlanded; the child fails standalone compile / the root interface-addressed surface does not compile"),
+    ("13-modules/private-deps-isolated-per-consumer", "§13.6 `$deps` private nested-instance provisioning is unlanded; the consumer child fails standalone compile"),
+    ("13-modules/sibling-cannot-address-private-dep-rejected", "§13.6 `$deps` privacy/provisioning is unlanded; the consumer child fails standalone compile"),
+    // `$if_module` guard (§13.7).
+    ("13-modules/if-module-guarded-state-preserved", "§13.7 `$if_module`-guarded `$expose` declarations are rejected by the model grammar (unlanded), so the child fails to load"),
+    // Update path (§13.14/§13.15): the §20 migration does not enforce the narrowing
+    // recheck, and the runtime host does not assemble the §13.15 update report.
+    ("13-modules/minor-update-narrowing-rejected", "§13.14 the narrowing recheck (exposed-compatibility-surface preservation) is not enforced by the §20 update the runtime host runs"),
+    ("13-modules/update-narrowing-view-field-rejected", "§13.14 the narrowing recheck (dropping an exposed view field) is not enforced by the §20 update the runtime host runs"),
+    ("13-modules/update-result-report", "§13.15 the update-report shape ($instance/$from/$to/$migrated/$seeded/$exposed/$imports/$commit) is not assembled by the runtime host, which returns a §20 migration report"),
+    ("13-modules/update-seed-three-way-merge", "the child `set_label` mutation defeats §8.3 parameter inference in a standalone child compile (M-MUT), so install fails before the §13.13 seed merge and `.modules::` aggregation can run"),
+    // --- §13 module lifecycle used by other chapters (same seams) ---
+    ("19-history-artifacts/child-export-matches-embedded-artifact", "§19 child-module `.liasse` artifact export/embedding is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
+    ("19-history-artifacts/child-module-artifact-embedded-and-extractable", "§19 child-module `.liasse` artifact export/embedding is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
+    ("19-history-artifacts/tampered-child-artifact-invalid", "§19 child-module `.liasse` artifact embedding/verification is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
+    ("annex-e-compatibility/module-minor-rebinds-interface-implementation-accepted", "§13.15/Annex E the update-report shape is not assembled by the runtime host, so the asserted report value is absent"),
+    ("annex-e-compatibility/module-removes-interface-binding-rejected", "§13.14/Annex E the interface-binding-removal narrowing recheck is not enforced by the §20 update the runtime host runs"),
+    ("w-worked-examples/w4-confusable-instance-names-both-install-distinct", "the child module package fails a standalone compile in the current runtime, so install is observed `invalid` rather than `ok` (a §13 child-compile seam)"),
+    ("w-worked-examples/w4-host-imports-exposed-template-across-boundary", "§13.9 the root package's interface-addressed `$public` surfaces do not compile in a fresh engine, so the deployment cannot be built"),
+    ("w-worked-examples/w4-import-disabled-template-across-boundary-rejected", "§13.9/§13.12 the root package's interface-addressed surfaces do not compile in a fresh engine, so the deployment cannot be built"),
+    ("w-worked-examples/w4-install-exposes-enabled-template-to-parent", "§13.8/§13.9 the root package's interface-addressed surfaces do not compile in a fresh engine, so the deployment cannot be built"),
+    ("w-worked-examples/w4-plan-gates-template-disabled-not-exposed", "the child module package fails a standalone compile in the current runtime, so install is observed `invalid` rather than `ok` (a §13 child-compile seam)"),
+    ("w-worked-examples/w4-seed-computed-enabled-reevaluation-unspecified", "the root package's interface-addressed surfaces do not compile in a fresh engine, so the deployment cannot be built (SPEC-ISSUES #23 seed-reevaluation case)"),
+    ("w-worked-examples/w4-uninstall-removes-aggregated-templates", "the child module package fails a standalone compile / §13.9 aggregation is unlanded, so install is observed `invalid` rather than `ok`"),
     // --- `operator` step ---
     // Root-mutation operator transitions now drive through a synthetic public
     // surface (`SurfaceHost::operator_call`); the entries below remain debt for a
@@ -299,7 +314,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // step-0 watch diverges before `reopen` is ever reached. A runtime root-scalar
     // view seam, not a §16 wiring gap.
     ("16-host-namespaces/pinned-descriptor-drift-fails-reopen", "root-scalar host-call view yields no row (runtime materializes no top-level scalar view; a plain `.n` view is empty too), so the step-0 watch diverges before `reopen`"),
-    ("16-host-namespaces/required-namespace-pure-function-runs-in-view", "root-scalar host-call view (`util.double(.n)`) materializes 0 rows — the runtime does not materialize a top-level scalar view (a plain `.n` view is empty too)"),
     ("16-host-namespaces/required-namespace-removed-fails-reopen", "root-scalar host-call view yields no row (runtime materializes no top-level scalar view), so the step-0 watch diverges before `reopen`"),
     ("18-blobs/all-holders-corrupt-fetch-outcome-unspecified", "package does not load yet (upstream compile/model gap)"),
     ("18-blobs/billing-sum-over-stored-descriptors", "package does not load yet (upstream compile/model gap)"),
@@ -336,9 +350,7 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- fail:noval ---
     ("08-mutations-validation/empty-args-call-forms-equivalent", "no value produced (unsupported call path)"),
     ("08-mutations-validation/inferred-param-target-normalization-applies", "no value produced (unsupported call path)"),
-    ("10-interfaces-roles/surface-exposes-only-declared-members", "no value produced (unsupported call path)"),
     ("15-meters/hypothetical-balance-accessor-with-time", "no value produced (unsupported call path)"),
-    ("16-host-namespaces/rejected-update-preserves-active-composition", "root-scalar mutation (`bump` returns `.n`) reads/returns `none` — the runtime does not materialize a top-level scalar singleton"),
     ("21-deletion-erasure/double-reinsert-second-finds-no-stub-rejects", "no value produced (unsupported call path)"),
     ("21-deletion-erasure/erase-cascade-scrub-scope-unspecified", "no value produced (unsupported call path)"),
     ("21-deletion-erasure/erase-removes-row-from-live-state", "no value produced (unsupported call path)"),
@@ -353,7 +365,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("10-interfaces-roles/recursive-coverage-nests-included-descendants", "no view value produced (unsupported view/watch path)"),
     ("14-buckets/short-form-from-defaults-to-created", "no view value produced (unsupported view/watch path)"),
     // --- fail:outcome ---
-    ("05-state-model/bulk-insert-defaults-see-prestatement-state", "outcome divergence: expected `ok` observed `rejected`"),
     ("05-state-model/nested-initializer-failure-rejects-parent-insert", "outcome divergence: expected `ok` observed `rejected`"),
     ("06-expressions/row-mutation-receiver-duplicate-occurrences-reject", "outcome divergence: expected `ok` observed `rejected`"),
     ("08-mutations-validation/internal-call-failure-rejects-caller-writes", "outcome divergence: expected `rejected` observed `ok`"),
@@ -381,14 +392,9 @@ pub const SKIP: &[(&str, &str)] = &[
     ("08-mutations-validation/replacement-validates-complete-collection", "value diverges from expectation"),
     // --- fail:viewdiff ---
     ("05-state-model/set-of-enum-reads-in-declaration-order", "view result diverges from expectation"),
-    ("09-loading-bootstrap/seed-default-observes-prospective-state", "view result diverges from expectation"),
     ("12-clients-live-views/temporal-observation-advances-live-view", "view result diverges from expectation"),
     ("12-clients-live-views/window-anchor-survives-rekey", "view result diverges from expectation"),
     ("14-buckets/expiration-preserves-row-in-all", "view result diverges from expectation"),
-    ("18-blobs/claimed-sha512-mismatch-rejected", "view result diverges from expectation"),
-    ("18-blobs/no-writable-store-rejects-upload", "view result diverges from expectation"),
-    ("18-blobs/oversize-upload-rejected", "view result diverges from expectation"),
-    ("18-blobs/replay-operation-id-upload-at-most-once", "view result diverges from expectation"),
     ("21-deletion-erasure/erased-row-unobservable-in-second-view", "view result diverges from expectation"),
     ("22-runtime-semantics/concurrent-appends-either-order-both-atomic", "view result diverges from expectation"),
     ("22-runtime-semantics/cross-connection-sequential-order-unspecified", "view result diverges from expectation"),

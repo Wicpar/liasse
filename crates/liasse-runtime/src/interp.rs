@@ -311,6 +311,15 @@ impl<'a> Interp<'a> {
         if let ExprKind::Name(id) = &target.kind {
             return self.bind_local(id.text.clone(), value, source);
         }
+        // §8.2: `.field = value` at the package root (no row receiver) writes a
+        // durable singleton root member. A singleton lives in its own reserved row,
+        // not a keyed collection, so it takes a dedicated write path rather than the
+        // collection-field one.
+        if self.receiver.is_none()
+            && let Some((field, ty)) = self.root_singleton_target(target)
+        {
+            return self.write_singleton_field(&field, &ty, value, source);
+        }
         let Some((row, field)) = self.field_target(target, source)? else {
             // A collection replacement is a documented CORE seam: it stages nothing.
             return Ok(());
@@ -346,6 +355,61 @@ impl<'a> Interp<'a> {
             scalar
         };
         self.write_field(&row, &field, scalar)
+    }
+
+    /// When `target` is a bare root member (`.field`) that names a durable
+    /// singleton root member (§8.2), its name and decoded type. `None` for a
+    /// selector, a nested path, or a name that is not a writable root singleton
+    /// (a collection, computed view, or read-only computed scalar).
+    fn root_singleton_target(&self, target: &Expr) -> Option<(String, liasse_value::Type)> {
+        let ExprKind::Field { base, member } = &target.kind else { return None };
+        if !matches!(base.kind, ExprKind::Current) {
+            return None;
+        }
+        let model = self.ctx.schema.model();
+        let node = &model.root().member(&member.text)?.node;
+        let ty = crate::singleton::member_type(model, node)?;
+        Some((member.text.clone(), ty))
+    }
+
+    /// Write a singleton root member into its reserved row (§8.2): evaluate the
+    /// value, coerce an enum label / check assignability against the declared type
+    /// (§5.9), and stage it onto the singleton row, marking it touched.
+    fn write_singleton_field(
+        &mut self,
+        field: &str,
+        ty: &liasse_value::Type,
+        value: &Expr,
+        source: SourceId,
+    ) -> Result<(), Rejection> {
+        let current = self.current()?;
+        let typed = check_expression(&self.scope(), source, value)
+            .map_err(|_| Rejection::new(RejectionReason::Malformed, "the assigned value did not type-check"))?;
+        let scalar = match self.ctx.eval_with(self.prospective, &typed, &current, self.binding_cells())? {
+            Cell::Scalar(value) => value,
+            _ => return Err(Rejection::new(RejectionReason::TypeError, "a field is assigned a scalar value")),
+        };
+        let address = crate::singleton::address();
+        let where_path = format!("{}/{}", address.render(), field);
+        let scalar = if crate::rules::is_enum_field(ty) {
+            crate::rules::coerce_value(ty, &scalar, field, &where_path)?
+        } else {
+            if let Some(from) = typed.ty().as_scalar()
+                && !crate::schema::assignable(from, ty)
+            {
+                return Err(Rejection::new(
+                    RejectionReason::TypeError,
+                    format!("value of type `{}` is not assignable to `{}`", from.name(), ty.name()),
+                )
+                .at(where_path));
+            }
+            scalar
+        };
+        let mut fields = self.prospective.get(&address).cloned().unwrap_or_else(FieldMap::new);
+        fields.insert(field.to_owned(), scalar);
+        self.prospective.insert(address.clone(), fields);
+        self.mark(address);
+        Ok(())
     }
 
     /// Bind a lexical local `name` to `value` (§8.1). An insert expression
@@ -614,13 +678,76 @@ impl<'a> Interp<'a> {
 
     fn exec_insert(&mut self, collection: &Expr, object: &Expr, source: SourceId) -> Result<(), Rejection> {
         if self.collection_ref(collection, source)?.is_some() {
-            self.insert_row(collection, object, source)?;
+            // §8.7: `collection + { … }` inserts one row; `collection + view { … }`
+            // inserts every row of a source view (a bulk insertion). A literal row
+            // object is an `Object`; anything else is a source view to iterate.
+            if matches!(object.kind, ExprKind::Object(_)) {
+                self.insert_row(collection, object, source)?;
+            } else {
+                self.insert_from_view(collection, object, source)?;
+            }
             return Ok(());
         }
         // §8.5: `.set_field + values` is set union — adding an existing member
         // leaves the set unchanged (a no-op that produces no state change).
         if let Some((row, field)) = self.set_field_target(collection, source)? {
             return self.set_mutate(&row, &field, object, source, true);
+        }
+        Ok(())
+    }
+
+    /// Insert every row of a source view into a collection (§8.7 "insert from a
+    /// view"). §5.1 fixes the batch semantics: the statement builds its complete
+    /// prospective row set before any row of it becomes selectable, so every
+    /// inserted row's defaults observe the *pre-statement* state — two rows of one
+    /// bulk insert see the same `count(/coll)`, never each other. Defaults are
+    /// therefore resolved for all rows against the unchanged prospective (phase
+    /// one) before any is staged (phase two).
+    fn insert_from_view(&mut self, collection: &Expr, view: &Expr, source: SourceId) -> Result<(), Rejection> {
+        let Some(loc) = self.collection_ref(collection, source)? else {
+            return Err(Rejection::new(RejectionReason::Malformed, "insert targets a collection"));
+        };
+        let compiled = self.collection_at(&loc.decl)?;
+        let current = self.current()?;
+        let rows = match self.eval_value(view, source, &current)? {
+            Cell::Collection(rows) => rows,
+            Cell::Row(row) => vec![*row],
+            // A scalar source is not a row set; a bulk insert takes a view.
+            Cell::Scalar(_) => {
+                return Err(Rejection::new(
+                    RejectionReason::TypeError,
+                    "a bulk insert takes a source view of rows",
+                ));
+            }
+        };
+        // Phase one: resolve each row's complete fields against the pre-statement
+        // state, so no row observes a sibling of the same statement (§5.1).
+        let mut staged: Vec<(RowAddress, FieldMap)> = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let mut fields = FieldMap::new();
+            for (name, cell) in row.cells() {
+                if let Cell::Scalar(value) = cell {
+                    fields.insert(name.clone(), value.clone());
+                }
+            }
+            rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective)?;
+            rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
+            rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."))?;
+            let address = self.key_address(&loc.store_path, &loc.decl, &fields)?;
+            staged.push((address, fields));
+        }
+        // Phase two: establish every identity together, rejecting a key that
+        // collides with committed state or with another row of the same batch.
+        let mut seen: BTreeSet<RowAddress> = BTreeSet::new();
+        for (address, _) in &staged {
+            if self.prospective.contains(address) || !seen.insert(address.clone()) {
+                return Err(Rejection::new(RejectionReason::DuplicateKey, "a row with this key already exists")
+                    .at(address.render()));
+            }
+        }
+        for (address, fields) in staged {
+            self.prospective.insert(address.clone(), fields);
+            self.mark(address);
         }
         Ok(())
     }

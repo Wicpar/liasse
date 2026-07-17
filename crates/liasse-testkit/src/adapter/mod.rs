@@ -31,17 +31,23 @@
 //! # This phase's reach
 //!
 //! Public surfaces, calls, named-view watches, `export`/`import`/`reconcile`, the
-//! host-operator entry, and §9.2 lifecycle loads route end to end. The long tail —
-//! blob and keyring operations, module lifecycle, full `.liasse` archive assembly
-//! and tampering — still needs host wiring the current layer does not expose, so
-//! those [`OpRequest`] kinds report a harness skip (never a panic), leaving the
-//! outcome for the triage loop to harden. Load failures likewise skip every step.
+//! host-operator entry, §9.2 lifecycle loads, and blob/keyring operations route
+//! end to end. §13 module lifecycle verbs (`module_install`/`disable`/`enable`/
+//! `uninstall`/`rename`/`update`) drive a [`ModuleDeployment`](liasse_surface::ModuleDeployment)
+//! ([`modules`]): the lifecycle outcomes (name validation, duplicate detection)
+//! route through, while parent-surface interface addressing and the install-time
+//! `$config`/`$data`/peer seams stay a precise skip (documented per case in
+//! `scenario_gate`). The remaining long tail — full `.liasse` archive assembly and
+//! tampering — still needs host wiring the current layer does not expose, so those
+//! [`OpRequest`] kinds report a harness skip (never a panic), leaving the outcome
+//! for the triage loop to harden. Load failures likewise skip every step.
 
 mod auth;
 mod blobs;
 mod error;
 mod keyrings;
 pub mod lift;
+mod modules;
 mod namespaces;
 mod ops;
 mod router;
@@ -170,6 +176,13 @@ pub struct ScenarioAdapter<S: InstanceStore> {
     artifact_origin: std::collections::BTreeMap<String, String>,
     /// The base load's wiring, replayed when a sandbox restores an artifact.
     load_ctx: LoadContext,
+    /// The case's child package definitions (`packages` map), keyed by label, so a
+    /// §13 `module_install`/`module_update` resolves a `$module` line to its child
+    /// definition. Empty for a single-package case.
+    packages: serde_json::Map<String, serde_json::Value>,
+    /// The case's live §13 module deployment, built lazily on the first module op
+    /// (or the cached reason its root package did not load).
+    module: Option<Result<modules::ModuleState, String>>,
 }
 
 impl ScenarioAdapter<MemoryStore> {
@@ -214,6 +227,8 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
             artifacts: std::collections::BTreeMap::new(),
             artifact_origin: std::collections::BTreeMap::new(),
             load_ctx,
+            packages: child_packages(&case.packages),
+            module: None,
         }
     }
 
@@ -454,6 +469,16 @@ fn requires_only_builtin_cose(package: &serde_json::Value) -> bool {
                     .values()
                     .all(|spec| spec.as_str().is_some_and(|s| s.trim().starts_with("liasse.cose@")))
         })
+}
+
+/// The case's child package definitions, keyed by label — the `packages` map a
+/// §13 module install resolves a `$module` line against. Empty for a single-package
+/// case (it declares no children).
+fn child_packages(packages: &PackageSet) -> serde_json::Map<String, serde_json::Value> {
+    match packages {
+        PackageSet::Single(_) => serde_json::Map::new(),
+        PackageSet::Multi { packages, .. } => packages.clone(),
+    }
 }
 
 /// The root package definition of a case: the sole `package`, or the `root`

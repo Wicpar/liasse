@@ -56,6 +56,9 @@ pub fn response_to_json(response: &ResponseValue) -> J {
 /// are that object; anything else falls back to the array form.
 #[must_use]
 pub fn view_to_json_shaped(result: &ViewResult, singular: bool) -> J {
+    if let Some(value) = result.scalar() {
+        return value.to_wire();
+    }
     match (singular, result.rows()) {
         (true, [row]) => row_to_json(row),
         _ => rows_to_json(result.rows()),

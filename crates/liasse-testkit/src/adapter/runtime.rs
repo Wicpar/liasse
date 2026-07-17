@@ -436,6 +436,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
             Ok((completion, router, routing)) => {
                 self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs });
                 self.reopen_connections();
+                self.replay_watches();
                 Ok(Observation {
                     outcome: Outcome::Ok,
                     value: None,
@@ -452,6 +453,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
                     blobs,
                 });
                 self.reopen_connections();
+                self.replay_watches();
                 Ok(Observation::outcome(observed))
             }
         }

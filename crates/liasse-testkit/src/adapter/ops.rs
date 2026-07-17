@@ -30,6 +30,12 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             StepKind::Reconcile => self.drive_reconcile(request),
             StepKind::Restore => self.drive_restore(request),
             StepKind::HostLoad => self.drive_host_load(request),
+            StepKind::ModuleInstall => self.module_state()?.install(&request.target),
+            StepKind::ModuleDisable => self.module_state()?.disable(&request.target),
+            StepKind::ModuleEnable => self.module_state()?.enable(&request.target),
+            StepKind::ModuleUninstall => self.module_state()?.uninstall(&request.target),
+            StepKind::ModuleRename => self.module_state()?.rename(&request.target),
+            StepKind::ModuleUpdate => self.module_state()?.update(&request.target),
             StepKind::Operator => self.active().operator(&request.target),
             StepKind::OperationStatus => self.drive_operation_status(request),
             StepKind::Manifest => self.drive_manifest(request),
@@ -371,16 +377,6 @@ fn relation_from_token(token: &str) -> Option<ImportRelation> {
 /// adapter/surface seam each family hits, not merely "unsupported".
 fn unsupported_reason(kind: &StepKind) -> String {
     let need = match kind {
-        StepKind::ModuleInstall
-        | StepKind::ModuleUninstall
-        | StepKind::ModuleDisable
-        | StepKind::ModuleEnable
-        | StepKind::ModuleUpdate
-        | StepKind::ModuleRename => {
-            "the corpus's row-scoped module spaces (`/co/acme/modules`), \
-             `.modules[..]::interface` addressing, and `$config`/`$use`/`$deps` peer bindings, \
-             which the surface `ModuleDeployment`'s flat name-keyed single-space model does not carry"
-        }
         StepKind::RunReconciler => {
             "activation of a computed §19.9 merge into a new lineage, which the surface `reconcile` \
              computes but never applies, plus the `apply_correction` conflict-resolution the host \

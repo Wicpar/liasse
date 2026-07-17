@@ -109,9 +109,17 @@ impl HostBinding {
 
     /// Re-resolve `requires` against the already-registered components (a §20
     /// migration keeps the context's registry but swaps the package's own
-    /// requirement set). Uses the lenient discipline, matching the default load.
+    /// requirement set).
+    ///
+    /// Strict, unlike the lenient default *genesis* load: an update targets a
+    /// running instance whose host context is already settled, so a requirement
+    /// that resolves to no descriptor cannot "land later" and must reject the
+    /// update before activation (§2.1, §16.2 "missing requirements reject loading
+    /// before the package becomes active"; §9.4/§E.9 leave the prior application
+    /// active). A target that adds an unregistered `$requires` entry it never even
+    /// calls therefore still fails the update rather than silently deferring.
     pub(crate) fn rebind(&mut self, requires: &[(String, String)]) -> Result<(), EngineError> {
-        self.requires = Self::bind(&self.registry, requires, false)?;
+        self.requires = Self::bind(&self.registry, requires, true)?;
         Ok(())
     }
 

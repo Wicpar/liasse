@@ -528,6 +528,11 @@ impl<S: InstanceStore> Engine<S> {
         if let Some(data) = data {
             crate::seed::admit(&self.compiled, &ctx, &mut prospective, &mut touched, data)
                 .map_err(EngineError::Seed)?;
+        } else {
+            // §8.2: even with no `$data`, a writable singleton root field declared
+            // `= default` takes its default at genesis.
+            crate::seed::apply_singleton_defaults(&self.compiled, &ctx, &mut prospective)
+                .map_err(EngineError::Seed)?;
         }
         crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched).map_err(EngineError::Seed)?;
         // §14.5: reject seed data whose source-backed recurring bucket would generate

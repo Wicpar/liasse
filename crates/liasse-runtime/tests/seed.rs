@@ -32,6 +32,36 @@ fn valid_seed_is_admitted_through_the_pipeline() {
     assert_eq!(globex.field("tier"), Some(&int(3)), "supplied tier wins over the default");
 }
 
+/// §9.1: all seeded identities and supplied values form one prospective state
+/// before defaults resolve, so a default reading another seeded collection
+/// observes it regardless of `$data` member order. `audits` is listed before the
+/// `companies` its default counts, yet must still see both.
+const SEED_PROSPECTIVE: &str = r#"{
+  "$liasse": 1
+  "$app": "t.prospective@1.0.0"
+  "$model": {
+    "companies": { "$key": "id", "id": "text", "name": "text" }
+    "audits": { "$key": "id", "id": "text", "companies_seen": "int = count(/companies)" }
+    "all_audits": { "$view": ".audits { id, companies_seen }" }
+  }
+  "$data": {
+    "audits": { "boot": {} }
+    "companies": { "a": { "name": "Alpha" }, "b": { "name": "Beta" } }
+  }
+}"#;
+
+#[test]
+fn a_seed_default_observes_the_whole_prospective_state() {
+    let engine = load("prospective", SEED_PROSPECTIVE);
+    let view = engine.view_at_head("all_audits").expect("view").expect("declared");
+    assert_eq!(view.len(), 1, "one audit row");
+    assert_eq!(
+        view.rows()[0].field("companies_seen"),
+        Some(&int(2)),
+        "the default counts both seeded companies even though `audits` is seeded first",
+    );
+}
+
 #[test]
 fn invalid_seed_rejects_the_load() {
     let mut generator = generator();

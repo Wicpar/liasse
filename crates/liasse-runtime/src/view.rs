@@ -37,40 +37,63 @@ impl ViewRow {
     }
 }
 
-/// A materialized view at one frontier: its rows in canonical order.
+/// A materialized view at one frontier (§12.2). A `$view` delivers one of two
+/// shapes: a row stream (a collection, single-row, or keyed-selection view) or a
+/// single scalar value (a bare scalar field like `.n`, or an aggregate like
+/// `= size(.docs)`, §7.5). The two are distinct kinds, not a row list that
+/// happens to be empty — a scalar result carries its value directly so a reader
+/// can render it as the JSON scalar §12.2 pins, rather than an empty stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ViewResult {
-    rows: Vec<ViewRow>,
+pub enum ViewResult {
+    /// A row-stream result: its rows in canonical order (zero or more).
+    Rows(Vec<ViewRow>),
+    /// A scalar or aggregate result (§7.5): the single value it delivers, not
+    /// wrapped in a row.
+    Scalar(Value),
 }
 
 impl ViewResult {
-    /// Build a result from an evaluated cell (a collection, a single row, or an
-    /// empty scalar).
+    /// Build a result from an evaluated cell. A collection or single row becomes a
+    /// row stream; a scalar/aggregate cell becomes a [`ViewResult::Scalar`]
+    /// carrying its value (§12.2), never a dropped empty stream.
     pub(crate) fn from_cell(cell: &Cell) -> Self {
-        let rows = match cell {
-            Cell::Collection(rows) => rows.iter().map(view_row).collect(),
-            Cell::Row(row) => vec![view_row(row)],
-            Cell::Scalar(_) => Vec::new(),
-        };
-        Self { rows }
+        match cell {
+            Cell::Collection(rows) => Self::Rows(rows.iter().map(view_row).collect()),
+            Cell::Row(row) => Self::Rows(vec![view_row(row)]),
+            Cell::Scalar(value) => Self::Scalar(value.clone()),
+        }
     }
 
-    /// The rows in canonical order.
+    /// The rows in canonical order. A scalar result has no rows, so this is an
+    /// empty slice; read [`Self::scalar`] to recover a scalar result's value.
     #[must_use]
     pub fn rows(&self) -> &[ViewRow] {
-        &self.rows
+        match self {
+            Self::Rows(rows) => rows,
+            Self::Scalar(_) => &[],
+        }
     }
 
-    /// The number of rows.
+    /// The scalar value, when this is a scalar/aggregate result (§12.2). A reader
+    /// renders `Some(value)` as the JSON scalar; a row-stream result is `None`.
+    #[must_use]
+    pub fn scalar(&self) -> Option<&Value> {
+        match self {
+            Self::Scalar(value) => Some(value),
+            Self::Rows(_) => None,
+        }
+    }
+
+    /// The number of rows (a scalar result reports zero — it has no rows).
     #[must_use]
     pub fn len(&self) -> usize {
-        self.rows.len()
+        self.rows().len()
     }
 
-    /// Whether the view holds no rows.
+    /// Whether the view holds no rows (always true for a scalar result).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.rows.is_empty()
+        self.rows().is_empty()
     }
 }
 
@@ -90,13 +113,13 @@ impl ViewDelta {
     #[must_use]
     pub fn between(prev: Option<&ViewResult>, next: &ViewResult) -> Self {
         let Some(prev) = prev else {
-            return Self::Init(next.rows.clone());
+            return Self::Init(next.rows().to_vec());
         };
-        let before: BTreeMap<&RowId, &ViewRow> = prev.rows.iter().map(|r| (&r.id, r)).collect();
-        let after: BTreeMap<&RowId, &ViewRow> = next.rows.iter().map(|r| (&r.id, r)).collect();
+        let before: BTreeMap<&RowId, &ViewRow> = prev.rows().iter().map(|r| (&r.id, r)).collect();
+        let after: BTreeMap<&RowId, &ViewRow> = next.rows().iter().map(|r| (&r.id, r)).collect();
         let mut added = Vec::new();
         let mut changed = Vec::new();
-        for row in &next.rows {
+        for row in next.rows() {
             match before.get(&row.id) {
                 None => added.push(row.clone()),
                 Some(prior) if prior.fields != row.fields => changed.push(row.clone()),
@@ -104,7 +127,7 @@ impl ViewDelta {
             }
         }
         let removed = prev
-            .rows
+            .rows()
             .iter()
             .filter(|row| !after.contains_key(&row.id))
             .map(|row| row.id.clone())

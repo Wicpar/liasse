@@ -72,6 +72,16 @@ pub(crate) struct CompiledComputed {
     pub(crate) expr: TypedExpr,
 }
 
+/// A writable singleton root field's insertion default (§8.2): its name and the
+/// typed default expression evaluated over the package root (`.` = the root row).
+/// Applied once at genesis so a root field declared `= …` takes its default value
+/// when `$data` supplies none — the singleton analogue of a collection field's
+/// default.
+pub(crate) struct CompiledSingletonDefault {
+    pub(crate) name: String,
+    pub(crate) default: TypedExpr,
+}
+
 /// A compiled keyed collection: its identity, fields, constraints, and — for a
 /// nested collection (§5.4) — the child collections declared under its rows. A
 /// top-level collection is the root of one such tree; `children` holds the
@@ -204,6 +214,9 @@ pub(crate) struct Compiled {
     /// onto the package-root row at materialization so a view or projection reads
     /// them like any collection or stored value.
     pub(crate) root_computed: Vec<CompiledComputed>,
+    /// Insertion defaults for writable singleton root fields (§8.2), applied at
+    /// genesis when `$data` supplies no value.
+    pub(crate) root_singleton_defaults: Vec<CompiledSingletonDefault>,
     pub(crate) mutations: Vec<CompiledMutation>,
     pub(crate) views: Vec<CompiledView>,
     /// Compiled `$expose` interface `$view`s (§13.8), each the boundary projection
@@ -256,6 +269,7 @@ impl Compiled {
             apply_precision(collection, precision);
         }
         let root_computed = compile_root_computed(sources, schema, &root_ty, hosts)?;
+        let root_singleton_defaults = compile_root_singleton_defaults(sources, schema, &root_ty, hosts)?;
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth, hosts)?;
         let keyrings = compile_keyrings(schema, model_doc);
         let views = compile_views(sources, schema, &root_ty, &keyrings, model_doc, hosts)?;
@@ -267,6 +281,7 @@ impl Compiled {
         Ok(Self {
             collections,
             root_computed,
+            root_singleton_defaults,
             mutations,
             views,
             exposed_views,
@@ -783,6 +798,31 @@ fn compile_root_computed(
         {
             let (expr, _src) = compile_expr(sources, &scope, "computed", &source.text)?;
             out.push(CompiledComputed { name: member.name.as_str().to_owned(), expr });
+        }
+    }
+    Ok(out)
+}
+
+/// Compile the insertion default of each writable singleton root field (§8.2). A
+/// default is a write-time position, so it may call generated host functions
+/// (§8.8); it types over the package root (`.` = the root row).
+fn compile_root_singleton_defaults(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+    hosts: &HostSignatures,
+) -> Result<Vec<CompiledSingletonDefault>, EngineError> {
+    let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone())
+        .with_host_ops(hosts.clone())
+        .with_host_position(HostPosition::Write);
+    let mut out = Vec::new();
+    for member in &schema.model().root().members {
+        if let Node::Scalar(scalar) = &member.node
+            && scalar.is_writable()
+            && let Some(source) = &scalar.default
+        {
+            let (default, _src) = compile_expr(sources, &scope, "default", &source.text)?;
+            out.push(CompiledSingletonDefault { name: member.name.as_str().to_owned(), default });
         }
     }
     Ok(out)

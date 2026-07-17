@@ -19,8 +19,21 @@ use crate::materialize::FieldMap;
 use crate::rules;
 use crate::state::Prospective;
 
+/// One seed row staged in phase one: the compiled collection it belongs to and
+/// the address its supplied values occupy in the prospective state.
+struct Staged<'a> {
+    collection: &'a CompiledCollection,
+    address: RowAddress,
+}
+
 /// Admit every `$data` row into the prospective state, recording touched
 /// addresses for the final rule pass.
+///
+/// §9.1 admits seed data in two phases so member order carries no meaning: first
+/// every seeded row identity and supplied value is staged into one prospective
+/// state; then each row's defaults and normalization resolve against that whole
+/// state — so a default reading another seeded collection (`count(/companies)`)
+/// observes it regardless of the order the two appear in `$data`.
 pub(crate) fn admit(
     compiled: &Compiled,
     ctx: &EvalCtx<'_>,
@@ -33,10 +46,13 @@ pub(crate) fn admit(
     };
     let model = ctx.schema.model();
     let mut singleton = FieldMap::new();
+    let mut staged: Vec<Staged<'_>> = Vec::new();
+    // Phase one: stage every seed row's identity and supplied values (no defaults
+    // yet), building the prospective state and the ordered work list.
     for member in collections {
         if let Some(collection) = compiled.collection(&member.name.text) {
             let store_path = CollectionPath::top(NameSegment::new(member.name.text.clone()));
-            admit_rows(ctx, prospective, touched, collection, &store_path, &member.value)?;
+            stage_rows(prospective, &mut staged, collection, &store_path, &member.value)?;
             continue;
         }
         // §8.2/§9.1: a `$data` member naming a singleton root field seeds that
@@ -51,18 +67,29 @@ pub(crate) fn admit(
     if !singleton.is_empty() {
         prospective.insert(crate::singleton::address(), singleton);
     }
+    apply_singleton_defaults(compiled, ctx, prospective)?;
+    // Phase two: with the full prospective state in place, resolve each staged
+    // row's defaults and normalization against it (§9.1 "defaults are then
+    // evaluated by dependency").
+    for entry in &staged {
+        let mut fields = prospective.get(&entry.address).cloned().unwrap_or_else(FieldMap::new);
+        rules::apply_defaults(entry.collection, &mut fields, ctx, prospective)?;
+        rules::normalize_all(entry.collection, &mut fields, ctx, prospective)?;
+        prospective.replace(&entry.address, fields);
+        touched.push(entry.address.clone());
+    }
     Ok(())
 }
 
-/// Admit every seed row of the collection at `store_path` (top-level or nested,
-/// §5.4), then recurse into each row's nested-collection members (§5.5). The
-/// address of each row roots the store path of its children so a nested pool or
-/// spend keeps its ancestor identity (§15).
-fn admit_rows(
-    ctx: &EvalCtx<'_>,
+/// Stage every seed row of the collection at `store_path` (top-level or nested,
+/// §5.4) into the prospective state with its supplied values only, then recurse
+/// into each row's nested-collection members (§5.5). The address of each row
+/// roots the store path of its children so a nested pool or spend keeps its
+/// ancestor identity (§15). Defaults resolve later, in phase two.
+fn stage_rows<'a>(
     prospective: &mut Prospective,
-    touched: &mut Vec<RowAddress>,
-    collection: &CompiledCollection,
+    staged: &mut Vec<Staged<'a>>,
+    collection: &'a CompiledCollection,
     store_path: &CollectionPath,
     rows: &DocValue,
 ) -> Result<(), Rejection> {
@@ -73,9 +100,9 @@ fn admit_rows(
         ));
     };
     for entry in entries {
-        let mut fields = decode_row(collection, &entry.name.text, &entry.value)?;
-        rules::apply_defaults(collection, &mut fields, ctx, prospective)?;
-        rules::normalize_all(collection, &mut fields, ctx, prospective)?;
+        let fields = decode_row(collection, &entry.name.text, &entry.value)?;
+        // A seed row's key fields come from the map key (§9.1), so the address is
+        // known before any default resolves.
         let key = row_key(collection, &fields)?;
         let address = store_path.row(key);
         if prospective.contains(&address) {
@@ -83,9 +110,9 @@ fn admit_rows(
                 .at(address.render()));
         }
         prospective.insert(address.clone(), fields);
-        touched.push(address.clone());
-        // §5.5: a seed row may carry nested-collection initializers, admitted
-        // under the parent address through the same pipeline.
+        staged.push(Staged { collection, address: address.clone() });
+        // §5.5: a seed row may carry nested-collection initializers, staged under
+        // the parent address through the same pipeline.
         let members = doc::object(&entry.value).into_iter().flatten();
         for member in members {
             if let Some(child) = collection.child(&member.name.text) {
@@ -93,7 +120,7 @@ fn admit_rows(
                     address.steps().cloned(),
                     NameSegment::new(member.name.text.clone()),
                 );
-                admit_rows(ctx, prospective, touched, child, &child_path, &member.value)?;
+                stage_rows(prospective, staged, child, &child_path, &member.value)?;
             }
         }
     }
@@ -179,6 +206,43 @@ fn decode_key_components<'a>(
         .zip(components)
         .map(|(name, component)| (name, component.as_str().to_owned()))
         .collect())
+}
+
+/// Apply the insertion default of each writable singleton root field that no
+/// `$data` value supplied (§8.2), the singleton analogue of a collection field
+/// default. Supplied values are already staged, so a default may read a sibling
+/// singleton member or a staged collection identity. Runs at every genesis load,
+/// whether or not the package declares `$data`.
+pub(crate) fn apply_singleton_defaults(
+    compiled: &Compiled,
+    ctx: &EvalCtx<'_>,
+    prospective: &mut Prospective,
+) -> Result<(), Rejection> {
+    let root_address = crate::singleton::address();
+    for def in &compiled.root_singleton_defaults {
+        if prospective.get(&root_address).is_some_and(|f| f.contains_key(&def.name)) {
+            continue;
+        }
+        let root = liasse_expr::Cell::Row(Box::new(ctx.root(prospective)));
+        let value = default_scalar(ctx.eval(prospective, &def.default, &root)?)?;
+        let mut fields = prospective.get(&root_address).cloned().unwrap_or_else(FieldMap::new);
+        fields.insert(def.name.clone(), value);
+        prospective.insert(root_address.clone(), fields);
+    }
+    Ok(())
+}
+
+/// The scalar value a singleton default evaluates to. A single-row result yields
+/// its key (a ref default, §5.6); a collection result is not a scalar.
+fn default_scalar(cell: liasse_expr::Cell) -> Result<liasse_value::Value, Rejection> {
+    match cell {
+        liasse_expr::Cell::Scalar(value) => Ok(value),
+        liasse_expr::Cell::Row(row) => Ok(row.key().clone()),
+        liasse_expr::Cell::Collection(_) => Err(Rejection::new(
+            RejectionReason::TypeError,
+            "a singleton root default must evaluate to a scalar value",
+        )),
+    }
 }
 
 fn decode(ty: &Type, wire: &serde_json::Value, field: &str) -> Result<liasse_value::Value, Rejection> {

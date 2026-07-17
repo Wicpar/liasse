@@ -82,6 +82,37 @@ fn from_with_as_transforms_the_old_value() {
     assert_eq!(row.field("name"), None, "the dropped source field is absent from live state");
 }
 
+/// A minor release that adds a `$requires` entry naming a namespace the running
+/// host context never registered (§16.2). The requirement is not even called by
+/// any view — it must still reject the update.
+const PEOPLE_V1_1_NEEDS_NS: &str = r#"{
+  "$liasse": 1
+  "$app": "example.people@1.1.0"
+  "$requires": { "pw": "liasse.password@1" }
+  "$model": {
+    "people": { "$key": "id", "id": "text", "name": "text" }
+    "all_people": { "$view": ".people { id, name }" }
+  }
+}"#;
+
+#[test]
+fn update_requiring_an_unregistered_namespace_rejects_and_keeps_prior_active() {
+    // The engine loads with no managed host components (empty registry), so its
+    // context cannot supply `liasse.password@1`.
+    let mut engine = load("people", PEOPLE_V1);
+    let mut generator = generator();
+    match engine.update(PEOPLE_V1_1_NEEDS_NS, &mut generator) {
+        // §2.1/§16.2: a missing requirement fails the update before activation;
+        // the host layer surfaces it as an engine-level requirement error.
+        Err(UpdateError::Engine(_)) => {}
+        other => panic!("expected a requirement rejection, got {other:?}"),
+    }
+    // §9.4/§E.9: the prior application remains active and intact.
+    assert_eq!(engine.model().header().identity.version.minor, 0, "the active version is still 1.0.0");
+    let view = engine.view_at_head("all_people").expect("view").expect("declared");
+    assert_eq!(view.len(), 1, "prior state still served");
+}
+
 #[test]
 fn unrelated_line_update_is_incompatible() {
     let mut engine = load("people", PEOPLE_V1);
