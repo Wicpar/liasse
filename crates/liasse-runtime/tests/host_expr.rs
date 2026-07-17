@@ -4,20 +4,19 @@
 //! hook — the seam distinct from the interpreter's `name = ns.fn(...)` binding
 //! path.
 //!
-//! # Reachability and the liasse-model seam
+//! # Reachability across the liasse-model seam
 //!
 //! A host call in a *view*, *field default*, or *computed value* is type-checked
-//! by liasse-model's Phase-2 `check_tree` (`ModelScope`), which does not resolve
-//! `$requires` descriptors, so such a package is rejected at `Model::build` as an
-//! "unknown function" *before* the runtime's checker runs. Closing that requires a
-//! liasse-model change (thread the descriptors into `ModelScope`, mirroring how
-//! the mutation checker's `type_value` already skips `is_program_call` host
-//! calls). Until then, the reachable expression position is a `$mut` operator
-//! value — an insert object member `{ field: ns.fn(args) }` — which the model
-//! accepts structurally (the whole insert `uses_mutation_operator`) and the
-//! runtime type-checks against the resolved signatures and evaluates through the
-//! environment's host-call hook. These tests drive that path; the view/default
-//! positions are exercised at the checker level in `liasse-expr`.
+//! by liasse-model's Phase-2 `check_tree` (`ModelScope`). `Engine::load_with_hosts`
+//! resolves the package's `$requires` against the registry and threads the pinned
+//! signatures into `Model::build_with_hosts`, so `ModelScope` now types such a call
+//! against its contract and effect policy (§16.3) instead of rejecting it as an
+//! "unknown function" before activation — closing the seam this file once tracked.
+//! The `$mut` operator-value position (an insert object member `{ field: ns.fn(args) }`)
+//! is still accepted structurally by the model (the whole insert
+//! `uses_mutation_operator`) and type-checked by the runtime's compiled layer.
+//! These tests drive both: the mutation-value path and the view/default positions
+//! end to end through `Engine::load_with_hosts`.
 //!
 //! Every expectation is re-derived from the sim namespace's pinned behaviour
 //! (`double: x -> 2x` pure; `token` generated; `bad` a `(int) -> int` returning a
@@ -158,6 +157,48 @@ fn nonconforming_return_in_an_expression_call_is_caught() {
     };
     assert_eq!(rejection.reason(), RejectionReason::Host);
     assert_eq!(engine.head(), head_before, "the rejected insert commits nothing");
+}
+
+/// §16.2/§16.3: a *pure* host call in a `$view` (a read position) type-checks
+/// against the pinned `(int) -> int` signature at load — the position `check_tree`
+/// once rejected as an unknown function — and evaluates through the view env's
+/// host-call hook, so `double(21) = 42` is the view's value.
+#[test]
+fn pure_host_call_in_a_view_type_checks_and_loads() {
+    let def = r#"{
+      "$liasse": 1,
+      "$app": "t.pureview@1.0.0",
+      "$requires": { "util": "test.util@1" },
+      "$model": {
+        "items": { "$key": "id", "id": "text", "n": "int" },
+        "doubled": { "$view": ".items { id, d: util.double(.n) }" }
+      },
+      "$data": { "items": { "r1": { "n": 21 } } }
+    }"#;
+    let engine = load(def).expect("a pure host call in a view loads");
+    let view = engine.view_at_head("doubled").expect("no engine fault").expect("declared view");
+    let row = &view.rows()[0];
+    assert_eq!(row.field("d"), Some(&int(42)), "the view evaluates the pure host call");
+}
+
+/// §16.3/§8.8: a *generated* host call in a `$view` (a pure read position) is
+/// rejected at load — `token` is generated and only a pure function may run in a
+/// view, so the package fails to type-check before activation.
+#[test]
+fn generated_host_call_in_a_pure_view_rejects_at_load() {
+    let def = r#"{
+      "$liasse": 1,
+      "$app": "t.genview@1.0.0",
+      "$requires": { "util": "test.util@1" },
+      "$model": {
+        "minted": { "$view": "util.token()" }
+      }
+    }"#;
+    match load(def) {
+        Err(EngineError::Invalid(_)) => {}
+        Err(_) => panic!("expected a static Invalid rejection, got a different engine error"),
+        Ok(_) => panic!("expected a static rejection of a generated call in a pure view, but it loaded"),
+    }
 }
 
 /// §16.2: a host call naming a namespace with no `$requires` declaration fails to

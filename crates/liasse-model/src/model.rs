@@ -14,6 +14,7 @@ use liasse_syntax::SpannedDocument;
 use crate::build::Builder;
 use crate::doc::DocValueExt;
 use crate::header::{Header, Parsed};
+use crate::host::HostDescriptors;
 use crate::mutation::{check_mutations, Mutation};
 use crate::refs;
 use crate::report::Reporter;
@@ -45,8 +46,26 @@ impl Model {
         source: SourceId,
         document: &SpannedDocument,
     ) -> Result<Self, Diagnostics> {
+        Self::build_with_hosts(sources, source, document, &HostDescriptors::default())
+    }
+
+    /// Build and validate a package whose expressions may call the resolved
+    /// `$requires` host namespaces `hosts` describes (§16.2).
+    ///
+    /// A `$view`/`$default`/computed/`$check`/`$normalize` host-namespace call
+    /// type-checks against its pinned signature and the position's effect policy
+    /// (§16.3) rather than faulting as an unknown function. The runtime supplies
+    /// these after resolving `$requires` against its host registry; [`Model::build`]
+    /// passes none, so a package with no host requirements is unaffected. Other
+    /// arguments and the failure discipline match [`Model::build`].
+    pub fn build_with_hosts(
+        sources: &mut SourceMap,
+        source: SourceId,
+        document: &SpannedDocument,
+        hosts: &HostDescriptors,
+    ) -> Result<Self, Diagnostics> {
         let mut diags = Diagnostics::new();
-        let model = Self::assemble(sources, source, document, &mut diags);
+        let model = Self::assemble(sources, source, document, hosts, &mut diags);
         match model {
             Some(model) if !diags.has_errors() => Ok(model),
             _ => Err(diags),
@@ -57,6 +76,7 @@ impl Model {
         sources: &mut SourceMap,
         source: SourceId,
         document: &SpannedDocument,
+        hosts: &HostDescriptors,
         diags: &mut Diagnostics,
     ) -> Option<Self> {
         let mut reporter = Reporter::new(source, diags);
@@ -86,7 +106,7 @@ impl Model {
         // declared interface contracts before the tree/surface checks, so
         // `.modules::iface` aggregation and `modules.$key` resolve.
         module::type_module_spaces(&resolver, &mut root, &build.module_spaces);
-        check::check_tree(&mut reporter, sources, &resolver, &root);
+        check::check_tree(&mut reporter, sources, &resolver, &root, hosts);
         let mutations = check_mutations(
             &mut reporter,
             sources,

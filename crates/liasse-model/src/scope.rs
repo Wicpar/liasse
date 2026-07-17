@@ -10,7 +10,9 @@
 
 use std::collections::BTreeMap;
 
-use liasse_expr::{ExprType, Scope};
+use liasse_expr::{ExprType, HostOp, HostPosition, Scope};
+
+use crate::host::HostDescriptors;
 
 /// A concrete scope built from the model tree for one declaration position.
 #[derive(Debug, Clone)]
@@ -24,6 +26,14 @@ pub(crate) struct ModelScope {
     structurals: BTreeMap<String, ExprType>,
     imports: BTreeMap<String, ExprType>,
     bindings: BTreeMap<String, ExprType>,
+    /// The resolved `$requires` namespaces' pinned signatures (§16.2). Empty for a
+    /// scope in a package with no host requirements, so a host call there faults
+    /// as an unknown function.
+    hosts: HostDescriptors,
+    /// Which host effect classes this position admits (§16.3, §8.8). A
+    /// view/computed/`$check`/`$normalize` stays `Pure`; a field default opts into
+    /// `Write`, where a generated function may run.
+    host_position: HostPosition,
 }
 
 impl ModelScope {
@@ -37,7 +47,25 @@ impl ModelScope {
             structurals: BTreeMap::new(),
             imports: BTreeMap::new(),
             bindings: BTreeMap::new(),
+            hosts: HostDescriptors::default(),
+            host_position: HostPosition::Pure,
         }
+    }
+
+    /// Attach the resolved host-namespace signatures a call site type-checks
+    /// against (§16.2), so `namespace.function(...)` resolves its pinned contract
+    /// instead of faulting as an unknown function.
+    pub(crate) fn with_host_ops(mut self, hosts: HostDescriptors) -> Self {
+        self.hosts = hosts;
+        self
+    }
+
+    /// Set the host effect policy of this checking position (§16.3, §8.8): a field
+    /// default is a `Write` position (a generated function may run); a
+    /// view/computed/`$check`/`$normalize` stays the default `Pure`.
+    pub(crate) fn with_host_position(mut self, position: HostPosition) -> Self {
+        self.host_position = position;
+        self
     }
 
     /// Add a parameter binding `@name`.
@@ -91,5 +119,13 @@ impl Scope for ModelScope {
 
     fn binding(&self, name: &str) -> Option<ExprType> {
         self.bindings.get(name).cloned()
+    }
+
+    fn namespace_op(&self, namespace: &str, function: &str) -> Option<HostOp> {
+        self.hosts.op(namespace, function).cloned()
+    }
+
+    fn host_position(&self) -> HostPosition {
+        self.host_position
     }
 }

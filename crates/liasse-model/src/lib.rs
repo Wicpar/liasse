@@ -60,6 +60,7 @@ mod delete;
 mod doc;
 mod header;
 mod history;
+mod host;
 mod infer;
 mod keyring;
 mod meter;
@@ -79,6 +80,7 @@ mod types;
 mod walk;
 
 pub use header::{Header, Kind};
+pub use host::HostDescriptors;
 pub use model::Model;
 pub use mutation::Mutation;
 pub use names::{DeclName, PackageId, PackageName, Version};

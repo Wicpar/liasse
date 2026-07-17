@@ -69,7 +69,14 @@ pub(crate) fn compile_definition(
     let mut sources = SourceMap::new();
     let src = sources.add_file("liasse.json", definition.to_owned());
     let document = parse_document(src, definition).map_err(|d| EngineError::Invalid(Box::new(d)))?;
-    let model = Model::build(&mut sources, src, &document).map_err(|d| EngineError::Invalid(Box::new(d)))?;
+    // §16.2: type-check the package's `$view`/`$default`/computed host-namespace
+    // calls against the same resolved signatures the compiled layer uses, so a
+    // host call in a read/write position no longer faults as an unknown function
+    // at `Model::build` before activation. An empty `hosts` (the default load,
+    // restore, migration) reproduces the plain `Model::build` behaviour.
+    let descriptors = hosts.descriptors();
+    let model = Model::build_with_hosts(&mut sources, src, &document, &descriptors)
+        .map_err(|d| EngineError::Invalid(Box::new(d)))?;
     let model_doc = doc::member(document.root(), "$model")
         .cloned()
         .ok_or_else(|| EngineError::Internal("definition has no `$model`".to_owned()))?;
@@ -454,6 +461,19 @@ impl<S: InstanceStore> Engine<S> {
     /// invalid public key). `None` when no keyring of that name is declared.
     pub fn keyring_provider_mut(&mut self, ring: &str) -> Option<&mut SimKeyProvider> {
         self.keyrings.iter_mut().find(|r| r.name() == ring).map(Keyring::provider_mut)
+    }
+
+    /// Mutable lifecycle access to the internally-provisioned keyring `ring`
+    /// (§17.3/§17.4), so a host operator can drive the version lifecycle the
+    /// engine does not schedule automatically: `bind_activate` a manual policy's
+    /// externally created version (bind the provider's
+    /// [`MANUAL_EXTERNAL_KEY`](crate::MANUAL_EXTERNAL_KEY) handle), `revoke` a
+    /// version, or `destroy` its provider material. The engine reads these rings
+    /// for every subsequent snapshot, so the `/ring.$current`/`.$accepted`/
+    /// `.$versions` views reflect the transition on the next read. `None` when the
+    /// package declares no keyring of that name.
+    pub fn keyring_admin(&mut self, ring: &str) -> Option<&mut Keyring<SimKeyProvider>> {
+        self.keyrings.iter_mut().find(|r| r.name() == ring)
     }
 
     /// The declared keyring names (§17.1), in declaration order — so a driver maps

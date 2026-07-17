@@ -48,17 +48,23 @@ impl Actor {
 /// The application row an authenticator selected as `$session` (§11.2), with the
 /// two lifetime fields the surface layer judges without model support: its
 /// expiry instant and its revocation flag (§11.7).
+///
+/// The expiry is the session bucket's upper bound `$until` (§14.1). An absent
+/// bound (`None`) leaves the interval unbounded (§14): the session is perpetual,
+/// active until revoked (§11.7).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Session {
     key: Value,
-    expires_at: Timestamp,
+    expires_at: Option<Timestamp>,
     revoked: bool,
 }
 
 impl Session {
-    /// A session at `key` expiring at `expires_at`, revoked or not.
+    /// A session at `key` whose bucket upper bound is `expires_at` — `Some`
+    /// instant for a finite lifetime, `None` for a perpetual session (§14
+    /// unbounded upper bound) — revoked or not.
     #[must_use]
-    pub fn new(key: Value, expires_at: Timestamp, revoked: bool) -> Self {
+    pub fn new(key: Value, expires_at: Option<Timestamp>, revoked: bool) -> Self {
         Self { key, expires_at, revoked }
     }
 
@@ -68,9 +74,10 @@ impl Session {
         &self.key
     }
 
-    /// The instant at and after which the session is no longer active (§11.7).
+    /// The instant at and after which the session is no longer active, or `None`
+    /// when the session never expires (§11.7, §14 unbounded upper bound).
     #[must_use]
-    pub fn expires_at(&self) -> Timestamp {
+    pub fn expires_at(&self) -> Option<Timestamp> {
         self.expires_at
     }
 
@@ -80,12 +87,14 @@ impl Session {
         self.revoked
     }
 
-    /// Whether the session is active at `now`: not revoked and not yet expired.
-    /// Expiry is half-open — a session is live strictly before `expires_at` and
-    /// dead at it (§11.7, `red/session-expiry-half-open-boundary`).
+    /// Whether the session is active at `now`: not revoked and within its bucket
+    /// interval. Expiry is half-open — a finite session is live strictly before
+    /// `expires_at` and dead at it (§11.7, `red/session-expiry-half-open-boundary`);
+    /// a session with no expiry is unbounded above, so it stays active until
+    /// revoked (§14 omitted upper bound).
     #[must_use]
     pub fn is_active_at(&self, now: Timestamp) -> bool {
-        !self.revoked && now < self.expires_at
+        !self.revoked && self.expires_at.is_none_or(|until| now < until)
     }
 }
 

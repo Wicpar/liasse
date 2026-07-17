@@ -62,10 +62,17 @@ impl SessionSource {
                 return Err(Denial::new(DenialReason::SessionInvalid, "the session store is unreadable"));
             }
         };
+        // The expiry is the session bucket's upper bound `$until` (§14.1). A
+        // finite timestamp bounds the lifetime; an absent field or `none`
+        // resolves to an omitted upper bound, leaving the interval unbounded
+        // (§14) — a perpetual session, active until revoked (§11.7). A present
+        // value of any other type is a malformed row and denies rather than
+        // silently reading as perpetual.
         let expires_at = match row.field(&self.expires_field) {
-            Some(Value::Timestamp(instant)) => *instant,
-            _ => {
-                return Err(Denial::new(DenialReason::SessionInvalid, "the session has no expiry instant"));
+            Some(Value::Timestamp(instant)) => Some(*instant),
+            None | Some(Value::None) => None,
+            Some(_) => {
+                return Err(Denial::new(DenialReason::SessionInvalid, "the session expiry is not a timestamp"));
             }
         };
         // A missing revocation flag defaults to not-revoked (§11.2 `revoked:

@@ -10,10 +10,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::SourceMap;
-use liasse_expr::{check_statement, ExprType, Scope};
+use liasse_expr::{check_statement, ExprType, HostPosition, Scope};
 use liasse_syntax::{parse_expression, Expr, ExprKind, SpannedExpression};
 use liasse_value::Type;
 
+use crate::host::HostDescriptors;
 use crate::report::{code, Reporter};
 use crate::resolve::Resolver;
 use crate::scope::ModelScope;
@@ -21,11 +22,18 @@ use crate::state::{Check, ExprSource, Node, ScalarField, Shape};
 use crate::walk::child_exprs;
 
 /// Type-check every expression in the state tree.
+///
+/// `hosts` supplies the resolved `$requires` namespaces' pinned signatures
+/// (§16.2), so a host-namespace call in a `$view`/`$default`/computed/`$check`/
+/// `$normalize` expression type-checks against its declared contract and the
+/// position's effect policy (§16.3) instead of faulting as an unknown function.
+/// It is empty for a package with no host requirements.
 pub(crate) fn check_tree(
     reporter: &mut Reporter,
     sources: &mut SourceMap,
     resolver: &Resolver,
     root: &Shape,
+    hosts: &HostDescriptors,
 ) {
     let root_row = ExprType::Row(resolver.shape_row(root));
     let mut checker = TreeChecker {
@@ -33,6 +41,7 @@ pub(crate) fn check_tree(
         sources,
         resolver,
         root: root_row.clone(),
+        hosts,
     };
     checker.shape(root, vec![root_row]);
 }
@@ -43,6 +52,9 @@ struct TreeChecker<'a, 'b> {
     sources: &'a mut SourceMap,
     resolver: &'a Resolver<'a>,
     root: ExprType,
+    /// The resolved `$requires` host-namespace signatures every checked
+    /// expression's scope carries (§16.2).
+    hosts: &'a HostDescriptors,
 }
 
 impl TreeChecker<'_, '_> {
@@ -50,7 +62,8 @@ impl TreeChecker<'_, '_> {
     fn shape(&mut self, shape: &Shape, contexts: Vec<ExprType>) {
         self.detect_cycles(shape);
         for check in &shape.checks {
-            let scope = ModelScope::nested(contexts.clone(), self.root.clone());
+            let scope = ModelScope::nested(contexts.clone(), self.root.clone())
+                .with_host_ops(self.hosts.clone());
             self.check_bool(&scope, check, "a row/struct `$check` must be a `bool` condition");
         }
         for member in &shape.members {
@@ -75,16 +88,21 @@ impl TreeChecker<'_, '_> {
     /// Check a scalar field's default, computed, normalize, and check exprs.
     fn scalar(&mut self, field: &ScalarField, contexts: &[ExprType]) {
         // A default and a computed value read the containing row as `.`.
-        let row_scope = ModelScope::nested(contexts.to_vec(), self.root.clone());
+        let row_scope = ModelScope::nested(contexts.to_vec(), self.root.clone())
+            .with_host_ops(self.hosts.clone());
         // `$normalize`/`$check` read the field's own value as `.` (§8.8).
         let mut value_chain = contexts.to_vec();
         value_chain.push(ExprType::scalar(field.ty.clone()));
-        let value_scope = ModelScope::nested(value_chain, self.root.clone());
+        let value_scope = ModelScope::nested(value_chain, self.root.clone())
+            .with_host_ops(self.hosts.clone());
 
-        if let Some(default) = &field.default
-            && let Some(typed) = self.check_value(&row_scope, default)
-        {
-            self.expect_assignable(&typed, &field.ty, default);
+        if let Some(default) = &field.default {
+            // §8.8/§16.3: a field default is a write position, so a generated host
+            // function may run in it (unlike a computed value or a `$check`).
+            let default_scope = row_scope.clone().with_host_position(HostPosition::Write);
+            if let Some(typed) = self.check_value(&default_scope, default) {
+                self.expect_assignable(&typed, &field.ty, default);
+            }
         }
         if let Some(computed) = &field.computed {
             self.check_pure_value(&row_scope, computed);
@@ -100,7 +118,8 @@ impl TreeChecker<'_, '_> {
     }
 
     fn view(&mut self, expr: &ExprSource, contexts: &[ExprType]) {
-        let scope = ModelScope::nested(contexts.to_vec(), self.root.clone());
+        let scope = ModelScope::nested(contexts.to_vec(), self.root.clone())
+            .with_host_ops(self.hosts.clone());
         // §7.1/§12.2: a view's result may be a row stream, a single row (a
         // root or struct projection such as `. { a, b }` or `.invoice { ... }`),
         // or a scalar (an aggregate or computed value like `= size(.docs)`).

@@ -123,12 +123,24 @@ fn optional_ts(instant: Option<liasse_value::Timestamp>) -> Cell {
     Cell::Scalar(instant.map_or(Value::None, Value::Timestamp))
 }
 
+/// The deterministic external key handle the self-provisioned provider carries
+/// for a manual-rotation keyring (§17.4 manual policy). A manual keyring is
+/// activated only by an operator binding an externally created handle, so the
+/// engine's own provider must offer one for
+/// [`Engine::keyring_admin`](crate::Engine::keyring_admin)`.bind_activate` to have
+/// anything to bind. A driver references it as
+/// `ExternalKeyRef::new(MANUAL_EXTERNAL_KEY)`.
+pub const MANUAL_EXTERNAL_KEY: &str = "liasse.manual-bootstrap";
+
 /// The in-process key provider the engine bootstraps a declared keyring against
 /// when no external host provider is registered. It advertises everything the
 /// declared policy needs — the declared algorithm, every protected operation,
 /// generation, binding, disable, destroy, and attestation, at hardware
 /// protection — so the §17.6 capability check passes and the deterministic
-/// double drives the version lifecycle.
+/// double drives the version lifecycle. A manual policy additionally carries one
+/// bindable [`MANUAL_EXTERNAL_KEY`] handle in the declared algorithm, so an
+/// operator can bind and activate the first version through
+/// [`Engine::keyring_admin`](crate::Engine::keyring_admin) (§17.4 manual policy).
 pub(crate) fn built_in_provider(policy: &KeyringPolicy) -> SimKeyProvider {
     let mut caps = KeyCapabilities::builder(ProtectionClass::Hardware)
         .algorithm(policy.algorithm.clone())
@@ -147,7 +159,12 @@ pub(crate) fn built_in_provider(policy: &KeyringPolicy) -> SimKeyProvider {
     ] {
         caps = caps.operation(op);
     }
-    SimKeyProvider::new(caps.build())
+    let provider = SimKeyProvider::new(caps.build());
+    if matches!(policy.rotate.map(|r| r.mode), Some(RotationMode::Manual)) {
+        provider.with_external_key(MANUAL_EXTERNAL_KEY, policy.algorithm.clone())
+    } else {
+        provider
+    }
 }
 
 /// Parse a `$keyring` policy object (§17.1, C.16) into a [`KeyringPolicy`], or

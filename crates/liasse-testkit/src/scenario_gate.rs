@@ -386,9 +386,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("15-meters/spend-at-pool-until-boundary-excluded", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/spend-update-failure-preserves-prior-allocation", "outcome divergence: expected `ok` observed `rejected`"),
     ("21-deletion-erasure/collection-replacement-restrict-ref-rejects", "outcome divergence: expected `rejected` observed `ok`"),
-    ("21-deletion-erasure/delete-grant-is-not-erasure-grant", "outcome divergence: expected `ok` observed `denied`"),
-    ("22-runtime-semantics/actor-bound-for-authenticated-request", "outcome divergence: expected `ok` observed `denied`"),
-    ("22-runtime-semantics/confusable-actor-names-provenance-stays-distinct", "outcome divergence: expected `ok` observed `denied`"),
     ("23-host-contract/restart-preserves-identity-values-and-view", "outcome divergence: expected `ok` observed `denied`"),
     // --- fail:valdiff ---
     ("08-mutations-validation/replacement-validates-complete-collection", "value diverges from expectation"),

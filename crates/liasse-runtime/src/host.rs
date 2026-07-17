@@ -50,6 +50,15 @@ impl HostSignatures {
     pub(crate) fn op(&self, namespace: &str, function: &str) -> Option<&HostOp> {
         self.0.get(namespace)?.get(function)
     }
+
+    /// The same resolved signatures as a [`liasse_model::HostDescriptors`], so the
+    /// model's Phase-2 checker (`check_tree`) types a `$view`/`$default`/computed
+    /// host call against the identical pinned contracts the runtime's own checker
+    /// uses (§16.2) — closing the seam where `Model::build` rejected the call as an
+    /// unknown function before the runtime's checker ran.
+    pub(crate) fn descriptors(&self) -> liasse_model::HostDescriptors {
+        liasse_model::HostDescriptors::new(self.0.clone())
+    }
 }
 
 /// Translate a §16.3 [`EffectClass`] into the expr checker's [`HostEffect`].
