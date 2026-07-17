@@ -16,9 +16,10 @@
 //! permanently empty, still-live subscription. A concrete anchor MUST identify
 //! exactly one current occurrence when the window opens ([`WindowError`]); row
 //! identity is unique within a result, so "exactly one" is "present". If that
-//! occurrence later leaves the view, the window freezes its ordered neighbor
-//! coordinate as an immutable gap and tracks "the first rows at or after it" until
-//! the occurrence reappears (§12.2).
+//! occurrence later leaves the view, the window freezes the anchor's last complete
+//! **sort tuple** as an immutable ordered gap coordinate and tracks "the first
+//! rows at or after it" — a fixed position in the total sort order, not a live
+//! neighbor — until the occurrence reappears (§12.2).
 //!
 //! # Runtime seam
 //!
@@ -30,6 +31,7 @@
 
 use liasse_expr::RowId;
 use liasse_runtime::{ViewResult, ViewRow};
+use liasse_value::Value;
 
 /// Where a bounded window sits within the underlying view (§12.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,14 +44,25 @@ enum Anchor {
     At(RowId),
 }
 
-/// The frozen ordered neighbor coordinate of a concrete anchor, captured at the
-/// last frontier its occurrence was present (§12.2 "last complete sort tuple").
-/// While the occurrence is gone this coordinate — not a live position — decides
-/// where the window begins.
+/// The frozen ordered gap coordinate of a concrete anchor: the anchor's last
+/// complete **sort tuple**, captured at the last frontier its occurrence was
+/// present (§12.2). While the occurrence is gone this coordinate — a fixed
+/// position in the total sort order, not a live neighbor — decides where the
+/// window begins. The paired occurrence identity §12.2 retains is the anchor's
+/// own, held by [`Anchor::At`].
 #[derive(Debug, Clone)]
-struct Gap {
-    left: Option<RowId>,
-    right: Option<RowId>,
+struct FrozenGap {
+    coordinate: Vec<Value>,
+}
+
+impl FrozenGap {
+    /// The window start while the anchor is absent: the first current row whose
+    /// sort tuple is at or after the frozen coordinate (§12.2). The view result is
+    /// in ascending sort-tuple order, so this is a `partition_point` — fixing both
+    /// the left-gone and right-gone directions a neighbor coordinate got wrong.
+    fn resume(&self, rows: &[ViewRow]) -> usize {
+        rows.partition_point(|row| row.sort_tuple() < self.coordinate.as_slice())
+    }
 }
 
 /// A bounded window's request and the mutable coordinate it tracks (§12.2).
@@ -58,7 +71,7 @@ pub struct Window {
     size: usize,
     anchor: Anchor,
     slide: bool,
-    gap: Option<Gap>,
+    gap: Option<FrozenGap>,
 }
 
 /// A window that could not open: its concrete anchor identified no current
@@ -119,31 +132,29 @@ impl Window {
         let start = match &self.anchor {
             Anchor::First => 0,
             Anchor::Last => rows.len().saturating_sub(self.size),
-            Anchor::At(occurrence) => match position(rows, occurrence) {
-                Some(index) => {
-                    self.gap = Some(Gap {
-                        left: index
-                            .checked_sub(1)
-                            .and_then(|i| rows.get(i))
-                            .map(|row| row.id().clone()),
-                        right: rows.get(index + 1).map(|row| row.id().clone()),
-                    });
+            Anchor::At(occurrence) => match locate(rows, occurrence) {
+                // Present: (re)freeze the immutable gap at the anchor's current
+                // sort tuple, then place the window (§12.2).
+                Some((index, row)) => {
+                    self.gap = Some(FrozenGap { coordinate: row.sort_tuple().to_vec() });
                     if self.slide {
                         center(index, self.size, rows.len())
                     } else {
                         index
                     }
                 }
-                None => gap_start(rows, self.gap.as_ref()?),
+                // Absent: the frozen sort-tuple coordinate holds the window until
+                // the occurrence reappears (§12.2). No gap yet ⇒ unopenable.
+                None => self.gap.as_ref()?.resume(rows),
             },
         };
         Some(slice(rows, start, self.size))
     }
 }
 
-/// The index of the row whose identity is `id`, if present.
-fn position(rows: &[ViewRow], id: &RowId) -> Option<usize> {
-    rows.iter().position(|row| row.id() == id)
+/// The index and row whose identity is `id` — the reappearance match (§12.2).
+fn locate<'r>(rows: &'r [ViewRow], id: &RowId) -> Option<(usize, &'r ViewRow)> {
+    rows.iter().enumerate().find(|(_, row)| row.id() == id)
 }
 
 /// `size` rows of `rows` beginning at `start`, saturating at the end.
@@ -156,21 +167,4 @@ fn slice(rows: &[ViewRow], start: usize, size: usize) -> Vec<ViewRow> {
 fn center(index: usize, size: usize, len: usize) -> usize {
     let max_start = len.saturating_sub(size);
     index.saturating_sub(size / 2).min(max_start)
-}
-
-/// The start index for the "first rows at or after the gap coordinate" (§12.2):
-/// just past the frozen left neighbor if it survives, else at the frozen right
-/// neighbor, else the view start when both have gone.
-fn gap_start(rows: &[ViewRow], gap: &Gap) -> usize {
-    if let Some(left) = &gap.left
-        && let Some(index) = position(rows, left)
-    {
-        return index + 1;
-    }
-    if let Some(right) = &gap.right
-        && let Some(index) = position(rows, right)
-    {
-        return index;
-    }
-    0
 }

@@ -11,11 +11,13 @@ use std::collections::BTreeMap;
 use liasse_expr::{Cell, RowId};
 use liasse_value::Value;
 
-/// One row of a view result: its stable identity and its scalar output fields.
+/// One row of a view result: its stable identity, its scalar output fields, and
+/// the `$sort` tuple that fixed its ordered position (§7.3, empty when unsorted).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewRow {
     id: RowId,
     fields: BTreeMap<String, Value>,
+    sort_tuple: Vec<Value>,
 }
 
 impl ViewRow {
@@ -23,6 +25,14 @@ impl ViewRow {
     #[must_use]
     pub fn id(&self) -> &RowId {
         &self.id
+    }
+
+    /// The row's `$sort` tuple: the ordered coordinate that fixed its position in
+    /// a sorted view (§7.3), or empty when unsorted. A bounded window retains this
+    /// as its immutable ordered gap coordinate once the anchor leaves (§12.2).
+    #[must_use]
+    pub fn sort_tuple(&self) -> &[Value] {
+        &self.sort_tuple
     }
 
     /// The value of an output field, if present.
@@ -150,5 +160,5 @@ fn view_row(row: &liasse_expr::Row) -> ViewRow {
             _ => None,
         })
         .collect();
-    ViewRow { id: row.id().clone(), fields }
+    ViewRow { id: row.id().clone(), fields, sort_tuple: row.sort().to_vec() }
 }

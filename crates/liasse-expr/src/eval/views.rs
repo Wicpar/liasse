@@ -368,7 +368,8 @@ fn bind_name_of(expr: &TypedExpr) -> Option<String> {
 /// Order rows by successive sort keys (descending flips each), with occurrence
 /// identity as the final tiebreaker (Annex B.5). Optional `none` sorts last
 /// ascending / first descending because `Value::None` is the order maximum
-/// (Annex B.2).
+/// (Annex B.2). Each ordered row keeps its complete sort tuple (§7.3) so a
+/// bounded window can retain it as the §12.2 immutable gap coordinate.
 fn order_rows(mut ranked: Vec<(Row, Vec<Value>)>, sort: &[SortKey]) -> Vec<Row> {
     ranked.sort_by(|(a_row, a_keys), (b_row, b_keys)| {
         for (index, key) in sort.iter().enumerate() {
@@ -385,7 +386,7 @@ fn order_rows(mut ranked: Vec<(Row, Vec<Value>)>, sort: &[SortKey]) -> Vec<Row> 
         }
         a_row.id().cmp(b_row.id())
     });
-    ranked.into_iter().map(|(row, _)| row).collect()
+    ranked.into_iter().map(|(row, keys)| row.with_sort(keys)).collect()
 }
 
 /// Apply `$skip`/`$limit` bounds after sorting (§7.3).

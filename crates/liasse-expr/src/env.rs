@@ -150,20 +150,26 @@ impl Cell {
     }
 }
 
-/// A logical row: an occurrence identity, a typed key, and named cells.
+/// A logical row: an occurrence identity, a typed key, named cells, and — for a
+/// sorted view result — the sort tuple that fixed its position.
 ///
 /// The key is `Value::None` for a keyless scope (the package root or a static
 /// struct). Cells are held in field-name order — the canonical struct order
-/// (A.7 / B.4) a projection inherits.
+/// (A.7 / B.4) a projection inherits. `sort` is the row's complete `$sort` tuple
+/// (§7.3): empty for an unsorted row, and — when the row is a bounded-window
+/// anchor that later leaves the view — the immutable ordered gap coordinate
+/// §12.2 retains to decide where the window resumes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Row {
     id: RowId,
     key: Value,
     cells: BTreeMap<String, Cell>,
+    sort: Vec<Value>,
 }
 
 impl Row {
-    /// Assemble a row from its identity, key, and cells.
+    /// Assemble a row from its identity, key, and cells, with no sort tuple.
+    /// [`Row::with_sort`] attaches the `$sort` coordinate for a sorted view.
     #[must_use]
     pub fn new(
         id: RowId,
@@ -174,7 +180,16 @@ impl Row {
             id,
             key,
             cells: cells.into_iter().collect(),
+            sort: Vec::new(),
         }
+    }
+
+    /// The same row carrying the `$sort` tuple that fixed its ordered position
+    /// (§7.3, §12.2). Empty leaves it unsorted.
+    #[must_use]
+    pub fn with_sort(mut self, sort: Vec<Value>) -> Self {
+        self.sort = sort;
+        self
     }
 
     /// A keyless scope row (package root / static struct).
@@ -204,6 +219,14 @@ impl Row {
     /// The cells in canonical field-name order.
     pub fn cells(&self) -> impl Iterator<Item = (&String, &Cell)> {
         self.cells.iter()
+    }
+
+    /// The row's `$sort` tuple (§7.3): the ordered coordinate that fixed its
+    /// position in a sorted view, or empty when unsorted. §12.2 retains this as a
+    /// bounded window's immutable gap coordinate once its anchor leaves the view.
+    #[must_use]
+    pub fn sort(&self) -> &[Value] {
+        &self.sort
     }
 }
 
