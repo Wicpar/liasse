@@ -419,8 +419,17 @@ impl<C: BlobConnector> BlobEngine<C> {
             .iter()
             .filter(|(_, state)| **state == CopyState::Verified)
             .filter(|(store, _)| {
-                self.connector_for(store)
-                    .is_some_and(|c| integrity.fetch_verified(c).is_err())
+                // §18.5: `corrupt` is "observed to hash wrong". Only a `Tampered`
+                // result — bytes that were delivered and hashed against the
+                // descriptor's `$sha512` — is such an observation, so only it
+                // demotes a verified copy. A `Connector` failure is a temporary
+                // transport outage that delivered no bytes and therefore cannot be
+                // a corruption observation; §18.12 preserves committed application
+                // state on temporary failure, so the copy stays verified and is
+                // simply skipped this reconcile pass (a later pass re-checks it).
+                self.connector_for(store).is_some_and(|c| {
+                    matches!(integrity.fetch_verified(c), Err(VerifiedFetchError::Tampered(_)))
+                })
             })
             .map(|(store, _)| store.clone())
             .collect();
