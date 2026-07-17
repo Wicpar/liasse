@@ -9,8 +9,9 @@ use liasse_ident::InstanceId;
 use liasse_store::{StoreError, StoreFactory};
 use postgres::{Client, NoTls};
 
-use crate::backend::{backend, cell, refuse};
-use crate::schema::{SCHEMA_VERSION, Schema};
+use crate::backend::backend;
+use crate::reconcile::reconcile;
+use crate::schema::Schema;
 use crate::store::PgStore;
 
 /// Constructs [`PgStore`]s over one DSN and namespace.
@@ -59,38 +60,18 @@ impl PgStoreFactory {
         Schema::derive(&self.namespace, instance.as_str())
     }
 
+    /// Reconcile the instance's physical schema against the current model — create
+    /// what is missing, drop every orphan (see [`crate::reconcile`]) — then seed the
+    /// single `instance_meta` row a fresh schema needs. Reconciliation stamps the
+    /// version and refuses a schema newer than this build.
     fn ensure(client: &mut Client, schema: &Schema, instance: &InstanceId) -> Result<(), StoreError> {
-        client.batch_execute(&schema.create_ddl()).map_err(backend)?;
-        let s = schema.quoted();
-        // Stamp a fresh schema at the current version and bump an older one forward
-        // now that its DDL (the derived indexes above) has been reapplied. `GREATEST`
-        // never lowers a *newer* stamp, which the check below then refuses to open.
+        reconcile(client, schema)?;
         client
             .execute(
                 &format!(
-                    "INSERT INTO {s}.schema_version (id, version) VALUES (1, $1) \
-                     ON CONFLICT (id) DO UPDATE \
-                     SET version = GREATEST(schema_version.version, EXCLUDED.version)"
-                ),
-                &[&SCHEMA_VERSION],
-            )
-            .map_err(backend)?;
-        let version_row = client
-            .query_one(&format!("SELECT version FROM {s}.schema_version WHERE id = 1"), &[])
-            .map_err(backend)?;
-        let stamped: i32 = cell(&version_row, "schema_version", "version")?;
-        if stamped > SCHEMA_VERSION {
-            return Err(refuse(format!(
-                "schema `{}` is version {stamped}, newer than this build ({SCHEMA_VERSION}); \
-                 refusing to open",
-                schema.name()
-            )));
-        }
-        client
-            .execute(
-                &format!(
-                    "INSERT INTO {s}.instance_meta (id, head, next_incarnation, instance_id) \
-                     VALUES (1, 0, 0, $1) ON CONFLICT (id) DO NOTHING"
+                    "INSERT INTO {}.instance_meta (id, head, next_incarnation, instance_id) \
+                     VALUES (1, 0, 0, $1) ON CONFLICT (id) DO NOTHING",
+                    schema.quoted()
                 ),
                 &[&instance.as_str()],
             )

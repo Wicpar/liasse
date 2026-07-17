@@ -5,7 +5,11 @@
 //!
 //! - [`PgStoreFactory`] opens connections and owns per-instance schema lifecycle:
 //!   one PostgreSQL schema per instance (derived from its identity), created on
-//!   open and droppable as a unit ([`schema`]). It refuses to open a schema
+//!   open and droppable as a unit ([`schema`]). Every open runs the self-reconciling
+//!   lifecycle ([`reconcile`]): the physical schema is brought into exact
+//!   correspondence with the model — missing tables and indexes are created, and
+//!   orphan indexes/tables a superseded model or an older backend left behind are
+//!   dropped, so migrations never pollute the database. It refuses to open a schema
 //!   stamped newer than the embedded, versioned DDL knows.
 //! - [`PgStore`] holds one connection (one writer per instance) plus an in-memory
 //!   [`projection`] of committed state. The contract's reads are `&self` while
@@ -40,6 +44,7 @@ mod backend;
 mod factory;
 mod jsonb_text;
 mod projection;
+mod reconcile;
 mod record_codec;
 mod schema;
 mod store;
@@ -47,6 +52,6 @@ mod transition;
 mod value_codec;
 
 pub use factory::PgStoreFactory;
-pub use schema::{IndexSpec, SCHEMA_VERSION, Schema};
+pub use schema::{IndexSpec, SCHEMA_VERSION, Schema, TableSpec};
 pub use store::PgStore;
 pub use transition::PgTransition;

@@ -11,16 +11,17 @@
 //! `schema_version` row. Opening refuses a schema stamped newer than this code
 //! knows: forward compatibility is not assumed.
 //!
-//! # Model-derived indexes
+//! # Enumerable objects
 //!
-//! The secondary indexes a schema needs are *derived* from its tables
-//! ([`Schema::indexes`]) rather than baked into one opaque DDL blob, so the set is
-//! enumerable. Opening creates every derived index idempotently
-//! (`CREATE INDEX IF NOT EXISTS`), and because the set is data a later
-//! reconciliation round can diff the live indexes against it and drop any the
-//! active model no longer needs — no migration leaves orphaned structures behind.
-//! Primary-key and unique indexes are intrinsic to their table declarations (they
-//! vanish with the table) and so are not part of this derived set.
+//! Both the fixed tables ([`Schema::tables`]) and the secondary indexes a schema
+//! needs ([`Schema::indexes`]) are held as *data* rather than baked into one
+//! opaque DDL blob, so each set is enumerable. Opening creates every table and
+//! index idempotently (`CREATE … IF NOT EXISTS`), and because the sets are data a
+//! later reconciliation round (see [`crate::reconcile`]) can diff the live objects
+//! against them and drop any orphan the active model no longer declares — no
+//! migration leaves orphaned structures behind. Primary-key and unique indexes are
+//! intrinsic to their table declarations (they vanish with the table) and so are
+//! not part of the derived index set.
 
 /// The schema version this build writes and understands. Opening a schema with a
 /// higher stamp is refused rather than guessed at; opening an older one applies
@@ -83,6 +84,39 @@ impl IndexSpec {
     }
 }
 
+/// One of a [`Schema`]'s fixed tables, held as data so the same list drives both
+/// the creating DDL ([`Schema::create_ddl`]) and the reconciliation round's
+/// *desired* table set — a single source of truth means the two can never drift.
+/// A table present in the instance schema but absent from this list is an orphan
+/// (a leftover from an earlier backend layout) the reconciler drops.
+#[derive(Debug, Clone, Copy)]
+pub struct TableSpec {
+    name: &'static str,
+    columns: &'static str,
+}
+
+impl TableSpec {
+    /// The bare table name — its identity within the schema and the key the
+    /// reconciler diffs the live catalog against.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.name
+    }
+
+    /// Idempotent creation DDL, scoped to `schema`. The primary-key and unique
+    /// constraints in the column body materialize the intrinsic indexes the
+    /// reconciler preserves.
+    #[must_use]
+    pub fn create_sql(&self, schema: &Schema) -> String {
+        format!(
+            "CREATE TABLE IF NOT EXISTS {}.{} ({});",
+            schema.quoted(),
+            quote(self.name),
+            self.columns
+        )
+    }
+}
+
 impl Schema {
     /// Derive the schema for `instance` under `namespace`. Both are sanitized to
     /// `[a-z0-9_]`; the instance label is additionally folded through a stable
@@ -134,37 +168,57 @@ impl Schema {
         ]
     }
 
-    /// The DDL that (idempotently) creates every table and derived index this
-    /// schema owns.
+    /// The fixed tables every instance schema owns, as data so the same list
+    /// drives the creating DDL and the reconciler's desired-set (§21 retains
+    /// `commit_log`/`history_points`/`blobs`; none of the six is ever an orphan).
+    ///
+    /// The application collections do not each get a table: every collection's
+    /// rows live in the single `rows` table keyed by `addr_key`, so this set is
+    /// model-independent and evolves only when the backend layout itself does.
+    #[must_use]
+    pub fn tables(&self) -> [TableSpec; 6] {
+        [
+            TableSpec {
+                name: "schema_version",
+                columns: "id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1), version INT NOT NULL",
+            },
+            TableSpec {
+                name: "instance_meta",
+                columns: "id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1), \
+                          head BIGINT NOT NULL, \
+                          next_incarnation BIGINT NOT NULL, \
+                          instance_id TEXT NOT NULL, \
+                          definition_source TEXT, \
+                          definition_id TEXT, \
+                          composition JSONB",
+            },
+            TableSpec {
+                name: "rows",
+                columns: "addr_key TEXT PRIMARY KEY, incarnation TEXT NOT NULL, value JSONB NOT NULL",
+            },
+            TableSpec {
+                name: "commit_log",
+                columns: "seq BIGINT PRIMARY KEY, transaction_id TEXT, ops JSONB NOT NULL",
+            },
+            TableSpec {
+                name: "history_points",
+                columns: "lineage TEXT NOT NULL, point TEXT NOT NULL, seq BIGINT NOT NULL, \
+                          PRIMARY KEY (lineage, point)",
+            },
+            TableSpec { name: "blobs", columns: "digest TEXT PRIMARY KEY, bytes BYTEA NOT NULL" },
+        ]
+    }
+
+    /// The DDL that (idempotently) creates every fixed table and derived index
+    /// this schema owns, built from the same [`tables`](Schema::tables) and
+    /// [`indexes`](Schema::indexes) data the reconciler diffs against.
     #[must_use]
     pub fn create_ddl(&self) -> String {
-        let s = self.quoted();
-        let mut ddl = format!(
-            "CREATE SCHEMA IF NOT EXISTS {s};\n\
-             CREATE TABLE IF NOT EXISTS {s}.schema_version (\
-                 id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1), version INT NOT NULL);\n\
-             CREATE TABLE IF NOT EXISTS {s}.instance_meta (\
-                 id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1), \
-                 head BIGINT NOT NULL, \
-                 next_incarnation BIGINT NOT NULL, \
-                 instance_id TEXT NOT NULL, \
-                 definition_source TEXT, \
-                 definition_id TEXT, \
-                 composition JSONB);\n\
-             CREATE TABLE IF NOT EXISTS {s}.rows (\
-                 addr_key TEXT PRIMARY KEY, \
-                 incarnation TEXT NOT NULL, \
-                 value JSONB NOT NULL);\n\
-             CREATE TABLE IF NOT EXISTS {s}.commit_log (\
-                 seq BIGINT PRIMARY KEY, \
-                 transaction_id TEXT, \
-                 ops JSONB NOT NULL);\n\
-             CREATE TABLE IF NOT EXISTS {s}.history_points (\
-                 lineage TEXT NOT NULL, point TEXT NOT NULL, seq BIGINT NOT NULL, \
-                 PRIMARY KEY (lineage, point));\n\
-             CREATE TABLE IF NOT EXISTS {s}.blobs (\
-                 digest TEXT PRIMARY KEY, bytes BYTEA NOT NULL);\n"
-        );
+        let mut ddl = format!("CREATE SCHEMA IF NOT EXISTS {};\n", self.quoted());
+        for table in self.tables() {
+            ddl.push_str(&table.create_sql(self));
+            ddl.push('\n');
+        }
         for index in self.indexes() {
             ddl.push_str(&index.create_sql(self));
             ddl.push('\n');
@@ -177,6 +231,23 @@ impl Schema {
     #[must_use]
     pub fn drop_ddl(&self) -> String {
         format!("DROP SCHEMA IF EXISTS {} CASCADE;", self.quoted())
+    }
+
+    /// Idempotent DDL dropping a stray secondary `index` by its live catalog name
+    /// — the reconciler's tool for retiring an orphan index that has fallen out of
+    /// the declared set (an in-model index is retired through
+    /// [`IndexSpec::drop_sql`] instead). Quoting mirrors [`Schema::quoted`].
+    #[must_use]
+    pub(crate) fn drop_index_sql(&self, index: &str) -> String {
+        format!("DROP INDEX IF EXISTS {}.{};", self.quoted(), quote(index))
+    }
+
+    /// Idempotent DDL dropping a stray `table` by its live catalog name — a
+    /// leftover from a prior backend layout — cascading its dependents. The
+    /// reconciler never passes a fixed table here, so the six are never dropped.
+    #[must_use]
+    pub(crate) fn drop_table_sql(&self, table: &str) -> String {
+        format!("DROP TABLE IF EXISTS {}.{} CASCADE;", self.quoted(), quote(table))
     }
 }
 
