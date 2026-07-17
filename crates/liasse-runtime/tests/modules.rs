@@ -228,9 +228,11 @@ fn empty_instance_name_is_rejected() {
 
 #[test]
 fn install_records_boundary_bindings() {
-    // §13.3: the admitted instance records `$config`/`$use`/`$deps`.
+    // §13.3: the admitted instance records `$config`/`$use`/`$deps`. `currency` is
+    // a declared `$config` member of `CONFIGURED`, so its supplied value is both
+    // accepted (§13.1 type-check) and recorded on the instance.
     let (mut host, space) = (host(), space());
-    let request = InstallRequest::new("sales", TEMPLATES)
+    let request = InstallRequest::new("sales", CONFIGURED)
         .config("currency", text("EUR"))
         .use_handle("people", "/companies/acme/modules/people")
         .optional_use("billing", "acme.billing/customers@1")
@@ -310,4 +312,66 @@ fn seed_three_way_merge_retains_local_edits() {
     let merged = SeedMerge { old_seed: &old_seed, new_seed: &new_seed, current: &current }.merge();
     assert_eq!(merged.get("title"), Some(&text("Welcome v2")), "unchanged field takes the new seed");
     assert_eq!(merged.get("body"), Some(&text("edited by user")), "locally edited field is retained");
+}
+
+/// A module package with a declared `$config` struct (§13.1): `currency` is a
+/// text installation value defaulting to `USD`. Its exposed interface projects
+/// `$config.currency`, so a boundary read observes the value the instance was
+/// installed with.
+const CONFIGURED: &str = r#"{
+  "$liasse": 1
+  "$module": "acme.configured@1.0.0"
+  "$config": { "currency": "text = 'USD'" }
+  "$model": {
+    "templates": { "$key": "id", "id": "text", "label": "text" }
+  }
+  "$data": { "templates": { "std": { "label": "Standard" } } }
+  "$expose": {
+    "templates": { "$view": ".templates { id, label, currency: $config.currency }" }
+  }
+}"#;
+
+#[test]
+fn child_reads_installed_config_value_through_the_binding() {
+    let (mut host, space) = (host(), space());
+    let mut generator = generator();
+    // §13.3: an explicit `$config` value is bound; an omitted one takes the default.
+    host.install(&space, InstallRequest::new("kit_eur", CONFIGURED).config("currency", text("EUR")), &mut generator)
+        .expect("install with explicit config");
+    host.install(&space, InstallRequest::new("kit_def", CONFIGURED), &mut generator)
+        .expect("install with default config");
+
+    // §13.1: the child's exposed `$view` reads `$config.currency`; the installed
+    // value crosses the boundary.
+    let eur = host.interface_read(&space, "kit_eur", "templates").expect("read").expect("declared");
+    assert_eq!(eur.rows()[0].field("currency"), Some(&text("EUR")), "the installed config value is read");
+    // §13.3: the omitted member resolves to the declared `text = 'USD'` default.
+    let def = host.interface_read(&space, "kit_def", "templates").expect("read").expect("declared");
+    assert_eq!(def.rows()[0].field("currency"), Some(&text("USD")), "an omitted config member takes its default");
+}
+
+#[test]
+fn config_value_type_mismatch_rejects_install() {
+    let (mut host, space) = (host(), space());
+    let mut generator = generator();
+    // §13.1/§13.3: `currency` is declared `text`; a boolean does not decode to it,
+    // so the install is rejected before the instance activates.
+    let request = InstallRequest::new("kit", CONFIGURED).config("currency", Value::Bool(true));
+    match host.install(&space, request, &mut generator) {
+        Err(ModuleError::ConfigMismatch(_)) => {}
+        other => panic!("a type-mismatched `$config` value must reject the install, got {other:?}"),
+    }
+}
+
+#[test]
+fn config_unknown_member_rejects_install() {
+    let (mut host, space) = (host(), space());
+    let mut generator = generator();
+    // §13.1/§2.5: `tax_id` is not a declared `$config` member, so supplying it is
+    // rejected (the declared `currency` still resolves to its default).
+    let request = InstallRequest::new("kit", CONFIGURED).config("tax_id", text("X1"));
+    match host.install(&space, request, &mut generator) {
+        Err(ModuleError::ConfigMismatch(_)) => {}
+        other => panic!("an undeclared `$config` member must reject the install, got {other:?}"),
+    }
 }

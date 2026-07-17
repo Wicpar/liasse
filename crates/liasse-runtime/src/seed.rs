@@ -52,15 +52,18 @@ pub(crate) fn admit(
     for member in collections {
         if let Some(collection) = compiled.collection(&member.name.text) {
             let store_path = CollectionPath::top(NameSegment::new(member.name.text.clone()));
-            stage_rows(prospective, &mut staged, collection, &store_path, &member.value)?;
+            stage_rows(ctx, prospective, &mut staged, collection, &store_path, &member.value)?;
             continue;
         }
         // §8.2/§9.1: a `$data` member naming a singleton root field seeds that
-        // field; an unknown or computed member is not seedable.
+        // field; an unknown or computed member is not seedable. §4.2/C.4: the value
+        // (and each static-struct member) is a literal-or-expression position.
         if let Some(node) = model.root().member(&member.name.text).map(|m| &m.node)
-            && let Some(ty) = crate::singleton::member_type(model, node)
+            && crate::singleton::member_type(model, node).is_some()
         {
-            let value = decode(&ty, &doc::to_json(&member.value), &member.name.text)?;
+            let value = crate::seed_value::materialize_singleton(
+                model, node, &member.name.text, &member.value, ctx, prospective,
+            )?;
             singleton.insert(member.name.text.clone(), value);
         }
     }
@@ -88,6 +91,7 @@ pub(crate) fn admit(
 /// roots the store path of its children so a nested pool or spend keeps its
 /// ancestor identity (§15). Defaults resolve later, in phase two.
 fn stage_rows<'a>(
+    ctx: &EvalCtx<'_>,
     prospective: &mut Prospective,
     staged: &mut Vec<Staged<'a>>,
     collection: &'a CompiledCollection,
@@ -101,7 +105,7 @@ fn stage_rows<'a>(
         ));
     };
     for entry in entries {
-        let fields = decode_row(collection, &entry.name.text, &entry.value)?;
+        let fields = decode_row(ctx, prospective, collection, &entry.name.text, &entry.value)?;
         // A seed row's key fields come from the map key (§9.1), so the address is
         // known before any default resolves.
         let key = row_key(collection, &fields)?;
@@ -121,7 +125,7 @@ fn stage_rows<'a>(
                     address.steps().cloned(),
                     NameSegment::new(member.name.text.clone()),
                 );
-                stage_rows(prospective, staged, child, &child_path, &member.value)?;
+                stage_rows(ctx, prospective, staged, child, &child_path, &member.value)?;
             }
         }
     }
@@ -134,6 +138,8 @@ fn stage_rows<'a>(
 /// `$key` field (in key order), so an omitted key field takes its own decoded
 /// component — not the whole joined text.
 fn decode_row(
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
     collection: &CompiledCollection,
     key_text: &str,
     row: &DocValue,
@@ -145,7 +151,12 @@ fn decode_row(
     for field in &collection.fields {
         let supplied = members.iter().find(|m| m.name.text == field.name);
         let value = match supplied {
-            Some(member) => decode(&field.ty, &doc::to_json(&member.value), &field.name)?,
+            // §4.2/C.4: a `$data` value is a literal-or-expression position — honor
+            // the leading-`'` literal escape and the leading-`=` expression form
+            // (against the fields decoded so far as `.` and the staged seed state).
+            Some(member) => crate::seed_value::materialize(
+                &field.ty, &field.name, &member.value, collection, &fields, ctx, prospective,
+            )?,
             None => match key_components.iter().find(|(name, _)| *name == &field.name) {
                 Some((_, component)) => {
                     decode(&field.ty, &serde_json::Value::String(component.clone()), &field.name)?

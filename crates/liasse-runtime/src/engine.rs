@@ -159,6 +159,13 @@ pub struct Engine<S> {
     /// mutation program's host-namespace call dispatches against. Built at load,
     /// when a missing/incompatible/ambiguous requirement fails before activation.
     host: HostBinding,
+    /// The immutable installation `$config` this module instance was installed
+    /// with (§13.1), as the `$config` structural cell a child's expressions read
+    /// through `$config`/`$config.member`. `None` for an application, a module with
+    /// no `$config`, and an instance not yet bound (a bare load, before install).
+    /// Bound once at install by [`Engine::bind_config`] and carried into every
+    /// evaluation context this engine builds.
+    config: Option<Cell>,
 }
 
 /// Bootstrap a live keyring per declaration (§17.3), over the in-process key
@@ -205,7 +212,7 @@ impl<S: InstanceStore> Engine<S> {
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host };
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
     }
@@ -242,7 +249,7 @@ impl<S: InstanceStore> Engine<S> {
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host };
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
     }
@@ -268,7 +275,7 @@ impl<S: InstanceStore> Engine<S> {
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host };
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None };
         engine.install_state(definition, state)?;
         Ok(engine)
     }
@@ -489,6 +496,77 @@ impl<S: InstanceStore> Engine<S> {
         &self.model
     }
 
+    /// Type-check and bind an installation's `$config` values onto this instance
+    /// (§13.1, §13.3). Consumes the model's declared `$config` struct schema: it
+    /// rejects a supplied member the struct does not declare or a value that does
+    /// not decode to the declared type, fills each omitted member from its default
+    /// (rejecting a required member that was omitted), and records the resolved
+    /// struct as the `$config` value the child's expressions read.
+    ///
+    /// Called once at install, after genesis (§13.3 "loading validates ... the
+    /// configuration ... before the instance becomes active"). A package with no
+    /// `$config` accepts no installation values.
+    pub(crate) fn bind_config<G: Generators>(
+        &mut self,
+        supplied: &BTreeMap<String, liasse_value::Value>,
+        generator: &mut G,
+    ) -> Result<(), crate::config::ConfigBindError> {
+        let resolved = self.resolve_config(supplied, generator)?;
+        self.config = resolved.as_ref().map(crate::config::cell);
+        Ok(())
+    }
+
+    /// Resolve the installation `$config` against the declared struct (§13.3),
+    /// returning the resolved values, or `None` for a package with no `$config`.
+    fn resolve_config<G: Generators>(
+        &self,
+        supplied: &BTreeMap<String, liasse_value::Value>,
+        generator: &mut G,
+    ) -> Result<Option<BTreeMap<String, liasse_value::Value>>, crate::config::ConfigBindError> {
+        let Some(schema) = self.model.config_schema() else {
+            // A package with no `$config` declares no installation values, so any
+            // supplied member is unknown (§13.1).
+            if let Some(name) = supplied.keys().next() {
+                return Err(crate::config::ConfigBindError::Mismatch(
+                    crate::config::ConfigError::UnknownMember(name.clone()),
+                ));
+            }
+            return Ok(None);
+        };
+        let engine_schema = Schema::new(&self.model);
+        let snapshots = self.keyring_snapshots();
+        let ctx = EvalCtx {
+            schema: engine_schema,
+            compiled: &self.compiled,
+            params: BTreeMap::new(),
+            now: self.clock,
+            seed: generator.next_seed(),
+            keyrings: &snapshots,
+            context: BTreeMap::new(),
+            hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
+            modules: None,
+        };
+        let prospective = Prospective::gather(&self.store, engine_schema)
+            .map_err(|error| crate::config::ConfigBindError::Engine(EngineError::Store(error)))?;
+        let resolved = crate::config::resolve(schema, supplied, &ctx, &prospective)
+            .map_err(crate::config::ConfigBindError::Mismatch)?;
+        Ok(Some(resolved))
+    }
+
+    /// The structural bindings every evaluation context this engine builds carries
+    /// beyond the request's own (§11.1 `$actor`/`$session`): the immutable
+    /// installation `$config` (§13.1), so a child's default, computed value,
+    /// `$view`, exposed interface, or mutation resolves `$config`/`$config.member`
+    /// to the values it was installed with. Empty for an application or an
+    /// unbound instance.
+    fn base_context(&self) -> BTreeMap<String, Cell> {
+        let mut context = BTreeMap::new();
+        if let Some(config) = &self.config {
+            context.insert("config".to_owned(), config.clone());
+        }
+        context
+    }
+
     /// The backing store.
     #[must_use]
     pub fn store(&self) -> &S {
@@ -638,7 +716,9 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: generator.next_seed(),
             keyrings: &snapshots,
-            context: BTreeMap::new(),
+            // §13.1: the installation `$config` is bound before this overlay, so an
+            // overlaid `$data` value reading `$config` resolves it.
+            context: self.base_context(),
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
             modules: None,
         };
@@ -681,7 +761,9 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: generator.next_seed(),
             keyrings: &snapshots,
-            context: BTreeMap::new(),
+            // §13.1: a module instance's mutation reads its installed `$config`;
+            // `$actor`/`$session` are merged in below once resolved.
+            context: self.base_context(),
             // §16.4/§17.7: a mutation program may call a resolved host namespace
             // (`util.double(...)`) or sign a session token (`cose.sign(/ring, …)`);
             // the dispatch resolves the call and routes cose to the live keyring.
@@ -703,7 +785,9 @@ impl<S: InstanceStore> Engine<S> {
         // program reads them. The row is re-materialized from committed state by
         // key at this admission position (§10.3, §11.3), not carried from the
         // authenticator, so a state change since resolution is observed.
-        ctx.context = auth_context(&self.compiled, &ctx, &prospective, request);
+        // §11.1/§13.1: merge the resolved `$actor`/`$session` into the `$config`
+        // the context already carries, so a mutation reads all three.
+        ctx.context.extend(auth_context(&self.compiled, &ctx, &prospective, request));
         let mut interp = Interp {
             compiled: &self.compiled,
             ctx: &ctx,
@@ -869,7 +953,9 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: 0,
             keyrings: &keyrings,
-            context: BTreeMap::new(),
+            // §13.1: a module instance's `$view` reads its installed `$config`;
+            // `$actor`/`$session` are merged in below when the query supplies them.
+            context: self.base_context(),
             // §16.3: a `$view` may call a resolved *pure* host namespace (the
             // checker admits only pure functions in a read position), so a view
             // read carries the live dispatch to evaluate it. Signing (cose) and
@@ -886,8 +972,8 @@ impl<S: InstanceStore> Engine<S> {
         // §11.1/§11.3: a role `$view` reads `$actor`/`$session`, bound to the row
         // each key resolves at this frontier — the same re-materialization an
         // authenticated admission performs, so the view sees state as of the read.
-        ctx.context =
-            bind_context(&self.compiled, &ctx, &prospective, query.actor_key(), query.session_key());
+        ctx.context
+            .extend(bind_context(&self.compiled, &ctx, &prospective, query.actor_key(), query.session_key()));
         let current = Cell::Row(Box::new(ctx.root(&prospective)));
         let env = ctx.env(&prospective);
         // §12.2: a `$view` delivers a row stream. Evaluate in view context so a
@@ -987,7 +1073,9 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: 0,
             keyrings: &keyrings,
-            context: BTreeMap::new(),
+            // §13.1: the exposed interface `$view` reads the child's installed
+            // `$config`, so `.templates { …, currency: $config.currency }` resolves.
+            context: self.base_context(),
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
             // A child interface read resolves against the child's own state; it
             // exposes no further module spaces of its own here.

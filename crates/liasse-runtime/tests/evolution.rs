@@ -126,3 +126,94 @@ fn unrelated_line_update_is_incompatible() {
     let view = engine.view_at_head("all_people").expect("view").expect("declared");
     assert_eq!(view.len(), 1);
 }
+
+/// §20.2 downgrade representability: a downgrade that would drop a populated field
+/// the older shape cannot represent, with no declared transform, is rejected.
+const REGION_V1_1: &str = r#"{
+  "$liasse": 1
+  "$app": "t.region@1.1.0"
+  "$model": {
+    "companies": { "$key": "id", "id": "text", "name": "text", "region": "text" }
+    "all": { "$view": ".companies { id, name, region }" }
+  }
+  "$data": { "companies": { "acme": { "name": "Acme", "region": "EU" } } }
+}"#;
+
+/// The older 1.0.0 release: `region` removed, no downgrade transform.
+const REGION_V1_0: &str = r#"{
+  "$liasse": 1
+  "$app": "t.region@1.0.0"
+  "$model": {
+    "companies": { "$key": "id", "id": "text", "name": "text" }
+    "all": { "$view": ".companies { id, name }" }
+  }
+}"#;
+
+#[test]
+fn downgrade_dropping_a_populated_field_is_rejected() {
+    let mut engine = load("region", REGION_V1_1);
+    let mut generator = generator();
+    match engine.update(REGION_V1_0, &mut generator) {
+        // §20.2: the older shape cannot represent live `region` and declares no
+        // downgrade transform, so the downgrade is rejected.
+        Err(UpdateError::Rejected(_)) => {
+            // E.9: the active 1.1.0 stays active with its populated state intact.
+            let view = engine.view_at_head("all").expect("view").expect("declared");
+            assert_eq!(
+                view.rows()[0].field("region"),
+                Some(&text("EU")),
+                "1.1.0 remains active with the populated region preserved",
+            );
+        }
+        other => panic!("a downgrade dropping populated `region` must be rejected, got {other:?}"),
+    }
+}
+
+/// §20.2 downgrade via exact inverse: the active package declares `$from`/`$back`
+/// on the field it added, so downgrading reconstructs the older field. (The corpus
+/// case uses base64; here `string.upper`/`string.lower` is an exact inverse for the
+/// stored value.)
+const ENCODED_V1: &str = r#"{
+  "$liasse": 1
+  "$app": "t.enc@1.0.0"
+  "$model": {
+    "accounts": { "$key": "id", "id": "text", "name": "text" }
+    "all": { "$view": ".accounts { id, name }" }
+  }
+  "$data": { "accounts": { "a1": { "name": "hi" } } }
+}"#;
+
+const ENCODED_V2: &str = r#"{
+  "$liasse": 1
+  "$app": "t.enc@2.0.0"
+  "$model": {
+    "accounts": {
+      "$key": "id"
+      "id": "text"
+      "encoded": { "$type": "text", "$from": "name", "$as": "string.upper(.)", "$back": "string.lower(.)" }
+    }
+    "all": { "$view": ".accounts { id, encoded }" }
+  }
+}"#;
+
+#[test]
+fn downgrade_via_exact_inverse_reconstructs_the_older_field() {
+    let mut engine = load("enc", ENCODED_V1);
+    let mut generator = generator();
+
+    // Upgrade 1.0.0 -> 2.0.0: name -> encoded, with a declared exact inverse.
+    let up = engine.update(ENCODED_V2, &mut generator).expect("upgrade commits");
+    assert_eq!(up.relation, UpdateRelation::Major, "1.0.0 -> 2.0.0 is a major release");
+    let encoded = engine.view_at_head("all").expect("view").expect("declared");
+    assert_eq!(encoded.rows()[0].field("encoded"), Some(&text("HI")), "hi encodes to HI");
+
+    // Downgrade 2.0.0 -> 1.0.0: the available exact inverse reconstructs `name`.
+    let down = engine.update(ENCODED_V1, &mut generator).expect("downgrade commits via inverse");
+    assert_eq!(down.relation, UpdateRelation::Downgrade, "2.0.0 -> 1.0.0 is a downgrade");
+    let restored = engine.view_at_head("all").expect("view").expect("declared");
+    assert_eq!(
+        restored.rows()[0].field("name"),
+        Some(&text("hi")),
+        "name is reconstructed from encoded via the exact inverse",
+    );
+}

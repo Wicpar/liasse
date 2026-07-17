@@ -41,6 +41,8 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             StepKind::LoadArtifact => self.drive_load_artifact(request),
             StepKind::TamperArtifact => self.drive_tamper_artifact(request),
             StepKind::InspectArtifact => self.drive_inspect_artifact(request),
+            StepKind::ExtractArtifact => self.drive_extract_artifact(request),
+            StepKind::ApplyCorrection => self.drive_apply_correction(request),
             StepKind::Operator => self.active().operator(&request.target),
             StepKind::OperationStatus => self.drive_operation_status(request),
             StepKind::Manifest => self.drive_manifest(request),
@@ -240,8 +242,38 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
                  scope: the incoming was not produced by a restored sandbox",
             ));
         };
+        // §19.9: a `bind_plan` retains this plan's base/incoming bytes so a later
+        // `apply_correction` recovers and resolves it (local state is unchanged
+        // between the two steps).
+        if let Some(label) = request.target.get("bind_plan").and_then(serde_json::Value::as_str) {
+            self.plans.insert(
+                label.to_owned(),
+                super::correction::ReconcilePlan { base: base.clone(), incoming: incoming.clone() },
+            );
+        }
         let policy = movement_policy(&request.target);
         self.active().reconcile(&base, &incoming, &policy)
+    }
+
+    /// §19.9 `apply_correction`: recover the reconciliation plan the step's `plan`
+    /// label bound, and resolve its conflicts under the step's display-path-keyed
+    /// `choose` map against the active instance, activating the corrected
+    /// composition (adapter/correction.rs).
+    fn drive_apply_correction(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let target = &request.target;
+        let Some(label) = target.get("plan").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`apply_correction` step carries no `plan` label"));
+        };
+        let Some(choose) = target.get("choose").cloned() else {
+            return Err(AdapterError::unsupported("`apply_correction` step carries no `choose` map"));
+        };
+        let Some(plan) = self.plans.get(label) else {
+            return Err(AdapterError::unsupported(format!(
+                "`apply_correction` names no bound reconciliation plan `{label}`"
+            )));
+        };
+        let (base, incoming) = (plan.base.clone(), plan.incoming.clone());
+        self.active().apply_correction(&base, &incoming, &choose)
     }
 
     /// §19.10 `restore`: activate the current sandbox instance over a throwaway
@@ -383,19 +415,15 @@ fn relation_from_token(token: &str) -> Option<ImportRelation> {
 fn unsupported_reason(kind: &StepKind) -> String {
     let need = match kind {
         StepKind::RunReconciler => {
-            "activation of a computed §19.9 merge into a new lineage, which the surface `reconcile` \
-             computes but never applies, plus the `apply_correction` conflict-resolution the host \
-             correction API the surface does not expose"
+            "a background reconciler loop over retained lineages, which the single-step \
+             `reconcile`/`apply_correction` verbs do not model"
         }
-        StepKind::ExtractArtifact | StepKind::TamperExtract => {
-            "child-module `.liasse` extraction and extract-then-tamper (§19 embedded artifacts), \
-             which needs the runtime's module-artifact embedding the export path does not yet emit"
+        StepKind::TamperExtract => {
+            "extract-then-tamper over a child-module `.liasse` (§19 embedded artifacts), which needs \
+             the runtime's module-artifact embedding the export path does not yet emit"
         }
-        StepKind::Erase
-        | StepKind::Reinsert
-        | StepKind::ScrubScopeOfCascadedRow
-        | StepKind::ApplyCorrection => {
-            "the deletion/erasure/correction host verbs the surface host does not expose"
+        StepKind::Erase | StepKind::Reinsert | StepKind::ScrubScopeOfCascadedRow => {
+            "the deletion/erasure host verbs the surface host does not expose"
         }
         StepKind::BudgetSet => {
             "a host component budget control provisioned from the case's `hosts` block, which the \

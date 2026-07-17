@@ -200,7 +200,7 @@ impl<S: InstanceStore> Runtime<S> {
     /// are preserved: the store and clock are retained across
     /// [`SurfaceHost::into_parts`], and connections and subscriptions are
     /// re-established over the rebuilt host.
-    fn rebuild_engine<T>(
+    pub(super) fn rebuild_engine<T>(
         &mut self,
         mutate: impl FnOnce(&mut liasse_runtime::Engine<S>) -> T,
     ) -> Result<T, AdapterError> {
@@ -262,12 +262,22 @@ pub(super) trait Instance {
     fn export(&mut self) -> Result<Vec<u8>, AdapterError>;
     /// Import `bytes` under `policy` (§19.8), rendering the movement report.
     fn import(&mut self, bytes: &[u8], policy: &[ImportRelation]) -> Result<Observation, AdapterError>;
-    /// Compute the §19.9 three-way merge of `base`/`incoming` against local state.
+    /// Compute the §19.9 three-way merge of `base`/`incoming` against local state,
+    /// activating a clean merge into a new lineage when `policy` permits it.
     fn reconcile(
         &mut self,
         base: &[u8],
         incoming: &[u8],
         policy: &[ImportRelation],
+    ) -> Result<Observation, AdapterError>;
+    /// §19.9 `apply_correction`: resolve a bound reconciliation plan's conflicts
+    /// (base/incoming bytes) under a display-path-keyed `choose` map, then activate
+    /// the corrected composition. Implemented in adapter/correction.rs.
+    fn apply_correction(
+        &mut self,
+        base: &[u8],
+        incoming: &[u8],
+        choose: &serde_json::Value,
     ) -> Result<Observation, AdapterError>;
     /// §18.7 `blob_put`: stage and verify a blob parameter, then admit the
     /// containing mutation over the composed §18 blob host.
@@ -558,28 +568,44 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         &mut self,
         base: &[u8],
         incoming: &[u8],
-        _policy: &[ImportRelation],
+        policy: &[ImportRelation],
     ) -> Result<Observation, AdapterError> {
-        let loaded = self.loaded()?;
-        match loaded.host.reconcile(base, incoming) {
-            Ok(outcome) => {
-                // §19.9 `reconcile` computes but never activates the merge, so a
-                // clean merge reports `applied: true` as its computed disposition
-                // while committed state is left for a host correction to move.
-                let conflicts: Vec<serde_json::Value> = outcome
-                    .conflicts
-                    .iter()
-                    .map(|conflict| serde_json::json!({ "coordinate": conflict.coordinate }))
-                    .collect();
-                Ok(Observation {
-                    outcome: Outcome::Ok,
-                    value: Some(import_value(ImportRelation::Merge, outcome.is_clean(), Some(conflicts))),
-                    completion: Some(Completion::Unchanged),
-                    extra: Default::default(),
-                })
+        let outcome = {
+            let loaded = self.loaded()?;
+            match loaded.host.reconcile(base, incoming) {
+                Ok(outcome) => outcome,
+                Err(error) => return Ok(Observation::outcome(import_error_outcome(&error))),
             }
-            Err(error) => Ok(Observation::outcome(import_error_outcome(&error))),
+        };
+        // §19.9: a clean automatic merge activates into a new lineage when the
+        // movement policy permits it; a conflicted merge produces the reconciliation
+        // plan a host correction resolves and commits, so it stays computed-only.
+        let activate = outcome.is_clean() && policy.contains(&ImportRelation::Merge);
+        if activate {
+            let merged = outcome.merged.clone();
+            self.rebuild_engine(move |engine| engine.activate_merge(&merged))?
+                .map_err(|error| AdapterError::Host(error.to_string()))?;
         }
+        let conflicts: Vec<serde_json::Value> = outcome
+            .conflicts
+            .iter()
+            .map(|conflict| serde_json::json!({ "coordinate": conflict.coordinate }))
+            .collect();
+        Ok(Observation {
+            outcome: Outcome::Ok,
+            value: Some(import_value(ImportRelation::Merge, activate, Some(conflicts))),
+            completion: Some(if activate { Completion::Committed } else { Completion::Unchanged }),
+            extra: Default::default(),
+        })
+    }
+
+    fn apply_correction(
+        &mut self,
+        base: &[u8],
+        incoming: &[u8],
+        choose: &serde_json::Value,
+    ) -> Result<Observation, AdapterError> {
+        self.drive_correction(base, incoming, choose)
     }
 
     fn blob_put(&mut self, spec: &super::blobs::BlobPutSpec) -> Result<Observation, AdapterError> {

@@ -107,33 +107,36 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- `erase` step ---
     ("annex-d-identity/erase-removes-live-row-and-rechecksums-history", "`erase` step not driven this phase"),
     ("annex-d-identity/erasure-extract-replay-foreign-instance-rejected", "`erase` step not driven this phase"),
-    // --- `export` step ---
-    ("19-history-artifacts/displaced-lineage-reimport-is-merge", "`export` step not driven this phase"),
-    ("19-history-artifacts/forged-state-consistent-checksums-unspecified", "`export` step not driven this phase"),
-    ("19-history-artifacts/history-index-overlapping-ranges-invalid", "`export` step not driven this phase"),
-    ("19-history-artifacts/import-fast-forward-applies-continuation", "`export` step not driven this phase"),
-    ("19-history-artifacts/import-policy-gates-activation", "`export` step not driven this phase"),
-    ("19-history-artifacts/import-replay-idempotent", "`export` step not driven this phase"),
-    ("19-history-artifacts/imported-state-survives-restart", "`export` step not driven this phase"),
-    ("19-history-artifacts/manifest-extra-member-invalid", "`export` step not driven this phase"),
-    ("19-history-artifacts/manifest-index-selection-mismatch-invalid", "`export` step not driven this phase"),
-    ("19-history-artifacts/merge-combined-uniqueness-violation-conflict", "`export` step not driven this phase"),
-    ("19-history-artifacts/merge-compatible-separate-coordinates", "`export` step not driven this phase"),
-    ("19-history-artifacts/merge-competing-module-mounts-conflict", "`export` step not driven this phase"),
-    ("19-history-artifacts/merge-correction-activates-new-lineage", "`export` step not driven this phase"),
-    ("19-history-artifacts/mimetype-mismatch-invalid", "`export` step not driven this phase"),
-    ("19-history-artifacts/missing-required-entry-invalid", "`export` step not driven this phase"),
-    ("19-history-artifacts/point-id-aliasing-unrelated-history-unspecified", "`export` step not driven this phase"),
-    ("19-history-artifacts/restore-reexport-preserves-selection-identity", "`export` step not driven this phase"),
-    ("19-history-artifacts/spliced-state-selection-mismatch-invalid", "`export` step not driven this phase"),
-    ("19-history-artifacts/tampered-state-checksum-mismatch-invalid", "`export` step not driven this phase"),
-    ("19-history-artifacts/unknown-extra-entry-unspecified", "`export` step not driven this phase"),
-    ("19-history-artifacts/zip-path-traversal-entry-invalid", "`export` step not driven this phase"),
-    ("20-evolution-migrations/downgrade-preserves-history-order", "`export` step not driven this phase"),
-    ("annex-d-identity/display-path-key-slash-escaped-in-correction", "`export` step not driven this phase"),
+    // --- §19 history op families (export/import/reconcile/apply_correction, the
+    // tamper and extract ops) now drive end to end (adapter/ops.rs, artifacts.rs,
+    // correction.rs). The residual entries are genuine runtime/artifact seams, not
+    // adapter driving gaps. ---
+    // §19.8 classification: the runtime classifies an incoming artifact by commit-
+    // seat order within one instance+lineage only, so a continuation/policy/replay/
+    // displaced-lineage relation is not distinguished as the corpus expects.
+    ("19-history-artifacts/import-fast-forward-applies-continuation", "§19.8 classify reports a seat-order relation the case does not expect (runtime classifies by commit seat within one lineage)"),
+    ("19-history-artifacts/import-policy-gates-activation", "§19.8 classify reports a seat-order relation the case does not expect (runtime classifies by commit seat within one lineage)"),
+    ("19-history-artifacts/import-replay-idempotent", "§19.8 classify reports a seat-order relation the case does not expect (runtime classifies by commit seat within one lineage)"),
+    ("19-history-artifacts/imported-state-survives-restart", "§19.8 classify reports a seat-order relation the case does not expect (runtime classifies by commit seat within one lineage)"),
+    ("19-history-artifacts/displaced-lineage-reimport-is-merge", "§19.8 the runtime does not classify a same-lineage divergence as a merge (classify is seat-order only)"),
+    ("19-history-artifacts/restore-reexport-preserves-selection-identity", "§19.7 a restore re-export re-selects a fresh point, so selected.point differs from the original (point identity across restore unlanded)"),
+    // §19.7 state-section-vs-selected-point coherence is not verified at restore, so
+    // a spliced or mismatched selection is accepted rather than rejected.
+    ("19-history-artifacts/manifest-index-selection-mismatch-invalid", "§19.7 state/index selection coherence is not verified at restore, so a mismatched selection is accepted"),
+    ("19-history-artifacts/spliced-state-selection-mismatch-invalid", "§19.7 state-vs-selected-point coherence is not verified at restore (the copy_entry_from splice is accepted)"),
+    // §19.9 the runtime merge does not re-validate the combined composition under
+    // ordinary rules, so an individually-clean union that breaks uniqueness is
+    // reported clean instead of conflicting.
+    ("19-history-artifacts/merge-combined-uniqueness-violation-conflict", "§19.9 the runtime merge does not re-validate the combined composition under uniqueness, so the invalid union is reported clean (applied true)"),
+    // Tamper ops needing machinery beyond archive byte/JSON surgery.
+    ("19-history-artifacts/forged-state-consistent-checksums-unspecified", "the `edit_cbor` tamper needs schema-owned resolution of a keyed-collection logical pointer into the state section, beyond byte surgery"),
+    ("19-history-artifacts/history-index-overlapping-ranges-invalid", "the runtime emits an empty history-index `ranges` object (CORE), so `duplicate_json_member` has nothing to duplicate and §19.6 range verification is unlanded"),
+    // §13 non-absolute module space / child-artifact embedding (same seam as the
+    // child-* cases below).
+    ("19-history-artifacts/merge-competing-module-mounts-conflict", "§13 the case mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects, so mount competition never reaches the merge"),
+    ("20-evolution-migrations/downgrade-preserves-history-order", "§20 the downgrade `host_load` is rejected (migration/history-order preservation seam), reached only after the export setup drives"),
     // --- `host_load` step ---
     ("20-evolution-migrations/confusable-from-source-name-nonexistent-rejected", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/downgrade-drops-unrepresentable-field-rejected", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/downgrade-via-inverse-restores-value", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/empty-source-collection-migrates-to-empty", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/migrated-state-dangling-ref-rejected", "`host_load` step not driven this phase"),
@@ -145,7 +148,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("20-evolution-migrations/missing-migration-for-active-source-version-rejected", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/replay-identical-version-update-unchanged", "`host_load` step not driven this phase"),
     ("20-evolution-migrations/reversible-transform-roundtrip-commits", "`host_load` step not driven this phase"),
-    ("annex-e-compatibility/downgrade-drops-populated-field-rejected", "`host_load` step not driven this phase"),
     // --- `keyring_admin` manual `bind_activate` (§17.4 manual policy) ---
     // `keyring_admin` now drives the engine's self-provisioned ring through
     // `Engine::keyring_admin` (adapter/keyrings.rs) — `revoke`/`destroy` on an
@@ -183,11 +185,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // parent's declared `$interfaces` is not checked at install.
     ("13-modules/expose-binding-contract-mismatch-invalid", "§13.8/§13.10 interface-contract satisfaction (the child exposed `$mut`/`$view` binding vs the parent's declared interface) is not checked at install, so the mismatch is admitted"),
     ("13-modules/interface-mutation-param-contract-mismatch-invalid", "§13.10 interface mutation parameter-contract satisfaction is not checked at install"),
-    // `$config` (§13.1): recorded on the install request, but neither type-checked
-    // against the declared struct nor readable through child expressions.
-    ("13-modules/install-config-type-mismatch-invalid", "§13.1 installation `$config` is recorded but not type-checked against the child's declared `$config` struct, so a type mismatch is admitted"),
-    ("13-modules/install-config-unknown-member-invalid", "§13.1/§2.5 installation `$config` is recorded but its members are not validated against the declared struct, so an unknown member is admitted"),
-    ("13-modules/module-config-values-read-through-binding", "§13.1 `$config` read-through in child expressions is unlanded (the expression language has no `$config` binding), so the child fails to compile at install"),
     // Installation `$data` overlay (§13.3): the overlay is recorded on the install
     // request (adapter/modules.rs), so a fresh-row overlay and its `$check` now run;
     // the three-way *merge* onto an already-seeded row is a runtime seam.
@@ -244,16 +241,11 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- hostfault:nested ---
     ("05-state-model/like-recursion-adopts-containing-shape", "host environment nested-collection shaping gap (engine invariant)"),
     // --- hostfault:row-field ---
-    ("04-package-structure/data-expression-and-literal-escape", "host environment row-field shaping gap (engine invariant)"),
     ("05-state-model/named-type-recursive-shape", "host environment row-field shaping gap (engine invariant)"),
     ("06-expressions/caret-reads-lexical-parent-scope", "host environment row-field shaping gap (engine invariant)"),
     ("06-expressions/selector-set-keys-follow-target-canonical-order", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/computed-field-equals-prefix-form", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/deep-nested-projection-loads", "host environment row-field shaping gap (engine invariant)"),
-    ("annex-c-grammar/double-leading-quote-stores-single-quote", "host environment row-field shaping gap (engine invariant)"),
-    ("annex-c-grammar/literal-equals-prefixed-text-escaped-in-data", "host environment row-field shaping gap (engine invariant)"),
-    ("annex-c-grammar/literal-leading-quote-removed-in-data", "host environment row-field shaping gap (engine invariant)"),
-    ("annex-c-grammar/lone-quote-in-data-stores-empty-string", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/member-order-carries-no-semantics", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/plain-object-is-static-struct", "host environment row-field shaping gap (engine invariant)"),
     // ========================================================================
@@ -308,7 +300,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("w-worked-examples/w2-two-logins-create-distinct-sessions", "package does not load yet (upstream compile/model gap)"),
     // --- seed ---
     ("15-meters/spend-time-in-gap-between-periods-unfunded", "seed admission gap: seed field `period`: `duration` value `= none` is not a canonical ISO-8601 elapsed dura..."),
-    ("15-meters/w3-overlapping-heterogeneous-credits", "seed admission gap: seed field `period`: `duration` value `= none` is not a canonical ISO-8601 elapsed dura..."),
     ("annex-a-types-wire/ref-composite-wire-is-key-order-array", "seed admission gap: reference `loc` does not resolve to a live row"),
     // ========================================================================
     // RUNTIME RESULT DIVERGES FROM THE CORPUS EXPECTATION

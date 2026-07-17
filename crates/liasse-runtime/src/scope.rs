@@ -100,7 +100,16 @@ impl Scope for RuntimeScope {
     }
 
     fn structural(&self, name: &str) -> Option<ExprType> {
-        self.structurals.get(name).cloned()
+        if let Some(ty) = self.structurals.get(name) {
+            return Some(ty.clone());
+        }
+        // §13.1: a package-wide structural binding (`$config`) is carried on the
+        // root row type, so every scope built over this root resolves it without
+        // each construction site rebinding it.
+        match &self.root {
+            ExprType::Row(row) | ExprType::View(row) => row.structural(name).cloned(),
+            ExprType::Scalar(_) => None,
+        }
     }
 
     fn import(&self, _name: &str) -> Option<ExprType> {

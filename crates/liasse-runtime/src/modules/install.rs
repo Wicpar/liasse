@@ -91,9 +91,10 @@ impl DepSpec {
 /// occurrences (§13.12) without re-parsing the request.
 #[derive(Debug, Clone, Default)]
 pub struct AdmittedBindings {
-    /// The immutable `$config` installation values (§13.1). Recorded here; reading
-    /// them through `$config` inside child expressions is a documented seam (the
-    /// expression language has no `$config` binding yet).
+    /// The immutable `$config` installation values (§13.1). Recorded here as the
+    /// supplied values; at install they are type-checked against the child's
+    /// declared `$config` struct and resolved (with defaults) into the `$config`
+    /// value the child's expressions read through `$config`/`$config.member`.
     pub config: BTreeMap<String, Value>,
     /// Required and optional `$use` handles (§13.5), each carrying whether its
     /// absence is valid (`$optional`).

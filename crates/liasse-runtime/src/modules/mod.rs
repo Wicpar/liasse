@@ -31,9 +31,6 @@
 //!
 //! - Installation `$data` overlay onto the child genesis (§13.3), and wiring the
 //!   [`SeedMerge`] rule into the update seed pass (§13.13).
-//! - `$config` read-through inside child expressions (§13.1) and config
-//!   type-checking against the declared `$config` struct (needs a root-model
-//!   accessor this crate cannot add).
 //! - Peer/parent resolution against the sibling set, interface satisfaction, and
 //!   `$deps` nested-instance provisioning (§13.4–§13.6); binding a space to a
 //!   declared `$modules` mount and checking the containing row exists (§13.2).

@@ -74,3 +74,110 @@ fn invalid_seed_rejects_the_load() {
         Ok(_) => panic!("an invalid seed must not activate"),
     }
 }
+
+/// §4.2 / Annex C.4: a `$data` value is a literal-or-expression position. A
+/// string beginning with `=` is an expression evaluated against the seed state;
+/// a leading `'` escapes exactly one quote and stores the remainder as a literal
+/// that is never evaluated.
+const SEED_ESCAPE: &str = r#"{
+  "$liasse": 1
+  "$app": "t.escape@1.0.0"
+  "$model": {
+    "docs": {
+      "$key": "id"
+      "id": "text"
+      "formula": "text"
+      "n": "int"
+    }
+    "all_docs": { "$view": ".docs { id, formula, n }" }
+  }
+  "$data": {
+    "docs": {
+      "d1": { "formula": "'= total + tax", "n": "= 1 + 1" }
+    }
+  }
+}"#;
+
+#[test]
+fn seed_honors_the_literal_escape_and_the_expression_form() {
+    let engine = load("escape", SEED_ESCAPE);
+    let view = engine.view_at_head("all_docs").expect("view").expect("declared");
+    assert_eq!(view.len(), 1, "one seeded doc");
+    let row = &view.rows()[0];
+    // "'= total + tax" is an escaped literal: one leading ' removed, NOT evaluated.
+    assert_eq!(
+        row.field("formula"),
+        Some(&text("= total + tax")),
+        "a leading ' escape stores the literal `= total + tax`, not an evaluated expression",
+    );
+    // "= 1 + 1" is an expression evaluated at seed time to the int 2.
+    assert_eq!(
+        row.field("n"),
+        Some(&int(2)),
+        "a `= 1 + 1` seed value evaluates to the int 2",
+    );
+}
+
+/// The leading-`'` escape removes exactly one quote (Annex C.4): `"'x"` stores
+/// `"x"`, `"''x"` stores `"'x"`, and a lone `"'"` stores the empty string.
+const SEED_QUOTE_BOUNDARY: &str = r#"{
+  "$liasse": 1
+  "$app": "t.quoteboundary@1.0.0"
+  "$model": {
+    "docs": { "$key": "id", "id": "text", "label": "text" }
+    "all_docs": { "$view": ".docs { id, label }" }
+  }
+  "$data": {
+    "docs": {
+      "plain": { "label": "'plain" }
+      "double": { "label": "''x" }
+      "lone": { "label": "'" }
+    }
+  }
+}"#;
+
+#[test]
+fn seed_literal_escape_removes_exactly_one_leading_quote() {
+    let engine = load("quote-boundary", SEED_QUOTE_BOUNDARY);
+    let view = engine.view_at_head("all_docs").expect("view").expect("declared");
+    let label = |id: &str| {
+        view.rows()
+            .iter()
+            .find(|r| r.field("id") == Some(&text(id)))
+            .and_then(|r| r.field("label"))
+            .cloned()
+    };
+    assert_eq!(label("plain"), Some(text("plain")), "one leading ' removed");
+    assert_eq!(label("double"), Some(text("'x")), "exactly one of two leading quotes removed");
+    assert_eq!(label("lone"), Some(text("")), "a lone ' stores the empty string");
+}
+
+/// The exact §04 `data-expression-and-literal-escape` corpus package, served
+/// through its `$public` surface view (which reads another view) — proving the
+/// seed materialization is observable end to end at the runtime boundary.
+const SEED_ESCAPE_SURFACE: &str = r#"{
+  "$liasse": 1
+  "$app": "t.pkg.escape@1.0.0"
+  "$model": {
+    "doc": { "formula": "text", "n": "int" }
+    "doc_view": { "$view": ".doc { formula, n }" }
+    "$public": { "doc": { "$view": ".doc_view" } }
+  }
+  "$data": {
+    "doc": { "formula": "'= total + tax", "n": "= 1 + 1" }
+  }
+}"#;
+
+#[test]
+fn seed_escape_is_observable_through_a_public_surface_view() {
+    use liasse_runtime::ViewQuery;
+    let engine = load("escape-surface", SEED_ESCAPE_SURFACE);
+    let head = engine.head();
+    let result = engine
+        .view_with("public.doc", head, &ViewQuery::new())
+        .expect("surface view")
+        .expect("declared");
+    let row = &result.rows()[0];
+    assert_eq!(row.field("formula"), Some(&text("= total + tax")), "escaped literal survives the surface read");
+    assert_eq!(row.field("n"), Some(&int(2)), "the `= 1 + 1` seed evaluates to 2 through the surface read");
+}

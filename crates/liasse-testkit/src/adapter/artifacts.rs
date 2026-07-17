@@ -125,15 +125,53 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         let bytes = self
             .artifacts
             .get(&from)
-            .ok_or_else(|| AdapterError::unsupported(format!("`tamper_artifact` names no artifact `{from}` in scope")))?;
-        let mut entries = super::rawzip::read_ordered(bytes).map_err(AdapterError::Host)?;
+            .ok_or_else(|| AdapterError::unsupported(format!("`tamper_artifact` names no artifact `{from}` in scope")))?
+            .clone();
+        let mut entries = super::rawzip::read_ordered(&bytes).map_err(AdapterError::Host)?;
 
         for op in target.get("ops").and_then(J::as_array).into_iter().flatten() {
-            apply_tamper_op(&mut entries, op)?;
+            apply_tamper_op(&mut entries, op, &self.artifacts)?;
         }
         let tampered = super::rawzip::write_ordered(&entries);
         self.artifacts.insert(label, tampered);
         Ok(Observation::ok(None))
+    }
+
+    /// §19.5 `extract_artifact`: pull one archive entry that is itself a nested
+    /// `.liasse` (every entry below `modules/` is a complete artifact) and bind its
+    /// bytes under the step's `as` label. `entry` is a glob that must match exactly
+    /// one entry.
+    pub(super) fn drive_extract_artifact(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let target = &request.target;
+        let Some(from) = target.get("from").and_then(J::as_str) else {
+            return Err(AdapterError::unsupported("`extract_artifact` step carries no `from` label"));
+        };
+        let Some(glob) = target.get("entry").and_then(J::as_str) else {
+            return Err(AdapterError::unsupported("`extract_artifact` step carries no `entry` glob"));
+        };
+        let Some(label) = target.get("as").and_then(J::as_str) else {
+            return Err(AdapterError::unsupported("`extract_artifact` step carries no `as` label"));
+        };
+        let label = label.to_owned();
+        let bytes = self
+            .artifacts
+            .get(from)
+            .ok_or_else(|| AdapterError::unsupported(format!("`extract_artifact` names no artifact `{from}` in scope")))?;
+        let entries = super::rawzip::read_ordered(bytes).map_err(AdapterError::Host)?;
+        let mut matched = entries.iter().filter(|(name, _)| glob_match(glob, name));
+        match (matched.next(), matched.next()) {
+            (Some((_, data)), None) => {
+                let data = data.clone();
+                self.artifacts.insert(label, data);
+                Ok(Observation::ok(None))
+            }
+            (None, _) => Err(AdapterError::unsupported(format!(
+                "`extract_artifact` glob `{glob}` matched no archive entry"
+            ))),
+            (Some(_), Some(_)) => Err(AdapterError::unsupported(format!(
+                "`extract_artifact` glob `{glob}` matched several archive entries (must match exactly one)"
+            ))),
+        }
     }
 
     /// §19.5 `inspect_artifact`: open-and-verify the artifact and return its
@@ -281,9 +319,15 @@ fn rehash(entries: &mut [(String, Vec<u8>)]) -> Result<(), AdapterError> {
     Ok(())
 }
 
-/// Apply one §19 `tamper_artifact` op. The ops the annex-d archive-integrity
-/// corpus exercises are supported; a broader §19 op is a precise skip.
-fn apply_tamper_op(entries: &mut Vec<(String, Vec<u8>)>, op: &J) -> Result<(), AdapterError> {
+/// Apply one §19 `tamper_artifact` op. The byte- and JSON-surgery ops the §19 and
+/// annex-d integrity corpus exercises are driven; a CBOR-state edit is a precise
+/// skip (the state section carries the runtime's keyed-collection codec, so its
+/// logical pointer needs schema-owned key resolution beyond byte surgery).
+fn apply_tamper_op(
+    entries: &mut Vec<(String, Vec<u8>)>,
+    op: &J,
+    artifacts: &std::collections::BTreeMap<String, Vec<u8>>,
+) -> Result<(), AdapterError> {
     let Some((name, body)) = op.as_object().and_then(|map| map.iter().next()) else {
         return Err(AdapterError::unsupported("malformed `tamper_artifact` op"));
     };
@@ -291,9 +335,7 @@ fn apply_tamper_op(entries: &mut Vec<(String, Vec<u8>)>, op: &J) -> Result<(), A
         // Smuggle a second entry with identical bytes to the referenced one, so
         // every checksum still matches yet the entry exists twice (§D.5).
         "duplicate_entry" => {
-            let Some(path) = body.get("path").and_then(J::as_str) else {
-                return Err(AdapterError::unsupported("`duplicate_entry` carries no `path`"));
-            };
+            let path = entry_path(body, "duplicate_entry")?;
             let Some((_, data)) = entries.iter().find(|(n, _)| n == path) else {
                 return Err(AdapterError::unsupported(format!("`duplicate_entry` names absent entry `{path}`")));
             };
@@ -301,12 +343,81 @@ fn apply_tamper_op(entries: &mut Vec<(String, Vec<u8>)>, op: &J) -> Result<(), A
             entries.push(copy);
             Ok(())
         }
-        // Edit an entry's JSON at a pointer (leaving the manifest checksum stale
-        // unless a later `fix_checksums` op recomputes it).
-        "edit_json" => {
-            let Some(path) = body.get("path").and_then(J::as_str) else {
-                return Err(AdapterError::unsupported("`edit_json` carries no `path`"));
+        // Flip the last byte of an entry, so its checksum no longer matches (§D.5).
+        "corrupt_entry" => {
+            let path = entry_path(body, "corrupt_entry")?;
+            let Some((_, data)) = entries.iter_mut().find(|(n, _)| n == path) else {
+                return Err(AdapterError::unsupported(format!("`corrupt_entry` names absent entry `{path}`")));
             };
+            match data.last_mut() {
+                Some(last) => *last ^= 0x01,
+                None => data.push(0x01),
+            }
+            Ok(())
+        }
+        // Replace an entry's bytes with UTF-8 text.
+        "set_entry" => {
+            let path = entry_path(body, "set_entry")?;
+            let text = body.get("text").and_then(J::as_str).unwrap_or_default();
+            set_entry(entries, path, text.as_bytes().to_vec());
+            Ok(())
+        }
+        // Delete an archive entry, leaving the manifest untouched (a dangling
+        // reference the verifier catches).
+        "remove_entry" => {
+            let path = entry_path(body, "remove_entry")?;
+            entries.retain(|(n, _)| n != path);
+            Ok(())
+        }
+        // Add a new archive entry with UTF-8 text content.
+        "add_entry" => {
+            let path = entry_path(body, "add_entry")?;
+            let text = body.get("text").and_then(J::as_str).unwrap_or_default();
+            entries.push((path.to_owned(), text.as_bytes().to_vec()));
+            Ok(())
+        }
+        // Replace an entry with the same-named entry's bytes from another artifact.
+        "copy_entry_from" => {
+            let path = entry_path(body, "copy_entry_from")?;
+            let Some(label) = body.get("artifact").and_then(J::as_str) else {
+                return Err(AdapterError::unsupported("`copy_entry_from` carries no `artifact`"));
+            };
+            let Some(source) = artifacts.get(label) else {
+                return Err(AdapterError::unsupported(format!("`copy_entry_from` names no artifact `{label}`")));
+            };
+            let source = super::rawzip::read_ordered(source).map_err(AdapterError::Host)?;
+            let Some((_, data)) = source.iter().find(|(n, _)| n == path) else {
+                return Err(AdapterError::unsupported(format!(
+                    "`copy_entry_from` finds no entry `{path}` in `{label}`"
+                )));
+            };
+            set_entry(entries, path, data.clone());
+            Ok(())
+        }
+        // Add an `entries` manifest member for `path` with the correct media and
+        // sha256 of the current bytes.
+        "add_manifest_entry" => {
+            let path = entry_path(body, "add_manifest_entry")?;
+            let sha = entries
+                .iter()
+                .find(|(n, _)| n == path)
+                .map(|(_, data)| Digest::of_bytes(data).to_canonical_text());
+            let Some(sha) = sha else {
+                return Err(AdapterError::unsupported(format!("`add_manifest_entry` names absent entry `{path}`")));
+            };
+            edit_manifest(entries, |manifest| {
+                if let Some(map) = manifest.get_mut("entries").and_then(J::as_object_mut) {
+                    map.insert(
+                        path.to_owned(),
+                        serde_json::json!({ "media": "application/octet-stream", "sha256": sha }),
+                    );
+                }
+            })
+        }
+        // Set (creating if absent) an entry's JSON member at a pointer, leaving the
+        // manifest checksum stale unless a later `fix_checksums` recomputes it.
+        "edit_json" => {
+            let path = entry_path(body, "edit_json")?;
             let Some(pointer) = body.get("pointer").and_then(J::as_str) else {
                 return Err(AdapterError::unsupported("`edit_json` carries no `pointer`"));
             };
@@ -315,19 +426,150 @@ fn apply_tamper_op(entries: &mut Vec<(String, Vec<u8>)>, op: &J) -> Result<(), A
                 return Err(AdapterError::unsupported(format!("`edit_json` names absent entry `{path}`")));
             };
             let mut value: J = serde_json::from_slice(data).map_err(|err| AdapterError::Host(err.to_string()))?;
-            let Some(slot) = value.pointer_mut(pointer) else {
-                return Err(AdapterError::unsupported(format!("`edit_json` pointer `{pointer}` does not resolve")));
-            };
-            *slot = new;
+            set_json_pointer(&mut value, pointer, new)?;
             *data = serde_json::to_vec(&value).map_err(|err| AdapterError::Host(err.to_string()))?;
+            Ok(())
+        }
+        // Replace an identifier everywhere it appears as a string value or member
+        // name in the artifact's JSON entries (manifest, history index, definition).
+        "rewrite_identifier" => {
+            let Some(from) = body.get("from").and_then(J::as_str) else {
+                return Err(AdapterError::unsupported("`rewrite_identifier` carries no `from`"));
+            };
+            let Some(to) = body.get("to").and_then(J::as_str) else {
+                return Err(AdapterError::unsupported("`rewrite_identifier` carries no `to`"));
+            };
+            for (_, data) in entries.iter_mut().filter(|(name, _)| name.ends_with(".json")) {
+                if let Ok(mut value) = serde_json::from_slice::<J>(data) {
+                    rewrite_identifier(&mut value, from, to);
+                    if let Ok(bytes) = serde_json::to_vec(&value) {
+                        *data = bytes;
+                    }
+                }
+            }
             Ok(())
         }
         // Recompute every byte checksum so tampered bytes are self-consistent.
         "fix_checksums" => rehash(entries),
+        "edit_cbor" => Err(AdapterError::unsupported(
+            "`tamper_artifact` op `edit_cbor` needs schema-owned resolution of a keyed-collection \
+             logical pointer (`/state/<coll>/<key>/…`) into the state section, beyond byte surgery",
+        )),
+        "duplicate_json_member" => Err(AdapterError::unsupported(
+            "`tamper_artifact` op `duplicate_json_member` targets `history/index.json` ranges, which \
+             the runtime emits as an empty object (a CORE simplification), so there is nothing to \
+             duplicate and §19.6 range-partition verification is unlanded",
+        )),
         other => Err(AdapterError::unsupported(format!(
-            "`tamper_artifact` op `{other}` is not driven this phase (the annex-d archive-integrity \
-             ops duplicate_entry/edit_json/fix_checksums are)"
+            "`tamper_artifact` op `{other}` is not driven this phase"
         ))),
+    }
+}
+
+/// The `path` member of a tamper op, or a precise skip when absent.
+fn entry_path<'a>(body: &'a J, op: &str) -> Result<&'a str, AdapterError> {
+    body.get("path")
+        .and_then(J::as_str)
+        .ok_or_else(|| AdapterError::unsupported(format!("`{op}` carries no `path`")))
+}
+
+/// Parse `manifest.json`, apply `edit`, and write it back.
+fn edit_manifest(entries: &mut [(String, Vec<u8>)], edit: impl FnOnce(&mut J)) -> Result<(), AdapterError> {
+    let Some((_, data)) = entries.iter_mut().find(|(n, _)| n == MANIFEST_JSON) else {
+        return Err(AdapterError::unsupported("op finds no `manifest.json` entry"));
+    };
+    let mut manifest: J = serde_json::from_slice(data).map_err(|err| AdapterError::Host(err.to_string()))?;
+    edit(&mut manifest);
+    *data = serde_json::to_vec(&manifest).map_err(|err| AdapterError::Host(err.to_string()))?;
+    Ok(())
+}
+
+/// Set a JSON pointer, creating any absent intermediate object members and the
+/// final member. Supports the object and array-index pointer forms the corpus uses;
+/// `~1`/`~0` unescape to `/`/`~` (RFC 6901).
+fn set_json_pointer(root: &mut J, pointer: &str, new: J) -> Result<(), AdapterError> {
+    let segments: Vec<String> = pointer
+        .strip_prefix('/')
+        .unwrap_or(pointer)
+        .split('/')
+        .map(|segment| segment.replace("~1", "/").replace("~0", "~"))
+        .collect();
+    let Some((last, parents)) = segments.split_last() else {
+        *root = new;
+        return Ok(());
+    };
+    if last.is_empty() && parents.is_empty() {
+        *root = new;
+        return Ok(());
+    }
+    let mut current = root;
+    for segment in parents {
+        current = descend(current, segment)?;
+    }
+    match current {
+        J::Object(map) => {
+            map.insert(last.clone(), new);
+            Ok(())
+        }
+        J::Array(items) => match last.parse::<usize>().ok().and_then(|index| items.get_mut(index)) {
+            Some(slot) => {
+                *slot = new;
+                Ok(())
+            }
+            None => Err(AdapterError::unsupported(format!("`edit_json` pointer index `{last}` is out of range"))),
+        },
+        _ => Err(AdapterError::unsupported(format!("`edit_json` pointer `{pointer}` is not addressable"))),
+    }
+}
+
+/// Descend one pointer segment, creating an absent object member as an empty object.
+fn descend<'a>(current: &'a mut J, segment: &str) -> Result<&'a mut J, AdapterError> {
+    match current {
+        J::Object(map) => Ok(map.entry(segment.to_owned()).or_insert_with(|| J::Object(serde_json::Map::new()))),
+        J::Array(items) => match segment.parse::<usize>().ok().and_then(|index| items.get_mut(index)) {
+            Some(slot) => Ok(slot),
+            None => Err(AdapterError::unsupported(format!("`edit_json` pointer index `{segment}` is out of range"))),
+        },
+        _ => Err(AdapterError::unsupported("`edit_json` pointer descends through a non-container")),
+    }
+}
+
+/// Replace every string value and object member name that *equals* `from` with `to`,
+/// recursively — the identifier-substitution the §19 point-id aliasing tamper needs.
+fn rewrite_identifier(value: &mut J, from: &str, to: &str) {
+    match value {
+        J::String(text) => {
+            if text == from {
+                *text = to.to_owned();
+            }
+        }
+        J::Array(items) => {
+            for item in items {
+                rewrite_identifier(item, from, to);
+            }
+        }
+        J::Object(map) => {
+            let mut rebuilt = serde_json::Map::with_capacity(map.len());
+            for (key, mut member) in std::mem::take(map) {
+                rewrite_identifier(&mut member, from, to);
+                let key = if key == from { to.to_owned() } else { key };
+                rebuilt.insert(key, member);
+            }
+            *map = rebuilt;
+        }
+        _ => {}
+    }
+}
+
+/// Match `name` against a glob with at most one `*` wildcard (prefix `*` suffix).
+fn glob_match(glob: &str, name: &str) -> bool {
+    match glob.split_once('*') {
+        None => glob == name,
+        Some((prefix, suffix)) => {
+            name.len() >= prefix.len() + suffix.len()
+                && name.starts_with(prefix)
+                && name.ends_with(suffix)
+        }
     }
 }
 

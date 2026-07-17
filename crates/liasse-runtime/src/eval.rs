@@ -90,6 +90,25 @@ impl<'a> EvalCtx<'a> {
         )
     }
 
+    /// The evaluation environment that folds each computed value, nested view, or
+    /// declared view over `base` as the root (§5.2, §7.1). It carries the request
+    /// context so a folded expression resolves `$config` (§13.1) — and, harmlessly,
+    /// `$actor`/`$session`, which no foldable expression can reference — while
+    /// introducing no lexical local bindings.
+    fn fold_env(&self, base: Row, temporal: Vec<Vec<Row>>) -> RuntimeEnv<'a> {
+        RuntimeEnv::new(
+            base,
+            self.params.clone(),
+            BTreeMap::new(),
+            self.context.clone(),
+            self.now,
+            self.seed,
+            temporal,
+            self.keyrings.to_vec(),
+            self.hosts,
+        )
+    }
+
     /// Merge the request-scoped context bindings (`$actor`/`$session`, §11.1) with
     /// the caller's own structurals. A caller-supplied name wins, so a feature that
     /// rebinds a structural (none does in CORE) keeps precedence.
@@ -143,17 +162,7 @@ impl<'a> EvalCtx<'a> {
             return base;
         }
         let temporal = self.temporal_index(prospective);
-        let env = RuntimeEnv::new(
-            base.clone(),
-            self.params.clone(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            self.now,
-            self.seed,
-            temporal,
-            self.keyrings.to_vec(),
-            self.hosts,
-        );
+        let env = self.fold_env(base.clone(), temporal);
         fold_computed(&env, &self.compiled.root_computed, base)
     }
 
@@ -168,17 +177,7 @@ impl<'a> EvalCtx<'a> {
             return base;
         }
         let temporal = self.temporal_index(prospective);
-        let env = RuntimeEnv::new(
-            base.clone(),
-            self.params.clone(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            self.now,
-            self.seed,
-            temporal,
-            self.keyrings.to_vec(),
-            self.hosts,
-        );
+        let env = self.fold_env(base.clone(), temporal);
         let cells: Vec<(String, Cell)> = base
             .cells()
             .map(|(name, cell)| match (cell, self.compiled.collection(name)) {
@@ -220,17 +219,7 @@ impl<'a> EvalCtx<'a> {
             return base;
         }
         let temporal = self.temporal_index(prospective);
-        let env = RuntimeEnv::new(
-            base.clone(),
-            self.params.clone(),
-            BTreeMap::new(),
-            BTreeMap::new(),
-            self.now,
-            self.seed,
-            temporal,
-            self.keyrings.to_vec(),
-            self.hosts,
-        );
+        let env = self.fold_env(base.clone(), temporal);
         let cells: Vec<(String, Cell)> = base
             .cells()
             .map(|(name, cell)| match (cell, self.compiled.collection(name)) {
@@ -366,17 +355,7 @@ impl<'a> EvalCtx<'a> {
             let mut progressed = false;
             let mut still = Vec::new();
             for view in pending {
-                let env = RuntimeEnv::new(
-                    root.clone(),
-                    self.params.clone(),
-                    BTreeMap::new(),
-                    BTreeMap::new(),
-                    self.now,
-                    self.seed,
-                    temporal.clone(),
-                    self.keyrings.to_vec(),
-                    self.hosts,
-                );
+                let env = self.fold_env(root.clone(), temporal.clone());
                 let current = Cell::Row(Box::new(root.clone()));
                 match view.expr.evaluate(&env, &current) {
                     Ok(cell) => {

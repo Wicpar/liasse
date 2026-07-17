@@ -45,6 +45,7 @@
 mod artifacts;
 mod auth;
 mod blobs;
+mod correction;
 mod error;
 mod keyrings;
 pub mod lift;
@@ -176,6 +177,10 @@ pub struct ScenarioAdapter<S: InstanceStore> {
     /// The §19.9 merge base of each exported artifact: the shared ancestor it
     /// diverged from (the sandbox origin at export time), keyed by artifact label.
     artifact_origin: std::collections::BTreeMap<String, String>,
+    /// Reconciliation plans a `reconcile` step bound with `bind_plan`, keyed by the
+    /// plan label, so a later `apply_correction` recovers the base/incoming bytes to
+    /// recompute and resolve the §19.9 merge (adapter/correction.rs).
+    plans: std::collections::BTreeMap<String, correction::ReconcilePlan>,
     /// The base load's wiring, replayed when a sandbox restores an artifact.
     load_ctx: LoadContext,
     /// The case's child package definitions (`packages` map), keyed by label, so a
@@ -232,6 +237,7 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
             sandbox_origins: Vec::new(),
             artifacts: std::collections::BTreeMap::new(),
             artifact_origin: std::collections::BTreeMap::new(),
+            plans: std::collections::BTreeMap::new(),
             load_ctx,
             packages: child_packages(&case.packages),
             module: None,

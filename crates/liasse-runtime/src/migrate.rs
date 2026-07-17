@@ -94,9 +94,23 @@ impl<S: InstanceStore> Engine<S> {
                 format!("update narrows the boundary contract: {reason}"),
             )));
         }
-        let plan = MigrationPlan::read(target).map_err(UpdateError::Engine)?;
         let old_state =
             StateSection::capture(self.schema(), self.store()).map_err(|e| UpdateError::Engine(EngineError::Store(e)))?;
+        // §20.2: a downgrade loads the older package and applies an explicit direct
+        // migration or the available exact inverses the *active* package declared
+        // (`$from`/`$back`). Build that combined plan and reject the downgrade when a
+        // populated live field the older shape cannot represent has no such transform.
+        let plan = if decision.relation == UpdateRelation::Downgrade {
+            let active = self.definition_source().ok_or_else(|| {
+                UpdateError::Engine(EngineError::Internal("active definition unavailable for downgrade".to_owned()))
+            })?;
+            let plan = downgrade_plan(&active, target).map_err(UpdateError::Engine)?;
+            downgrade_representable(self.compiled(), &old_state, &compilation, &plan)
+                .map_err(UpdateError::Rejected)?;
+            plan
+        } else {
+            MigrationPlan::read(target).map_err(UpdateError::Engine)?
+        };
         let migrated = build_migrated(self.compiled(), &old_state, &compilation, &plan, generator, self.now())
             .map_err(UpdateError::Rejected)?;
         let commit = self
@@ -221,6 +235,73 @@ fn build_migrated<G: crate::generator::Generators>(
         .into_iter()
         .filter_map(|address| prospective.get(&address).map(|fields| (address.clone(), fields.clone())))
         .collect())
+}
+
+/// Build the downgrade migration plan (§20.2): the older target's own declared
+/// mappings, augmented with the exact inverses the *active* package's field
+/// transforms provide. An active field declared `$from: X` with an exact inverse
+/// `$back: B` reconstructs the older field `X` as `B(<active field>)`; the
+/// target's own mapping for `X` (an explicit direct downgrade migration) wins over
+/// the inferred inverse. A collection rename on downgrade is a documented seam, so
+/// an inverse is attributed to the same-named target collection.
+fn downgrade_plan(active_definition: &str, target: &str) -> Result<MigrationPlan, EngineError> {
+    let mut plan = MigrationPlan::read(target)?;
+    let active = MigrationPlan::read(active_definition)?;
+    for (collection, migration) in active.collections {
+        for (active_field, mapping) in migration.fields {
+            let Some(back) = mapping.back else { continue };
+            let target_collection = plan.collections.entry(collection.clone()).or_default();
+            target_collection.fields.entry(mapping.from).or_insert(FieldMigration {
+                from: active_field,
+                transform: Some(back),
+                back: None,
+            });
+        }
+    }
+    Ok(plan)
+}
+
+/// §20.2 downgrade representability: reject the downgrade when the older shape
+/// cannot represent a populated live field and no declared transform preserves it.
+///
+/// A field of the active shape carrying a value in some live row is representable
+/// only when the older shape keeps a field of the same name (the compatible copy),
+/// or some target-field mapping reads it (an explicit direct migration, or an exact
+/// inverse folded into [`downgrade_plan`]). A populated field with neither would be
+/// silently discarded — the §20.2 asymmetry with a forward migration, which MAY
+/// drop a source field because it survives in history — so the downgrade is
+/// rejected and the current package stays active (E.9).
+fn downgrade_representable(
+    active_compiled: &Compiled,
+    active_state: &StateSection,
+    target: &Compilation,
+    plan: &MigrationPlan,
+) -> Result<(), Rejection> {
+    for (name, rows) in active_state.collections() {
+        let Some(active_collection) = active_compiled.collection(name) else { continue };
+        let target_collection = target.compiled.collection(name);
+        let migration = plan.collections.get(name);
+        for field in &active_collection.fields {
+            let populated = rows.iter().any(|row| row.get(&field.name).is_some_and(|value| *value != Value::None));
+            if !populated {
+                continue;
+            }
+            let kept = target_collection.is_some_and(|collection| collection.field(&field.name).is_some());
+            let reconstructed =
+                migration.is_some_and(|migration| migration.fields.values().any(|f| f.from == field.name));
+            if !kept && !reconstructed {
+                return Err(Rejection::new(
+                    RejectionReason::Compatibility,
+                    format!(
+                        "downgrade drops populated field `{}` of `{name}`: the older shape cannot represent \
+                         it and no declared downgrade transform preserves it",
+                        field.name
+                    ),
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Map one source row to the target row (§20.1): the compatible same-name copy,

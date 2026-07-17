@@ -307,7 +307,16 @@ impl Compiled {
         hosts: &HostSignatures,
     ) -> Result<Self, EngineError> {
         let schema = Schema::new(model);
-        let root_ty = ExprType::Row(schema.root_row_type());
+        // §13.1: a module package binds `$config` in every authored expression. The
+        // model already type-checked them against the declared struct; the runtime
+        // re-checks over its own scopes, so carry the `$config` struct as a
+        // structural binding on the root row — every scope built over this root
+        // (the [`RuntimeScope::structural`] fallback) then resolves `$config`.
+        let mut root = schema.root_row_type();
+        if let Some(config) = model.config_schema() {
+            root = root.with_structural([("config".to_owned(), ExprType::Row(config.row_type().clone()))]);
+        }
+        let root_ty = ExprType::Row(root);
         let auth = AuthBindings::derive(schema, model_doc);
         let mut collections = compile_collections(sources, schema, &root_ty, model_doc, hosts)?;
         // §4.4: apply the declared `timestamp_precision` to every stored `timestamp`
