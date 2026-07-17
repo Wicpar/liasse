@@ -103,7 +103,10 @@ impl Request {
         match &step.kind {
             StepKind::Connect => Ok(Self::Connect(ConnectRequest {
                 connection: ConnectionId::new(require_str(&step.target, action, "connection id")?),
-                authenticate: step.member("authenticate").cloned(),
+                // §11.4: a login-minted credential (`credential: "$ref:tok1"`) is a
+                // bound value like any other payload argument, so resolve `$ref:`
+                // bindings inside the authenticate payload before submitting it.
+                authenticate: step.member("authenticate").map(|payload| env.resolve(payload)),
             })),
             StepKind::Disconnect => {
                 Ok(Self::Disconnect(ConnectionId::new(require_str(&step.target, action, "connection id")?)))
@@ -113,7 +116,7 @@ impl Request {
                 args: env.resolve(step.member("args").unwrap_or(&Value::Null)),
                 on: step.on.clone(),
                 operation_id: step.member("operation_id").and_then(Value::as_str).map(ToOwned::to_owned),
-                auth: step.member("auth").cloned(),
+                auth: step.member("auth").map(|selection| env.resolve(selection)),
                 context: step.member("context").and_then(Value::as_str).map(ToOwned::to_owned),
             })),
             StepKind::Watch => Ok(Self::Watch(WatchRequest {
@@ -122,7 +125,7 @@ impl Request {
                 on: step.on.clone(),
                 args: env.resolve(step.member("args").unwrap_or(&Value::Null)),
                 window: step.member("window").cloned(),
-                auth: step.member("auth").cloned(),
+                auth: step.member("auth").map(|selection| env.resolve(selection)),
                 context: step.member("context").and_then(Value::as_str).map(ToOwned::to_owned),
             })),
             StepKind::Unwatch => Ok(Self::Unwatch(WatchId::new(require_str(&step.target, action, "subscription id")?))),

@@ -105,6 +105,30 @@ impl Verifier for HostVerifier {
     }
 }
 
+/// A verifier for a `$verify: "cose.verify(/ring, $credential)"` authenticator
+/// (§17.7/§17.8). The cose token is verified against the ring's accepted versions
+/// *before* this runs — at the adapter's auth layer, through
+/// [`Engine::cose_verify`](liasse_runtime::Engine::cose_verify), an acceptance
+/// read this surface [`Verifier`] seam cannot reach the engine to perform. So the
+/// credential this receives is the already-verified claims struct (a login-minted
+/// token that verifies) or a non-struct sentinel (a wrong-keyring / rotated-out /
+/// revoked token that did not). This only decodes the verified claims to typed
+/// [`Claims`]: the `auth` claim binds the token to its authenticator (§11.4), and
+/// the `session`/`account` claims select the session and account rows (§11.3).
+struct CoseVerifier;
+
+impl Verifier for CoseVerifier {
+    fn verify(&self, credential: &Credential) -> Result<Claims, VerifyFailure> {
+        let Value::Struct(claims) = credential.value() else {
+            return Err(VerifyFailure::new("cose token did not verify against the keyring"));
+        };
+        let Some(Value::Text(auth)) = claims.get("auth") else {
+            return Err(VerifyFailure::new("verified cose claims carry no `auth` binding"));
+        };
+        Ok(Claims::new(auth.as_str(), claims.get("session").cloned(), claims.get("account").cloned()))
+    }
+}
+
 /// Which verifier a planned authenticator uses.
 enum VerifierSpec {
     /// `$verify: "$credential"` — the proof is the credential.
@@ -112,6 +136,10 @@ enum VerifierSpec {
     /// A host verifier namespace: its declared credential → proof table, whether
     /// a colon-split behavioral fallback applies, and the account key type.
     Host { tokens: BTreeMap<String, HostProof>, split: bool, account_ty: Type },
+    /// `$verify: "cose.verify(/ring, $credential)"` — the credential is a cose
+    /// token gated through [`Engine::cose_verify`](liasse_runtime::Engine::cose_verify)
+    /// at the adapter's auth layer before it reaches [`CoseVerifier`].
+    Cose,
 }
 
 /// The `$session` wiring of a session-backed authenticator (§11.2): the synthetic
@@ -155,6 +183,11 @@ pub struct AuthPlan {
     synthetic_views: Vec<(String, String)>,
     authenticators: Vec<AuthnSpec>,
     roles: Vec<RoleSpec>,
+    /// `(authenticator name, keyring name)` for each `$verify: "cose.verify(/ring,
+    /// $credential)"` authenticator (§17.7), so the adapter's auth layer gates its
+    /// credential through [`Engine::cose_verify`](liasse_runtime::Engine::cose_verify)
+    /// against the named ring before the surface authenticator resolves it.
+    cose_rings: Vec<(String, String)>,
 }
 
 impl AuthPlan {
@@ -186,6 +219,14 @@ impl AuthPlan {
         !self.authenticators.is_empty()
     }
 
+    /// Each `$verify: "cose.verify(/ring, …)"` authenticator's `(name, ring)`
+    /// pair (§17.7), so the adapter records which authenticator credentials to
+    /// gate through [`Engine::cose_verify`](liasse_runtime::Engine::cose_verify)
+    /// and against which keyring.
+    pub fn cose_authenticators(&self) -> impl Iterator<Item = &(String, String)> {
+        self.cose_rings.iter()
+    }
+
     /// The synthetic views to inject into `$model` before load.
     pub fn synthetic_views(&self) -> impl Iterator<Item = &(String, String)> {
         self.synthetic_views.iter()
@@ -206,6 +247,7 @@ impl AuthPlan {
         let account_ty = collection_key_type(model, actor_collection);
 
         let is_literal = verify == "$credential";
+        let cose_ring = cose_verify_ring(verify);
 
         // `$session` wiring. A `$verify: "$credential"` proof carries no session
         // claim, so a `$session` with the literal verifier stays unwired.
@@ -221,6 +263,11 @@ impl AuthPlan {
 
         let verifier = if is_literal {
             VerifierSpec::Literal
+        } else if let Some(ring) = &cose_ring {
+            // §17.7: the token is gated through `Engine::cose_verify` at the auth
+            // layer; record the ring so that gating targets the right keyring.
+            self.cose_rings.push((name.to_owned(), ring.clone()));
+            VerifierSpec::Cose
         } else {
             let session_ty = session
                 .as_ref()
@@ -302,6 +349,7 @@ impl AuthPlan {
                         split: *split,
                         account_ty: account_ty.clone(),
                     }),
+                    VerifierSpec::Cose => Box::new(CoseVerifier),
                 };
                 let accounts = RowSource::new(spec.actor_view.clone(), spec.actor_key.clone());
                 match &spec.session {
@@ -345,11 +393,23 @@ impl AuthPlan {
     }
 }
 
+/// The keyring a `$verify: "cose.verify(/ring, $credential)"` authenticator
+/// verifies against (§17.7), read from the verify expression. `None` for any
+/// other `$verify` shape.
+fn cose_verify_ring(verify: &str) -> Option<String> {
+    let inner = verify.trim().strip_prefix("cose.verify(")?;
+    let first = inner.split(',').next()?.trim();
+    let ring = first.trim_start_matches('/').trim();
+    (!ring.is_empty()).then(|| ring.to_owned())
+}
+
 /// The `$session` collection's field roles (§11.2): its key, the account
 /// reference field, and — when declared — the expiry instant and revocation
-/// flag. A session collection omitting the lifetime fields (a minimal actor
-/// binding) leaves those `None`; the [`SessionSource`] then reads a missing
-/// field and denies, so nothing is fabricated.
+/// flag. A session collection omitting the expiry field (`expires`/bucket upper
+/// bound) leaves it `None`; the surface [`SessionSource`] then reads a missing
+/// expiry as an unbounded (perpetual) session — active until revoked (§11.7,
+/// §14 omitted upper bound) — rather than denying, so a keyring package that
+/// isolates the token rule from session expiry authenticates.
 struct SessionFields {
     key: String,
     account: String,
@@ -553,10 +613,14 @@ fn selection_collection(expr: &str) -> Option<&str> {
     (!name.is_empty() && is_identifier(name)).then_some(name)
 }
 
-/// The collection a `.collection[...]`/`.collection {...}` row-stream `$members`
-/// expression reads from.
+/// The collection a `.collection[...]`/`.collection {...}` row-stream — or a
+/// root-absolute `/collection` selection — `$members` expression reads from. Both
+/// the current-scope `.` and root `/` prefixes name the same top-level collection
+/// at the root, so a `$members: "/accounts"` (all rows) wires the same way as a
+/// `$members: ".accounts[…]"` (a filtered stream).
 fn stream_collection(expr: &str) -> Option<&str> {
-    let rest = expr.trim().strip_prefix('.')?;
+    let trimmed = expr.trim();
+    let rest = trimmed.strip_prefix('.').or_else(|| trimmed.strip_prefix('/'))?;
     let end = rest.find(['[', '{', ' ']).unwrap_or(rest.len());
     let name = rest.get(..end)?.trim();
     (!name.is_empty() && is_identifier(name)).then_some(name)

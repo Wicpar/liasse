@@ -10,21 +10,22 @@
 //! same engine ring.
 //!
 //! This module parses the two chapter-local step keys (tests/17-keyrings/NOTES.md)
-//! into typed specs and translates the `provider_set` fault-injection vocabulary
-//! (§17.9) onto the engine ring's backing [`SimKeyProvider`], reached through
-//! [`Engine::keyring_provider_mut`](liasse_runtime::Engine::keyring_provider_mut).
-//! The lifecycle-transition vocabulary (`keyring_admin`: `bind_activate`/`revoke`/
-//! `destroy`) has no engine entry point — the engine lends its ring only immutably
-//! ([`keyring`](liasse_runtime::Engine::keyring)) and its provider mutably, but
-//! exposes no mutable keyring-admin transition — so that op is reported as a
-//! precise skip naming the seam, never silently dropped.
+//! into typed specs and drives them against the engine ring: the `provider_set`
+//! fault-injection vocabulary (§17.9) onto the ring's backing [`SimKeyProvider`]
+//! ([`Engine::keyring_provider_mut`](liasse_runtime::Engine::keyring_provider_mut)),
+//! and the `keyring_admin` lifecycle transitions (§17.3/§17.4) — `bind_activate`,
+//! `revoke`, `destroy` — onto the ring itself through
+//! [`Engine::keyring_admin`](liasse_runtime::Engine::keyring_admin), the mutable
+//! keyring-lifecycle accessor.
 
 use liasse_host::sim::{ProviderOp, SimKeyProvider};
-use liasse_runtime::Engine;
+use liasse_host::ExternalKeyRef;
+use liasse_runtime::{Engine, Keyring, VersionId, MANUAL_EXTERNAL_KEY};
 use liasse_store::InstanceStore;
 use serde_json::Value as J;
 
-use super::AdapterError;
+use crate::contract::Observation;
+use crate::outcome::Outcome;
 
 /// A parsed `provider_set` step (§17.9 fault injection): the provider name it
 /// targets and the reconfiguration it applies from this step onward. Each field
@@ -47,9 +48,12 @@ pub(super) struct ProviderSetSpec {
 /// A parsed `keyring_admin` step (§17.3/§17.4 lifecycle transition).
 pub(super) struct KeyringAdminSpec {
     /// The addressed ring (`/name` or `name`).
-    pub(super) ring: String,
+    ring: String,
     /// The transition: `bind_activate`, `revoke`, or `destroy`.
-    pub(super) op: String,
+    op: String,
+    /// The version ordinal a `revoke`/`destroy` addresses (the `.$versions` `id`,
+    /// carried as an `int` wire string).
+    version: Option<String>,
 }
 
 impl ProviderSetSpec {
@@ -106,25 +110,55 @@ impl KeyringAdminSpec {
         let object = target.as_object()?;
         let ring = object.get("ring").and_then(J::as_str)?.trim_start_matches('/').to_owned();
         let op = object.get("op").and_then(J::as_str)?.to_owned();
-        Some(Self { ring, op })
+        let version = object.get("version").and_then(J::as_str).map(ToOwned::to_owned);
+        Some(Self { ring, op, version })
     }
 
-    /// The precise seam this transition is blocked on. The engine self-provisions
-    /// the ring and lends it only immutably (`keyring()`), plus its provider
-    /// mutably (`keyring_provider_mut()`), but exposes no mutable keyring-admin
-    /// transition — and the surface's separately-composed `CoseKeyring` admin is a
-    /// different ring than the one `cose.sign` mutations and `/ring.$*` views read.
-    /// So a bind/revoke/destroy cannot reach the ring the case observes.
-    pub(super) fn unsupported(&self) -> AdapterError {
-        AdapterError::unsupported(format!(
-            "`keyring_admin {{ op: {op} }}` on `/{ring}` needs a mutable keyring-lifecycle entry the \
-             engine does not expose: `Keyring::{op}` exists, but `Engine` lends its self-provisioned \
-             ring only immutably (`keyring()`) plus its provider mutably (`keyring_provider_mut()`), \
-             so a `bind_activate`/`revoke`/`destroy` cannot reach the ring that `cose.sign` mutations \
-             and `/{ring}.$current`/`.$accepted`/`.$versions` views read (a liasse-runtime API seam)",
-            op = self.op,
-            ring = self.ring,
-        ))
+    /// Drive the lifecycle transition against the engine's self-provisioned ring
+    /// (§17.3/§17.4), mapping its result to the harness outcome vocabulary:
+    ///
+    /// - `bind_activate` binds the engine provider's manual external handle
+    ///   ([`MANUAL_EXTERNAL_KEY`]) and activates it through the same transition as
+    ///   automatic rotation (§17.4), atomically retiring any prior active version;
+    /// - `revoke`/`destroy` address the version whose `.$versions` `id` ordinal the
+    ///   step names, resolved to its logical [`VersionId`] from the ring.
+    ///
+    /// A provider/capability/metadata failure (§17.4/§17.6/§17.9) — an algorithm
+    /// mismatch, a missing external handle, an unknown version — is a `rejected`
+    /// transition that activates or revokes nothing.
+    pub(super) fn apply<S: InstanceStore>(&self, engine: &mut Engine<S>) -> Observation {
+        let now = engine.now();
+        let Some(ring) = engine.keyring_admin(&self.ring) else {
+            return Observation::outcome(Outcome::Rejected);
+        };
+        let result = match self.op.as_str() {
+            "bind_activate" => {
+                ring.bind_activate(&ExternalKeyRef::new(MANUAL_EXTERNAL_KEY), now).map(|_| ())
+            }
+            "revoke" | "destroy" => {
+                let Some(version) = self.version_id(ring) else {
+                    return Observation::outcome(Outcome::Rejected);
+                };
+                if self.op == "revoke" {
+                    ring.revoke(version, now)
+                } else {
+                    ring.destroy(version, now)
+                }
+            }
+            _ => return Observation::outcome(Outcome::Error),
+        };
+        match result {
+            Ok(()) => Observation::ok(None),
+            Err(_) => Observation::outcome(Outcome::Rejected),
+        }
+    }
+
+    /// The logical [`VersionId`] the step's version ordinal names, resolved from
+    /// the ring's retained versions (§17.2 `.$versions.id`). `None` when the step
+    /// carries no version or the ring has no version of that ordinal.
+    fn version_id(&self, ring: &Keyring<SimKeyProvider>) -> Option<VersionId> {
+        let ordinal: u64 = self.version.as_ref()?.parse().ok()?;
+        ring.versions().iter().find(|version| version.id().get() == ordinal).map(|version| version.id())
     }
 }
 

@@ -13,7 +13,10 @@ fn module_composition_loads() {
     let built = build(
         r#"{ "$liasse": 1, "$module": "acme.sales@1.0.0",
             "$config": { "currency": "text" },
-            "$model": { "templates": { "$key": "id", "id": "text", "label": "text" } },
+            "$model": {
+              "templates": { "$key": "id", "id": "text", "label": "text" },
+              "$mut": { "create_template": ".templates + { id: @id, label: @label }" }
+            },
             "$use": { "company": "$parent", "$optional": { "billing": "acme.billing/customers@1" } },
             "$deps": { "tax": "acme.tax@2" },
             "$expose": { "templates": { "$view": ".templates { id, label }", "$mut": { "create": ".create_template" } } }
@@ -163,6 +166,57 @@ fn interface_projection_of_unbound_field_rejected() {
     );
     assert!(built.has_code("E-EXPR"), "expected a projection rejection, got: {}", built.rendered());
     assert!(built.points_at("secret"));
+}
+
+/// §13.8 — an exposed `$view` is typed against the module's own root: a
+/// projection of a field the module does not declare is a static type error, so
+/// a malformed boundary contract is caught in the child package itself.
+#[test]
+fn expose_view_over_undeclared_field_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$module": "acme.notes@1.0.0",
+            "$model": { "notes": { "$key": "id", "id": "text", "body": "text" } },
+            "$expose": { "feed": { "$view": ".notes { id, missing }" } }
+        }"#,
+    );
+    assert!(built.has_code("E-EXPR"), "expected an exposed-view type error, got: {}", built.rendered());
+    assert!(built.points_at("missing"));
+}
+
+/// §13.8 — an `$expose` `$mut` binding must name a mutation the module declares;
+/// binding a contract to an undeclared private mutation is rejected.
+#[test]
+fn expose_mut_binding_to_undeclared_mutation_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$module": "acme.notes@1.0.0",
+            "$model": { "notes": { "$key": "id", "id": "text", "body": "text" } },
+            "$expose": { "feed": { "$view": ".notes { id, body }", "$mut": { "add": ".no_such_mut" } } }
+        }"#,
+    );
+    assert!(built.has_code("M-MODULE"), "expected a binding rejection, got: {}", built.rendered());
+    assert!(built.points_at("no_such_mut"));
+}
+
+/// §13.8 — a well-formed `$expose` whose `$view` projects declared fields and
+/// whose `$mut` binds a declared mutation loads and is captured.
+#[test]
+fn expose_well_formed_captured() {
+    let built = build(
+        r#"{ "$liasse": 1, "$module": "acme.notes@1.0.0",
+            "$model": {
+              "notes": { "$key": "id", "id": "text", "body": "text" },
+              "$mut": { "add": ".notes + { id: @id, body: @body }" }
+            },
+            "$expose": { "feed": { "$view": ".notes { id, body }", "$mut": { "post": ".add" } } }
+        }"#,
+    );
+    let model = built.expect_ok();
+    let exposed = model.exposed_interfaces();
+    assert_eq!(exposed.len(), 1, "one interface captured");
+    assert_eq!(exposed[0].name.as_str(), "feed");
+    assert!(exposed[0].view.is_some(), "the $view is captured for the runtime");
+    assert_eq!(exposed[0].muts.len(), 1);
+    assert_eq!(exposed[0].muts[0].name.as_str(), "post");
 }
 
 /// §13.11 — a surface may bind an interface boundary member

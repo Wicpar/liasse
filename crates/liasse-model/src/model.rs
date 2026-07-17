@@ -13,6 +13,7 @@ use liasse_syntax::SpannedDocument;
 
 use crate::build::Builder;
 use crate::doc::DocValueExt;
+use crate::expose::ExposedInterface;
 use crate::header::{Header, Parsed};
 use crate::host::HostDescriptors;
 use crate::mutation::{check_mutations, Mutation};
@@ -21,7 +22,7 @@ use crate::report::Reporter;
 use crate::resolve::Resolver;
 use crate::state::{Node, Shape};
 use crate::surface::{check_surfaces, Surface};
-use crate::{auth, blob, bucket, check, delete, infer, meter, migration, module, seed};
+use crate::{auth, blob, bucket, check, delete, expose, infer, meter, migration, module, seed};
 
 /// A statically valid Liasse package model.
 #[derive(Debug, Clone)]
@@ -31,6 +32,7 @@ pub struct Model {
     types: BTreeMap<String, Node>,
     mutations: Vec<Mutation>,
     surfaces: Vec<Surface>,
+    exposed: Vec<ExposedInterface>,
 }
 
 impl Model {
@@ -131,6 +133,18 @@ impl Model {
         if let Some(migrations) = document.root().member("$migrations") {
             migration::check(&mut reporter, sources, &migrations.value);
         }
+        // §13.8: type each `$expose` interface `$view` against the module root and
+        // validate its `$mut` bindings, capturing the interfaces the runtime
+        // evaluates against a child instance and resolves an interface-addressed
+        // call through.
+        let exposed = expose::check_and_capture(
+            &mut reporter,
+            sources,
+            &resolver,
+            &root,
+            &mutations,
+            document.root().member("$expose").map(|m| &m.value),
+        );
         if let Some(data) = data {
             seed::check_seed(&mut reporter, &root, data);
         }
@@ -143,6 +157,7 @@ impl Model {
             types: build.types,
             mutations,
             surfaces,
+            exposed,
         })
     }
 
@@ -174,5 +189,15 @@ impl Model {
     #[must_use]
     pub fn surfaces(&self) -> &[Surface] {
         &self.surfaces
+    }
+
+    /// The module interfaces this package exposes (§13.8): each a child-visible
+    /// handle bound to a private `$view` projection and callable mutations. Empty
+    /// for a package with no top-level `$expose`. The composition runtime
+    /// evaluates the `$view` against a child instance to serve an interface read
+    /// and resolves an interface-addressed call through the bound mutations.
+    #[must_use]
+    pub fn exposed_interfaces(&self) -> &[ExposedInterface] {
+        &self.exposed
     }
 }

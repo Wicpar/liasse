@@ -58,6 +58,7 @@ mod build;
 mod check;
 mod delete;
 mod doc;
+mod expose;
 mod header;
 mod history;
 mod host;
@@ -79,6 +80,7 @@ mod surface;
 mod types;
 mod walk;
 
+pub use expose::{ExposedInterface, ExposedMut};
 pub use header::{Header, Kind};
 pub use host::HostDescriptors;
 pub use model::Model;

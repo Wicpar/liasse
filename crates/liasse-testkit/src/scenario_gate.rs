@@ -176,22 +176,24 @@ pub const SKIP: &[(&str, &str)] = &[
     ("annex-e-compatibility/minor-narrows-relative-to-active-intermediate-release-rejected", "`host_load` step not driven this phase"),
     ("annex-e-compatibility/minor-removes-output-member-rejected", "`host_load` step not driven this phase"),
     ("annex-e-compatibility/patch-narrowing-response-rejected", "`host_load` step not driven this phase"),
-    // --- `keyring_admin` step (§17.3/§17.4 lifecycle transition) ---
-    // The `provider_set` fault vocabulary now drives against the engine's
-    // self-provisioned ring (adapter/keyrings.rs), but a keyring *lifecycle*
-    // transition — `bind_activate`/`revoke`/`destroy` — has no engine entry point:
-    // `Engine` lends its ring only immutably (`keyring()`) plus its backing
-    // provider mutably (`keyring_provider_mut()`), and `Keyring::{bind_activate,
-    // revoke, destroy}` cannot be reached through that. The surface's separately
-    // composed `CoseKeyring` admin is a *different* ring than the one `cose.sign`
-    // mutations and `/ring.$*` views read, so it cannot stand in. A liasse-runtime
-    // API seam, not a testkit gap.
-    ("17-keyrings/bind-algorithm-mismatch-rejected", "keyring lifecycle transition (bind_activate) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
-    ("17-keyrings/manual-activation-enables-dependent-surface", "keyring lifecycle transition (bind_activate) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
-    ("17-keyrings/manual-second-activation-retires-prior", "keyring lifecycle transition (bind_activate) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
-    ("17-keyrings/retain-omitted-accepts-until-revoked", "keyring lifecycle transition (revoke) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
-    ("17-keyrings/revocation-overrides-retain-window", "keyring lifecycle transition (revoke) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
-    ("17-keyrings/destroyed-version-no-longer-accepted", "keyring lifecycle transition (destroy) has no engine entry (immutable `keyring()` + `keyring_provider_mut()` only)"),
+    // --- `keyring_admin` manual `bind_activate` (§17.4 manual policy) ---
+    // `keyring_admin` now drives the engine's self-provisioned ring through
+    // `Engine::keyring_admin` (adapter/keyrings.rs) — `revoke`/`destroy` on an
+    // automatic (`$rotate`) ring pass. The manual `bind_activate` cases below stay
+    // blocked on two liasse-runtime/liasse-host seams, not a testkit gap: (1) the
+    // runtime bootstraps a no-`$rotate` keyring as *automatic* (it auto-activates
+    // v1), whereas §17.1 (and these cases) read a missing `$rotate` as *manual*
+    // (no active version until an operator binds one); (2) the engine's
+    // self-provisioned `SimKeyProvider` offers a bindable external handle
+    // (`MANUAL_EXTERNAL_KEY`) only for a manual-mode ring, and never the corpus's
+    // named `external_keys` with their declared algorithms — so a manual
+    // `bind_activate` has nothing to bind (a no-`$rotate` ring rejects
+    // `UnknownExternal`), and `bind-algorithm-mismatch` cannot present a
+    // wrong-algorithm external key. Provisioning them needs a `&mut`
+    // add-external-key on `SimKeyProvider` or a no-`$rotate`=manual policy fix.
+    ("17-keyrings/bind-algorithm-mismatch-rejected", "no-`$rotate` ring bootstraps as automatic and its provider carries no bindable external key with the corpus algorithm — a runtime policy / liasse-host provider-provisioning seam"),
+    ("17-keyrings/manual-activation-enables-dependent-surface", "no-`$rotate` ring bootstraps as automatic (auto-activates v1) and its provider offers no bindable external handle, so manual `bind_activate` rejects — a runtime no-`$rotate`=manual / provider-provisioning seam"),
+    ("17-keyrings/manual-second-activation-retires-prior", "no-`$rotate` ring bootstraps as automatic and its provider offers no bindable external handle, so manual `bind_activate` rejects — a runtime no-`$rotate`=manual / provider-provisioning seam"),
     // --- `module_install` step ---
     ("13-modules/aggregation-skips-disabled-instance", "`module_install` step not driven this phase"),
     ("13-modules/cross-boundary-ref-missing-on-delete-invalid", "`module_install` step not driven this phase"),
@@ -246,7 +248,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // Root-mutation operator transitions now drive through a synthetic public
     // surface (`SurfaceHost::operator_call`); the entries below remain debt for a
     // distinct reason the operator wiring does not resolve.
-    ("23-host-contract/operator-bypasses-role-authentication", "role-authenticated client call is denied without host `$verify` wiring"),
     ("23-host-contract/operator-retains-meter-capacity", "`operator` on a collection-row mutation needs receiver-row wiring"),
     // --- `restart` step ---
     // ========================================================================
@@ -255,21 +256,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // evaluation environment (a row/collection the runtime could not present in the
     // expected shape). A runtime gap, surfaced as a host fault and skipped.
     // ========================================================================
-    // --- cose session authentication (§17.7/§17.8 token round-trip) ---
-    // The engine now mints tokens through `cose.sign(/ring, …)` in a mutation and
-    // exposes acceptance-based `cose.verify` — the adapter could gate a credential
-    // against `Engine::cose_verify` (an immutable `&self` read) at authenticate.
-    // But each of these packages declares an *expiry-less* session (isolating the
-    // keyring rule from session expiry, per the case notes), and the surface's
-    // `SessionSource` denies any session that resolves no `Value::Timestamp`
-    // expiry instant (§11.7). So the session authenticator denies before the
-    // keyring token rule is ever exercised — a liasse-surface seam, not a testkit
-    // or keyring gap.
-    ("17-keyrings/cross-authenticator-token-escalation-denied", "cose session auth: surface SessionSource requires a session-expiry instant the expiry-less keyring package omits (§11.7)"),
-    ("17-keyrings/direct-token-roundtrip-authenticates", "cose session auth: surface SessionSource requires a session-expiry instant the expiry-less keyring package omits (§11.7)"),
-    ("17-keyrings/retain-window-bounds-retired-acceptance", "cose session auth: surface SessionSource requires a session-expiry instant the expiry-less keyring package omits (§11.7)"),
-    ("17-keyrings/stolen-token-survives-rotations-until-session-revoked", "cose session auth: surface SessionSource requires a session-expiry instant the expiry-less keyring package omits (§11.7)"),
-    ("17-keyrings/wrong-keyring-token-denied", "cose session auth: surface SessionSource requires a session-expiry instant the expiry-less keyring package omits (§11.7)"),
     // --- hostfault:nested ---
     ("05-state-model/like-recursion-adopts-containing-shape", "host environment nested-collection shaping gap (engine invariant)"),
     // --- hostfault:row-field ---
@@ -304,11 +290,17 @@ pub const SKIP: &[(&str, &str)] = &[
     ("14-buckets/calendar-monthly-clamp-preserves-anchor", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/dst-fall-back-ambiguous-earlier", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/recurring-rollover-at-exact-boundary", "package does not load yet (upstream compile/model gap)"),
-    ("16-host-namespaces/generated-default-fixed-and-recorded", "package does not load yet (upstream compile/model gap)"),
-    ("16-host-namespaces/pinned-descriptor-drift-fails-reopen", "package does not load yet (upstream compile/model gap)"),
-    ("16-host-namespaces/required-namespace-pure-function-runs-in-view", "package does not load yet (upstream compile/model gap)"),
-    ("16-host-namespaces/required-namespace-removed-fails-reopen", "package does not load yet (upstream compile/model gap)"),
-    ("17-keyrings/due-rotation-commits-once-under-concurrency", "`concurrently` branch watch does not name `on` and several connections are open, which the executor does not disambiguate across branches"),
+    // §16 registered host namespaces now resolve strictly (`Engine::load_with_hosts`,
+    // adapter/namespaces.rs), so these packages load and a host call in a collection
+    // view/default runs (`generated-default-fixed-and-recorded` passes). These three
+    // read a host call through a *root-scalar* view (`stats: ".doubled"` over
+    // `doubled: "util.double(.n)"`), and the runtime materializes no row for a
+    // top-level scalar view — a plain `.n` root-scalar view is empty too — so the
+    // step-0 watch diverges before `reopen` is ever reached. A runtime root-scalar
+    // view seam, not a §16 wiring gap.
+    ("16-host-namespaces/pinned-descriptor-drift-fails-reopen", "root-scalar host-call view yields no row (runtime materializes no top-level scalar view; a plain `.n` view is empty too), so the step-0 watch diverges before `reopen`"),
+    ("16-host-namespaces/required-namespace-pure-function-runs-in-view", "root-scalar host-call view (`util.double(.n)`) materializes 0 rows — the runtime does not materialize a top-level scalar view (a plain `.n` view is empty too)"),
+    ("16-host-namespaces/required-namespace-removed-fails-reopen", "root-scalar host-call view yields no row (runtime materializes no top-level scalar view), so the step-0 watch diverges before `reopen`"),
     ("18-blobs/all-holders-corrupt-fetch-outcome-unspecified", "package does not load yet (upstream compile/model gap)"),
     ("18-blobs/billing-sum-over-stored-descriptors", "package does not load yet (upstream compile/model gap)"),
     ("18-blobs/corrupt-copy-demoted-and-repaired", "package does not load yet (upstream compile/model gap)"),
@@ -320,7 +312,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("18-blobs/repeated-store-identity-deduplicated", "package does not load yet (upstream compile/model gap)"),
     ("18-blobs/serve-order-defaults-to-flattened-placement", "package does not load yet (upstream compile/model gap)"),
     ("18-blobs/surplus-copy-after-policy-shrinks", "package does not load yet (upstream compile/model gap)"),
-    ("23-host-contract/impure-pure-function-replay-divergence-unspecified", "package does not load yet (upstream compile/model gap)"),
     ("23-host-contract/rotation-provider-invalid-public-key-keeps-current-active", "package does not load yet (upstream compile/model gap)"),
     ("annex-d-identity/ref-wire-value-is-current-typed-key", "package does not load yet (upstream compile/model gap)"),
     ("w-worked-examples/w2-cross-account-session-revoke-has-no-owner-check", "package does not load yet (upstream compile/model gap)"),
@@ -347,7 +338,7 @@ pub const SKIP: &[(&str, &str)] = &[
     ("08-mutations-validation/inferred-param-target-normalization-applies", "no value produced (unsupported call path)"),
     ("10-interfaces-roles/surface-exposes-only-declared-members", "no value produced (unsupported call path)"),
     ("15-meters/hypothetical-balance-accessor-with-time", "no value produced (unsupported call path)"),
-    ("16-host-namespaces/rejected-update-preserves-active-composition", "no value produced (unsupported call path)"),
+    ("16-host-namespaces/rejected-update-preserves-active-composition", "root-scalar mutation (`bump` returns `.n`) reads/returns `none` — the runtime does not materialize a top-level scalar singleton"),
     ("21-deletion-erasure/double-reinsert-second-finds-no-stub-rejects", "no value produced (unsupported call path)"),
     ("21-deletion-erasure/erase-cascade-scrub-scope-unspecified", "no value produced (unsupported call path)"),
     ("21-deletion-erasure/erase-removes-row-from-live-state", "no value produced (unsupported call path)"),
@@ -361,7 +352,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("10-interfaces-roles/except-prunes-entire-branch", "no view value produced (unsupported view/watch path)"),
     ("10-interfaces-roles/recursive-coverage-nests-included-descendants", "no view value produced (unsupported view/watch path)"),
     ("14-buckets/short-form-from-defaults-to-created", "no view value produced (unsupported view/watch path)"),
-    ("16-host-namespaces/verifier-namespace-runs-at-admission", "no view value produced (unsupported view/watch path)"),
     // --- fail:outcome ---
     ("05-state-model/bulk-insert-defaults-see-prestatement-state", "outcome divergence: expected `ok` observed `rejected`"),
     ("05-state-model/nested-initializer-failure-rejects-parent-insert", "outcome divergence: expected `ok` observed `rejected`"),

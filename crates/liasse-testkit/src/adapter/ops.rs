@@ -299,7 +299,7 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             .ok_or_else(|| "prepared definition did not serialize".to_owned())?;
         let store = MemoryStore::new(instance);
         let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
-        let engine = super::load_engine(store, &definition, &mut clock, &ctx.package)
+        let engine = super::load_engine(store, &definition, &mut clock, &ctx.package, ctx.hosts.as_ref())
             .map_err(|err| err.to_string())?;
         let (router, mut routing) =
             router::build(engine.model(), &ctx.package, &plan, &ctx.lift).map_err(|err| err.to_string())?;

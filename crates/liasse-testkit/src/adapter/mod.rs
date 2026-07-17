@@ -42,6 +42,7 @@ mod blobs;
 mod error;
 mod keyrings;
 pub mod lift;
+mod namespaces;
 mod ops;
 mod router;
 mod runtime;
@@ -49,13 +50,13 @@ mod shape;
 mod wire;
 
 use liasse_ident::InstanceId;
-use liasse_runtime::{Engine, Precision, Registry};
+use liasse_runtime::{ContractRef, Engine, Precision, Registry};
 use liasse_store::{InstanceStore, MemoryStore};
 use liasse_surface::{
     Authenticate, AuthSelection, Credential, SurfaceHost, Subscription, SurfaceError,
     Window, VirtualClock as SurfaceClock,
 };
-use liasse_value::{Text, Value};
+use liasse_value::{Json, Struct, Text, Type, Value};
 
 use crate::case::{Case, PackageSet};
 use crate::contract::{ConnectRequest, Driver, Observation};
@@ -279,7 +280,8 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
             .ok_or_else(|| "prepared definition did not serialize".to_owned())?;
         let store = provision.provision(InstanceId::new(case.name.clone()))?;
         let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
-        let engine = load_engine(store, &definition, &mut clock, package).map_err(|err| err.to_string())?;
+        let engine = load_engine(store, &definition, &mut clock, package, case.hosts.as_ref())
+            .map_err(|err| err.to_string())?;
         let (router, mut routing) =
             router::build(engine.model(), package, plan, lift).map_err(|err| err.to_string())?;
         routing.load_view_param_types(&engine);
@@ -379,29 +381,61 @@ pub(super) fn connection_name(on: Option<&ConnectionId>) -> String {
 }
 
 /// Load `definition` into `store` (§9.2), choosing the requirement-resolution
-/// discipline from the package's `$requires`. When every requirement names the
-/// runtime's built-in `liasse.cose` contract — the one the engine seeds and
-/// serves through its self-provisioned keyrings with no registered component —
-/// resolve *strictly* through [`Engine::load_with_hosts`] (§16.2: a missing,
-/// incompatible, or ambiguous requirement fails load before activation).
-/// Otherwise keep the lenient [`Engine::load`], which defers an unresolved
-/// requirement rather than failing it: the §11/§12/§16 host-verifier namespaces a
-/// case requires are reconstructed at the auth layer (adapter/auth.rs), not
-/// registered as engine components, so the lenient default is the safe path for
-/// them (the runtime kept it lenient for exactly this). The keyring op families
-/// the strict path enables are driven through the engine's self-provisioned rings
-/// (adapter/keyrings.rs), not a registered provider.
+/// discipline from the package's `$requires` and its `hosts.namespaces` block.
+///
+/// When the case declares one or more §16 namespace *descriptors* (a `functions`
+/// roster, tests/16-host-namespaces/NOTES.md) and every `$requires` entry resolves
+/// against them (or the built-in `liasse.cose`), build a [`Registry`] from those
+/// descriptors and resolve *strictly* through [`Engine::load_with_hosts`] (§16.2:
+/// a missing/incompatible/ambiguous requirement fails load before activation), so
+/// a host call in a view/default/verifier type-checks and evaluates against the
+/// pinned descriptor. When the requirements name only the built-in cose contract
+/// (a keyring package), resolve strictly against the auto-seeded cose namespace
+/// with no other registered component; its rings are self-provisioned
+/// (adapter/keyrings.rs). Otherwise keep the lenient [`Engine::load`], which defers
+/// an unresolved requirement rather than failing it: the §11/§12 host-verifier
+/// namespaces a case requires are reconstructed at the auth layer (adapter/auth.rs),
+/// not registered as engine components, so lenient is the safe path for them.
 fn load_engine<S: InstanceStore, G: liasse_runtime::Generators>(
     store: S,
     definition: &str,
     generator: &mut G,
     package: &serde_json::Value,
+    hosts: Option<&serde_json::Value>,
 ) -> Result<Engine<S>, liasse_runtime::EngineError> {
+    let namespaces = namespaces::sim_namespaces(hosts);
+    if !namespaces.is_empty() {
+        let registry = namespaces::registry(namespaces);
+        if requires_resolve_against(package, &registry) {
+            return Engine::load_with_hosts(store, definition, generator, registry);
+        }
+    }
     if requires_only_builtin_cose(package) {
         Engine::load_with_hosts(store, definition, generator, Registry::new())
     } else {
         Engine::load(store, definition, generator)
     }
+}
+
+/// Whether every `$requires` entry resolves against `registry` (§16.2), treating
+/// the runtime's built-in `liasse.cose` contract as always available. `false` when
+/// the package declares no requirements (nothing to resolve strictly) or a
+/// requirement names a namespace neither registered nor built in — so the lenient
+/// load, which defers it, is chosen instead.
+fn requires_resolve_against(package: &serde_json::Value, registry: &Registry) -> bool {
+    package
+        .get("$requires")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|requires| {
+            !requires.is_empty()
+                && requires.values().all(|spec| {
+                    spec.as_str().is_some_and(|spec| match ContractRef::parse(spec) {
+                        Ok(contract) if contract.name().as_str() == "liasse.cose" => true,
+                        Ok(contract) => registry.resolve_namespace(&contract).is_ok(),
+                        Err(_) => false,
+                    })
+                })
+        })
 }
 
 /// Whether the package's `$requires` names only the built-in `liasse.cose`
@@ -503,6 +537,96 @@ pub(super) fn parse_auth_selection(payload: &serde_json::Value) -> Option<AuthSe
     let auth = object.get("auth")?.as_str()?;
     let credential = object.get("credential")?.as_str()?;
     Some(AuthSelection::new(auth, Credential::new(Value::Text(Text::new(credential.to_owned())))))
+}
+
+/// Build the surface [`Authenticate`] for a `connect`/`authenticate` payload,
+/// gating a §17.7 cose authenticator's credential through
+/// [`Engine::cose_verify`](Engine::cose_verify) first.
+///
+/// When the payload's authenticator is a `$verify: "cose.verify(/ring, …)"`
+/// authenticator (adapter/auth.rs records these on the router), its credential is
+/// a login-minted cose token carried back as a wire object. This reconstructs that
+/// token and verifies it against the named ring's accepted versions at the current
+/// instant — the acceptance read (§17.7) the surface [`Verifier`](liasse_surface::Verifier)
+/// seam cannot reach the engine to perform. A token that verifies is replaced by
+/// its typed claims struct (the surface `CoseVerifier` then decodes it and the
+/// session authenticator resolves the session/actor); a wrong-keyring, rotated-out,
+/// revoked, or tampered token is replaced by a non-struct sentinel the verifier
+/// rejects, so authentication is denied. Any other authenticator falls through to
+/// the ordinary [`parse_authenticate`] path.
+pub(super) fn resolve_authenticate<S: InstanceStore>(
+    loaded: &Loaded<S>,
+    payload: &serde_json::Value,
+) -> Option<Authenticate> {
+    let object = payload.as_object()?;
+    let auth = object.get("auth")?.as_str()?;
+    let Some(ring) = loaded.routing.cose_ring(auth) else {
+        return parse_authenticate(payload, &loaded.routing);
+    };
+    let role = object
+        .get("role")
+        .and_then(serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .or_else(|| loaded.routing.role_for_auth(auth).map(ToOwned::to_owned))?;
+    let credential = cose_gated_credential(loaded.host.engine(), ring, object.get("credential")?);
+    Some(Authenticate::new(role, AuthSelection::new(auth, credential)))
+}
+
+/// Verify a cose-token credential against keyring `ring` (§17.7), yielding the
+/// verified claims as the surface credential on success, or the `none` sentinel a
+/// [`CoseVerifier`](auth) rejects on any verification failure.
+fn cose_gated_credential<S: InstanceStore>(
+    engine: &Engine<S>,
+    ring: &str,
+    wire: &serde_json::Value,
+) -> Credential {
+    match cose_token_from_wire(wire).map(|token| engine.cose_verify(ring, &token)) {
+        Some(Ok(claims)) => Credential::new(claims),
+        _ => Credential::new(Value::None),
+    }
+}
+
+/// Reconstruct a cose-token [`Value`] from its wire JSON (the pinned §17.8 token
+/// format: `$ring`/`$version`/`$claims`/`$sig`), so a login-minted token carried
+/// back through the harness can be re-verified by [`Engine::cose_verify`](Engine::cose_verify).
+/// Each claim decodes to its most-specific scalar so the verified `session` claim
+/// matches the session row's typed key on lookup; canonical JSON is identical
+/// across those scalar spellings, so the token's signed-bytes check is unaffected.
+fn cose_token_from_wire(wire: &serde_json::Value) -> Option<Value> {
+    let object = wire.as_object()?;
+    let ring = object.get("$ring")?.as_str()?;
+    let version = Type::Int.decode(object.get("$version")?).ok()?;
+    let signature = Type::Bytes.decode(object.get("$sig")?).ok()?;
+    let claims = object
+        .get("$claims")?
+        .as_object()?
+        .iter()
+        .map(|(name, wire)| (Text::new(name.clone()), claim_value(wire)))
+        .collect::<Vec<_>>();
+    Some(Value::Struct(Struct::new([
+        (Text::new("$ring"), Value::Text(Text::new(ring.to_owned()))),
+        (Text::new("$version"), version),
+        (Text::new("$claims"), Value::Struct(Struct::new(claims))),
+        (Text::new("$sig"), signature),
+    ])))
+}
+
+/// Decode one claim's wire value to its most-specific scalar: a `uuid`/`int`
+/// string to that typed value (so a `uuid`/`int` session-key claim matches the
+/// session row's key by value), any other string to `text`, and a composite to
+/// `json`.
+fn claim_value(wire: &serde_json::Value) -> Value {
+    match wire {
+        serde_json::Value::String(text) => Type::Uuid
+            .decode(wire)
+            .or_else(|_| Type::Int.decode(wire))
+            .unwrap_or_else(|_| Value::Text(Text::new(text.clone()))),
+        serde_json::Value::Bool(flag) => Value::Bool(*flag),
+        other => Json::from_wire(other).map_or_else(
+            |_| Value::Text(Text::new(other.to_string())),
+            Value::Json,
+        ),
+    }
 }
 
 /// Build a bounded window (§12.2) from a verbatim `window` spec. Handles the

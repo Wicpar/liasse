@@ -31,7 +31,7 @@ use super::lift::SurfaceLift;
 use super::router::Routing;
 use super::{
     build_window, connection_name, host_fault, observe_call, observe_subscription, parse_auth_selection,
-    parse_authenticate, wire, AdapterError, Loaded, State,
+    wire, AdapterError, Loaded, State,
 };
 
 /// One live runtime instance: the loaded surface host (or the reason it did not
@@ -200,19 +200,19 @@ impl<S: InstanceStore> Runtime<S> {
     /// are preserved: the store and clock are retained across
     /// [`SurfaceHost::into_parts`], and connections and subscriptions are
     /// re-established over the rebuilt host.
-    fn rebuild_engine(
+    fn rebuild_engine<T>(
         &mut self,
-        mutate: impl FnOnce(&mut liasse_runtime::Engine<S>),
-    ) -> Result<(), AdapterError> {
+        mutate: impl FnOnce(&mut liasse_runtime::Engine<S>) -> T,
+    ) -> Result<T, AdapterError> {
         let loaded = self.take_loaded()?;
         let routing = loaded.routing;
         let blobs = loaded.blobs;
         let (mut engine, router, clock) = loaded.host.into_parts();
-        mutate(&mut engine);
+        let result = mutate(&mut engine);
         self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs });
         self.reopen_connections();
         self.replay_watches();
-        Ok(())
+        Ok(result)
     }
 }
 
@@ -292,14 +292,22 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         let loaded = self.loaded()?;
         loaded.host.connect(connection.clone());
         // §11.4: bind the authenticated context on the connection so later role
-        // calls run under it. A payload the wiring does not cover leaves the
-        // connection unauthenticated; the denial surfaces on the asserted call.
-        if let Some(payload) = request.authenticate.as_ref()
-            && let Some(auth) = parse_authenticate(payload, &loaded.routing)
-        {
-            let _ = loaded.host.authenticate(&connection, &auth);
+        // calls run under it, and reflect the authentication outcome so a
+        // `connect { authenticate }` step asserting `ok`/`denied` observes the real
+        // result. A cose credential is gated through `Engine::cose_verify` (§17.7)
+        // before the surface authenticator resolves it.
+        let Some(payload) = request.authenticate.as_ref() else {
+            return Ok(Observation::ok(None));
+        };
+        let Some(auth) = super::resolve_authenticate(loaded, payload) else {
+            // A payload the wiring does not cover binds no context; the denial is
+            // the observable outcome (§11.4).
+            return Ok(Observation::outcome(Outcome::Denied));
+        };
+        match loaded.host.authenticate(&connection, &auth).map_err(host_fault)? {
+            AuthResult::Bound => Ok(Observation::ok(None)),
+            AuthResult::Denied(_) => Ok(Observation::outcome(Outcome::Denied)),
         }
-        Ok(Observation::ok(None))
     }
 
     fn disconnect(&mut self, connection: &ConnectionId) -> Result<Observation, AdapterError> {
@@ -512,7 +520,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
     ) -> Result<Observation, AdapterError> {
         self.ensure_connection(connection);
         let loaded = self.loaded()?;
-        let Some(mut request) = parse_authenticate(payload, &loaded.routing) else {
+        let Some(mut request) = super::resolve_authenticate(loaded, payload) else {
             // A selection that resolves no wired role leaves the context unbound;
             // the denial is the observable outcome (§11.4).
             return Ok(Observation::outcome(Outcome::Denied));
@@ -598,9 +606,12 @@ impl<S: InstanceStore> Instance for Runtime<S> {
     }
 
     fn keyring_admin(&mut self, spec: &super::keyrings::KeyringAdminSpec) -> Result<Observation, AdapterError> {
-        // The engine self-provisions the ring and exposes no mutable
-        // keyring-lifecycle transition, so this reports the precise seam (skip).
-        Err(spec.unsupported())
+        // §17.3/§17.4: drive the lifecycle transition against the engine's
+        // self-provisioned ring. Reaching `&mut Engine` (for `keyring_admin`)
+        // rebuilds the host over its engine, preserving committed state,
+        // connections, and live subscriptions — so a `/ring.$*` metadata watch
+        // opened after the transition reads the new version view.
+        self.rebuild_engine(|engine| spec.apply(engine))
     }
 }
 

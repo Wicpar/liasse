@@ -181,6 +181,15 @@ impl<'d, D: Driver> Engine<'d, D> {
         match self.connections.as_slice() {
             [only] => Ok(only.clone()),
             [] => self.open_implicit(),
+            // Several connections are open. FORMAT.md's `on` default is "the single
+            // connection"; a single-client flow whose main line is the implicit
+            // `$default` connection may still open auxiliary named connections (a
+            // second `connect` that authenticates a role), so a later no-`on` step
+            // targets that main line. Prefer the implicit connection when it is
+            // among the open set; a set of only named connections stays ambiguous.
+            open if open.iter().any(|c| c.as_str() == IMPLICIT_CONNECTION) => {
+                Ok(ConnectionId::new(IMPLICIT_CONNECTION))
+            }
             _ => Err("ambiguous connection: several are open, so the step must name `on`".to_owned()),
         }
     }

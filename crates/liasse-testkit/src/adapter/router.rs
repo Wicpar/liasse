@@ -44,6 +44,10 @@ pub struct Routing {
     /// bare `authenticate { auth, credential }` (no role named) can target a role
     /// that accepts the selection.
     authenticator_roles: BTreeMap<String, String>,
+    /// Each `$verify: "cose.verify(/ring, …)"` authenticator name → its keyring
+    /// (§17.7), so the auth layer gates that authenticator's credential through
+    /// [`Engine::cose_verify`](liasse_runtime::Engine::cose_verify).
+    cose_authenticators: BTreeMap<String, String>,
 }
 
 impl Routing {
@@ -92,6 +96,15 @@ impl Routing {
     #[must_use]
     pub fn role_for_auth(&self, auth: &str) -> Option<&str> {
         self.authenticator_roles.get(auth).map(String::as_str)
+    }
+
+    /// The keyring the authenticator named `auth` verifies against, when it is a
+    /// `$verify: "cose.verify(/ring, …)"` authenticator (§17.7) — so the auth
+    /// layer gates its credential through
+    /// [`Engine::cose_verify`](liasse_runtime::Engine::cose_verify).
+    #[must_use]
+    pub fn cose_ring(&self, auth: &str) -> Option<&str> {
+        self.cose_authenticators.get(auth).map(String::as_str)
     }
 }
 
@@ -153,6 +166,9 @@ pub fn build(
         }
     }
 
+    for (auth, ring) in plan.cose_authenticators() {
+        routing.cose_authenticators.insert(auth.clone(), ring.clone());
+    }
     for authenticator in plan.authenticators() {
         builder = builder.authenticator(authenticator);
     }
@@ -228,13 +244,18 @@ fn surface_binding(
         if catalog.shapes.is_singular(name) {
             routing.singular_views.insert(surface_address.clone());
         }
-    } else if definition.get("$view").and_then(J::as_str).is_some() {
+    } else if let Some(view) = definition.get("$view").and_then(J::as_str) {
         // An inline `$view` that reads `@param` or `$actor`/`$session` cannot be
         // lifted to a scope-free top-level view (§10.1, SPEC-ISSUES item 10). The
         // runtime compiles it as a surface view keyed by this dotted address, with
         // its `$params` and the package's `$actor`/`$session` in scope, so bind the
-        // surface view directly and let the param/actor-aware read serve it.
+        // surface view directly and let the param/actor-aware read serve it. A view
+        // whose projection spine is the single-row `$actor`/`$session` (§11.1)
+        // delivers one object (§12.2), so record it as singular.
         binding = binding.with_view(ViewBinding::surface(&surface_address));
+        if singular_actor_view(view) {
+            routing.singular_views.insert(surface_address.clone());
+        }
     }
 
     if let Some(calls) = definition.get("$mut").and_then(J::as_object) {
@@ -428,6 +449,32 @@ fn key_params(keys: &[Expr]) -> Option<Vec<String>> {
         }
     }
     Some(params)
+}
+
+/// Whether an inline surface `$view` delivers a single object (§12.2): its
+/// projection spine is the single-row `$actor`/`$session` structural binding
+/// (§11.1), reached through field/projection access with no collection selector.
+/// A `$actor { … }` (the actor row projected) is singular; a
+/// `/coll[…] { … }`/`.coll` (a collection stream) is not.
+fn singular_actor_view(text: &str) -> bool {
+    let mut sources = SourceMap::new();
+    let source = sources.add_label("surface-view-shape", text.to_owned());
+    let Ok(parsed) = parse_expression(source, text) else { return false };
+    let StmtKind::Bare(expr) = &parsed.statement().kind else { return false };
+    singular_actor_spine(expr)
+}
+
+/// Whether `expr`'s projection spine bottoms out at `$actor`/`$session` through
+/// field/projection/call access alone — no collection [`Select`](Selector) that
+/// would make the result a stream.
+fn singular_actor_spine(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Structural(id) => matches!(id.text.as_str(), "actor" | "session"),
+        ExprKind::Field { base, .. } | ExprKind::SameName { base, .. } => singular_actor_spine(base),
+        ExprKind::Block { base, .. } => singular_actor_spine(base),
+        ExprKind::Call { callee, .. } => singular_actor_spine(callee),
+        _ => false,
+    }
 }
 
 /// The identifier the reference points at when it is a bare `.<name>` with no
