@@ -160,6 +160,7 @@ mod migrate;
 mod modules;
 mod outcome;
 mod portable;
+mod refid;
 mod request;
 mod response;
 mod rules;

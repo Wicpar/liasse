@@ -10,12 +10,13 @@
 use liasse_expr::Cell;
 use liasse_ident::NameSegment;
 use liasse_store::{CollectionPath, RowAddress};
-use liasse_value::{RefKey, Struct, Text, Value};
+use liasse_value::{RefKey, Value};
 
 use crate::compiled::{Compiled, CompiledCollection};
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
 use crate::materialize::FieldMap;
+use crate::refid::{identity_of, ref_identity};
 use crate::state::Prospective;
 
 /// Resolve insertion defaults for the omitted fields of a new row (§5.1), then
@@ -332,31 +333,6 @@ fn target_present(
             identity_of(names, &components) == wanted
         })
     })
-}
-
-/// The application-visible key value (§5.4) from a collection's `$key` field
-/// `names` and a row's ordered key `components`: a lone component is its bare
-/// scalar, several become a name-sorted struct — the same shape
-/// `materialize::key_identity` produces and a composite ref decodes to.
-fn identity_of(names: &[String], components: &[Value]) -> Value {
-    match names {
-        [_] => components.first().cloned().unwrap_or(Value::None),
-        _ => Value::Struct(Struct::new(
-            names.iter().zip(components).map(|(name, value)| (Text::new(name.clone()), value.clone())),
-        )),
-    }
-}
-
-/// The application key a reference denotes (§6.3/A.9): a scalar-keyed ref exposes
-/// its bare value (a scalar for a single-field target, or the name-sorted struct
-/// a composite ref decodes to); a positional composite ref is reconciled to that
-/// same struct by pairing its `$key`-order components with the target's key field
-/// `names`.
-fn ref_identity(names: &[String], key: &RefKey) -> Value {
-    match key {
-        RefKey::Scalar(value) => (**value).clone(),
-        RefKey::Composite(components) => identity_of(names, components),
-    }
 }
 
 fn check_uniqueness(
