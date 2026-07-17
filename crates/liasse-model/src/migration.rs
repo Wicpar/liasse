@@ -199,7 +199,13 @@ fn root_binding(expr: &Expr) -> Option<&str> {
 /// The name of a non-deterministic core function called anywhere in `stmt`
 /// (§16.1: `uuid()`, `now()`), or `None`. A migration transform MUST be a
 /// deterministic pure function (§20.1), so either is a definition-only defect.
-fn nondeterministic_call(stmt: &Stmt) -> Option<&'static str> {
+///
+/// This is the canonical §20.1 determinism classifier. It gates the
+/// `$migrations` program statements here, and the runtime reuses it over the
+/// local `$from`/`$as`/`$back` transform expressions (`liasse-runtime`'s
+/// migration pass) so both migration positions bar the identical generated
+/// calls in lockstep.
+pub fn nondeterministic_call(stmt: &Stmt) -> Option<&'static str> {
     let mut found = None;
     walk_stmt(stmt, &mut |expr| {
         if let ExprKind::Call { callee, .. } = &expr.kind

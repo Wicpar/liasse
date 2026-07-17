@@ -26,7 +26,7 @@ use std::collections::BTreeMap;
 use liasse_artifact::{CompatibilityDecision, PackageIdentity, PackageName, UpdateRelation, Version};
 use liasse_diag::SourceMap;
 use liasse_expr::{check_statement, Cell, ExprType, Row, TypedExpr};
-use liasse_model::{Model, PackageId};
+use liasse_model::{nondeterministic_call, Model, PackageId};
 use liasse_store::{CommitSeq, InstanceStore, RowAddress};
 use liasse_syntax::{parse_document, parse_expression};
 use liasse_value::{Timestamp, Type, Value};
@@ -526,9 +526,12 @@ fn map_row(
                     let old_ty = old_collection
                         .and_then(|c| c.field(&mapping.from))
                         .map_or(Type::Json, |f| f.ty.clone());
-                    let transformed = transform(text, source, old_ty.clone(), ctx, sources, root_ty, codec_sigs)?;
+                    let transformed =
+                        transform(text, source, old_ty.clone(), ctx, sources, root_ty, codec_sigs, &field.name)?;
                     if let Some(back) = &mapping.back {
-                        verify_reversible(back, source, &transformed, &field.ty, ctx, sources, root_ty, codec_sigs)?;
+                        verify_reversible(
+                            back, source, &transformed, &field.ty, ctx, sources, root_ty, codec_sigs, &field.name,
+                        )?;
                     }
                     transformed
                 }
@@ -544,6 +547,7 @@ fn map_row(
 }
 
 /// Evaluate a `$as`/`$from` transform expression with `.` bound to the old value.
+#[allow(clippy::too_many_arguments)]
 fn transform(
     text: &str,
     old_value: &Value,
@@ -552,8 +556,9 @@ fn transform(
     sources: &mut SourceMap,
     root_ty: &ExprType,
     codec_sigs: &HostSignatures,
+    field: &str,
 ) -> Result<Value, Rejection> {
-    let typed = compile(text, old_ty, sources, root_ty, codec_sigs)?;
+    let typed = compile(text, old_ty, sources, root_ty, codec_sigs, field)?;
     let cell = ctx.eval(&Prospective::empty(), &typed, &Cell::Scalar(old_value.clone()))?;
     Ok(scalar(cell))
 }
@@ -569,8 +574,9 @@ fn verify_reversible(
     sources: &mut SourceMap,
     root_ty: &ExprType,
     codec_sigs: &HostSignatures,
+    field: &str,
 ) -> Result<(), Rejection> {
-    let restored = transform(back, transformed, target_ty.clone(), ctx, sources, root_ty, codec_sigs)?;
+    let restored = transform(back, transformed, target_ty.clone(), ctx, sources, root_ty, codec_sigs, field)?;
     if restored == *original {
         Ok(())
     } else {
@@ -583,17 +589,36 @@ fn verify_reversible(
 
 /// Type-check a transform expression whose `.` is a scalar of `dot_ty`, resolving
 /// the built-in codec namespaces (§16.1) so `base64.encode`/`string.bytes` type.
+///
+/// A `$from`/`$as`/`$back` transform is a *pure* position (§20.1): its `.`-rooted
+/// scope carries only the pure codec namespaces and defaults to
+/// [`HostPosition::Pure`](liasse_expr::HostPosition), so a generated host op is
+/// already refused by the effect-position check. The one remaining generated
+/// surface is the core `now()`/`uuid()`, which `check_statement` types without a
+/// position gate; the §20.1 [`nondeterministic_call`] classifier — the same one a
+/// `$migrations` program uses — bars it here so no fresh non-source-derived value
+/// bakes into committed migrated state.
 fn compile(
     text: &str,
     dot_ty: Type,
     sources: &mut SourceMap,
     root_ty: &ExprType,
     codec_sigs: &HostSignatures,
+    field: &str,
 ) -> Result<TypedExpr, Rejection> {
     let src = sources.add_label("migration", text.to_owned());
     let parsed = parse_expression(src, text).map_err(|d| {
         Rejection::new(RejectionReason::Malformed, format!("migration transform: {}", d.render(sources)))
     })?;
+    if let Some(func) = nondeterministic_call(parsed.statement()) {
+        return Err(Rejection::new(
+            RejectionReason::Malformed,
+            format!(
+                "migration transform for field `{field}` calls the non-deterministic `{func}()`: a \
+                 `$from`/`$as` transform MUST use deterministic pure functions of its input `.` (§20.1)"
+            ),
+        ));
+    }
     let scope = RuntimeScope::new(ExprType::scalar(dot_ty), root_ty.clone()).with_host_ops(codec_sigs.clone());
     check_statement(&scope, src, &parsed).map_err(|d| {
         Rejection::new(RejectionReason::TypeError, format!("migration transform: {}", d.render(sources)))
