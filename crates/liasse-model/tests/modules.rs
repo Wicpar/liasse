@@ -358,3 +358,117 @@ fn surface_binding_into_private_child_path_rejected() {
     assert!(built.has_code("M-SURFACE"), "expected a surface rejection, got: {}", built.rendered());
     assert!(built.points_at("create_template"));
 }
+
+/// §13.12 — a `$ref` whose target is an imported module interface (`#people`)
+/// crosses a module boundary, so it MUST decide `$on_delete` at the ref site.
+/// Omitting it is rejected (the model previously mis-rejected such a ref as an
+/// unresolvable local collection; §13.12 makes the real fault the missing policy).
+#[test]
+fn cross_boundary_ref_without_on_delete_rejected() {
+    let built = build(
+        r##"{ "$liasse": 1, "$module": "t.orders@1.0.0",
+            "$use": { "people": "t.people/people@1" },
+            "$model": { "orders": { "$key": "id", "id": "text", "owner": { "$ref": "#people" } } },
+            "$expose": { "orders": { "$view": ".orders { id, owner }" } }
+        }"##,
+    );
+    assert!(built.has_code("M-DELETE"), "expected a cross-boundary $on_delete rejection, got: {}", built.rendered());
+    assert!(built.points_at("#people"));
+}
+
+/// §13.12 — the same cross-boundary ref loads once it declares `$on_delete`, and
+/// a `#handle` target is not rejected as an unresolvable local collection (its
+/// key type binds through the composition, a runtime seam).
+#[test]
+fn cross_boundary_ref_with_on_delete_loads() {
+    let built = build(
+        r##"{ "$liasse": 1, "$module": "t.orders@1.0.0",
+            "$use": { "people": "t.people/people@1" },
+            "$model": { "orders": { "$key": "id", "id": "text",
+              "owner": { "$ref": "#people", "$on_delete": "restrict" } } },
+            "$expose": { "orders": { "$view": ".orders { id, owner }" } }
+        }"##,
+    );
+    built.expect_ok();
+}
+
+/// §13.8 — a module-space interface `$mut` contract name carries an explicit
+/// parameter prototype; a malformed prototype (an unknown parameter type) is
+/// rejected rather than accepted as an opaque boundary contract.
+#[test]
+fn interface_mut_contract_malformed_prototype_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
+            "companies": {
+              "$key": "id", "id": "text",
+              "modules": { "$modules": { "$interfaces": { "t": {
+                "$view": { "$key": "id", "id": "text" },
+                "$mut": { "create({ id: notatype })": { "$return": "bool" } }
+              } } } }
+            }
+        } }"#,
+    );
+    assert!(built.has_code("M-MODULE"), "expected an interface contract rejection, got: {}", built.rendered());
+    assert!(built.points_at("create({ id: notatype })"));
+}
+
+/// §13.8 — an interface `$mut` contract object carries only `$return`; an unknown
+/// member (a typo) is rejected.
+#[test]
+fn interface_mut_contract_unknown_body_member_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
+            "companies": {
+              "$key": "id", "id": "text",
+              "modules": { "$modules": { "$interfaces": { "t": {
+                "$view": { "$key": "id", "id": "text" },
+                "$mut": { "create({ id: text })": { "$reply": "bool" } }
+              } } } }
+            }
+        } }"#,
+    );
+    assert!(built.has_code("M-MODULE"), "expected an interface contract rejection, got: {}", built.rendered());
+    assert!(built.points_at("$reply"));
+}
+
+/// §13.8 — `$return` is a response *shape* (scalar type, struct, ref, or
+/// row/view); a bare scalar literal is not a shape and is rejected.
+#[test]
+fn interface_mut_contract_non_shape_return_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
+            "companies": {
+              "$key": "id", "id": "text",
+              "modules": { "$modules": { "$interfaces": { "t": {
+                "$view": { "$key": "id", "id": "text" },
+                "$mut": { "create({ id: text })": { "$return": 5 } }
+              } } } }
+            }
+        } }"#,
+    );
+    assert!(built.has_code("M-MODULE"), "expected a `$return` shape rejection, got: {}", built.rendered());
+}
+
+/// §13.8 — a well-formed interface `$mut` map loads: a scalar `$return`, a struct
+/// `$return`, a `{ $ref: ... }` response, and a response-free (`{}`) contract all
+/// pass, exercising each declared response form.
+#[test]
+fn interface_mut_contract_well_formed_loads() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
+            "companies": {
+              "$key": "id", "id": "text",
+              "modules": { "$modules": { "$interfaces": { "templates": {
+                "$view": { "$key": "id", "id": "text", "label": "text" },
+                "$mut": {
+                  "disable({ template: text })": { "$return": "bool" },
+                  "create({ id: text, label: text })": { "$return": { "id": "text", "label": "text" } },
+                  "clone({ id: text })": { "$return": { "$ref": ".templates" } },
+                  "remove({ id: text })": {}
+                }
+              } } } }
+            }
+        } }"#,
+    );
+    built.expect_ok();
+}

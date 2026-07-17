@@ -21,9 +21,12 @@ use liasse_value::Type;
 
 use crate::bucket::node_at_mut;
 use crate::doc::DocValueExt;
+use crate::mutation::parse_name;
+use crate::names::DeclName;
 use crate::report::{code, Reporter};
 use crate::resolve::Resolver;
 use crate::state::{Node, Shape};
+use crate::types::{NamedTypes, TypeParser};
 
 /// Pre-pass (§13.8/§13.9): type each module space's placeholder view node into a
 /// keyed view of instances. Each instance shape's interface members are projected
@@ -91,13 +94,127 @@ fn check_interfaces(reporter: &mut Reporter, value: &DocValue) {
         };
         for member in members {
             match member.name.text.as_str() {
-                "$view" | "$mut" => {}
+                // The `$view` shape is built and typed by the state builder
+                // ([`crate::build`]) as the interface's read row (§13.8/§13.9).
+                "$view" => {}
+                "$mut" => check_interface_muts(reporter, &member.value),
                 other => reporter.reject(
                     member.span,
                     code::MODULE,
                     format!("`{other}` is not an interface member; use `$view` and `$mut`"),
                 ),
             }
+        }
+    }
+}
+
+/// Validate a module-space interface `$mut` contract map (§13.8). Each key is a
+/// mutation contract whose name carries an explicit parameter prototype
+/// `name({ param: type })`; each value is an object whose only member is the
+/// `$return` response shape (an omitted `$return`, i.e. an empty object, declares
+/// a response-free mutation). Malformed prototypes and response shapes are
+/// rejected here so the boundary contract is well-typed.
+///
+/// Cross-package seam: checking that a *child's* bound private mutation satisfies
+/// this contract — its parameters are a subset the contract supplies, its
+/// response conforms to `$return` — needs both the child package's typed
+/// mutations and this contract, so it is the composition runtime's install-time
+/// check (§13.3/§13.8), not a single-package rule.
+fn check_interface_muts(reporter: &mut Reporter, value: &DocValue) {
+    let Some(contracts) = value.as_object() else {
+        reporter.reject_hint(
+            value.span,
+            code::MODULE,
+            "an interface `$mut` maps contract prototypes to their response shapes",
+            "e.g. `{ \"create({ label: text })\": { \"$return\": \"bool\" } }`",
+        );
+        return;
+    };
+    for contract in contracts {
+        match parse_name(&contract.name.text) {
+            Ok((base, _proto)) => {
+                if let Err(reason) = DeclName::parse(&base) {
+                    reporter.reject(contract.name.span, code::MODULE, reason);
+                }
+            }
+            Err(reason) => reporter.reject_hint(
+                contract.name.span,
+                code::MODULE,
+                reason,
+                "declare the contract with an explicit parameter prototype, e.g. `\"create({ label: text })\"` (§13.8)",
+            ),
+        }
+        let Some(body) = contract.value.as_object() else {
+            reporter.reject_hint(
+                contract.value.span,
+                code::MODULE,
+                format!("interface mutation `{}` must be an object carrying its `$return` shape", contract.name.text),
+                "e.g. `{ \"$return\": \"bool\" }`, or `{}` for a response-free mutation",
+            );
+            continue;
+        };
+        for member in body {
+            match member.name.text.as_str() {
+                "$return" => check_return_shape(reporter, &member.value),
+                other => reporter.reject(
+                    member.span,
+                    code::MODULE,
+                    format!("`{other}` is not an interface mutation member; a contract object carries only `$return` (§13.8)"),
+                ),
+            }
+        }
+    }
+}
+
+/// Validate an interface mutation `$return` response shape (§13.8): a scalar
+/// type, a struct, a `{ $ref: target }`, or a row/view response. A scalar or a
+/// struct field's declared type must be a well-formed type expression; the ref
+/// target and any deeper row/view resolution are composition seams checked once
+/// the boundary is bound.
+fn check_return_shape(reporter: &mut Reporter, value: &DocValue) {
+    if let Some(text) = value.as_string() {
+        if let Err(reason) = TypeParser::parse(text.trim(), &NamedTypes::new()) {
+            reporter.reject(
+                value.span,
+                code::MODULE,
+                format!("`$return` names a response type, but `{}` is not one: {reason}", text.trim()),
+            );
+        }
+        return;
+    }
+    let Some(members) = value.as_object() else {
+        reporter.reject_hint(
+            value.span,
+            code::MODULE,
+            "`$return` is a response shape: a scalar type, a struct, a `{ $ref: ... }`, or a row/view",
+            "e.g. `\"bool\"`, `{ \"id\": \"text\" }`, or `{ \"$ref\": \".templates\" }`",
+        );
+        return;
+    };
+    // A `{ $ref: target }` ref response — the target names a row source, resolved
+    // (locally or across the bound boundary) by a later pass; only the descriptor
+    // shape is checked here.
+    if let Some(reference) = members.iter().find(|m| m.name.text == "$ref") {
+        if reference.value.as_string().is_none() {
+            reporter.reject(reference.value.span, code::MODULE, "`$return` `$ref` names a target row source as a string");
+        }
+        return;
+    }
+    // A struct/row response: each field maps a name to a type. A string field
+    // type is validated; a `$key`/`$sort` row directive or a nested struct value
+    // is accepted structurally (deeper response typing is a composition seam).
+    for member in members {
+        if member.name.text.starts_with('$') {
+            continue;
+        }
+        if let Some(text) = member.value.as_string()
+            && let Err(reason) = TypeParser::parse(text.trim(), &NamedTypes::new())
+        {
+            reporter.reject(
+                member.value.span,
+                code::MODULE,
+                format!("`$return` field `{}` has an invalid type `{}`: {reason}", member.name.text, text.trim()),
+            );
         }
     }
 }

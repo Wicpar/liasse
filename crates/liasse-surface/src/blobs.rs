@@ -16,6 +16,11 @@
 //!   the typed rejection of a lying/oversized/unaccepted descriptor;
 //! - [`BlobHost::get`] — the §18.8/§18.9 fetch by digest through a visibility gate,
 //!   returning a [`BlobGetOutcome`] that never surfaces tampered bytes;
+//! - [`BlobHost::fetch_projected`] — the §18.8 fetch gate over the *value* a
+//!   caller's surface projection resolved at the descriptor occurrence, so a
+//!   metadata-only or hidden projection grants no fetch;
+//! - [`BlobHost::placement_state`] — the §18.5 `$stored`/`$satisfied`/`$surplus`
+//!   observations of a committed blob against the current placement policy;
 //! - [`BlobHost::reconcile`] — the §18.6 convergence of a retained blob's placement.
 //!
 //! [`BlobConnector`]: liasse_host::BlobConnector
@@ -24,7 +29,8 @@ use std::collections::BTreeMap;
 
 use liasse_host::{BlobConnector, BlobIntegrity};
 use liasse_runtime::{
-    AcceptedType, Blob, BlobEngine, DeclaredDescriptor, FetchError, Placement, StoreId, UploadError,
+    AcceptedType, Blob, BlobEngine, DeclaredDescriptor, FetchError, Placement, PlacementState,
+    StoreId, UploadError, Value,
 };
 
 /// The result of a §18.7 upload through [`BlobHost::put`].
@@ -120,6 +126,50 @@ impl<C: BlobConnector> BlobHost<C> {
             Err(FetchError::Denied) => BlobGetOutcome::Denied,
             Err(FetchError::NoCleanHolder) => BlobGetOutcome::NoCleanHolder,
         }
+    }
+
+    /// Fetch the content the caller's surface projection exposes (§18.8): the
+    /// §18.8 gate is *visibility of a blob value through a currently authorized
+    /// surface*, so the caller supplies not a bare digest but the value its
+    /// resolved projection yields at the descriptor occurrence.
+    ///
+    /// - `Some(Value::Blob(descriptor))` — the projection exposes the blob
+    ///   *value*; its `$sha512` identifies the content to fetch. A known-hash
+    ///   attacker whose surface hides the row, or a revoked member whose role
+    ///   view no longer resolves it, never reaches this arm (their projection
+    ///   yields `None`).
+    /// - `Some(_)` — the projection is metadata-only (a `$bytes`/`$media` value,
+    ///   not the blob value): it "grants that metadata and no blob fetch" (§18.8).
+    /// - `None` — no descriptor occurrence is visible through the projection.
+    ///
+    /// Resolving the caller's projection to that value (authentication, scoped
+    /// role membership, surface projection, descriptor occurrence) is the
+    /// surface view engine's job; this method is the §18.8 gate over its result.
+    #[must_use]
+    pub fn fetch_projected(&self, projected: Option<&Value>) -> BlobGetOutcome {
+        let Some(Value::Blob(descriptor)) = projected else {
+            // Metadata-only projection or no visible occurrence: no blob fetch.
+            return BlobGetOutcome::Denied;
+        };
+        self.get(&descriptor.sha512().to_canonical_text(), true)
+    }
+
+    /// The §18.5 placement observations of the content `digest`, evaluated
+    /// against the host's declared policy — `$stored`, `$satisfied`, `$surplus`.
+    /// `None` if no blob with that digest is retained.
+    #[must_use]
+    pub fn placement_state(&self, digest: &str) -> Option<PlacementState> {
+        self.placement_state_under(digest, &self.placement)
+    }
+
+    /// The §18.5 placement observations of `digest` evaluated against a
+    /// `policy` re-resolved from current store rows (§18.4/§18.5): disabling a
+    /// store shrinks the store view the policy resolves to, so a still-verified
+    /// copy in a no-longer-required store surfaces in `$surplus` without any
+    /// bytes moving. `None` if no blob with that digest is retained.
+    #[must_use]
+    pub fn placement_state_under(&self, digest: &str, policy: &Placement) -> Option<PlacementState> {
+        self.committed.get(digest).map(|blob| blob.placement_state(policy))
     }
 
     /// Converge a retained blob's placement toward the host's policy (§18.6):

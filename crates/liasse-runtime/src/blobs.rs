@@ -25,35 +25,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use liasse_host::{BlobConnector, BlobIntegrity, VerifiedFetchError};
 use liasse_value::{BlobDescriptor, MediaType, Sha512};
 
-/// A store identity (`stores.id`, §18.3).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StoreId(String);
+mod placement;
 
-impl StoreId {
-    /// Wrap a store id.
-    #[must_use]
-    pub fn new(id: impl Into<String>) -> Self {
-        Self(id.into())
-    }
-
-    /// The store-id text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-/// A store row (§18.3): its id, the connector it selects, and whether it is
-/// enabled for placement.
-#[derive(Debug, Clone)]
-pub struct Store {
-    /// The store id.
-    pub id: StoreId,
-    /// The registered connector name this store selects.
-    pub connector: String,
-    /// Whether the store participates in placement (`enabled`).
-    pub enabled: bool,
-}
+use placement::dedup;
+pub use placement::{CopyState, Placement, PlacementState, Store, StoreId};
 
 /// The accepted-blob-type constraints of a `blob` field (§18.2).
 #[derive(Debug, Clone)]
@@ -62,71 +37,6 @@ pub struct AcceptedType {
     pub max_bytes: u64,
     /// The set of accepted media types.
     pub media: Vec<MediaType>,
-}
-
-/// A placement policy plan (§18.4). A bare `view` requires every store it
-/// yields; the branch combinators compose those requirements.
-#[derive(Debug, Clone)]
-pub enum Placement {
-    /// A store view: verified in every store it yields.
-    View(Vec<StoreId>),
-    /// Every branch required simultaneously.
-    All(Vec<Placement>),
-    /// Alternatives in preference order; the first fulfillable is the new-write
-    /// plan.
-    Any(Vec<Placement>),
-    /// Any `n` writable stores from the ordered view.
-    Copies {
-        /// The required copy count.
-        n: usize,
-        /// The ordered source view.
-        of: Vec<StoreId>,
-    },
-}
-
-impl Placement {
-    /// The flattened depth-first, left-to-right store order with duplicate store
-    /// identities removed by first occurrence (§18.4). This is the default
-    /// `$serve` order.
-    #[must_use]
-    pub fn flattened(&self) -> Vec<StoreId> {
-        let mut seen = BTreeSet::new();
-        let mut order = Vec::new();
-        self.collect(&mut seen, &mut order);
-        order
-    }
-
-    fn collect(&self, seen: &mut BTreeSet<StoreId>, order: &mut Vec<StoreId>) {
-        match self {
-            Self::View(stores) | Self::Copies { of: stores, .. } => {
-                for store in stores {
-                    if seen.insert(store.clone()) {
-                        order.push(store.clone());
-                    }
-                }
-            }
-            Self::All(branches) | Self::Any(branches) => {
-                for branch in branches {
-                    branch.collect(seen, order);
-                }
-            }
-        }
-    }
-}
-
-/// The lifecycle state of one placement copy (§18.5).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CopyState {
-    /// Staged, not yet copying.
-    Pending,
-    /// Copy in progress.
-    Copying,
-    /// Verified at its destination.
-    Verified,
-    /// Observed to hash wrong; demoted for repair.
-    Corrupt,
-    /// Being drained as surplus.
-    Draining,
 }
 
 /// A committed blob occurrence (§18.5): its descriptor and per-store placement.
@@ -158,6 +68,35 @@ impl Blob {
     #[must_use]
     pub fn placement(&self, store: &StoreId) -> Option<CopyState> {
         self.placement.get(store).copied()
+    }
+
+    /// The §18.5 logical placement observations of this occurrence, evaluated
+    /// against the current placement `policy`: `$stored` (the verified stores),
+    /// `$satisfied` (the policy over them), and `$surplus` (verified copies
+    /// outside the currently required policy).
+    ///
+    /// The `policy` is the *current* resolution of the field's `$blob_storage`
+    /// `$in`, re-derived from current store rows — so disabling a store shrinks
+    /// the required set without moving bytes, and the now-unrequired verified
+    /// copy surfaces in `$surplus` (§18.4/§18.5).
+    #[must_use]
+    pub fn placement_state(&self, policy: &Placement) -> PlacementState {
+        let verified = self.verified_set();
+        PlacementState {
+            stored: verified.iter().cloned().collect(),
+            satisfied: policy.satisfied_by(&verified),
+            surplus: policy.surplus(&verified),
+        }
+    }
+
+    /// The verified store set (`blob.$stored` as a set, §18.5), for evaluating
+    /// the placement policy over it.
+    fn verified_set(&self) -> BTreeSet<StoreId> {
+        self.placement
+            .iter()
+            .filter(|(_, state)| **state == CopyState::Verified)
+            .map(|(id, _)| id.clone())
+            .collect()
     }
 }
 
@@ -523,10 +462,4 @@ fn parse_media(media: &str) -> (String, Vec<(String, String)>) {
         .collect();
     params.sort();
     (essence, params)
-}
-
-/// Remove repeated store identities by first occurrence (§18.4).
-fn dedup(stores: &[StoreId]) -> Vec<StoreId> {
-    let mut seen = BTreeSet::new();
-    stores.iter().filter(|s| seen.insert((*s).clone())).cloned().collect()
 }

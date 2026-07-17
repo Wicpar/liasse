@@ -171,8 +171,8 @@ mod state;
 mod view;
 
 pub use blobs::{
-    AcceptedType, Blob, BlobEngine, CopyState, DeclaredDescriptor, FetchError, Placement, Store,
-    StoreId, UploadError,
+    AcceptedType, Blob, BlobEngine, CopyState, DeclaredDescriptor, FetchError, Placement,
+    PlacementState, Store, StoreId, UploadError,
 };
 pub use deletion::{
     DeleteError, DeletePolicy, DeletionPlan, Erasure, Extract, Graph, Occurrence, RefEdge, RowRef,

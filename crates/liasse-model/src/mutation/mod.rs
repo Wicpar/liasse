@@ -31,13 +31,15 @@ use crate::state::{Node, Shape};
 use crate::walk::child_exprs;
 
 use helpers::{
-    collect_param_refs, is_program_call, is_scalar_binop, local_binding_name, parse_name,
-    receiver_shape, record, resolve_node, uses_mutation_operator, wrap, write_path, BindEnv,
-    Params,
+    collect_param_refs, is_program_call, is_scalar_binop, local_binding_name, receiver_shape,
+    record, resolve_node, uses_mutation_operator, wrap, write_path, BindEnv, Params,
 };
 // Re-exported for the surface phase's inline-program check (§10.1), which walks a
 // statement's expressions to reject a public `$actor`/`$session` reference.
 pub(crate) use helpers::stmt_exprs;
+// Re-exported for the module phase (§13.8): validating a `$modules` interface
+// `$mut` contract name against the same `name({ proto })` prototype grammar.
+pub(crate) use helpers::parse_name;
 
 /// A validated mutation: where it is declared, its external name, and its
 /// inferred/declared parameter contract.

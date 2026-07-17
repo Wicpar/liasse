@@ -90,6 +90,15 @@ fn resolve_shape(reporter: &mut Reporter, shape: &mut Shape, index: &Index) {
 }
 
 fn resolve_ref(reporter: &mut Reporter, reference: &mut Reference, index: &Index) {
+    // §13.12: a `#handle` target names an imported module interface, not a local
+    // collection. Its key type is the peer interface's key, knowable only once
+    // the composition binds the handle (a runtime seam), so it is not resolved
+    // against the local collection index and is not rejected as a missing
+    // collection. The cross-boundary `$on_delete` requirement is enforced by the
+    // deletion pass (`crate::delete`).
+    if reference.target.trim_start().starts_with('#') {
+        return;
+    }
     let normalized = normalize_target(&reference.target);
     match index.keys.get(&normalized) {
         Some(key) => reference.key_type = key.clone(),

@@ -12,13 +12,20 @@
 //!   keys`, `-row_source`, `collection = view`, `erase(row)`), every inbound ref
 //!   to that collection MUST declare a policy, or the whole package is rejected
 //!   (§21.1). The diagnostic names the deleting declaration and the ref.
+//! * **Cross-module boundary.** A `$ref` whose target is an imported module
+//!   interface (`#handle`) crosses a module boundary. §13.12 requires such a ref
+//!   to declare `$on_delete` *immediately*, without the deferral above: the
+//!   target package owns its own state and exposed membership and may evolve or
+//!   uninstall independently, so no local reasoning can prove the target is
+//!   undeletable. Omission is rejected here.
 //!
 //! CORE scope: the deleting-capability set is computed from directly authored
 //! deleting operators. Transitive capability across mutation *calls* and across
 //! cascade-induced row removal (also §21.1) is a documented runtime seam; the
 //! same-module deferral this pass models catches the authored capabilities the
-//! chapter's static cases pin. Cross-module refs (which MUST declare a policy
-//! immediately) are resolved once module composition is available.
+//! chapter's static cases pin. Which concrete peer instance a `#handle` binds is
+//! a composition-runtime concern; the immediate `$on_delete` requirement itself
+//! is decided here from the single package.
 
 use std::collections::BTreeSet;
 
@@ -37,6 +44,24 @@ pub(crate) fn check(reporter: &mut Reporter, sources: &mut SourceMap, root: &Sha
     collect_refs(root, &mut String::new(), &mut refs);
     for reference in &refs {
         check_policy(reporter, reference.reference);
+        // §13.12: a ref crossing a module boundary (`#handle` target) must declare
+        // `$on_delete` at the ref site, immediately — the local deferral below,
+        // which reasons about the owning module's own deleting capabilities, cannot
+        // apply because the target instance is owned and evolved by another package.
+        if reference.reference.target.trim_start().starts_with('#') {
+            if reference.reference.on_delete.is_none() {
+                reporter.reject_hint(
+                    reference.reference.span,
+                    code::DELETE,
+                    format!(
+                        "ref to imported module interface `{}` must declare `$on_delete`: a ref crossing a module boundary decides its deletion policy at the ref site (§13.12)",
+                        reference.reference.target,
+                    ),
+                    "declare `$on_delete` as `restrict`, `cascade`, `none` (optional refs), or a `= patch`",
+                );
+            }
+            continue;
+        }
         if reference.reference.on_delete.is_none() && deletable.contains(&reference.target) {
             reporter.reject_hint(
                 reference.reference.span,

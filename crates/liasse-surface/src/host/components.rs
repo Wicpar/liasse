@@ -30,8 +30,8 @@
 use liasse_host::sim::{SimConnector, SimKeyProvider};
 use liasse_host::{CoseClaims, CoseToken};
 use liasse_runtime::{
-    DeclaredDescriptor, KeyringError, Rejection, RejectionReason, RotationOutcome, StoreId,
-    Timestamp, VersionId,
+    DeclaredDescriptor, KeyringError, Placement, PlacementState, Rejection, RejectionReason,
+    RotationOutcome, StoreId, Timestamp, Value, VersionId,
 };
 use liasse_store::InstanceStore;
 
@@ -241,6 +241,38 @@ impl<S: InstanceStore> SurfaceHost<S> {
         visible: bool,
     ) -> Result<BlobGetOutcome, HostComponentError> {
         Ok(self.blob(name)?.get(digest, visible))
+    }
+
+    /// Fetch from blob host `name` the content its caller's surface projection
+    /// exposes at a descriptor occurrence (§18.8). `projected` is the value the
+    /// caller's resolved surface view yields there: a `blob` value grants the
+    /// fetch, a metadata value or an absent occurrence grants none. This is the
+    /// §18.8 gate "blob_get needs the projection, not just the digest" — a
+    /// known-hash or revoked caller whose projection hides the row is denied.
+    ///
+    /// # Errors
+    /// [`HostComponentError::NoBlob`] if unregistered.
+    pub fn blob_get_projected(
+        &self,
+        name: &str,
+        projected: Option<&Value>,
+    ) -> Result<BlobGetOutcome, HostComponentError> {
+        Ok(self.blob(name)?.fetch_projected(projected))
+    }
+
+    /// The §18.5 placement observations of `digest` in blob host `name`
+    /// evaluated against a `policy` re-resolved from current store rows —
+    /// `$stored`, `$satisfied`, `$surplus` (§18.4/§18.5).
+    ///
+    /// # Errors
+    /// [`HostComponentError::NoBlob`] if unregistered.
+    pub fn blob_placement_state(
+        &self,
+        name: &str,
+        digest: &str,
+        policy: &Placement,
+    ) -> Result<Option<PlacementState>, HostComponentError> {
+        Ok(self.blob(name)?.placement_state_under(digest, policy))
     }
 
     /// Converge blob host `name`'s retained content `digest` toward policy

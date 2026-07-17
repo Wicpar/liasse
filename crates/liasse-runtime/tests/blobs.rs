@@ -9,8 +9,8 @@
 use liasse_host::sim::SimConnector;
 use liasse_host::{BlobIntegrity, Capability, ConnectorCapabilities};
 use liasse_runtime::{
-    AcceptedType, Blob, BlobEngine, CopyState, DeclaredDescriptor, FetchError, Placement, Store,
-    StoreId, UploadError,
+    AcceptedType, Blob, BlobEngine, CopyState, DeclaredDescriptor, FetchError, Placement,
+    PlacementState, Store, StoreId, UploadError,
 };
 use liasse_value::MediaType;
 
@@ -368,6 +368,80 @@ fn corrupt_copy_demoted_and_repaired() {
     );
     // The blob still fetches its exact bytes after repair.
     assert_eq!(engine.fetch(&blob, true).expect("fetch"), content);
+}
+
+/// §18.5: with a single-store `$in` policy and one verified copy, `$stored` is
+/// {primary}, `$satisfied` is true, and `$surplus` is empty.
+#[test]
+fn satisfied_placement_reads_stored_and_satisfied() {
+    let mut engine = single_store_engine();
+    let blob = upload_ok(&mut engine, b"placed once");
+    assert_eq!(
+        blob.placement_state(&primary()),
+        PlacementState {
+            stored: vec![StoreId::new("primary")],
+            satisfied: true,
+            surplus: vec![],
+        },
+    );
+}
+
+/// §18.5: `$satisfied` evaluates the placement policy over the verified stores.
+/// A single verified copy does not satisfy a policy that requires a copy in a
+/// second store, so `$satisfied` is false while `$stored` still lists the one
+/// holding store. (The upload always lands a complete branch; an under-verified
+/// state arises when the *current* policy is wider than the admission-time one.)
+#[test]
+fn unsatisfied_in_policy_reads_not_satisfied() {
+    let mut engine = single_store_engine();
+    let blob = upload_ok(&mut engine, b"only primary");
+    let wider = Placement::All(vec![
+        Placement::View(vec![StoreId::new("primary")]),
+        Placement::View(vec![StoreId::new("backup")]),
+    ]);
+    assert_eq!(
+        blob.placement_state(&wider),
+        PlacementState {
+            stored: vec![StoreId::new("primary")],
+            satisfied: false,
+            surplus: vec![],
+        },
+    );
+}
+
+/// §18.4/§18.5: shrinking the policy without moving bytes leaves the already
+/// verified copy in the no-longer-required store as `$surplus`, while the
+/// remaining required store keeps the policy `$satisfied`.
+#[test]
+fn surplus_after_policy_shrinks() {
+    let mut engine = two_store_engine();
+    let both = Placement::View(vec![StoreId::new("primary"), StoreId::new("backup")]);
+    let content = b"replicated then orphaned";
+    let blob = engine
+        .upload(&declared(content, "text/plain"), &accepted(100, &["text/plain"]), &both, content)
+        .expect("both verified");
+
+    // Before shrink: both required and verified, nothing surplus.
+    assert_eq!(
+        blob.placement_state(&both),
+        PlacementState {
+            stored: vec![StoreId::new("backup"), StoreId::new("primary")],
+            satisfied: true,
+            surplus: vec![],
+        },
+    );
+
+    // Shrink the policy to `primary` only: `backup` still physically holds a
+    // verified copy, now outside the required policy, hence surplus.
+    let shrunk = Placement::View(vec![StoreId::new("primary")]);
+    assert_eq!(
+        blob.placement_state(&shrunk),
+        PlacementState {
+            stored: vec![StoreId::new("backup"), StoreId::new("primary")],
+            satisfied: true,
+            surplus: vec![StoreId::new("backup")],
+        },
+    );
 }
 
 // ---- helpers -------------------------------------------------------------

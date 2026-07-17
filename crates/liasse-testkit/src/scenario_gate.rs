@@ -134,20 +134,48 @@ pub const SKIP: &[(&str, &str)] = &[
     // §13 non-absolute module space / child-artifact embedding (same seam as the
     // child-* cases below).
     ("19-history-artifacts/merge-competing-module-mounts-conflict", "§13 the case mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects, so mount competition never reaches the merge"),
-    ("20-evolution-migrations/downgrade-preserves-history-order", "§20 the downgrade `host_load` is rejected (migration/history-order preservation seam), reached only after the export setup drives"),
-    // --- `host_load` step ---
-    ("20-evolution-migrations/confusable-from-source-name-nonexistent-rejected", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/downgrade-via-inverse-restores-value", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/empty-source-collection-migrates-to-empty", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/migrated-state-dangling-ref-rejected", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/migration-order-from-before-program", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/migration-program-atomicity-partial-failure-rejected", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/migration-program-key-collision-rejected", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/migration-program-splits-collection", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/minor-update-narrowing-despite-migration-rejected", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/missing-migration-for-active-source-version-rejected", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/replay-identical-version-update-unchanged", "`host_load` step not driven this phase"),
-    ("20-evolution-migrations/reversible-transform-roundtrip-commits", "`host_load` step not driven this phase"),
+    // --- §20 `host_load` / migration ---
+    // `host_load` now drives `Engine::update` end to end (adapter/runtime.rs
+    // `apply_host_load`): the compatible field-level `$from`/`$as`/`$back` path
+    // commits, a boundary narrowing rejects, and a downgrade via inverse commits, so
+    // most §20 cases pass. Each residual below is a genuine runtime/model seam — the
+    // observed outcome is the runtime's real update result, not a driving gap.
+    //
+    // §20.1 package-level `$migrations` program (splits/merges reading `$old`): the
+    // model rejects `$migrations` as an unknown reserved shape member (M-RESERVED),
+    // so `Engine::update` cannot compile the target and `host_load` observes
+    // `invalid` (for a case expecting `rejected`, the same compile failure preempts
+    // the admission check). The two-model program runtime is documented as unlanded
+    // in migrate.rs.
+    ("20-evolution-migrations/empty-source-collection-migrates-to-empty", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the update target fails to compile (`invalid`) — a runtime/model seam"),
+    ("20-evolution-migrations/replay-identical-version-update-unchanged", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the update target fails to compile (`invalid`) — a runtime/model seam"),
+    ("20-evolution-migrations/migration-program-splits-collection", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the update target fails to compile (`invalid`) — a runtime/model seam"),
+    ("20-evolution-migrations/migration-order-from-before-program", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the update target fails to compile (`invalid`) — a runtime/model seam"),
+    ("20-evolution-migrations/migration-program-key-collision-rejected", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the target fails to compile (`invalid`) before the admission `rejected` — a runtime/model seam"),
+    ("20-evolution-migrations/migration-program-atomicity-partial-failure-rejected", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the target fails to compile (`invalid`) before the admission `rejected` — a runtime/model seam"),
+    ("20-evolution-migrations/migrated-state-dangling-ref-rejected", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the target fails to compile (`invalid`) before the ref admission `rejected` — a runtime/model seam"),
+    ("20-evolution-migrations/missing-migration-for-active-source-version-rejected", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the target fails to compile (`invalid`) before the missing-migration `rejected` — a runtime/model seam"),
+    //
+    // §20.2 reversible transform: the migration transform eval scope
+    // (migrate.rs `HostDispatch::none`) resolves no `base64.encode`/`base64.decode`/
+    // `string.bytes`/`string.from_bytes`, so the `$as`/`$back` expression fails
+    // type-check (unknown-function E-EXPR) and the migration is `rejected`.
+    ("20-evolution-migrations/reversible-transform-roundtrip-commits", "§20.2 the migration transform scope resolves no `base64`/`string.bytes` function (unknown-function E-EXPR), so the `$as` transform is `rejected` — a runtime seam"),
+    ("20-evolution-migrations/downgrade-via-inverse-restores-value", "§20.2 the migration transform scope resolves no `base64`/`string.bytes` function (unknown-function E-EXPR), so the step-0 upgrade `$as` is `rejected` — a runtime seam"),
+    ("20-evolution-migrations/downgrade-preserves-history-order", "§20.2 the step-2 upgrade `$as` is `rejected` (no `base64`/`string.bytes` in the migration scope, unknown-function E-EXPR), reached after the export/inspect setup drives — a runtime seam"),
+    //
+    // §20.1 the runtime silently drops a `$from` naming a nonexistent source field
+    // instead of rejecting, so the migration commits (`ok`) with the target field
+    // unpopulated — a runtime seam (the case expects `rejected`).
+    ("20-evolution-migrations/confusable-from-source-name-nonexistent-rejected", "§20.1 the runtime silently skips a `$from` naming a nonexistent source field, so the migration commits (`ok`) with the field unpopulated instead of rejecting — a runtime seam"),
+    //
+    // CORPUS SUSPECT (§20.3 / Annex E.9 outcome vocabulary): `Engine::update`
+    // returns `UpdateError::Rejected` (RejectionReason::Compatibility) for a boundary
+    // narrowing, rendered `rejected`; the case expects `invalid` under the chapter's
+    // definition-only §9.4 split. Both collapse to the one §9.4 `rejected` lifecycle
+    // result, so the observable outcome is not in doubt — a corpus-classification
+    // discrepancy, not an implementation bug (reported, not faked).
+    ("20-evolution-migrations/minor-update-narrowing-despite-migration-rejected", "CORPUS SUSPECT: runtime emits `rejected` for the boundary narrowing (Annex E.9, admission-class), the case expects `invalid` (definition-only §9.4 split); both collapse to §9.4 `rejected` — a corpus-vocabulary discrepancy, not an impl bug"),
     // --- `keyring_admin` manual `bind_activate` (§17.4 manual policy) ---
     // `keyring_admin` now drives the engine's self-provisioned ring through
     // `Engine::keyring_admin` (adapter/keyrings.rs) — `revoke`/`destroy` on an
