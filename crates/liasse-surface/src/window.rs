@@ -17,9 +17,9 @@
 //! exactly one current occurrence when the window opens ([`WindowError`]); row
 //! identity is unique within a result, so "exactly one" is "present". If that
 //! occurrence later leaves the view, the window freezes the anchor's last complete
-//! **sort tuple** as an immutable ordered gap coordinate and tracks "the first
-//! rows at or after it" — a fixed position in the total sort order, not a live
-//! neighbor — until the occurrence reappears (§12.2).
+//! **sort tuple plus occurrence identity** as an immutable ordered gap coordinate
+//! and tracks "the first rows at or after it" — a fixed position in the total sort
+//! order, not a live neighbor — until the occurrence reappears (§12.2).
 //!
 //! # Runtime seam
 //!
@@ -45,23 +45,28 @@ enum Anchor {
 }
 
 /// The frozen ordered gap coordinate of a concrete anchor: the anchor's last
-/// complete **sort tuple**, captured at the last frontier its occurrence was
-/// present (§12.2). While the occurrence is gone this coordinate — a fixed
-/// position in the total sort order, not a live neighbor — decides where the
-/// window begins. The paired occurrence identity §12.2 retains is the anchor's
-/// own, held by [`Anchor::At`].
+/// complete **sort tuple plus occurrence identity**, captured at the last frontier
+/// its occurrence was present (§12.2). A sort tuple alone is not a position when
+/// rows tie on it: the view's total order breaks such ties by occurrence identity
+/// (§8, Annex B.5), so the gap retains the pair to name one exact position — a
+/// fixed position, not a live neighbor — that decides where the window begins
+/// while the occurrence is gone.
 #[derive(Debug, Clone)]
 struct FrozenGap {
     coordinate: Vec<Value>,
+    occurrence: RowId,
 }
 
 impl FrozenGap {
     /// The window start while the anchor is absent: the first current row whose
-    /// sort tuple is at or after the frozen coordinate (§12.2). The view result is
-    /// in ascending sort-tuple order, so this is a `partition_point` — fixing both
-    /// the left-gone and right-gone directions a neighbor coordinate got wrong.
+    /// ordered position is at or after the frozen coordinate (§12.2). That position
+    /// is the pair `(sort tuple, occurrence identity)` — the exact total order the
+    /// engine's `order_rows` produces (sort keys, then [`RowId`] as the §8/B.5 final
+    /// tiebreak) — so a `partition_point` on the pair fixes both the distinct-tuple
+    /// case and the equal-sort-key tie case a bare sort tuple got wrong.
     fn resume(&self, rows: &[ViewRow]) -> usize {
-        rows.partition_point(|row| row.sort_tuple() < self.coordinate.as_slice())
+        let frozen = (self.coordinate.as_slice(), &self.occurrence);
+        rows.partition_point(|row| (row.sort_tuple(), row.id()) < frozen)
     }
 }
 
@@ -134,17 +139,22 @@ impl Window {
             Anchor::Last => rows.len().saturating_sub(self.size),
             Anchor::At(occurrence) => match locate(rows, occurrence) {
                 // Present: (re)freeze the immutable gap at the anchor's current
-                // sort tuple, then place the window (§12.2).
+                // (sort tuple, occurrence identity) pair, then place the window
+                // (§12.2, §8/B.5). The occurrence is the anchor's own, in hand.
                 Some((index, row)) => {
-                    self.gap = Some(FrozenGap { coordinate: row.sort_tuple().to_vec() });
+                    self.gap = Some(FrozenGap {
+                        coordinate: row.sort_tuple().to_vec(),
+                        occurrence: occurrence.clone(),
+                    });
                     if self.slide {
                         center(index, self.size, rows.len())
                     } else {
                         index
                     }
                 }
-                // Absent: the frozen sort-tuple coordinate holds the window until
-                // the occurrence reappears (§12.2). No gap yet ⇒ unopenable.
+                // Absent: the frozen (sort tuple, occurrence) coordinate holds the
+                // window until the occurrence reappears (§12.2). No gap yet ⇒
+                // unopenable.
                 None => self.gap.as_ref()?.resume(rows),
             },
         };
