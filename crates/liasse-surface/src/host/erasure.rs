@@ -29,8 +29,9 @@
 //! state, so in CORE scope an erased row is absent from the export by virtue of
 //! the live removal.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use liasse_expr::{RowId, RowIdPart};
 use liasse_runtime::{Erasure, Extract, Occurrence, Value};
 use liasse_store::InstanceStore;
 use liasse_value::{Struct, Text};
@@ -107,12 +108,18 @@ impl<S: InstanceStore> SurfaceHost<S> {
     }
 
     /// Snapshot the rows of the surface's own `$view` at the committed head, each
-    /// as its field map. The surface a call addresses exposes the observable view
-    /// its rows are read from; capturing before/after the removal isolates exactly
-    /// the scrubbed rows without the surface having to know the receiver's key
-    /// field. An unresolvable or unreadable view yields an empty snapshot (no
-    /// extract), which is the correct fail-closed observation.
-    fn surface_view_snapshot(&self, call_address: &SurfaceAddress) -> Vec<BTreeMap<String, Value>> {
+    /// as its stable [`RowId`] identity (Annex B.5) paired with its field map. The
+    /// surface a call addresses exposes the observable view its rows are read from;
+    /// diffing the before/after snapshots by *identity* isolates exactly the
+    /// scrubbed rows without the surface having to know the receiver's key field.
+    /// Identity — not the projected field map — is what the diff keys on, so a
+    /// non-injective projection (one that hides the key) cannot let a surviving
+    /// sibling mask a removed row. An unresolvable or unreadable view yields an
+    /// empty snapshot (no extract), which is the correct fail-closed observation.
+    fn surface_view_snapshot(
+        &self,
+        call_address: &SurfaceAddress,
+    ) -> Vec<(RowId, BTreeMap<String, Value>)> {
         let Ok(view_address) = SurfaceAddress::parse(&call_address.surface_prefix()) else {
             return Vec::new();
         };
@@ -128,28 +135,36 @@ impl<S: InstanceStore> SurfaceHost<S> {
         result
             .rows()
             .iter()
-            .map(|row| row.fields().map(|(name, value)| (name.clone(), value.clone())).collect())
+            .map(|row| {
+                let fields =
+                    row.fields().map(|(name, value)| (name.clone(), value.clone())).collect();
+                (row.id().clone(), fields)
+            })
             .collect()
     }
 }
 
 /// Build the extract for the rows present in `before` but gone from `after` — the
-/// rows the removal scrubbed (§21.2 step 2). Each scrubbed row is recorded under a
-/// stable occurrence identity (its canonical wire form) and erased, replacing it
-/// with a digest stub while its payload lives on only in the returned extract.
-/// `None` when the removal took nothing out of the observable view.
+/// rows the removal scrubbed (§21.2 step 2). The diff keys on each row's stable
+/// [`RowId`] identity, so a row removed under a non-injective projection is
+/// captured even when a surviving sibling projects to the same field map. Each
+/// scrubbed row is recorded under its own occurrence identity (its `RowId`, §B.5)
+/// and erased, replacing it with a digest stub while its payload lives on only in
+/// the returned extract. `None` when the removal took nothing out of the
+/// observable view.
 fn extract_of(
-    before: &[BTreeMap<String, Value>],
-    after: &[BTreeMap<String, Value>],
+    before: &[(RowId, BTreeMap<String, Value>)],
+    after: &[(RowId, BTreeMap<String, Value>)],
 ) -> Option<Extract> {
+    let surviving: BTreeSet<&RowId> = after.iter().map(|(id, _)| id).collect();
     let mut history = Erasure::new();
     let mut occurrences = Vec::new();
-    for fields in before {
-        if after.contains(fields) {
+    for (id, fields) in before {
+        if surviving.contains(id) {
             continue;
         }
         let payload = struct_payload(fields);
-        let occurrence = Occurrence::new(payload.to_canonical_json_string());
+        let occurrence = Occurrence::new(occurrence_id(id));
         history.record(occurrence.clone(), payload);
         occurrences.push(occurrence);
     }
@@ -160,6 +175,30 @@ fn extract_of(
     // a payload; a failure here would be an internal contradiction rather than an
     // observable outcome, so it collapses to "no extract".
     history.erase(&occurrences).ok()
+}
+
+/// A stable text occurrence identity (Annex B.5) for a view row: its [`RowId`]
+/// rendered as its ordered key/occurrence parts, each tagged by kind and closed
+/// by a record separator so distinct paths render distinctly. Distinct rows carry
+/// distinct ids even under a projection that hides the key, so keying the extract
+/// by this — rather than by the projected field map — keeps each scrubbed row a
+/// separate occurrence.
+fn occurrence_id(id: &RowId) -> String {
+    let mut text = String::new();
+    for part in id.parts() {
+        match part {
+            RowIdPart::Key(key) => {
+                text.push('k');
+                text.push_str(key);
+            }
+            RowIdPart::Occurrence(segment) => {
+                text.push('o');
+                text.push_str(&segment.to_string());
+            }
+        }
+        text.push('\u{1e}');
+    }
+    text
 }
 
 /// The row's fields as a composite `struct` value — the scrubbed leaf payload.
