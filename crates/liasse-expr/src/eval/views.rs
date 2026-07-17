@@ -327,28 +327,37 @@ impl Evaluator<'_> {
         lhs: &TypedExpr,
         rhs: &TypedExpr,
     ) -> Result<Cell, EvalError> {
-        let left: Vec<Row> = self.eval_view(lhs)?.into_iter().map(|s| s.row).collect();
-        let right: Vec<Row> = self.eval_view(rhs)?.into_iter().map(|s| s.row).collect();
-        let right_keys: BTreeSet<&Value> = right.iter().map(Row::key).collect();
-        let result = match op {
+        let left = self.eval_view(lhs)?;
+        let right = self.eval_view(rhs)?;
+        // §7.2/§7.4/B.5: a combinator identifies rows by their composed occurrence
+        // identity — a `::` level's `outer.$key + inner.$key` (§13.9, `RowId::join`)
+        // or a synthetic group's `$key` — not the bare inner key. Two rows sharing an
+        // inner key under distinct parents are distinct identities and must not merge.
+        // `RowScope::identity` carries that composed identity; for a plain collection
+        // it is the row's own key-derived id, so plain-view behavior is unchanged.
+        let right_ids: BTreeSet<&RowId> = right.iter().map(|scope| &scope.identity).collect();
+        let result: Vec<Row> = match op {
             // §7.4: union keeps left order, then right identities not already present.
             CombineOp::Union => {
-                let mut left_keys: BTreeSet<Value> = left.iter().map(|r| r.key().clone()).collect();
-                let mut rows = left.clone();
-                for row in right {
-                    if left_keys.insert(row.key().clone()) {
-                        rows.push(row);
+                let mut left_ids: BTreeSet<RowId> =
+                    left.iter().map(|scope| scope.identity.clone()).collect();
+                let mut rows: Vec<Row> = left.iter().map(|scope| scope.row.clone()).collect();
+                for scope in right {
+                    if left_ids.insert(scope.identity.clone()) {
+                        rows.push(scope.row);
                     }
                 }
                 rows
             }
             CombineOp::Intersect => left
                 .into_iter()
-                .filter(|row| right_keys.contains(row.key()))
+                .filter(|scope| right_ids.contains(&scope.identity))
+                .map(|scope| scope.row)
                 .collect(),
             CombineOp::Difference => left
                 .into_iter()
-                .filter(|row| !right_keys.contains(row.key()))
+                .filter(|scope| !right_ids.contains(&scope.identity))
+                .map(|scope| scope.row)
                 .collect(),
         };
         Ok(Cell::Collection(result))
