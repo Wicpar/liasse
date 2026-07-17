@@ -354,13 +354,24 @@ impl<C: BlobConnector> BlobEngine<C> {
         if !row.enabled {
             return false;
         }
-        self.connectors.get(&row.connector).is_some_and(|c| {
-            // A store is writable when its connector advertises upload and is
-            // reachable now (§18.4 "currently writable"). `observe_usage` needs
-            // no digest and fails `Unavailable` on a downed connector (§18.12).
-            c.capabilities().has(liasse_host::Capability::StreamUpload)
-                && c.observe_usage().is_ok()
-        })
+        // A store is writable for a new write when it is enabled and its
+        // connector advertises the write capability (§18.4 "currently writable
+        // capable stores"; §18.2 "every verified copy required by one complete
+        // branch"). Writability is the ability to hold a verified copy — the
+        // `StreamUpload` capability — and nothing more.
+        //
+        // Physical-usage observation is NOT a writability/liveness signal:
+        // §18.11 makes it a host observation for reconciliation and auditing,
+        // and §18.12 lists it as one OPTIONAL advertised capability. A connector
+        // that legitimately does not advertise `PhysicalUsage` returns
+        // `Unsupported` from `observe_usage`; gating placement on it would wrongly
+        // exclude an upload-capable store. Actual reachability is proven where it
+        // matters — at placement time the upload+verify either lands the copy or
+        // fails (an `$all` branch rejects; an `$any`/`$copies` plan tries the next
+        // capable store) — so no pre-probe of the connector is needed here.
+        self.connectors
+            .get(&row.connector)
+            .is_some_and(|c| c.capabilities().has(liasse_host::Capability::StreamUpload))
     }
 
     // ---- copying and integrity (§18.9) -----------------------------------
