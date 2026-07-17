@@ -108,8 +108,19 @@ impl Evaluator<'_> {
             _ => return Err(EvalError::ShapeMismatch { expected: "a scalar or keyed row" }),
         };
         let found = match self.eval(haystack)? {
+            // §6.3: a set's members carry the needle's exact element type (the
+            // checker pins it), so a `ref` needle compares against `ref` members
+            // directly — no key unwrap.
             Cell::Scalar(Value::Set(members)) => members.contains(&value),
-            Cell::Collection(rows) => rows.iter().any(|row| row.key() == &value),
+            // §6.3/§7.6/A.9: a view's identity is its rows' target keys, and "a ref
+            // value is a target key", so a `ref` needle denotes its target key here.
+            // Unwrap a scalar-keyed ref to that key before matching — exactly as
+            // `select_by_keys` does — so `task.owner in .people` is the §6.3 identity
+            // comparison rather than a never-equal `ref`-vs-key mismatch.
+            Cell::Collection(rows) => {
+                let key = super::ref_key_value(&value);
+                rows.iter().any(|row| row.key() == key)
+            }
             _ => return Err(EvalError::ShapeMismatch { expected: "a set or view" }),
         };
         Ok(Cell::Scalar(Value::Bool(found)))
