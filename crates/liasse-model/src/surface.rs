@@ -43,6 +43,7 @@ pub(crate) fn check_surfaces(
     root: &Shape,
     mutations: &[Mutation],
     raw: &[RawSurface],
+    config: Option<&ExprType>,
 ) -> Vec<Surface> {
     let root_row = ExprType::Row(resolver.shape_row(root));
     let mut phase = SurfacePhase {
@@ -53,6 +54,7 @@ pub(crate) fn check_surfaces(
         receiver_row: root_row,
         path: Vec::new(),
         mutations,
+        config: config.cloned(),
     };
     let mut surfaces = Vec::new();
     for block in raw {
@@ -82,6 +84,10 @@ struct SurfacePhase<'a, 'b> {
     /// The receiver location of the block being checked (§10.3 role scope).
     path: Vec<String>,
     mutations: &'a [Mutation],
+    /// A module package's `$config` struct row (§13.1), bound as the `$config`
+    /// structural so a module surface's `$view`/predicate reads it; `None`
+    /// outside a module.
+    config: Option<ExprType>,
 }
 
 impl SurfacePhase<'_, '_> {
@@ -317,7 +323,8 @@ impl SurfacePhase<'_, '_> {
     /// Type-check a `$recursive` `$through` expression against the covered row,
     /// returning its result type. A non-stream result is rejected.
     fn recursive_view(&mut self, text: &str) -> Option<ExprType> {
-        let scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone());
+        let scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
+            .with_optional_structural("config", self.config.as_ref());
         let sub = self.sources.add_label("recursive-through", text.to_owned());
         let parsed = match parse_expression(sub, text) {
             Ok(parsed) => parsed,
@@ -354,6 +361,7 @@ impl SurfacePhase<'_, '_> {
         text: &str,
     ) {
         let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
+            .with_optional_structural("config", self.config.as_ref())
             .with_binding(bind.to_owned(), candidate.clone());
         for (name, ty) in params {
             scope = scope.with_param(name.clone(), ty.clone());
@@ -386,7 +394,8 @@ impl SurfacePhase<'_, '_> {
             self.reporter.reject(value.span, code::SURFACE, "`$view` must be an expression string");
             return;
         };
-        let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone());
+        let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
+            .with_optional_structural("config", self.config.as_ref());
         for (name, ty) in params {
             scope = scope.with_param(name.clone(), ty.clone());
         }

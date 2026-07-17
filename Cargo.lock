@@ -724,6 +724,7 @@ dependencies = [
  "liasse-store",
  "liasse-syntax",
  "liasse-value",
+ "serde",
  "serde_json",
  "thiserror",
 ]

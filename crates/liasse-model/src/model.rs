@@ -11,7 +11,10 @@ use std::collections::BTreeMap;
 use liasse_diag::{Diagnostics, SourceId, SourceMap};
 use liasse_syntax::SpannedDocument;
 
+use liasse_expr::ExprType;
+
 use crate::build::Builder;
+use crate::config::ConfigSchema;
 use crate::doc::DocValueExt;
 use crate::expose::ExposedInterface;
 use crate::header::{Header, Parsed};
@@ -20,7 +23,7 @@ use crate::mutation::{check_mutations, Mutation};
 use crate::refs;
 use crate::report::Reporter;
 use crate::resolve::Resolver;
-use crate::state::{Node, Shape};
+use crate::state::{ExprSource, Node, Shape};
 use crate::surface::{check_surfaces, Surface};
 use crate::{auth, blob, bucket, check, delete, expose, infer, meter, migration, module, seed};
 
@@ -33,6 +36,7 @@ pub struct Model {
     mutations: Vec<Mutation>,
     surfaces: Vec<Surface>,
     exposed: Vec<ExposedInterface>,
+    config: Option<ConfigSchema>,
 }
 
 impl Model {
@@ -90,16 +94,23 @@ impl Model {
         } = Header::build(&mut reporter, document.root())?;
         let model = model?;
 
-        let build = Builder::run(&mut reporter, model, types);
+        let build = Builder::run(&mut reporter, model, types, document.root().member("$config").map(|m| &m.value));
         let mut root = build.root;
         refs::resolve(&mut reporter, &mut root);
 
         let resolver = Resolver::new(&build.types);
+        // §13.1: a module's `$config` resolves to a keyless struct row. A module's
+        // authored expressions read it through `$config`, so the row is bound as a
+        // structural in every expression phase below; the runtime type-checks
+        // install values against the same schema retained on the model. `None` for
+        // an application or a module with no `$config`, which binds nothing.
+        let config_row = build.config.as_ref().map(|shape| resolver.shape_row(shape));
+        let config_binding = config_row.as_ref().map(|row| ExprType::Row(row.clone()));
         // §5.1/§5.2: refine each model-root computed value's placeholder `json`
         // type from its expression before the tree check, so a reference `.name`
         // resolves to the value's real type (a `bool` condition, an `int` operand)
         // rather than the widest `json`. Diagnostics are the tree check's job.
-        infer::root_computed_types(sources, &resolver, &mut root);
+        infer::root_computed_types(sources, &resolver, &mut root, config_binding.as_ref());
         // §14.4–§14.6: type each source-backed bucket into its temporal-collection
         // row before the tree/surface checks, so a temporal selector over the
         // bucket resolves against real output-field and structural-binding types.
@@ -108,7 +119,7 @@ impl Model {
         // declared interface contracts before the tree/surface checks, so
         // `.modules::iface` aggregation and `modules.$key` resolve.
         module::type_module_spaces(&resolver, &mut root, &build.module_spaces);
-        check::check_tree(&mut reporter, sources, &resolver, &root, hosts);
+        check::check_tree(&mut reporter, sources, &resolver, &root, hosts, config_binding.as_ref());
         let mutations = check_mutations(
             &mut reporter,
             sources,
@@ -116,6 +127,7 @@ impl Model {
             &root,
             &build.raw_muts,
             &build.source_buckets,
+            config_binding.as_ref(),
         );
         let surfaces = check_surfaces(
             &mut reporter,
@@ -124,6 +136,7 @@ impl Model {
             &root,
             &mutations,
             &build.surfaces,
+            config_binding.as_ref(),
         );
         auth::check(&mut reporter, sources, &build.auths, &build.surfaces);
         bucket::check(&mut reporter, sources, &resolver, &root, &build.buckets);
@@ -144,10 +157,14 @@ impl Model {
             &root,
             &mutations,
             document.root().member("$expose").map(|m| &m.value),
+            config_binding.as_ref(),
         );
         if let Some(data) = data {
             seed::check_seed(&mut reporter, &root, data);
         }
+        // §13.1: retain the resolved `$config` struct row and its per-member
+        // defaults as the schema the runtime type-checks install values against.
+        let config = config_row.map(|row| ConfigSchema::new(row, config_defaults(build.config.as_ref())));
         // `resolver` borrows `build.types`; its last use above lets NLL release
         // the borrow so the table can move into the model below.
 
@@ -158,6 +175,7 @@ impl Model {
             mutations,
             surfaces,
             exposed,
+            config,
         })
     }
 
@@ -191,6 +209,21 @@ impl Model {
         &self.surfaces
     }
 
+    /// The declared `$config` struct schema (§13.1), for a module package that
+    /// declares one; `None` for an application or a module with no `$config`.
+    ///
+    /// Analogous to [`exposed_interfaces`](Self::exposed_interfaces): the
+    /// composition runtime consumes it to type-check an installation's supplied
+    /// `$config` values against the declared member types — rejecting an unknown
+    /// member or a type mismatch (§13.3) — and to bind `$config` to the schema's
+    /// [`row_type`](ConfigSchema::row_type) as the structural value a child's
+    /// expressions read (§13.1). The model has already bound `$config` in this
+    /// package's own authored expressions against the same schema.
+    #[must_use]
+    pub fn config_schema(&self) -> Option<&ConfigSchema> {
+        self.config.as_ref()
+    }
+
     /// The module interfaces this package exposes (§13.8): each a child-visible
     /// handle bound to a private `$view` projection and callable mutations. Empty
     /// for a package with no top-level `$expose`. The composition runtime
@@ -200,4 +233,23 @@ impl Model {
     pub fn exposed_interfaces(&self) -> &[ExposedInterface] {
         &self.exposed
     }
+}
+
+/// Each `$config` member's default expression, by member name (§13.1). A member
+/// with a default MAY be omitted by an installation; one without is required.
+fn config_defaults(config: Option<&Shape>) -> BTreeMap<String, ExprSource> {
+    let Some(shape) = config else {
+        return BTreeMap::new();
+    };
+    shape
+        .members
+        .iter()
+        .filter_map(|member| match &member.node {
+            Node::Scalar(field) => field
+                .default
+                .clone()
+                .map(|default| (member.name.as_str().to_owned(), default)),
+            _ => None,
+        })
+        .collect()
 }

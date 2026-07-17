@@ -24,14 +24,15 @@ use std::collections::BTreeMap;
 
 use liasse_artifact::{Artifact, ArtifactBuilder, ArtifactError};
 use liasse_ident::{HistoryPoint, LineageId, PointId};
-use liasse_store::{InstanceStore, RowAddress};
+use liasse_store::{AddressStep, InstanceStore, RowAddress};
 use liasse_value::Value;
 use serde_json::Value as J;
 
 use crate::engine::{compile_definition, Engine};
 use crate::error::EngineError;
-use crate::materialize::FieldMap;
+use crate::materialize::{self, FieldMap};
 use crate::portable::StateSection;
+use crate::schema::Schema;
 
 /// How an incoming artifact relates to local retained history (§19.8).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -83,11 +84,68 @@ pub enum ConflictKind {
     CompetingInsert,
 }
 
+/// The logical coordinate a §19.9 merge conflict concerns: the top-level
+/// collection, the conflicted row's key value, and — for a field-level conflict —
+/// the field name (absent for a whole-row delete-vs-modify or competing insert).
+///
+/// This is structured rather than a rendered string so a host correction can
+/// address it by its canonical D.3 display path (§D.3): the collection name, the
+/// key rendered as an escaped key-text segment, and the field. A rendered
+/// `RowAddress` diagnostic string cannot be reversed to that escaped path (a key
+/// containing `/` is ambiguous), which is exactly the attack §D.3 escaping
+/// defends; carrying `(collection, key, field)` lets the surface recover the
+/// escaped coordinate from a real [`MergeOutcome`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConflictCoordinate {
+    collection: String,
+    key: Value,
+    field: Option<String>,
+}
+
+impl ConflictCoordinate {
+    /// The top-level collection the conflicted row belongs to.
+    #[must_use]
+    pub fn collection(&self) -> &str {
+        &self.collection
+    }
+
+    /// The conflicted row's application-visible key value (§5.4): the lone
+    /// component for a single-field key, a struct of the named components for a
+    /// composite key.
+    #[must_use]
+    pub fn key(&self) -> &Value {
+        &self.key
+    }
+
+    /// The conflicted field name, or `None` for a whole-row conflict
+    /// (delete-vs-modify, competing insert).
+    #[must_use]
+    pub fn field(&self) -> Option<&str> {
+        self.field.as_deref()
+    }
+}
+
+impl serde::Serialize for ConflictCoordinate {
+    /// Serialize as a diagnostic object `{ collection, key, field? }` with the key
+    /// as its canonical wire value (Annex A). This is the form the §19.9
+    /// reconciliation-plan diagnostic carries; the key stays a structured wire
+    /// value so a consumer can rebuild the D.3 display path from it.
+    fn serialize<Sr: serde::Serializer>(&self, serializer: Sr) -> Result<Sr::Ok, Sr::Error> {
+        let mut object = serde_json::Map::new();
+        object.insert("collection".to_owned(), J::String(self.collection.clone()));
+        object.insert("key".to_owned(), self.key.to_wire());
+        if let Some(field) = &self.field {
+            object.insert("field".to_owned(), J::String(field.clone()));
+        }
+        J::Object(object).serialize(serializer)
+    }
+}
+
 /// One reported conflict: the coordinate it concerns and why it conflicts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MergeConflict {
-    /// The logical coordinate (row address, optionally `#field`).
-    pub coordinate: String,
+    /// The structured logical coordinate (collection, row key, optional field).
+    pub coordinate: ConflictCoordinate,
     /// Why the coordinate could not be merged automatically.
     pub kind: ConflictKind,
 }
@@ -220,7 +278,7 @@ impl<S: InstanceStore> Engine<S> {
             .working(schema)
             .map_err(ImportError::Engine)?;
         let incoming = incoming.working(schema).map_err(ImportError::Engine)?;
-        Ok(ThreeWayMerge { base, local, incoming }.resolve())
+        Ok(ThreeWayMerge { base, local, incoming, schema }.resolve())
     }
 }
 
@@ -236,14 +294,38 @@ fn decode_sections(opened: &Artifact) -> Result<(String, StateSection), ImportEr
     Ok((definition, state))
 }
 
-/// The three logical states a §19.9 merge compares, keyed by row address.
-struct ThreeWayMerge {
+/// The three logical states a §19.9 merge compares, keyed by row address, plus
+/// the schema that resolves a conflicted address to its structured coordinate.
+struct ThreeWayMerge<'a> {
     base: BTreeMap<RowAddress, FieldMap>,
     local: BTreeMap<RowAddress, FieldMap>,
     incoming: BTreeMap<RowAddress, FieldMap>,
+    schema: Schema<'a>,
 }
 
-impl ThreeWayMerge {
+impl ThreeWayMerge<'_> {
+    /// The structured D.3-addressable coordinate of a conflicted `address`
+    /// (§D.3): the top-level collection name and the row's application-visible key
+    /// (§5.4), with the field for a field-level conflict. The key resolves through
+    /// the schema so a single-field key is its scalar and a composite key its
+    /// component struct — the form the surface renders as an escaped key-text
+    /// segment.
+    fn coordinate(&self, address: &RowAddress, field: Option<String>) -> ConflictCoordinate {
+        // A merged row is a top-level collection row, so its final step names the
+        // collection and carries the key (nested-collection merge is a seam). A
+        // `RowAddress` is non-empty by construction, so the step is always present.
+        let mut collection = String::new();
+        let mut key = Value::None;
+        if let Some(step) = last_step(address) {
+            collection = step.name().as_str().to_owned();
+            key = match self.schema.top_collection(&collection) {
+                Some(model) => materialize::key_identity(model, step.key()),
+                None => step.key().components().next().cloned().unwrap_or(Value::None),
+            };
+        }
+        ConflictCoordinate { collection, key, field }
+    }
+
     /// Resolve the merge coordinate by coordinate (§19.9): accept a change made on
     /// one side, equal results on both sides, and compatible changes to separate
     /// coordinates; report incompatible field values, delete-versus-modify, and
@@ -281,7 +363,7 @@ impl ThreeWayMerge {
             }
             // A fresh row on both sides with different content: competing insert.
             (None, Some(_), Some(_)) => conflicts.push(MergeConflict {
-                coordinate: address.render(),
+                coordinate: self.coordinate(address, None),
                 kind: ConflictKind::CompetingInsert,
             }),
             // A fresh row on exactly one side: accept it.
@@ -293,11 +375,11 @@ impl ThreeWayMerge {
             }
             // Modified on one side, deleted on the other: delete-vs-modify.
             (Some(b), Some(l), None) if l != b => conflicts.push(MergeConflict {
-                coordinate: address.render(),
+                coordinate: self.coordinate(address, None),
                 kind: ConflictKind::DeleteVsModify,
             }),
             (Some(b), None, Some(i)) if i != b => conflicts.push(MergeConflict {
-                coordinate: address.render(),
+                coordinate: self.coordinate(address, None),
                 kind: ConflictKind::DeleteVsModify,
             }),
             // Deleted on one side, unchanged on the other, or deleted on both:
@@ -338,7 +420,7 @@ impl ThreeWayMerge {
                 }
                 Ok(None) => {}
                 Err(()) => conflicts.push(MergeConflict {
-                    coordinate: format!("{}#{name}", address.render()),
+                    coordinate: self.coordinate(address, Some(name.clone())),
                     kind: ConflictKind::IncompatibleValue,
                 }),
             }
@@ -362,4 +444,11 @@ impl ThreeWayMerge {
         }
         Err(())
     }
+}
+
+/// The final address step of a row (the collection + key at its own level). A
+/// `RowAddress` is non-empty by construction, so this is `Some` for every real
+/// address; the `Option` keeps the coordinate builder total without a panic.
+fn last_step(address: &RowAddress) -> Option<&AddressStep> {
+    address.steps().last()
 }

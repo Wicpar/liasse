@@ -34,6 +34,7 @@ pub(crate) fn check_tree(
     resolver: &Resolver,
     root: &Shape,
     hosts: &HostDescriptors,
+    config: Option<&ExprType>,
 ) {
     let root_row = ExprType::Row(resolver.shape_row(root));
     let mut checker = TreeChecker {
@@ -42,6 +43,7 @@ pub(crate) fn check_tree(
         resolver,
         root: root_row.clone(),
         hosts,
+        config: config.cloned(),
     };
     checker.shape(root, vec![root_row]);
 }
@@ -55,6 +57,10 @@ struct TreeChecker<'a, 'b> {
     /// The resolved `$requires` host-namespace signatures every checked
     /// expression's scope carries (§16.2).
     hosts: &'a HostDescriptors,
+    /// A module package's `$config` struct row (§13.1), bound as the `$config`
+    /// structural in every checked expression so a module's own computed values,
+    /// `$check`s, `$normalize`s, and `$view`s read it. `None` outside a module.
+    config: Option<ExprType>,
 }
 
 impl TreeChecker<'_, '_> {
@@ -63,7 +69,8 @@ impl TreeChecker<'_, '_> {
         self.detect_cycles(shape);
         for check in &shape.checks {
             let scope = ModelScope::nested(contexts.clone(), self.root.clone())
-                .with_host_ops(self.hosts.clone());
+                .with_host_ops(self.hosts.clone())
+                .with_optional_structural("config", self.config.as_ref());
             self.check_bool(&scope, check, "a row/struct `$check` must be a `bool` condition");
         }
         for member in &shape.members {
@@ -89,12 +96,14 @@ impl TreeChecker<'_, '_> {
     fn scalar(&mut self, field: &ScalarField, contexts: &[ExprType]) {
         // A default and a computed value read the containing row as `.`.
         let row_scope = ModelScope::nested(contexts.to_vec(), self.root.clone())
-            .with_host_ops(self.hosts.clone());
+            .with_host_ops(self.hosts.clone())
+            .with_optional_structural("config", self.config.as_ref());
         // `$normalize`/`$check` read the field's own value as `.` (§8.8).
         let mut value_chain = contexts.to_vec();
         value_chain.push(ExprType::scalar(field.ty.clone()));
         let value_scope = ModelScope::nested(value_chain, self.root.clone())
-            .with_host_ops(self.hosts.clone());
+            .with_host_ops(self.hosts.clone())
+            .with_optional_structural("config", self.config.as_ref());
 
         if let Some(default) = &field.default {
             // §8.8/§16.3: a field default is a write position, so a generated host
@@ -119,7 +128,8 @@ impl TreeChecker<'_, '_> {
 
     fn view(&mut self, expr: &ExprSource, contexts: &[ExprType]) {
         let scope = ModelScope::nested(contexts.to_vec(), self.root.clone())
-            .with_host_ops(self.hosts.clone());
+            .with_host_ops(self.hosts.clone())
+            .with_optional_structural("config", self.config.as_ref());
         // §7.1/§12.2: a view's result may be a row stream, a single row (a
         // root or struct projection such as `. { a, b }` or `.invoice { ... }`),
         // or a scalar (an aggregate or computed value like `= size(.docs)`).

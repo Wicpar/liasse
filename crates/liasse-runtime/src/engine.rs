@@ -125,6 +125,14 @@ fn genesis_lineage(instance: &liasse_ident::InstanceId) -> LineageId {
     LineageId::new(format!("{}#L0", instance.as_str()))
 }
 
+/// The lineage a §19.9 reconciliation activation records its accepted result on
+/// (§19.3): a fresh lineage derived from the prior one and the committed seat, so
+/// the reconciled point is distinguishable from the linear history it replaced
+/// and two activations never collide (the seat is strictly monotone, §22.3).
+fn reconciled_lineage(prior: &LineageId, seat: CommitSeq) -> LineageId {
+    LineageId::new(format!("{}#M{}", prior.as_str(), seat.get()))
+}
+
 /// A loaded, activated package instance over a store `S`.
 pub struct Engine<S> {
     store: S,
@@ -348,6 +356,48 @@ impl<S: InstanceStore> Engine<S> {
         })
     }
 
+    /// §19.9 activation: install a computed merged/corrected logical state as one
+    /// atomic transition into a *new lineage*, the engine primitive a host
+    /// reconciliation correction commits through.
+    ///
+    /// `merged` is the accepted combined row set — the [`MergeOutcome::merged`] of
+    /// a clean automatic merge, or the composition a host correction resolved over
+    /// a conflicted plan. Its rows replace live state exactly as an applied import
+    /// does (§19.8): every address absent from `merged` is removed, the rest
+    /// overwritten, staged as one commit. The engine's lineage then advances to a
+    /// freshly derived lineage so a subsequent [`export`](Self::export) names the
+    /// reconciled point on its own lineage, recording that a reconciliation
+    /// happened. Retaining *both* source histories as alternate lineages (§19.9
+    /// "preserving both source histories") is a documented artifact-container seam;
+    /// CORE records the accepted result on the new lineage over the prior history.
+    ///
+    /// [`MergeOutcome::merged`]: crate::MergeOutcome
+    pub fn activate_merge(
+        &mut self,
+        merged: &BTreeMap<RowAddress, crate::materialize::FieldMap>,
+    ) -> Result<CommitSeq, EngineError> {
+        let schema = Schema::new(&self.model);
+        let mut prospective = Prospective::gather(&self.store, schema)?;
+        let live: Vec<RowAddress> = prospective.working().keys().cloned().collect();
+        for address in live {
+            if !merged.contains_key(&address) {
+                prospective.remove(&address);
+            }
+        }
+        for (address, fields) in merged {
+            prospective.insert(address.clone(), fields.clone());
+        }
+        let changes = prospective.diff();
+        let mut txn = self.store.begin();
+        stage(&mut txn, changes)?;
+        let seq = match txn.commit()? {
+            CommitOutcome::Committed(seq) => seq,
+            CommitOutcome::Unchanged => self.store.head(),
+        };
+        self.lineage = reconciled_lineage(&self.lineage, seq);
+        Ok(seq)
+    }
+
     /// Commit a migration (§20): replace live state with the migrated rows under
     /// the new definition in one atomic commit, then swap in the target's model
     /// and compiled artefacts. The migrated rows were already checked against the
@@ -533,8 +583,10 @@ impl<S: InstanceStore> Engine<S> {
                 .map_err(EngineError::Seed)?;
         } else {
             // §8.2: even with no `$data`, a writable singleton root field declared
-            // `= default` takes its default at genesis.
+            // `= default` takes its default at genesis, then normalizes it (§8.8).
             crate::seed::apply_singleton_defaults(&self.compiled, &ctx, &mut prospective)
+                .map_err(EngineError::Seed)?;
+            crate::seed::apply_singleton_normalizes(&self.compiled, &ctx, &mut prospective)
                 .map_err(EngineError::Seed)?;
         }
         crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched).map_err(EngineError::Seed)?;
@@ -660,6 +712,7 @@ impl<S: InstanceStore> Engine<S> {
             receiver,
             touched: Vec::new(),
             ret: None,
+            erase_result: None,
             locals: BTreeMap::new(),
             depth: 0,
         };
@@ -668,6 +721,7 @@ impl<S: InstanceStore> Engine<S> {
         }
         let touched = std::mem::take(&mut interp.touched);
         let ret = interp.ret.take();
+        let erase_result = interp.erase_result.take();
         let locals = std::mem::take(&mut interp.locals);
         let receiver = interp.receiver.take();
 
@@ -706,17 +760,23 @@ impl<S: InstanceStore> Engine<S> {
         // which types as a single `Row`.
         let changes = prospective.diff();
         let state_changed = !changes.is_empty();
-        let response = match eval_return(
-            &ctx,
-            &prospective,
-            &receiver,
-            &locals,
-            mutation,
-            ret.as_ref(),
-            state_changed,
-        ) {
-            Ok(response) => response,
-            Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+        // §21.2: a `return erase(row)` delivers the durable extract the erase
+        // produced during the program, in place of a post-commit `return`.
+        let response = if let Some(value) = erase_result {
+            Some(ResponseValue::new(Cell::Scalar(value)))
+        } else {
+            match eval_return(
+                &ctx,
+                &prospective,
+                &receiver,
+                &locals,
+                mutation,
+                ret.as_ref(),
+                state_changed,
+            ) {
+                Ok(response) => response,
+                Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+            }
         };
 
         if !state_changed {

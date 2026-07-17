@@ -80,6 +80,17 @@ impl ModelScope {
         self
     }
 
+    /// Add the structural binding `$name` when `ty` is present, leaving the scope
+    /// unchanged otherwise. Used to bind a module package's `$config` (§13.1) into
+    /// every authored-expression scope of a module — and nothing at all in an
+    /// application or a module that declares no `$config`.
+    pub(crate) fn with_optional_structural(self, name: &str, ty: Option<&ExprType>) -> Self {
+        match ty {
+            Some(ty) => self.with_structural(name, ty.clone()),
+            None => self,
+        }
+    }
+
     /// Add a lexical binding — a bare name introduced by a filter or a
     /// `$recursive` `$bind` (§10.5) that names one candidate descendant row.
     pub(crate) fn with_binding(mut self, name: impl Into<String>, ty: ExprType) -> Self {

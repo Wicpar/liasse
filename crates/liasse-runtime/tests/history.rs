@@ -181,9 +181,79 @@ fn merge_reports_delete_vs_modify_conflict() {
 
     let outcome = local.merge(&base, &incoming).expect("merge");
     assert!(!outcome.is_clean(), "the merge conflicts");
-    assert!(
-        outcome.conflicts.iter().any(|c| c.kind == ConflictKind::DeleteVsModify),
-        "delete-vs-modify is reported: {:?}",
-        outcome.conflicts,
-    );
+    let conflict = outcome
+        .conflicts
+        .iter()
+        .find(|c| c.kind == ConflictKind::DeleteVsModify)
+        .unwrap_or_else(|| panic!("delete-vs-modify is reported: {:?}", outcome.conflicts));
+    // §D.3 / SEAM 3: the conflict carries a structured coordinate (collection, key,
+    // field), not a rendered diagnostic string, so a host correction can recover
+    // the escaped D.3 display path. The whole-row conflict names `notes` row `n2`.
+    assert_eq!(conflict.coordinate.collection(), "notes");
+    assert_eq!(conflict.coordinate.key(), &text("n2"));
+    assert_eq!(conflict.coordinate.field(), None, "a delete-vs-modify is a whole-row conflict");
+}
+
+#[test]
+fn incompatible_field_conflict_names_its_field_coordinate() {
+    // Both sides change n1's body to different values -> an incompatible field
+    // value (§19.9). The structured coordinate names the field, so the surface can
+    // render `/notes/n1/body` (§D.3).
+    let mut base_engine = load("notes", NOTES);
+    add_note(&mut base_engine, "n1", "one");
+    let base = base_engine.export().expect("base");
+
+    let mut incoming_engine = load("notes-i", NOTES);
+    add_note(&mut incoming_engine, "n1", "incoming-body");
+    let incoming = incoming_engine.export().expect("incoming");
+
+    let mut local = load("notes", NOTES);
+    add_note(&mut local, "n1", "local-body");
+
+    let outcome = local.merge(&base, &incoming).expect("merge");
+    let conflict = outcome
+        .conflicts
+        .iter()
+        .find(|c| c.kind == ConflictKind::IncompatibleValue)
+        .unwrap_or_else(|| panic!("incompatible value is reported: {:?}", outcome.conflicts));
+    assert_eq!(conflict.coordinate.collection(), "notes");
+    assert_eq!(conflict.coordinate.key(), &text("n1"));
+    assert_eq!(conflict.coordinate.field(), Some("body"));
+}
+
+#[test]
+fn clean_merge_activates_into_committed_state() {
+    // §19.9 activation (SEAM 2): a clean merge of compatible separate coordinates
+    // produces a combined result, and `activate_merge` commits it into a new
+    // lineage over live state.
+    let mut base_engine = load("notes", NOTES);
+    add_note(&mut base_engine, "n1", "one");
+    let base = base_engine.export().expect("base");
+
+    // Incoming adds n3 relative to base; local adds n2. The coordinates are
+    // separate, so the merge is clean and combines all three.
+    let mut incoming_engine = load("notes-i", NOTES);
+    add_note(&mut incoming_engine, "n1", "one");
+    add_note(&mut incoming_engine, "n3", "three");
+    let incoming = incoming_engine.export().expect("incoming");
+
+    let mut local = load("notes", NOTES);
+    add_note(&mut local, "n1", "one");
+    add_note(&mut local, "n2", "two");
+
+    let outcome = local.merge(&base, &incoming).expect("merge");
+    assert!(outcome.is_clean(), "compatible separate coordinates merge cleanly: {:?}", outcome.conflicts);
+    assert_eq!(outcome.merged.len(), 3, "the combined result holds n1, n2, and n3");
+
+    // Before activation the engine's own state still lacks n3.
+    assert_eq!(note_count(&local), 2, "n3 is not yet in live state");
+    local.activate_merge(&outcome.merged).expect("activation commits");
+    assert_eq!(note_count(&local), 3, "the merged composition is now the committed state");
+
+    // The reconciled state round-trips through an export/restore of the new lineage.
+    let artifact = local.export().expect("export reconciled");
+    let mut generator = generator();
+    let store = MemoryStore::new(InstanceId::new("notes"));
+    let restored = Engine::restore(store, &artifact, &mut generator).expect("restore");
+    assert_eq!(note_count(&restored), 3, "the reconciled composition round-trips");
 }

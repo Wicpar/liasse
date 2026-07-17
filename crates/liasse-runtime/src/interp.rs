@@ -19,7 +19,7 @@ use liasse_value::{Ref, RefKey, Struct, Text, Type, Value};
 
 use crate::cascade::{self, PlannedDeletion};
 use crate::compiled::{Compiled, CompiledCollection, CompiledMutation, CompiledStruct};
-use crate::deletion::RowRef;
+use crate::deletion::{Erasure, Extract, Occurrence, RowRef};
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
 use crate::materialize::{self, FieldMap};
@@ -107,6 +107,11 @@ pub(crate) struct Interp<'a> {
     pub(crate) receiver: Option<RowTarget>,
     pub(crate) touched: Vec<RowAddress>,
     pub(crate) ret: Option<(Expr, SourceId)>,
+    /// The durable extract a `return erase(row)` produced (§21.2 step 6): the
+    /// erasure's response value, delivered in place of an ordinary evaluated
+    /// `return` because the erase mutated state and cannot be re-evaluated
+    /// post-commit as a pure expression.
+    pub(crate) erase_result: Option<Value>,
     /// Lexical locals bound by `name = …` statements (§8.1), in declaration
     /// order, visible to later statements and to the `return`.
     pub(crate) locals: BTreeMap<String, LocalBind>,
@@ -132,6 +137,16 @@ impl<'a> Interp<'a> {
     fn exec(&mut self, stmt: &Stmt, source: SourceId) -> Result<(), Rejection> {
         match &stmt.kind {
             StmtKind::Return(expr) => {
+                // §21.2: `return erase(row)` is not a pure post-commit expression —
+                // the erase mutates state during the program and its response is the
+                // durable extract. Execute it now and record the extract as the
+                // response, rather than deferring to `eval_return`.
+                if let ExprKind::Call { callee, args } = &expr.kind
+                    && is_erase(callee)
+                {
+                    self.erase_result = Some(self.exec_erase(args, source)?);
+                    return Ok(());
+                }
                 self.ret = Some((expr.clone(), source));
                 Ok(())
             }
@@ -424,6 +439,9 @@ impl<'a> Interp<'a> {
         };
         let mut fields = self.prospective.get(&address).cloned().unwrap_or_else(FieldMap::new);
         fields.insert(field.to_owned(), scalar);
+        // §8.2/§8.3: the assigned target applies its own normalization, so a
+        // written singleton member is normalized exactly as a collection field is.
+        rules::normalize_singleton_field(self.compiled, field, &mut fields, self.ctx, self.prospective)?;
         self.prospective.insert(address.clone(), fields);
         self.mark(address);
         Ok(())
@@ -666,6 +684,13 @@ impl<'a> Interp<'a> {
     fn exec_bare(&mut self, expr: &Expr, source: SourceId) -> Result<(), Rejection> {
         match &expr.kind {
             ExprKind::Call { callee, args } if is_assert(callee) => self.exec_assert(args, source),
+            // §21.2: a bare `erase(row)` statement plans and applies the same live
+            // removal as ordinary deletion and scrubs the retained payload; its
+            // extract is discarded (only a `return erase(row)` delivers it).
+            ExprKind::Call { callee, args } if is_erase(callee) => {
+                self.exec_erase(args, source)?;
+                Ok(())
+            }
             // §8.11: a statement invoking a declared mutation (`.rename(…)`, or the
             // bare shorthand `rename({ … })`) runs it inside the same atomic
             // program. A callee that resolves no declared mutation (a bare
@@ -744,6 +769,7 @@ impl<'a> Interp<'a> {
             receiver,
             touched: Vec::new(),
             ret: None,
+            erase_result: None,
             locals: BTreeMap::new(),
             depth: self.depth + 1,
         };
@@ -1307,6 +1333,59 @@ impl<'a> Interp<'a> {
         self.delete_rows(initial)
     }
 
+    /// Execute the `erase(row)` builtin (§21.2): plan and apply the *same* live
+    /// removal an ordinary deletion would (step 1, `$on_delete` cascades/patches
+    /// included), capturing each targeted row's retained payload before it is
+    /// removed, then scrub each captured payload to a digest stub and return the
+    /// durable extract (steps 2–6). Because the removal flows through ordinary
+    /// admission, the erased row is then unobservable in live views and absent from
+    /// a fresh export; the returned extract carries only the content hash, never the
+    /// scrubbed bytes, so an erase response never re-leaks what it scrubbed.
+    ///
+    /// Erasure is scoped to top-level collection rows in CORE, like keyed deletion
+    /// (§21.1); a nested-collection erasure is a documented seam.
+    fn exec_erase(&mut self, args: &[Arg], source: SourceId) -> Result<Value, Rejection> {
+        let Some(arg) = args.first() else {
+            return Err(Rejection::new(RejectionReason::Malformed, "`erase` requires a row selector"));
+        };
+        let selector = arg_expr(arg);
+        let base = match &selector.kind {
+            ExprKind::Select { base, .. } => base.as_ref(),
+            _ => selector,
+        };
+        let Some(loc) = self.collection_ref(base, source)? else {
+            return Err(Rejection::new(RejectionReason::Malformed, "`erase` targets a top-level collection row"));
+        };
+        let name = loc.decl.last().cloned().unwrap_or_default();
+        let current = self.current()?;
+        let keys: Vec<Value> = match self.eval_value(selector, source, &current)? {
+            Cell::Collection(rows) => rows.iter().map(|row| row.key().clone()).collect(),
+            Cell::Row(row) => vec![row.key().clone()],
+            Cell::Scalar(scalar) => vec![scalar],
+        };
+        // §21.2 step 2: capture each targeted live row's retained payload before the
+        // removal, under a stable occurrence identity (its canonical wire form).
+        let mut history = Erasure::new();
+        let mut occurrences = Vec::new();
+        for key in &keys {
+            let address = materialize::top_address(&name, KeyValue::single(key.clone()));
+            let Some(fields) = self.prospective.get(&address) else { continue };
+            let payload = materialize::struct_of(fields);
+            let occurrence = Occurrence::new(payload.to_canonical_json_string());
+            history.record(occurrence.clone(), payload);
+            occurrences.push(occurrence);
+        }
+        // §21.2 step 1: the same §21.1 live removal an ordinary deletion performs.
+        let initial: Vec<RowRef> = keys.into_iter().map(|key| RowRef::new(name.clone(), key)).collect();
+        self.delete_rows(initial)?;
+        // §21.2 steps 3–6: scrub each captured payload to a digest stub, producing
+        // the durable extract this call returns.
+        let extract = history
+            .erase(&occurrences)
+            .map_err(|error| Rejection::new(RejectionReason::Evaluation, error.to_string()))?;
+        Ok(extract_response(&extract))
+    }
+
     /// Plan and apply the deletion of `initial` (§21.1): a delete is a graph
     /// operation, so the cascade closure and the surviving-row patches every
     /// inbound `$on_delete` policy induces are planned from the pre-delete state
@@ -1584,6 +1663,19 @@ impl<'a> Interp<'a> {
 
 fn is_assert(callee: &Expr) -> bool {
     matches!(&callee.kind, ExprKind::Name(id) if id.text == "assert")
+}
+
+/// Whether a call names the `erase(row)` builtin (§21.2): a bare `erase(...)`.
+fn is_erase(callee: &Expr) -> bool {
+    matches!(&callee.kind, ExprKind::Name(id) if id.text == "erase")
+}
+
+/// The response value an `erase(row)` returns (§21.2 step 6): the extract's
+/// durable content hash (§21.3). Only the hash crosses the response boundary —
+/// never the scrubbed payloads — so identifying an extract for a later
+/// reinsertion cannot re-leak the bytes the erasure removed.
+fn extract_response(extract: &Extract) -> Value {
+    Value::Text(Text::new(extract.hash().to_owned()))
 }
 
 /// The value expression of a call argument, positional or named (§16.4 host-call

@@ -7,6 +7,117 @@ mod common;
 
 use common::build;
 
+/// §13.1 — a module package's `$config` struct schema is retained on the model
+/// so the composition runtime can type-check installation values against it. The
+/// schema exposes each declared member's type (a supplied value that does not
+/// match is thereby catchable) and its default (a member with a default MAY be
+/// omitted at install; one without is required).
+#[test]
+fn module_config_schema_retained() {
+    let built = build(
+        r#"{ "$liasse": 1, "$module": "t.tplc@1.0.0",
+            "$config": { "currency": "text = 'USD'", "region": "text" },
+            "$model": { "templates": { "$key": "id", "id": "text" } }
+        }"#,
+    );
+    let model = built.expect_ok();
+    let schema = model.config_schema().expect("a module `$config` schema is retained");
+    // The declared member type is exposed, so an install value of the wrong type
+    // (e.g. a `bool` against `text`) is catchable against it (§13.1/§13.3).
+    assert_eq!(schema.member_type("currency").map(|t| t.describe()), Some("text".to_owned()));
+    assert_eq!(schema.member_type("region").map(|t| t.describe()), Some("text".to_owned()));
+    // An undeclared member has no type — the check an install uses to reject an
+    // unknown `$config` member (§13.1).
+    assert!(schema.member_type("tax_id").is_none());
+    // `currency` declares a default, so an install MAY omit it; `region` does not.
+    assert!(schema.default("currency").is_some());
+    assert!(schema.default("region").is_none());
+    assert_eq!(schema.members().count(), 2);
+}
+
+/// §13.1 — an application package declares no `$config`, so its schema is `None`.
+#[test]
+fn application_has_no_config_schema() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.app@1.0.0",
+            "$model": { "a": { "$key": "id", "id": "text" } }
+        }"#,
+    );
+    assert!(built.expect_ok().config_schema().is_none());
+}
+
+/// §13.1 — a module's own expressions read `$config` through the binding: an
+/// exposed `$view` projecting `$config.currency` type-checks against the declared
+/// struct (the shape the `module-config-values-read-through-binding` scenario
+/// depends on to load its child package).
+#[test]
+fn config_read_through_in_expose_view_types() {
+    let built = build(
+        r#"{ "$liasse": 1, "$module": "t.tplc@1.0.0",
+            "$config": { "currency": "text = 'USD'" },
+            "$model": { "templates": { "$key": "id", "id": "text", "label": "text" } },
+            "$expose": { "templates": { "$view": ".templates { id, label, currency: $config.currency }" } }
+        }"#,
+    );
+    built.expect_ok();
+}
+
+/// §13.1 — a module's own model expression reads `$config`: a computed value
+/// `= $config.rate` type-checks against the declared member's type.
+#[test]
+fn config_read_through_in_computed_value_types() {
+    let built = build(
+        r#"{ "$liasse": 1, "$module": "t.tax@1.0.0",
+            "$config": { "rate": "decimal = 0.2" },
+            "$model": { "current_rate": "= $config.rate" }
+        }"#,
+    );
+    built.expect_ok();
+}
+
+/// §13.1 — reading a member the `$config` struct does not declare is a static
+/// type error, the module-side analogue of an install supplying an unknown
+/// `$config` member.
+#[test]
+fn config_read_of_undeclared_member_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$module": "t.tplc@1.0.0",
+            "$config": { "currency": "text = 'USD'" },
+            "$model": { "templates": { "$key": "id", "id": "text", "label": "text" } },
+            "$expose": { "templates": { "$view": ".templates { id, label, cur: $config.nope }" } }
+        }"#,
+    );
+    assert!(built.has_code("E-EXPR"), "expected a config-member type error, got: {}", built.rendered());
+    assert!(built.points_at("nope"));
+}
+
+/// §13.1 — a `$config` member with a malformed type is not a valid struct field;
+/// the declaration is rejected (the static "valid struct type" check).
+#[test]
+fn config_invalid_member_type_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$module": "t.bad@1.0.0",
+            "$config": { "currency": "notatype" },
+            "$model": { "a": { "$key": "id", "id": "text" } }
+        }"#,
+    );
+    assert!(built.has_code("M-TYPE"), "expected a type rejection, got: {}", built.rendered());
+}
+
+/// §13.1 — a `$config` member is a typed installation *value*, not a view or a
+/// keyed collection; a `$view` member is rejected as not a valid struct field.
+#[test]
+fn config_non_value_member_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$module": "t.bad@1.0.0",
+            "$config": { "feed": { "$view": ".a { id }" } },
+            "$model": { "a": { "$key": "id", "id": "text" } }
+        }"#,
+    );
+    assert!(built.has_code("M-MODULE"), "expected a config-shape rejection, got: {}", built.rendered());
+    assert!(built.points_at("feed"));
+}
+
 /// §13.1/§13.5/§13.6/§13.8 — a module package's composition members load.
 #[test]
 fn module_composition_loads() {

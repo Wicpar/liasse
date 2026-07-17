@@ -28,7 +28,16 @@ use crate::scope::ModelScope;
 use crate::state::{Node, Shape};
 
 /// Refine the type of every model-root computed value from its expression.
-pub(crate) fn root_computed_types(sources: &mut SourceMap, resolver: &Resolver, root: &mut Shape) {
+///
+/// `config` is a module package's `$config` struct row (§13.1), bound as the
+/// `$config` structural so a root computed value that reads it refines against
+/// its members rather than failing to type; `None` outside a module.
+pub(crate) fn root_computed_types(
+    sources: &mut SourceMap,
+    resolver: &Resolver,
+    root: &mut Shape,
+    config: Option<&ExprType>,
+) {
     // The names of root members that are still-placeholder computed values.
     let pending: Vec<String> = root
         .members
@@ -51,7 +60,7 @@ pub(crate) fn root_computed_types(sources: &mut SourceMap, resolver: &Resolver, 
     for _ in 0..pending.len() {
         let mut changed = false;
         for name in &pending {
-            let Some(inferred) = infer_one(sources, resolver, root, name) else {
+            let Some(inferred) = infer_one(sources, resolver, root, name, config) else {
                 continue;
             };
             if let Some(field) = root.members.iter_mut().find_map(|member| match &mut member.node {
@@ -71,7 +80,13 @@ pub(crate) fn root_computed_types(sources: &mut SourceMap, resolver: &Resolver, 
 /// Type the model-root computed value `name` against the current model root,
 /// returning its inferred concrete scalar type (never `json`, which carries no
 /// new information over the placeholder).
-fn infer_one(sources: &mut SourceMap, resolver: &Resolver, root: &Shape, name: &str) -> Option<Type> {
+fn infer_one(
+    sources: &mut SourceMap,
+    resolver: &Resolver,
+    root: &Shape,
+    name: &str,
+    config: Option<&ExprType>,
+) -> Option<Type> {
     let field = root.members.iter().find_map(|member| match &member.node {
         Node::Scalar(field) if member.name.as_str() == name => Some(field),
         _ => None,
@@ -80,7 +95,8 @@ fn infer_one(sources: &mut SourceMap, resolver: &Resolver, root: &Shape, name: &
     // Building the scope reads the (partially refined) root immutably; the caller
     // applies any write afterwards, so the borrows never overlap.
     let root_ty = ExprType::Row(resolver.shape_row(root));
-    let scope = ModelScope::nested(vec![root_ty.clone()], root_ty);
+    let scope = ModelScope::nested(vec![root_ty.clone()], root_ty)
+        .with_optional_structural("config", config);
     let parsed = parse_expression(sources.add_label("infer", source.text.clone()), &source.text).ok()?;
     let typed = check_statement(&scope, sources.add_label("infer", source.text.clone()), &parsed).ok()?;
     match typed.ty().as_scalar() {

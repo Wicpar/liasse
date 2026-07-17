@@ -140,6 +140,24 @@ pub(crate) fn normalize_all(
     Ok(())
 }
 
+/// Normalize one writable singleton root member in place, if it declares a
+/// `$normalize` (§8.2/§8.8): `.` is the member's own value, evaluated over the
+/// package root. The singleton analogue of [`normalize_field`], reached from the
+/// singleton write path and the seed path rather than a keyed collection.
+pub(crate) fn normalize_singleton_field(
+    compiled: &Compiled,
+    name: &str,
+    fields: &mut FieldMap,
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+) -> Result<(), Rejection> {
+    let Some(normalize) = compiled.singleton_normalize(name) else { return Ok(()) };
+    let current = Cell::Scalar(fields.get(name).cloned().unwrap_or(Value::None));
+    let value = scalar(ctx.eval(prospective, normalize, &current)?);
+    fields.insert(name.to_owned(), value);
+    Ok(())
+}
+
 /// Normalize one field in place, if it declares a `$normalize` (§8.8).
 pub(crate) fn normalize_field(
     collection: &CompiledCollection,

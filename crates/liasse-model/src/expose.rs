@@ -64,12 +64,13 @@ pub(crate) fn check_and_capture(
     root: &Shape,
     mutations: &[Mutation],
     expose: Option<&DocValue>,
+    config: Option<&ExprType>,
 ) -> Vec<ExposedInterface> {
     let Some(interfaces) = expose.and_then(DocValueExt::as_object) else {
         return Vec::new();
     };
     let root_row = ExprType::Row(resolver.shape_row(root));
-    let mut phase = ExposePhase { reporter, sources, root_row, mutations };
+    let mut phase = ExposePhase { reporter, sources, root_row, mutations, config: config.cloned() };
     let mut out = Vec::new();
     for interface in interfaces {
         if let Some(exposed) = phase.interface(interface) {
@@ -84,6 +85,10 @@ struct ExposePhase<'a, 'b> {
     sources: &'a mut SourceMap,
     root_row: ExprType,
     mutations: &'a [Mutation],
+    /// The module package's `$config` struct row (§13.1), bound as the `$config`
+    /// structural so an exposed `$view` reads it (`currency: $config.currency`);
+    /// `None` when the module declares no `$config`.
+    config: Option<ExprType>,
 }
 
 impl ExposePhase<'_, '_> {
@@ -108,7 +113,8 @@ impl ExposePhase<'_, '_> {
     fn view(&mut self, value: &DocValue) -> Option<ExprSource> {
         let text = value.as_string()?;
         let text = text.trim_start().strip_prefix('=').map_or(text, str::trim).to_owned();
-        let scope = ModelScope::nested(vec![self.root_row.clone()], self.root_row.clone());
+        let scope = ModelScope::nested(vec![self.root_row.clone()], self.root_row.clone())
+            .with_optional_structural("config", self.config.as_ref());
         let sub = self.sources.add_label("expose-view", text.clone());
         match parse_expression(sub, &text) {
             Ok(parsed) => {

@@ -82,6 +82,16 @@ pub(crate) struct CompiledSingletonDefault {
     pub(crate) default: TypedExpr,
 }
 
+/// A writable singleton root field's normalizer (§8.2/§8.8): its name and the
+/// typed `$normalize` expression, typed with the member's own value as `.` over
+/// the package root. Applied every time the member is written — at a seed, at a
+/// resolved default, and at a `.field = …` mutation — the singleton analogue of a
+/// collection field's [`CompiledField::normalize`].
+pub(crate) struct CompiledSingletonNormalize {
+    pub(crate) name: String,
+    pub(crate) normalize: TypedExpr,
+}
+
 /// A compiled keyed collection: its identity, fields, constraints, and — for a
 /// nested collection (§5.4) — the child collections declared under its rows. A
 /// top-level collection is the root of one such tree; `children` holds the
@@ -244,6 +254,10 @@ pub(crate) struct Compiled {
     /// onto the package-root row at materialization so a view or projection reads
     /// them like any collection or stored value.
     pub(crate) root_computed: Vec<CompiledComputed>,
+    /// Normalizers for writable singleton root fields (§8.2/§8.8), applied every
+    /// time the member is written (seed, default, mutation) — the singleton
+    /// analogue of a collection field's normalizer.
+    pub(crate) root_singleton_normalizes: Vec<CompiledSingletonNormalize>,
     /// Insertion defaults for writable singleton root fields (§8.2), applied at
     /// genesis when `$data` supplies no value.
     pub(crate) root_singleton_defaults: Vec<CompiledSingletonDefault>,
@@ -305,6 +319,7 @@ impl Compiled {
         }
         let root_computed = compile_root_computed(sources, schema, &root_ty, hosts)?;
         let root_singleton_defaults = compile_root_singleton_defaults(sources, schema, &root_ty, hosts)?;
+        let root_singleton_normalizes = compile_root_singleton_normalizes(sources, schema, &root_ty, hosts)?;
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth, hosts)?;
         let keyrings = compile_keyrings(schema, model_doc);
         let views = compile_views(sources, schema, &root_ty, &keyrings, model_doc, hosts)?;
@@ -318,6 +333,7 @@ impl Compiled {
             collections,
             root_computed,
             root_singleton_defaults,
+            root_singleton_normalizes,
             mutations,
             views,
             exposed_views,
@@ -347,6 +363,12 @@ impl Compiled {
     /// The compiled mutation named `name`, if any.
     pub(crate) fn mutation(&self, name: &str) -> Option<&CompiledMutation> {
         self.mutations.iter().find(|m| m.name == name)
+    }
+
+    /// The compiled `$normalize` of the writable singleton root field `name`, if
+    /// it declares one (§8.2/§8.8).
+    pub(crate) fn singleton_normalize(&self, name: &str) -> Option<&TypedExpr> {
+        self.root_singleton_normalizes.iter().find(|n| n.name == name).map(|n| &n.normalize)
     }
 
     /// The compiled view named `name`, if any.
@@ -908,6 +930,32 @@ fn compile_root_singleton_defaults(
         {
             let (default, _src) = compile_expr(sources, &scope, "default", &source.text)?;
             out.push(CompiledSingletonDefault { name: member.name.as_str().to_owned(), default });
+        }
+    }
+    Ok(out)
+}
+
+/// Compile the `$normalize` of each writable singleton root field (§8.2/§8.8). A
+/// normalizer types with the member's own value as `.` (a scalar) over the
+/// package root, exactly like a collection field's normalizer
+/// ([`compile_field`]), so `.field = @in` yields the normalized committed value
+/// (§8.3 "the assigned target still applies its own normalization").
+fn compile_root_singleton_normalizes(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+    hosts: &HostSignatures,
+) -> Result<Vec<CompiledSingletonNormalize>, EngineError> {
+    let mut out = Vec::new();
+    for member in &schema.model().root().members {
+        if let Node::Scalar(scalar) = &member.node
+            && scalar.is_writable()
+            && let Some(source) = &scalar.normalize
+        {
+            let field_scope = RuntimeScope::new(ExprType::scalar(scalar.ty.clone()), root_ty.clone())
+                .with_host_ops(hosts.clone());
+            let (normalize, _src) = compile_expr(sources, &field_scope, "normalize", &source.text)?;
+            out.push(CompiledSingletonNormalize { name: member.name.as_str().to_owned(), normalize });
         }
     }
     Ok(out)

@@ -317,13 +317,9 @@ pub const SKIP: &[(&str, &str)] = &[
     // expects. Each is real conformance debt for the triage loop; none is edited away.
     // ========================================================================
     // --- fail:noval ---
-    ("08-mutations-validation/inferred-param-target-normalization-applies", "no value produced (unsupported call path)"),
     ("15-meters/hypothetical-balance-accessor-with-time", "no value produced (unsupported call path)"),
     ("21-deletion-erasure/double-reinsert-second-finds-no-stub-rejects", "no value produced (unsupported call path)"),
     ("21-deletion-erasure/erase-cascade-scrub-scope-unspecified", "no value produced (unsupported call path)"),
-    ("21-deletion-erasure/erase-removes-row-from-live-state", "no value produced (unsupported call path)"),
-    ("21-deletion-erasure/erased-row-absent-across-export-restore", "no value produced (unsupported call path)"),
-    ("21-deletion-erasure/reinsert-historical-does-not-recreate-live-row", "no value produced (unsupported call path)"),
     ("21-deletion-erasure/reinsert-tampered-extract-hash-rejects", "no value produced (unsupported call path)"),
     ("annex-c-grammar/mutation-name-explicit-prototype-parses", "no value produced (unsupported call path)"),
     ("annex-c-grammar/noparam-call-paren-equals-empty-args", "no value produced (unsupported call path)"),
@@ -359,7 +355,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("12-clients-live-views/temporal-observation-advances-live-view", "view result diverges from expectation"),
     ("12-clients-live-views/window-anchor-survives-rekey", "view result diverges from expectation"),
     ("14-buckets/expiration-preserves-row-in-all", "view result diverges from expectation"),
-    ("21-deletion-erasure/erased-row-unobservable-in-second-view", "view result diverges from expectation"),
     ("22-runtime-semantics/concurrent-appends-either-order-both-atomic", "view result diverges from expectation"),
     ("22-runtime-semantics/cross-connection-sequential-order-unspecified", "view result diverges from expectation"),
     ("annex-c-grammar/patch-block-is-one-statement", "view result diverges from expectation"),

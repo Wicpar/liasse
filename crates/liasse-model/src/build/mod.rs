@@ -93,6 +93,11 @@ pub(crate) struct StateBuild<'a> {
     /// [`crate::module::type_module_spaces`] pass projects each instance shape and
     /// writes the instance-name-keyed view row onto the placeholder view node.
     pub module_spaces: Vec<(Vec<String>, Shape)>,
+    /// A module package's top-level `$config` struct (§13.1), when declared: the
+    /// immutable typed struct of installation values built as a static struct
+    /// shape. `None` for an application or a module with no `$config`. Resolved to
+    /// a [`ConfigSchema`](crate::ConfigSchema) and retained on the model.
+    pub config: Option<Shape>,
 }
 
 /// The structural builder: accumulates the reusable type table and the raw
@@ -123,11 +128,13 @@ pub(crate) struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-    /// Build the whole state tree from the located `$model` (and `$types`).
+    /// Build the whole state tree from the located `$model` (and `$types`), plus
+    /// a module package's `$config` struct schema (§13.1) when present.
     pub(crate) fn run(
         reporter: &mut Reporter,
         model: &'a DocValue,
         types_doc: Option<&'a DocValue>,
+        config_doc: Option<&'a DocValue>,
     ) -> StateBuild<'a> {
         let mut builder = Builder {
             named: NamedTypes::new(),
@@ -156,6 +163,9 @@ impl<'a> Builder<'a> {
             }
         };
         builder.register_recursion_targets(&root);
+        // §13.1: a module's `$config` is a static struct of typed installation
+        // values, built after the root so it may reference the same `$types`.
+        let config = config_doc.map(|doc| builder.config_shape(reporter, doc));
         StateBuild {
             root,
             types: builder.types,
@@ -169,7 +179,54 @@ impl<'a> Builder<'a> {
             source_buckets: builder.source_buckets,
             source_bucket_decls: builder.source_bucket_decls,
             module_spaces: builder.module_spaces,
+            config,
         }
+    }
+
+    /// Build a module package's `$config` struct schema (§13.1): the immutable
+    /// typed struct whose members are the installation values a child's
+    /// expressions read through `$config`. Each member must be a typed *value*
+    /// field — a scalar, struct, set, or ref — so a reserved `$`-member or a
+    /// view/keyed-collection member is rejected. That, together with the
+    /// per-member type parse `data_member` performs, is the static "valid struct
+    /// type" check (§13.1). The resulting shape is resolved to a struct row the
+    /// runtime type-checks install values against and binds as `$config`.
+    fn config_shape(&mut self, reporter: &mut Reporter, config: &'a DocValue) -> Shape {
+        // A non-object `$config` is already reported by the header phase.
+        let Some(members) = config.as_object() else {
+            return Shape::default();
+        };
+        let mut shape = Shape::default();
+        for member in members {
+            if is_reserved(&member.name.text) {
+                reporter.reject_hint(
+                    member.span,
+                    code::MODULE,
+                    format!(
+                        "`{}` is not a `$config` value; `$config` declares a struct of typed installation fields (§13.1)",
+                        member.name.text
+                    ),
+                    "declare each config value as `name: \"type\"` or `name: \"type = default\"`",
+                );
+                continue;
+            }
+            let index = shape.members.len();
+            self.data_member(reporter, member, &["$config".to_owned()], &mut shape);
+            if let Some(added) = shape.members.get(index)
+                && matches!(added.node, Node::View(_) | Node::Collection(_))
+            {
+                reporter.reject_hint(
+                    member.span,
+                    code::MODULE,
+                    format!(
+                        "`$config.{}` must be a typed value field, not a view or collection (§13.1)",
+                        member.name.text
+                    ),
+                    "declare a scalar, struct, set, or ref installation value",
+                );
+            }
+        }
+        shape
     }
 
     /// Build the reusable `$types` shapes (§5.8). Scalar-shaped entries (enums,

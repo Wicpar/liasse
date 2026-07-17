@@ -23,6 +23,9 @@ liasse-artifact = { path = "../liasse-artifact" }
 # keeps big int/decimal inputs exact and matches the feature the value layer
 # already enables so the workspace unifies to one serde_json build.
 serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+# §19.9 reconciliation: a structured merge-conflict coordinate serializes to a
+# diagnostic value for the reconciliation plan a host correction consumes.
+serde = "1.0"
 # §15 meters: exact decimal capacity/allocation arithmetic over the `decimal`
 # values `liasse-value` wraps, using the same `BigDecimal` build.
 bigdecimal = "0.4.10"

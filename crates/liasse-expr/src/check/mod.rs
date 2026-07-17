@@ -249,10 +249,13 @@ impl<'a> Checker<'a> {
     }
 
     fn check_structural(&mut self, expr: &Expr, name: &str) -> Option<TypedExpr> {
-        // A structural binding resolves from the base scope's feature context
-        // (`$actor`/`$session`/… and a bucket declaration's own `$source`/`$from`),
-        // or, inside a projection over a bucketed view, from the current row's
-        // structural bindings (`$index`/`$from`/`$until`/`$source`, §14.4).
+        // A structural binding resolves from the base scope's feature context —
+        // `$actor`/`$session`/…, a module package's `$config` struct (§13.1, a
+        // package-level binding whose members `$config.member` then read as
+        // ordinary fields of the returned row), and a bucket declaration's own
+        // `$source`/`$from` — or, inside a projection over a bucketed view, from
+        // the current row's structural bindings (`$index`/`$from`/`$until`/
+        // `$source`, §14.4).
         match self.scope.structural(name).or_else(|| self.row_structural(name)) {
             Some(ty) => Some(TypedExpr::new(
                 expr.span,

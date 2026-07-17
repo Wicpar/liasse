@@ -56,6 +56,7 @@ mod blob;
 mod bucket;
 mod build;
 mod check;
+mod config;
 mod delete;
 mod doc;
 mod expose;
@@ -80,6 +81,7 @@ mod surface;
 mod types;
 mod walk;
 
+pub use config::ConfigSchema;
 pub use expose::{ExposedInterface, ExposedMut};
 pub use header::{Header, Kind};
 pub use host::HostDescriptors;

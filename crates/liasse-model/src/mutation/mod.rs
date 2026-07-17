@@ -59,6 +59,7 @@ pub(crate) fn check_mutations(
     root: &Shape,
     raw: &[RawMut],
     source_buckets: &[String],
+    config: Option<&ExprType>,
 ) -> Vec<Mutation> {
     let root_row = ExprType::Row(resolver.shape_row(root));
     raw.iter()
@@ -69,6 +70,7 @@ pub(crate) fn check_mutations(
                 root,
                 root_row: root_row.clone(),
                 source_buckets,
+                config,
             };
             phase.check(entry)
         })
@@ -94,6 +96,9 @@ struct MutPhase<'a, 'b> {
     root_row: ExprType,
     /// Absolute paths of source-backed bucket collections (read-only, §14.4).
     source_buckets: &'a [String],
+    /// A module package's `$config` struct row (§13.1), bound as the `$config`
+    /// structural so a module mutation body reads it; `None` outside a module.
+    config: Option<&'a ExprType>,
 }
 
 impl MutPhase<'_, '_> {
@@ -190,7 +195,8 @@ impl MutPhase<'_, '_> {
     }
 
     fn build_scope(&self, receiver: &ExprType, params: &Params) -> ModelScope {
-        let mut scope = ModelScope::nested(vec![receiver.clone()], self.root_row.clone());
+        let mut scope = ModelScope::nested(vec![receiver.clone()], self.root_row.clone())
+            .with_optional_structural("config", self.config);
         for (name, ty) in params.iter() {
             scope = scope.with_param(name.clone(), ty.clone());
         }

@@ -68,6 +68,7 @@ pub(crate) fn admit(
         prospective.insert(crate::singleton::address(), singleton);
     }
     apply_singleton_defaults(compiled, ctx, prospective)?;
+    apply_singleton_normalizes(compiled, ctx, prospective)?;
     // Phase two: with the full prospective state in place, resolve each staged
     // row's defaults and normalization against it (§9.1 "defaults are then
     // evaluated by dependency").
@@ -228,6 +229,32 @@ pub(crate) fn apply_singleton_defaults(
         let mut fields = prospective.get(&root_address).cloned().unwrap_or_else(FieldMap::new);
         fields.insert(def.name.clone(), value);
         prospective.insert(root_address.clone(), fields);
+    }
+    Ok(())
+}
+
+/// Normalize every writable singleton root member that carries a `$normalize`
+/// and holds a value (§8.2/§8.8/§9.1): a seeded or defaulted singleton member
+/// passes through the same normalization a collection seed row does. Runs after
+/// [`apply_singleton_defaults`] so a defaulted value is normalized too. An
+/// absent member (no seed, no default) is left absent rather than normalizing
+/// `none`, matching how the singleton root materializes an unwritten member.
+pub(crate) fn apply_singleton_normalizes(
+    compiled: &Compiled,
+    ctx: &EvalCtx<'_>,
+    prospective: &mut Prospective,
+) -> Result<(), Rejection> {
+    let root_address = crate::singleton::address();
+    let Some(mut fields) = prospective.get(&root_address).cloned() else { return Ok(()) };
+    let mut changed = false;
+    for norm in &compiled.root_singleton_normalizes {
+        if fields.contains_key(&norm.name) {
+            rules::normalize_singleton_field(compiled, &norm.name, &mut fields, ctx, prospective)?;
+            changed = true;
+        }
+    }
+    if changed {
+        prospective.replace(&root_address, fields);
     }
     Ok(())
 }

@@ -188,7 +188,8 @@ pub use liasse_host::{
 };
 pub use generator::{derive_uuid, FixedGenerators, Generators};
 pub use history::{
-    ConflictKind, ImportError, ImportRelation, ImportReport, MergeConflict, MergeOutcome,
+    ConflictCoordinate, ConflictKind, ImportError, ImportRelation, ImportReport, MergeConflict,
+    MergeOutcome,
 };
 pub use migrate::{UpdateError, UpdateReport};
 pub use modules::{
