@@ -150,14 +150,39 @@ fn decode_row(
     let mut fields = FieldMap::new();
     for field in &collection.fields {
         let supplied = members.iter().find(|m| m.name.text == field.name);
+        let key_component = key_components.iter().find(|(name, _)| *name == &field.name);
         let value = match supplied {
             // §4.2/C.4: a `$data` value is a literal-or-expression position — honor
             // the leading-`'` literal escape and the leading-`=` expression form
             // (against the fields decoded so far as `.` and the staged seed state).
-            Some(member) => crate::seed_value::materialize(
-                &field.ty, &field.name, &member.value, collection, &fields, ctx, prospective,
-            )?,
-            None => match key_components.iter().find(|(name, _)| *name == &field.name) {
+            Some(member) => {
+                let value = crate::seed_value::materialize(
+                    &field.ty, &field.name, &member.value, collection, &fields, ctx, prospective,
+                )?;
+                // §9.1: "The map member supplies the local key. A repeated key
+                // field MUST agree with it." When a key field is supplied in the
+                // row body, its value MUST equal the component the `$data` map
+                // member key decodes to; a disagreement is an admission-class key
+                // fault that rejects the whole atomic load (§9.3/§9.4).
+                if let Some((_, component)) = key_component {
+                    let from_key =
+                        decode(&field.ty, &serde_json::Value::String(component.clone()), &field.name)?;
+                    if value != from_key {
+                        return Err(Rejection::new(
+                            RejectionReason::DuplicateKey,
+                            format!(
+                                "repeated key field '{}' disagrees with the seed map member key: \
+                                 the map member supplies `{}` but the row body supplies `{}`",
+                                field.name,
+                                from_key.to_canonical_json_string(),
+                                value.to_canonical_json_string(),
+                            ),
+                        ));
+                    }
+                }
+                value
+            }
+            None => match key_component {
                 Some((_, component)) => {
                     decode(&field.ty, &serde_json::Value::String(component.clone()), &field.name)?
                 }
