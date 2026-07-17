@@ -19,6 +19,7 @@ use crate::doc::DocValueExt;
 use crate::expose::ExposedInterface;
 use crate::header::{Header, Parsed};
 use crate::host::HostDescriptors;
+use crate::migration::Migrations;
 use crate::mutation::{check_mutations, Mutation};
 use crate::refs;
 use crate::report::Reporter;
@@ -37,6 +38,7 @@ pub struct Model {
     surfaces: Vec<Surface>,
     exposed: Vec<ExposedInterface>,
     config: Option<ConfigSchema>,
+    migrations: Migrations,
 }
 
 impl Model {
@@ -143,9 +145,15 @@ impl Model {
         meter::check(&mut reporter, sources, &build.limits, &build.consumes);
         blob::check_all(&mut reporter, &build.blob_storage);
         delete::check(&mut reporter, sources, &root, &build.raw_muts);
-        if let Some(migrations) = document.root().member("$migrations") {
-            migration::check(&mut reporter, sources, &migrations.value);
-        }
+        // §20.1/§4: `$migrations` is an optional model-root declaration (a sibling
+        // of the collections inside `$model`); the §4 authoring form also admits it
+        // as a top-level member. Validate its shape wherever it is declared and
+        // retain the parsed programs so the runtime can compile them (§20.1).
+        let migrations = model
+            .member("$migrations")
+            .or_else(|| document.root().member("$migrations"))
+            .map(|m| migration::check(&mut reporter, sources, &m.value))
+            .unwrap_or_default();
         // §13.8: type each `$expose` interface `$view` against the module root and
         // validate its `$mut` bindings, capturing the interfaces the runtime
         // evaluates against a child instance and resolves an interface-addressed
@@ -176,6 +184,7 @@ impl Model {
             surfaces,
             exposed,
             config,
+            migrations,
         })
     }
 
@@ -232,6 +241,15 @@ impl Model {
     #[must_use]
     pub fn exposed_interfaces(&self) -> &[ExposedInterface] {
         &self.exposed
+    }
+
+    /// The retained `$migrations` programs (§20.1): the ordered statement texts of
+    /// each exact source-version migration program. The runtime compiles and runs
+    /// the program whose key matches the active source package version when a
+    /// package update targets this model.
+    #[must_use]
+    pub fn migrations(&self) -> &Migrations {
+        &self.migrations
     }
 }
 

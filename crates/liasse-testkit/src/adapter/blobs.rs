@@ -5,8 +5,9 @@
 //! [`BlobHost`] per blob field, composed into the [`SurfaceHost`] under the field
 //! (mutation-parameter) name a `blob_put` step binds to. The driving side
 //! ([`put`]/[`get`]/[`connector_set`]) then admits an upload through the surface
-//! blob-parameter call path (§18.7), fetches by digest through the §18.9 verify
-//! gate (§18.8), and scripts the §18.12 connector fault-injection vocabulary.
+//! blob-parameter call path (§18.7), fetches through the §18.8 visibility gate over
+//! the caller's surface projection (§18.9 verifying the bytes), and scripts the
+//! §18.12 connector fault-injection vocabulary.
 //!
 //! The bytes-and-media of an honest upload go straight through
 //! [`SurfaceHost::call_with_blob`], which stages, verifies, and binds the verified
@@ -20,8 +21,9 @@ use liasse_host::sim::{ConnectorOp, SimConnector};
 use liasse_host::{BlobIntegrity, Capability, ConnectorCapabilities};
 use liasse_store::InstanceStore;
 use liasse_surface::{
-    AcceptedType, BlobEngine, BlobHost, BlobPutOutcome, DeclaredDescriptor, Placement, Store,
-    StoreId, SurfaceAddress, SurfaceCall, SurfaceHost,
+    AcceptedType, AuthSelection, BlobEngine, BlobGetOutcome, BlobHost, BlobPutOutcome,
+    DeclaredDescriptor, Placement, Store, StoreId, Subscription, SurfaceAddress, SurfaceCall,
+    SurfaceHost, SurfaceWatch, Value, ViewResult,
 };
 use liasse_value::{MediaType, Sha512};
 use serde_json::Value as J;
@@ -53,6 +55,24 @@ pub(super) struct BlobPutSpec {
     pub(super) claim: Option<J>,
     pub(super) operation_id: Option<String>,
     pub(super) connection: String,
+    /// The §11.4 per-request authenticator selection the upload runs under, so a
+    /// role-scoped blob surface (`member.docs.add`) authenticates before admission
+    /// exactly as a plain `call` step does.
+    pub(super) auth: Option<AuthSelection>,
+}
+
+/// A parsed `blob_get` step (tests/18-blobs/NOTES.md).
+pub(super) struct BlobGetSpec {
+    /// The surface view address the caller's projection resolves through.
+    pub(super) surface: String,
+    /// The view parameters (a parameterized surface view reads them as `$params`).
+    pub(super) args: J,
+    /// The descriptor occurrence within the resolved row (`.file`), naming the
+    /// blob field whose value the fetch gate is applied to.
+    pub(super) at: Option<String>,
+    pub(super) connection: String,
+    /// The §11.4 per-request authenticator selection the fetch runs under.
+    pub(super) auth: Option<AuthSelection>,
 }
 
 /// A parsed `connector_set` step (§18.12 fault injection).
@@ -241,6 +261,12 @@ pub(super) fn put<S: InstanceStore>(
     if let Some(operation_id) = &spec.operation_id {
         call = call.with_operation_id(operation_id.clone());
     }
+    // §11.4: a role-scoped blob surface (`member.docs.add`) authenticates the
+    // upload under the step's authenticator selection, exactly as a plain `call`
+    // does — without it the containing mutation is denied before its transition.
+    if let Some(auth) = &spec.auth {
+        call = call.with_auth(auth.clone());
+    }
 
     if let Some(claim) = &spec.claim {
         return put_declared(loaded, spec, claim);
@@ -291,6 +317,89 @@ fn put_declared<S: InstanceStore>(
              but the surface admits only the honest `call_with_blob` blob parameter (no \
              declared-descriptor call binding is exposed)",
         )),
+    }
+}
+
+/// Fetch a blob through the §18.8 visibility gate over the caller's surface
+/// projection. The gate is *visibility of a blob value through a currently
+/// authorized surface*, so the fetch resolves the caller's surface view (with the
+/// step's authenticator and view parameters), reads the value at the descriptor
+/// occurrence (`at`, a blob field), and hands it to
+/// [`SurfaceHost::blob_get_projected`]: a projected blob *value* grants the fetch
+/// of exactly its bytes, while a hidden row (a role-scoped/filtered view that
+/// resolves nothing), a revoked membership (the surface denies the read), or a
+/// metadata-only projection grants none (§18.8/§18.9).
+pub(super) fn get<S: InstanceStore>(
+    loaded: &mut Loaded<S>,
+    spec: &BlobGetSpec,
+) -> Result<Observation, AdapterError> {
+    let field = blob_field(spec, loaded).ok_or_else(|| {
+        AdapterError::unsupported("`blob_get` step names no descriptor occurrence and no blob field is registered")
+    })?;
+
+    // Resolve the caller's surface projection at the current frontier: an
+    // authorized read yields the row (and its blob value); a role/membership
+    // refusal yields no projection at all, denying the fetch (§18.8).
+    let address = SurfaceAddress::parse(&spec.surface)
+        .map_err(|err| AdapterError::Host(format!("malformed blob surface `{}`: {err}", spec.surface)))?;
+    let arg_types = loaded.routing.view_arg_types(&spec.surface);
+    let args = wire::decode_args(&spec.args, &arg_types);
+    let mut watch = SurfaceWatch::new(address, format!("$blob_get:{}", spec.surface));
+    if !args.is_empty() {
+        watch = watch.with_args(args);
+    }
+    if let Some(auth) = &spec.auth {
+        watch = watch.with_auth(auth.clone());
+    }
+    let subscription = loaded.host.watch(&spec.connection, &watch).map_err(host_fault)?;
+
+    let outcome = match &subscription {
+        // §18.8: read the descriptor occurrence the authorized projection exposes.
+        // A blob value grants the fetch; a metadata-only projection or a hidden
+        // occurrence (no such field on the resolved row) grants none.
+        Subscription::Init(result) => {
+            loaded.host.blob_get_projected(&field, projected_value(result, &field)).map_err(component_fault)?
+        }
+        // §18.8: authentication or scoped-role membership refused the read, so no
+        // descriptor occurrence is visible — the fetch plan is not issued.
+        Subscription::Denied(_) | Subscription::Failed(_) | Subscription::Window(_) => {
+            loaded.host.blob_get_projected(&field, None).map_err(component_fault)?
+        }
+    };
+    Ok(observe_get(&outcome))
+}
+
+/// The blob-field name a `blob_get` fetches at: the descriptor occurrence `at`
+/// (a `.field` path, reduced to its last component), or the sole registered blob
+/// field when the step names no occurrence.
+fn blob_field<S: InstanceStore>(spec: &BlobGetSpec, loaded: &Loaded<S>) -> Option<String> {
+    spec.at
+        .as_deref()
+        .map(|at| at.trim_start_matches('.').rsplit('.').next().unwrap_or(at).to_owned())
+        .filter(|field| !field.is_empty())
+        .or_else(|| loaded.blobs.fields.first().cloned())
+}
+
+/// The value the resolved projection exposes at blob field `field`: the blob
+/// value of the single resolved row, or `None` when the view resolved no row or
+/// the projection does not expose that field (a metadata-only or hidden
+/// projection). A singular blob-value view resolves at most one row.
+fn projected_value<'a>(result: &'a ViewResult, field: &str) -> Option<&'a Value> {
+    result.rows().first().and_then(|row| row.field(field))
+}
+
+/// Render a §18.8/§18.9 fetch outcome to a harness observation. A delivered
+/// result reports `ok` carrying the exact fetched bytes as their staged UTF-8
+/// text (so a report shows the content); a denied visibility gate reports
+/// `denied`; a no-clean-holder result is a fetch failure (§18.9).
+fn observe_get(outcome: &BlobGetOutcome) -> Observation {
+    match outcome {
+        BlobGetOutcome::Delivered(bytes) => {
+            let text = String::from_utf8_lossy(bytes).into_owned();
+            Observation::ok(Some(J::String(text)))
+        }
+        BlobGetOutcome::Denied | BlobGetOutcome::Unknown => Observation::outcome(Outcome::Denied),
+        BlobGetOutcome::NoCleanHolder => Observation::outcome(Outcome::Error),
     }
 }
 

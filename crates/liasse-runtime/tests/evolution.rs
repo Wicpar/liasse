@@ -196,6 +196,197 @@ const ENCODED_V2: &str = r#"{
   }
 }"#;
 
+/// §20.1 package-level `$migrations` program: a target keyed to the exact active
+/// source splits `users` into `people` (every user) and `emails` (only users with
+/// an email), reading the read-only `$old` source state.
+const SPLIT_V1: &str = r#"{
+  "$liasse": 1
+  "$app": "t.split@1.0.0"
+  "$model": {
+    "users": { "$key": "id", "id": "text", "name": "text", "email": "text?" }
+    "all_users": { "$view": ".users { id, name }" }
+  }
+  "$data": {
+    "users": {
+      "u1": { "name": "  Ann  ", "email": "ann@example.com" }
+      "u2": { "name": "Bob" }
+    }
+  }
+}"#;
+
+const SPLIT_V2: &str = r#"{
+  "$liasse": 1
+  "$app": "t.split@2.0.0"
+  "$model": {
+    "people": { "$key": "id", "id": "text", "display_name": "text" }
+    "emails": { "$key": "user", "user": "text", "email": "text" }
+    "$migrations": {
+      "1.0.0": [
+        ".people = $old.users { id, display_name: string.trim(.name) }",
+        ".emails = $old.users[:u | has(u.email)] { user: .id, email: .email }"
+      ]
+    }
+    "people_view": { "$view": ".people { id, display_name, $sort: [id] }" }
+    "emails_view": { "$view": ".emails { user, email, $sort: [user] }" }
+  }
+}"#;
+
+#[test]
+fn migrations_program_splits_a_collection_for_the_active_source() {
+    let mut engine = load("split", SPLIT_V1);
+    let mut generator = generator();
+
+    engine.update(SPLIT_V2, &mut generator).expect("the $migrations program commits");
+
+    // §20.1: the program mapped every user into `people` (trimming the name) and
+    // only users with an email into `emails`.
+    let people = engine.view_at_head("people_view").expect("view").expect("declared");
+    assert_eq!(people.len(), 2, "every user becomes a person");
+    assert_eq!(people.rows()[0].field("display_name"), Some(&text("Ann")), "program trims the name");
+    assert_eq!(people.rows()[1].field("display_name"), Some(&text("Bob")));
+    let emails = engine.view_at_head("emails_view").expect("view").expect("declared");
+    assert_eq!(emails.len(), 1, "only u1 has an email");
+    assert_eq!(emails.rows()[0].field("user"), Some(&text("u1")));
+    assert_eq!(emails.rows()[0].field("email"), Some(&text("ann@example.com")));
+}
+
+/// A byte-identical replay of the 2.0.0 load: the "1.0.0"-keyed program cannot
+/// re-fire once 2.0.0 is active, so the same-identity `people` are copied, not
+/// re-derived from a now-absent `$old.users` (§20.1 exact-source key).
+#[test]
+fn migrations_program_does_not_refire_on_identical_replay() {
+    let mut engine = load("split", SPLIT_V1);
+    let mut generator = generator();
+    engine.update(SPLIT_V2, &mut generator).expect("first migration commits");
+
+    let report = engine.update(SPLIT_V2, &mut generator).expect("replay is admissible");
+    assert_eq!(report.relation, UpdateRelation::SameVersion, "2.0.0 -> 2.0.0 is a same-version republish");
+    let people = engine.view_at_head("people_view").expect("view").expect("declared");
+    assert_eq!(people.len(), 2, "the same-identity people are copied, not doubled");
+    assert_eq!(people.rows()[0].field("display_name"), Some(&text("Ann")), "value unchanged by the replay");
+}
+
+/// §20.1 final refs check: a program that sets every player's `team` to a literal
+/// key present in no `teams` row builds a dangling ref, so the prospective target
+/// fails the refs check and the update is rejected (§5.6).
+const REF_V1: &str = r#"{
+  "$liasse": 1
+  "$app": "t.ref@1.0.0"
+  "$model": {
+    "teams": { "$key": "id", "id": "text", "name": "text" }
+    "players": { "$key": "id", "id": "text", "team": { "$ref": "/teams" } }
+    "players_view": { "$view": ".players { id, team }" }
+  }
+  "$data": { "teams": { "t1": { "name": "Red" } }, "players": { "p1": { "team": "t1" } } }
+}"#;
+
+const REF_V2: &str = r#"{
+  "$liasse": 1
+  "$app": "t.ref@2.0.0"
+  "$model": {
+    "teams": { "$key": "id", "id": "text", "name": "text" }
+    "players": { "$key": "id", "id": "text", "team": { "$ref": "/teams" } }
+    "$migrations": {
+      "1.0.0": [
+        ".teams = $old.teams { id, name }",
+        ".players = $old.players { id, team: \"ghost\" }"
+      ]
+    }
+    "players_view": { "$view": ".players { id, team }" }
+  }
+}"#;
+
+#[test]
+fn migration_producing_a_dangling_ref_is_rejected() {
+    let mut engine = load("ref", REF_V1);
+    let mut generator = generator();
+    match engine.update(REF_V2, &mut generator) {
+        // §20.1/§5.6: `team = "ghost"` resolves to no `/teams` row.
+        Err(UpdateError::Rejected(_)) => {}
+        other => panic!("a dangling-ref migration must be rejected, got {other:?}"),
+    }
+    // §E.9: 1.0.0 stays active with its resolving ref intact.
+    assert_eq!(engine.model().header().identity.version.major, 1, "1.0.0 stays active");
+    let players = engine.view_at_head("players_view").expect("view").expect("declared");
+    assert_eq!(players.len(), 1, "the prior players collection is intact");
+}
+
+/// §20.1: a field `$from` naming a source field the source collection does not
+/// declare resolves to no source and rejects (the confusable / typo case), rather
+/// than silently leaving the target field unpopulated.
+const FROM_V1: &str = r#"{
+  "$liasse": 1
+  "$app": "t.from@1.0.0"
+  "$model": {
+    "items": { "$key": "id", "id": "text", "name": "text" }
+    "items_view": { "$view": ".items { id, name }" }
+  }
+  "$data": { "items": { "i1": { "name": "real" } } }
+}"#;
+
+const FROM_V2_BAD: &str = r#"{
+  "$liasse": 1
+  "$app": "t.from@2.0.0"
+  "$model": {
+    "items": { "$key": "id", "id": "text", "label": { "$type": "text", "$from": "nonexistent" } }
+    "items_view": { "$view": ".items { id, label }" }
+  }
+}"#;
+
+#[test]
+fn migration_from_naming_a_nonexistent_source_field_is_rejected() {
+    let mut engine = load("from", FROM_V1);
+    let mut generator = generator();
+    match engine.update(FROM_V2_BAD, &mut generator) {
+        // §20.1: `$from: "nonexistent"` names no field of `items`.
+        Err(UpdateError::Rejected(_)) => {}
+        other => panic!("a `$from` naming no source field must reject, got {other:?}"),
+    }
+    let items = engine.view_at_head("items_view").expect("view").expect("declared");
+    assert_eq!(items.rows()[0].field("name"), Some(&text("real")), "1.0.0 stays active");
+}
+
+/// §20.2 reversible transform via the built-in codec namespaces (§16.1): `$as`
+/// base64-encodes the UTF-8 bytes of the old value and `$back` inverts it, so the
+/// verified round trip commits and `encoded` holds the canonical base64.
+const B64_V1: &str = r#"{
+  "$liasse": 1
+  "$app": "t.b64@1.0.0"
+  "$model": {
+    "accounts": { "$key": "id", "id": "text", "name": "text" }
+    "all": { "$view": ".accounts { id, name }" }
+  }
+  "$data": { "accounts": { "a1": { "name": "hi" } } }
+}"#;
+
+const B64_V2: &str = r#"{
+  "$liasse": 1
+  "$app": "t.b64@2.0.0"
+  "$model": {
+    "accounts": {
+      "$key": "id"
+      "id": "text"
+      "encoded": {
+        "$type": "text"
+        "$from": "name"
+        "$as": "base64.encode(string.bytes(.))"
+        "$back": "string.from_bytes(base64.decode(.))"
+      }
+    }
+    "all": { "$view": ".accounts { id, encoded }" }
+  }
+}"#;
+
+#[test]
+fn base64_reversible_transform_commits() {
+    let mut engine = load("b64", B64_V1);
+    let mut generator = generator();
+    engine.update(B64_V2, &mut generator).expect("the reversible base64 migration commits");
+    let view = engine.view_at_head("all").expect("view").expect("declared");
+    // base64.encode(string.bytes("hi")) == "aGk=" (bytes 0x68 0x69).
+    assert_eq!(view.rows()[0].field("encoded"), Some(&text("aGk=")), "hi encodes to aGk=");
+}
+
 #[test]
 fn downgrade_via_exact_inverse_reconstructs_the_older_field() {
     let mut engine = load("enc", ENCODED_V1);

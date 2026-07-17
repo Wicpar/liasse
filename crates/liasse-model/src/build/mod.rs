@@ -297,6 +297,12 @@ impl<'a> Builder<'a> {
             // it structurally here so a rename target is not rejected as an
             // unknown reserved member.
             "$from" => {}
+            // §20.1/§4: `$migrations` is a model-root declaration (the corpus
+            // authoring form places it inside `$model`, a sibling of the
+            // collections and `$public`). Accept it structurally at the model root;
+            // its shape and the §20.1 statement constraints are validated by
+            // [`crate::migration::check`], which also retains the parsed programs.
+            "$migrations" if is_root => {}
             "$bucket" => self.buckets.push(RawDecl {
                 path: path.to_vec(),
                 span: member.span,

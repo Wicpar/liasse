@@ -86,6 +86,7 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             claim: target.get("claim").cloned(),
             operation_id: target.get("operation_id").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
             connection,
+            auth: target.get("auth").and_then(super::parse_auth_selection),
         };
         self.active().blob_put(&spec)
     }
@@ -126,17 +127,28 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         self.active().connector_set(&spec)
     }
 
-    /// §18.8/§18.9 `blob_get`: a precise seam. Fetch visibility is the §18.8
-    /// authorization over the caller's surface projection, and the corpus's fetch
-    /// cases resolve it through role-scoped/filtered surface views (or a blob-value
-    /// view the model layer does not yet compile) — a projection evaluation the
-    /// composed blob host, keyed only by digest, does not perform.
-    fn drive_blob_get(&mut self, _request: &OpRequest) -> Result<Observation, AdapterError> {
-        Err(AdapterError::unsupported(
-            "`blob_get` needs the §18.8 fetch-visibility decision over the caller's surface \
-             projection (role-scoped/filtered views, or a blob-value view the model does not \
-             compile), which the digest-keyed composed blob host does not evaluate",
-        ))
+    /// §18.8/§18.9 `blob_get`: resolve the caller's surface projection under the
+    /// step's authenticator, then gate the fetch on the descriptor occurrence that
+    /// projection exposes (§18.8) — a role-scoped or filtered view that hides the
+    /// row, or a revoked membership the surface now refuses, grants no fetch.
+    fn drive_blob_get(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        let target = &request.target;
+        let Some(surface) = target.get("surface").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`blob_get` step carries no `surface` view address"));
+        };
+        let connection = target
+            .get("on")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+            .unwrap_or_else(|| super::connection_name(request.on.as_ref()));
+        let spec = super::blobs::BlobGetSpec {
+            surface: surface.to_owned(),
+            args: target.get("args").cloned().unwrap_or(serde_json::Value::Null),
+            at: target.get("at").and_then(serde_json::Value::as_str).map(ToOwned::to_owned),
+            connection,
+            auth: target.get("auth").and_then(super::parse_auth_selection),
+        };
+        self.active().blob_get(&spec)
     }
 
     /// §12.3 `operation_status`: query the retained status of the operation whose

@@ -282,6 +282,9 @@ pub(super) trait Instance {
     /// §18.7 `blob_put`: stage and verify a blob parameter, then admit the
     /// containing mutation over the composed §18 blob host.
     fn blob_put(&mut self, spec: &super::blobs::BlobPutSpec) -> Result<Observation, AdapterError>;
+    /// §18.8/§18.9 `blob_get`: resolve the caller's surface projection and gate the
+    /// fetch on the visible descriptor occurrence over the composed §18 blob host.
+    fn blob_get(&mut self, spec: &super::blobs::BlobGetSpec) -> Result<Observation, AdapterError>;
     /// §18.12 `connector_set`: reconfigure a simulated connector from this step
     /// onward (unavailability, per-operation failure, stored-object corruption).
     fn connector_set(&mut self, spec: &super::blobs::ConnectorSetSpec) -> Result<Observation, AdapterError>;
@@ -612,6 +615,14 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         self.ensure_connection(&spec.connection);
         match &mut self.state {
             State::Loaded(loaded) => super::blobs::put(loaded, &mut self.blob_digests, spec),
+            State::Failed(message) => Err(AdapterError::LoadFailed(message.clone())),
+        }
+    }
+
+    fn blob_get(&mut self, spec: &super::blobs::BlobGetSpec) -> Result<Observation, AdapterError> {
+        self.ensure_connection(&spec.connection);
+        match &mut self.state {
+            State::Loaded(loaded) => super::blobs::get(loaded, spec),
             State::Failed(message) => Err(AdapterError::LoadFailed(message.clone())),
         }
     }

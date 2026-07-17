@@ -137,6 +137,7 @@
 mod blobs;
 mod bucket;
 mod cascade;
+mod codec;
 mod compiled;
 mod config;
 mod contract;

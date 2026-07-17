@@ -107,6 +107,21 @@ impl HostBinding {
         Ok(Self { registry, requires })
     }
 
+    /// A binding that serves only the built-in core codec namespaces (§16.1):
+    /// `base64`, `hex`, and the `string` byte codecs. The migration transform
+    /// path (§20.1/§20.2) evaluates `base64.encode(string.bytes(.))` and its
+    /// inverse in a scope with no package `$requires`, so it dispatches against
+    /// this dedicated binding rather than the instance's own host components. The
+    /// codec contracts are fixed literals, so `bind` cannot fail here.
+    pub(crate) fn codecs() -> Self {
+        let mut registry = Registry::new();
+        for namespace in crate::codec::namespaces() {
+            registry.register_namespace(namespace);
+        }
+        let requires = Self::bind(&registry, &crate::codec::requires(), false).unwrap_or_default();
+        Self { registry, requires }
+    }
+
     /// Re-resolve `requires` against the already-registered components (a §20
     /// migration keeps the context's registry but swaps the package's own
     /// requirement set).

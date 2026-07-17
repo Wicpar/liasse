@@ -9,29 +9,37 @@
 //! rejects the whole migration. The complete prospective target is then checked
 //! under the ordinary key/ref/uniqueness/check pipeline before the update commits.
 //!
-//! CORE scope: field-level `$from`/`$as`/`$back` mappings and collection renames
-//! via `$from`, over top-level keyed collections. The package-level `$migrations`
-//! program (splits/merges reading `$old`) needs the two-model program runtime and
-//! is a documented seam; the Annex E contract-narrowing check (§20.3) likewise
-//! needs the typed effective-contract comparison and is left to the model layer.
+//! The package-level `$migrations` program (§20.1) also runs here: the target's
+//! program for the exact active source version executes over the prospective
+//! target with `$old` bound to the read-only source state, so splits, merges, and
+//! coordinated collection transforms commit atomically. The `$as`/`$back`/program
+//! transforms resolve the built-in codec namespaces (§16.1) — `base64`,
+//! `string.bytes`, and their inverses — seeded like the built-in cose contract.
+//!
+//! CORE scope: top-level keyed collections. `$old` is materialized as the source
+//! model's stored collections (its computed values and views are a documented
+//! seam); the Annex E contract-narrowing check (§20.3) uses the typed
+//! effective-contract comparison in [`BoundaryContract`].
 
 use std::collections::BTreeMap;
 
 use liasse_artifact::{CompatibilityDecision, PackageIdentity, PackageName, UpdateRelation, Version};
 use liasse_diag::SourceMap;
-use liasse_expr::{check_statement, Cell, ExprType, TypedExpr};
+use liasse_expr::{check_statement, Cell, ExprType, Row, TypedExpr};
 use liasse_model::{Model, PackageId};
 use liasse_store::{CommitSeq, InstanceStore, RowAddress};
 use liasse_syntax::{parse_document, parse_expression};
-use liasse_value::Value;
+use liasse_value::{Timestamp, Type, Value};
 
-use crate::compiled::{Compiled, CompiledCollection};
+use crate::compiled::{Compiled, CompiledCollection, CompiledMutation, CompiledStmt};
 use crate::contract::BoundaryContract;
 use crate::doc;
 use crate::engine::{compile_definition, Compilation, Engine};
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::eval::EvalCtx;
-use crate::materialize::{self, FieldMap};
+use crate::host::{HostBinding, HostDispatch, HostSignatures};
+use crate::interp::Interp;
+use crate::materialize::{self, FieldMap, Temporal};
 use crate::portable::StateSection;
 use crate::rules;
 use crate::schema::Schema;
@@ -111,8 +119,24 @@ impl<S: InstanceStore> Engine<S> {
         } else {
             MigrationPlan::read(target).map_err(UpdateError::Engine)?
         };
-        let migrated = build_migrated(self.compiled(), &old_state, &compilation, &plan, generator, self.now())
-            .map_err(UpdateError::Rejected)?;
+        // §20.1: the migration selects the package-level program keyed to the
+        // exact active source version. Capture it before staging so the target's
+        // `$migrations` can read `$old` under the source model.
+        let active_source = {
+            let version = &self.model().header().identity.version;
+            format!("{}.{}.{}", version.major, version.minor, version.patch)
+        };
+        let migrated = build_migrated(
+            self.compiled(),
+            self.schema(),
+            &old_state,
+            &active_source,
+            &compilation,
+            &plan,
+            generator,
+            self.now(),
+        )
+        .map_err(UpdateError::Rejected)?;
         let commit = self
             .apply_migration(target, compilation, migrated)
             .map_err(UpdateError::Engine)?;
@@ -168,17 +192,37 @@ fn identity(id: &PackageId) -> Result<PackageIdentity, EngineError> {
     Ok(PackageIdentity::new(name, version))
 }
 
-/// Build the prospective migrated state (§20.1 order) and verify reversible
-/// transforms, returning the addressed rows to stage.
+/// Build the prospective migrated state in the §20.1 order — compatible copy and
+/// local `$from`/`$as` mappings, then the package-level `$migrations` program for
+/// the active source version — verify reversible transforms, and return the
+/// addressed rows to stage. `active_source` is the exact `major.minor.patch` of
+/// the currently active package; the program keyed to it (if any) runs over `.`
+/// (the prospective target) with `$old` bound to the read-only source state.
+#[allow(clippy::too_many_arguments)]
 fn build_migrated<G: crate::generator::Generators>(
     old_compiled: &Compiled,
+    old_schema: Schema<'_>,
     old_state: &StateSection,
+    active_source: &str,
     target: &Compilation,
     plan: &MigrationPlan,
     generator: &mut G,
-    now: liasse_value::Timestamp,
+    now: Timestamp,
 ) -> Result<BTreeMap<RowAddress, FieldMap>, Rejection> {
     let schema = Schema::new(&target.model);
+    // §16.1/§20.2: the migration transform scope resolves the built-in codec
+    // namespaces (`base64`/`hex`/`string.bytes`), so `base64.encode(string.bytes(.))`
+    // and its inverse type-check and evaluate. They are seeded like the built-in
+    // cose contract, independent of the package's own `$requires`.
+    let codec = HostBinding::codecs();
+    let codec_sigs = codec.expr_signatures();
+    // §20.1: `$old` is the complete read-only source state, materialized under the
+    // source (old) model and bound as the `$old` structural for the program.
+    let old_working = old_state
+        .working(old_schema)
+        .map_err(|error| Rejection::new(RejectionReason::Malformed, format!("source state: {error}")))?;
+    let old_root = materialize_all(old_schema, &old_working);
+    let old_root_ty = ExprType::Row(old_schema.root_row_type());
     let ctx = EvalCtx {
         schema,
         compiled: &target.compiled,
@@ -189,10 +233,11 @@ fn build_migrated<G: crate::generator::Generators>(
         // participate in state transforms, so the migrated-state context owns no
         // keyring index (§20.1).
         keyrings: &[],
-        // A migration transform runs with no actor (§11.1).
-        context: BTreeMap::new(),
-        // A migration transform is a pure expression; it resolves no host call.
-        hosts: crate::host::HostDispatch::none(now),
+        // §20.1: `$old` is the read-only source state the program reads.
+        context: BTreeMap::from([("old".to_owned(), Cell::Row(Box::new(old_root)))]),
+        // §16.1/§20.2: resolve the built-in codec namespaces so a `$as`/`$back`
+        // or program transform may call `base64.encode`/`string.bytes`.
+        hosts: HostDispatch::new(&codec, &[], now),
         // A migration builds the target instance's own rows; no installed-module
         // aggregate participates in a state transform.
         modules: None,
@@ -202,6 +247,8 @@ fn build_migrated<G: crate::generator::Generators>(
     let mut prospective = Prospective::empty();
     let mut touched = Vec::new();
 
+    // §20.1 order (1/2): the compatible same-identity copy and the local `$from`
+    // field mappings (with their `$as` transforms), in declaration order.
     for collection in &target.compiled.collections {
         let migration = plan.collections.get(&collection.name);
         let source_name = migration
@@ -217,7 +264,8 @@ fn build_migrated<G: crate::generator::Generators>(
         };
         let old_collection = old_compiled.collection(&source_name);
         for old_row in old_rows {
-            let mut fields = map_row(collection, migration, old_row, old_collection, &ctx, &mut sources, &root_ty)?;
+            let mut fields =
+                map_row(collection, migration, old_row, old_collection, &ctx, &mut sources, &root_ty, &codec_sigs)?;
             rules::apply_defaults(collection, &mut fields, &ctx, &prospective)?;
             rules::normalize_all(collection, &mut fields, &ctx, &prospective)?;
             let address = key_address(schema, collection, &fields)?;
@@ -230,11 +278,143 @@ fn build_migrated<G: crate::generator::Generators>(
         }
     }
 
-    rules::finalize(&target.compiled, &ctx, &prospective, &touched)?;
-    Ok(touched
+    // §20.1 order (3): the selected package-level `$migrations` program, in array
+    // order, over the prospective target with `$old` bound. Only the program keyed
+    // to the exact active source version runs (§20.1); a byte-identical replay of a
+    // higher version finds no program and leaves the compatible copy in place.
+    if let Some(statements) = target.model.migrations().program(active_source) {
+        run_program(&target.compiled, statements, &old_root_ty, &root_ty, &codec_sigs, &ctx, &mut prospective, &mut touched)?;
+    }
+
+    // §20.1 final check: the complete prospective target is checked under ordinary
+    // keys, refs, uniqueness, and checks. Every migrated row is the state to admit,
+    // so coerce ref-typed values to typed refs (a program's literal key becomes a
+    // resolvable ref), reject any required field a migration left unpopulated, then
+    // run the ordinary rule pipeline over the whole result.
+    let addresses: Vec<RowAddress> = prospective.working().keys().cloned().collect();
+    for address in &addresses {
+        coerce_and_require(&target.compiled, &mut prospective, address)?;
+    }
+    rules::finalize(&target.compiled, &ctx, &prospective, &addresses)?;
+    Ok(addresses
         .into_iter()
         .filter_map(|address| prospective.get(&address).map(|fields| (address.clone(), fields.clone())))
         .collect())
+}
+
+/// Materialize the whole source root (§20.1 `$old`): every top-level collection
+/// with its stored rows, non-temporal (a migration source is read whole).
+fn materialize_all(schema: Schema<'_>, working: &BTreeMap<RowAddress, FieldMap>) -> Row {
+    let keep = |_: &str, _: &FieldMap| true;
+    let interval = |_: &str, _: &FieldMap| None;
+    let temporal = Temporal { keep: &keep, interval: &interval };
+    materialize::materialize_root_filtered(schema, working, &temporal)
+}
+
+/// Run the package-level `$migrations` program (§20.1) as a root mutation over the
+/// prospective target, with `$old` (the source state) and the built-in codec
+/// namespaces in scope. Its writes accumulate into `prospective`/`touched`; a
+/// failing statement rejects the whole atomic program (§20.1).
+#[allow(clippy::too_many_arguments)]
+fn run_program(
+    target: &Compiled,
+    statements: &[String],
+    old_root_ty: &ExprType,
+    root_ty: &ExprType,
+    codec_sigs: &HostSignatures,
+    ctx: &EvalCtx<'_>,
+    prospective: &mut Prospective,
+    touched: &mut Vec<RowAddress>,
+) -> Result<(), Rejection> {
+    let mut sources = SourceMap::new();
+    let mut program = Vec::with_capacity(statements.len());
+    for text in statements {
+        let src = sources.add_label("migration", text.clone());
+        let parsed = parse_expression(src, text).map_err(|d| {
+            Rejection::new(RejectionReason::Malformed, format!("migration statement: {}", d.render(&sources)))
+        })?;
+        program.push(CompiledStmt { stmt: parsed.statement, source: src });
+    }
+    // A root migration program: `.` and `/` are the target root; `$old` is the
+    // read-only source root; the codec namespaces are resolvable (§16.1).
+    let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone())
+        .with_structural("old", old_root_ty.clone())
+        .with_host_ops(codec_sigs.clone());
+    let mutation = CompiledMutation {
+        name: "$migrations".to_owned(),
+        path: Vec::new(),
+        receiver_is_root: true,
+        params: Vec::new(),
+        scope,
+        program,
+        context_structurals: Vec::new(),
+    };
+    let mut interp = Interp {
+        compiled: target,
+        ctx,
+        prospective,
+        mutation: &mutation,
+        receiver: None,
+        touched: Vec::new(),
+        ret: None,
+        erase_result: None,
+        locals: BTreeMap::new(),
+        depth: 0,
+    };
+    interp.run()?;
+    touched.append(&mut interp.touched);
+    Ok(())
+}
+
+/// Coerce a migrated row for the §20.1 final check and enforce population: a
+/// ref-typed field carrying a scalar key (a program's literal `team: "ghost"`) is
+/// decoded to a typed ref so the refs check resolves it; a required field the
+/// migration left unpopulated is a §5.1/§20.1 state-population gap and rejects.
+fn coerce_and_require(
+    compiled: &Compiled,
+    prospective: &mut Prospective,
+    address: &RowAddress,
+) -> Result<(), Rejection> {
+    let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
+    let Some(collection) = compiled.collection_at(&decl) else { return Ok(()) };
+    let Some(mut fields) = prospective.get(address).cloned() else { return Ok(()) };
+    let mut changed = false;
+    for field in &collection.fields {
+        let value = fields.get(&field.name);
+        if field.reference.is_some() {
+            // A ref value produced as a plain scalar key is decoded to a typed
+            // ref so the §5.6/§20.1 refs check resolves (or rejects) it. A
+            // required-but-absent ref is left for the refs check to report.
+            if let Some(value) = value
+                && !matches!(value, Value::None | Value::Ref(_))
+            {
+                let coerced = field.ty.decode(&value.to_wire()).map_err(|error| {
+                    Rejection::new(RejectionReason::TypeError, format!("migrated ref `{}`: {error}", field.name))
+                        .at(address.render())
+                })?;
+                fields.insert(field.name.clone(), coerced);
+                changed = true;
+            }
+            continue;
+        }
+        if is_required(&field.ty) && matches!(value, None | Some(Value::None)) {
+            return Err(Rejection::new(
+                RejectionReason::Check,
+                format!("migration left required field `{}` unpopulated", field.name),
+            )
+            .at(address.render()));
+        }
+    }
+    if changed {
+        prospective.replace(address, fields);
+    }
+    Ok(())
+}
+
+/// Whether a migrated field must carry a value: a non-optional, non-set scalar or
+/// struct (§5.1). An optional field may stay `none`; a set defaults to empty.
+fn is_required(ty: &Type) -> bool {
+    !matches!(ty, Type::Optional(_) | Type::Set(_))
 }
 
 /// Build the downgrade migration plan (§20.2): the older target's own declared
@@ -305,7 +485,10 @@ fn downgrade_representable(
 }
 
 /// Map one source row to the target row (§20.1): the compatible same-name copy,
-/// then each declared local `$from` mapping with its optional `$as` transform.
+/// then each declared local `$from` mapping with its optional `$as` transform. A
+/// `$from` naming a field the source collection does not declare rejects — the
+/// mapping names no source (§20.1), a confusable near-miss included.
+#[allow(clippy::too_many_arguments)]
 fn map_row(
     collection: &CompiledCollection,
     migration: Option<&CollectionMigration>,
@@ -314,20 +497,36 @@ fn map_row(
     ctx: &EvalCtx<'_>,
     sources: &mut SourceMap,
     root_ty: &ExprType,
+    codec_sigs: &HostSignatures,
 ) -> Result<FieldMap, Rejection> {
     let mut fields = FieldMap::new();
     for field in &collection.fields {
         let mapping = migration.and_then(|m| m.fields.get(&field.name));
         if let Some(mapping) = mapping {
+            // §20.1: a `$from` must name an existing source field. A name that is
+            // not a declared field of the source collection (a Unicode confusable,
+            // a typo) resolves to no source and rejects — it does not silently
+            // leave the target field unpopulated.
+            if let Some(old_collection) = old_collection
+                && old_collection.field(&mapping.from).is_none()
+            {
+                return Err(Rejection::new(
+                    RejectionReason::Malformed,
+                    format!(
+                        "migration `$from: \"{}\"` for `{}` names no field of source collection `{}`",
+                        mapping.from, field.name, old_collection.name
+                    ),
+                ));
+            }
             let Some(source) = old_row.get(&mapping.from) else { continue };
             let value = match &mapping.transform {
                 Some(text) => {
                     let old_ty = old_collection
                         .and_then(|c| c.field(&mapping.from))
-                        .map_or(liasse_value::Type::Json, |f| f.ty.clone());
-                    let transformed = transform(text, source, old_ty.clone(), ctx, sources, root_ty)?;
+                        .map_or(Type::Json, |f| f.ty.clone());
+                    let transformed = transform(text, source, old_ty.clone(), ctx, sources, root_ty, codec_sigs)?;
                     if let Some(back) = &mapping.back {
-                        verify_reversible(back, source, &transformed, &field.ty, ctx, sources, root_ty)?;
+                        verify_reversible(back, source, &transformed, &field.ty, ctx, sources, root_ty, codec_sigs)?;
                     }
                     transformed
                 }
@@ -346,27 +545,30 @@ fn map_row(
 fn transform(
     text: &str,
     old_value: &Value,
-    old_ty: liasse_value::Type,
+    old_ty: Type,
     ctx: &EvalCtx<'_>,
     sources: &mut SourceMap,
     root_ty: &ExprType,
+    codec_sigs: &HostSignatures,
 ) -> Result<Value, Rejection> {
-    let typed = compile(text, old_ty, ctx, sources, root_ty)?;
+    let typed = compile(text, old_ty, sources, root_ty, codec_sigs)?;
     let cell = ctx.eval(&Prospective::empty(), &typed, &Cell::Scalar(old_value.clone()))?;
     Ok(scalar(cell))
 }
 
 /// Verify a reversible transform round trip (§20.2): `$back($as(x)) == x`.
+#[allow(clippy::too_many_arguments)]
 fn verify_reversible(
     back: &str,
     original: &Value,
     transformed: &Value,
-    target_ty: &liasse_value::Type,
+    target_ty: &Type,
     ctx: &EvalCtx<'_>,
     sources: &mut SourceMap,
     root_ty: &ExprType,
+    codec_sigs: &HostSignatures,
 ) -> Result<(), Rejection> {
-    let restored = transform(back, transformed, target_ty.clone(), ctx, sources, root_ty)?;
+    let restored = transform(back, transformed, target_ty.clone(), ctx, sources, root_ty, codec_sigs)?;
     if restored == *original {
         Ok(())
     } else {
@@ -377,19 +579,20 @@ fn verify_reversible(
     }
 }
 
-/// Type-check a transform expression whose `.` is a scalar of `dot_ty`.
+/// Type-check a transform expression whose `.` is a scalar of `dot_ty`, resolving
+/// the built-in codec namespaces (§16.1) so `base64.encode`/`string.bytes` type.
 fn compile(
     text: &str,
-    dot_ty: liasse_value::Type,
-    _ctx: &EvalCtx<'_>,
+    dot_ty: Type,
     sources: &mut SourceMap,
     root_ty: &ExprType,
+    codec_sigs: &HostSignatures,
 ) -> Result<TypedExpr, Rejection> {
     let src = sources.add_label("migration", text.to_owned());
     let parsed = parse_expression(src, text).map_err(|d| {
         Rejection::new(RejectionReason::Malformed, format!("migration transform: {}", d.render(sources)))
     })?;
-    let scope = RuntimeScope::new(ExprType::scalar(dot_ty), root_ty.clone());
+    let scope = RuntimeScope::new(ExprType::scalar(dot_ty), root_ty.clone()).with_host_ops(codec_sigs.clone());
     check_statement(&scope, src, &parsed).map_err(|d| {
         Rejection::new(RejectionReason::TypeError, format!("migration transform: {}", d.render(sources)))
     })

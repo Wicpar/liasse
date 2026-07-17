@@ -56,6 +56,7 @@ mod rawzip;
 mod router;
 mod runtime;
 mod shape;
+mod surface_params;
 mod wire;
 
 use liasse_ident::InstanceId;
@@ -600,6 +601,10 @@ pub(super) fn prepared_definition(
 ) -> Option<String> {
     let mut definition = package.clone();
     inject_synthetic_views(&mut definition, plan);
+    // §10.1: reconstruct the `$params` a parameterized surface `$view` needs so
+    // the runtime compiles and serves it, rather than dropping the surface view
+    // (SPEC-ISSUES item 10: surface-view parameter inference is undefined).
+    surface_params::inject(&mut definition);
     if let Some(model) = definition.get_mut("$model").and_then(serde_json::Value::as_object_mut) {
         lift.inject(model);
     }

@@ -48,6 +48,54 @@ fn migration_program_loads() {
     built.expect_ok();
 }
 
+/// §20.1/§4 — `$migrations` is a model-root declaration: placed inside `$model`
+/// (a sibling of the collections) it loads, rather than being rejected as an
+/// unknown reserved member.
+#[test]
+fn migration_program_inside_model_loads() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.mig@2.0.0",
+            "$model": {
+                "people": { "$key": "id", "id": "text", "name": "text" },
+                "$migrations": { "1.4.0": [".people = $old.users { id, name: string.trim(.name) }"] }
+            }
+        }"#,
+    );
+    built.expect_ok();
+}
+
+/// §20.1 — a migration statement that writes the read-only `$old` source state is
+/// a definition-only defect, rejected before activation.
+#[test]
+fn migration_writing_old_state_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.mig@2.0.0",
+            "$model": {
+                "people": { "$key": "id", "id": "text", "name": "text" },
+                "$migrations": { "1.0.0": ["$old.users[\"u1\"].name = \"tampered\"", ".people = $old.users { id, name }"] }
+            }
+        }"#,
+    );
+    assert!(built.has_code("M-MIGRATE"));
+    assert!(built.has_hint());
+}
+
+/// §20.1 — a migration program "MUST use deterministic pure functions", so a
+/// statement calling the non-deterministic `uuid()` is rejected before activation.
+#[test]
+fn migration_nondeterministic_call_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.mig@2.0.0",
+            "$model": {
+                "rows": { "$key": "id", "id": "text", "token": "text" },
+                "$migrations": { "1.0.0": [".rows = $old.rows { id, token: uuid() }"] }
+            }
+        }"#,
+    );
+    assert!(built.has_code("M-MIGRATE"));
+    assert!(built.has_hint());
+}
+
 /// §20.1 — a migration key that is not an exact version is rejected.
 #[test]
 fn migration_bad_version_key_rejected() {

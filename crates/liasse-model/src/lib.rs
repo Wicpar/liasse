@@ -85,6 +85,7 @@ pub use config::ConfigSchema;
 pub use expose::{ExposedInterface, ExposedMut};
 pub use header::{Header, Kind};
 pub use host::HostDescriptors;
+pub use migration::Migrations;
 pub use model::Model;
 pub use mutation::Mutation;
 pub use names::{DeclName, PackageId, PackageName, Version};

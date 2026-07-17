@@ -77,25 +77,29 @@ pub const SKIP: &[(&str, &str)] = &[
     // The `authenticate` step drives through `SurfaceHost::authenticate`; the
     // residual case fails later — its `watch`/`call` name a multiplexed `context`
     // (§11.8) the adapter does not yet thread onto the surface watch/call.
-    // --- §18 blob steps drive the composed blob host, but these do not yet pass ---
-    // The blob-parameter upload (`blob_put`), fetch (`blob_get`), and connector
-    // fault-injection (`connector_set`) now run against a real §18 `BlobHost`
-    // composed from the case's `hosts.connectors` + `$data` stores. The residual
-    // debt below is a genuine seam, not a missing driver: a §18.5 placement
-    // observation (`.file.$satisfied`/`.file.$stored`) the runtime does not track on
-    // a surface-bound descriptor; a declared descriptor member (`$name`, a verifying
-    // `claim`) the honest `call_with_blob` blob parameter cannot bind into the call;
-    // a role-scoped §18.8 fetch visibility the digest-keyed host does not resolve; or
-    // a `.liasse` archive step the adapter does not link.
-    ("18-blobs/accepted-upload-commits-and-verifies", "§18.5 placement observation (`.file.$satisfied`/`$stored`) not tracked on a surface-bound blob descriptor"),
-    ("18-blobs/all-branch-verifies-every-copy-at-admission", "§18.5 placement observation not tracked on a surface-bound blob descriptor"),
-    ("18-blobs/disabled-store-excluded-from-placement", "§18.5 placement observation not tracked on a surface-bound blob descriptor"),
+    // --- §18 blob steps drive the composed blob host end to end ---
+    // The blob-parameter upload (`blob_put`, now authenticating under the step's
+    // role selection), fetch (`blob_get`, gated through the caller's surface
+    // projection via `blob_get_projected`), and connector fault-injection
+    // (`connector_set`) run against a real §18 `BlobHost` composed from the case's
+    // `hosts.connectors` + `$data` stores; the parameterized role/surface `$view`
+    // a fetch resolves through is served by reconstructing its `$params`
+    // (adapter/surface_params.rs). The residuals below are genuine
+    // runtime/model/expression seams, not driving gaps:
+    //
+    // §18.5 placement descriptor members (`.file.$satisfied`/`.file.$stored`/
+    // `.file.$surplus`) are not implemented in the expression layer — liasse-expr
+    // and the model recognize only `.$sha512`/`.$bytes`/`.$media`/`.$name`
+    // (§18.1). A mutation return reading a placement member is dropped, so the
+    // upload commits but returns no value; a view reading one does not type-check,
+    // so its package does not load. Tracked as a runtime/expr seam per case below.
+    ("18-blobs/accepted-upload-commits-and-verifies", "§18.5 placement descriptor member `.file.$satisfied`/`.file.$stored` is unimplemented in the expression layer (liasse-expr/model know only `.$sha512`/`.$bytes`/`.$media`/`.$name`), so the mutation return is dropped and no value is observed"),
+    ("18-blobs/all-branch-verifies-every-copy-at-admission", "§18.5 placement descriptor member `.file.$satisfied`/`.file.$stored` unimplemented in the expression layer, so the mutation return is dropped and no value is observed"),
+    ("18-blobs/disabled-store-excluded-from-placement", "§18.5 placement descriptor member `.file.$satisfied`/`.file.$stored` unimplemented in the expression layer, so the mutation return is dropped and no value is observed"),
     ("18-blobs/same-content-different-metadata-distinct-descriptors", "a declared `$name` must bind into the mutation call, which the honest `call_with_blob` blob parameter drops"),
     ("18-blobs/descriptor-bytes-encoding-unspecified", "a verifying client-declared descriptor must bind into the mutation call, which the honest-only blob parameter does not expose"),
-    ("18-blobs/fetch-reevaluates-revoked-membership-denied", "role-scoped blob surface authorization / §18.8 fetch visibility not resolved (denied)"),
-    ("18-blobs/known-hash-without-visibility-no-fetch", "role-scoped §18.8 fetch visibility over the surface projection not resolved (denied)"),
-    ("23-host-contract/connector-failure-preserves-committed-state", "§18.5 placement observation not tracked on a surface-bound blob descriptor"),
-    ("23-host-contract/connector-tampered-read-refetched-from-verified-holder", "role-scoped §18.8 fetch / §18.5 placement observation not resolved on a surface-bound descriptor"),
+    ("23-host-contract/connector-failure-preserves-committed-state", "§18.5 placement descriptor member `.file.$satisfied` unimplemented in the expression layer, so the step-1 mutation return is dropped and no value is observed"),
+    ("23-host-contract/connector-tampered-read-refetched-from-verified-holder", "§18.5 placement descriptor member `.file.$satisfied` unimplemented in the expression layer, so the step-1 mutation return is dropped and no value is observed"),
     // --- `budget_set` step ---
     ("23-host-contract/budget-backpressure-or-reject-choice-unspecified", "`budget_set` step not driven this phase"),
     ("23-host-contract/budget-exhaustion-never-partial-transition", "`budget_set` step not driven this phase"),
@@ -103,7 +107,7 @@ pub const SKIP: &[(&str, &str)] = &[
     // `liasse-artifact` archive layer — adapter/artifacts.rs — so every
     // 04-package-structure case passes.)
     // --- `connector_set` drives §18.12 fault injection; this residual is a seam ---
-    ("18-blobs/any-branch-selects-first-fulfillable", "§18.5 placement observation not tracked on a surface-bound blob descriptor"),
+    ("18-blobs/any-branch-selects-first-fulfillable", "§18.5 placement descriptor member `.file.$satisfied`/`.file.$stored` unimplemented in the expression layer, so the mutation return is dropped and no value is observed"),
     // --- `erase` step ---
     ("annex-d-identity/erase-removes-live-row-and-rechecksums-history", "`erase` step not driven this phase"),
     ("annex-d-identity/erasure-extract-replay-foreign-instance-rejected", "`erase` step not driven this phase"),
@@ -135,39 +139,12 @@ pub const SKIP: &[(&str, &str)] = &[
     // child-* cases below).
     ("19-history-artifacts/merge-competing-module-mounts-conflict", "§13 the case mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects, so mount competition never reaches the merge"),
     // --- §20 `host_load` / migration ---
-    // `host_load` now drives `Engine::update` end to end (adapter/runtime.rs
-    // `apply_host_load`): the compatible field-level `$from`/`$as`/`$back` path
-    // commits, a boundary narrowing rejects, and a downgrade via inverse commits, so
-    // most §20 cases pass. Each residual below is a genuine runtime/model seam — the
-    // observed outcome is the runtime's real update result, not a driving gap.
-    //
-    // §20.1 package-level `$migrations` program (splits/merges reading `$old`): the
-    // model rejects `$migrations` as an unknown reserved shape member (M-RESERVED),
-    // so `Engine::update` cannot compile the target and `host_load` observes
-    // `invalid` (for a case expecting `rejected`, the same compile failure preempts
-    // the admission check). The two-model program runtime is documented as unlanded
-    // in migrate.rs.
-    ("20-evolution-migrations/empty-source-collection-migrates-to-empty", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the update target fails to compile (`invalid`) — a runtime/model seam"),
-    ("20-evolution-migrations/replay-identical-version-update-unchanged", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the update target fails to compile (`invalid`) — a runtime/model seam"),
-    ("20-evolution-migrations/migration-program-splits-collection", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the update target fails to compile (`invalid`) — a runtime/model seam"),
-    ("20-evolution-migrations/migration-order-from-before-program", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the update target fails to compile (`invalid`) — a runtime/model seam"),
-    ("20-evolution-migrations/migration-program-key-collision-rejected", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the target fails to compile (`invalid`) before the admission `rejected` — a runtime/model seam"),
-    ("20-evolution-migrations/migration-program-atomicity-partial-failure-rejected", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the target fails to compile (`invalid`) before the admission `rejected` — a runtime/model seam"),
-    ("20-evolution-migrations/migrated-state-dangling-ref-rejected", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the target fails to compile (`invalid`) before the ref admission `rejected` — a runtime/model seam"),
-    ("20-evolution-migrations/missing-migration-for-active-source-version-rejected", "§20.1 package-level `$migrations` program unlanded: the model rejects `$migrations` (M-RESERVED), so the target fails to compile (`invalid`) before the missing-migration `rejected` — a runtime/model seam"),
-    //
-    // §20.2 reversible transform: the migration transform eval scope
-    // (migrate.rs `HostDispatch::none`) resolves no `base64.encode`/`base64.decode`/
-    // `string.bytes`/`string.from_bytes`, so the `$as`/`$back` expression fails
-    // type-check (unknown-function E-EXPR) and the migration is `rejected`.
-    ("20-evolution-migrations/reversible-transform-roundtrip-commits", "§20.2 the migration transform scope resolves no `base64`/`string.bytes` function (unknown-function E-EXPR), so the `$as` transform is `rejected` — a runtime seam"),
-    ("20-evolution-migrations/downgrade-via-inverse-restores-value", "§20.2 the migration transform scope resolves no `base64`/`string.bytes` function (unknown-function E-EXPR), so the step-0 upgrade `$as` is `rejected` — a runtime seam"),
-    ("20-evolution-migrations/downgrade-preserves-history-order", "§20.2 the step-2 upgrade `$as` is `rejected` (no `base64`/`string.bytes` in the migration scope, unknown-function E-EXPR), reached after the export/inspect setup drives — a runtime seam"),
-    //
-    // §20.1 the runtime silently drops a `$from` naming a nonexistent source field
-    // instead of rejecting, so the migration commits (`ok`) with the target field
-    // unpopulated — a runtime seam (the case expects `rejected`).
-    ("20-evolution-migrations/confusable-from-source-name-nonexistent-rejected", "§20.1 the runtime silently skips a `$from` naming a nonexistent source field, so the migration commits (`ok`) with the field unpopulated instead of rejecting — a runtime seam"),
+    // `host_load` drives `Engine::update` end to end (adapter/runtime.rs
+    // `apply_host_load`). The §20.1 package-level `$migrations` program, the §20.2
+    // reversible `$as`/`$back` transforms, and the `$from` nonexistent-source check
+    // now land in the runtime, so those cases pass (their ledger entries were
+    // pruned as stale). The single residual below is a corpus-vocabulary
+    // discrepancy, not an implementation gap.
     //
     // CORPUS SUSPECT (§20.3 / Annex E.9 outcome vocabulary): `Engine::update`
     // returns `UpdateError::Rejected` (RejectionReason::Compatibility) for a boundary
@@ -304,17 +281,21 @@ pub const SKIP: &[(&str, &str)] = &[
     // view seam, not a §16 wiring gap.
     ("16-host-namespaces/pinned-descriptor-drift-fails-reopen", "root-scalar host-call view yields no row (runtime materializes no top-level scalar view; a plain `.n` view is empty too), so the step-0 watch diverges before `reopen`"),
     ("16-host-namespaces/required-namespace-removed-fails-reopen", "root-scalar host-call view yields no row (runtime materializes no top-level scalar view), so the step-0 watch diverges before `reopen`"),
-    ("18-blobs/all-holders-corrupt-fetch-outcome-unspecified", "package does not load yet (upstream compile/model gap)"),
-    ("18-blobs/billing-sum-over-stored-descriptors", "package does not load yet (upstream compile/model gap)"),
-    ("18-blobs/corrupt-copy-demoted-and-repaired", "package does not load yet (upstream compile/model gap)"),
-    ("18-blobs/descriptor-metadata-readable-in-view", "package does not load yet (upstream compile/model gap)"),
-    ("18-blobs/fetch-returns-exact-bytes", "package does not load yet (upstream compile/model gap)"),
-    ("18-blobs/live-descriptor-pins-content-across-restart", "package does not load yet (upstream compile/model gap)"),
-    ("18-blobs/metadata-only-projection-grants-no-fetch", "package does not load yet (upstream compile/model gap)"),
-    ("18-blobs/placement-observations-single-store", "package does not load yet (upstream compile/model gap)"),
-    ("18-blobs/repeated-store-identity-deduplicated", "package does not load yet (upstream compile/model gap)"),
-    ("18-blobs/serve-order-defaults-to-flattened-placement", "package does not load yet (upstream compile/model gap)"),
-    ("18-blobs/surplus-copy-after-policy-shrinks", "package does not load yet (upstream compile/model gap)"),
+    // §18 blob views: a parameterized surface/top-level `$view` a case reads now
+    // compiles and serves (adapter/surface_params.rs reconstructs its `$params`),
+    // so `fetch-returns-exact-bytes`/`serve-order-defaults-to-flattened-placement`
+    // pass. The residuals below are the §18.5 placement-member seam (the same
+    // `.file.$stored`/`.file.$satisfied`/`.file.$surplus` the expression layer
+    // does not implement), a keyed-selection surface-view result shape, or a
+    // restart re-composition seam.
+    ("18-blobs/billing-sum-over-stored-descriptors", "§18.5 placement member `.file.$stored` is unimplemented in the expression layer, so the sum-over-stored view does not type-check and the package does not load"),
+    ("18-blobs/corrupt-copy-demoted-and-repaired", "§18.5 placement member `.file.$stored`/`.file.$satisfied` unimplemented in the expression layer, so the placement view does not type-check and the package does not load (also `run_reconciler`, unlanded)"),
+    ("18-blobs/descriptor-metadata-readable-in-view", "§12.2 keyed-selection surface view (`.docs[@id] { … }`) delivers a row array, but the case expects a single object — a runtime/corpus view-shape tension, not a driving gap"),
+    ("18-blobs/live-descriptor-pins-content-across-restart", "§22 restart drops the composed blob host (its in-memory connectors/committed bytes are not durable), so the post-restart `blob_get` finds no blob host — a blob-persistence-across-restart seam"),
+    ("18-blobs/metadata-only-projection-grants-no-fetch", "§12.2 keyed-selection surface view delivers a row array, but the case's metadata watch expects a single object — a runtime/corpus view-shape tension reached before the `blob_get` gate"),
+    ("18-blobs/placement-observations-single-store", "§18.5 placement members `.file.$stored`/`.file.$satisfied`/`.file.$surplus` unimplemented in the expression layer, so the placement view does not type-check and the package does not load"),
+    ("18-blobs/repeated-store-identity-deduplicated", "§18.5 placement member `.file.$stored` unimplemented in the expression layer, so the mutation return is dropped and no value is observed"),
+    ("18-blobs/surplus-copy-after-policy-shrinks", "§18.5 placement members `.file.$stored`/`.file.$satisfied`/`.file.$surplus` unimplemented in the expression layer, so the placement view does not type-check and the package does not load"),
     ("23-host-contract/rotation-provider-invalid-public-key-keeps-current-active", "package does not load yet (upstream compile/model gap)"),
     ("annex-d-identity/ref-wire-value-is-current-typed-key", "package does not load yet (upstream compile/model gap)"),
     ("w-worked-examples/w2-cross-account-session-revoke-has-no-owner-check", "package does not load yet (upstream compile/model gap)"),
