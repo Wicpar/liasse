@@ -382,6 +382,9 @@ impl CompiledSourceBucket {
             inputs.now,
             inputs.seed,
             Vec::new(),
+            // A source view / derived-row key reads stored collections directly and
+            // evaluates no temporal selector, so it needs no source-bucket horizon.
+            None,
             inputs.keyrings.to_vec(),
             // A source view / derived-row key reads stored collections, never a
             // blob placement member (§14.4–§14.6), so it carries no placement facts.
@@ -409,6 +412,69 @@ impl CompiledSourceBucket {
             }
         }
         Ok(())
+    }
+}
+
+/// A regenerable view of every source-backed bucket's full extant interval set
+/// (§14.2, §14.5).
+///
+/// A temporal selector reading an unbounded recurring bucket must generate the
+/// series far enough to cover its OWN bound (§14.5): the precomputed working set
+/// is generated only up to the request clock, so a future `.$at`/`.$between`
+/// would otherwise observe no period past `now`. This captures everything a
+/// materialization needs except the generation horizon, which the selector
+/// supplies through [`Self::extant_to`] — a past-or-present read keeps the clock
+/// horizon (behaviour unchanged), a future read extends it to the selector's own
+/// bound. It carries no horizon of its own, so it never enumerates an unbounded
+/// series outside a bounded selector (the case §14.5 rejects).
+#[derive(Clone)]
+pub(crate) struct SourceBucketHorizon<'a> {
+    buckets: &'a [CompiledSourceBucket],
+    base_root: Row,
+    params: BTreeMap<String, Cell>,
+    context: BTreeMap<String, Cell>,
+    now: Timestamp,
+    seed: u64,
+    keyrings: Vec<KeyringSnapshot>,
+}
+
+impl<'a> SourceBucketHorizon<'a> {
+    /// Capture the materialization context of `buckets` from `inputs`. Returns
+    /// `None` when there is no source-backed bucket, so a package without one
+    /// carries no horizon and a temporal selector regenerates nothing.
+    pub(crate) fn capture(
+        buckets: &'a [CompiledSourceBucket],
+        inputs: &BucketInputs<'_>,
+    ) -> Option<Self> {
+        if buckets.is_empty() {
+            return None;
+        }
+        Some(Self {
+            buckets,
+            base_root: inputs.base_root.clone(),
+            params: inputs.params.clone(),
+            context: inputs.context.clone(),
+            now: inputs.now,
+            seed: inputs.seed,
+            keyrings: inputs.keyrings.to_vec(),
+        })
+    }
+
+    /// The full extant interval set of every source-backed bucket, each generated
+    /// up to `horizon` (§14.2): the working set a temporal selector re-derives
+    /// activity over. `horizon` is driven by the selector's own bound (§14.5), so a
+    /// read past the clock still generates the periods that cover it, while a
+    /// bounded finite series is generated in full regardless of `horizon`.
+    pub(crate) fn extant_to(&self, horizon: Timestamp) -> Vec<Vec<Row>> {
+        let inputs = BucketInputs {
+            base_root: &self.base_root,
+            params: &self.params,
+            context: &self.context,
+            now: self.now,
+            seed: self.seed,
+            keyrings: &self.keyrings,
+        };
+        self.buckets.iter().map(|bucket| bucket.materialize(&inputs, horizon, false)).collect()
     }
 }
 

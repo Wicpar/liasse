@@ -91,6 +91,7 @@ impl<'a> EvalCtx<'a> {
             self.now,
             self.seed,
             self.temporal_index(prospective),
+            self.source_horizon(prospective, self.now),
             self.keyrings.to_vec(),
             self.placements.clone(),
             self.hosts,
@@ -102,7 +103,12 @@ impl<'a> EvalCtx<'a> {
     /// context so a folded expression resolves `$config` (§13.1) — and, harmlessly,
     /// `$actor`/`$session`, which no foldable expression can reference — while
     /// introducing no lexical local bindings.
-    fn fold_env(&self, base: Row, temporal: Vec<Vec<Row>>) -> RuntimeEnv<'a> {
+    fn fold_env(
+        &self,
+        base: Row,
+        temporal: Vec<Vec<Row>>,
+        source_horizon: Option<crate::source_bucket::SourceBucketHorizon<'a>>,
+    ) -> RuntimeEnv<'a> {
         RuntimeEnv::new(
             base,
             self.params.clone(),
@@ -111,6 +117,7 @@ impl<'a> EvalCtx<'a> {
             self.now,
             self.seed,
             temporal,
+            source_horizon,
             self.keyrings.to_vec(),
             self.placements.clone(),
             self.hosts,
@@ -170,7 +177,7 @@ impl<'a> EvalCtx<'a> {
             return base;
         }
         let temporal = self.temporal_index(prospective);
-        let env = self.fold_env(base.clone(), temporal);
+        let env = self.fold_env(base.clone(), temporal, self.source_horizon(prospective, self.now));
         fold_computed(&env, &self.compiled.root_computed, base)
     }
 
@@ -185,7 +192,7 @@ impl<'a> EvalCtx<'a> {
             return base;
         }
         let temporal = self.temporal_index(prospective);
-        let env = self.fold_env(base.clone(), temporal);
+        let env = self.fold_env(base.clone(), temporal, self.source_horizon(prospective, self.now));
         let cells: Vec<(String, Cell)> = base
             .cells()
             .map(|(name, cell)| match (cell, self.compiled.collection(name)) {
@@ -227,7 +234,7 @@ impl<'a> EvalCtx<'a> {
             return base;
         }
         let temporal = self.temporal_index(prospective);
-        let env = self.fold_env(base.clone(), temporal);
+        let env = self.fold_env(base.clone(), temporal, self.source_horizon(prospective, self.now));
         let cells: Vec<(String, Cell)> = base
             .cells()
             .map(|(name, cell)| match (cell, self.compiled.collection(name)) {
@@ -358,12 +365,13 @@ impl<'a> EvalCtx<'a> {
             return root;
         }
         let temporal = self.temporal_index(prospective);
+        let source_horizon = self.source_horizon(prospective, self.now);
         let mut pending: Vec<&crate::compiled::CompiledView> = self.compiled.views.iter().collect();
         loop {
             let mut progressed = false;
             let mut still = Vec::new();
             for view in pending {
-                let env = self.fold_env(root.clone(), temporal.clone());
+                let env = self.fold_env(root.clone(), temporal.clone(), source_horizon.clone());
                 let current = Cell::Row(Box::new(root.clone()));
                 match view.expr.evaluate(&env, &current) {
                     Ok(cell) => {
@@ -475,12 +483,18 @@ impl<'a> EvalCtx<'a> {
             now,
             self.seed,
             index,
+            self.source_horizon(prospective, now),
             self.keyrings.to_vec(),
             self.placements.clone(),
             self.hosts,
         )
     }
 
+    /// The full extant rows of every STORED bucketed collection (§14.2) at `now`.
+    /// Source-backed buckets are excluded: their extant set is regenerated on demand
+    /// from a [`SourceBucketHorizon`] at a horizon the temporal selector's own bound
+    /// drives (§14.5), so a future `.$at`/`.$between` still generates the periods
+    /// covering it rather than stopping at `now`.
     fn temporal_index_at(&self, prospective: &Prospective, now: Timestamp) -> Vec<Vec<Row>> {
         let keep = |name: &str, fields: &FieldMap| self.active_at(name, fields, now);
         let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
@@ -494,13 +508,24 @@ impl<'a> EvalCtx<'a> {
                 }
             }
         }
-        // §14.4–§14.6: a source-backed bucket's full extant interval set is the
-        // working set its `.$at`/`.$between` selector re-derives activity over.
-        if !self.compiled.source_buckets.is_empty() {
-            let base = self.expose_keyrings(self.base_root(prospective));
-            index.extend(self.source_bucket_extant(&base, now));
-        }
         index
+    }
+
+    /// The regenerable extant set of every source-backed bucket (§14.4–§14.6) at
+    /// clock `now`, which a temporal selector re-materializes at a horizon its own
+    /// bound drives (§14.5). `None` when the package declares no source-backed
+    /// bucket, so an ordinary package carries no horizon and pays nothing.
+    fn source_horizon(
+        &self,
+        prospective: &Prospective,
+        now: Timestamp,
+    ) -> Option<crate::source_bucket::SourceBucketHorizon<'a>> {
+        if self.compiled.source_buckets.is_empty() {
+            return None;
+        }
+        let base = self.expose_keyrings(self.base_root(prospective));
+        let inputs = self.bucket_inputs(&base, now);
+        crate::source_bucket::SourceBucketHorizon::capture(&self.compiled.source_buckets, &inputs)
     }
 
     /// Evaluate a typed expression with `current` as `.`, against the current

@@ -252,10 +252,11 @@ pub const SKIP: &[(&str, &str)] = &[
     // collection with no `expires`/bucket lower bound.
     ("11-auth-sessions/committed-request-final-after-revocation", "scoped-role session `revoke()` mutation not bound (denied)"),
     ("11-auth-sessions/session-not-yet-active-denied", "session bucket lower-bound activation not observed at boundary"),
-    ("14-buckets/between-window-spanning-rollover-returns-both-periods", "package does not load yet (upstream compile/model gap)"),
-    ("14-buckets/calendar-monthly-clamp-preserves-anchor", "package does not load yet (upstream compile/model gap)"),
+    // §14.5 bounded temporal read of an unbounded recurring source-backed bucket
+    // now generates the series to the selector's own bound, so `.$at`/`.$between`
+    // past the clock resolve; the rollover-at-boundary, future-spanning window, and
+    // calendar-monthly-clamp cases pass and were pruned from the ledger.
     ("14-buckets/dst-fall-back-ambiguous-earlier", "package does not load yet (upstream compile/model gap)"),
-    ("14-buckets/recurring-rollover-at-exact-boundary", "package does not load yet (upstream compile/model gap)"),
     // §16 registered host namespaces now resolve strictly (`Engine::load_with_hosts`,
     // adapter/namespaces.rs), so these packages load and a host call in a collection
     // view/default runs (`generated-default-fixed-and-recorded` passes). These three

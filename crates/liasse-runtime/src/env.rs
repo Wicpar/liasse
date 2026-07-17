@@ -20,6 +20,7 @@ use crate::generator::derive_uuid;
 use crate::host::HostDispatch;
 use crate::keyring_view::{snapshot_for, KeyringSnapshot};
 use crate::materialize::row_interval;
+use crate::source_bucket::SourceBucketHorizon;
 
 /// The engine's §18.5 logical placement ledger: the recorded placement facts of
 /// each committed blob, keyed by its canonical `$sha512` digest.
@@ -62,11 +63,20 @@ pub(crate) struct RuntimeEnv<'a> {
     structurals: BTreeMap<String, Cell>,
     now: Timestamp,
     seed: u64,
-    /// The full extant rows of each bucketed collection (§14.2), each carrying
-    /// its `$from`/`$until` interval cells. A temporal selector reads over the
-    /// full set so `.$all` and a back-dated `.$at` observe rows that have already
-    /// left their active interval.
+    /// The full extant rows of each STORED bucketed collection (§14.2), each
+    /// carrying its `$from`/`$until` interval cells. A temporal selector reads over
+    /// the full set so `.$all` and a back-dated `.$at` observe rows that have
+    /// already left their active interval. Source-backed buckets are NOT held here:
+    /// their extant set is regenerated on demand from [`Self::source_horizon`] at a
+    /// horizon the selector's own bound drives (§14.5), because an unbounded
+    /// recurring series past the clock is not materialized until a bounded selector
+    /// asks for it.
     temporal: Vec<Vec<Row>>,
+    /// The regenerable extant set of every source-backed bucket (§14.4–§14.6).
+    /// `None` when the package declares none. A temporal selector regenerates it up
+    /// to a horizon its bound supplies (§14.5); a bare/`.$all` read never reaches it
+    /// on an unbounded recurring bucket, which the checker rejects.
+    source_horizon: Option<SourceBucketHorizon<'a>>,
     /// The keyring version-view snapshots (§17.2) a keyring public selector
     /// resolves against. Each names the versions active (`.$current`) and
     /// accepted (`.$accepted`/`.$public`) at the read instant.
@@ -99,11 +109,38 @@ impl<'a> RuntimeEnv<'a> {
         now: Timestamp,
         seed: u64,
         temporal: Vec<Vec<Row>>,
+        source_horizon: Option<SourceBucketHorizon<'a>>,
         keyrings: Vec<KeyringSnapshot>,
         placements: BlobPlacements,
         hosts: HostDispatch<'a>,
     ) -> Self {
-        Self { root, params, bindings, structurals, now, seed, temporal, keyrings, placements, hosts }
+        Self {
+            root,
+            params,
+            bindings,
+            structurals,
+            now,
+            seed,
+            temporal,
+            source_horizon,
+            keyrings,
+            placements,
+            hosts,
+        }
+    }
+
+    /// The generation horizon a temporal selector drives (§14.5): the later of the
+    /// request clock and the selector's own explicit upper bound, so a past-or-
+    /// present read keeps the clock horizon (behaviour unchanged) and a future read
+    /// extends generation to cover its instant/window. `.$all` carries no bound and
+    /// stays at the clock — the checker forbids it over an unbounded recurring
+    /// bucket, so no unbounded enumeration escapes a bounded selector.
+    fn horizon_for(&self, query: &TemporalQuery) -> Timestamp {
+        match query {
+            TemporalQuery::All => self.now,
+            TemporalQuery::At(instant) => (*instant).max(self.now),
+            TemporalQuery::Between(_, end) => (*end).max(self.now),
+        }
     }
 
     /// The working set a temporal selector ranges over (§14.1). When `base` is
@@ -112,9 +149,14 @@ impl<'a> RuntimeEnv<'a> {
     /// from that collection's *full* extant set, so `.$all` and a back-dated
     /// `.$at` see inactive rows (§14.2). Otherwise (a filtered or projected base)
     /// the query ranges over `base` as given, using each row's carried interval.
-    fn working_set<'w>(&'w self, base: &'w [Row]) -> &'w [Row] {
+    ///
+    /// `source` is the freshly regenerated source-bucket extant set for this
+    /// query's horizon (§14.5); it is searched after the stored buckets so a
+    /// source-backed collection resolves against periods generated to cover the
+    /// selector's bound.
+    fn working_set<'w>(&'w self, base: &'w [Row], source: &'w [Vec<Row>]) -> &'w [Row] {
         let base_ids: BTreeSet<&RowId> = base.iter().map(Row::id).collect();
-        for extant in &self.temporal {
+        for extant in self.temporal.iter().chain(source.iter()) {
             let active: BTreeSet<&RowId> =
                 extant.iter().filter(|row| active_at(row, self.now)).map(Row::id).collect();
             if active == base_ids {
@@ -158,8 +200,16 @@ impl Environment for RuntimeEnv<'_> {
     /// `[from, until)` comes from its `$from`/`$until` interval cells; a row is
     /// selected by the half-open activity rule for the query.
     fn temporal(&self, base: &[Row], query: &TemporalQuery) -> Result<Vec<Row>, EvalError> {
+        // §14.5: regenerate the source-backed buckets' extant set up to the horizon
+        // this selector's own bound drives, so a read past the clock still generates
+        // the covering periods. Empty when the package has no source-backed bucket,
+        // leaving stored-bucket resolution exactly as before.
+        let source = match &self.source_horizon {
+            Some(horizon) => horizon.extant_to(self.horizon_for(query)),
+            None => Vec::new(),
+        };
         Ok(self
-            .working_set(base)
+            .working_set(base, &source)
             .iter()
             .filter(|row| selects(row, query))
             .cloned()

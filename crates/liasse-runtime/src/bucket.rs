@@ -156,6 +156,8 @@ fn eval_bound(
         now,
         0,
         Vec::new(),
+        // A bucket bound is a pure row expression; no source-backed bucket horizon.
+        None,
         Vec::new(),
         // A bucket bound is a pure expression (row fields and `now()`); it reads no
         // blob placement member and resolves no host call.
