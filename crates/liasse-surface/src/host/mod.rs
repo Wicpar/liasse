@@ -11,10 +11,16 @@
 mod barrier;
 mod call;
 mod components;
+mod correction;
+mod erasure;
 mod history;
 mod operator;
 
 pub use components::{HostComponentError, KeyringErrorOr, VerifyErrorOr};
+pub use correction::{
+    ChooseMap, ChooseSide, ConflictCoordinate, CorrectionError, CorrectionOutcome,
+};
+pub use erasure::EraseOutcome;
 
 use std::collections::BTreeMap;
 

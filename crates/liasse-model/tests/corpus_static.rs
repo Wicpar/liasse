@@ -34,18 +34,6 @@ use liasse_testkit::{Corpus, LoadedCase, Outcome, PackageSet, Suite};
 /// single-package model and that legitimately await a later phase. Each entry is
 /// `"<area>/<name>"` with a one-line reason. This list must only shrink.
 const SKIP: &[(&str, &str)] = &[
-    // --- Surface-inline mutation programs (documented surface seam) ---
-    // A program written directly in a surface `$mut` (not a `.name` reference) is
-    // accepted structurally today (crates/liasse-model/src/surface.rs). Checking
-    // its write target / actor scope needs it routed through the mutation phase.
-    (
-        "05-state-model/write-to-computed-value-invalid",
-        "write-target check inside a surface-inline mutation program (§5.2); surface seam",
-    ),
-    (
-        "10-interfaces-roles/public-surface-cannot-bind-actor",
-        "$actor-scope check inside a surface-inline mutation program (§10/§11); surface seam",
-    ),
     // --- §16 host-namespace / §9.2 provider+namespace resolution ---
     // The model's lib.rs documents host-namespace resolution as a CORE seam: the
     // expr registry carries only the attested core functions, and no host

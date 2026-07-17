@@ -86,7 +86,8 @@ pub use binding::{CallBinding, SurfaceBinding, ViewBinding};
 pub use clock::VirtualClock;
 pub use connection::{Connection, DEFAULT_CONTEXT};
 pub use host::{
-    AuthResult, HostComponentError, KeyringErrorOr, Subscription, SurfaceError, SurfaceHost,
+    AuthResult, ChooseMap, ChooseSide, ConflictCoordinate, CorrectionError, CorrectionOutcome,
+    EraseOutcome, HostComponentError, KeyringErrorOr, Subscription, SurfaceError, SurfaceHost,
     VerifyErrorOr,
 };
 pub use operation::{OperationKey, OperationLog, OperationStatus, RequestModel};
@@ -106,12 +107,12 @@ pub use liasse_expr::RowId;
 /// without a direct dependency edge on the runtime and value crates.
 pub use liasse_runtime::{
     AcceptedType, AdmittedBindings, Blob, BlobEngine, CommitSeq, ConflictKind, CopyState,
-    DeclaredDescriptor, DepSpec, Engine, FetchError, ImportError, ImportRelation, ImportReport,
-    InstallRequest, InterfaceRow, KeyState, KeyVersion, Keyring, KeyringError, KeyringPolicy,
-    MergeConflict, MergeOutcome, ModuleError, ModuleHost, ModuleSpace, Placement, Precision,
-    Rejection, ResponseValue, RotationMode, RotationOutcome, RotationSchedule, SeedMerge,
-    SessionToken, Store, StoreId, Timestamp, UpdateReport, UploadError, UseSpec, Value, VerifyError,
-    VersionId, ViewDelta, ViewResult, ViewRow,
+    DeclaredDescriptor, DeleteError, DepSpec, Engine, Erasure, Extract, FetchError, ImportError,
+    ImportRelation, ImportReport, InstallRequest, InterfaceRow, KeyState, KeyVersion, Keyring,
+    KeyringError, KeyringPolicy, MergeConflict, MergeOutcome, ModuleError, ModuleHost, ModuleSpace,
+    Occurrence, Placement, Precision, Rejection, ResponseValue, RotationMode, RotationOutcome,
+    RotationSchedule, SeedMerge, SessionToken, Store, StoreId, Timestamp, UpdateReport, UploadError,
+    UseSpec, Value, VerifyError, VersionId, ViewDelta, ViewResult, ViewRow,
 };
 
 /// Re-exported so a driver builds keyring providers, blob connectors, cose

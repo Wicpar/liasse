@@ -661,6 +661,7 @@ impl<S: InstanceStore> Engine<S> {
             touched: Vec::new(),
             ret: None,
             locals: BTreeMap::new(),
+            depth: 0,
         };
         if let Err(rejection) = interp.run() {
             return Ok(CallOutcome::Rejected(rejection));

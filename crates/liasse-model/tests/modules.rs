@@ -213,10 +213,11 @@ fn expose_well_formed_captured() {
     let model = built.expect_ok();
     let exposed = model.exposed_interfaces();
     assert_eq!(exposed.len(), 1, "one interface captured");
-    assert_eq!(exposed[0].name.as_str(), "feed");
-    assert!(exposed[0].view.is_some(), "the $view is captured for the runtime");
-    assert_eq!(exposed[0].muts.len(), 1);
-    assert_eq!(exposed[0].muts[0].name.as_str(), "post");
+    let feed = exposed.first().expect("one interface");
+    assert_eq!(feed.name.as_str(), "feed");
+    assert!(feed.view.is_some(), "the $view is captured for the runtime");
+    assert_eq!(feed.muts.len(), 1);
+    assert_eq!(feed.muts.first().expect("one mut").name.as_str(), "post");
 }
 
 /// §13.11 — a surface may bind an interface boundary member

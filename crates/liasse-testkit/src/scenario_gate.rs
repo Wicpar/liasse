@@ -269,7 +269,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // `$actor` view rendering, a scoped-role session mutation, or a session
     // collection with no `expires`/bucket lower bound.
     ("11-auth-sessions/committed-request-final-after-revocation", "scoped-role session `revoke()` mutation not bound (denied)"),
-    ("11-auth-sessions/internal-call-preserves-actor", "role-scoped `$actor` view not rendered (no view value)"),
     ("11-auth-sessions/session-not-yet-active-denied", "session bucket lower-bound activation not observed at boundary"),
     ("14-buckets/between-window-spanning-rollover-returns-both-periods", "package does not load yet (upstream compile/model gap)"),
     ("14-buckets/calendar-monthly-clamp-preserves-anchor", "package does not load yet (upstream compile/model gap)"),
@@ -318,7 +317,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // expects. Each is real conformance debt for the triage loop; none is edited away.
     // ========================================================================
     // --- fail:noval ---
-    ("08-mutations-validation/empty-args-call-forms-equivalent", "no value produced (unsupported call path)"),
     ("08-mutations-validation/inferred-param-target-normalization-applies", "no value produced (unsupported call path)"),
     ("15-meters/hypothetical-balance-accessor-with-time", "no value produced (unsupported call path)"),
     ("21-deletion-erasure/double-reinsert-second-finds-no-stub-rejects", "no value produced (unsupported call path)"),
@@ -337,8 +335,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- fail:outcome ---
     ("05-state-model/nested-initializer-failure-rejects-parent-insert", "outcome divergence: expected `ok` observed `rejected`"),
     ("06-expressions/row-mutation-receiver-duplicate-occurrences-reject", "outcome divergence: expected `ok` observed `rejected`"),
-    ("08-mutations-validation/internal-call-failure-rejects-caller-writes", "outcome divergence: expected `rejected` observed `ok`"),
-    ("08-mutations-validation/replacement-restrict-ref-rejects-transition", "outcome divergence: expected `rejected` observed `ok`"),
     ("10-interfaces-roles/deleted-scope-row-revokes-role", "outcome divergence: expected `ok` observed `denied`"),
     ("10-interfaces-roles/fixed-call-argument-not-overridable", "outcome divergence: expected `ok` observed `denied`"),
     ("10-interfaces-roles/membership-reevaluated-each-admission", "outcome divergence: expected `ok` observed `rejected`"),
@@ -356,10 +352,8 @@ pub const SKIP: &[(&str, &str)] = &[
     ("15-meters/pool-removal-preserves-recorded-funding", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/spend-at-pool-until-boundary-excluded", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/spend-update-failure-preserves-prior-allocation", "outcome divergence: expected `ok` observed `rejected`"),
-    ("21-deletion-erasure/collection-replacement-restrict-ref-rejects", "outcome divergence: expected `rejected` observed `ok`"),
     ("23-host-contract/restart-preserves-identity-values-and-view", "outcome divergence: expected `ok` observed `denied`"),
     // --- fail:valdiff ---
-    ("08-mutations-validation/replacement-validates-complete-collection", "value diverges from expectation"),
     // --- fail:viewdiff ---
     ("05-state-model/set-of-enum-reads-in-declaration-order", "view result diverges from expectation"),
     ("12-clients-live-views/temporal-observation-advances-live-view", "view result diverges from expectation"),

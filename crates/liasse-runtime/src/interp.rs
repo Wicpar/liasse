@@ -93,6 +93,11 @@ pub(crate) fn local_bindings(
     (types, cells)
 }
 
+/// The internal-call nesting bound (§8.11): a program calling another mutation
+/// recurses this interpreter, so a cyclic mutation graph is capped rather than
+/// overflowing the stack. Real packages nest only a handful of levels.
+const MAX_CALL_DEPTH: usize = 64;
+
 /// The mutation-program interpreter over one admission.
 pub(crate) struct Interp<'a> {
     pub(crate) compiled: &'a Compiled,
@@ -105,6 +110,10 @@ pub(crate) struct Interp<'a> {
     /// Lexical locals bound by `name = …` statements (§8.1), in declaration
     /// order, visible to later statements and to the `return`.
     pub(crate) locals: BTreeMap<String, LocalBind>,
+    /// The internal-call nesting depth (§8.11): `0` for the request's own
+    /// program, incremented for each `.mut()` call it makes, so recursion is
+    /// bounded by [`MAX_CALL_DEPTH`].
+    pub(crate) depth: usize,
 }
 
 impl<'a> Interp<'a> {
@@ -320,8 +329,16 @@ impl<'a> Interp<'a> {
         {
             return self.write_singleton_field(&field, &ty, value, source);
         }
+        // §8.7: `.coll = view` replaces a whole collection — the target names a
+        // collection rather than a row field. Diff the replacement view against the
+        // current collection, applying inserts/updates and deleting dropped keys
+        // through ordinary §21.1 planning.
+        if let Some(loc) = self.collection_ref(target, source)? {
+            return self.replace_collection(&loc, value, source);
+        }
         let Some((row, field)) = self.field_target(target, source)? else {
-            // A collection replacement is a documented CORE seam: it stages nothing.
+            // A target that is neither a row field nor a collection stages nothing
+            // (a documented seam).
             return Ok(());
         };
         let current = self.current()?;
@@ -649,6 +666,14 @@ impl<'a> Interp<'a> {
     fn exec_bare(&mut self, expr: &Expr, source: SourceId) -> Result<(), Rejection> {
         match &expr.kind {
             ExprKind::Call { callee, args } if is_assert(callee) => self.exec_assert(args, source),
+            // §8.11: a statement invoking a declared mutation (`.rename(…)`, or the
+            // bare shorthand `rename({ … })`) runs it inside the same atomic
+            // program. A callee that resolves no declared mutation (a bare
+            // host-namespace call, an unknown call) stays a documented seam.
+            ExprKind::Call { callee, args } => match self.internal_call_target(callee) {
+                Some(mutation) => self.exec_internal_call(mutation, args, source),
+                None => Ok(()),
+            },
             ExprKind::Binary { op: BinaryOp::Add, lhs, rhs } => self.exec_insert(lhs, rhs, source),
             ExprKind::Binary { op: BinaryOp::Sub, lhs, rhs } => self.exec_delete(lhs, rhs, source),
             // `-selection` — a prefix-minus delete of the rows a selector picks
@@ -656,9 +681,148 @@ impl<'a> Interp<'a> {
             // same §21.1 cascade planner as a keyed delete.
             ExprKind::Unary { op: UnaryOp::Neg, operand } => self.exec_delete_selection(operand, source),
             ExprKind::Block { base, members } => self.exec_patch(base, members, source),
-            // Internal mutation calls and other statement forms are CORE seams.
+            // Other statement forms are CORE seams.
             _ => Ok(()),
         }
+    }
+
+    /// The declared mutation an internal-call callee names (§8.11), if any: a
+    /// leading-dot `.name(…)` on the current receiver/root, or a bare `name(…)`
+    /// shorthand. A `namespace.fn(…)` host call (base is a named namespace, not
+    /// `.`) or an `assert` resolves no mutation and is left to its own path.
+    fn internal_call_target(&self, callee: &Expr) -> Option<&'a CompiledMutation> {
+        let name = match &callee.kind {
+            ExprKind::Field { base, member } if matches!(base.kind, ExprKind::Current) && !member.structural => {
+                &member.text
+            }
+            ExprKind::Name(id) => &id.text,
+            _ => return None,
+        };
+        self.compiled.mutation(name)
+    }
+
+    /// Run a declared mutation as an internal call (§8.11): its program executes
+    /// against the same prospective state, preserving the external request's
+    /// `$actor`/`$session` bindings, so its writes and any rejection are the
+    /// caller's — a failure inside the call rejects the caller's earlier writes
+    /// too (§8.8/§22.2). Its `return` is ignored: only the outer program's
+    /// trailing `return` is the call's response (§8.10).
+    fn exec_internal_call(
+        &mut self,
+        mutation: &'a CompiledMutation,
+        args: &[Arg],
+        source: SourceId,
+    ) -> Result<(), Rejection> {
+        if self.depth >= MAX_CALL_DEPTH {
+            return Err(Rejection::new(
+                RejectionReason::Malformed,
+                "internal mutation calls are nested too deeply",
+            ));
+        }
+        let receiver = self.internal_receiver(mutation)?;
+        let params = self.internal_args(mutation, args, source)?;
+        // §8.11: the call runs in the same atomic program. It carries the request's
+        // `$actor`/`$session` (in `ctx.context`) and its own bound parameters, but
+        // evaluates against the shared prospective state, so effects accumulate and
+        // a rejection unwinds the whole program.
+        let child_ctx = EvalCtx {
+            schema: self.ctx.schema,
+            compiled: self.ctx.compiled,
+            params,
+            now: self.ctx.now,
+            seed: self.ctx.seed,
+            keyrings: self.ctx.keyrings,
+            context: self.ctx.context.clone(),
+            hosts: self.ctx.hosts,
+            modules: self.ctx.modules,
+        };
+        let mut child = Interp {
+            compiled: self.compiled,
+            ctx: &child_ctx,
+            prospective: &mut *self.prospective,
+            mutation,
+            receiver,
+            touched: Vec::new(),
+            ret: None,
+            locals: BTreeMap::new(),
+            depth: self.depth + 1,
+        };
+        child.run()?;
+        // The call's writes are the caller's: carry its touched rows so the final
+        // rule pass validates them in the same transition (§22.2).
+        let touched = std::mem::take(&mut child.touched);
+        for address in touched {
+            self.mark(address);
+        }
+        Ok(())
+    }
+
+    /// The receiver row of an internal mutation call (§8.11): `None` for a root
+    /// mutation. A row-mutation call reuses the caller's receiver when it targets
+    /// the same collection path; a key-addressed row call (`#coll.mut(key…)`) is a
+    /// documented CORE seam that rejects rather than mis-targeting.
+    fn internal_receiver(&self, mutation: &CompiledMutation) -> Result<Option<RowTarget>, Rejection> {
+        if mutation.receiver_is_root || mutation.path.is_empty() {
+            return Ok(None);
+        }
+        match &self.receiver {
+            Some(receiver) if receiver.path == mutation.path => Ok(Some(receiver.clone())),
+            _ => Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!("internal call to row mutation `{}` cannot resolve its receiver here", mutation.name),
+            )),
+        }
+    }
+
+    /// Bind an internal call's parameters from its argument object (§8.11). The
+    /// argument is a single object mapping parameter names to values (the shorthand
+    /// `{ @id }` expands to `id: @id`); `mut()` / `mut({})` supplies none. Each
+    /// value is evaluated in the caller's scope. A declared parameter takes its
+    /// supplied value, else `none` for an optional one (§8.3), else a missing
+    /// required argument rejects.
+    fn internal_args(
+        &self,
+        mutation: &CompiledMutation,
+        args: &[Arg],
+        source: SourceId,
+    ) -> Result<BTreeMap<String, Cell>, Rejection> {
+        let current = self.current()?;
+        let mut supplied: BTreeMap<String, Value> = BTreeMap::new();
+        for arg in args {
+            match arg {
+                Arg::Positional(Expr { kind: ExprKind::Object(members), .. }) => {
+                    for member in members {
+                        if let Some((name, value)) = self.object_member(member, &current, source)? {
+                            supplied.insert(name, value);
+                        }
+                    }
+                }
+                Arg::Named { name, value } => {
+                    supplied.insert(name.text.clone(), self.scalar_value(value, source, &current)?);
+                }
+                Arg::Positional(_) => {
+                    return Err(Rejection::new(
+                        RejectionReason::Malformed,
+                        "an internal call takes an argument object mapping parameter names to values",
+                    ));
+                }
+            }
+        }
+        let mut params = BTreeMap::new();
+        for (name, ty) in &mutation.params {
+            let cell = match supplied.remove(name) {
+                Some(value) => Cell::Scalar(value),
+                None if matches!(ty.as_scalar(), Some(Type::Optional(_))) => Cell::Scalar(Value::None),
+                None => {
+                    return Err(Rejection::new(
+                        RejectionReason::Malformed,
+                        format!("internal call is missing argument `@{name}`"),
+                    ));
+                }
+            };
+            params.insert(name.clone(), cell);
+        }
+        Ok(params)
     }
 
     fn exec_assert(&mut self, args: &[Arg], source: SourceId) -> Result<(), Rejection> {
@@ -750,6 +914,100 @@ impl<'a> Interp<'a> {
             self.mark(address);
         }
         Ok(())
+    }
+
+    /// Replace a whole collection from a source view (§8.7 `collection = view`).
+    /// The replacement matches existing rows by key: a matching key keeps its
+    /// incarnation and receives the normalized replacement values (an update); a
+    /// new key inserts a new incarnation; an existing key absent from the
+    /// replacement is deleted through ordinary §21.1 `$on_delete` planning — so a
+    /// dropped `restrict`-ref target rejects the whole transition. §5.1/§8.7 fix
+    /// the batch semantics: the statement builds its complete prospective row set
+    /// against the pre-statement state (phase one) before any of it is staged
+    /// (phase two), and the engine validates the complete resulting collection
+    /// before admission.
+    fn replace_collection(&mut self, loc: &CollectionLoc, view: &Expr, source: SourceId) -> Result<(), Rejection> {
+        let compiled = self.collection_at(&loc.decl)?;
+        let current = self.current()?;
+        let rows = match self.eval_value(view, source, &current)? {
+            Cell::Collection(rows) => rows,
+            Cell::Row(row) => vec![*row],
+            // A scalar source is not a row set; a replacement takes a view.
+            Cell::Scalar(_) => {
+                return Err(Rejection::new(
+                    RejectionReason::TypeError,
+                    "a collection replacement takes a source view of rows",
+                ));
+            }
+        };
+        // Phase one: resolve every replacement row's complete fields against the
+        // pre-statement state, so no row observes a sibling of the same statement
+        // (§5.1) and matching is by the fully-defaulted key (§8.7).
+        let mut staged: Vec<(RowAddress, FieldMap)> = Vec::with_capacity(rows.len());
+        for row in &rows {
+            let mut fields = FieldMap::new();
+            for (name, cell) in row.cells() {
+                if let Cell::Scalar(value) = cell {
+                    fields.insert(name.clone(), value.clone());
+                }
+            }
+            rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective)?;
+            rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
+            rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."))?;
+            let address = self.key_address(&loc.store_path, &loc.decl, &fields)?;
+            staged.push((address, fields));
+        }
+        // A replacement view supplying two rows of one key cannot form one
+        // prospective row set (§8.7): reject rather than silently collapse them.
+        let mut replacement: BTreeSet<RowAddress> = BTreeSet::new();
+        for (address, _) in &staged {
+            if !replacement.insert(address.clone()) {
+                return Err(Rejection::new(
+                    RejectionReason::DuplicateKey,
+                    "the replacement view supplies two rows with the same key",
+                )
+                .at(address.render()));
+            }
+        }
+        // The collection's existing rows before replacement (§8.7 matches by key).
+        let existing = self.prospective.addresses_in(&loc.store_path);
+        // Phase two: stage every replacement row — a matching key updates in place
+        // (the diff keeps its incarnation), a new key inserts (§8.7). The final
+        // rule pass validates the complete resulting collection (§8.7).
+        for (address, fields) in staged {
+            self.prospective.insert(address.clone(), fields);
+            self.mark(address);
+        }
+        // §8.7: every existing key absent from the replacement is dropped.
+        let dropped: Vec<RowAddress> =
+            existing.into_iter().filter(|address| !replacement.contains(address)).collect();
+        if dropped.is_empty() {
+            return Ok(());
+        }
+        // §5.4/§21.1: the cascade planner operates over the top-level graph; a
+        // dropped nested-collection row (no inbound refs in CORE scope) is removed
+        // directly with its subtree, a dropped top-level row through the planner so
+        // its inbound `$on_delete` policies (restrict/cascade/clear/patch) apply.
+        if loc.decl.len() > 1 {
+            for address in dropped {
+                self.remove_subtree(&address);
+            }
+            return Ok(());
+        }
+        let name = loc.decl.last().cloned().unwrap_or_default();
+        let model = self.ctx.schema.top_collection(&name);
+        let initial: Vec<RowRef> = dropped
+            .iter()
+            .filter_map(|address| {
+                let step = address.steps().last()?;
+                let key = match model {
+                    Some(model) => materialize::key_identity(model, step.key()),
+                    None => step.key().components().next()?.clone(),
+                };
+                Some(RowRef::new(name.clone(), key))
+            })
+            .collect();
+        self.delete_rows(initial)
     }
 
     /// Resolve `expr` to `(row, field)` when it addresses a set-typed field of a

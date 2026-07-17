@@ -16,7 +16,7 @@ use liasse_value::Type;
 
 use crate::build::RawSurface;
 use crate::doc::DocValueExt;
-use crate::mutation::Mutation;
+use crate::mutation::{stmt_exprs, Mutation};
 use crate::names::DeclName;
 use crate::report::{code, Reporter};
 use crate::resolve::Resolver;
@@ -48,6 +48,7 @@ pub(crate) fn check_surfaces(
     let mut phase = SurfacePhase {
         reporter,
         sources,
+        root,
         root_row: root_row.clone(),
         receiver_row: root_row,
         path: Vec::new(),
@@ -72,6 +73,8 @@ pub(crate) fn check_surfaces(
 struct SurfacePhase<'a, 'b> {
     reporter: &'a mut Reporter<'b>,
     sources: &'a mut SourceMap,
+    /// The model-root shape (`/`), for resolving an inline program's write target.
+    root: &'a Shape,
     /// The model-root row (`/`).
     root_row: ExprType,
     /// The `.` receiver row for the block being checked (the row at `path`).
@@ -153,7 +156,7 @@ impl SurfacePhase<'_, '_> {
                         self.check_view(&member.value, &params);
                     }
                 }
-                "$mut" => self.surface_muts(&member.value, &mut calls),
+                "$mut" => self.surface_muts(&member.value, public, &mut calls),
                 // §10.5: a scoped surface MAY propagate through a checked
                 // descendant relation. Its shape and predicate types are
                 // validated here; the runtime performs the actual traversal.
@@ -408,7 +411,7 @@ impl SurfacePhase<'_, '_> {
         }
     }
 
-    fn surface_muts(&mut self, value: &liasse_syntax::DocValue, calls: &mut Vec<DeclName>) {
+    fn surface_muts(&mut self, value: &liasse_syntax::DocValue, public: bool, calls: &mut Vec<DeclName>) {
         let Some(members) = value.as_object() else {
             self.reporter.reject(value.span, code::SURFACE, "a surface `$mut` is a map of external names");
             return;
@@ -421,33 +424,145 @@ impl SurfacePhase<'_, '_> {
                     continue;
                 }
             }
-            self.check_mut_reference(&member.value);
+            self.check_mut_value(&member.value, public);
         }
     }
 
-    /// §10.1: a string surface-mutation value that is a declared-mutation
-    /// reference must name a mutation the model declares; an inline program (an
-    /// array, or a state-changing expression) is accepted structurally.
-    fn check_mut_reference(&mut self, value: &liasse_syntax::DocValue) {
-        let Some(text) = value.as_string() else {
-            // An array is an inline atomic program.
+    /// §10.1: a surface-mutation value is either a declared-mutation reference (a
+    /// single `.name`/`x.y()` string, checked against the model's mutations) or an
+    /// inline atomic program (a state-changing expression string, or an array of
+    /// statement strings). The reference form is resolved here; the inline form is
+    /// held to the §8 statement rules a load must catch (see [`check_inline`]).
+    fn check_mut_value(&mut self, value: &liasse_syntax::DocValue, public: bool) {
+        if let Some(text) = value.as_string() {
+            let sub = self.sources.add_label("surface-mut", text.to_owned());
+            let parsed = match parse_expression(sub, text) {
+                Ok(parsed) => parsed,
+                Err(diags) => {
+                    self.reporter.emit_all(diags);
+                    return;
+                }
+            };
+            if self.is_reference(parsed.statement()) {
+                self.check_mut_reference(parsed.statement(), value);
+            } else {
+                self.check_inline(&[(parsed.statement, sub)], public);
+            }
+            return;
+        }
+        let Some(items) = value.as_array() else {
+            self.reporter.reject_hint(
+                value.span,
+                code::SURFACE,
+                "a surface mutation is a declared-mutation reference or an inline program",
+                "e.g. `\".add\"`, `\".tasks + { id: @id }\"`, or `[\".done = true\", \"return .\"]`",
+            );
             return;
         };
-        let sub = self.sources.add_label("surface-mut", text.to_owned());
-        let parsed = match parse_expression(sub, text) {
-            Ok(parsed) => parsed,
-            Err(diags) => {
-                self.reporter.emit_all(diags);
+        let mut statements = Vec::new();
+        for item in items {
+            let Some(text) = item.as_string() else {
+                self.reporter.reject(item.span, code::SURFACE, "an inline program statement must be a string");
                 return;
+            };
+            let sub = self.sources.add_label("surface-mut", text.to_owned());
+            match parse_expression(sub, text) {
+                Ok(parsed) => statements.push((parsed.statement, sub)),
+                Err(diags) => {
+                    self.reporter.emit_all(diags);
+                    return;
+                }
             }
+        }
+        self.check_inline(&statements, public);
+    }
+
+    /// Whether a surface-mutation statement is a declared-mutation reference — a
+    /// bare `x.y` path or `x.y()` call — rather than an inline program statement.
+    fn is_reference(&self, stmt: &liasse_syntax::Stmt) -> bool {
+        let StmtKind::Bare(expr) = &stmt.kind else {
+            return false;
         };
-        let StmtKind::Bare(expr) = &parsed.statement().kind else {
+        matches!(
+            &expr.kind,
+            ExprKind::Field { .. } | ExprKind::Call { .. }
+        )
+    }
+
+    /// §5.2/§8.5 and §10.2: hold an inline surface `$mut` program to the statement
+    /// rules a load must catch — a write to a read-only computed value, and, in a
+    /// public surface, a reference to `$actor`/`$session` an unauthenticated
+    /// operation can never bind. Full value/parameter typing of an inline program
+    /// stays a documented seam (the runtime resolves it), so a program is not
+    /// otherwise re-typed here.
+    fn check_inline(&mut self, statements: &[(liasse_syntax::Stmt, liasse_diag::SourceId)], public: bool) {
+        for (stmt, source) in statements {
+            if public {
+                for expr in stmt_exprs(stmt) {
+                    self.reject_public_actor(expr, *source);
+                }
+            }
+            if let StmtKind::Assign { target, .. } = &stmt.kind
+                && crate::mutation::assigns_read_only_computed(self.root, &self.path, target)
+            {
+                self.reject_at(
+                    *source,
+                    target.span,
+                    "assignment targets a read-only computed value (§5.2)",
+                    "a computed value is determined by its expression; remove the assignment",
+                );
+            }
+        }
+    }
+
+    /// §10.2: a public operation has no `$actor`/`$session`, so a public inline
+    /// program referencing either is statically invalid — no context can ever bind
+    /// it. Reports the first such reference reachable in `expr`.
+    fn reject_public_actor(&mut self, expr: &Expr, source: liasse_diag::SourceId) {
+        if let ExprKind::Structural(name) = &expr.kind
+            && matches!(name.text.as_str(), "actor" | "session")
+        {
+            self.reject_at(
+                source,
+                name.span,
+                format!("`${}` is not available in a public surface (§10.2)", name.text),
+                "a public operation is unauthenticated; expose this through a role with an `$auth`",
+            );
+            return;
+        }
+        for child in crate::walk::child_exprs(expr) {
+            self.reject_public_actor(child, source);
+        }
+    }
+
+    /// Emit a surface rejection whose span indexes a `$mut` statement sub-source.
+    fn reject_at(
+        &mut self,
+        source: liasse_diag::SourceId,
+        span: liasse_diag::ByteSpan,
+        message: impl Into<String>,
+        hint: impl Into<String>,
+    ) {
+        self.reporter.emit(
+            liasse_diag::Diagnostic::error(message.into())
+                .code(code::SURFACE)
+                .primary(liasse_diag::Span::new(source, span), "here")
+                .help(hint.into())
+                .build(),
+        );
+    }
+
+    /// §10.1: a declared-mutation reference must name a mutation the model
+    /// declares; a bare-collection receiver (a row stream) is not a valid row
+    /// mutation receiver (Annex C.10).
+    fn check_mut_reference(&mut self, stmt: &liasse_syntax::Stmt, value: &liasse_syntax::DocValue) {
+        let StmtKind::Bare(expr) = &stmt.kind else {
             return;
         };
         let reference = match &expr.kind {
             ExprKind::Call { callee, .. } => callee.as_ref(),
             ExprKind::Field { .. } => expr,
-            _ => return, // an inline program (insert/replace/patch/…).
+            _ => return,
         };
         if let ExprKind::Field { base, member } = &reference.kind
             && let Some(path) = self.resolve_path(base)

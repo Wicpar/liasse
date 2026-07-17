@@ -31,9 +31,13 @@ use crate::state::{Node, Shape};
 use crate::walk::child_exprs;
 
 use helpers::{
-    collect_param_refs, is_program_call, is_scalar_binop, parse_name, receiver_shape, record,
-    resolve_node, stmt_exprs, uses_mutation_operator, wrap, write_path, BindEnv, Params,
+    collect_param_refs, is_program_call, is_scalar_binop, local_binding_name, parse_name,
+    receiver_shape, record, resolve_node, uses_mutation_operator, wrap, write_path, BindEnv,
+    Params,
 };
+// Re-exported for the surface phase's inline-program check (§10.1), which walks a
+// statement's expressions to reject a public `$actor`/`$session` reference.
+pub(crate) use helpers::stmt_exprs;
 
 /// A validated mutation: where it is declared, its external name, and its
 /// inferred/declared parameter contract.
@@ -69,6 +73,18 @@ pub(crate) fn check_mutations(
             phase.check(entry)
         })
         .collect()
+}
+
+/// §5.2/§8.5: whether `target`, resolved from the receiver body at `path`, names
+/// a read-only computed value — an assignment a load must reject. A surface
+/// inline `$mut` program (§10.1) is a mutation program bound by the same rule, so
+/// its assignments are judged through this one predicate rather than a divergent
+/// copy of the resolution logic.
+pub(crate) fn assigns_read_only_computed(root: &Shape, path: &[String], target: &Expr) -> bool {
+    matches!(
+        resolve_node(target, receiver_shape(root, path), root),
+        Some(Node::Scalar(field)) if !field.is_writable()
+    )
 }
 
 struct MutPhase<'a, 'b> {
@@ -524,6 +540,9 @@ impl MutPhase<'_, '_> {
     ) {
         let receiver_shape = receiver_shape(self.root, &entry.path);
         let last = statements.len().saturating_sub(1);
+        // Local bindings introduced by earlier `local = ...` statements are visible
+        // to later ones (§8, Annex C.9), so the scope grows as the program is walked.
+        let mut scope = scope.clone();
         for (index, (stmt, source)) in statements.iter().enumerate() {
             self.check_readonly(stmt, &entry.path, *source);
             match &stmt.kind {
@@ -534,9 +553,22 @@ impl MutPhase<'_, '_> {
                     "move `return` to the end of the program",
                 ),
                 StmtKind::Assign { target, value } => {
-                    self.check_assign(target, value, receiver_shape, scope, *source);
+                    if let Some(local) = local_binding_name(target) {
+                        // `local = value_or_mutation_result` (Annex C.9): check the
+                        // value, then bind the local for later statements. An
+                        // insert/replace or host/program-call result the CORE phase
+                        // cannot type stays a documented seam — left unbound rather
+                        // than mis-typed — so a later reference to it is accepted
+                        // structurally exactly as before.
+                        if let Some(typed) = self.type_value(value, &scope, *source) {
+                            let ty = typed.ty().clone();
+                            scope = scope.with_binding(local.to_owned(), ty);
+                        }
+                    } else {
+                        self.check_assign(target, value, receiver_shape, &scope, *source);
+                    }
                 }
-                StmtKind::Bare(expr) => self.check_bare(expr, scope, *source),
+                StmtKind::Bare(expr) => self.check_bare(expr, &scope, *source),
                 StmtKind::Clear(target) => self.check_clear(target, receiver_shape, *source),
                 StmtKind::Return(_) => {}
             }

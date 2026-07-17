@@ -170,6 +170,18 @@ fn contains_row_source(expr: &Expr) -> bool {
     }
 }
 
+/// The name a local-binding statement introduces (§8, Annex C.9:
+/// `local = value_or_mutation_result`). A local binding's target is a bare name;
+/// a field assignment's target is a `.field` path (an [`ExprKind::Field`]) and a
+/// set/collection operation is a [`StmtKind::Bare`] statement, so a plain
+/// [`ExprKind::Name`] target is unambiguously the local-binding form.
+pub(super) fn local_binding_name(target: &Expr) -> Option<&str> {
+    match &target.kind {
+        ExprKind::Name(id) => Some(&id.text),
+        _ => None,
+    }
+}
+
 /// Resolve a target expression to the model node it addresses, if any.
 pub(super) fn resolve_node<'t>(expr: &Expr, receiver: &'t Shape, root: &'t Shape) -> Option<&'t Node> {
     match &expr.kind {
@@ -290,7 +302,7 @@ pub(super) fn is_program_call(expr: &Expr) -> bool {
     matches!(&expr.kind, ExprKind::Call { callee, .. } if !is_builtin_call(callee))
 }
 
-pub(super) fn stmt_exprs(stmt: &Stmt) -> Vec<&Expr> {
+pub(crate) fn stmt_exprs(stmt: &Stmt) -> Vec<&Expr> {
     match &stmt.kind {
         StmtKind::Return(expr) | StmtKind::Bare(expr) | StmtKind::Clear(expr) => vec![expr],
         StmtKind::Assign { target, value } => vec![target, value],
