@@ -8,12 +8,26 @@
 //! infrastructure faults do.
 
 use liasse_store::StoreError;
-use postgres::Row;
 use postgres::types::FromSql;
+use postgres::{Error, Row};
 
-/// Map a driver error into the opaque [`StoreError::Backend`] category.
-pub fn backend<E: core::fmt::Display>(error: E) -> StoreError {
-    StoreError::Backend { detail: error.to_string() }
+/// Map a driver error into the [`StoreError::Backend`] category, preserving the
+/// server's SQLSTATE and message where the failure came from PostgreSQL.
+///
+/// `postgres::Error`'s own `Display` collapses every server-side failure to the
+/// opaque string `"db error"`, discarding the SQLSTATE and message that name the
+/// actual cause — e.g. `22021` (invalid `U+0000` byte in a `text` value), `54000`
+/// (index row exceeds the btree tuple maximum for an oversized key), or `23505`
+/// (unique violation). SPEC §23.8 keeps the error *category* independent of the
+/// backend; carrying the SQLSTATE and message keeps the *detail* actionable, which
+/// AGENTS.md requires of a diagnostic. Transport faults with no `DbError` fall back
+/// to the driver's own message.
+pub fn backend(error: Error) -> StoreError {
+    let detail = match error.as_db_error() {
+        Some(db) => format!("{}: {}", db.code().code(), db.message()),
+        None => error.to_string(),
+    };
+    StoreError::Backend { detail }
 }
 
 /// Read column `column` of `table` from a durable `row`, mapping a type mismatch
