@@ -78,36 +78,30 @@ pub const SKIP: &[(&str, &str)] = &[
     // residual case fails later — its `watch`/`call` name a multiplexed `context`
     // (§11.8) the adapter does not yet thread onto the surface watch/call.
     // --- §18 blob steps drive the composed blob host end to end ---
-    // The blob-parameter upload (`blob_put`, now authenticating under the step's
-    // role selection), fetch (`blob_get`, gated through the caller's surface
-    // projection via `blob_get_projected`), and connector fault-injection
-    // (`connector_set`) run against a real §18 `BlobHost` composed from the case's
-    // `hosts.connectors` + `$data` stores; the parameterized role/surface `$view`
-    // a fetch resolves through is served by reconstructing its `$params`
-    // (adapter/surface_params.rs). The residuals below are genuine
-    // runtime/model/expression seams, not driving gaps:
+    // The blob-parameter upload (`blob_put`, staged into the blob host and admitted
+    // under the step's role selection), fetch (`blob_get`, gated through the caller's
+    // surface projection via `BlobHost::fetch_projected`), and connector fault
+    // injection (`connector_set`) run against a real §18 `BlobHost` the driver owns
+    // (adapter/blobs.rs), composed from the case's `hosts.connectors` + `$data`
+    // stores; the parameterized role/surface `$view` a fetch resolves through is
+    // served by reconstructing its `$params` (adapter/surface_params.rs). The
+    // residuals below are genuine runtime/model/expression seams, not driving gaps:
     //
     // §18.5 placement descriptor members (`.file.$satisfied`/`.file.$stored`/
-    // `.file.$surplus`) are not implemented in the expression layer — liasse-expr
-    // and the model recognize only `.$sha512`/`.$bytes`/`.$media`/`.$name`
-    // (§18.1). A mutation return reading a placement member is dropped, so the
-    // upload commits but returns no value; a view reading one does not type-check,
-    // so its package does not load. Tracked as a runtime/expr seam per case below.
-    ("18-blobs/accepted-upload-commits-and-verifies", "§18.5 placement descriptor member `.file.$satisfied`/`.file.$stored` is unimplemented in the expression layer (liasse-expr/model know only `.$sha512`/`.$bytes`/`.$media`/`.$name`), so the mutation return is dropped and no value is observed"),
-    ("18-blobs/all-branch-verifies-every-copy-at-admission", "§18.5 placement descriptor member `.file.$satisfied`/`.file.$stored` unimplemented in the expression layer, so the mutation return is dropped and no value is observed"),
-    ("18-blobs/disabled-store-excluded-from-placement", "§18.5 placement descriptor member `.file.$satisfied`/`.file.$stored` unimplemented in the expression layer, so the mutation return is dropped and no value is observed"),
-    ("18-blobs/same-content-different-metadata-distinct-descriptors", "a declared `$name` must bind into the mutation call, which the honest `call_with_blob` blob parameter drops"),
+    // `.file.$surplus`) now type-check and evaluate in the expression layer, and the
+    // driver records the placement facts into the engine before the return/view read
+    // (adapter/blobs.rs `stage`+`Engine::record_blob_placement`, §18.5). The cases
+    // that read a placement member in a mutation `return` therefore pass; the two
+    // residuals below stay blocked on a distinct §12.2 view-shape seam, not the
+    // record-placement seam. A `claim` residual keeps its binding note.
+    ("18-blobs/same-content-different-metadata-distinct-descriptors", "a declared `$name` must bind into the mutation call, which the honest blob parameter drops"),
     ("18-blobs/descriptor-bytes-encoding-unspecified", "a verifying client-declared descriptor must bind into the mutation call, which the honest-only blob parameter does not expose"),
-    ("23-host-contract/connector-failure-preserves-committed-state", "§18.5 placement descriptor member `.file.$satisfied` unimplemented in the expression layer, so the step-1 mutation return is dropped and no value is observed"),
-    ("23-host-contract/connector-tampered-read-refetched-from-verified-holder", "§18.5 placement descriptor member `.file.$satisfied` unimplemented in the expression layer, so the step-1 mutation return is dropped and no value is observed"),
     // --- `budget_set` step ---
     ("23-host-contract/budget-backpressure-or-reject-choice-unspecified", "`budget_set` step not driven this phase"),
     ("23-host-contract/budget-exhaustion-never-partial-transition", "`budget_set` step not driven this phase"),
     // (§4 `build_artifact`/`repack_artifact`/`load_artifact` now drive the real
     // `liasse-artifact` archive layer — adapter/artifacts.rs — so every
     // 04-package-structure case passes.)
-    // --- `connector_set` drives §18.12 fault injection; this residual is a seam ---
-    ("18-blobs/any-branch-selects-first-fulfillable", "§18.5 placement descriptor member `.file.$satisfied`/`.file.$stored` unimplemented in the expression layer, so the mutation return is dropped and no value is observed"),
     // --- `erase` step ---
     ("annex-d-identity/erase-removes-live-row-and-rechecksums-history", "`erase` step not driven this phase"),
     ("annex-d-identity/erasure-extract-replay-foreign-instance-rejected", "`erase` step not driven this phase"),
@@ -115,15 +109,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // tamper and extract ops) now drive end to end (adapter/ops.rs, artifacts.rs,
     // correction.rs). The residual entries are genuine runtime/artifact seams, not
     // adapter driving gaps. ---
-    // §19.8 classification: the runtime classifies an incoming artifact by commit-
-    // seat order within one instance+lineage only, so a continuation/policy/replay/
-    // displaced-lineage relation is not distinguished as the corpus expects.
-    ("19-history-artifacts/import-fast-forward-applies-continuation", "§19.8 classify reports a seat-order relation the case does not expect (runtime classifies by commit seat within one lineage)"),
-    ("19-history-artifacts/import-policy-gates-activation", "§19.8 classify reports a seat-order relation the case does not expect (runtime classifies by commit seat within one lineage)"),
-    ("19-history-artifacts/import-replay-idempotent", "§19.8 classify reports a seat-order relation the case does not expect (runtime classifies by commit seat within one lineage)"),
-    ("19-history-artifacts/imported-state-survives-restart", "§19.8 classify reports a seat-order relation the case does not expect (runtime classifies by commit seat within one lineage)"),
-    ("19-history-artifacts/displaced-lineage-reimport-is-merge", "§19.8 the runtime does not classify a same-lineage divergence as a merge (classify is seat-order only)"),
-    ("19-history-artifacts/restore-reexport-preserves-selection-identity", "§19.7 a restore re-export re-selects a fresh point, so selected.point differs from the original (point identity across restore unlanded)"),
     // §19.7 state-section-vs-selected-point coherence is not verified at restore, so
     // a spliced or mismatched selection is accepted rather than rejected.
     ("19-history-artifacts/manifest-index-selection-mismatch-invalid", "§19.7 state/index selection coherence is not verified at restore, so a mismatched selection is accepted"),
@@ -283,19 +268,17 @@ pub const SKIP: &[(&str, &str)] = &[
     ("16-host-namespaces/required-namespace-removed-fails-reopen", "root-scalar host-call view yields no row (runtime materializes no top-level scalar view), so the step-0 watch diverges before `reopen`"),
     // §18 blob views: a parameterized surface/top-level `$view` a case reads now
     // compiles and serves (adapter/surface_params.rs reconstructs its `$params`),
-    // so `fetch-returns-exact-bytes`/`serve-order-defaults-to-flattened-placement`
-    // pass. The residuals below are the §18.5 placement-member seam (the same
-    // `.file.$stored`/`.file.$satisfied`/`.file.$surplus` the expression layer
-    // does not implement), a keyed-selection surface-view result shape, or a
-    // restart re-composition seam.
-    ("18-blobs/billing-sum-over-stored-descriptors", "§18.5 placement member `.file.$stored` is unimplemented in the expression layer, so the sum-over-stored view does not type-check and the package does not load"),
-    ("18-blobs/corrupt-copy-demoted-and-repaired", "§18.5 placement member `.file.$stored`/`.file.$satisfied` unimplemented in the expression layer, so the placement view does not type-check and the package does not load (also `run_reconciler`, unlanded)"),
+    // and the §18.5 placement facts are recorded into the engine before a placement
+    // member is read (adapter/blobs.rs + runtime.rs, §18.5). The residuals below are
+    // an aggregate-over-projected-member type-check gap, a background reconciler
+    // step, or the §12.2 keyed-selection surface-view result shape — none of them
+    // the record-placement seam.
+    ("18-blobs/billing-sum-over-stored-descriptors", "§18.11 the billing view `sum(.uploads[:u | /stores['primary'] in u.file.$stored].file.$bytes)` does not type-check — the aggregate-over-projected-member seam (`in`/`sum` over the projected `.file.$stored`/`.file.$bytes` placement member), so the package does not load"),
+    ("18-blobs/corrupt-copy-demoted-and-repaired", "the placement view now resolves and steps 0–2 pass; the residual is the `run_reconciler` step (a background reconciler loop over retained lineages that demotes and repairs a corrupt copy), which the single-step `reconcile`/`apply_correction` verbs do not model — the run_reconciler seam"),
     ("18-blobs/descriptor-metadata-readable-in-view", "§12.2 keyed-selection surface view (`.docs[@id] { … }`) delivers a row array, but the case expects a single object — a runtime/corpus view-shape tension, not a driving gap"),
-    ("18-blobs/live-descriptor-pins-content-across-restart", "§22 restart drops the composed blob host (its in-memory connectors/committed bytes are not durable), so the post-restart `blob_get` finds no blob host — a blob-persistence-across-restart seam"),
     ("18-blobs/metadata-only-projection-grants-no-fetch", "§12.2 keyed-selection surface view delivers a row array, but the case's metadata watch expects a single object — a runtime/corpus view-shape tension reached before the `blob_get` gate"),
-    ("18-blobs/placement-observations-single-store", "§18.5 placement members `.file.$stored`/`.file.$satisfied`/`.file.$surplus` unimplemented in the expression layer, so the placement view does not type-check and the package does not load"),
-    ("18-blobs/repeated-store-identity-deduplicated", "§18.5 placement member `.file.$stored` unimplemented in the expression layer, so the mutation return is dropped and no value is observed"),
-    ("18-blobs/surplus-copy-after-policy-shrinks", "§18.5 placement members `.file.$stored`/`.file.$satisfied`/`.file.$surplus` unimplemented in the expression layer, so the placement view does not type-check and the package does not load"),
+    ("18-blobs/placement-observations-single-store", "the §18.5 placement facts are recorded and the placement members resolve, but the keyed-selection surface view (`.docs[@id] { … }`) delivers a §12.2 row array while the case expects a single object — the same view-shape tension as `descriptor-metadata-readable-in-view` (and in conflict with `06-expressions/selector-scalar-key-zero-or-one-row`, which expects the array form); a view-shape seam, not the record-placement seam"),
+    ("18-blobs/surplus-copy-after-policy-shrinks", "the §18.5 placement facts are recorded and re-recorded on the store `enabled` shrink (adapter refresh), but the keyed-selection placement view (`.docs[@id] { … }`) delivers a §12.2 row array while the case expects a single object — the same view-shape seam as `placement-observations-single-store`, not the record-placement seam"),
     ("23-host-contract/rotation-provider-invalid-public-key-keeps-current-active", "package does not load yet (upstream compile/model gap)"),
     ("annex-d-identity/ref-wire-value-is-current-typed-key", "package does not load yet (upstream compile/model gap)"),
     ("w-worked-examples/w2-cross-account-session-revoke-has-no-owner-check", "package does not load yet (upstream compile/model gap)"),

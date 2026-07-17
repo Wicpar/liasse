@@ -207,12 +207,36 @@ impl<S: InstanceStore> Runtime<S> {
         let loaded = self.take_loaded()?;
         let routing = loaded.routing;
         let blobs = loaded.blobs;
+        let blob_hosts = loaded.blob_hosts;
         let (mut engine, router, clock) = loaded.host.into_parts();
         let result = mutate(&mut engine);
-        self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs });
+        self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs, blob_hosts });
         self.reopen_connections();
         self.replay_watches();
         Ok(result)
+    }
+
+    /// Re-record every committed blob's §18.5 placement facts against the current
+    /// store rows (§18.4/§18.5), first absorbing any store `enabled` change the
+    /// committed mutation reported. Re-recording a digest overwrites its facts, so a
+    /// policy shrink that moves a verified copy out of the required set surfaces as
+    /// `$surplus` on the next read — without any bytes moving.
+    fn refresh_blob_placements(&mut self, committed: Option<&serde_json::Value>) -> Result<(), AdapterError> {
+        if let (State::Loaded(loaded), Some(value)) = (&mut self.state, committed) {
+            loaded.blobs.absorb_store_changes(value);
+        }
+        let records = match &self.state {
+            State::Loaded(loaded) => super::blobs::placement_records(loaded, &self.blob_digests),
+            State::Failed(_) => return Ok(()),
+        };
+        if records.is_empty() {
+            return Ok(());
+        }
+        self.rebuild_engine(move |engine| {
+            for (digest, state) in &records {
+                engine.record_blob_placement(digest, state);
+            }
+        })
     }
 }
 
@@ -369,6 +393,14 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         if let Some((opid, key)) = op_record {
             self.op_keys.insert(opid, key);
         }
+        // §18.5: a committed mutation may flip a store's `enabled` flag, shrinking the
+        // placement store view; refresh the recorded placement facts so a later view
+        // reads the current `$surplus`/`$satisfied` without any bytes moving.
+        let placement_reads =
+            matches!(&self.state, State::Loaded(loaded) if loaded.blobs.placement_reads());
+        if placement_reads && observation.outcome == Outcome::Ok {
+            self.refresh_blob_placements(observation.value.as_ref())?;
+        }
         Ok(observation)
     }
 
@@ -430,8 +462,12 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         let loaded = self.take_loaded()?;
         let routing = loaded.routing;
         let blobs = loaded.blobs;
+        // §22 durability: the driver's blob hosts model the durable §18 stores, so
+        // their staged bytes survive the volatile-state restart (a fresh, empty host
+        // would drop content a real §18 store persists).
+        let blob_hosts = loaded.blob_hosts;
         let (engine, router, clock) = loaded.host.into_parts();
-        self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs });
+        self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs, blob_hosts });
         self.open_connections.clear();
         Ok(Observation::ok(None))
     }
@@ -440,6 +476,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         let loaded = self.take_loaded()?;
         let old_routing = loaded.routing.clone();
         let blobs = loaded.blobs;
+        let blob_hosts = loaded.blob_hosts;
         let (mut engine, old_router, mut clock) = loaded.host.into_parts();
         // §9.2 host lifecycle reload: a `load(target)` step carries no `hosts`
         // block, so its verifier tables are unchanged from the base load. A
@@ -447,7 +484,12 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         let plan = AuthPlan::derive(package, None);
         match apply_host_load(&mut engine, &mut clock, package, &plan) {
             Ok((completion, router, routing)) => {
-                self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs });
+                self.reinstate(Loaded {
+                    host: SurfaceHost::new(engine, router, clock),
+                    routing,
+                    blobs,
+                    blob_hosts,
+                });
                 self.reopen_connections();
                 self.replay_watches();
                 Ok(Observation {
@@ -464,6 +506,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
                     host: SurfaceHost::new(engine, old_router, clock),
                     routing: old_routing,
                     blobs,
+                    blob_hosts,
                 });
                 self.reopen_connections();
                 self.replay_watches();
@@ -612,9 +655,33 @@ impl<S: InstanceStore> Instance for Runtime<S> {
     }
 
     fn blob_put(&mut self, spec: &super::blobs::BlobPutSpec) -> Result<Observation, AdapterError> {
+        use super::blobs::Staged;
         self.ensure_connection(&spec.connection);
+        // §18.7: stage and verify the blob parameter into the (driver-owned) blob
+        // host, building the admission call with the verified descriptor bound.
+        let staged = match &mut self.state {
+            State::Loaded(loaded) => super::blobs::stage(loaded, spec)?,
+            State::Failed(message) => return Err(AdapterError::LoadFailed(message.clone())),
+        };
+        let (digest, placement, call) = match staged {
+            // §18.2: a failed verification rejects before any state transition.
+            Staged::Rejected(observation) => return Ok(observation),
+            Staged::Ready { digest, placement, call } => (digest, placement, call),
+        };
+        // §18.5: record the placement facts into the engine *before* admission, so a
+        // mutation `return` reading `.file.$satisfied`/`.file.$stored`/`.file.$surplus`
+        // resolves them instead of faulting on a placement-index miss. Only a package
+        // that reads a placement member records (a rebuild would otherwise disturb an
+        // authenticated connection a non-placement upload keeps).
+        let placement_reads = matches!(&self.state, State::Loaded(loaded) if loaded.blobs.placement_reads());
+        if placement_reads
+            && let Some(state) = placement
+        {
+            self.rebuild_engine(move |engine| engine.record_blob_placement(&digest, &state))?;
+        }
+        // §18.7 step 5: admit the containing mutation with the verified descriptor.
         match &mut self.state {
-            State::Loaded(loaded) => super::blobs::put(loaded, &mut self.blob_digests, spec),
+            State::Loaded(loaded) => super::blobs::admit(loaded, &mut self.blob_digests, spec, call),
             State::Failed(message) => Err(AdapterError::LoadFailed(message.clone())),
         }
     }

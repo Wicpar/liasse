@@ -5,7 +5,8 @@
 
 mod support;
 
-use liasse_ident::InstanceId;
+use liasse_artifact::Artifact;
+use liasse_ident::{HistoryPoint, InstanceId};
 use liasse_runtime::{CallRequest, ConflictKind, Engine, ImportError, ImportRelation, Value};
 use liasse_store::MemoryStore;
 use liasse_value::Text;
@@ -33,6 +34,11 @@ fn add_note(engine: &mut Engine<MemoryStore>, id: &str, body: &str) {
 
 fn note_count(engine: &Engine<MemoryStore>) -> usize {
     engine.view_at_head("all_notes").expect("view").expect("declared").len()
+}
+
+/// The selected `(lineage, point)` an artifact's manifest names (§19.5).
+fn selected_point(artifact: &[u8]) -> HistoryPoint {
+    Artifact::open(artifact).expect("open artifact").manifest().selected.clone()
 }
 
 /// Read `all_companies` and return `(id, name)` pairs for comparison.
@@ -256,4 +262,82 @@ fn clean_merge_activates_into_committed_state() {
     let store = MemoryStore::new(InstanceId::new("notes"));
     let restored = Engine::restore(store, &artifact, &mut generator).expect("restore");
     assert_eq!(note_count(&restored), 3, "the reconciled composition round-trips");
+}
+
+#[test]
+fn restore_preserves_point_identity_on_reexport() {
+    // §19.2/§19.10: restoring an exported artifact and re-exporting the untouched
+    // instance reproduces the same selected `(lineage, point)`. Point identity is
+    // the engine's logical position, so a restore does not restart it at genesis
+    // even though the fresh store's commit seat does.
+    let mut engine = load("notes", NOTES);
+    add_note(&mut engine, "n1", "one");
+    let exported = engine.export().expect("export");
+    let original = selected_point(&exported);
+
+    let mut generator = generator();
+    let store = MemoryStore::new(InstanceId::new("notes"));
+    let restored = Engine::restore(store, &exported, &mut generator).expect("restore");
+    let reexported = restored.export().expect("re-export");
+    assert_eq!(
+        selected_point(&reexported),
+        original,
+        "the re-exported selected point equals the original point identity"
+    );
+}
+
+#[test]
+fn continuation_import_classifies_as_fast_forward_then_same_point() {
+    // §19.8: a restored instance continues its lineage and exports; the base's
+    // local point precedes that continuation, so it classifies as a fast-forward.
+    // Once applied, the local point IS the incoming point, so a replay of the
+    // identical artifact is already synchronized (same_point), not another
+    // fast-forward — the seat-order classifier collided here, this one does not.
+    let mut base = load("notes", NOTES);
+    add_note(&mut base, "n1", "one");
+    let early = base.export().expect("export early");
+
+    let mut generator = generator();
+    let store = MemoryStore::new(InstanceId::new("notes"));
+    let mut restored = Engine::restore(store, &early, &mut generator).expect("restore");
+    add_note(&mut restored, "n2", "two");
+    let ahead = restored.export().expect("export ahead");
+
+    assert_eq!(base.classify(&ahead).expect("classify"), ImportRelation::FastForward);
+    let applied = base.import(&ahead, &[ImportRelation::FastForward]).expect("import");
+    assert!(applied.applied, "the continuation fast-forwards");
+    assert_eq!(note_count(&base), 2, "the incoming continuation applied");
+
+    let replay = base.import(&ahead, &[ImportRelation::FastForward]).expect("replay");
+    assert_eq!(replay.relation, ImportRelation::SamePoint, "the replay is already synchronized");
+    assert!(!replay.applied, "an already-synchronized replay moves nothing");
+    assert_eq!(note_count(&base), 2, "the replay duplicates no rows");
+}
+
+#[test]
+fn divergent_import_classifies_as_merge() {
+    // §19.8/§19.3: roll back to an earlier point and continue with a different
+    // commit — the active lineage now branches from the shared point. Replaying
+    // the displaced future shares that branch point but diverges past it, so it
+    // is a three-way merge, not a fast-forward that would silently re-apply it.
+    let mut engine = load("notes", NOTES);
+    add_note(&mut engine, "n1", "one");
+    let a1 = engine.export().expect("export a1");
+    add_note(&mut engine, "n2", "two");
+    let a2 = engine.export().expect("export a2");
+
+    let rolled = engine.import(&a1, &[ImportRelation::Rollback]).expect("rollback");
+    assert!(rolled.applied, "the earlier point is a rollback target");
+    assert_eq!(note_count(&engine), 1, "state moved back to the earlier point");
+
+    // Diverge from the shared point onto a new lineage.
+    add_note(&mut engine, "n3", "three");
+
+    assert_eq!(engine.classify(&a2).expect("classify"), ImportRelation::Merge);
+    let report = engine
+        .import(&a2, &[ImportRelation::FastForward, ImportRelation::Rollback])
+        .expect("import");
+    assert_eq!(report.relation, ImportRelation::Merge);
+    assert!(!report.applied, "a merge is outside the fast-forward/rollback policy");
+    assert_eq!(note_count(&engine), 2, "the divergent lineage's work survives (n1, n3)");
 }

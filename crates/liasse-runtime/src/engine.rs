@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 
 use liasse_diag::SourceMap;
 use liasse_expr::{check_expression, Cell};
-use liasse_ident::{LineageId, NameSegment};
+use liasse_ident::NameSegment;
 use liasse_model::Model;
 use liasse_store::{
     AddressStep, CommitOutcome, CommitSeq, DefinitionText, InstanceStore, KeyValue, RowAddress, Transition,
@@ -119,21 +119,6 @@ fn read_requires(root: &liasse_syntax::DocValue) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The genesis lineage identifier of an instance (§19.3, D.5): its first
-/// lineage, deterministically derived from the instance incarnation so a
-/// restore of the same instance reconstructs the same lineage identity.
-fn genesis_lineage(instance: &liasse_ident::InstanceId) -> LineageId {
-    LineageId::new(format!("{}#L0", instance.as_str()))
-}
-
-/// The lineage a §19.9 reconciliation activation records its accepted result on
-/// (§19.3): a fresh lineage derived from the prior one and the committed seat, so
-/// the reconciled point is distinguishable from the linear history it replaced
-/// and two activations never collide (the seat is strictly monotone, §22.3).
-fn reconciled_lineage(prior: &LineageId, seat: CommitSeq) -> LineageId {
-    LineageId::new(format!("{}#M{}", prior.as_str(), seat.get()))
-}
-
 /// A loaded, activated package instance over a store `S`.
 pub struct Engine<S> {
     store: S,
@@ -145,10 +130,12 @@ pub struct Engine<S> {
     /// [`Engine::advance`]/[`Engine::set_time`], so temporal reads are
     /// deterministic and independent of a wall clock.
     clock: Timestamp,
-    /// This instance's genesis lineage (§19.3): the lineage its committed points
-    /// belong to, so an export names a stable `(lineage, point)` history point
-    /// and an import can classify an incoming artifact against local history.
-    lineage: LineageId,
+    /// This instance's logical position in its own history (§19.2/§19.3): the
+    /// active lineage and the selected point within it, plus the lineage ancestry
+    /// a rollback branches. Decoupled from the volatile store commit seat so an
+    /// export names a stable `(lineage, point)` that survives a restore and an
+    /// import classifies an incoming artifact by its lineage relationship (§19.8).
+    cursor: crate::lineage::HistoryCursor,
     sources: SourceMap,
     /// The live keyrings this package declares (§17): the version lifecycle over
     /// the in-process key provider, bootstrapped at load and advanced by due
@@ -219,9 +206,9 @@ impl<S: InstanceStore> Engine<S> {
             compile_definition(definition, &HostSignatures::default())?;
         let host = HostBinding::resolve(Registry::new(), &requires, false)?;
         let clock = generator.now();
-        let lineage = genesis_lineage(store.instance());
+        let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
+        let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
     }
@@ -256,9 +243,9 @@ impl<S: InstanceStore> Engine<S> {
         let Compilation { sources, model, compiled, data, .. } =
             compile_definition(definition, &host.expr_signatures())?;
         let clock = generator.now();
-        let lineage = genesis_lineage(store.instance());
+        let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
+        let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
     }
@@ -269,10 +256,18 @@ impl<S: InstanceStore> Engine<S> {
     /// [`Engine::load`] this applies no `$data` seed and no defaults — the capture
     /// is already the authoritative committed state — so a restore reproduces the
     /// exported state exactly.
+    ///
+    /// `cursor` is the logical position the artifact selected (§19.2): the restore
+    /// adopts it rather than restarting at the genesis point, so a re-export names
+    /// the *same* `(lineage, point)` and a continuation advances past it. The
+    /// genesis-position store commit that stages the captured rows is not a new
+    /// history point — the restored state *is* the selected point — so the cursor
+    /// is adopted verbatim and not advanced.
     pub(crate) fn from_state<G: Generators>(
         store: S,
         definition: &str,
         state: &crate::portable::StateSection,
+        cursor: crate::lineage::HistoryCursor,
         generator: &mut G,
     ) -> Result<Self, EngineError> {
         // A restore manages no host components (§19.10 rebuilds over a bare
@@ -282,9 +277,8 @@ impl<S: InstanceStore> Engine<S> {
             compile_definition(definition, &HostSignatures::default())?;
         let host = HostBinding::resolve(Registry::new(), &requires, false)?;
         let clock = generator.now();
-        let lineage = genesis_lineage(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
+        let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.install_state(definition, state)?;
         Ok(engine)
     }
@@ -295,10 +289,20 @@ impl<S: InstanceStore> Engine<S> {
         self.store.instance()
     }
 
-    /// This instance's genesis lineage (§19.3).
+    /// This instance's logical history cursor (§19.2/§19.3): the selected point,
+    /// its lineage ancestry, and the classification of an incoming point against
+    /// it. The §19 history operations read it to name an exported point and to
+    /// classify an import; an applied movement mutates it through
+    /// [`Self::cursor_mut`].
     #[must_use]
-    pub(crate) fn lineage(&self) -> &LineageId {
-        &self.lineage
+    pub(crate) fn cursor(&self) -> &crate::lineage::HistoryCursor {
+        &self.cursor
+    }
+
+    /// Mutable access to the history cursor, so an applied import (fast-forward or
+    /// rollback, §19.8) moves the selected point to the incoming one.
+    pub(crate) fn cursor_mut(&mut self) -> &mut crate::lineage::HistoryCursor {
+        &mut self.cursor
     }
 
     /// The active definition text (D.4).
@@ -410,7 +414,10 @@ impl<S: InstanceStore> Engine<S> {
             CommitOutcome::Committed(seq) => seq,
             CommitOutcome::Unchanged => self.store.head(),
         };
-        self.lineage = reconciled_lineage(&self.lineage, seq);
+        // §19.9: record the accepted result as a fresh point on a new lineage
+        // branched from the prior head, so a subsequent export names the
+        // reconciled point on its own lineage over the prior history.
+        self.cursor.begin_reconciled();
         Ok(seq)
     }
 
@@ -442,7 +449,12 @@ impl<S: InstanceStore> Engine<S> {
         stage(&mut txn, changes)?;
         txn.set_definition(DefinitionText::new(definition.to_owned()));
         let seq = match txn.commit()? {
-            CommitOutcome::Committed(seq) => seq,
+            // §20/§19.2: a migration is a linear continuation, so it takes a fresh
+            // point on the active lineage.
+            CommitOutcome::Committed(seq) => {
+                self.cursor.advance();
+                seq
+            }
             CommitOutcome::Unchanged => self.store.head(),
         };
         self.model = target.model;
@@ -764,7 +776,11 @@ impl<S: InstanceStore> Engine<S> {
         let changes = prospective.diff();
         let mut txn = self.store.begin();
         stage(&mut txn, changes)?;
-        txn.commit()?;
+        // §13.3/§19.2: an installation `$data` overlay that changes state takes a
+        // fresh point on the active lineage.
+        if let CommitOutcome::Committed(_) = txn.commit()? {
+            self.cursor.advance();
+        }
         Ok(())
     }
 
@@ -903,7 +919,12 @@ impl<S: InstanceStore> Engine<S> {
         let mut txn = self.store.begin();
         stage(&mut txn, changes)?;
         let seq = match txn.commit()? {
-            CommitOutcome::Committed(seq) => seq,
+            // §19.2: a state-changing commit takes a fresh point on the active
+            // lineage — the identity a later export names and an import classifies.
+            CommitOutcome::Committed(seq) => {
+                self.cursor.advance();
+                seq
+            }
             CommitOutcome::Unchanged => self.store.head(),
         };
         Ok(CallOutcome::Committed { seq, response })

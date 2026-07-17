@@ -2,18 +2,26 @@
 //!
 //! A case's `hosts.connectors` block plus its `$model` blob fields and `$data`
 //! store rows describe a §18 deployment; [`provision`] reconstructs it as a
-//! [`BlobHost`] per blob field, composed into the [`SurfaceHost`] under the field
-//! (mutation-parameter) name a `blob_put` step binds to. The driving side
-//! ([`put`]/[`get`]/[`connector_set`]) then admits an upload through the surface
-//! blob-parameter call path (§18.7), fetches through the §18.8 visibility gate over
-//! the caller's surface projection (§18.9 verifying the bytes), and scripts the
-//! §18.12 connector fault-injection vocabulary.
+//! [`BlobHost`] per blob field. The hosts are owned by the driver (in [`Loaded`],
+//! not the surface host) so they persist across a `rebuild_engine`/restart that
+//! seals only the engine — the seam the §18.5 placement recording depends on.
 //!
-//! The bytes-and-media of an honest upload go straight through
-//! [`SurfaceHost::call_with_blob`], which stages, verifies, and binds the verified
-//! descriptor before admission. A `claim` models a lying/malformed client: the
-//! declared descriptor is verified by [`SurfaceHost::blob_put_declared`], which
-//! rejects a mismatch before any transition (§18.1/§18.2).
+//! The driving side stages, fetches, and fault-injects directly against those
+//! hosts, admitting an upload through the surface call path (§18.7), fetching
+//! through the §18.8 visibility gate over the caller's surface projection (§18.9
+//! verifying the bytes), and scripting the §18.12 connector fault vocabulary.
+//!
+//! An honest upload is a two-phase [`stage`]-then-[`admit`]: [`stage`] streams the
+//! bytes into the blob host (verifying byte limit, media, count, and SHA-512),
+//! reads the §18.5 placement facts of the just-verified copy, and binds the
+//! verified descriptor as the mutation's blob argument; [`admit`] then admits the
+//! containing mutation. Splitting the two lets the caller record the placement
+//! facts into the engine (`Engine::record_blob_placement`, §18.5) *between* them,
+//! so a mutation `return` reading `.file.$satisfied`/`.file.$stored`/
+//! `.file.$surplus` resolves them rather than faulting on a placement-index miss.
+//! A `claim` models a lying/malformed client: the declared descriptor is verified
+//! by [`BlobHost::put_declared`], which rejects a mismatch before any transition
+//! (§18.1/§18.2).
 
 use std::collections::BTreeMap;
 
@@ -22,8 +30,8 @@ use liasse_host::{BlobIntegrity, Capability, ConnectorCapabilities};
 use liasse_store::InstanceStore;
 use liasse_surface::{
     AcceptedType, AuthSelection, BlobEngine, BlobGetOutcome, BlobHost, BlobPutOutcome,
-    DeclaredDescriptor, Placement, Store, StoreId, Subscription, SurfaceAddress, SurfaceCall,
-    SurfaceHost, SurfaceWatch, Value, ViewResult,
+    DeclaredDescriptor, Placement, PlacementState, Store, StoreId, Subscription, SurfaceAddress,
+    SurfaceCall, SurfaceWatch, Value, ViewResult,
 };
 use liasse_value::{MediaType, Sha512};
 use serde_json::Value as J;
@@ -34,14 +42,73 @@ use crate::outcome::Outcome;
 
 use super::{host_fault, observe_call, wire, AdapterError, Loaded};
 
-/// The §18 blob wiring a load reconstructs: the registered blob-field names and
-/// the store→connector map a `connector_set { corrupt }` resolves through.
-#[derive(Debug, Clone, Default)]
+/// The composed §18 blob hosts a load owns, one per blob field (mutation-parameter)
+/// name. Owned by the driver ([`Loaded`]) rather than the surface host so the staged
+/// bytes and connector fault state survive a `rebuild_engine`/restart.
+pub(super) type BlobHosts = BTreeMap<String, BlobHost<SimConnector>>;
+
+/// The §18 blob wiring a load reconstructs: the blob-field names, the
+/// store→connector map a `connector_set { corrupt }` resolves through, the store
+/// rows (§18.3) the placement policy re-resolves against, and the per-field
+/// placement-policy source so a shrunk store view (a disabled store, §18.5) is
+/// reflected on the next read.
+#[derive(Debug, Default)]
 pub(super) struct BlobWiring {
-    /// The blob field (mutation-parameter) names `register_blob` was called with.
-    fields: Vec<String>,
+    /// The blob field (mutation-parameter) names a blob host was provisioned for.
+    pub(super) fields: Vec<String>,
     /// store id → connector name, so a store-view `corrupt` finds its connector.
     store_connector: BTreeMap<String, String>,
+    /// The store rows (§18.3) the placement policy re-resolves against: seeded from
+    /// `$data`, and updated when a committed mutation flips a store's `enabled` flag
+    /// so a later placement read observes the shrunk store view (§18.5).
+    stores: Vec<Store>,
+    /// Per blob field: the `$blob_storage.$in` policy source (§18.4), re-resolved
+    /// against the current [`stores`](Self::stores) each time placement is recorded.
+    policy_source: BTreeMap<String, Option<J>>,
+    /// Whether the package reads a §18.5 placement member anywhere, so an upload
+    /// records the placement facts and a later mutation refreshes them.
+    placement_reads: bool,
+}
+
+impl BlobWiring {
+    /// Whether the package reads a §18.5 placement member (`.$satisfied`/`.$stored`/
+    /// `.$surplus`), so the driver records the facts an evaluation resolves against.
+    pub(super) fn placement_reads(&self) -> bool {
+        self.placement_reads
+    }
+
+    /// The §18.4 placement policy of `field`, re-resolved against the current store
+    /// rows: disabling a store shrinks the store view the policy yields, so an
+    /// already-verified copy in a no-longer-required store becomes surplus (§18.5).
+    pub(super) fn resolve_policy(&self, field: &str) -> Placement {
+        match self.policy_source.get(field).and_then(Option::as_ref) {
+            Some(value) => placement_from_value(value, &self.stores),
+            None => Placement::View(self.stores.iter().map(|s| s.id.clone()).collect()),
+        }
+    }
+
+    /// Absorb a committed mutation's result into the tracked store rows: a returned
+    /// store row (its `id` a known store, carrying an `enabled` flag, §18.3) updates
+    /// that store's participation so the placement policy re-resolves against it.
+    pub(super) fn absorb_store_changes(&mut self, value: &J) {
+        match value {
+            J::Object(row) => self.absorb_store_row(row),
+            J::Array(rows) => {
+                for row in rows.iter().filter_map(J::as_object) {
+                    self.absorb_store_row(row);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn absorb_store_row(&mut self, row: &serde_json::Map<String, J>) {
+        let Some(id) = row.get("id").and_then(J::as_str) else { return };
+        let Some(enabled) = row.get("enabled").and_then(J::as_bool) else { return };
+        if let Some(store) = self.stores.iter_mut().find(|s| s.id.as_str() == id) {
+            store.enabled = enabled;
+        }
+    }
 }
 
 /// A parsed `blob_put` step (tests/18-blobs/NOTES.md).
@@ -85,27 +152,30 @@ pub(super) struct ConnectorSetSpec {
 
 // ---- provisioning --------------------------------------------------------
 
-/// Reconstruct and compose a [`BlobHost`] for every `$type: blob` field in a
-/// `$blob_storage` collection, over the case's `hosts.connectors` and `$data`
-/// store rows. Returns the wiring later steps resolve connectors through.
-pub(super) fn provision<S: InstanceStore>(
-    host: &mut SurfaceHost<S>,
-    package: &J,
-    hosts: Option<&J>,
-) -> BlobWiring {
+/// Reconstruct a [`BlobHost`] for every `$type: blob` field in a `$blob_storage`
+/// collection, over the case's `hosts.connectors` and `$data` store rows. Returns
+/// the wiring later steps resolve connectors and placement policies through, and
+/// the hosts the driver owns (so they survive a `rebuild_engine`/restart).
+pub(super) fn provision(package: &J, hosts: Option<&J>) -> (BlobWiring, BlobHosts) {
     let mut wiring = BlobWiring::default();
-    let Some(model) = package.get("$model").and_then(J::as_object) else { return wiring };
+    let mut blob_hosts = BlobHosts::new();
+    let Some(model) = package.get("$model").and_then(J::as_object) else {
+        return (wiring, blob_hosts);
+    };
     let connectors = connector_specs(hosts);
     if connectors.is_empty() {
-        return wiring;
+        return (wiring, blob_hosts);
     }
     let stores = store_rows(package);
     wiring.store_connector =
         stores.iter().map(|s| (s.id.as_str().to_owned(), s.connector.clone())).collect();
+    wiring.stores = stores.clone();
+    wiring.placement_reads = reads_placement_member(package);
 
     for collection in model.values() {
         let Some(collection) = collection.as_object() else { continue };
         let Some(storage) = collection.get("$blob_storage") else { continue };
+        let policy_source = storage.get("$in").cloned();
         let placement = placement_of(storage, &stores);
         for (field_name, field) in collection {
             if field.get("$type").and_then(J::as_str) != Some("blob") {
@@ -122,11 +192,25 @@ pub(super) fn provision<S: InstanceStore>(
             for store in &stores {
                 engine.add_store(store.clone());
             }
-            host.register_blob(field_name.clone(), BlobHost::new(engine, accepted_type(field), placement.clone()));
+            blob_hosts.insert(
+                field_name.clone(),
+                BlobHost::new(engine, accepted_type(field), placement.clone()),
+            );
             wiring.fields.push(field_name.clone());
+            wiring.policy_source.insert(field_name.clone(), policy_source.clone());
         }
     }
-    wiring
+    (wiring, blob_hosts)
+}
+
+/// Whether the package reads a §18.5 placement member anywhere — the members the
+/// expression layer resolves off the engine's recorded placement ledger, so their
+/// presence is what makes the driver record the facts before an evaluation reads
+/// them (an unrecorded read is a placement-index miss that faults, §18.5).
+fn reads_placement_member(package: &J) -> bool {
+    serde_json::to_string(package).is_ok_and(|text| {
+        text.contains("$satisfied") || text.contains("$stored") || text.contains("$surplus")
+    })
 }
 
 /// The `(name, capabilities, available)` of every declared connector.
@@ -245,14 +329,28 @@ fn as_u64_flexible(value: &J) -> Option<u64> {
 
 // ---- driving -------------------------------------------------------------
 
-/// Admit a `blob_put` (§18.7). An honest upload streams its bytes through the
-/// surface blob-parameter call path; a `claim` declares a descriptor verified
-/// before admission (a lying/malformed client rejects, §18.1/§18.2).
-pub(super) fn put<S: InstanceStore>(
+/// The result of staging a `blob_put`'s bytes into the blob host, before admitting
+/// the containing mutation.
+pub(super) enum Staged {
+    /// The upload rejected before admission (§18.2): oversize, unaccepted media, a
+    /// hash/count mismatch, or no writable store. No mutation is admitted.
+    Rejected(Observation),
+    /// The blob verified and committed in the blob host. Carries the §18.5 placement
+    /// facts of the just-verified copy (to record before admission) and the call the
+    /// verified descriptor is bound into (§18.7 step 4).
+    Ready { digest: String, placement: Option<PlacementState>, call: SurfaceCall },
+}
+
+/// Stage a `blob_put`'s bytes into the blob host and build the admission call
+/// (§18.7). An honest upload streams its bytes through [`BlobHost::put`], verifying
+/// the byte limit, media, count, and SHA-512, then binds the verified descriptor
+/// as the mutation's blob argument and reads the §18.5 placement facts of the
+/// landed copy; a `claim` declares a descriptor verified before admission (a
+/// lying/malformed client rejects, §18.1/§18.2).
+pub(super) fn stage<S: InstanceStore>(
     loaded: &mut Loaded<S>,
-    digests: &mut BTreeMap<String, String>,
     spec: &BlobPutSpec,
-) -> Result<Observation, AdapterError> {
+) -> Result<Staged, AdapterError> {
     let address = SurfaceAddress::parse(&spec.call)
         .map_err(|err| AdapterError::Host(format!("malformed blob call `{}`: {err}", spec.call)))?;
     let types = loaded.routing.arg_types(&spec.call);
@@ -269,18 +367,33 @@ pub(super) fn put<S: InstanceStore>(
     }
 
     if let Some(claim) = &spec.claim {
-        return put_declared(loaded, spec, claim);
+        return stage_declared(loaded, spec, claim);
     }
 
-    let outcome = loaded
-        .host
-        .call_with_blob(&spec.connection, call, &spec.param, &spec.content, &spec.media)
-        .map_err(host_fault)?;
-    use liasse_surface::SurfaceOutcome as O;
-    if matches!(outcome, O::Committed { .. } | O::Unchanged { .. }) {
-        digests.insert(spec.param.clone(), BlobIntegrity::digest_hex(&spec.content));
+    let outcome = match loaded.blob_hosts.get_mut(&spec.param) {
+        Some(host) => host.put(&spec.content, &spec.media),
+        None => {
+            return Err(AdapterError::unsupported(
+                "`blob_put` names a blob parameter with no composed blob host",
+            ))
+        }
+    };
+    let digest = match outcome {
+        BlobPutOutcome::Committed { digest, .. } => digest,
+        // §18.2: a failed verification rejects the containing call before its state
+        // transition — no admission, no placement.
+        BlobPutOutcome::Rejected(_) => return Ok(Staged::Rejected(Observation::outcome(Outcome::Rejected))),
+    };
+    // §18.7 step 4: bind the verified descriptor to the mutation's blob parameter.
+    if let Some(value) = loaded.blob_hosts.get(&spec.param).and_then(|host| host.descriptor_value(&digest)) {
+        call = call.with_arg(spec.param.clone(), value);
     }
-    Ok(observe_call(&outcome))
+    // §18.5: the placement facts of the just-verified copy, evaluated against the
+    // policy re-resolved from the current store rows.
+    let policy = loaded.blobs.resolve_policy(&spec.param);
+    let placement =
+        loaded.blob_hosts.get(&spec.param).and_then(|host| host.placement_state_under(&digest, &policy));
+    Ok(Staged::Ready { digest, placement, call })
 }
 
 /// Verify a client-declared descriptor (a `claim`) against the streamed bytes
@@ -288,17 +401,17 @@ pub(super) fn put<S: InstanceStore>(
 /// [`DeclaredDescriptor`] type cannot even carry, so it is rejected at the wire
 /// boundary. A verifying descriptor that would still need binding into the
 /// mutation is a precise seam (the surface admits only honest blob parameters).
-fn put_declared<S: InstanceStore>(
+fn stage_declared<S: InstanceStore>(
     loaded: &mut Loaded<S>,
     spec: &BlobPutSpec,
     claim: &J,
-) -> Result<Observation, AdapterError> {
+) -> Result<Staged, AdapterError> {
     if let Some(bytes) = claim.get("$bytes").and_then(J::as_i64)
         && bytes < 0
     {
         // §18.1: `$bytes` is a non-negative integer; a negative claim is a
         // malformed descriptor, rejected before any transition.
-        return Ok(Observation::outcome(Outcome::Rejected));
+        return Ok(Staged::Rejected(Observation::outcome(Outcome::Rejected)));
     }
     let declared = DeclaredDescriptor {
         sha512: claim
@@ -310,25 +423,67 @@ fn put_declared<S: InstanceStore>(
         media: claim.get("$media").and_then(J::as_str).map(ToOwned::to_owned).unwrap_or_else(|| spec.media.clone()),
         name: claim.get("$name").and_then(J::as_str).map(ToOwned::to_owned).or_else(|| spec.name.clone()),
     };
-    match loaded.host.blob_put_declared(&spec.param, &declared, &spec.content).map_err(component_fault)? {
-        BlobPutOutcome::Rejected(_) => Ok(Observation::outcome(Outcome::Rejected)),
+    let Some(host) = loaded.blob_hosts.get_mut(&spec.param) else {
+        return Err(AdapterError::unsupported(
+            "`blob_put` names a blob parameter with no composed blob host",
+        ));
+    };
+    match host.put_declared(&declared, &spec.content) {
+        BlobPutOutcome::Rejected(_) => Ok(Staged::Rejected(Observation::outcome(Outcome::Rejected))),
         BlobPutOutcome::Committed { .. } => Err(AdapterError::unsupported(
             "a client-declared blob descriptor that verifies must be bound into the mutation call, \
-             but the surface admits only the honest `call_with_blob` blob parameter (no \
-             declared-descriptor call binding is exposed)",
+             but the surface admits only the honest blob parameter (no declared-descriptor call \
+             binding is exposed)",
         )),
     }
+}
+
+/// Admit a staged upload's mutation (§18.7), the verified descriptor already bound
+/// into `call`. The committed digest is tracked so a later `blob_get`/`connector_set`
+/// finds the blob under test.
+pub(super) fn admit<S: InstanceStore>(
+    loaded: &mut Loaded<S>,
+    digests: &mut BTreeMap<String, String>,
+    spec: &BlobPutSpec,
+    call: SurfaceCall,
+) -> Result<Observation, AdapterError> {
+    let outcome = loaded.host.call(&spec.connection, &call).map_err(host_fault)?;
+    use liasse_surface::SurfaceOutcome as O;
+    if matches!(outcome, O::Committed { .. } | O::Unchanged { .. }) {
+        digests.insert(spec.param.clone(), BlobIntegrity::digest_hex(&spec.content));
+    }
+    Ok(observe_call(&outcome))
+}
+
+/// The §18.5 placement facts to record for every committed blob, each digest's
+/// facts evaluated against its field's policy re-resolved from the current store
+/// rows (§18.4/§18.5) — so a store `enabled` change since the upload is reflected.
+pub(super) fn placement_records<S: InstanceStore>(
+    loaded: &Loaded<S>,
+    digests: &BTreeMap<String, String>,
+) -> Vec<(String, PlacementState)> {
+    digests
+        .iter()
+        .filter_map(|(field, digest)| {
+            let policy = loaded.blobs.resolve_policy(field);
+            loaded
+                .blob_hosts
+                .get(field)
+                .and_then(|host| host.placement_state_under(digest, &policy))
+                .map(|state| (digest.clone(), state))
+        })
+        .collect()
 }
 
 /// Fetch a blob through the §18.8 visibility gate over the caller's surface
 /// projection. The gate is *visibility of a blob value through a currently
 /// authorized surface*, so the fetch resolves the caller's surface view (with the
 /// step's authenticator and view parameters), reads the value at the descriptor
-/// occurrence (`at`, a blob field), and hands it to
-/// [`SurfaceHost::blob_get_projected`]: a projected blob *value* grants the fetch
-/// of exactly its bytes, while a hidden row (a role-scoped/filtered view that
-/// resolves nothing), a revoked membership (the surface denies the read), or a
-/// metadata-only projection grants none (§18.8/§18.9).
+/// occurrence (`at`, a blob field), and hands it to [`BlobHost::fetch_projected`]:
+/// a projected blob *value* grants the fetch of exactly its bytes, while a hidden
+/// row (a role-scoped/filtered view that resolves nothing), a revoked membership
+/// (the surface denies the read), or a metadata-only projection grants none
+/// (§18.8/§18.9).
 pub(super) fn get<S: InstanceStore>(
     loaded: &mut Loaded<S>,
     spec: &BlobGetSpec,
@@ -353,20 +508,17 @@ pub(super) fn get<S: InstanceStore>(
     }
     let subscription = loaded.host.watch(&spec.connection, &watch).map_err(host_fault)?;
 
-    let outcome = match &subscription {
-        // §18.8: read the descriptor occurrence the authorized projection exposes.
-        // A blob value grants the fetch; a metadata-only projection or a hidden
-        // occurrence (no such field on the resolved row) grants none.
-        Subscription::Init(result) => {
-            loaded.host.blob_get_projected(&field, projected_value(result, &field)).map_err(component_fault)?
-        }
-        // §18.8: authentication or scoped-role membership refused the read, so no
-        // descriptor occurrence is visible — the fetch plan is not issued.
-        Subscription::Denied(_) | Subscription::Failed(_) | Subscription::Window(_) => {
-            loaded.host.blob_get_projected(&field, None).map_err(component_fault)?
-        }
+    // §18.8: the descriptor occurrence the authorized projection exposes. A blob
+    // value grants the fetch; a metadata-only projection, a hidden occurrence, or a
+    // refused read (no `Init`) grants none — the fetch plan is not issued.
+    let projected: Option<Value> = match &subscription {
+        Subscription::Init(result) => projected_value(result, &field).cloned(),
+        Subscription::Denied(_) | Subscription::Failed(_) | Subscription::Window(_) => None,
     };
-    Ok(observe_get(&outcome))
+    let Some(host) = loaded.blob_hosts.get(&field) else {
+        return Err(AdapterError::unsupported("`blob_get` names a blob field with no composed blob host"));
+    };
+    Ok(observe_get(&host.fetch_projected(projected.as_ref())))
 }
 
 /// The blob-field name a `blob_get` fetches at: the descriptor occurrence `at`
@@ -428,7 +580,9 @@ pub(super) fn connector_set<S: InstanceStore>(
         .unwrap_or_default();
     let fields = loaded.blobs.fields.clone();
     for field in &fields {
-        if let Some(connector) = loaded.host.connector_mut(field, &target).map_err(component_fault)? {
+        if let Some(host) = loaded.blob_hosts.get_mut(field)
+            && let Some(connector) = host.connector_mut(&target)
+        {
             if let Some(available) = spec.available {
                 connector.set_available(available);
             }
@@ -441,9 +595,4 @@ pub(super) fn connector_set<S: InstanceStore>(
         }
     }
     Ok(Observation::ok(None))
-}
-
-/// Map a host-component driver error (an unregistered component) to a skip.
-fn component_fault(error: liasse_surface::HostComponentError) -> AdapterError {
-    AdapterError::Host(error.to_string())
 }

@@ -337,9 +337,9 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         let (router, mut routing) = router::build(engine.model(), &ctx.package, &plan, &ctx.lift)
             .map_err(|err| AdapterError::Host(format!("sandbox router rebuild failed: {err}")))?;
         routing.load_view_param_types(&engine);
-        let mut host = SurfaceHost::new(engine, router, clock);
-        let blobs = super::blobs::provision(&mut host, &ctx.package, ctx.hosts.as_ref());
-        Ok(Some(Loaded { host, routing, blobs }))
+        let host = SurfaceHost::new(engine, router, clock);
+        let (blobs, blob_hosts) = super::blobs::provision(&ctx.package, ctx.hosts.as_ref());
+        Ok(Some(Loaded { host, routing, blobs, blob_hosts }))
     }
 
     /// Load an independent installation of the case package into a fresh in-memory
@@ -359,9 +359,9 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         let (router, mut routing) =
             router::build(engine.model(), &ctx.package, &plan, &ctx.lift).map_err(|err| err.to_string())?;
         routing.load_view_param_types(&engine);
-        let mut host = SurfaceHost::new(engine, router, clock);
-        let blobs = super::blobs::provision(&mut host, &ctx.package, ctx.hosts.as_ref());
-        Ok(Loaded { host, routing, blobs })
+        let host = SurfaceHost::new(engine, router, clock);
+        let (blobs, blob_hosts) = super::blobs::provision(&ctx.package, ctx.hosts.as_ref());
+        Ok(Loaded { host, routing, blobs, blob_hosts })
     }
 
     /// §9.2 host lifecycle `load(target)`: re-load the step's package into the

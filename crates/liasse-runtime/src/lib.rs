@@ -153,6 +153,7 @@ mod host;
 mod interp;
 mod keyring;
 mod keyring_view;
+mod lineage;
 mod materialize;
 mod meter;
 mod migrate;

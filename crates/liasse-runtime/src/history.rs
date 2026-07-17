@@ -13,23 +13,29 @@
 //! restore/import time as an [`ImportError::Artifact`] before any movement is
 //! classified — this is the parse-don't-validate boundary for a byte stream.
 //!
-//! CORE scope: a single-instance linear lineage. Point identity is the commit
-//! seat (§22.3); classification against a same-instance same-lineage history is
-//! by seat order (fast-forward ahead, rollback behind, same-point equal), and a
-//! different instance incarnation or lineage is `unrelated`. Compaction, alternate
-//! retained lineages, and nested-module composition points remain documented
-//! seams the artifact container already supports.
+//! Point identity is lineage-aware ([`crate::lineage::HistoryCursor`]): a history
+//! point is `(lineage, position)`, decoupled from the volatile store commit seat
+//! so it survives a restore (§19.2) and a rollback. [`Engine::classify`] compares
+//! the incoming point to the local point by their *lineage relationship* (§19.8) —
+//! a continuation of the local lineage is a fast-forward, an ancestor is a
+//! rollback, a divergence from a shared ancestor is a merge, the identical point
+//! is already synchronized, and a different instance or a lineage the local
+//! ancestry does not know is `unrelated`. CORE tracks the active lineage and the
+//! ancestors a rollback branches through; retaining a displaced continuation's own
+//! head, reversible compaction, and nested-module composition points remain
+//! documented seams the artifact container already supports.
 
 use std::collections::BTreeMap;
 
 use liasse_artifact::{Artifact, ArtifactBuilder, ArtifactError};
-use liasse_ident::{HistoryPoint, LineageId, PointId};
+use liasse_ident::HistoryPoint;
 use liasse_store::{AddressStep, InstanceStore, RowAddress};
 use liasse_value::Value;
 use serde_json::Value as J;
 
 use crate::engine::{compile_definition, Engine};
 use crate::error::EngineError;
+use crate::lineage::LineageEntry;
 use crate::materialize::{self, FieldMap};
 use crate::portable::StateSection;
 use crate::schema::Schema;
@@ -169,25 +175,39 @@ impl MergeOutcome {
     }
 }
 
-/// Serialize a minimal §19.6 `history/index.json` for a linear lineage: its
-/// single range from genesis to the selected point.
-fn history_index_bytes(lineage: &LineageId, point: &PointId) -> Vec<u8> {
-    let mut selected = serde_json::Map::new();
-    selected.insert("lineage".to_owned(), J::String(lineage.as_str().to_owned()));
-    selected.insert("point".to_owned(), J::String(point.as_str().to_owned()));
+/// Serialize the §19.6 `history/index.json` for the selected point and the
+/// retained lineages the cursor knows: each lineage records its origin (genesis
+/// or the `{lineage, point}` it branched from, §19.6) and its head point. Ranges
+/// stay an empty object — CORE retains points without reversible compaction, so
+/// no range partition is emitted (a documented §19.4 seam).
+fn history_index_bytes(selected: &HistoryPoint, lineages: &[LineageEntry]) -> Vec<u8> {
+    let mut selected_obj = serde_json::Map::new();
+    selected_obj.insert("lineage".to_owned(), J::String(selected.lineage().as_str().to_owned()));
+    selected_obj.insert("point".to_owned(), J::String(selected.point().as_str().to_owned()));
 
-    let mut lineage_body = serde_json::Map::new();
-    lineage_body.insert("origin".to_owned(), J::String("genesis".to_owned()));
-    lineage_body.insert("head".to_owned(), J::String(point.as_str().to_owned()));
-    lineage_body.insert("ranges".to_owned(), J::Object(serde_json::Map::new()));
-
-    let mut lineages = serde_json::Map::new();
-    lineages.insert(lineage.as_str().to_owned(), J::Object(lineage_body));
+    let mut lineages_obj = serde_json::Map::new();
+    for entry in lineages {
+        let mut body = serde_json::Map::new();
+        match &entry.origin {
+            None => {
+                body.insert("origin".to_owned(), J::String("genesis".to_owned()));
+            }
+            Some((parent, position)) => {
+                let mut origin = serde_json::Map::new();
+                origin.insert("lineage".to_owned(), J::String(parent.as_str().to_owned()));
+                origin.insert("point".to_owned(), J::String(position.to_string()));
+                body.insert("origin".to_owned(), J::Object(origin));
+            }
+        }
+        body.insert("head".to_owned(), J::String(entry.head.to_string()));
+        body.insert("ranges".to_owned(), J::Object(serde_json::Map::new()));
+        lineages_obj.insert(entry.lineage.as_str().to_owned(), J::Object(body));
+    }
 
     let mut index = serde_json::Map::new();
     index.insert("format".to_owned(), J::Number(1u64.into()));
-    index.insert("selected".to_owned(), J::Object(selected));
-    index.insert("lineages".to_owned(), J::Object(lineages));
+    index.insert("selected".to_owned(), J::Object(selected_obj));
+    index.insert("lineages".to_owned(), J::Object(lineages_obj));
     serde_json::to_vec(&J::Object(index)).unwrap_or_default()
 }
 
@@ -200,9 +220,11 @@ impl<S: InstanceStore> Engine<S> {
         let definition = self
             .definition_source()
             .ok_or_else(|| EngineError::Internal("instance has no active definition".to_owned()))?;
-        let point = PointId::new(self.head().get().to_string());
-        let selected = HistoryPoint::new(self.lineage().clone(), point.clone());
-        let index = history_index_bytes(self.lineage(), &point);
+        // §19.2: the exported point is the engine's stable logical position, not
+        // the volatile store commit seat, so a restore reproduces the same
+        // `(lineage, point)` and a continuation advances past it.
+        let selected = self.cursor().point();
+        let index = history_index_bytes(&selected, &self.cursor().lineages());
         ArtifactBuilder::new(
             self.instance().clone(),
             selected,
@@ -224,34 +246,32 @@ impl<S: InstanceStore> Engine<S> {
     ) -> Result<Self, ImportError> {
         let opened = Artifact::open(artifact)?;
         let (definition, state) = decode_sections(&opened)?;
-        Self::from_state(store, &definition, &state, generator).map_err(ImportError::Engine)
+        // §19.2/§19.10: adopt the artifact's selected `(lineage, point)` and its
+        // recorded lineage ancestry, so a re-export reproduces the exact point and
+        // a later classify is lineage-aware — rather than restarting at genesis.
+        let cursor = crate::lineage::HistoryCursor::restored(&opened.manifest().selected, opened.history_index());
+        Self::from_state(store, &definition, &state, cursor, generator).map_err(ImportError::Engine)
     }
 
     /// Classify an incoming artifact against local retained history (§19.8),
-    /// verifying it first.
+    /// verifying it first. A different instance incarnation is `unrelated`;
+    /// otherwise the incoming `(lineage, point)` is compared to the local point by
+    /// their lineage relationship — a continuation is a fast-forward, an ancestor
+    /// a rollback, a divergence from a shared ancestor a merge, and a lineage the
+    /// local ancestry does not know shares no point (`unrelated`).
     pub fn classify(&self, artifact: &[u8]) -> Result<ImportRelation, ImportError> {
         let opened = Artifact::open(artifact)?;
         let manifest = opened.manifest();
-        if manifest.instance != *self.instance() || manifest.selected.lineage() != self.lineage() {
+        if manifest.instance != *self.instance() {
             return Ok(ImportRelation::Unrelated);
         }
-        let incoming = manifest
-            .selected
-            .point()
-            .as_str()
-            .parse::<u64>()
-            .map_err(|_| ImportError::Corrupt("selected point is not a commit seat".to_owned()))?;
-        let local = self.head().get();
-        Ok(match incoming.cmp(&local) {
-            std::cmp::Ordering::Equal => ImportRelation::SamePoint,
-            std::cmp::Ordering::Greater => ImportRelation::FastForward,
-            std::cmp::Ordering::Less => ImportRelation::Rollback,
-        })
+        Ok(self.cursor().classify(&manifest.selected))
     }
 
     /// Import an artifact under a movement `policy` (§19.8): classify it, and when
     /// the relation is a permitted fast-forward or rollback, activate the movement
-    /// by moving live state to the incoming point.
+    /// by moving live state to the incoming point and advancing the logical cursor
+    /// to that point.
     pub fn import(&mut self, artifact: &[u8], policy: &[ImportRelation]) -> Result<ImportReport, ImportError> {
         let relation = self.classify(artifact)?;
         let movement = matches!(relation, ImportRelation::FastForward | ImportRelation::Rollback);
@@ -260,6 +280,15 @@ impl<S: InstanceStore> Engine<S> {
             let opened = Artifact::open(artifact)?;
             let (_definition, state) = decode_sections(&opened)?;
             self.reinstall_state(&state).map_err(ImportError::Engine)?;
+            // §19.8: the selected point moves to the incoming one — a fast-forward
+            // continues the active lineage, a rollback selects the earlier point
+            // and displaces the current continuation onto a new branch.
+            let selected = opened.manifest().selected.clone();
+            match relation {
+                ImportRelation::FastForward => self.cursor_mut().apply_fast_forward(&selected),
+                ImportRelation::Rollback => self.cursor_mut().apply_rollback(&selected),
+                _ => {}
+            }
         }
         Ok(ImportReport { relation, applied })
     }
