@@ -32,7 +32,7 @@ impl Evaluator<'_> {
                 // As a view it never coerces to a single row, so an absent key is
                 // an empty stream rather than a cardinality error.
                 let rows = self.select_rows(base, selector)?;
-                Ok(rows.into_iter().map(bare_scope).collect())
+                Ok(rows.into_iter().map(RowScope::bare).collect())
             }
             TypedKind::Project { source, projection } => {
                 // §7.1 in view context: project over the source's row view. A
@@ -42,11 +42,11 @@ impl Evaluator<'_> {
                 // `eval_select` raises. This is the shape a `$view` declaration
                 // (§12.2) delivers — a collection, never a coerced single row.
                 let rows = self.project_view(source, projection)?;
-                Ok(rows.into_iter().map(bare_scope).collect())
+                Ok(rows.into_iter().map(RowScope::bare).collect())
             }
             _ => match self.eval(expr)? {
-                Cell::Collection(rows) => Ok(rows.into_iter().map(bare_scope).collect()),
-                Cell::Row(row) => Ok(vec![bare_scope(*row)]),
+                Cell::Collection(rows) => Ok(rows.into_iter().map(RowScope::bare).collect()),
+                Cell::Row(row) => Ok(vec![RowScope::bare(*row)]),
                 _ => Err(EvalError::ShapeMismatch { expected: "a view" }),
             },
         }
@@ -86,9 +86,12 @@ impl Evaluator<'_> {
                     continue;
                 }
             }
+            // A `[:name]` filter keeps the row unchanged, so its source-chain
+            // identity (any outer `::` prefix included) passes through untouched.
+            let identity = scope.identity;
             let mut binds = scope.binds;
             binds.push((name.to_owned(), Cell::Row(Box::new(row.clone()))));
-            kept.push(RowScope { row, binds });
+            kept.push(RowScope { row, binds, identity });
         }
         Ok(kept)
     }
@@ -111,7 +114,12 @@ impl Evaluator<'_> {
                     binds.push((name.clone(), Cell::Row(Box::new(scope.row.clone()))));
                 }
                 binds.push((member.to_owned(), Cell::Row(Box::new(row.clone()))));
-                out.push(RowScope { row, binds });
+                // §7.2/§13.9: a `::` level inherits `outer.$key + inner.$key`, so
+                // the outer (e.g. module-instance) component prefixes the exposed
+                // row's identity — keeping same-keyed rows of distinct outer rows
+                // apart. `scope.identity` already carries any further-out prefix.
+                let identity = scope.identity.join(row.id());
+                out.push(RowScope { row, binds, identity });
             }
         }
         Ok(out)
@@ -128,7 +136,7 @@ impl Evaluator<'_> {
                 Cell::Row(row) => *row,
                 _ => return Err(EvalError::ShapeMismatch { expected: "a row" }),
             };
-            let projected = self.project_row(&RowScope { row: row.clone(), binds: Vec::new() }, projection, None)?;
+            let projected = self.project_row(&RowScope::bare(row.clone()), projection, None)?;
             return Ok(Cell::Row(Box::new(projected)));
         }
         Ok(Cell::Collection(self.project_view(source, projection)?))
@@ -256,7 +264,10 @@ impl Evaluator<'_> {
             // §7.2/§12.4: a synthetic group's identity is its group key, not its
             // position — rendered to canonical key text (D.2) so it is stable.
             Some((_, identity)) => (group_row_id(&identity), identity),
-            None => (scope.row.id().clone(), scope.row.key().clone()),
+            // §7.2/§13.9: a plain projection inherits the source-chain identity —
+            // the row's own key for a single collection, or the composed
+            // `outer.$key + inner.$key` a `::` traversal contributed.
+            None => (scope.identity.clone(), scope.row.key().clone()),
         };
         Ok(Row::new(id, key, cells))
     }
@@ -342,10 +353,6 @@ impl Evaluator<'_> {
         };
         Ok(Cell::Collection(result))
     }
-}
-
-fn bare_scope(row: Row) -> RowScope {
-    RowScope { row, binds: Vec::new() }
 }
 
 /// The binding name a `::` base contributes: a field's name, or a nested

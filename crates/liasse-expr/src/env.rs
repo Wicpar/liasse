@@ -85,6 +85,17 @@ impl RowId {
         &self.0
     }
 
+    /// Append `tail`'s components after this identity's, composing the
+    /// source-row chain across a `::` traversal level (§7.2): `.modules::templates`
+    /// yields `modules.$key + templates.$key`, so two instances exposing the same
+    /// row key stay distinct by their instance component (§13.9, Annex D.1).
+    #[must_use]
+    pub fn join(&self, tail: &Self) -> Self {
+        let mut path = self.0.clone();
+        path.extend(tail.0.iter().cloned());
+        Self(path)
+    }
+
     fn extend(&self, part: RowIdPart) -> Self {
         let mut path = self.0.clone();
         path.push(part);

@@ -22,7 +22,7 @@ use std::collections::BTreeMap;
 
 use liasse_value::{RefKey, Text, Value};
 
-use crate::env::{Cell, Environment, Row};
+use crate::env::{Cell, Environment, Row, RowId};
 use crate::error::EvalError;
 use crate::ty::ExprType;
 use crate::typed::{TypedExpr, TypedKind, TypedSelector};
@@ -91,10 +91,26 @@ pub(crate) struct EvalFrame {
     pub(crate) bindings: BTreeMap<String, Cell>,
 }
 
-/// A row plus the binding context in which its projection is evaluated.
+/// A row plus the binding context in which its projection is evaluated, and the
+/// source-chain identity it contributes to a view output (§7.2, Annex D.1).
+///
+/// For an ordinary single-collection scope the identity is just the row's own
+/// key-derived [`RowId`]; a `::` traversal level prepends the outer row's
+/// identity, so `.modules::templates` inherits `modules.$key + templates.$key`
+/// (§7.2/§13.9) and two instances exposing the same exposed key stay distinct.
 pub(crate) struct RowScope {
     pub(crate) row: Row,
     pub(crate) binds: Vec<(String, Cell)>,
+    pub(crate) identity: RowId,
+}
+
+impl RowScope {
+    /// A bare scope over a single collection: its identity is the row's own,
+    /// with no traversal prefix (§7.2).
+    pub(crate) fn bare(row: Row) -> Self {
+        let identity = row.id().clone();
+        Self { row, binds: Vec::new(), identity }
+    }
 }
 
 /// The evaluator state: the environment and the frame stack.
