@@ -347,16 +347,35 @@ impl<S: InstanceStore> Engine<S> {
         Ok(())
     }
 
-    /// Replace live state with `state`, staging the exact diff as one commit —
-    /// the movement an applied import (fast-forward or rollback) performs
-    /// (§19.8). Returns the new head, or the current head when nothing changed.
-    pub(crate) fn reinstall_state(
+    /// Restore the definition AND state of an imported point as one atomic
+    /// movement — the fast-forward or rollback an applied import performs (§19.8).
+    /// Returns the new head, or the current head when nothing changed.
+    ///
+    /// A movement restores *the selected point*, which the artifact carries with
+    /// the definition active at that point (§19.5). When the point pre- or
+    /// post-dates a migration, its state was captured under a different shape than
+    /// the currently active one, so the definition must be adopted before the
+    /// captured rows are read — otherwise the point's bytes are reinterpreted under
+    /// a foreign schema and its values are lost (§20.2). This mirrors
+    /// [`Engine::from_state`] (the fresh-instance restore, §19.10) and the §20
+    /// migration commit: compile the point's definition, rebind its `$requires`
+    /// against the live registry, reinstall the captured rows under the point's own
+    /// schema, record the definition on the same commit, then adopt it as active.
+    pub(crate) fn reinstall_point(
         &mut self,
+        definition: &str,
         state: &crate::portable::StateSection,
     ) -> Result<CommitSeq, EngineError> {
-        let schema = Schema::new(&self.model);
-        let mut prospective = Prospective::gather(&self.store, schema)?;
-        let target = state.working(schema)?;
+        // §16.2/§20: re-resolve the point definition's `$requires` against the live
+        // registry before activation, strictly, exactly as a migration does.
+        let Compilation { sources, model, compiled, requires, .. } =
+            compile_definition(definition, &HostSignatures::default())?;
+        self.host.rebind(&requires)?;
+        // §19.5: read the captured rows under the POINT's own schema, not the
+        // engine's current one, so a movement across a migration reinstalls the
+        // point's shape rather than reinterpreting its bytes under a foreign model.
+        let target = state.working(Schema::new(&model))?;
+        let mut prospective = Prospective::gather(&self.store, self.schema())?;
         // Drop every live address absent from the target, then overwrite the rest.
         let live: Vec<_> = prospective.working().keys().cloned().collect();
         for address in live {
@@ -370,10 +389,18 @@ impl<S: InstanceStore> Engine<S> {
         let changes = prospective.diff();
         let mut txn = self.store.begin();
         stage(&mut txn, changes)?;
-        Ok(match txn.commit()? {
+        // §19.8/§19.10: record the point's definition on the same commit so a
+        // restart reproduces it, then adopt it as the active definition below.
+        txn.set_definition(DefinitionText::new(definition.to_owned()));
+        let seq = match txn.commit()? {
             CommitOutcome::Committed(seq) => seq,
             CommitOutcome::Unchanged => self.store.head(),
-        })
+        };
+        self.model = model;
+        self.compiled = compiled;
+        self.sources = sources;
+        self.keyrings = build_keyrings(&self.compiled, self.clock);
+        Ok(seq)
     }
 
     /// §19.9 activation: install a computed merged/corrected logical state as one

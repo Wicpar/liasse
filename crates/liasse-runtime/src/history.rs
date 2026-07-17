@@ -278,8 +278,13 @@ impl<S: InstanceStore> Engine<S> {
         let applied = movement && policy.contains(&relation);
         if applied {
             let opened = Artifact::open(artifact)?;
-            let (_definition, state) = decode_sections(&opened)?;
-            self.reinstall_state(&state).map_err(ImportError::Engine)?;
+            // §19.5/§19.8: a movement restores the selected point, which carries the
+            // definition active at that point. Adopt that definition together with
+            // the captured state so a movement across a migration stays coherent —
+            // the point's shape and values are not reinterpreted under the currently
+            // active model (§20.2).
+            let (definition, state) = decode_sections(&opened)?;
+            self.reinstall_point(&definition, &state).map_err(ImportError::Engine)?;
             // §19.8: the selected point moves to the incoming one — a fast-forward
             // continues the active lineage, a rollback selects the earlier point
             // and displaces the current continuation onto a new branch.
