@@ -10,15 +10,77 @@
 //! The DDL is `CREATE … IF NOT EXISTS` throughout and records a single
 //! `schema_version` row. Opening refuses a schema stamped newer than this code
 //! knows: forward compatibility is not assumed.
+//!
+//! # Model-derived indexes
+//!
+//! The secondary indexes a schema needs are *derived* from its tables
+//! ([`Schema::indexes`]) rather than baked into one opaque DDL blob, so the set is
+//! enumerable. Opening creates every derived index idempotently
+//! (`CREATE INDEX IF NOT EXISTS`), and because the set is data a later
+//! reconciliation round can diff the live indexes against it and drop any the
+//! active model no longer needs — no migration leaves orphaned structures behind.
+//! Primary-key and unique indexes are intrinsic to their table declarations (they
+//! vanish with the table) and so are not part of this derived set.
 
 /// The schema version this build writes and understands. Opening a schema with a
-/// higher stamp is refused rather than guessed at.
-pub const SCHEMA_VERSION: i32 = 1;
+/// higher stamp is refused rather than guessed at; opening an older one applies
+/// the current DDL (idempotently) and bumps the stamp forward.
+///
+/// Bumped to 2 when the model-derived `rows_key_order` index was added.
+pub const SCHEMA_VERSION: i32 = 2;
 
 /// A per-instance schema namespace: a validated PostgreSQL identifier.
 #[derive(Debug, Clone)]
 pub struct Schema {
     name: String,
+}
+
+/// A secondary index one of a [`Schema`]'s tables needs, held as data so the set
+/// is enumerable rather than fixed text.
+///
+/// Its creation is idempotent (`CREATE INDEX IF NOT EXISTS`) and it carries a
+/// matching [`drop_sql`](IndexSpec::drop_sql) so the reconciliation lifecycle can
+/// create the indexes the active model needs and drop the ones it no longer does,
+/// keyed by the deterministic index [`name`](IndexSpec::name).
+#[derive(Debug, Clone)]
+pub struct IndexSpec {
+    name: &'static str,
+    table: &'static str,
+    key: &'static str,
+}
+
+impl IndexSpec {
+    /// The deterministic index name — unique within the schema and stable across
+    /// opens, which is what makes create/drop idempotent and reconcilable.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.name
+    }
+
+    /// The table this index is defined on.
+    #[must_use]
+    pub fn table(&self) -> &str {
+        self.table
+    }
+
+    /// Idempotent creation DDL, scoped to `schema`.
+    #[must_use]
+    pub fn create_sql(&self, schema: &Schema) -> String {
+        format!(
+            "CREATE INDEX IF NOT EXISTS {} ON {}.{} ({});",
+            quote(self.name),
+            schema.quoted(),
+            quote(self.table),
+            self.key
+        )
+    }
+
+    /// Idempotent drop DDL, scoped to `schema` — the reconciliation round's tool
+    /// for retiring an index the active model no longer needs.
+    #[must_use]
+    pub fn drop_sql(&self, schema: &Schema) -> String {
+        format!("DROP INDEX IF EXISTS {}.{};", schema.quoted(), quote(self.name))
+    }
 }
 
 impl Schema {
@@ -49,11 +111,35 @@ impl Schema {
         format!("\"{}\"", self.name.replace('"', "\"\""))
     }
 
-    /// The DDL that (idempotently) creates every table this schema owns.
+    /// The secondary indexes this schema's tables need, derived from the query
+    /// patterns the backend must serve without a sequential scan (see the crate's
+    /// index-coverage gates). The set is data, so opening creates each idempotently
+    /// and reconciliation can drop any that fall out of the active model.
+    ///
+    /// Primary-key indexes (`rows(addr_key)`, `commit_log(seq)`, `blobs(digest)`,
+    /// `history_points(lineage, point)`) are intrinsic to the table declarations
+    /// and are not listed here — they serve every point lookup and the seq-ordered
+    /// log reads directly, and drop with their table.
+    #[must_use]
+    pub fn indexes(&self) -> Vec<IndexSpec> {
+        vec![
+            // `InstanceStore::scan` enumerates a collection's direct rows in Annex B
+            // key order over a shared `addr_key` prefix. The primary key on
+            // `addr_key` orders by the database's *default* collation, which is not
+            // guaranteed to be byte order — so a prefix range walk could sort or, on
+            // some locales, decline the index entirely. A `COLLATE "C"` index gives
+            // the prefix range a deterministic, byte-ordered, index-served path on
+            // every cluster, so the scan never degrades to a Seq Scan + Sort.
+            IndexSpec { name: "rows_key_order", table: "rows", key: "addr_key COLLATE \"C\"" },
+        ]
+    }
+
+    /// The DDL that (idempotently) creates every table and derived index this
+    /// schema owns.
     #[must_use]
     pub fn create_ddl(&self) -> String {
         let s = self.quoted();
-        format!(
+        let mut ddl = format!(
             "CREATE SCHEMA IF NOT EXISTS {s};\n\
              CREATE TABLE IF NOT EXISTS {s}.schema_version (\
                  id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1), version INT NOT NULL);\n\
@@ -78,7 +164,12 @@ impl Schema {
                  PRIMARY KEY (lineage, point));\n\
              CREATE TABLE IF NOT EXISTS {s}.blobs (\
                  digest TEXT PRIMARY KEY, bytes BYTEA NOT NULL);\n"
-        )
+        );
+        for index in self.indexes() {
+            ddl.push_str(&index.create_sql(self));
+            ddl.push('\n');
+        }
+        ddl
     }
 
     /// DDL dropping this schema and everything in it — the droppable-unit tear
@@ -87,6 +178,12 @@ impl Schema {
     pub fn drop_ddl(&self) -> String {
         format!("DROP SCHEMA IF EXISTS {} CASCADE;", self.quoted())
     }
+}
+
+/// Quote a bare SQL identifier. Table and index names here are ASCII literals
+/// this crate controls, so this is defence in depth mirroring [`Schema::quoted`].
+fn quote(ident: &str) -> String {
+    format!("\"{}\"", ident.replace('"', "\"\""))
 }
 
 fn sanitize(raw: &str) -> String {

@@ -51,13 +51,26 @@ impl PgStoreFactory {
         client.batch_execute(&schema.drop_ddl()).map_err(backend)
     }
 
+    /// The physical schema this factory materializes for `instance`. Exposed so
+    /// operational tooling — and the index-coverage gates — can inspect the exact
+    /// tables and derived indexes an instance owns.
+    #[must_use]
+    pub fn schema_for(&self, instance: &InstanceId) -> Schema {
+        Schema::derive(&self.namespace, instance.as_str())
+    }
+
     fn ensure(client: &mut Client, schema: &Schema, instance: &InstanceId) -> Result<(), StoreError> {
         client.batch_execute(&schema.create_ddl()).map_err(backend)?;
         let s = schema.quoted();
+        // Stamp a fresh schema at the current version and bump an older one forward
+        // now that its DDL (the derived indexes above) has been reapplied. `GREATEST`
+        // never lowers a *newer* stamp, which the check below then refuses to open.
         client
             .execute(
                 &format!(
-                    "INSERT INTO {s}.schema_version (version) VALUES ($1) ON CONFLICT (id) DO NOTHING"
+                    "INSERT INTO {s}.schema_version (id, version) VALUES (1, $1) \
+                     ON CONFLICT (id) DO UPDATE \
+                     SET version = GREATEST(schema_version.version, EXCLUDED.version)"
                 ),
                 &[&SCHEMA_VERSION],
             )

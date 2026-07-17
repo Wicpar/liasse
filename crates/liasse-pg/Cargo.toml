@@ -36,6 +36,15 @@ data-encoding = "2.11"
 # corpus through the shared runtime/surface harness over this store, gating it
 # against the identical `scenario_gate::SKIP` ledger the in-memory runner uses.
 liasse-testkit = { path = "../liasse-testkit" }
+# Throughput benchmarks comparing each backend op to the equivalent raw SQL on the
+# same populated database, so the backend's overhead over pure PostgreSQL is
+# measurable. `default-features = false` matches the rest of the workspace.
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+# Backend op vs. equivalent raw-SQL query on a shared populated database.
+name = "backend_vs_raw"
+harness = false
 
 [lints]
 workspace = true

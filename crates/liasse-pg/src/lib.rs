@@ -47,5 +47,6 @@ mod transition;
 mod value_codec;
 
 pub use factory::PgStoreFactory;
+pub use schema::{IndexSpec, SCHEMA_VERSION, Schema};
 pub use store::PgStore;
 pub use transition::PgTransition;
