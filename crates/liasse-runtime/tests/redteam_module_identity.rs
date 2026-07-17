@@ -20,7 +20,7 @@
 mod support;
 
 use liasse_runtime::{
-    Engine, InstallRequest, ModuleHost, ModuleSpace, Value, ViewDelta, ViewQuery,
+    Engine, InstallRequest, ModuleHost, ModuleSpace, PatchOp, Value, ViewDelta, ViewQuery,
 };
 use liasse_store::{MemoryStore, MemoryStoreFactory};
 use liasse_value::Text;
@@ -120,11 +120,12 @@ fn aggregation_same_exposed_key_across_instances_has_distinct_identity() {
 
 #[test]
 fn live_view_delta_distinguishes_rows_of_distinct_instances() {
-    // The observable §12.4 consequence of the §13.9 identity collision: a live
-    // watch computes its patch delta by keying rows on identity
-    // (`ViewDelta::between`). Disabling kit_b removes ITS `dup` row from the
-    // aggregation (§13.12); the correct delta reports exactly one removal and
-    // leaves kit_a's row unchanged.
+    // The observable §12.2 consequence of the §13.9 identity collision: a live
+    // watch computes its patch as the ordered op sequence between two frontiers
+    // (`ViewDelta::between`), keyed on identity. Disabling kit_b removes ITS `dup`
+    // row from the aggregation (§13.12); the correct patch is exactly one `remove`
+    // of an identity distinct from kit_a's, and NOTHING touching kit_a (no insert,
+    // move, or update).
     let (mut host, space) = host_with_two_dup_instances();
 
     let before = host.root_view("catalog", &ViewQuery::new()).expect("view").expect("declared");
@@ -134,25 +135,28 @@ fn live_view_delta_distinguishes_rows_of_distinct_instances() {
     let after = host.root_view("catalog", &ViewQuery::new()).expect("view").expect("declared");
     assert_eq!(after.len(), 1, "only kit_a's row remains after disabling kit_b");
     assert_eq!(after.rows()[0].field("module"), Some(&text("kit_a")));
+    let kit_a_id = after.rows()[0].id().clone();
 
     let delta = ViewDelta::between(Some(&before), &after);
     match delta {
-        ViewDelta::Patch { added, removed, changed } => {
-            assert!(added.is_empty(), "§12.4: nothing was added, got {added:?}");
-            // kit_b's `dup` row left the aggregation -> exactly one removal.
-            assert_eq!(
-                removed.len(),
-                1,
-                "§12.4/§13.9: disabling kit_b removes exactly its `dup` row, but the delta \
-                 reported {removed:?} (an identity collision hides the removal because kit_a's \
-                 `dup` still occupies the same identity)"
-            );
-            // kit_a's `dup` row (label A) never changed.
-            assert!(
-                changed.is_empty(),
-                "§12.4/§13.9: kit_a's row is unchanged, but the delta spuriously reports it as \
-                 changed {changed:?} (kit_a's `dup=A` is diffed against kit_b's collided `dup=B`)"
-            );
+        ViewDelta::Patch(ops) => {
+            // kit_b's `dup` row left the aggregation -> exactly one operation, a
+            // `remove`. More than one op, or any op targeting kit_a's identity,
+            // would mean the two `dup` rows shared one identity (§13.9 collision):
+            // kit_a's row would be diffed against kit_b's `dup=B` and spuriously
+            // updated/moved instead of kit_b simply removed.
+            assert_eq!(ops.len(), 1, "§12.2/§13.9: exactly one operation, got {ops:?}");
+            match &ops[0] {
+                PatchOp::Remove { id } => assert_ne!(
+                    *id, kit_a_id,
+                    "§13.9: the removal must target kit_b's `dup`, not kit_a's — a shared \
+                     identity would hide kit_b's removal behind kit_a's surviving row"
+                ),
+                other => panic!(
+                    "§12.2/§13.9: disabling kit_b must be a single `remove` of its `dup` row, \
+                     got {other:?}"
+                ),
+            }
         }
         other => panic!("expected a patch delta between the two frontiers, got {other:?}"),
     }

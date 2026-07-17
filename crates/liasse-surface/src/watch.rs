@@ -2,11 +2,11 @@
 //!
 //! A subscription begins with a complete result and a frontier, then receives
 //! ordered patches; after applying every patch the client result MUST equal the
-//! authorized declared view at the new frontier (§12.2). This layer guarantees
-//! that equality the direct way: it recomputes the view at each frontier through
-//! the engine's [`ViewResult`] and emits the minimal [`ViewDelta`] between the
-//! prior result and the new one — so the applied client result is, by
-//! construction, the recomputed view.
+//! authorized declared view at the new frontier (§12.2). This layer recomputes the
+//! view at each frontier through the engine's [`ViewResult`] and emits the ordered
+//! §12.2 [`ViewDelta`] between the prior result and the new one — the sequence of
+//! `insert`/`remove`/`move`/`update` operations that carries the client's prior
+//! ordered result to the recomputed view, order included.
 //!
 //! The runtime re-evaluates authorization and projection at every outgoing
 //! frontier; when the state removes the subscription's authority the runtime

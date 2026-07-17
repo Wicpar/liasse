@@ -110,7 +110,7 @@ pub use liasse_runtime::{
     DeclaredDescriptor, DeleteError, DepSpec, Engine, Erasure, Extract, FetchError, ImportError,
     ImportRelation, ImportReport, InstallRequest, InterfaceRow, KeyState, KeyVersion, Keyring,
     KeyringError, KeyringPolicy, MergeConflict, MergeOutcome, ModuleError, ModuleHost, ModuleSpace,
-    Occurrence, Placement, PlacementState, Precision, Rejection, ResponseValue, RotationMode,
+    Occurrence, PatchOp, Placement, PlacementState, Precision, Rejection, ResponseValue, RotationMode,
     RotationOutcome, RotationSchedule, SeedMerge, SessionToken, Store, StoreId, Timestamp,
     UpdateReport, UploadError, UseSpec, Value, VerifyError, VersionId, ViewDelta, ViewResult,
     ViewRow,

@@ -159,6 +159,7 @@ mod meter;
 mod migrate;
 mod modules;
 mod outcome;
+mod patch;
 mod portable;
 mod refid;
 mod request;
@@ -210,6 +211,7 @@ pub use keyring::{
 };
 pub use keyring_view::MANUAL_EXTERNAL_KEY;
 pub use outcome::CallOutcome;
+pub use patch::PatchOp;
 pub use request::{CallRequest, ViewQuery};
 pub use response::ResponseValue;
 pub use view::{ViewDelta, ViewResult, ViewRow};

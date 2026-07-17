@@ -1,15 +1,17 @@
-//! View evaluation at a frontier and the minimal init/patch delta between two
-//! frontiers (§7, §12.4–§12.6) — the primitive a subscription layer turns into
-//! live watches.
+//! View evaluation at a frontier and the ordered init/patch delta between two
+//! frontiers (§7, §12.2) — the primitive a subscription layer turns into live
+//! watches.
 //!
 //! A view is evaluated as a pure expression over the committed state at a
-//! [`CommitSeq`]; row identity comes from `liasse-expr`'s [`RowId`], so a delta
-//! is a straightforward keyed comparison of two evaluations.
+//! [`CommitSeq`]; row identity comes from `liasse-expr`'s [`RowId`], so an ordered
+//! §12.2 patch ([`crate::patch::diff`]) is computed from two evaluations.
 
 use std::collections::BTreeMap;
 
 use liasse_expr::{Cell, RowId, SortOrder};
 use liasse_value::Value;
+
+use crate::patch::PatchOp;
 
 /// One row of a view result: its stable identity, its scalar output fields, and
 /// the `$sort` tuple that fixed its ordered position (§7.3, empty when unsorted).
@@ -39,6 +41,16 @@ impl ViewRow {
     #[must_use]
     pub fn field(&self, name: &str) -> Option<&Value> {
         self.fields.get(name)
+    }
+
+    /// Whether `other` carries the same exposed value (output fields) as this row,
+    /// ignoring occurrence identity and internal `$sort` position — the §12.2
+    /// `update` test. A sort-position-only change (a non-projected `$sort` key
+    /// moving) leaves the exposed value equal, so it needs a `move`, not an
+    /// `update`.
+    #[must_use]
+    pub(crate) fn same_value(&self, other: &Self) -> bool {
+        self.fields == other.fields
     }
 
     /// The output fields in canonical name order.
@@ -122,42 +134,32 @@ impl ViewResult {
     }
 }
 
-/// The change between two view frontiers (§12.4): the full set at first
-/// observation, or the added/removed/changed rows between successive frontiers.
+/// The change between two view frontiers (§12.2): the full set at first
+/// observation (the `init` payload), or the ordered §12.2 patch that carries the
+/// prior frontier's client result to this one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewDelta {
-    /// The complete initial row set (no prior frontier).
+    /// The complete initial row set (no prior frontier) — the `init` payload.
     Init(Vec<ViewRow>),
-    /// Rows added, removed (by identity), and changed since the prior frontier.
-    Patch { added: Vec<ViewRow>, removed: Vec<RowId>, changed: Vec<ViewRow> },
+    /// An ordered §12.2 patch: the operations that, applied in listed order to the
+    /// prior frontier's result, yield this one EXACTLY — same occurrences, same
+    /// exposed values, same order. The empty sequence is a frontier-only patch.
+    Patch(Vec<PatchOp>),
 }
 
 impl ViewDelta {
     /// The delta from `prev` (the prior observation, or `None` for the first) to
-    /// `next`, keyed by row identity.
+    /// `next`. The first observation is an [`Init`]; a subsequent frontier is the
+    /// ordered §12.2 patch [`crate::patch::diff`] computes — applying it in order
+    /// to `prev`'s rows reproduces `next`'s rows including order (§12.2).
+    ///
+    /// [`Init`]: ViewDelta::Init
     #[must_use]
     pub fn between(prev: Option<&ViewResult>, next: &ViewResult) -> Self {
-        let Some(prev) = prev else {
-            return Self::Init(next.rows().to_vec());
-        };
-        let before: BTreeMap<&RowId, &ViewRow> = prev.rows().iter().map(|r| (&r.id, r)).collect();
-        let after: BTreeMap<&RowId, &ViewRow> = next.rows().iter().map(|r| (&r.id, r)).collect();
-        let mut added = Vec::new();
-        let mut changed = Vec::new();
-        for row in next.rows() {
-            match before.get(&row.id) {
-                None => added.push(row.clone()),
-                Some(prior) if prior.fields != row.fields => changed.push(row.clone()),
-                Some(_) => {}
-            }
+        match prev {
+            None => Self::Init(next.rows().to_vec()),
+            Some(prev) => Self::Patch(crate::patch::diff(prev.rows(), next.rows())),
         }
-        let removed = prev
-            .rows()
-            .iter()
-            .filter(|row| !after.contains_key(&row.id))
-            .map(|row| row.id.clone())
-            .collect();
-        Self::Patch { added, removed, changed }
     }
 }
 
