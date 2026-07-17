@@ -40,6 +40,10 @@ liasse-testkit = { path = "../liasse-testkit" }
 # same populated database, so the backend's overhead over pure PostgreSQL is
 # measurable. `default-features = false` matches the rest of the workspace.
 criterion = { version = "0.5", default-features = false }
+# Property-based gate for the order-preserving `key_enc` codec: across a recursive
+# `Value` strategy it asserts bytea `memcmp` order equals `Value`/`KeyValue` Annex-B
+# `Ord` and that Ord-equal values encode byte-identically.
+proptest = "1"
 
 [[bench]]
 # Backend op vs. equivalent raw-SQL query on a shared populated database.

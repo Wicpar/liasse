@@ -52,7 +52,11 @@ pub fn encode_key(value: &Value) -> J {
 /// trailing-zero scale, timestamps reduce to the coarsest exact precision, and
 /// composite/nested keys are rewritten component-wise. Every other value is its
 /// own representative.
-fn canonical_key(value: &Value) -> Value {
+///
+/// Exposed to the crate so the order-preserving `key_enc` codec can share the
+/// exact same Annex-B canonicalization the JSONB `key_wire` column uses, keeping
+/// the two durable key columns in lock-step.
+pub(crate) fn canonical_key(value: &Value) -> Value {
     match value {
         Value::Decimal(d) => {
             Value::Decimal(Decimal::from_big_decimal(d.as_big_decimal().normalized()))

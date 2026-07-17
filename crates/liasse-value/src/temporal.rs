@@ -150,4 +150,24 @@ impl Date {
     pub fn to_canonical_text(self) -> String {
         self.0.to_string()
     }
+
+    /// The proleptic-Gregorian year (`-9999..=9999`). Delegates to the backing
+    /// [`CivilDate`]; exposed so an order-preserving key codec can lay out the
+    /// `(year, month, day)` tuple B.1 orders a date by.
+    #[must_use]
+    pub fn year(self) -> i16 {
+        self.0.year()
+    }
+
+    /// The month of the year (`1..=12`).
+    #[must_use]
+    pub fn month(self) -> i8 {
+        self.0.month()
+    }
+
+    /// The day of the month (`1..=31`, valid for the month by construction).
+    #[must_use]
+    pub fn day(self) -> i8 {
+        self.0.day()
+    }
 }
