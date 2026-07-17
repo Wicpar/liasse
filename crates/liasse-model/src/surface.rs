@@ -7,11 +7,19 @@
 //!
 //! CORE scope: a role `$view`/`$members` that reads `$actor` is validated
 //! syntactically rather than fully typed (the `$actor` row type is a later
-//! pass); nested roles on rows and `$recursive` coverage are documented seams.
+//! pass); nested roles on rows are a documented seam. `$recursive` coverage
+//! (§10.5) is validated here: `$field`/`$through`/`$bind` presence, the covered
+//! `$field`, the descendant row-stream shape and identity of `$through`, its
+//! strict-descendant (acyclic) navigation, and `bool` `$where`/`$except`
+//! predicate types. The strict-descendant check is structural — it verifies the
+//! `$through` spine is rooted at `.` and descends into a contained collection
+//! ([`descends_from_current`]) — so a relation that could revisit a row through
+//! a *ref* field (which needs per-step ref-vs-containment type analysis) is a
+//! documented residual, not covered by this decidable subset.
 
 use liasse_diag::SourceMap;
 use liasse_expr::ExprType;
-use liasse_syntax::{parse_expression, Expr, ExprKind, StmtKind};
+use liasse_syntax::{parse_expression, Expr, ExprKind, Stmt, StmtKind};
 use liasse_value::Type;
 
 use crate::build::RawSurface;
@@ -333,6 +341,23 @@ impl SurfacePhase<'_, '_> {
                 return None;
             }
         };
+        // §10.5: `$through` "yields strict descendants of the current row" and the
+        // checker "verifies ... acyclicity". A strict-descendant relation is rooted
+        // at `.` (the covered row) and descends into a contained collection; a
+        // traversal rooted at the package root (`/`), a lexical parent (`^`), an
+        // import (`#`), a name/structural binding, or a bare `.` reaches the current
+        // row, a sibling, or an ancestor, so the coverage relation is not strict and
+        // may be cyclic (a row covering itself). Reject it before the shape check.
+        if !strict_descendant_through(parsed.statement()) {
+            self.reporter.reject_hint(
+                parsed.statement().span,
+                code::SURFACE,
+                "`$recursive` `$through` must yield strict descendants of the covered row so the \
+                 coverage relation is acyclic (§10.5)",
+                "root the traversal at `.` and descend into a nested collection, e.g. `.subcompanies`",
+            );
+            return None;
+        }
         match liasse_expr::check_statement(&scope, sub, &parsed) {
             Ok(typed) if typed.ty().as_view().is_some() => Some(typed.ty().clone()),
             Ok(_) => {
@@ -643,6 +668,47 @@ impl SurfacePhase<'_, '_> {
             }
             ExprKind::Select { base, .. } => self.resolve_path(base),
             _ => None,
+        }
+    }
+}
+
+/// Whether a `$recursive` `$through` statement navigates strictly downward from
+/// the covered row (§10.5). Only a bare view expression can (a `return`/assign is
+/// not a traversal); its downward navigation is decided by [`descends_from_current`].
+fn strict_descendant_through(stmt: &Stmt) -> bool {
+    match &stmt.kind {
+        StmtKind::Bare(expr) => descends_from_current(expr),
+        StmtKind::Return(_) | StmtKind::Assign { .. } | StmtKind::Clear(_) => false,
+    }
+}
+
+/// Whether an expression's base spine is a strict-descendant traversal of the
+/// covered row (§10.5). It is iff the spine is rooted at `.` (the covered row)
+/// and takes at least one downward navigation step — a field access, a row
+/// selector, or a same-name traversal — into a contained collection. A spine
+/// rooted at the package root (`/`), a lexical parent (`^`), an import (`#`), a
+/// name/structural binding, or a bare `.` (zero steps) can reach the current
+/// row, a sibling, or an ancestor, so it is not a strict descendant. Filter
+/// predicates inside a selector are not part of the spine and may read any scope.
+///
+/// This is a structural check: a `.`-rooted step through a *ref* field is
+/// accepted here, so a relation that revisits a row via refs (needing per-step
+/// ref-vs-containment type analysis) is a documented residual beyond this
+/// decidable subset. The reported whole-collection / ancestor / self cases —
+/// every non-`.`-rooted spine — are rejected.
+fn descends_from_current(expr: &Expr) -> bool {
+    let mut node = expr;
+    let mut steps = 0u32;
+    loop {
+        match &node.kind {
+            ExprKind::Field { base, .. }
+            | ExprKind::SameName { base, .. }
+            | ExprKind::Select { base, .. } => {
+                steps += 1;
+                node = base;
+            }
+            ExprKind::Current => return steps > 0,
+            _ => return false,
         }
     }
 }
