@@ -194,7 +194,19 @@ impl<'a> Builder<'a> {
             .ok_or_else(|| format!("`$unique` names `{name}`, not a declared field"))?;
         let ty = match &member.node {
             Node::Scalar(field) => &field.ty,
-            _ => return Err(format!("candidate-key field `{name}` must be a scalar field")),
+            // §5.7/A.8/A.9: a `$ref` candidate-key component contributes its
+            // target collection's already-validated eligible key type (A.9),
+            // exactly as a primary `$key` ref component does (`key_field_type`),
+            // so it is a valid candidate key. A candidate key MAY be optional
+            // (A.8: "the candidate-key fields themselves MAY be optional"), so —
+            // unlike a primary row key — an *optional* ref is admissible too; the
+            // row simply does not participate in the constraint while it is
+            // `none`. This matches the optional-scalar handling below.
+            Node::Reference(_) => {
+                return DeclName::parse(name)
+                    .map_err(|_| format!("`{name}` is not a valid field name"));
+            }
+            _ => return Err(format!("candidate-key field `{name}` must be a scalar or ref field")),
         };
         let base = match ty {
             Type::Optional(inner) => inner.as_ref(),
