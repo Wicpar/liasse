@@ -1,15 +1,17 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
-//! §13 module lifecycle over the surface [`ModuleDeployment`]: an installed child
-//! keeps its private state across disable/enable, a disabled child exposes no
-//! surfaces, a duplicate name is a rejection observation (not a fault), a rename
-//! preserves the incarnation, and an uninstall removes the instance.
+//! §13 module lifecycle over the surface [`ModuleDeployment`]: a module installs
+//! into a row-scoped module space and its `$expose`d interface is readable through
+//! the boundary; an interface aggregates across two installed instances; a
+//! disabled instance leaves the aggregation but keeps its private state; enable
+//! restores it; a duplicate name, empty name, and malformed binding are rejection
+//! observations (not faults); and an update migrates a single instance.
 
 use liasse_ident::InstanceId;
-use liasse_runtime::{CallOutcome, CallRequest};
+use liasse_runtime::{CallOutcome, CallRequest, InstallRequest};
 use liasse_store::{MemoryStore, MemoryStoreFactory};
 use liasse_surface::{
-    Engine, ModuleDeployment, ModuleError, ModuleHost, ModuleObservation, ModuleUpdate, Precision,
-    Value, VirtualClock,
+    Engine, ModuleDeployment, ModuleError, ModuleHost, ModuleObservation, ModuleSpace, ModuleUpdate,
+    Precision, Value, VirtualClock,
 };
 use liasse_value::Text;
 
@@ -21,29 +23,33 @@ const ROOT: &str = r#"{
   "$model": { "flags": { "$key": "id", "id": "text" } }
 }"#;
 
-const NOTES: &str = r#"{
+const TEMPLATES: &str = r#"{
   "$liasse": 1
-  "$module": "example.notes@1.0.0"
+  "$module": "example.templates@1.0.0"
   "$model": {
-    "notes": { "$key": "id", "id": "text", "body": "text" }
-    "all_notes": { "$view": ".notes { id, body }" }
-    "$mut": { "add": ".notes + { id: @id, body: @body }" }
+    "templates": { "$key": "id", "id": "text", "label": "text", "secret": "text" }
+    "$mut": { "add": ".templates + { id: @id, label: @label, secret: @secret }" }
   }
+  "$expose": { "templates": { "$view": ".templates { id, label }" } }
 }"#;
 
-/// A compatible successor of [`NOTES`] adding a defaulted `pinned` field.
-const NOTES_V2: &str = r#"{
+/// A compatible successor adding a defaulted `pinned` field.
+const TEMPLATES_V2: &str = r#"{
   "$liasse": 1
-  "$module": "example.notes@1.1.0"
+  "$module": "example.templates@1.1.0"
   "$model": {
-    "notes": { "$key": "id", "id": "text", "body": "text", "pinned": "bool = false" }
-    "all_notes": { "$view": ".notes { id, body }" }
-    "$mut": { "add": ".notes + { id: @id, body: @body }" }
+    "templates": { "$key": "id", "id": "text", "label": "text", "secret": "text", "pinned": "bool = false" }
+    "$mut": { "add": ".templates + { id: @id, label: @label, secret: @secret }" }
   }
+  "$expose": { "templates": { "$view": ".templates { id, label }" } }
 }"#;
 
 fn text(value: &str) -> Value {
     Value::Text(Text::new(value))
+}
+
+fn space() -> ModuleSpace {
+    ModuleSpace::new("/companies/acme/modules").expect("mount path")
 }
 
 fn deployment() -> ModuleDeployment<MemoryStoreFactory> {
@@ -52,79 +58,112 @@ fn deployment() -> ModuleDeployment<MemoryStoreFactory> {
     ModuleDeployment::new(ModuleHost::new(MemoryStoreFactory::new(), root), clock)
 }
 
-fn add_note(deployment: &mut ModuleDeployment<MemoryStoreFactory>, instance: &str, id: &str, body: &str) {
-    let request = CallRequest::new("add").arg("id", text(id)).arg("body", text(body));
-    let outcome = deployment.child_call(instance, &request).expect("child call");
+fn install(deployment: &mut ModuleDeployment<MemoryStoreFactory>, space: &ModuleSpace, name: &str) {
+    assert_eq!(
+        deployment.install(space, InstallRequest::new(name, TEMPLATES)).expect("install"),
+        ModuleObservation::Applied,
+    );
+}
+
+fn add_template(deployment: &mut ModuleDeployment<MemoryStoreFactory>, space: &ModuleSpace, name: &str, id: &str, label: &str) {
+    let request = CallRequest::new("add").arg("id", text(id)).arg("label", text(label)).arg("secret", text("hush"));
+    let outcome = deployment.child_call(space, name, &request).expect("child call");
     assert!(matches!(outcome, CallOutcome::Committed { .. }), "add commits");
 }
 
-fn note_count(deployment: &ModuleDeployment<MemoryStoreFactory>, instance: &str) -> usize {
-    deployment.child_view(instance, "all_notes").expect("view").expect("declared").len()
+#[test]
+fn install_exposes_a_readable_interface() {
+    let (mut deployment, space) = (deployment(), space());
+    install(&mut deployment, &space, "sales");
+    add_template(&mut deployment, &space, "sales", "t1", "Invoice");
+
+    let result = deployment.interface_read(&space, "sales", "templates").expect("read").expect("declared");
+    assert_eq!(result.len(), 1);
+    let row = &result.rows()[0];
+    assert_eq!(row.field("label"), Some(&text("Invoice")));
+    // §13.8 isolation: the private `secret` field does not cross the boundary.
+    assert_eq!(row.field("secret"), None);
 }
 
 #[test]
-fn install_disable_enable_preserves_state() {
-    let mut deployment = deployment();
-    assert_eq!(deployment.install("sales", NOTES).expect("install"), ModuleObservation::Applied);
-    add_note(&mut deployment, "sales", "n1", "first");
-    assert_eq!(note_count(&deployment, "sales"), 1);
+fn disable_leaves_aggregation_and_enable_restores() {
+    let (mut deployment, space) = (deployment(), space());
+    install(&mut deployment, &space, "sales");
+    install(&mut deployment, &space, "support");
+    add_template(&mut deployment, &space, "sales", "t1", "kept");
+    add_template(&mut deployment, &space, "support", "u1", "other");
+    assert_eq!(deployment.aggregate(&space, "templates").expect("agg").len(), 2);
 
-    assert_eq!(deployment.disable("sales").expect("disable"), ModuleObservation::Applied);
-    assert!(!deployment.is_enabled("sales"));
-    match deployment.child_view("sales", "all_notes") {
+    assert_eq!(deployment.disable(&space, "sales").expect("disable"), ModuleObservation::Applied);
+    assert!(!deployment.is_enabled(&space, "sales"));
+    assert_eq!(deployment.aggregate(&space, "templates").expect("agg").len(), 1, "disabled leaves the aggregation");
+    match deployment.interface_read(&space, "sales", "templates") {
         Err(ModuleError::Disabled(_)) => {}
-        other => panic!("a disabled instance exposes no surfaces, got {other:?}"),
+        other => panic!("a disabled instance exposes no boundary read, got {other:?}"),
     }
 
-    assert_eq!(deployment.enable("sales").expect("enable"), ModuleObservation::Applied);
-    assert_eq!(note_count(&deployment, "sales"), 1, "state survived disable/enable");
+    assert_eq!(deployment.enable(&space, "sales").expect("enable"), ModuleObservation::Applied);
+    assert_eq!(deployment.aggregate(&space, "templates").expect("agg").len(), 2, "state survived disable/enable");
 }
 
 #[test]
 fn duplicate_install_is_a_rejection_observation() {
-    let mut deployment = deployment();
-    deployment.install("sales", NOTES).expect("install");
+    let (mut deployment, space) = (deployment(), space());
+    install(&mut deployment, &space, "sales");
     assert_eq!(
-        deployment.install("sales", NOTES).expect("second install is an observation, not a fault"),
+        deployment.install(&space, InstallRequest::new("sales", TEMPLATES)).expect("observation, not a fault"),
         ModuleObservation::DuplicateName("sales".to_owned()),
     );
 }
 
 #[test]
-fn rename_preserves_incarnation_and_state() {
-    let mut deployment = deployment();
-    deployment.install("sales", NOTES).expect("install");
-    let incarnation = deployment.incarnation("sales").expect("installed").clone();
-    add_note(&mut deployment, "sales", "n1", "kept");
+fn empty_name_and_malformed_binding_are_rejection_observations() {
+    let (mut deployment, space) = (deployment(), space());
+    assert_eq!(
+        deployment.install(&space, InstallRequest::new("", TEMPLATES)).expect("observation"),
+        ModuleObservation::EmptyName,
+    );
+    let bad = InstallRequest::new("sales", TEMPLATES).use_handle("people", "not-a-spec");
+    match deployment.install(&space, bad).expect("observation") {
+        ModuleObservation::InvalidBinding(_) => {}
+        other => panic!("a malformed binding is an observation, got {other:?}"),
+    }
+}
 
-    assert_eq!(deployment.rename("sales", "revenue").expect("rename"), ModuleObservation::Applied);
-    assert!(!deployment.is_installed("sales"));
-    assert_eq!(deployment.incarnation("revenue"), Some(&incarnation), "rename preserves the incarnation");
-    assert_eq!(note_count(&deployment, "revenue"), 1, "rename preserves state");
+#[test]
+fn rename_preserves_incarnation_and_state() {
+    let (mut deployment, space) = (deployment(), space());
+    install(&mut deployment, &space, "sales");
+    let incarnation = deployment.incarnation(&space, "sales").expect("installed").clone();
+    add_template(&mut deployment, &space, "sales", "t1", "kept");
+
+    assert_eq!(deployment.rename(&space, "sales", "revenue").expect("rename"), ModuleObservation::Applied);
+    assert!(!deployment.is_installed(&space, "sales"));
+    assert_eq!(deployment.incarnation(&space, "revenue"), Some(&incarnation), "rename preserves the incarnation");
+    assert_eq!(deployment.aggregate(&space, "templates").expect("agg")[0].instance(), "revenue");
 }
 
 #[test]
 fn update_migrates_a_single_instance() {
-    let mut deployment = deployment();
-    deployment.install("sales", NOTES).expect("install");
-    add_note(&mut deployment, "sales", "n1", "kept");
+    let (mut deployment, space) = (deployment(), space());
+    install(&mut deployment, &space, "sales");
+    add_template(&mut deployment, &space, "sales", "t1", "kept");
 
-    match deployment.update("sales", NOTES_V2).expect("update") {
+    match deployment.update(&space, "sales", TEMPLATES_V2).expect("update") {
         ModuleUpdate::Updated(_) => {}
         other => panic!("a compatible update migrates, got {other:?}"),
     }
-    // The migrated instance keeps its row; the added field defaults in.
-    assert_eq!(note_count(&deployment, "sales"), 1, "the note survived the migration");
+    assert_eq!(deployment.aggregate(&space, "templates").expect("agg").len(), 1, "the template survived migration");
 }
 
 #[test]
 fn uninstall_removes_instance() {
-    let mut deployment = deployment();
-    deployment.install("sales", NOTES).expect("install");
-    assert_eq!(deployment.uninstall("sales").expect("uninstall"), ModuleObservation::Applied);
-    assert!(!deployment.is_installed("sales"));
+    let (mut deployment, space) = (deployment(), space());
+    install(&mut deployment, &space, "sales");
+    assert_eq!(deployment.uninstall(&space, "sales").expect("uninstall"), ModuleObservation::Applied);
+    assert!(!deployment.is_installed(&space, "sales"));
     assert_eq!(
-        deployment.uninstall("sales").expect("second uninstall observes unknown"),
+        deployment.uninstall(&space, "sales").expect("second uninstall observes unknown"),
         ModuleObservation::Unknown("sales".to_owned()),
     );
 }

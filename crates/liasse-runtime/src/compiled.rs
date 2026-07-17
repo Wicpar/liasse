@@ -147,6 +147,17 @@ pub(crate) struct CompiledView {
     pub(crate) expr: TypedExpr,
 }
 
+/// A compiled exposed module interface `$view` (§13.8): the interface handle name
+/// a parent or peer addresses (`::templates`) and the typed projection over the
+/// module's own root. Only the fields this projection selects cross the boundary —
+/// a private field it omits is unreachable through the interface (§13.8 isolation),
+/// so an interface-addressed read evaluates this expression rather than any private
+/// child view or path.
+pub(crate) struct CompiledExposed {
+    pub(crate) interface: String,
+    pub(crate) expr: TypedExpr,
+}
+
 /// One declared `$params` entry of a surface view (§10.1): its name, its
 /// contract type, and — when declared with a `= …` default — the typed default
 /// expression a read binds when the caller omits the argument (§8.3).
@@ -195,6 +206,11 @@ pub(crate) struct Compiled {
     pub(crate) root_computed: Vec<CompiledComputed>,
     pub(crate) mutations: Vec<CompiledMutation>,
     pub(crate) views: Vec<CompiledView>,
+    /// Compiled `$expose` interface `$view`s (§13.8), each the boundary projection
+    /// a parent or peer reads through the interface handle. Evaluated by
+    /// [`Engine::interface_read`](crate::Engine::interface_read) against a child
+    /// instance; only the projected fields cross the boundary.
+    pub(crate) exposed_views: Vec<CompiledExposed>,
     /// Compiled `$public`/role surface `$view`s (§10.1), each carrying its
     /// `$params` and the `$actor`/`$session` structurals in scope so a
     /// param-aware or role read type-checks. Served by
@@ -243,6 +259,7 @@ impl Compiled {
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth, hosts)?;
         let keyrings = compile_keyrings(schema, model_doc);
         let views = compile_views(sources, schema, &root_ty, &keyrings, model_doc, hosts)?;
+        let exposed_views = compile_exposed_views(sources, &root_ty, model, hosts)?;
         let surface_views = compile_surface_views(sources, schema, &root_ty, model_doc, &auth, hosts);
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc)?;
         let source_buckets = crate::source_bucket::compile(sources, schema, &root_ty, model_doc)?;
@@ -252,6 +269,7 @@ impl Compiled {
             root_computed,
             mutations,
             views,
+            exposed_views,
             surface_views,
             buckets,
             source_buckets,
@@ -282,6 +300,12 @@ impl Compiled {
     /// The compiled view named `name`, if any.
     pub(crate) fn view(&self, name: &str) -> Option<&CompiledView> {
         self.views.iter().find(|v| v.name == name)
+    }
+
+    /// The compiled `$expose` interface `$view` for interface `name`, if one is
+    /// declared with a readable projection (§13.8).
+    pub(crate) fn exposed_view(&self, name: &str) -> Option<&TypedExpr> {
+        self.exposed_views.iter().find(|e| e.interface == name).map(|e| &e.expr)
     }
 
     /// The compiled bucket bounding collection `name`, if it is bucketed.
@@ -793,6 +817,28 @@ fn compile_views(
             let (expr, _source) = compile_expr(sources, &scope, "view", &view.expr.text)?;
             out.push(CompiledView { name: name.to_owned(), expr });
         }
+    }
+    Ok(out)
+}
+
+/// Compile each `$expose` interface's `$view` (§13.8) into a typed projection over
+/// the module root, so an interface-addressed read (§13.9) evaluates it against a
+/// child instance. The model's expose phase already typed each `$view` against the
+/// same root scope; re-checking it here in the runtime scope produces the
+/// evaluable [`TypedExpr`] the boundary read uses. An interface that binds only
+/// mutations (no `$view`) contributes nothing readable.
+fn compile_exposed_views(
+    sources: &mut SourceMap,
+    root_ty: &ExprType,
+    model: &Model,
+    hosts: &HostSignatures,
+) -> Result<Vec<CompiledExposed>, EngineError> {
+    let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
+    let mut out = Vec::new();
+    for interface in model.exposed_interfaces() {
+        let Some(view) = interface.view.as_ref() else { continue };
+        let (expr, _source) = compile_expr(sources, &scope, "expose-view", &view.text)?;
+        out.push(CompiledExposed { interface: interface.name.as_str().to_owned(), expr });
     }
     Ok(out)
 }

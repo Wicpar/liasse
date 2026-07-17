@@ -190,7 +190,10 @@ pub use history::{
     ConflictKind, ImportError, ImportRelation, ImportReport, MergeConflict, MergeOutcome,
 };
 pub use migrate::{UpdateError, UpdateReport};
-pub use modules::{ModuleError, ModuleHost, SeedMerge};
+pub use modules::{
+    AdmittedBindings, DepSpec, InstallRequest, InterfaceRow, ModuleError, ModuleHost, ModuleSpace,
+    SeedMerge, UseSpec,
+};
 
 /// The Annex E version relationship an [`UpdateReport`] carries (§20.3).
 pub use liasse_artifact::UpdateRelation;

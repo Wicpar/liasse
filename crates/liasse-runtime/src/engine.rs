@@ -786,6 +786,48 @@ impl<S: InstanceStore> Engine<S> {
         self.view(name, self.store.head())
     }
 
+    /// Evaluate an `$expose`d interface's `$view` against this instance at head
+    /// (§13.8/§13.9) — the cross-boundary read a parent or peer performs through
+    /// the module interface handle (`::templates`). The boundary grants access only
+    /// to the fields the exposed projection selects, so a private field the
+    /// projection omits never appears in the result and a private child path is
+    /// unreachable through the interface (§13.8 isolation). No parameters and no
+    /// actor identity cross the boundary — the projection reads only the child's
+    /// own committed state. Returns `None` when no interface of that name exposes a
+    /// readable `$view` (an absent or mutation-only interface).
+    pub fn interface_read(&self, interface: &str) -> Result<Option<ViewResult>, EngineError> {
+        let Some(expr) = self.compiled.exposed_view(interface) else {
+            return Ok(None);
+        };
+        let snapshot = self.store.snapshot(self.store.head())?;
+        let schema = Schema::new(&self.model);
+        let prospective = Prospective::from_snapshot(&snapshot, schema);
+        let keyrings = self.keyring_snapshots();
+        let ctx = EvalCtx {
+            schema,
+            compiled: &self.compiled,
+            params: BTreeMap::new(),
+            now: self.clock,
+            seed: 0,
+            keyrings: &keyrings,
+            context: BTreeMap::new(),
+            hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
+        };
+        let current = Cell::Row(Box::new(ctx.root(&prospective)));
+        let env = ctx.env(&prospective);
+        let cell = expr
+            .evaluate_view(&env, &current)
+            .map_err(|error| EngineError::Internal(error.message()))?;
+        Ok(Some(ViewResult::from_cell(&cell)))
+    }
+
+    /// The `$expose`d interface names that carry a readable `$view` (§13.8), in
+    /// declaration order — the interfaces [`Engine::interface_read`] serves and a
+    /// parent aggregates over (§13.9).
+    pub fn exposed_interface_names(&self) -> impl Iterator<Item = &str> {
+        self.compiled.exposed_views.iter().map(|e| e.interface.as_str())
+    }
+
     /// The dotted addresses of every compiled `$public`/role surface `$view`
     /// (`public.<name>`, `<role>.<name>`, §10.1) — the names [`Engine::view_with`]
     /// serves. Lets the surface layer discover which of its declared surfaces the

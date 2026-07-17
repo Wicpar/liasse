@@ -105,11 +105,12 @@ pub use liasse_expr::RowId;
 /// Re-exported so callers build requests, read outcomes, and inspect views
 /// without a direct dependency edge on the runtime and value crates.
 pub use liasse_runtime::{
-    AcceptedType, Blob, BlobEngine, CommitSeq, ConflictKind, CopyState, DeclaredDescriptor, Engine,
-    FetchError, ImportError, ImportRelation, ImportReport, KeyState, KeyVersion, Keyring,
-    KeyringError, KeyringPolicy, MergeConflict, MergeOutcome, ModuleError, ModuleHost, Placement,
-    Precision, Rejection, ResponseValue, RotationMode, RotationOutcome, RotationSchedule, SeedMerge,
-    SessionToken, Store, StoreId, Timestamp, UpdateReport, UploadError, Value, VerifyError,
+    AcceptedType, AdmittedBindings, Blob, BlobEngine, CommitSeq, ConflictKind, CopyState,
+    DeclaredDescriptor, DepSpec, Engine, FetchError, ImportError, ImportRelation, ImportReport,
+    InstallRequest, InterfaceRow, KeyState, KeyVersion, Keyring, KeyringError, KeyringPolicy,
+    MergeConflict, MergeOutcome, ModuleError, ModuleHost, ModuleSpace, Placement, Precision,
+    Rejection, ResponseValue, RotationMode, RotationOutcome, RotationSchedule, SeedMerge,
+    SessionToken, Store, StoreId, Timestamp, UpdateReport, UploadError, UseSpec, Value, VerifyError,
     VersionId, ViewDelta, ViewResult, ViewRow,
 };
 
