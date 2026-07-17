@@ -354,24 +354,28 @@ impl<C: BlobConnector> BlobEngine<C> {
         if !row.enabled {
             return false;
         }
-        // A store is writable for a new write when it is enabled and its
-        // connector advertises the write capability (§18.4 "currently writable
-        // capable stores"; §18.2 "every verified copy required by one complete
-        // branch"). Writability is the ability to hold a verified copy — the
-        // `StreamUpload` capability — and nothing more.
+        // A store is writable for a new write (§18.4 "the first branch whose
+        // complete requirements can currently be fulfilled") when it is enabled,
+        // its connector advertises the write capability (`StreamUpload`, §18.2),
+        // and it is currently reachable.
         //
-        // Physical-usage observation is NOT a writability/liveness signal:
-        // §18.11 makes it a host observation for reconciliation and auditing,
-        // and §18.12 lists it as one OPTIONAL advertised capability. A connector
-        // that legitimately does not advertise `PhysicalUsage` returns
-        // `Unsupported` from `observe_usage`; gating placement on it would wrongly
-        // exclude an upload-capable store. Actual reachability is proven where it
-        // matters — at placement time the upload+verify either lands the copy or
-        // fails (an `$all` branch rejects; an `$any`/`$copies` plan tries the next
-        // capable store) — so no pre-probe of the connector is needed here.
-        self.connectors
-            .get(&row.connector)
-            .is_some_and(|c| c.capabilities().has(liasse_host::Capability::StreamUpload))
+        // Physical-usage observation is NOT a writability signal in itself:
+        // §18.11 makes it a host observation for reconciliation and auditing and
+        // §18.12 lists it as one OPTIONAL advertised capability, so a connector
+        // that does not advertise it (returning `Unsupported` from
+        // `observe_usage`) is still writable. But "currently fulfillable" DOES
+        // require reachability: a connector reporting `Unavailable` (or any other
+        // liveness failure) cannot hold the write now, so it is excluded and an
+        // `$any`/`$copies` plan falls through to the next alternative (§18.4).
+        // `observe_usage` is the liveness probe; only its capability-absent
+        // `Unsupported` result is read as "still reachable, just no usage API".
+        self.connectors.get(&row.connector).is_some_and(|c| {
+            c.capabilities().has(liasse_host::Capability::StreamUpload)
+                && matches!(
+                    c.observe_usage(),
+                    Ok(_) | Err(liasse_host::ConnectorFailure::Unsupported(_))
+                )
+        })
     }
 
     // ---- copying and integrity (§18.9) -----------------------------------
