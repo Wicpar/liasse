@@ -257,24 +257,56 @@ impl<C: BlobConnector> BlobEngine<C> {
     }
 
     /// Converge `blob`'s placement toward `placement` (§18.6): demote holders
-    /// that no longer verify, then copy from a verified source into every plan
-    /// store that is not yet verified, verifying each destination.
+    /// that no longer verify, then copy from a verified source into each
+    /// [repair target](Self::repair_targets), verifying each destination.
     pub fn reconcile(&mut self, blob: &mut Blob, placement: &Placement) {
         let digest = *blob.descriptor.sha512();
         self.demote_corrupt(blob, &digest);
         let Some(source) = self.verified_source(blob, &digest) else { return };
-        let targets: Vec<StoreId> = self
-            .writable_plan(placement)
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|store| blob.placement.get(store) != Some(&CopyState::Verified))
-            .collect();
-        for store in targets {
+        for store in self.repair_targets(blob, placement) {
             if self.copy_and_verify(store.clone(), &digest, &source) {
                 blob.placement.insert(store, CopyState::Verified);
             }
         }
         blob.serve = self.serve_order(placement, &blob.placement);
+    }
+
+    /// The stores this reconcile pass should (re)create and verify, given a
+    /// verified source is available (§18.6). Two INDEPENDENT contributions, so an
+    /// unrelated store's temporary outage can never suppress an otherwise-possible
+    /// repair:
+    ///
+    /// - **fill toward policy** — the new-write plan's not-yet-verified stores,
+    ///   WHEN the whole policy is currently fulfillable ([`writable_plan`]), which
+    ///   tops a partially-placed blob up to one complete branch;
+    /// - **per-copy repair** — every currently `corrupt` copy whose own store is
+    ///   writable/reachable now. §18.6 says a corrupt observation "triggers repair
+    ///   from another verified holder"; that repair reads from the verified source
+    ///   and writes to the corrupt store, so it does NOT depend on whether the
+    ///   *rest* of the policy can be fulfilled this pass. A store that is itself
+    ///   down is skipped until it returns (§18.12, its copy left as-is), and the
+    ///   repair never writes to an unwritable store.
+    ///
+    /// An already-verified store is excluded; [`copy_and_verify`] re-verifies each
+    /// destination, so a store that cannot hash clean is not promoted (§18.9). The
+    /// two contributions are deduplicated — a corrupt store already covered by the
+    /// fill plan is repaired once.
+    ///
+    /// [`writable_plan`]: Self::writable_plan
+    /// [`copy_and_verify`]: Self::copy_and_verify
+    fn repair_targets(&self, blob: &Blob, placement: &Placement) -> Vec<StoreId> {
+        let mut targets: Vec<StoreId> = self
+            .writable_plan(placement)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|store| blob.placement.get(store) != Some(&CopyState::Verified))
+            .collect();
+        for (store, state) in &blob.placement {
+            if *state == CopyState::Corrupt && self.writable(store) && !targets.contains(store) {
+                targets.push(store.clone());
+            }
+        }
+        targets
     }
 
     // ---- descriptor verification (§18.1/§18.2) ---------------------------
