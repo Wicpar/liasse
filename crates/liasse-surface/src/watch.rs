@@ -3,10 +3,12 @@
 //! A subscription begins with a complete result and a frontier, then receives
 //! ordered patches; after applying every patch the client result MUST equal the
 //! authorized declared view at the new frontier (§12.2). This layer recomputes the
-//! view at each frontier through the engine's [`ViewResult`] and emits the ordered
-//! §12.2 [`ViewDelta`] between the prior result and the new one — the sequence of
-//! `insert`/`remove`/`move`/`update` operations that carries the client's prior
-//! ordered result to the recomputed view, order included.
+//! view at each frontier through the engine's [`ViewResult`] and emits the §12.2
+//! [`ViewDelta`] between the prior result and the new one. For a row-stream view
+//! that is the ordered `insert`/`remove`/`move`/`update` sequence carrying the
+//! client's prior ordered result to the recomputed view, order included; for a
+//! scalar/aggregate view (§7.5) it is the value form — the new value when it
+//! changed, a frontier-only no-op when it did not.
 //!
 //! The runtime re-evaluates authorization and projection at every outgoing
 //! frontier; when the state removes the subscription's authority the runtime
@@ -192,7 +194,8 @@ impl Watch {
     }
 
     /// Deliver the initial complete result at `frontier`, returning the `init`
-    /// delta (§12.2). Called once, when the subscription opens. A bounded
+    /// delta (§12.2): a row-stream view's complete rows, or a scalar/aggregate
+    /// view's value (§7.5). Called once, when the subscription opens. A bounded
     /// subscription also opens its window over `result`, which fails when a
     /// concrete anchor identifies no current occurrence.
     ///
@@ -208,11 +211,12 @@ impl Watch {
         Ok(delta)
     }
 
-    /// Advance to `result` at `frontier`, returning the coherent patch delta from
-    /// the prior result (§12.2). The applied client result equals `result` — the
-    /// recomputed authorized view — by construction; a bounded subscription
-    /// re-slices its window over the recomputed view, tracking its anchor across
-    /// gaps and reappearances.
+    /// Advance to `result` at `frontier`, returning the coherent delta from the
+    /// prior result (§12.2): a row-stream view's ordered patch, or a scalar view's
+    /// new value (frontier-only when unchanged, §7.5). The applied client result
+    /// equals `result` — the recomputed authorized view — by construction; a
+    /// bounded subscription re-slices its window over the recomputed view, tracking
+    /// its anchor across gaps and reappearances.
     pub fn advance(&mut self, result: ViewResult, frontier: CommitSeq) -> ViewDelta {
         let delta = ViewDelta::between(self.last.as_ref(), &result);
         if let Some(window) = &mut self.window {

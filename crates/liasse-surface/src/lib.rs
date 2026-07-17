@@ -22,8 +22,10 @@
 //! - **Clients** ([`SurfaceHost`], [`Connection`], [`Watch`]) — a connection
 //!   owns its subscriptions and a frontier; a successful call advances that
 //!   frontier through at least the returned commit and drags every still-
-//!   authorized subscription through it, delivering coherent patches over the
-//!   engine's [`liasse_runtime::ViewDelta`] primitive (§12.2–§12.6).
+//!   authorized subscription through it, delivering coherent deltas over the
+//!   engine's [`liasse_runtime::ViewDelta`] primitive (§12.2–§12.6) — an ordered
+//!   row patch for a row-stream view, or the value form for a scalar/aggregate
+//!   view (§7.5).
 //! - **Operations** ([`OperationLog`]) — a retained record per scoped identifier
 //!   provides at-most-once execution: an equivalent retry re-observes the stored
 //!   outcome, a divergent reuse is rejected (§12.3).

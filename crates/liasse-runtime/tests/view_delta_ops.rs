@@ -25,6 +25,7 @@ const APP: &str = r#"{
   "$model": {
     "items": { "$key": "name", "name": "text", "label": "text = 'base'", "prio": "int = 0" }
     "listing": { "$view": ".items { name, label, $sort: [prio, name] }" }
+    "total": { "$view": "count(.items)" }
     "$mut": {
       "add": ".items + { name: @name, prio: @prio }"
       "setprio": ".items[@name].prio = @prio"
@@ -63,7 +64,13 @@ fn ops(prev: &ViewResult, next: &ViewResult) -> Vec<PatchOp> {
     match ViewDelta::between(Some(prev), next) {
         ViewDelta::Patch(ops) => ops,
         ViewDelta::Init(_) => panic!("between(Some, _) is a patch, not an init"),
+        ViewDelta::Scalar(_) => panic!("the row `listing` view never yields a scalar delta"),
     }
+}
+
+/// The scalar/aggregate `total` view (`count(.items)`, §7.5) at head.
+fn total(engine: &Engine<MemoryStore>) -> ViewResult {
+    engine.view_at_head("total").expect("view evaluates").expect("total declared")
 }
 
 #[test]
@@ -160,5 +167,54 @@ fn rekey_diffs_as_remove_of_old_and_insert_of_new_leaving_others_untouched() {
     assert!(
         !ops.iter().any(|op| matches!(op, PatchOp::Update { .. } | PatchOp::Move { .. })),
         "the sibling `m` is untouched, {ops:?}",
+    );
+}
+
+// --- scalar / aggregate view deltas (§7.5, §12.2) ------------------------------
+
+#[test]
+fn scalar_view_first_observation_conveys_the_value() {
+    // §7.5: count(.items) with one item is 1. §12.2: the first observation conveys
+    // the complete result — here the scalar value, not an empty row init.
+    let mut e = load("vdo_scalar_init", APP);
+    add(&mut e, "a", 0);
+    let result = total(&e);
+    assert_eq!(result.scalar(), Some(&int(1)), "count is 1 (§7.5)");
+    assert_eq!(
+        ViewDelta::between(None, &result),
+        ViewDelta::Scalar(Some(int(1))),
+        "the first observation of a scalar view conveys its value",
+    );
+}
+
+#[test]
+fn scalar_view_change_conveys_the_new_value() {
+    // §7.5: a second insert takes count 1 -> 2. §12.2: the delta must convey the
+    // new value so the client result reaches it.
+    let mut e = load("vdo_scalar_change", APP);
+    add(&mut e, "a", 0);
+    let prev = total(&e);
+    add(&mut e, "b", 0);
+    let next = total(&e);
+    assert_eq!(next.scalar(), Some(&int(2)), "count is 2 (§7.5)");
+    assert_eq!(
+        ViewDelta::between(Some(&prev), &next),
+        ViewDelta::Scalar(Some(int(2))),
+        "a changed scalar conveys the new value",
+    );
+}
+
+#[test]
+fn scalar_view_unchanged_is_a_frontier_only_noop() {
+    // §12.2: "A frontier-only patch has an empty operation sequence." The scalar
+    // analogue is `Scalar(None)` — the value did not change.
+    let mut e = load("vdo_scalar_noop", APP);
+    add(&mut e, "a", 0);
+    let prev = total(&e);
+    let next = total(&e);
+    assert_eq!(
+        ViewDelta::between(Some(&prev), &next),
+        ViewDelta::Scalar(None),
+        "an unchanged scalar is the frontier-only no-op",
     );
 }

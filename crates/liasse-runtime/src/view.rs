@@ -134,31 +134,80 @@ impl ViewResult {
     }
 }
 
-/// The change between two view frontiers (§12.2): the full set at first
-/// observation (the `init` payload), or the ordered §12.2 patch that carries the
-/// prior frontier's client result to this one.
+/// The change between two view frontiers (§12.2). A `$view` delivers one of two
+/// result shapes (§7, §7.5), and each carries its own delta form on the same
+/// `init`/`patch` semantics:
+///
+/// - a ROW stream ([`ViewResult::Rows`]): [`Init`] is the complete row set at
+///   first observation, then [`Patch`] is the ordered op sequence advancing it;
+/// - a SCALAR/aggregate value ([`ViewResult::Scalar`]): [`Scalar`] conveys the
+///   value at first observation or when it changed, and is the frontier-only no-op
+///   when it did not.
+///
+/// A view's result shape is fixed for its lifetime, so successive deltas keep one
+/// form; [`ViewDelta::between`] falls back to a full re-init if the shape ever
+/// changes rather than panicking.
+///
+/// [`Init`]: ViewDelta::Init
+/// [`Patch`]: ViewDelta::Patch
+/// [`Scalar`]: ViewDelta::Scalar
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewDelta {
-    /// The complete initial row set (no prior frontier) — the `init` payload.
+    /// The complete initial row set (no prior frontier, or a shape change) — the
+    /// `init` payload of a row-stream view.
     Init(Vec<ViewRow>),
-    /// An ordered §12.2 patch: the operations that, applied in listed order to the
-    /// prior frontier's result, yield this one EXACTLY — same occurrences, same
-    /// exposed values, same order. The empty sequence is a frontier-only patch.
+    /// An ordered §12.2 patch over a row-stream view: the operations that, applied
+    /// in listed order to the prior frontier's result, yield this one EXACTLY —
+    /// same occurrences, same exposed values, same order. The empty sequence is a
+    /// frontier-only patch.
     Patch(Vec<PatchOp>),
+    /// A scalar/aggregate view's value (§7.5, §12.2). `Some(value)` conveys the
+    /// value — at first observation or when it changed — and the client sets its
+    /// result to `value`; `None` is the frontier-only no-op for an unchanged
+    /// scalar, mirroring an empty [`Patch`]. The carried [`Value`] MAY itself be
+    /// [`Value::None`] (an absent optional, or `avg`/`min`/`max` over empty input,
+    /// §7.5), a present scalar reading distinct from the `None` no-op.
+    Scalar(Option<Value>),
 }
 
 impl ViewDelta {
     /// The delta from `prev` (the prior observation, or `None` for the first) to
-    /// `next`. The first observation is an [`Init`]; a subsequent frontier is the
-    /// ordered §12.2 patch [`crate::patch::diff`] computes — applying it in order
-    /// to `prev`'s rows reproduces `next`'s rows including order (§12.2).
+    /// `next` (§12.2). Like shapes compare like-to-like:
+    ///
+    /// - two row streams yield the ordered §12.2 [`crate::patch::diff`] as a
+    ///   [`Patch`] (or an [`Init`] on the first observation) — applying it in order
+    ///   to `prev`'s rows reproduces `next`'s rows including order;
+    /// - two scalars yield [`Scalar`] carrying the new value when it changed, or
+    ///   the frontier-only [`Scalar`]`(None)` when it did not (mirroring the
+    ///   empty-patch case), and the scalar value at the first observation.
+    ///
+    /// A view's result shape is fixed for its lifetime; a shape mismatch (or the
+    /// first observation) takes the guarded fallback of a full re-init of `next` in
+    /// its own shape, never a panic.
     ///
     /// [`Init`]: ViewDelta::Init
+    /// [`Patch`]: ViewDelta::Patch
+    /// [`Scalar`]: ViewDelta::Scalar
     #[must_use]
     pub fn between(prev: Option<&ViewResult>, next: &ViewResult) -> Self {
-        match prev {
-            None => Self::Init(next.rows().to_vec()),
-            Some(prev) => Self::Patch(crate::patch::diff(prev.rows(), next.rows())),
+        match (prev, next) {
+            // Same-shape row stream: the ordered §12.2 patch from prior to next.
+            (Some(ViewResult::Rows { rows: prev_rows, .. }), ViewResult::Rows { rows, .. }) => {
+                Self::Patch(crate::patch::diff(prev_rows, rows))
+            }
+            // Same-shape scalar: the new value when it changed, else the
+            // frontier-only no-op (§7.5, §12.2), mirroring the empty-patch case.
+            (Some(ViewResult::Scalar(prev_value)), ViewResult::Scalar(value)) => {
+                if prev_value == value {
+                    Self::Scalar(None)
+                } else {
+                    Self::Scalar(Some(value.clone()))
+                }
+            }
+            // First observation, or a guarded shape change: a full re-init of
+            // `next` in its own shape — never a panic.
+            (_, ViewResult::Rows { rows, .. }) => Self::Init(rows.clone()),
+            (_, ViewResult::Scalar(value)) => Self::Scalar(Some(value.clone())),
         }
     }
 }

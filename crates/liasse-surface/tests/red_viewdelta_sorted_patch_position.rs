@@ -79,6 +79,7 @@ fn apply_patch(prior: &[ViewRow], delta: &ViewDelta) -> Vec<ViewRow> {
             }
             rows
         }
+        ViewDelta::Scalar(_) => unreachable!("a sorted row view never yields a scalar delta"),
     }
 }
 
@@ -111,6 +112,7 @@ fn assert_coherent(prev: &ViewResult, next: &ViewResult) -> Vec<PatchOp> {
     match delta {
         ViewDelta::Patch(ops) => ops,
         ViewDelta::Init(_) => panic!("between(Some, _) is a patch, not an init"),
+        ViewDelta::Scalar(_) => panic!("a sorted row view never yields a scalar delta"),
     }
 }
 
