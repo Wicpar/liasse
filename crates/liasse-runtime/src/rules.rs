@@ -10,7 +10,7 @@
 use liasse_expr::Cell;
 use liasse_ident::NameSegment;
 use liasse_store::{CollectionPath, RowAddress};
-use liasse_value::{RefKey, Value};
+use liasse_value::{RefKey, Struct, Text, Value};
 
 use crate::compiled::{Compiled, CompiledCollection};
 use crate::error::{Rejection, RejectionReason};
@@ -191,7 +191,7 @@ pub(crate) fn finalize(
         let Some(collection) = compiled.collection_at(&decl) else { continue };
         check_fields(collection, fields, address, ctx, prospective)?;
         check_row(collection, fields, address, ctx, prospective)?;
-        check_refs(prospective, collection, fields, address)?;
+        check_refs(compiled, prospective, collection, fields, address)?;
         check_uniqueness(prospective, collection, fields, address)?;
         if let Some(bucket) = compiled.bucket(&name) {
             crate::bucket::check_interval(bucket, collection, fields, ctx.now, &address.render())?;
@@ -243,6 +243,7 @@ fn check_row(
 }
 
 fn check_refs(
+    compiled: &Compiled,
     prospective: &Prospective,
     collection: &CompiledCollection,
     fields: &FieldMap,
@@ -260,7 +261,7 @@ fn check_refs(
                     .at(address.render()));
                 }
                 Some(Value::Ref(reference)) => {
-                    if !target_present(prospective, &info.target, reference.key()) {
+                    if !target_present(compiled, prospective, &info.target, reference.key()) {
                         return Err(Rejection::new(
                             RejectionReason::DanglingRef,
                             format!("reference `{}` does not resolve to a live row", field.name),
@@ -279,7 +280,7 @@ fn check_refs(
         {
             for member in members {
                 let Some(key) = member_ref_key(member) else { continue };
-                if !target_present(prospective, &info.target, &key) {
+                if !target_present(compiled, prospective, &info.target, &key) {
                     return Err(Rejection::new(
                         RejectionReason::DanglingRef,
                         format!("a member of reference set `{}` does not resolve to a live row", field.name),
@@ -304,17 +305,58 @@ fn member_ref_key(value: &Value) -> Option<RefKey> {
 }
 
 /// Whether the target collection holds a live row whose key matches `key`.
-fn target_present(prospective: &Prospective, target: &str, key: &RefKey) -> bool {
+///
+/// §6.3/§7.6/A.9: a reference resolves by comparing its *application key* against
+/// each target row's application-visible key identity (§5.4). A single-field key
+/// compares as its bare scalar; a composite key compares as the name-sorted
+/// struct a target row materializes (`materialize::key_identity`) — which is the
+/// same shape a composite ref carries, since a ref to a composite target is typed
+/// `RefTarget::Scalar(Struct)` and decodes to `Ref::scalar(Struct)`. Comparing
+/// the two reconciled identities (rather than the old positional-vs-first-only
+/// component test) lets a composite ref resolve to its target regardless of
+/// whether it is carried as that name-sorted struct or a positional `$key`-order
+/// tuple. A ref naming no declared collection resolves nowhere.
+fn target_present(
+    compiled: &Compiled,
+    prospective: &Prospective,
+    target: &str,
+    key: &RefKey,
+) -> bool {
+    let Some(collection) = compiled.collection(target) else { return false };
+    let names = collection.key.as_slice();
+    let wanted = ref_identity(names, key);
     let path = CollectionPath::top(NameSegment::new(target));
     prospective.addresses_in(&path).iter().any(|address| {
-        address.steps().last().is_some_and(|step| match key {
-            RefKey::Scalar(value) => {
-                let mut components = step.key().components();
-                components.next() == Some(value) && components.next().is_none()
-            }
-            RefKey::Composite(values) => step.key().components().eq(values.iter()),
+        address.steps().last().is_some_and(|step| {
+            let components: Vec<Value> = step.key().components().cloned().collect();
+            identity_of(names, &components) == wanted
         })
     })
+}
+
+/// The application-visible key value (§5.4) from a collection's `$key` field
+/// `names` and a row's ordered key `components`: a lone component is its bare
+/// scalar, several become a name-sorted struct — the same shape
+/// `materialize::key_identity` produces and a composite ref decodes to.
+fn identity_of(names: &[String], components: &[Value]) -> Value {
+    match names {
+        [_] => components.first().cloned().unwrap_or(Value::None),
+        _ => Value::Struct(Struct::new(
+            names.iter().zip(components).map(|(name, value)| (Text::new(name.clone()), value.clone())),
+        )),
+    }
+}
+
+/// The application key a reference denotes (§6.3/A.9): a scalar-keyed ref exposes
+/// its bare value (a scalar for a single-field target, or the name-sorted struct
+/// a composite ref decodes to); a positional composite ref is reconciled to that
+/// same struct by pairing its `$key`-order components with the target's key field
+/// `names`.
+fn ref_identity(names: &[String], key: &RefKey) -> Value {
+    match key {
+        RefKey::Scalar(value) => (**value).clone(),
+        RefKey::Composite(components) => identity_of(names, components),
+    }
 }
 
 fn check_uniqueness(

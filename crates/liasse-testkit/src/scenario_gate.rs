@@ -293,7 +293,7 @@ pub const SKIP: &[(&str, &str)] = &[
     ("w-worked-examples/w2-two-logins-create-distinct-sessions", "package does not load yet (upstream compile/model gap)"),
     // --- seed ---
     ("15-meters/spend-time-in-gap-between-periods-unfunded", "seed admission gap: seed field `period`: `duration` value `= none` is not a canonical ISO-8601 elapsed dura..."),
-    ("annex-a-types-wire/ref-composite-wire-is-key-order-array", "seed admission gap: reference `loc` does not resolve to a live row"),
+    ("annex-a-types-wire/ref-composite-wire-is-key-order-array", "the composite ref now resolves to its target (§5.6 admission fixed); remaining A.9 wire debt — a ref to a composite target is carried as `Ref::scalar(struct)` and projects as an object, not the `$key`-order array `[\"eu\",\"x\"]`"),
     // ========================================================================
     // RUNTIME RESULT DIVERGES FROM THE CORPUS EXPECTATION
     // The package loads and the steps run, but the runtime's observed outcome, value,
