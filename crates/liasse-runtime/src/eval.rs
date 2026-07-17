@@ -40,6 +40,11 @@ pub(crate) struct EvalCtx<'a> {
     /// its patches, and its `return` all resolve `$actor`/`$session`. Empty for a
     /// public or internal call, and for genesis and view reads (§11.1).
     pub(crate) context: BTreeMap<String, Cell>,
+    /// The host-namespace dispatch a mutation program's `ns.fn(args)` call runs
+    /// against (§16.4, §17.7): the resolved `$requires` namespaces and the live
+    /// keyrings a `cose.sign` reaches. [`HostDispatch::none`] for genesis, views,
+    /// and migration, where a host call flows through the pure expression checker.
+    pub(crate) hosts: crate::host::HostDispatch<'a>,
 }
 
 impl EvalCtx<'_> {

@@ -133,6 +133,8 @@ fn build_migrated<G: crate::generator::Generators>(
         keyrings: &[],
         // A migration transform runs with no actor (§11.1).
         context: BTreeMap::new(),
+        // A migration transform is a pure expression; it resolves no host call.
+        hosts: crate::host::HostDispatch::none(now),
     };
     let root_ty = ExprType::Row(schema.root_row_type());
     let mut sources = SourceMap::new();

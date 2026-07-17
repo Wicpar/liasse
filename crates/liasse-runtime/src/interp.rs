@@ -15,7 +15,7 @@ use liasse_expr::{check_expression, Cell, ExprType, Row, RowId};
 use liasse_ident::NameSegment;
 use liasse_syntax::{Arg, BinaryOp, BlockMember, BlockMemberKind, Expr, ExprKind, Selector, Stmt, StmtKind, UnaryOp};
 use liasse_store::{CollectionPath, KeyValue, RowAddress};
-use liasse_value::{Ref, RefKey, Struct, Text, Value};
+use liasse_value::{Ref, RefKey, Struct, Text, Type, Value};
 
 use crate::cascade::{self, PlannedDeletion};
 use crate::compiled::{Compiled, CompiledCollection, CompiledMutation, CompiledStruct};
@@ -210,6 +210,98 @@ impl<'a> Interp<'a> {
         }
     }
 
+    // ---- host-namespace calls (§16.4, §17.7) ------------------------------
+
+    /// If `expr` is a resolved host-namespace call `ns.fn(args)` — where `ns` is a
+    /// `$requires` key the load-time registry resolution bound — its namespace
+    /// local key, the function name, and the argument list (§16.4). A core-language
+    /// call (`string.lower`, `now`, an aggregate) is not a `$requires` namespace,
+    /// so it falls through to the ordinary expression checker.
+    fn host_call<'e>(&self, expr: &'e Expr) -> Option<(&'e str, &'e str, &'e [Arg])> {
+        let ExprKind::Call { callee, args } = &expr.kind else { return None };
+        let ExprKind::Field { base, member } = &callee.kind else { return None };
+        if member.structural {
+            return None;
+        }
+        let ExprKind::Name(namespace) = &base.kind else { return None };
+        self.ctx
+            .hosts
+            .is_namespace(&namespace.text)
+            .then_some((namespace.text.as_str(), member.text.as_str(), args.as_slice()))
+    }
+
+    /// Evaluate a host-namespace call to its result cell and pinned type (§16.2).
+    /// A cose call is routed to the managed keyring; every other namespace call
+    /// evaluates its arguments as values and invokes the component through the
+    /// conformance guard, so a nonconforming return or a verifier rejection is a
+    /// typed rejection that commits no effect (§16.3).
+    fn eval_host_call(
+        &self,
+        namespace: &str,
+        function: &str,
+        args: &[Arg],
+        source: SourceId,
+    ) -> Result<(Cell, ExprType), Rejection> {
+        if self.ctx.hosts.is_cose(namespace) {
+            return self.eval_cose_call(function, args, source);
+        }
+        let current = self.current()?;
+        let mut values = Vec::with_capacity(args.len());
+        for arg in args {
+            values.push(self.scalar_value(arg_expr(arg), source, &current)?);
+        }
+        let result = self.ctx.hosts.invoke(namespace, function, &values)?;
+        let ty = self
+            .ctx
+            .hosts
+            .result_type(namespace, function)
+            .unwrap_or_else(|| ExprType::scalar(Type::Json));
+        Ok((Cell::Scalar(result), ty))
+    }
+
+    /// Evaluate a `cose.sign(/ring, claims)` call (§17.7/§17.8): the first argument
+    /// names the keyring by path, the second evaluates to the claim object; signing
+    /// goes through the ring's active version, so a §17.9 provider outage rejects
+    /// the mutation before any token is minted. The result is the token value.
+    fn eval_cose_call(
+        &self,
+        function: &str,
+        args: &[Arg],
+        source: SourceId,
+    ) -> Result<(Cell, ExprType), Rejection> {
+        match function {
+            "sign" => {
+                let [ring_arg, claims_arg] = args else {
+                    return Err(Rejection::new(
+                        RejectionReason::Malformed,
+                        "`cose.sign` takes a keyring path and a claims object",
+                    ));
+                };
+                let ring = keyring_ref(arg_expr(ring_arg)).ok_or_else(|| {
+                    Rejection::new(
+                        RejectionReason::Malformed,
+                        "`cose.sign` first argument must be a keyring path `/ring`",
+                    )
+                })?;
+                let current = self.current()?;
+                let claims = self.scalar_value(arg_expr(claims_arg), source, &current)?;
+                let token = self.ctx.hosts.cose_sign(ring, &claims)?;
+                Ok((Cell::Scalar(token), ExprType::scalar(Type::Json)))
+            }
+            // §17.7: `cose.verify` runs during authentication (`$verify`), where the
+            // surface layer drives it against the ring's accepted set — not inside a
+            // mutation program.
+            "verify" => Err(Rejection::new(
+                RejectionReason::Malformed,
+                "`cose.verify` runs during authentication (`$verify`), not in a mutation program",
+            )),
+            other => Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!("unknown cose function `{other}`"),
+            )),
+        }
+    }
+
     // ---- assignment -------------------------------------------------------
 
     fn exec_assign(&mut self, target: &Expr, value: &Expr, source: SourceId) -> Result<(), Rejection> {
@@ -261,6 +353,14 @@ impl<'a> Interp<'a> {
     /// `name = .coll + { … }` then `return name { … }` returns the committed row
     /// (§8.4, §8.10); any other right-hand side binds its evaluated value.
     fn bind_local(&mut self, name: String, value: &Expr, source: SourceId) -> Result<(), Rejection> {
+        // §16.4/§17.7: `name = ns.fn(args)` binds the result of a resolved
+        // host-namespace call — a pure/verifier/generated function, or a
+        // `cose.sign(/ring, claims)` token minted through the managed keyring.
+        if let Some((namespace, function, args)) = self.host_call(value) {
+            let (cell, ty) = self.eval_host_call(namespace, function, args, source)?;
+            self.locals.insert(name, LocalBind::Value(cell, ty));
+            return Ok(());
+        }
         if let ExprKind::Binary { op: BinaryOp::Add, lhs, rhs } = &value.kind
             && self.collection_ref(lhs, source)?.is_some()
         {
@@ -1099,6 +1199,28 @@ impl<'a> Interp<'a> {
 
 fn is_assert(callee: &Expr) -> bool {
     matches!(&callee.kind, ExprKind::Name(id) if id.text == "assert")
+}
+
+/// The value expression of a call argument, positional or named (§16.4 host-call
+/// arguments carry no keyword semantics in CORE — the name is decorative).
+fn arg_expr(arg: &Arg) -> &Expr {
+    match arg {
+        Arg::Positional(value) | Arg::Named { value, .. } => value,
+    }
+}
+
+/// The keyring name a `cose.sign` path argument `/ring` addresses (§17.7): a root
+/// field access `Field { base: Root, member }`. Any other shape is not a keyring
+/// path.
+fn keyring_ref(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Field { base, member }
+            if matches!(base.kind, ExprKind::Root) && !member.structural =>
+        {
+            Some(&member.text)
+        }
+        _ => None,
+    }
 }
 
 /// The `name: value` pair of an insert-object member when it is an explicit

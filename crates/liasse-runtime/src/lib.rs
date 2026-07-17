@@ -48,10 +48,25 @@
 //! clear, `assert`, `return`), seed admission, root views, the virtual clock,
 //! lifecycle buckets, and the `.$at`/`.$between`/`.$all` temporal selectors over
 //! bucketed collections (§14.1–§14.2). Nested collections, view-sourced
-//! insert/replace, local bindings, internal calls, host-requirement resolution
-//! against a registry, and full dependency-ordered default evaluation remain
-//! documented seams. So do the remaining feature families, each blocked on
-//! machinery outside this crate's current reach:
+//! insert/replace, local bindings, internal calls, and full dependency-ordered
+//! default evaluation remain documented seams. So do the remaining feature
+//! families, each blocked on machinery outside this crate's current reach:
+//!
+//! # Host namespaces and keyring calls (§16, §17.7/§17.8)
+//!
+//! A package's `$requires` host-namespace declarations are resolved against a
+//! host [`Registry`] the engine holds ([`Engine::load_with_hosts`]):
+//! a missing/incompatible/ambiguous requirement fails before activation (§16.2,
+//! §9.2 step 4); the default [`Engine::load`] manages no components and defers an
+//! unresolved requirement instead. A mutation program's host-namespace call —
+//! `util.double(...)` through the [`ConformanceGuard`]
+//! (a nonconforming return is a rejection), or `cose.sign(/ring, claims)` through
+//! the internally-provisioned [`Keyring`] (§17.7/§17.8: signing exercises the
+//! active version, so a §17.9 outage rejects and mints no token) — is dispatched
+//! by the interpreter (`host` module). A host-namespace call in a *view*,
+//! *default*, or `$verify` position flows through the pure expression checker
+//! (liasse-expr), which types only the core language namespaces — resolving a
+//! host call *there* is a documented cross-crate seam (see the crate-level report).
 //!
 //! - **Source-backed and recurring buckets** (§14.4–§14.6) are implemented
 //!   ([`source_bucket`]): a compiled pass reads each `$source`/`$from`/`$until`/
@@ -95,7 +110,7 @@
 //!
 //! - [`Keyring`] (§17): the version lifecycle, rotation scheduling on the
 //!   virtual clock, sealed public-only metadata, and §17.9 failure keep-current
-//!   over a [`KeyProvider`](liasse_host::KeyProvider).
+//!   over a [`KeyProvider`].
 //! - [`BlobEngine`] (§18): descriptor acceptance, placement-policy planning,
 //!   transactional upload, and integrity-verified fetch over a
 //!   [`BlobConnector`](liasse_host::BlobConnector), so tampered bytes never
@@ -121,6 +136,7 @@ mod error;
 mod eval;
 mod generator;
 mod history;
+mod host;
 mod interp;
 mod keyring;
 mod keyring_view;
@@ -150,6 +166,15 @@ pub use deletion::{
 };
 pub use engine::Engine;
 pub use error::{EngineError, Rejection, RejectionReason};
+pub use host::CoseVerifyError;
+
+/// Re-exported so a host or the testkit builds the component registry the engine
+/// resolves `$requires` against ([`Engine::load_with_hosts`]) and drives the
+/// keyring/provider fault-injection vocabulary (§16.2, §17).
+pub use liasse_host::{
+    ConformanceGuard, ContractName, ContractRef, CoseClaims, CoseToken, EffectClass, HostNamespace,
+    InterfaceHash, KeyProvider, NamespaceDescriptor, OpSignature, Registry, Version,
+};
 pub use generator::{derive_uuid, FixedGenerators, Generators};
 pub use history::{
     ConflictKind, ImportError, ImportRelation, ImportReport, MergeConflict, MergeOutcome,

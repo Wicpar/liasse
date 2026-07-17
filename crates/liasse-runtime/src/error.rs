@@ -79,6 +79,11 @@ pub enum RejectionReason {
     /// The request itself was malformed — unknown mutation, argument that does
     /// not decode to its declared type, missing receiver.
     Malformed,
+    /// A host-namespace call refused the operation (§16.3/§17.9): a verifier
+    /// rejected its input, a bound provider or keyring version was unavailable,
+    /// or the returned value did not conform to the pinned contract. No
+    /// application effect is committed.
+    Host,
 }
 
 /// An admission refusal: the class, a human message, and the state path it

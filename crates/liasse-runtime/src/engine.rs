@@ -21,9 +21,11 @@ use liasse_syntax::parse_document;
 use liasse_value::Timestamp;
 
 use liasse_host::sim::SimKeyProvider;
+use liasse_host::Registry;
 
 use crate::compiled::{Compiled, CompiledMutation};
 use crate::doc;
+use crate::host::{HostBinding, HostDispatch};
 use crate::keyring::Keyring;
 use crate::keyring_view::KeyringSnapshot;
 use crate::error::{EngineError, Rejection, RejectionReason};
@@ -45,6 +47,10 @@ pub(crate) struct Compilation {
     pub(crate) model: Model,
     pub(crate) compiled: Compiled,
     pub(crate) data: Option<liasse_syntax::DocValue>,
+    /// The package's `$requires` declarations (§16.2), as `(local namespace,
+    /// "name@major")` pairs in declaration order — resolved against the host
+    /// registry at load, before activation.
+    pub(crate) requires: Vec<(String, String)>,
 }
 
 /// Parse a definition text and compile its model, statements, views, and buckets
@@ -67,7 +73,22 @@ pub(crate) fn compile_definition(definition: &str) -> Result<Compilation, Engine
         .unwrap_or(liasse_value::Precision::DEFAULT);
     let compiled = Compiled::build(&mut sources, &model, &model_doc, precision)?;
     let data = doc::member(document.root(), "$data").cloned();
-    Ok(Compilation { sources, model, compiled, data })
+    let requires = read_requires(document.root());
+    Ok(Compilation { sources, model, compiled, data, requires })
+}
+
+/// The package's `$requires` declarations as `(local namespace, "name@major")`
+/// pairs (§16.2). The model has already validated the block's shape (a decl-name
+/// key mapping to a string); resolving each against the host registry is the
+/// runtime's load-time job.
+fn read_requires(root: &liasse_syntax::DocValue) -> Vec<(String, String)> {
+    let Some(requires) = doc::member(root, "$requires").and_then(doc::object) else {
+        return Vec::new();
+    };
+    requires
+        .iter()
+        .filter_map(|member| doc::string(&member.value).map(|spec| (member.name.text.clone(), spec.to_owned())))
+        .collect()
 }
 
 /// The genesis lineage identifier of an instance (§19.3, D.5): its first
@@ -98,6 +119,11 @@ pub struct Engine<S> {
     /// rotations as the virtual clock moves. A keyring public selector reads a
     /// snapshot of these ([`Self::keyring_snapshots`]).
     keyrings: Vec<Keyring<SimKeyProvider>>,
+    /// The resolved host components this package binds (§16.2): the registered
+    /// [`Registry`](liasse_host::Registry) and the resolved `$requires` map a
+    /// mutation program's host-namespace call dispatches against. Built at load,
+    /// when a missing/incompatible/ambiguous requirement fails before activation.
+    host: HostBinding,
 }
 
 /// Bootstrap a live keyring per declaration (§17.3), over the in-process key
@@ -122,19 +148,54 @@ impl<S: InstanceStore> Engine<S> {
     /// (§9.1–§9.3). A static failure returns [`EngineError::Invalid`]; a rejected
     /// seed returns [`EngineError::Seed`].
     ///
-    /// Host requirement resolution (§9.2 step 4) is a documented seam: the public
-    /// [`Model`] does not expose its `$requires` descriptors, so a registry pass
-    /// belongs to the features layer that adds host components.
+    /// This form manages no host components beyond the runtime's built-in
+    /// `liasse.cose` namespace, so a `$requires` entry naming any other namespace
+    /// is *deferred* rather than failing the load: the package activates, and a
+    /// mutation that actually calls the unbound namespace fails as an unknown
+    /// function. Use [`Engine::load_with_hosts`] to supply registered host
+    /// namespaces, key providers, and connectors and have `$requires` resolved
+    /// strictly (§16.2: a missing/incompatible/ambiguous requirement fails load).
     pub fn load<G: Generators>(
         store: S,
         definition: &str,
         generator: &mut G,
     ) -> Result<Self, EngineError> {
-        let Compilation { sources, model, compiled, data } = compile_definition(definition)?;
+        let Compilation { sources, model, compiled, data, requires } = compile_definition(definition)?;
+        let host = HostBinding::resolve(Registry::new(), &requires, false)?;
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings };
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host };
+        engine.genesis(definition, data.as_ref(), generator)?;
+        Ok(engine)
+    }
+
+    /// Load `definition` into `store` against a host [`Registry`], resolving the
+    /// package's `$requires` host-namespace declarations before activation (§16.2,
+    /// §9.2 step 4). A missing, incompatible, or ambiguous requirement returns
+    /// [`EngineError::Requirement`]; the package does not activate.
+    ///
+    /// Build the registry with
+    /// [`register_namespace`](liasse_host::Registry::register_namespace),
+    /// [`register_provider`](liasse_host::Registry::register_provider), and
+    /// [`register_connector`](liasse_host::Registry::register_connector) to supply
+    /// the host components a case's `hosts` block provisions (a `sim` namespace,
+    /// a key provider, a connector). The runtime's built-in `liasse.cose`
+    /// namespace is added automatically when the registry carries none, so a
+    /// keyring package's `cose.sign`/`cose.verify` resolves without external
+    /// wiring; a host may register its own cose descriptor instead.
+    pub fn load_with_hosts<G: Generators>(
+        store: S,
+        definition: &str,
+        generator: &mut G,
+        registry: Registry,
+    ) -> Result<Self, EngineError> {
+        let Compilation { sources, model, compiled, data, requires } = compile_definition(definition)?;
+        let host = HostBinding::resolve(registry, &requires, true)?;
+        let clock = generator.now();
+        let lineage = genesis_lineage(store.instance());
+        let keyrings = build_keyrings(&compiled, clock);
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
     }
@@ -151,11 +212,12 @@ impl<S: InstanceStore> Engine<S> {
         state: &crate::portable::StateSection,
         generator: &mut G,
     ) -> Result<Self, EngineError> {
-        let Compilation { sources, model, compiled, .. } = compile_definition(definition)?;
+        let Compilation { sources, model, compiled, requires, .. } = compile_definition(definition)?;
+        let host = HostBinding::resolve(Registry::new(), &requires, false)?;
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings };
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host };
         engine.install_state(definition, state)?;
         Ok(engine)
     }
@@ -253,6 +315,10 @@ impl<S: InstanceStore> Engine<S> {
         target: Compilation,
         migrated: BTreeMap<RowAddress, crate::materialize::FieldMap>,
     ) -> Result<CommitSeq, EngineError> {
+        // §16.2/§20: the target keeps the context's registered components but
+        // declares its own `$requires`; re-resolve them before staging, so an
+        // unmet requirement fails the migration before any effect.
+        self.host.rebind(&target.requires)?;
         let schema = Schema::new(&self.model);
         let mut prospective = Prospective::gather(&self.store, schema)?;
         let live: Vec<RowAddress> = prospective.working().keys().cloned().collect();
@@ -336,6 +402,49 @@ impl<S: InstanceStore> Engine<S> {
         &self.store
     }
 
+    /// The internally-provisioned keyring named `ring` (§17), for reading its
+    /// version metadata (`.$current`/`.$accepted`/`.$versions`) and lifecycle
+    /// state. The engine bootstraps and rotates it on the virtual clock; a host
+    /// driver reads it to assert acceptance and rotation. `None` when the package
+    /// declares no keyring of that name.
+    #[must_use]
+    pub fn keyring(&self, ring: &str) -> Option<&Keyring<SimKeyProvider>> {
+        self.keyrings.iter().find(|r| r.name() == ring)
+    }
+
+    /// Mutable access to keyring `ring`'s backing key provider, for the §17.9
+    /// `provider_set` fault-injection vocabulary a driver uses to make a
+    /// `cose.sign` mutation fail (unavailability, per-operation failure, an
+    /// invalid public key). `None` when no keyring of that name is declared.
+    pub fn keyring_provider_mut(&mut self, ring: &str) -> Option<&mut SimKeyProvider> {
+        self.keyrings.iter_mut().find(|r| r.name() == ring).map(Keyring::provider_mut)
+    }
+
+    /// The declared keyring names (§17.1), in declaration order — so a driver maps
+    /// a `$provider` fault target to the rings it backs.
+    pub fn keyring_names(&self) -> impl Iterator<Item = &str> {
+        self.keyrings.iter().map(Keyring::name)
+    }
+
+    /// Verify a `cose.sign` token against keyring `ring`'s accepted versions at
+    /// the current instant (§17.7), returning the verified claims. Acceptance-
+    /// based: no provider operation is involved, so an existing token keeps
+    /// verifying through a provider outage while a revoked / retired-past-`$retain`
+    /// / foreign-ring / tampered token is denied. This is the runtime capability
+    /// the surface/testkit auth path (`$verify: "cose.verify(/ring, $credential)"`)
+    /// drives.
+    ///
+    /// # Errors
+    /// [`CoseVerifyError`](crate::CoseVerifyError) for a malformed token, an unknown ring, a foreign-ring
+    /// token, a tampered claim set, or a no-longer-accepted version.
+    pub fn cose_verify(
+        &self,
+        ring: &str,
+        token: &liasse_value::Value,
+    ) -> Result<liasse_value::Value, crate::host::CoseVerifyError> {
+        crate::host::cose_verify(&self.keyrings, ring, token, self.clock)
+    }
+
     fn genesis<G: Generators>(
         &mut self,
         definition: &str,
@@ -353,6 +462,10 @@ impl<S: InstanceStore> Engine<S> {
             keyrings: &snapshots,
             // §11.1: genesis seeding executes with no actor.
             context: BTreeMap::new(),
+            // A `$data` seed's defaults flow through the pure expression checker,
+            // which does not resolve a host-namespace call, so genesis carries no
+            // live host dispatch (a host-call-in-default is a cross-crate seam).
+            hosts: HostDispatch::none(self.clock),
         };
         let mut prospective = Prospective::empty();
         let mut touched = Vec::new();
@@ -402,6 +515,10 @@ impl<S: InstanceStore> Engine<S> {
             seed: generator.next_seed(),
             keyrings: &snapshots,
             context: BTreeMap::new(),
+            // §16.4/§17.7: a mutation program may call a resolved host namespace
+            // (`util.double(...)`) or sign a session token (`cose.sign(/ring, …)`);
+            // the dispatch resolves the call and routes cose to the live keyring.
+            hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
         };
 
         let receiver = match receiver_target(&self.compiled, mutation, request) {
@@ -546,6 +663,10 @@ impl<S: InstanceStore> Engine<S> {
             seed: 0,
             keyrings: &keyrings,
             context: BTreeMap::new(),
+            // A `$view` reads through the pure expression checker, which does not
+            // resolve a host-namespace call, so a view read carries no live host
+            // dispatch (a host-call-in-view is a cross-crate seam).
+            hosts: HostDispatch::none(self.clock),
         };
         // §10.1: bind each supplied argument, then fill an omitted declared
         // parameter with its declared default (§8.3), so a `$view` reading `@name`
