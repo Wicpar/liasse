@@ -48,7 +48,8 @@ mod typed;
 
 pub use check::{check_expression, check_statement};
 pub use env::{
-    CallSite, Cell, Environment, KeyringSelector, Row, RowId, RowIdPart, TemporalQuery,
+    BlobPlacement, CallSite, Cell, Environment, KeyringSelector, Row, RowId, RowIdPart,
+    TemporalQuery,
 };
 pub use error::EvalError;
 pub use host::{HostEffect, HostOp, HostPosition};

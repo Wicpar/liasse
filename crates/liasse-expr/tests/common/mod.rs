@@ -10,11 +10,11 @@ use std::collections::BTreeMap;
 
 use liasse_diag::{Diagnostics, SourceMap};
 use liasse_expr::{
-    CallSite, Cell, Environment, EvalError, ExprType, KeyringSelector, Row, RowId, RowType, Scope,
-    TemporalQuery, TypedExpr,
+    BlobPlacement, CallSite, Cell, Environment, EvalError, ExprType, KeyringSelector, Row, RowId,
+    RowType, Scope, TemporalQuery, TypedExpr,
 };
 use liasse_syntax::parse_expression;
-use liasse_value::{Decimal, Integer, Text, Timestamp, Type, Uuid, Value};
+use liasse_value::{BlobDescriptor, Decimal, Integer, Text, Timestamp, Type, Uuid, Value};
 
 /// A scope with an explicit lexical current chain plus out-of-band maps.
 pub struct FixedScope {
@@ -96,6 +96,10 @@ pub struct FixedEnv {
     pub structurals: BTreeMap<String, Cell>,
     pub now: Timestamp,
     pub uuid: Uuid,
+    /// A test §18.5 placement index keyed by a blob's canonical `$sha512` digest,
+    /// so `blob_placement` answers a placement member exactly as the runtime's
+    /// engine-recorded index would.
+    pub placements: BTreeMap<String, BlobPlacement>,
 }
 
 impl FixedEnv {
@@ -106,6 +110,7 @@ impl FixedEnv {
             structurals: BTreeMap::new(),
             now: Timestamp::new(1_700_000_000_000_000, liasse_value::Precision::Micros),
             uuid: Uuid::from_bytes([7; 16]),
+            placements: BTreeMap::new(),
         }
     }
 
@@ -116,6 +121,13 @@ impl FixedEnv {
 
     pub fn structural(mut self, name: &str, cell: Cell) -> Self {
         self.structurals.insert(name.to_owned(), cell);
+        self
+    }
+
+    /// Record the §18.5 placement facts of the blob whose canonical digest is
+    /// `digest`, so a placement member read of that occurrence resolves them.
+    pub fn placement(mut self, digest: &str, facts: BlobPlacement) -> Self {
+        self.placements.insert(digest.to_owned(), facts);
         self
     }
 }
@@ -186,6 +198,17 @@ impl Environment for FixedEnv {
             .cloned()
             .collect();
         Ok(kept)
+    }
+
+    /// A test §18.5 placement index: the facts recorded for the descriptor's
+    /// canonical digest, mirroring the runtime's engine-recorded index. An
+    /// unrecorded descriptor is a placement-index miss, exactly as an environment
+    /// that owns no placement for that occurrence would report.
+    fn blob_placement(&self, descriptor: &BlobDescriptor) -> Result<BlobPlacement, EvalError> {
+        self.placements
+            .get(&descriptor.sha512().to_canonical_text())
+            .cloned()
+            .ok_or(EvalError::NoBlobPlacement)
     }
 }
 

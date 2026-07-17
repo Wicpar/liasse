@@ -23,7 +23,7 @@
 use std::collections::BTreeMap;
 
 use liasse_diag::ByteSpan;
-use liasse_value::{Timestamp, Uuid, Value};
+use liasse_value::{BlobDescriptor, Text, Timestamp, Uuid, Value};
 
 use crate::error::EvalError;
 
@@ -230,6 +230,32 @@ pub enum TemporalQuery {
     All,
 }
 
+/// The §18.5 logical placement observations of one blob occurrence, supplied by
+/// the environment.
+///
+/// §18.5 exposes, off a committed blob descriptor, `blob.$stored` (the verified
+/// stores holding the content), `blob.$satisfied` (whether the placement policy
+/// is satisfied over them), and `blob.$surplus` (verified copies outside the
+/// currently required policy). These are engine-recorded observations, not
+/// values the pure evaluator can compute: physical placement and the current
+/// policy resolution live outside the value tree. So the evaluator reads them
+/// off the [`Environment`], exactly as it defers temporal activity and keyring
+/// lifecycle to their indices.
+///
+/// Store identities are their `stores.id` `text` values (§18.3). The evaluator
+/// turns each into a keyed store-identity row, so `.file.$stored { id }` projects
+/// the identity and `/stores['id'] in .file.$stored` tests membership by it
+/// (§18.11).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlobPlacement {
+    /// `blob.$stored`: the verified stores holding this content, in engine order.
+    pub stored: Vec<Text>,
+    /// `blob.$satisfied`: the placement policy evaluated over `stored`.
+    pub satisfied: bool,
+    /// `blob.$surplus`: verified copies outside the currently required policy.
+    pub surplus: Vec<Text>,
+}
+
 /// A keyring public version selector (§17.2). Unlike a temporal selector it
 /// carries no instant: it names a lifecycle role over a keyring's managed
 /// versions, which only the keyring-managing environment can resolve.
@@ -315,6 +341,23 @@ pub trait Environment {
     fn keyring(&self, base: &[Row], selector: KeyringSelector) -> Result<Vec<Row>, EvalError> {
         let _ = (base, selector);
         Err(EvalError::NoKeyringIndex)
+    }
+
+    /// Resolve the §18.5 logical placement observations of a committed blob
+    /// occurrence `descriptor`: its verified stores (`$stored`), whether the
+    /// current placement policy is satisfied over them (`$satisfied`), and the
+    /// verified copies outside that policy (`$surplus`).
+    ///
+    /// As with the temporal and keyring indices, keeping placement in the
+    /// environment is what preserves purity: physical placement and the current
+    /// policy resolution are engine-recorded state, so the evaluator hands over
+    /// the descriptor and reads the facts back rather than computing them. The
+    /// default owns no placement index and rejects, so only a placement-aware
+    /// environment (the runtime) answers a placement member; a metadata read
+    /// (`$sha512`/`$bytes`/`$media`/`$name`) never reaches this method.
+    fn blob_placement(&self, descriptor: &BlobDescriptor) -> Result<BlobPlacement, EvalError> {
+        let _ = descriptor;
+        Err(EvalError::NoBlobPlacement)
     }
 
     /// Invoke a resolved host-namespace function `namespace.function` with the

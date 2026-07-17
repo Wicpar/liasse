@@ -223,16 +223,18 @@ fn build_migrated<G: crate::generator::Generators>(
         .map_err(|error| Rejection::new(RejectionReason::Malformed, format!("source state: {error}")))?;
     let old_root = materialize_all(old_schema, &old_working);
     let old_root_ty = ExprType::Row(old_schema.root_row_type());
+    // Migration builds the target's rows; neither a keyring selector nor a blob
+    // placement member participates in a state transform (§20.1), so the
+    // migrated-state context owns an empty keyring and placement index.
+    let empty_placements = crate::env::BlobPlacements::default();
     let ctx = EvalCtx {
         schema,
         compiled: &target.compiled,
         params: BTreeMap::new(),
         now,
         seed: generator.next_seed(),
-        // Migration builds the target's rows; a keyring selector does not
-        // participate in state transforms, so the migrated-state context owns no
-        // keyring index (§20.1).
         keyrings: &[],
+        placements: &empty_placements,
         // §20.1: `$old` is the read-only source state the program reads.
         context: BTreeMap::from([("old".to_owned(), Cell::Row(Box::new(old_root)))]),
         // §16.1/§20.2: resolve the built-in codec namespaces so a `$as`/`$back`

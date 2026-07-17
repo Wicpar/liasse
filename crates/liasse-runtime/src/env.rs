@@ -10,13 +10,44 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use liasse_expr::{CallSite, Cell, Environment, EvalError, KeyringSelector, Row, RowId, TemporalQuery};
-use liasse_value::{Timestamp, Uuid, Value};
+use liasse_expr::{
+    BlobPlacement, CallSite, Cell, Environment, EvalError, KeyringSelector, Row, RowId,
+    TemporalQuery,
+};
+use liasse_value::{BlobDescriptor, Timestamp, Uuid, Value};
 
 use crate::generator::derive_uuid;
 use crate::host::HostDispatch;
 use crate::keyring_view::{snapshot_for, KeyringSnapshot};
 use crate::materialize::row_interval;
+
+/// The engine's §18.5 logical placement ledger: the recorded placement facts of
+/// each committed blob, keyed by its canonical `$sha512` digest.
+///
+/// §18.5 placement (`$stored`/`$satisfied`/`$surplus`) is engine-recorded state,
+/// not something a pure expression can derive from the value tree: physical
+/// placement and the current policy resolution live in the blob subsystem. The
+/// engine records a blob's facts (through [`Engine::record_blob_placement`], which
+/// the surface/driver feeds from its `blob_placement_state`, §18.5), and every
+/// evaluation environment carries a snapshot so a `.blob.$satisfied`/`.$stored`/
+/// `.$surplus` read resolves against them.
+///
+/// [`Engine::record_blob_placement`]: crate::Engine::record_blob_placement
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BlobPlacements(BTreeMap<String, BlobPlacement>);
+
+impl BlobPlacements {
+    /// Record the §18.5 facts of the blob whose canonical digest is `digest`,
+    /// replacing any prior facts (a re-record after a policy change updates them).
+    pub(crate) fn record(&mut self, digest: impl Into<String>, facts: BlobPlacement) {
+        self.0.insert(digest.into(), facts);
+    }
+
+    /// The recorded facts for `digest`, if any.
+    pub(crate) fn get(&self, digest: &str) -> Option<&BlobPlacement> {
+        self.0.get(digest)
+    }
+}
 
 /// A read-only, deterministic evaluation context.
 pub(crate) struct RuntimeEnv<'a> {
@@ -40,6 +71,11 @@ pub(crate) struct RuntimeEnv<'a> {
     /// resolves against. Each names the versions active (`.$current`) and
     /// accepted (`.$accepted`/`.$public`) at the read instant.
     keyrings: Vec<KeyringSnapshot>,
+    /// The §18.5 logical placement facts a blob placement member resolves against
+    /// (`blob.$satisfied`/`$stored`/`$surplus`), keyed by canonical `$sha512`
+    /// digest. A snapshot of the engine's ledger; empty when no blob placement has
+    /// been recorded, so a placement read then faults as a contract breach.
+    placements: BlobPlacements,
     /// The host-namespace dispatch a resolved `namespace.function(...)` call in a
     /// view/default/computed value runs through (§16.2/§16.3). A [`HostDispatch::none`]
     /// answers no namespace, so a host call in a position with no live binding
@@ -64,9 +100,10 @@ impl<'a> RuntimeEnv<'a> {
         seed: u64,
         temporal: Vec<Vec<Row>>,
         keyrings: Vec<KeyringSnapshot>,
+        placements: BlobPlacements,
         hosts: HostDispatch<'a>,
     ) -> Self {
-        Self { root, params, bindings, structurals, now, seed, temporal, keyrings, hosts }
+        Self { root, params, bindings, structurals, now, seed, temporal, keyrings, placements, hosts }
     }
 
     /// The working set a temporal selector ranges over (§14.1). When `base` is
@@ -141,6 +178,19 @@ impl Environment for RuntimeEnv<'_> {
             KeyringSelector::Accepted | KeyringSelector::Public => snapshot.accepted_rows(),
             KeyringSelector::Versions => snapshot.rows.clone(),
         })
+    }
+
+    /// Resolve a §18.5 blob placement member off the engine's placement ledger,
+    /// keyed by the descriptor's canonical `$sha512` digest. An unrecorded
+    /// descriptor is a placement-index miss ([`EvalError::NoBlobPlacement`]): the
+    /// blob's placement was never recorded, so the read cannot resolve — the
+    /// contract-breach signal the mutation/view path turns into a dropped
+    /// response, exactly as an unbound keyring or temporal read.
+    fn blob_placement(&self, descriptor: &BlobDescriptor) -> Result<BlobPlacement, EvalError> {
+        self.placements
+            .get(&descriptor.sha512().to_canonical_text())
+            .cloned()
+            .ok_or(EvalError::NoBlobPlacement)
     }
 
     /// Invoke a resolved host-namespace function in a view/default/computed value

@@ -383,6 +383,9 @@ impl CompiledSourceBucket {
             inputs.seed,
             Vec::new(),
             inputs.keyrings.to_vec(),
+            // A source view / derived-row key reads stored collections, never a
+            // blob placement member (§14.4–§14.6), so it carries no placement facts.
+            crate::env::BlobPlacements::default(),
             // A source view / derived-row key is a pure expression (§14.4–§14.6);
             // it resolves no host call, so it needs no live dispatch.
             crate::host::HostDispatch::none(inputs.now),

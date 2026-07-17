@@ -23,6 +23,7 @@ use liasse_value::Timestamp;
 use liasse_host::sim::SimKeyProvider;
 use liasse_host::Registry;
 
+use crate::blobs::PlacementState;
 use crate::compiled::{Compiled, CompiledMutation};
 use crate::doc;
 use crate::host::{HostBinding, HostDispatch, HostSignatures};
@@ -166,6 +167,14 @@ pub struct Engine<S> {
     /// Bound once at install by [`Engine::bind_config`] and carried into every
     /// evaluation context this engine builds.
     config: Option<Cell>,
+    /// The §18.5 logical placement ledger: the recorded `$stored`/`$satisfied`/
+    /// `$surplus` facts of each committed blob, keyed by canonical `$sha512`
+    /// digest (§18.5). Populated by [`Engine::record_blob_placement`] — the
+    /// surface/driver feeds it from the blob subsystem's `blob_placement_state`,
+    /// since physical placement lives outside application state — and carried into
+    /// every evaluation context so a mutation `return` or a `$view` reading a
+    /// placement member resolves the fact.
+    blob_placements: crate::env::BlobPlacements,
 }
 
 /// Bootstrap a live keyring per declaration (§17.3), over the in-process key
@@ -212,7 +221,7 @@ impl<S: InstanceStore> Engine<S> {
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None };
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
     }
@@ -249,7 +258,7 @@ impl<S: InstanceStore> Engine<S> {
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None };
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
     }
@@ -275,7 +284,7 @@ impl<S: InstanceStore> Engine<S> {
         let clock = generator.now();
         let lineage = genesis_lineage(store.instance());
         let keyrings = build_keyrings(&compiled, clock);
-        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None };
+        let mut engine = Self { store, model, compiled, clock, lineage, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.install_state(definition, state)?;
         Ok(engine)
     }
@@ -472,6 +481,25 @@ impl<S: InstanceStore> Engine<S> {
         self.rotate_due();
     }
 
+    /// Record the §18.5 logical placement facts of a committed blob, keyed by its
+    /// canonical `$sha512` `digest`: the verified stores (`$stored`), whether the
+    /// placement policy is satisfied over them (`$satisfied`), and the verified
+    /// copies outside the currently required policy (`$surplus`).
+    ///
+    /// Physical placement lives in the blob subsystem, not application state, so
+    /// the engine cannot derive these itself: the surface/driver reads them from a
+    /// blob host's [`blob_placement_state`] and records them here (§18.5). Every
+    /// subsequent evaluation that reads `.blob.$satisfied`/`.$stored`/`.$surplus`
+    /// — a mutation `return`, a `$view` — resolves against the recorded facts.
+    /// Re-recording a digest replaces its facts, so a policy change that shifts
+    /// `$surplus`/`$satisfied` without moving bytes is reflected on the next read
+    /// (§18.5).
+    ///
+    /// [`blob_placement_state`]: crate::PlacementState
+    pub fn record_blob_placement(&mut self, digest: impl Into<String>, state: &PlacementState) {
+        self.blob_placements.record(digest, state.facts());
+    }
+
     /// Perform any due keyring rotation before the next operation (§17.4): moving
     /// the virtual clock past a cadence retires the prior active version and
     /// activates a new one, and reaching the `$overlap` lead exposes a pending
@@ -542,6 +570,7 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: generator.next_seed(),
             keyrings: &snapshots,
+            placements: &self.blob_placements,
             context: BTreeMap::new(),
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
             modules: None,
@@ -644,6 +673,7 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: generator.next_seed(),
             keyrings: &snapshots,
+            placements: &self.blob_placements,
             // §11.1: genesis seeding executes with no actor.
             context: BTreeMap::new(),
             // §16.3/§8.8: a `$data` seed's field default may call a resolved host
@@ -716,6 +746,7 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: generator.next_seed(),
             keyrings: &snapshots,
+            placements: &self.blob_placements,
             // §13.1: the installation `$config` is bound before this overlay, so an
             // overlaid `$data` value reading `$config` resolves it.
             context: self.base_context(),
@@ -761,6 +792,7 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: generator.next_seed(),
             keyrings: &snapshots,
+            placements: &self.blob_placements,
             // §13.1: a module instance's mutation reads its installed `$config`;
             // `$actor`/`$session` are merged in below once resolved.
             context: self.base_context(),
@@ -953,6 +985,7 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: 0,
             keyrings: &keyrings,
+            placements: &self.blob_placements,
             // §13.1: a module instance's `$view` reads its installed `$config`;
             // `$actor`/`$session` are merged in below when the query supplies them.
             context: self.base_context(),
@@ -1073,6 +1106,7 @@ impl<S: InstanceStore> Engine<S> {
             now: self.clock,
             seed: 0,
             keyrings: &keyrings,
+            placements: &self.blob_placements,
             // §13.1: the exposed interface `$view` reads the child's installed
             // `$config`, so `.templates { …, currency: $config.currency }` resolves.
             context: self.base_context(),

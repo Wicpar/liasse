@@ -217,27 +217,41 @@ pub(crate) enum TypedKind {
         base: Box<TypedExpr>,
         selector: KeyringSelector,
     },
-    /// A `blob` descriptor member selector (§18.1): `.$sha512`, `.$bytes`,
-    /// `.$media`, `.$name`. The base is a `blob` value; evaluation reads the
-    /// named member off its descriptor.
+    /// A `blob` descriptor or placement member selector (§18.1, §18.5):
+    /// `.$sha512`, `.$bytes`, `.$media`, `.$name` read descriptor metadata, while
+    /// `.$satisfied`, `.$stored`, `.$surplus` read the engine-recorded placement
+    /// observations. The base is a `blob` value; a metadata member reads it off
+    /// the descriptor directly, a placement member defers to the environment's
+    /// placement index (as a temporal/keyring selector defers activity/lifecycle).
     BlobMember {
         base: Box<TypedExpr>,
         member: BlobMember,
     },
 }
 
-/// A `blob` descriptor member (§18.1). The complete descriptor is the
-/// application value; these are its readable members.
+/// A `blob` descriptor member (§18.1) or logical placement member (§18.5). The
+/// complete descriptor is the application value; the metadata members are read
+/// off it, and the placement members are the engine's logical observations of
+/// where the content is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BlobMember {
-    /// `$sha512` — the content hash, as its canonical lowercase-hex `text`.
+    /// `$sha512` — the content hash, as its canonical lowercase-hex `text` (§18.1).
     Sha512,
-    /// `$bytes` — the non-negative `int` byte count.
+    /// `$bytes` — the non-negative `int` byte count (§18.1).
     Bytes,
-    /// `$media` — the canonical media type, as `text`.
+    /// `$media` — the canonical media type, as `text` (§18.1).
     Media,
-    /// `$name` — the optional file name (`optional<text>`).
+    /// `$name` — the optional file name (`optional<text>`, §18.1).
     Name,
+    /// `$satisfied` — whether the current placement policy is satisfied over the
+    /// verified stores (`bool`, §18.5).
+    Satisfied,
+    /// `$stored` — the verified stores holding this content, as a view of keyed
+    /// store-identity rows (§18.5).
+    Stored,
+    /// `$surplus` — the verified copies outside the currently required policy, as
+    /// a view of keyed store-identity rows (§18.5).
+    Surplus,
 }
 
 /// A resolved temporal selector form (§14.1). The instant operands are typed

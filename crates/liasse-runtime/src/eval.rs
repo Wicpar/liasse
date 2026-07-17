@@ -34,6 +34,12 @@ pub(crate) struct EvalCtx<'a> {
     /// keyring public selector against, materialized under each ring name in the
     /// package root. Empty when the package declares no keyring.
     pub(crate) keyrings: &'a [crate::keyring_view::KeyringSnapshot],
+    /// The engine's §18.5 blob placement ledger (`blob.$satisfied`/`$stored`/
+    /// `$surplus`), keyed by canonical `$sha512` digest. A snapshot is carried into
+    /// every environment this context builds, so a mutation `return` and a `$view`
+    /// reading a placement member resolve it. Empty when the package has recorded
+    /// no blob placement.
+    pub(crate) placements: &'a crate::env::BlobPlacements,
     /// Request-scoped structural bindings introduced by the admitting context —
     /// `$actor` and, when the authenticator declared one, `$session` (§11.1).
     /// Every environment this context builds carries them, so a mutation program,
@@ -86,6 +92,7 @@ impl<'a> EvalCtx<'a> {
             self.seed,
             self.temporal_index(prospective),
             self.keyrings.to_vec(),
+            self.placements.clone(),
             self.hosts,
         )
     }
@@ -105,6 +112,7 @@ impl<'a> EvalCtx<'a> {
             self.seed,
             temporal,
             self.keyrings.to_vec(),
+            self.placements.clone(),
             self.hosts,
         )
     }
@@ -468,6 +476,7 @@ impl<'a> EvalCtx<'a> {
             self.seed,
             index,
             self.keyrings.to_vec(),
+            self.placements.clone(),
             self.hosts,
         )
     }

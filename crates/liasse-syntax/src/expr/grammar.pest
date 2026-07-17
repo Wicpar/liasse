@@ -62,7 +62,14 @@ lt = { "<" }
 gt = { ">" }
 eq = { "==" }
 ne = { "!=" }
-in_op = { "in" ~ !ident_cont }
+// Atomic for the same reason as `return_kw` (see the note above `return_stmt`):
+// in a non-atomic rule pest inserts implicit WHITESPACE between `"in"` and
+// `!ident_cont`, moving the boundary check past the space onto the right operand's
+// first character. `x in y` would then fail whenever `y` starts with an identifier
+// character (a bare name, `u.file.$stored` in §18.11's billing sum, a digit). The
+// atomic form checks the word boundary immediately after the keyword; the operand
+// that follows is parsed normally (whitespace-skipping) by `comparison`.
+in_op = @{ "in" ~ !ident_cont }
 
 additive = { multiplicative ~ (add_op ~ multiplicative)* }
 add_op = { plus | minus }

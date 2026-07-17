@@ -139,3 +139,63 @@ fn descriptor_member_on_non_blob_rejected() {
     );
     assert!(built.has_code("E-EXPR"));
 }
+
+/// §18.5 — the placement members (`$satisfied`, `$stored`, `$surplus`) are
+/// readable where the blob descriptor type is used. A `$view` projecting them
+/// type-checks: `$satisfied` is a `bool` output, and `$stored`/`$surplus` are
+/// store-identity views projected as `{ id }`. Loading proves all three resolve
+/// off the `file` blob field through the expression layer.
+#[test]
+fn placement_members_readable_in_a_view() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.bl@1.0.0", "$model": {
+            "stores": { "$key": "id", "id": "text", "connector": "text", "enabled": "bool = true" }
+            "docs": {
+              "$key": "id", "id": "text",
+              "$blob_storage": { "$in": "/stores['primary']" }
+              "file": { "$type": "blob", "$max_bytes": "100", "$media": ["text/plain"] }
+            }
+            "placement": {
+              "$view": ".docs { id, satisfied: .file.$satisfied, stored: .file.$stored { id }, surplus: .file.$surplus { id } }"
+            }
+        } }"#,
+    );
+    built.expect_ok();
+}
+
+/// §18.11 — a store-membership filter over the placement state type-checks:
+/// `/stores['primary'] in u.file.$stored` names a `/stores['primary']` row needle
+/// and the `$stored` store-identity view as its `in` haystack. This is the §18.11
+/// billing filter shape; loading proves the whole membership-over-placement path
+/// resolves through the model's checker, and — because the right operand `u...`
+/// begins with an identifier — that the `in` keyword parses before a bare name.
+#[test]
+fn store_membership_filter_over_stored_type_checks() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.bl@1.0.0", "$model": {
+            "stores": { "$key": "id", "id": "text", "connector": "text", "enabled": "bool = true" }
+            "docs": {
+              "$key": "id", "id": "text",
+              "$blob_storage": { "$in": "/stores['primary']" }
+              "file": { "$type": "blob", "$max_bytes": "100", "$media": ["text/plain"] }
+            }
+            "in_primary": {
+              "$view": ".docs[:u | /stores['primary'] in u.file.$stored] { id }"
+            }
+        } }"#,
+    );
+    built.expect_ok();
+}
+
+/// §18.5 — a placement member selector applies only to a `blob`; reading
+/// `.$satisfied` off a non-blob field is a static type error, so the blob-only
+/// typing is not vacuous.
+#[test]
+fn placement_member_on_non_blob_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.bl@1.0.0", "$model": {
+            "docs": { "$key": "id", "id": "text", "count": "int", "bad": "= .count.$satisfied" }
+        } }"#,
+    );
+    assert!(built.has_code("E-EXPR"));
+}

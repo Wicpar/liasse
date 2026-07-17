@@ -42,6 +42,9 @@ impl Checker<'_> {
             "bytes" => return self.check_blob_selector(expr, base, BlobMember::Bytes),
             "media" => return self.check_blob_selector(expr, base, BlobMember::Media),
             "name" => return self.check_blob_selector(expr, base, BlobMember::Name),
+            "satisfied" => return self.check_blob_selector(expr, base, BlobMember::Satisfied),
+            "stored" => return self.check_blob_selector(expr, base, BlobMember::Stored),
+            "surplus" => return self.check_blob_selector(expr, base, BlobMember::Surplus),
             other => {
                 // §14.4: a source-backed bucket row exposes its structural bindings
                 // (`$source`/`$from`/`$until`/`$index`) as readable members, so
@@ -54,8 +57,9 @@ impl Checker<'_> {
                     format!(
                         "`.${other}` is not a selector (row identity `.$key`, §6.3; temporal \
                          `.$all`, §14.2; keyring \
-                         `.$current`/`.$accepted`/`.$public`/`.$versions`, §17.2; blob \
-                         `.$sha512`/`.$bytes`/`.$media`/`.$name`, §18.1)"
+                         `.$current`/`.$accepted`/`.$public`/`.$versions`, §17.2; blob descriptor \
+                         `.$sha512`/`.$bytes`/`.$media`/`.$name`, §18.1; blob placement \
+                         `.$satisfied`/`.$stored`/`.$surplus`, §18.5)"
                     ),
                 );
             }

@@ -20,6 +20,9 @@
 
 use std::collections::BTreeSet;
 
+use liasse_expr::BlobPlacement;
+use liasse_value::Text;
+
 /// A store identity (`stores.id`, §18.3).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StoreId(String);
@@ -180,6 +183,21 @@ pub struct PlacementState {
     pub satisfied: bool,
     /// `blob.$surplus`: verified copies outside the currently required policy.
     pub surplus: Vec<StoreId>,
+}
+
+impl PlacementState {
+    /// The §18.5 facts as the expression layer's [`BlobPlacement`] — store
+    /// identities as their `text` values (§18.3) — so the engine can record them
+    /// in its placement ledger and an environment can answer a placement member
+    /// with them.
+    #[must_use]
+    pub fn facts(&self) -> BlobPlacement {
+        BlobPlacement {
+            stored: self.stored.iter().map(|s| Text::new(s.as_str())).collect(),
+            satisfied: self.satisfied,
+            surplus: self.surplus.iter().map(|s| Text::new(s.as_str())).collect(),
+        }
+    }
 }
 
 /// Remove repeated store identities by first occurrence (§18.4).

@@ -87,6 +87,12 @@ pub enum EvalError {
     /// call must run against a host-aware environment (the runtime), never a bare
     /// pure environment.
     NoHostDispatch,
+
+    /// A blob placement member (`.$satisfied`/`.$stored`/`.$surplus`) was
+    /// evaluated against an environment that owns no placement index (§18.5). An
+    /// environment contract breach: a placement read must run against a
+    /// placement-aware environment (the runtime), never a bare pure environment.
+    NoBlobPlacement,
 }
 
 impl EvalError {
@@ -116,6 +122,10 @@ impl EvalError {
             Self::HostCall { detail } => format!("host-namespace call failed: {detail}"),
             Self::NoHostDispatch => {
                 "a host-namespace call needs an environment with host dispatch".to_owned()
+            }
+            Self::NoBlobPlacement => {
+                "a blob placement member needs an environment that owns the placement index"
+                    .to_owned()
             }
         }
     }

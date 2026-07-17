@@ -99,7 +99,14 @@ impl Evaluator<'_> {
         needle: &TypedExpr,
         haystack: &TypedExpr,
     ) -> Result<Cell, EvalError> {
-        let value = self.eval_scalar(needle)?;
+        // §6.3: a keyed-row needle denotes its identity key, so membership by a
+        // row (`/stores['s3'] in .file.$stored`, §18.11) tests that key against
+        // the haystack's row keys — the same identity a set/view is compared by.
+        let value = match self.eval(needle)? {
+            Cell::Scalar(value) => value,
+            Cell::Row(row) => row.key().clone(),
+            _ => return Err(EvalError::ShapeMismatch { expected: "a scalar or keyed row" }),
+        };
         let found = match self.eval(haystack)? {
             Cell::Scalar(Value::Set(members)) => members.contains(&value),
             Cell::Collection(rows) => rows.iter().any(|row| row.key() == &value),

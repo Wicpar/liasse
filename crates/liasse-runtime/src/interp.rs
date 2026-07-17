@@ -757,6 +757,7 @@ impl<'a> Interp<'a> {
             now: self.ctx.now,
             seed: self.ctx.seed,
             keyrings: self.ctx.keyrings,
+            placements: self.ctx.placements,
             context: self.ctx.context.clone(),
             hosts: self.ctx.hosts,
             modules: self.ctx.modules,

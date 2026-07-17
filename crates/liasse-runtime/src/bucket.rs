@@ -157,8 +157,9 @@ fn eval_bound(
         0,
         Vec::new(),
         Vec::new(),
-        // A bucket bound is a pure expression (row fields and `now()`); it resolves
-        // no host call, so it needs no live dispatch.
+        // A bucket bound is a pure expression (row fields and `now()`); it reads no
+        // blob placement member and resolves no host call.
+        crate::env::BlobPlacements::default(),
         crate::host::HostDispatch::none(now),
     );
     match typed.evaluate(&env, &current)? {

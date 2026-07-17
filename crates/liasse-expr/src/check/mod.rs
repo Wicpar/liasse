@@ -122,21 +122,35 @@ impl<'a> Checker<'a> {
         }
     }
 
-    /// Resolve a bare name to a binding type: local frames first, then the base
-    /// scope's lexical bindings, then a field of the current row.
+    /// Resolve a bare name within the current scope chain (§6.2, §7.1).
+    ///
+    /// The innermost frame is the current projection/filter scope. Its own
+    /// bindings win first — an earlier same-projection output (§7.1
+    /// cross-reference) or a copied `[:name]`/`::` bind (§6.4). Then the current
+    /// row's own field, so a *nested* projection reads its own row's field rather
+    /// than an enclosing projection's like-named output (`... { id, xs: .ys { id }
+    /// }` reads each `y`'s `id`, not the outer row's). Only after both fall through
+    /// do enclosing frames and the base scope's lexical bindings apply; an
+    /// enclosing projection's output is reached, if at all, through an explicit
+    /// `^` parent step, never by a bare name shadowing a local field.
     fn resolve_name(&self, name: &str) -> Option<NameResolution> {
-        for frame in self.frames.iter().rev() {
+        if let Some(frame) = self.frames.last()
+            && let Some(ty) = frame.bindings.get(name)
+        {
+            return Some(NameResolution::Frame(ty.clone()));
+        }
+        if let Some(ExprType::Row(row)) = self.current_at(0)
+            && let Some(ty) = row.field(name)
+        {
+            return Some(NameResolution::Field(ty.clone()));
+        }
+        for frame in self.frames.iter().rev().skip(1) {
             if let Some(ty) = frame.bindings.get(name) {
                 return Some(NameResolution::Frame(ty.clone()));
             }
         }
         if let Some(ty) = self.scope.binding(name) {
             return Some(NameResolution::Scope(ty));
-        }
-        if let Some(ExprType::Row(row)) = self.current_at(0)
-            && let Some(ty) = row.field(name)
-        {
-            return Some(NameResolution::Field(ty.clone()));
         }
         None
     }
