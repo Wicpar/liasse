@@ -2,7 +2,6 @@
 //! grouped), sorting and bounds, aggregates, and set combinators
 //! (§7.1–§7.5, Annex B.2/B.5).
 
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_value::Value;
@@ -10,6 +9,7 @@ use liasse_value::Value;
 use crate::env::{Cell, Row, RowId};
 use crate::error::EvalError;
 use crate::eval::{Evaluator, RowScope};
+use crate::order::SortOrder;
 use crate::ty::ExprType;
 use crate::typed::{CombineOp, Projection, SortKey, TypedExpr, TypedKind, TypedSelector};
 
@@ -374,26 +374,17 @@ fn bind_name_of(expr: &TypedExpr) -> Option<String> {
     }
 }
 
-/// Order rows by successive sort keys (descending flips each), with occurrence
-/// identity as the final tiebreaker (Annex B.5). Optional `none` sorts last
-/// ascending / first descending because `Value::None` is the order maximum
-/// (Annex B.2). Each ordered row keeps its complete sort tuple (§7.3) so a
-/// bounded window can retain it as the §12.2 immutable gap coordinate.
+/// Order rows through the view's [`SortOrder`] (§7.3, Annex B.5): successive sort
+/// keys with each descending key reversed, occurrence identity as the final
+/// tiebreak, and optional `none` last ascending / first descending because
+/// `Value::None` is the Annex B.2 order maximum. The comparator is the shared
+/// [`SortOrder::compare`], so a bounded window's §12.2 gap partition orders rows
+/// identically. Each ordered row keeps its complete sort tuple (§7.3) so a bounded
+/// window can retain it as the §12.2 immutable gap coordinate.
 fn order_rows(mut ranked: Vec<(Row, Vec<Value>)>, sort: &[SortKey]) -> Vec<Row> {
+    let order = SortOrder::from_keys(sort);
     ranked.sort_by(|(a_row, a_keys), (b_row, b_keys)| {
-        for (index, key) in sort.iter().enumerate() {
-            let a = a_keys.get(index);
-            let b = b_keys.get(index);
-            let ordering = match (a, b) {
-                (Some(a), Some(b)) => a.cmp(b),
-                _ => Ordering::Equal,
-            };
-            let ordering = if key.descending { ordering.reverse() } else { ordering };
-            if ordering != Ordering::Equal {
-                return ordering;
-            }
-        }
-        a_row.id().cmp(b_row.id())
+        order.compare(a_keys, a_row.id(), b_keys, b_row.id())
     });
     ranked.into_iter().map(|(row, keys)| row.with_sort(keys)).collect()
 }

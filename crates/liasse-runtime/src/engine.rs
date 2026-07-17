@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use liasse_diag::SourceMap;
-use liasse_expr::{check_expression, Cell};
+use liasse_expr::{check_expression, Cell, SortOrder};
 use liasse_ident::NameSegment;
 use liasse_model::Model;
 use liasse_store::{
@@ -1038,7 +1038,10 @@ impl<S: InstanceStore> Engine<S> {
         let cell = expr
             .evaluate_view(&env, &current)
             .map_err(|error| EngineError::Internal(error.message()))?;
-        Ok(Some(ViewResult::from_cell(&cell)))
+        // §7.3/§12.2: carry the view's total `$sort` order alongside the rows so a
+        // bounded window partitions at its gap coordinate through the same order the
+        // evaluator sorted by.
+        Ok(Some(ViewResult::from_cell(&cell, expr.result_order())))
     }
 
     /// The parameter cells a surface `$view` read runs against (§10.1): each
@@ -1090,7 +1093,10 @@ impl<S: InstanceStore> Engine<S> {
     /// own committed state. Returns `None` when no interface of that name exposes a
     /// readable `$view` (an absent or mutation-only interface).
     pub fn interface_read(&self, interface: &str) -> Result<Option<ViewResult>, EngineError> {
-        Ok(self.interface_cell(interface)?.map(|cell| ViewResult::from_cell(&cell)))
+        let Some(cell) = self.interface_cell(interface)? else { return Ok(None) };
+        let order =
+            self.compiled.exposed_view(interface).map_or_else(SortOrder::unordered, |expr| expr.result_order());
+        Ok(Some(ViewResult::from_cell(&cell, order)))
     }
 
     /// The rows an `$expose`d interface `$view` projects through the boundary

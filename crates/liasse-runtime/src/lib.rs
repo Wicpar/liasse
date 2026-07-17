@@ -213,6 +213,10 @@ pub use request::{CallRequest, ViewQuery};
 pub use response::ResponseValue;
 pub use view::{ViewDelta, ViewResult, ViewRow};
 
+/// Re-exported so callers name the total order a [`ViewResult`] carries (§7.3)
+/// without a direct dependency edge on the expression crate.
+pub use liasse_expr::SortOrder;
+
 /// Re-exported so callers build typed requests and read outcomes without a
 /// direct dependency edge on the value and store crates.
 pub use liasse_store::CommitSeq;

@@ -29,7 +29,7 @@
 //! "`rekey` ... preserving occurrence") needs a rekey-stable occurrence identity
 //! the current [`ViewResult`] does not carry; that case is left to the runtime.
 
-use liasse_expr::RowId;
+use liasse_expr::{RowId, SortOrder};
 use liasse_runtime::{ViewResult, ViewRow};
 use liasse_value::Value;
 
@@ -60,13 +60,18 @@ struct FrozenGap {
 impl FrozenGap {
     /// The window start while the anchor is absent: the first current row whose
     /// ordered position is at or after the frozen coordinate (§12.2). That position
-    /// is the pair `(sort tuple, occurrence identity)` — the exact total order the
-    /// engine's `order_rows` produces (sort keys, then [`RowId`] as the §8/B.5 final
-    /// tiebreak) — so a `partition_point` on the pair fixes both the distinct-tuple
-    /// case and the equal-sort-key tie case a bare sort tuple got wrong.
-    fn resume(&self, rows: &[ViewRow]) -> usize {
-        let frozen = (self.coordinate.as_slice(), &self.occurrence);
-        rows.partition_point(|row| (row.sort_tuple(), row.id()) < frozen)
+    /// is the pair `(sort tuple, occurrence identity)` compared through the view's
+    /// own total `order` — the exact comparator the engine's `order_rows` sorted by
+    /// ([`SortOrder::compare`]: each `$sort` key with its declared direction, then
+    /// [`RowId`] as the §8/B.5 final tiebreak). Partitioning through that shared
+    /// order fixes the distinct-tuple case, the equal-sort-key tie case, AND any
+    /// descending or mixed-direction `$sort` (§7.3) a bare ascending compare got
+    /// wrong — `rows` is monotone under exactly this predicate, so `partition_point`
+    /// is well-defined.
+    fn resume(&self, rows: &[ViewRow], order: &SortOrder) -> usize {
+        rows.partition_point(|row| {
+            order.is_before(row.sort_tuple(), row.id(), &self.coordinate, &self.occurrence)
+        })
     }
 }
 
@@ -119,7 +124,7 @@ impl Window {
     /// # Errors
     /// [`WindowError`] when a concrete anchor identifies no current occurrence.
     pub fn open(&mut self, result: &ViewResult) -> Result<Vec<ViewRow>, WindowError> {
-        self.select(result.rows()).ok_or(WindowError)
+        self.select(result).ok_or(WindowError)
     }
 
     /// Recompute the window over `result` at a new frontier. Once the window has
@@ -127,13 +132,16 @@ impl Window {
     /// its frozen gap coordinate, so this always yields rows.
     #[must_use]
     pub fn refresh(&mut self, result: &ViewResult) -> Vec<ViewRow> {
-        self.select(result.rows()).unwrap_or_default()
+        self.select(result).unwrap_or_default()
     }
 
-    /// The window's start index into `rows`, or `None` only for a concrete anchor
-    /// whose occurrence is absent and whose gap has not yet been frozen (an
-    /// unopenable window). Refreshes the frozen gap whenever the occurrence shows.
-    fn select(&mut self, rows: &[ViewRow]) -> Option<Vec<ViewRow>> {
+    /// The window's rows over `result`, or `None` only for a concrete anchor whose
+    /// occurrence is absent and whose gap has not yet been frozen (an unopenable
+    /// window). Refreshes the frozen gap whenever the occurrence shows. The
+    /// absent-anchor gap partition uses `result`'s own total order (§7.3), so it
+    /// resumes correctly under a descending or mixed-direction `$sort`.
+    fn select(&mut self, result: &ViewResult) -> Option<Vec<ViewRow>> {
+        let rows = result.rows();
         let start = match &self.anchor {
             Anchor::First => 0,
             Anchor::Last => rows.len().saturating_sub(self.size),
@@ -153,9 +161,13 @@ impl Window {
                     }
                 }
                 // Absent: the frozen (sort tuple, occurrence) coordinate holds the
-                // window until the occurrence reappears (§12.2). No gap yet ⇒
-                // unopenable.
-                None => self.gap.as_ref()?.resume(rows),
+                // window until the occurrence reappears (§12.2), partitioned through
+                // the view's own total order. No gap yet ⇒ unopenable.
+                None => {
+                    let gap = self.gap.as_ref()?;
+                    let order = result.order().cloned().unwrap_or_default();
+                    gap.resume(rows, &order)
+                }
             },
         };
         Some(slice(rows, start, self.size))

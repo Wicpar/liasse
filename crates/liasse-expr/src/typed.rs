@@ -68,6 +68,26 @@ impl TypedExpr {
     pub fn is_none_literal(&self) -> bool {
         matches!(self.kind, TypedKind::Literal(Value::None))
     }
+
+    /// The total order this view's result rows are delivered in (§7.3): the
+    /// per-key directions of the outermost projection that fixed their order.
+    ///
+    /// The final `$sort` tuple each row carries is set by the outermost
+    /// projection — it rebuilds fresh rows and either re-sorts (writing that
+    /// projection's keys) or preserves source order (leaving the tuple empty), so
+    /// the directions of the outermost projection describe exactly the order the
+    /// rows are in. A view that is not a directly sorted projection (a combinator,
+    /// a bare collection, a scalar) exposes no single `$sort` direction and is
+    /// [`SortOrder::unordered`], so its rows fall back to occurrence-identity order
+    /// (§8/Annex B.5). A bounded window partitions rows at its frozen gap
+    /// coordinate through this order (§12.2), matching the evaluator exactly.
+    #[must_use]
+    pub fn result_order(&self) -> crate::SortOrder {
+        match &self.kind {
+            TypedKind::Project { projection, .. } => crate::SortOrder::from_keys(&projection.sort),
+            _ => crate::SortOrder::unordered(),
+        }
+    }
 }
 
 /// A resolved operation. Overloads (`+` as int/decimal/text, `-` as

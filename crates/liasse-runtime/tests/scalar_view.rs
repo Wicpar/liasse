@@ -49,7 +49,9 @@ fn add_thing(engine: &mut liasse_runtime::Engine<MemoryStore>, id: &str) {
 fn scalar(engine: &liasse_runtime::Engine<MemoryStore>, view: &str) -> Value {
     match engine.view_at_head(view).expect("view").expect("declared") {
         ViewResult::Scalar(value) => value,
-        ViewResult::Rows(rows) => panic!("view `{view}` delivered {} rows, expected a scalar", rows.len()),
+        ViewResult::Rows { rows, .. } => {
+            panic!("view `{view}` delivered {} rows, expected a scalar", rows.len())
+        }
     }
 }
 
@@ -111,7 +113,7 @@ fn a_root_singleton_field_takes_its_default_at_genesis() {
     let mut generator = generator();
     match engine.view_at_head("plain").expect("view").expect("declared") {
         ViewResult::Scalar(value) => assert_eq!(value.to_wire(), serde_json::json!("0"), "default applied"),
-        ViewResult::Rows(_) => panic!("plain is a scalar view"),
+        ViewResult::Rows { .. } => panic!("plain is a scalar view"),
     }
     let outcome = engine.call(&CallRequest::new("bump"), &mut generator).expect("call ok");
     assert_eq!(

@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use liasse_expr::{Cell, RowId};
+use liasse_expr::{Cell, RowId, SortOrder};
 use liasse_value::Value;
 
 /// One row of a view result: its stable identity, its scalar output fields, and
@@ -55,21 +55,25 @@ impl ViewRow {
 /// can render it as the JSON scalar §12.2 pins, rather than an empty stream.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ViewResult {
-    /// A row-stream result: its rows in canonical order (zero or more).
-    Rows(Vec<ViewRow>),
+    /// A row-stream result: its rows in canonical order (zero or more), and the
+    /// total order (§7.3, `$sort` directions) they are delivered in — the order a
+    /// bounded window partitions rows through at its §12.2 gap coordinate.
+    Rows { rows: Vec<ViewRow>, order: SortOrder },
     /// A scalar or aggregate result (§7.5): the single value it delivers, not
     /// wrapped in a row.
     Scalar(Value),
 }
 
 impl ViewResult {
-    /// Build a result from an evaluated cell. A collection or single row becomes a
-    /// row stream; a scalar/aggregate cell becomes a [`ViewResult::Scalar`]
-    /// carrying its value (§12.2), never a dropped empty stream.
-    pub(crate) fn from_cell(cell: &Cell) -> Self {
+    /// Build a result from an evaluated cell, in the total `order` the view's
+    /// outermost `$sort` fixed (§7.3). A collection or single row becomes a row
+    /// stream carrying that order; a scalar/aggregate cell becomes a
+    /// [`ViewResult::Scalar`] carrying its value (§12.2), never a dropped empty
+    /// stream.
+    pub(crate) fn from_cell(cell: &Cell, order: SortOrder) -> Self {
         match cell {
-            Cell::Collection(rows) => Self::Rows(rows.iter().map(view_row).collect()),
-            Cell::Row(row) => Self::Rows(vec![view_row(row)]),
+            Cell::Collection(rows) => Self::Rows { rows: rows.iter().map(view_row).collect(), order },
+            Cell::Row(row) => Self::Rows { rows: vec![view_row(row)], order },
             Cell::Scalar(value) => Self::Scalar(value.clone()),
         }
     }
@@ -79,8 +83,19 @@ impl ViewResult {
     #[must_use]
     pub fn rows(&self) -> &[ViewRow] {
         match self {
-            Self::Rows(rows) => rows,
+            Self::Rows { rows, .. } => rows,
             Self::Scalar(_) => &[],
+        }
+    }
+
+    /// The total order the rows are delivered in (§7.3): the `$sort` directions a
+    /// bounded window partitions rows through at its §12.2 gap coordinate. A scalar
+    /// result has no rows, hence no order.
+    #[must_use]
+    pub fn order(&self) -> Option<&SortOrder> {
+        match self {
+            Self::Rows { order, .. } => Some(order),
+            Self::Scalar(_) => None,
         }
     }
 
@@ -90,7 +105,7 @@ impl ViewResult {
     pub fn scalar(&self) -> Option<&Value> {
         match self {
             Self::Scalar(value) => Some(value),
-            Self::Rows(_) => None,
+            Self::Rows { .. } => None,
         }
     }
 

@@ -42,6 +42,7 @@ mod env;
 mod error;
 mod eval;
 mod host;
+mod order;
 mod scope;
 mod ty;
 mod typed;
@@ -53,6 +54,7 @@ pub use env::{
 };
 pub use error::EvalError;
 pub use host::{HostEffect, HostOp, HostPosition};
+pub use order::SortOrder;
 pub use scope::Scope;
 pub use ty::{ExprType, RowType};
 pub use typed::TypedExpr;
