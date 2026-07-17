@@ -212,7 +212,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // Interface-contract satisfaction: the child's exposed view/mutation vs the
     // parent's declared `$interfaces` is not checked at install.
     ("13-modules/expose-binding-contract-mismatch-invalid", "§13.8/§13.10 interface-contract satisfaction (the child exposed `$mut`/`$view` binding vs the parent's declared interface) is not checked at install, so the mismatch is admitted"),
-    ("13-modules/expose-view-missing-interface-field-invalid", "§13.8 structural interface-view satisfaction (the child exposed `$view` vs the parent's declared interface fields) is not checked at install"),
     ("13-modules/interface-mutation-param-contract-mismatch-invalid", "§13.10 interface mutation parameter-contract satisfaction is not checked at install"),
     // `$config` (§13.1): recorded on the install request, but neither type-checked
     // against the declared struct nor readable through child expressions.

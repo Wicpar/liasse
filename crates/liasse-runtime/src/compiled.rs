@@ -98,6 +98,11 @@ pub(crate) struct CompiledCollection {
     pub(crate) structs: Vec<CompiledStruct>,
     /// Keyed collections nested directly under this collection's rows (§5.4).
     pub(crate) children: Vec<CompiledCollection>,
+    /// Nested `$view` members (§7.1) declared under this collection's rows, each
+    /// typed with the row as `.` — the row-scoped analogue of a root view. Folded
+    /// onto each row at materialization so a `/coll[k].view` read resolves; the
+    /// canonical case is a `catalog: ".modules::iface { … }"` §13.9 aggregation.
+    pub(crate) views: Vec<CompiledView>,
 }
 
 /// A compiled static struct member (§5.3): a plain nested object sharing the
@@ -166,6 +171,31 @@ pub(crate) struct CompiledView {
 pub(crate) struct CompiledExposed {
     pub(crate) interface: String,
     pub(crate) expr: TypedExpr,
+}
+
+/// A declared `$modules` space (§13.2): the declaration-name path of the space
+/// node (`["companies", "modules"]`) and the interface contracts it declares. The
+/// path tells the root engine which rows to fold installed instances into (§13.9);
+/// the contracts are the boundary a child's `$expose` must satisfy at install
+/// (§13.8).
+pub(crate) struct CompiledModuleSpace {
+    /// The declaration-name path of the `$modules` node from `$model`.
+    pub(crate) path: Vec<String>,
+    /// The interface contracts the space declares (`$interfaces`), each the boundary
+    /// a child exposing that interface must satisfy structurally (§13.8).
+    pub(crate) interfaces: Vec<CompiledInterfaceContract>,
+}
+
+/// One `$interfaces` boundary contract of a module space (§13.8): the interface
+/// name and the `$view` fields it requires an exposing child to project. A child
+/// whose exposed `$view` omits a required field, or projects one the contract does
+/// not declare, does not structurally satisfy the interface.
+pub(crate) struct CompiledInterfaceContract {
+    /// The interface name a parent addresses (`::templates`).
+    pub(crate) name: String,
+    /// The `(field, type)` pairs the interface `$view` declares (§13.8). Empty when
+    /// the interface declares no `$view` (a mutation-only interface).
+    pub(crate) view_fields: Vec<(String, Type)>,
 }
 
 /// One declared `$params` entry of a surface view (§10.1): its name, its
@@ -246,6 +276,11 @@ pub(crate) struct Compiled {
     /// The declaration-name path of the collection an authenticator selects as
     /// `$session` (§11.3), or `None` when no authenticator declares one.
     pub(crate) session_collection: Option<Vec<String>>,
+    /// The declared `$modules` spaces (§13.2), each with its declaration path and
+    /// interface contracts, so the root engine can fold installed instances into a
+    /// `.modules::iface` read (§13.9) and check `$expose` satisfaction at install
+    /// (§13.8). Empty when the package declares no module space.
+    pub(crate) module_spaces: Vec<CompiledModuleSpace>,
 }
 
 impl Compiled {
@@ -260,7 +295,7 @@ impl Compiled {
         let schema = Schema::new(model);
         let root_ty = ExprType::Row(schema.root_row_type());
         let auth = AuthBindings::derive(schema, model_doc);
-        let mut collections = compile_collections(sources, schema, &root_ty, hosts)?;
+        let mut collections = compile_collections(sources, schema, &root_ty, model_doc, hosts)?;
         // §4.4: apply the declared `timestamp_precision` to every stored `timestamp`
         // field type, so a seed or mutation decodes a bare wire count at the package
         // precision (the model keeps the default microsecond precision on field
@@ -278,6 +313,7 @@ impl Compiled {
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc)?;
         let source_buckets = crate::source_bucket::compile(sources, schema, &root_ty, model_doc)?;
         let meters = crate::meter::compile(sources, schema, &root_ty, model_doc)?;
+        let module_spaces = compile_module_spaces(model_doc, &[]);
         Ok(Self {
             collections,
             root_computed,
@@ -292,6 +328,7 @@ impl Compiled {
             keyrings,
             actor_collection: auth.actor.map(|(path, _)| path),
             session_collection: auth.session.map(|(path, _)| path),
+            module_spaces,
         })
     }
 
@@ -321,6 +358,13 @@ impl Compiled {
     /// declared with a readable projection (§13.8).
     pub(crate) fn exposed_view(&self, name: &str) -> Option<&TypedExpr> {
         self.exposed_views.iter().find(|e| e.interface == name).map(|e| &e.expr)
+    }
+
+    /// The `$interfaces` boundary contracts of the `$modules` space at declaration
+    /// path `path` (§13.8), if the package declares one there. Used at install to
+    /// check a child's `$expose` structurally satisfies the space's contract.
+    pub(crate) fn module_space_interfaces(&self, path: &[String]) -> Option<&[CompiledInterfaceContract]> {
+        self.module_spaces.iter().find(|space| space.path == path).map(|space| space.interfaces.as_slice())
     }
 
     /// The compiled bucket bounding collection `name`, if it is bucketed.
@@ -450,13 +494,14 @@ fn compile_collections(
     sources: &mut SourceMap,
     schema: Schema<'_>,
     root_ty: &ExprType,
+    model_doc: &liasse_syntax::DocValue,
     hosts: &HostSignatures,
 ) -> Result<Vec<CompiledCollection>, EngineError> {
     let mut out = Vec::new();
     for member in &schema.model().root().members {
         if let Node::Collection(collection) = &member.node {
             let path = vec![member.name.as_str().to_owned()];
-            out.push(compile_collection(sources, schema, root_ty, &path, collection, hosts)?);
+            out.push(compile_collection(sources, schema, root_ty, model_doc, &path, collection, hosts)?);
         }
     }
     Ok(out)
@@ -466,6 +511,7 @@ fn compile_collection(
     sources: &mut SourceMap,
     schema: Schema<'_>,
     root_ty: &ExprType,
+    model_doc: &liasse_syntax::DocValue,
     path: &[String],
     collection: &Collection,
     hosts: &HostSignatures,
@@ -480,6 +526,7 @@ fn compile_collection(
     let mut computed = Vec::new();
     let mut structs = Vec::new();
     let mut children = Vec::new();
+    let mut views = Vec::new();
     let mut unique: Vec<Vec<String>> = collection
         .unique
         .iter()
@@ -500,7 +547,20 @@ fn compile_collection(
             Node::Collection(nested) => {
                 let mut child_path = path.to_vec();
                 child_path.push(name.to_owned());
-                children.push(compile_collection(sources, schema, root_ty, &child_path, nested, hosts)?);
+                children.push(compile_collection(sources, schema, root_ty, model_doc, &child_path, nested, hosts)?);
+            }
+            // A nested `$view` member (§7.1): compiled with the row as `.` so a
+            // `/coll[k].view` read (e.g. a `.modules::iface` aggregation) resolves.
+            // A `$modules`/`$keyring`/source-bucket placeholder is also a
+            // `Node::View`, so only a genuine `$view` doc member is compiled here.
+            Node::View(view) => {
+                let mut child_path = path.to_vec();
+                child_path.push(name.to_owned());
+                if let Some(compiled) =
+                    compile_nested_view(sources, root_ty, &row_ty, model_doc, &child_path, view, hosts)
+                {
+                    views.push(compiled);
+                }
             }
             _ => {
                 if let Some(field) =
@@ -523,7 +583,32 @@ fn compile_collection(
         row_checks,
         structs,
         children,
+        views,
     })
+}
+
+/// Compile a genuine nested `$view` member (§7.1) into a [`CompiledView`] typed
+/// with the collection row as `.`, or `None` when the `Node::View` is a
+/// `$modules`/`$keyring`/source-bucket placeholder (owned by its own materializer)
+/// or the view does not compile. The doc member's shape distinguishes a real
+/// `$view` from a placeholder; a view that fails to type is left unmaterialized so
+/// a reader faults exactly as before rather than failing the whole load.
+fn compile_nested_view(
+    sources: &mut SourceMap,
+    root_ty: &ExprType,
+    row_ty: &ExprType,
+    model_doc: &liasse_syntax::DocValue,
+    path: &[String],
+    view: &liasse_model::ViewDecl,
+    hosts: &HostSignatures,
+) -> Option<CompiledView> {
+    let shape = doc::shape_at(model_doc, path)?;
+    // Only a `$view` doc member is a nested view; a `$modules` space and the other
+    // synthetic `Node::View`s carry their own member markers and are owned elsewhere.
+    doc::member(shape, "$view")?;
+    let scope = RuntimeScope::new(row_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
+    let (expr, _) = compile_expr(sources, &scope, "nested-view", &view.expr.text).ok()?;
+    Some(CompiledView { name: path.last()?.clone(), expr })
 }
 
 /// Compile a static struct member (§5.3): its writable fields (with defaults,
@@ -828,6 +913,69 @@ fn compile_root_singleton_defaults(
     Ok(out)
 }
 
+/// Walk the `$model` document for `$modules` spaces (§13.2), recording each space's
+/// declaration-name path and its `$interfaces` boundary contracts. `prefix` is the
+/// declaration path of the containing object; a `$modules` member is recorded, and
+/// a keyed collection is descended so a row-scoped space
+/// (`companies.…​.modules`) is found. Reads the document directly because the model
+/// projects a `$modules` node as an opaque placeholder view.
+fn compile_module_spaces(model_doc: &liasse_syntax::DocValue, prefix: &[String]) -> Vec<CompiledModuleSpace> {
+    let mut out = Vec::new();
+    let Some(members) = doc::object(model_doc) else {
+        return out;
+    };
+    for member in members {
+        // `$mut`/`$types`/other reserved model members are never module spaces or
+        // collections; skip them so only declared shapes are walked.
+        if member.name.text.starts_with('$') {
+            continue;
+        }
+        let mut path = prefix.to_vec();
+        path.push(member.name.text.clone());
+        if doc::member(&member.value, "$modules").is_some() {
+            out.push(CompiledModuleSpace { path, interfaces: compile_interface_contracts(&member.value) });
+        } else if doc::member(&member.value, "$key").is_some() {
+            out.extend(compile_module_spaces(&member.value, &path));
+        }
+    }
+    out
+}
+
+/// The `$interfaces` boundary contracts of a `$modules` space node (§13.8): each
+/// interface name and the `(field, type)` pairs its `$view` shape declares.
+fn compile_interface_contracts(space_node: &liasse_syntax::DocValue) -> Vec<CompiledInterfaceContract> {
+    let Some(interfaces) =
+        doc::member(space_node, "$modules").and_then(|m| doc::member(m, "$interfaces")).and_then(doc::object)
+    else {
+        return Vec::new();
+    };
+    interfaces
+        .iter()
+        .map(|iface| CompiledInterfaceContract {
+            name: iface.name.text.clone(),
+            view_fields: doc::member(&iface.value, "$view").map(interface_view_fields).unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// The `(field, type)` pairs an interface `$view` shape declares (§13.8): each
+/// non-`$` member mapping a field name to its scalar type. A `$key`/`$sort`
+/// directive and a field whose type is not a lowerable scalar are skipped, so the
+/// contract carries exactly the typed fields structural satisfaction compares.
+fn interface_view_fields(view: &liasse_syntax::DocValue) -> Vec<(String, Type)> {
+    let Some(members) = doc::object(view) else {
+        return Vec::new();
+    };
+    members
+        .iter()
+        .filter(|m| !m.name.text.starts_with('$'))
+        .filter_map(|m| {
+            let text = doc::string(&m.value)?;
+            lower_scalar_type(text.trim()).map(|ty| (m.name.text.clone(), ty))
+        })
+        .collect()
+}
+
 fn compile_views(
     sources: &mut SourceMap,
     schema: Schema<'_>,
@@ -852,6 +1000,13 @@ fn compile_views(
             // its rows are materialized from its `$source` view (not its placeholder
             // `.` expression); the source-bucket materializer owns the member.
             if crate::source_bucket::is_source_bucket(model_doc, name) {
+                continue;
+            }
+            // §13.2: a `$modules` space is projected as a `Node::View` for typing,
+            // but its rows are the installed instances the module host folds in, not
+            // its `.` placeholder — compiling it would overwrite the injected spaces
+            // with a whole-root clone. The module aggregation owns the member.
+            if doc::member(model_doc, name).is_some_and(|value| doc::member(value, "$modules").is_some()) {
                 continue;
             }
             let (expr, _source) = compile_expr(sources, &scope, "view", &view.expr.text)?;

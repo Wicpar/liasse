@@ -49,4 +49,15 @@ impl ModuleSpace {
     pub fn components(&self) -> &[String] {
         &self.components
     }
+
+    /// The declaration-name path of the `$modules` node this space mounts, dropping
+    /// the intervening row keys (§13.2/§13.3): `/companies/acme/modules` →
+    /// `["companies", "modules"]`, `/modules` → `["modules"]`. A display path
+    /// interleaves collection segments with the row key selecting each level, so the
+    /// declaration path is the even-indexed components (collection, …, member). This
+    /// keys the space against the root package's compiled `$modules` declarations.
+    #[must_use]
+    pub fn declaration_path(&self) -> Vec<String> {
+        self.components.iter().step_by(2).cloned().collect()
+    }
 }

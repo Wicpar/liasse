@@ -80,6 +80,16 @@ impl CallRequest {
         self
     }
 
+    /// This request retargeted at a different mutation, keeping its arguments,
+    /// receiver, and actor/session bindings (§13.10): an interface-addressed
+    /// mutation `interface.mutation` routes to the child's private mutation under
+    /// the same arguments.
+    #[must_use]
+    pub fn with_mutation(mut self, mutation: impl Into<String>) -> Self {
+        self.mutation = mutation.into();
+        self
+    }
+
     /// The mutation name.
     #[must_use]
     pub fn mutation(&self) -> &str {

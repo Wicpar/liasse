@@ -522,6 +522,9 @@ impl<S: InstanceStore> Engine<S> {
             // namespace (a pure or generated function), so genesis carries the live
             // dispatch the same way a mutation admission does.
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
+            // Genesis seeds the instance's own state; a `.modules::iface` read is a
+            // parent-engine concern, so no installed-module aggregate crosses here.
+            modules: None,
         };
         let mut prospective = Prospective::empty();
         let mut touched = Vec::new();
@@ -547,6 +550,57 @@ impl<S: InstanceStore> Engine<S> {
         stage(&mut txn, changes)?;
         // §9.3: a definition load creates a commit even when state is unchanged.
         txn.set_definition(DefinitionText::new(definition.to_owned()));
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Overlay an installation `$data` object (§13.3) onto this instance's already
+    /// seeded genesis: `data_text` is the JSON text of the `$data` object, admitted
+    /// through the ordinary insertion pipeline (defaults, normalizers, checks, meter
+    /// funding) as one commit over current state — so every resulting value passes
+    /// load validation. This inserts the installation rows the module composition
+    /// seeds a child with. Merging supplied scalar/struct fields into an existing
+    /// package-`$data` row and unioning sets (the full §13.3/§13.13 overlay) is a
+    /// documented seam: a row colliding with a package-`$data` key is rejected as a
+    /// duplicate rather than field-merged.
+    pub(crate) fn overlay_install_data<G: Generators>(
+        &mut self,
+        data_text: &str,
+        generator: &mut G,
+    ) -> Result<(), EngineError> {
+        // Wrap the `$data` object as a one-member document so the existing document
+        // parser yields its spanned `DocValue`.
+        let wrapper = format!("{{\"$data\":{data_text}}}");
+        let mut sources = SourceMap::new();
+        let src = sources.add_file("install-data", wrapper.clone());
+        let document = parse_document(src, &wrapper).map_err(|d| EngineError::Invalid(Box::new(d)))?;
+        let Some(data) = doc::member(document.root(), "$data") else {
+            return Ok(());
+        };
+        let schema = Schema::new(&self.model);
+        let snapshots = self.keyring_snapshots();
+        let ctx = EvalCtx {
+            schema,
+            compiled: &self.compiled,
+            params: BTreeMap::new(),
+            now: self.clock,
+            seed: generator.next_seed(),
+            keyrings: &snapshots,
+            context: BTreeMap::new(),
+            hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
+            modules: None,
+        };
+        let mut prospective = Prospective::gather(&self.store, schema)?;
+        let mut touched = Vec::new();
+        crate::seed::admit(&self.compiled, &ctx, &mut prospective, &mut touched, data)
+            .map_err(EngineError::Seed)?;
+        crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched).map_err(EngineError::Seed)?;
+        ctx.validate_source_series(&prospective).map_err(EngineError::Seed)?;
+        crate::meter::admit::enforce(&ctx, &self.compiled.meters, &mut prospective, &touched)
+            .map_err(EngineError::Seed)?;
+        let changes = prospective.diff();
+        let mut txn = self.store.begin();
+        stage(&mut txn, changes)?;
         txn.commit()?;
         Ok(())
     }
@@ -580,6 +634,10 @@ impl<S: InstanceStore> Engine<S> {
             // (`util.double(...)`) or sign a session token (`cose.sign(/ring, …)`);
             // the dispatch resolves the call and routes cose to the live keyring.
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
+            // A mutation admits against this instance's own state; interface-addressed
+            // cross-module dispatch is routed by the parent host (§13.10), not folded
+            // into this engine's evaluation.
+            modules: None,
         };
 
         let receiver = match receiver_target(&self.compiled, mutation, request) {
@@ -702,6 +760,33 @@ impl<S: InstanceStore> Engine<S> {
         frontier: CommitSeq,
         query: &ViewQuery,
     ) -> Result<Option<ViewResult>, EngineError> {
+        self.view_with_impl(name, frontier, query, None)
+    }
+
+    /// [`Engine::view_with`] with the installed module instances (§13.9) folded into
+    /// the read, so a root package's `.modules::iface` aggregation and a
+    /// `/collection[k].catalog` nested view resolve against the children the
+    /// [`ModuleHost`](crate::ModuleHost) installed. The `ModuleHost` — which owns
+    /// this root engine and its children — builds the aggregate by reading each
+    /// enabled child's exposed interface `$view` through the boundary, so only the
+    /// projected fields cross and a private child field stays unreachable (§13.8).
+    pub(crate) fn view_with_modules(
+        &self,
+        name: &str,
+        frontier: CommitSeq,
+        query: &ViewQuery,
+        modules: &crate::modules::ModuleAggregate,
+    ) -> Result<Option<ViewResult>, EngineError> {
+        self.view_with_impl(name, frontier, query, Some(modules))
+    }
+
+    fn view_with_impl(
+        &self,
+        name: &str,
+        frontier: CommitSeq,
+        query: &ViewQuery,
+        modules: Option<&crate::modules::ModuleAggregate>,
+    ) -> Result<Option<ViewResult>, EngineError> {
         // A plain top-level view (§7) takes no parameters; a `$public`/role surface
         // view (§10.1) reads `$params`/`$actor`. Resolve the plain view first, then
         // the surface view addressed by `name`.
@@ -729,6 +814,9 @@ impl<S: InstanceStore> Engine<S> {
             // read carries the live dispatch to evaluate it. Signing (cose) and
             // effectful namespaces never reach a view — they are rejected at load.
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
+            // §13.9: the installed children a `.modules::iface` read aggregates,
+            // supplied only on the parent-host module-aware read path.
+            modules,
         };
         // §10.1: bind each supplied argument, then fill an omitted declared
         // parameter with its declared default (§8.3), so a `$view` reading `@name`
@@ -801,6 +889,29 @@ impl<S: InstanceStore> Engine<S> {
     /// own committed state. Returns `None` when no interface of that name exposes a
     /// readable `$view` (an absent or mutation-only interface).
     pub fn interface_read(&self, interface: &str) -> Result<Option<ViewResult>, EngineError> {
+        Ok(self.interface_cell(interface)?.map(|cell| ViewResult::from_cell(&cell)))
+    }
+
+    /// The rows an `$expose`d interface `$view` projects through the boundary
+    /// (§13.8), keeping each row's identity key so a §13.9 aggregation reads
+    /// `iface.$key` and `iface.field` faithfully. `None` when no interface of that
+    /// name exposes a readable `$view`. This is the key-preserving form the parent
+    /// [`ModuleHost`](crate::ModuleHost) folds into a `.modules::iface` read; the
+    /// public [`Engine::interface_read`] drops row identity to scalar output fields.
+    pub(crate) fn interface_rows(&self, interface: &str) -> Result<Option<Vec<liasse_expr::Row>>, EngineError> {
+        Ok(self.interface_cell(interface)?.map(|cell| match cell {
+            Cell::Collection(rows) => rows,
+            Cell::Row(row) => vec![*row],
+            Cell::Scalar(_) => Vec::new(),
+        }))
+    }
+
+    /// Evaluate the `$expose`d interface `$view` for `interface` against this
+    /// instance at head (§13.8/§13.9), or `None` when no interface of that name
+    /// exposes a readable `$view`. The boundary grants access only to the fields the
+    /// exposed projection selects, so a private field never appears in the result
+    /// (§13.8 isolation); no parameters and no actor cross the boundary.
+    fn interface_cell(&self, interface: &str) -> Result<Option<Cell>, EngineError> {
         let Some(expr) = self.compiled.exposed_view(interface) else {
             return Ok(None);
         };
@@ -817,13 +928,16 @@ impl<S: InstanceStore> Engine<S> {
             keyrings: &keyrings,
             context: BTreeMap::new(),
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
+            // A child interface read resolves against the child's own state; it
+            // exposes no further module spaces of its own here.
+            modules: None,
         };
         let current = Cell::Row(Box::new(ctx.root(&prospective)));
         let env = ctx.env(&prospective);
         let cell = expr
             .evaluate_view(&env, &current)
             .map_err(|error| EngineError::Internal(error.message()))?;
-        Ok(Some(ViewResult::from_cell(&cell)))
+        Ok(Some(cell))
     }
 
     /// The `$expose`d interface names that carry a readable `$view` (§13.8), in
@@ -831,6 +945,42 @@ impl<S: InstanceStore> Engine<S> {
     /// parent aggregates over (§13.9).
     pub fn exposed_interface_names(&self) -> impl Iterator<Item = &str> {
         self.compiled.exposed_views.iter().map(|e| e.interface.as_str())
+    }
+
+    /// The `(field, type)` pairs the `$expose`d interface `$view` for `interface`
+    /// projects across the boundary (§13.8), or `None` when no such interface is
+    /// declared. The output field types a parent's `$interfaces` `$view` contract is
+    /// checked against for structural satisfaction at install.
+    pub(crate) fn exposed_view_fields(&self, interface: &str) -> Option<Vec<(String, liasse_value::Type)>> {
+        let expr = self.compiled.exposed_view(interface)?;
+        let row = expr.ty().as_view().or_else(|| expr.ty().as_row())?;
+        Some(
+            row.fields()
+                .filter_map(|(name, ty)| ty.as_scalar().map(|ty| (name.clone(), ty.clone())))
+                .collect(),
+        )
+    }
+
+    /// The `$interfaces` boundary contracts of the `$modules` space at declaration
+    /// path `path` (§13.8), if this package declares one there — the contract a
+    /// child's `$expose` must structurally satisfy at install.
+    pub(crate) fn module_space_interfaces(
+        &self,
+        path: &[String],
+    ) -> Option<&[crate::compiled::CompiledInterfaceContract]> {
+        self.compiled.module_space_interfaces(path)
+    }
+
+    /// Resolve an `$expose`d interface mutation to the private root mutation it
+    /// binds (§13.8): the interface handle `interface` and the contract name
+    /// `mutation` map to a bound reference like `.create_template`, whose child
+    /// mutation name this returns (`create_template`). `None` when the interface
+    /// binds no such mutation, or the binding is a row-scoped or inline program the
+    /// CORE dispatch does not yet route (a documented seam).
+    pub(crate) fn exposed_mutation(&self, interface: &str, mutation: &str) -> Option<String> {
+        let iface = self.model.exposed_interfaces().iter().find(|i| i.name.as_str() == interface)?;
+        let bound = iface.muts.iter().find(|m| m.name.as_str() == mutation)?;
+        exposed_mutation_name(&bound.binding.text)
     }
 
     /// The dotted addresses of every compiled `$public`/role surface `$view`
@@ -857,6 +1007,22 @@ impl<S: InstanceStore> Engine<S> {
 
 fn rejected(reason: RejectionReason, message: impl Into<String>) -> CallOutcome {
     CallOutcome::Rejected(Rejection::new(reason, message))
+}
+
+/// The child root-mutation name a simple `$expose` `$mut` binding names (§13.8):
+/// `.create_template` → `create_template`. Only a bare root-mutation reference is
+/// routed by the CORE interface-mutation dispatch; a row-scoped receiver
+/// (`.templates[@t].disable`) or an inline program is a documented seam, so this
+/// returns `None` for anything but a leading-dot bare identifier.
+fn exposed_mutation_name(binding: &str) -> Option<String> {
+    let text = binding.trim();
+    let text = text.strip_prefix('=').map_or(text, str::trim);
+    let rest = text.strip_prefix('.')?;
+    let rest = rest.strip_suffix("()").unwrap_or(rest);
+    if rest.is_empty() || !rest.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some(rest.to_owned())
 }
 
 /// The request-scoped `$actor`/`$session` structural cells an authenticated

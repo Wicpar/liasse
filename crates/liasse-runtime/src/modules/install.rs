@@ -110,6 +110,9 @@ pub struct InstallRequest {
     name: String,
     definition: String,
     bindings: AdmittedBindings,
+    /// The installation `$data` overlay (§13.3), as the JSON text of the `$data`
+    /// object. Applied onto the child genesis after the package `$data` seed.
+    data: Option<String>,
     error: Option<ModuleError>,
 }
 
@@ -123,6 +126,7 @@ impl InstallRequest {
             name: name.into(),
             definition: definition.into(),
             bindings: AdmittedBindings::default(),
+            data: None,
             error: None,
         }
     }
@@ -131,6 +135,16 @@ impl InstallRequest {
     #[must_use]
     pub fn config(mut self, field: impl Into<String>, value: Value) -> Self {
         self.bindings.config.insert(field.into(), value);
+        self
+    }
+
+    /// Supply the installation `$data` overlay (§13.3), as the JSON text of the
+    /// `$data` object (`{"templates": {"a2": {"label": "Zeta"}}}`). Applied onto the
+    /// child genesis after the package `$data` seed; every resulting value passes
+    /// ordinary insertion and load validation.
+    #[must_use]
+    pub fn data(mut self, data: impl Into<String>) -> Self {
+        self.data = Some(data.into());
         self
     }
 
@@ -182,15 +196,30 @@ impl InstallRequest {
         &self.definition
     }
 
-    /// Consume the request into its recorded bindings, or the first malformed-spec
-    /// error, and validate the instance name is non-empty (§13.3).
-    pub(crate) fn admit(self) -> Result<(String, String, AdmittedBindings), ModuleError> {
+    /// Consume the request into its recorded bindings and installation `$data`, or
+    /// the first malformed-spec error, and validate the instance name is non-empty
+    /// (§13.3).
+    pub(crate) fn admit(self) -> Result<AdmittedInstall, ModuleError> {
         if let Some(error) = self.error {
             return Err(error);
         }
         if self.name.is_empty() {
             return Err(ModuleError::EmptyName);
         }
-        Ok((self.name, self.definition, self.bindings))
+        Ok(AdmittedInstall {
+            name: self.name,
+            definition: self.definition,
+            bindings: self.bindings,
+            data: self.data,
+        })
     }
+}
+
+/// An admitted install request (§13.3): the instance name, the child definition,
+/// the boundary bindings, and the installation `$data` overlay text.
+pub(crate) struct AdmittedInstall {
+    pub(crate) name: String,
+    pub(crate) definition: String,
+    pub(crate) bindings: AdmittedBindings,
+    pub(crate) data: Option<String>,
 }

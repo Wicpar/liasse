@@ -40,11 +40,13 @@
 //! - Interface-addressed *mutation* dispatch and cross-module atomic transitions
 //!   (§13.10/§13.11); `$if_module`-guarded declaration activation (§13.7).
 
+mod aggregate;
 mod host;
 mod install;
 mod merge;
 mod space;
 
+pub(crate) use aggregate::{AggregatedInstance, ModuleAggregate};
 pub use host::ModuleHost;
 pub use install::{AdmittedBindings, DepSpec, InstallRequest, UseSpec};
 pub use merge::SeedMerge;
@@ -76,6 +78,17 @@ pub enum ModuleError {
     /// A `$use`/`$deps` binding spec is malformed (§13.5/§13.6).
     #[error("`{0}` is not a valid module binding spec")]
     InvalidBinding(String),
+    /// A child's `$expose` does not structurally satisfy the module space's declared
+    /// interface contract (§13.8): a required `$view` field is missing or mistyped,
+    /// or the interface is not exposed at all. Rejected before the instance activates
+    /// (§13.3 "Loading validates ... interfaces ... before the instance becomes
+    /// active").
+    #[error("the child does not satisfy interface contract `{0}`: {1}")]
+    InterfaceContract(String, String),
+    /// An installation `$config` value does not match the child's declared `$config`
+    /// typed struct (§13.1), or names a field the struct does not declare.
+    #[error("installation `$config` does not match the declared struct: {0}")]
+    ConfigMismatch(String),
     /// Loading or operating the child instance failed.
     #[error(transparent)]
     Engine(#[from] EngineError),

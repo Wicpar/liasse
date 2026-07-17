@@ -142,6 +142,9 @@ fn build_migrated<G: crate::generator::Generators>(
         context: BTreeMap::new(),
         // A migration transform is a pure expression; it resolves no host call.
         hosts: crate::host::HostDispatch::none(now),
+        // A migration builds the target instance's own rows; no installed-module
+        // aggregate participates in a state transform.
+        modules: None,
     };
     let root_ty = ExprType::Row(schema.root_row_type());
     let mut sources = SourceMap::new();

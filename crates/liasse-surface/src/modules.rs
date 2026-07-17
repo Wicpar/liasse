@@ -21,7 +21,7 @@
 use liasse_ident::InstanceId;
 use liasse_runtime::{
     AdmittedBindings, CallOutcome, CallRequest, Engine, InstallRequest, InterfaceRow, ModuleError,
-    ModuleHost, ModuleSpace, UpdateReport, ViewResult,
+    ModuleHost, ModuleSpace, UpdateReport, ViewQuery, ViewResult,
 };
 use liasse_store::StoreFactory;
 
@@ -68,7 +68,16 @@ impl ModuleObservation {
             ModuleError::Disabled(name) => Ok(Self::Disabled(name)),
             ModuleError::InvalidSpace(path) => Ok(Self::InvalidSpace(path)),
             ModuleError::InvalidBinding(spec) => Ok(Self::InvalidBinding(spec)),
-            fault @ ModuleError::Engine(_) => Err(ModuleFault(fault)),
+            // §13.8/§13.1: a contract-satisfaction or `$config`-type refusal is a
+            // static `invalid` (§13.3 "Loading validates ... before the instance
+            // becomes active"), but the `ModuleObservation` vocabulary does not yet
+            // model those distinct outcomes. Until the outcome enum (and the harness
+            // that matches it exhaustively) grows a case, they surface as a
+            // [`ModuleFault`]; a driver still classifies that as `invalid`. Giving
+            // each its own first-class observation is a surface seam.
+            fault @ (ModuleError::InterfaceContract(..)
+            | ModuleError::ConfigMismatch(_)
+            | ModuleError::Engine(_)) => Err(ModuleFault(fault)),
         }
     }
 }
@@ -246,6 +255,39 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     /// occurred.
     pub fn child_view(&self, space: &ModuleSpace, name: &str, view: &str) -> Result<Option<ViewResult>, ModuleError> {
         self.host.child_view(space, name, view)
+    }
+
+    /// Evaluate a **root** package view that reads its installed children through
+    /// `.modules::iface` (§13.9), with the enabled instances folded into the root
+    /// engine's evaluation — the aggregation a parent surface serves. Only the
+    /// interface-projected fields cross the boundary (§13.8 isolation). This is the
+    /// entry a `watch`/`view` on a root surface reading `.modules::iface` routes
+    /// through so the installed children become visible. `None` when no view of that
+    /// name is declared.
+    ///
+    /// # Errors
+    /// [`ModuleError`] on a store or view fault while aggregating or evaluating.
+    pub fn root_view(&self, name: &str, query: &ViewQuery) -> Result<Option<ViewResult>, ModuleError> {
+        self.host.root_view(name, query)
+    }
+
+    /// Dispatch an interface-addressed mutation to a child's `$expose`d mutation
+    /// (§13.10): route `interface.mutation` on the enabled instance in `space` to
+    /// the private mutation it binds and admit it against the child atomically.
+    ///
+    /// # Errors
+    /// [`ModuleError`] if the instance is unknown or disabled, the interface binds
+    /// no such routable mutation, or a store/engine fault occurred; a rejected child
+    /// transition is a [`CallOutcome`], not an error.
+    pub fn interface_call(
+        &mut self,
+        space: &ModuleSpace,
+        name: &str,
+        interface: &str,
+        mutation: &str,
+        request: &CallRequest,
+    ) -> Result<CallOutcome, ModuleError> {
+        self.host.interface_call(space, name, interface, mutation, request, &mut self.clock)
     }
 
     /// Whether an instance of that name is installed in `space` (enabled or

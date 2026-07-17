@@ -1,6 +1,8 @@
 //! The module composition host: a root engine plus the child instances mounted in
 //! its row-scoped module spaces (§13).
 
+use std::collections::BTreeMap;
+
 use liasse_ident::InstanceId;
 use liasse_store::StoreFactory;
 
@@ -8,9 +10,9 @@ use crate::engine::Engine;
 use crate::error::EngineError;
 use crate::generator::Generators;
 use crate::modules::install::{AdmittedBindings, InstallRequest};
-use crate::modules::{InterfaceRow, ModuleError, ModuleSpace};
+use crate::modules::{AggregatedInstance, InterfaceRow, ModuleAggregate, ModuleError, ModuleSpace};
 use crate::outcome::CallOutcome;
-use crate::request::CallRequest;
+use crate::request::{CallRequest, ViewQuery};
 use crate::view::ViewResult;
 
 /// One installed child module instance mounted in a space.
@@ -83,7 +85,8 @@ impl<F: StoreFactory> ModuleHost<F> {
         request: InstallRequest,
         generator: &mut G,
     ) -> Result<InstanceId, ModuleError> {
-        let (name, definition, bindings) = request.admit()?;
+        let admitted = request.admit()?;
+        let name = admitted.name;
         if self.find(space, &name).is_some() {
             return Err(ModuleError::DuplicateName(name));
         }
@@ -92,7 +95,16 @@ impl<F: StoreFactory> ModuleHost<F> {
             .factory
             .create(incarnation.clone())
             .map_err(|error| ModuleError::Engine(EngineError::Store(error)))?;
-        let engine = Engine::load(store, &definition, generator)?;
+        let mut engine = Engine::load(store, &admitted.definition, generator)?;
+        // §13.8/§13.3: the child's `$expose` must structurally satisfy the module
+        // space's declared `$interfaces` contract before the instance activates.
+        self.check_interface_contracts(space, &engine)?;
+        // §13.3: package `$data` was applied by the load; the installation `$data`
+        // now overlays onto the child genesis, passing ordinary insertion validation.
+        if let Some(data) = &admitted.data {
+            engine.overlay_install_data(data, generator)?;
+        }
+        let bindings = admitted.bindings;
         self.children.push(Child {
             space: space.clone(),
             name,
@@ -240,6 +252,116 @@ impl<F: StoreFactory> ModuleHost<F> {
     pub fn child_view(&self, space: &ModuleSpace, name: &str, view: &str) -> Result<Option<ViewResult>, ModuleError> {
         let child = self.enabled_child(space, name)?;
         child.engine.view_at_head(view).map_err(ModuleError::Engine)
+    }
+
+    /// Evaluate a **root** package view that reads its installed children through
+    /// `.modules::iface` (§13.9), with the enabled child instances folded into the
+    /// read. This is what makes module composition visible to the root engine: the
+    /// host aggregates each enabled child's exposed interface `$view` through the
+    /// boundary (§13.8 — only projected fields cross, so a private field stays
+    /// unreachable) and evaluates the named root view over the resulting module
+    /// spaces, so a `catalog: ".modules::iface { module: modules.$key, … }"`
+    /// aggregation resolves against the actual children. Serves a plain `$view`, a
+    /// `$public`/role surface `$view` (bind `$params`/`$actor` via `query`), and a
+    /// nested `/collection[k].catalog` view. `None` when no view of that name is
+    /// declared.
+    pub fn root_view(&self, name: &str, query: &ViewQuery) -> Result<Option<ViewResult>, ModuleError> {
+        let aggregate = self.aggregate_snapshot()?;
+        let frontier = self.root.head();
+        self.root.view_with_modules(name, frontier, query, &aggregate).map_err(ModuleError::Engine)
+    }
+
+    /// Dispatch an interface-addressed mutation to a child's `$expose`d mutation
+    /// (§13.10): resolve `interface.mutation` on the enabled instance in `space` to
+    /// the private mutation it binds and admit it against the child atomically,
+    /// returning the child mutation's response (the §13.8 `$return` shape). This is
+    /// the "a parent routes a call to a child's exposed mutation" boundary; the
+    /// binding must be a simple root-mutation reference (`.create_template`) — a
+    /// row-scoped or inline binding, and folding the child transition into the same
+    /// atomic *parent* transition (§13.10/§13.11), remain documented seams.
+    ///
+    /// # Errors
+    /// [`ModuleError::Unknown`]/[`ModuleError::Disabled`] for an absent or disabled
+    /// instance; [`ModuleError::InterfaceContract`] when the interface binds no such
+    /// routable mutation; an engine/store fault otherwise. A rejected child
+    /// transition is a [`CallOutcome::Rejected`], not an error.
+    pub fn interface_call<G: Generators>(
+        &mut self,
+        space: &ModuleSpace,
+        name: &str,
+        interface: &str,
+        mutation: &str,
+        request: &CallRequest,
+        generator: &mut G,
+    ) -> Result<CallOutcome, ModuleError> {
+        let child = self.enabled_child(space, name)?;
+        let Some(child_mutation) = child.engine.exposed_mutation(interface, mutation) else {
+            return Err(ModuleError::InterfaceContract(
+                interface.to_owned(),
+                format!("interface binds no routable mutation `{mutation}`"),
+            ));
+        };
+        let routed = request.clone().with_mutation(child_mutation);
+        let child = self.enabled_child_mut(space, name)?;
+        child.engine.call(&routed, generator).map_err(ModuleError::Engine)
+    }
+
+    /// Aggregate every enabled child's exposed interface rows into the snapshot the
+    /// root engine folds into a `.modules::iface` read (§13.9). Each instance is
+    /// grouped under its module-space display path, carrying one entry per readable
+    /// interface it exposes (its boundary-projected rows). A disabled instance is
+    /// skipped, so it leaves the aggregation (§13.12).
+    fn aggregate_snapshot(&self) -> Result<ModuleAggregate, ModuleError> {
+        let mut spaces: BTreeMap<String, Vec<AggregatedInstance>> = BTreeMap::new();
+        for child in self.children.iter().filter(|c| c.enabled) {
+            let names: Vec<String> = child.engine.exposed_interface_names().map(str::to_owned).collect();
+            let mut interfaces = Vec::new();
+            for interface in names {
+                if let Some(rows) = child.engine.interface_rows(&interface).map_err(ModuleError::Engine)? {
+                    interfaces.push((interface, rows));
+                }
+            }
+            spaces
+                .entry(child.space.as_str().to_owned())
+                .or_default()
+                .push(AggregatedInstance { name: child.name.clone(), interfaces });
+        }
+        Ok(ModuleAggregate::new(spaces))
+    }
+
+    /// Check the `child` engine's `$expose` structurally satisfies every interface
+    /// contract the module space at `space` declares in the root package (§13.8):
+    /// each contract `$view` field must appear in the child's exposed view output
+    /// with a matching scalar type. A space the root declares no contract for
+    /// (an undeclared space, a documented §13.2 seam) imposes none.
+    fn check_interface_contracts(&self, space: &ModuleSpace, child: &Engine<F::Store>) -> Result<(), ModuleError> {
+        let Some(contracts) = self.root.module_space_interfaces(&space.declaration_path()) else {
+            return Ok(());
+        };
+        for contract in contracts {
+            if contract.view_fields.is_empty() {
+                // A mutation-only interface declares no readable `$view`; its
+                // response-contract satisfaction is a documented seam.
+                continue;
+            }
+            // §13.9: an instance exposes only the interfaces it implements — the
+            // parent reads "every instance exposing an interface". A child that does
+            // not expose this one simply does not implement it, so there is nothing
+            // to check; only an *exposed* view must satisfy the declared contract.
+            let Some(exposed) = child.exposed_view_fields(&contract.name) else {
+                continue;
+            };
+            for (field, ty) in &contract.view_fields {
+                let satisfied = exposed.iter().any(|(name, got)| name == field && got == ty);
+                if !satisfied {
+                    return Err(ModuleError::InterfaceContract(
+                        contract.name.clone(),
+                        format!("the exposed view does not provide field `{field}` with the declared type"),
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn find(&self, space: &ModuleSpace, name: &str) -> Option<&Child<F::Store>> {
