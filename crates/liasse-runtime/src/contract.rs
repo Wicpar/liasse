@@ -8,24 +8,38 @@
 //! move (a minor or patch).
 //!
 //! A [`BoundaryContract`] is the observable promise an independently versioned
-//! client relies on (E.2): each `$public`/role surface's view output shape and
-//! identity, its view parameters, and each `$mut`-bound operation's accepted
-//! input and promised response. [`BoundaryContract::narrowing`] compares a
-//! candidate against the active contract and reports the first narrowing it can
-//! establish — a removed surface or operation, a removed or type-narrowed output
-//! member, an enum result whose exhaustive domain changed, a required parameter
-//! added, or an accepted input domain narrowed (E.4, E.5, E.7).
+//! client relies on (E.2): each `$public`/role surface's view output shape,
+//! identity, and explicit ordering, its view parameters, and each `$mut`-bound
+//! operation's accepted input and promised response. [`BoundaryContract::narrowing`]
+//! compares a candidate against the active contract and reports the first
+//! narrowing it can establish — a removed surface or operation, a removed or
+//! type-narrowed output member, an enum result whose exhaustive domain changed, a
+//! changed explicit view ordering (E.5 "changing explicit sort semantics"), a
+//! required parameter added, or an accepted input domain narrowed (E.4, E.5, E.7).
+//!
+//! Explicit ordering (E.2/E.5): a `$public`/role view's `$sort` is a boundary
+//! contract, so a same-major forward release MUST preserve it. The contract reads
+//! the view's top-level projection `$sort` — normalized to an ordered
+//! `(key, descending)` sequence so the three §7.3 spellings (`"-name"`, `-name`,
+//! `{ $by: name, $dir: desc }`) compare equal — and rejects any change (a
+//! direction flip, or a key added, removed, replaced, or reordered) as a
+//! narrowing. An unchanged `$sort` compares equal and passes; a major release
+//! bypasses the whole check (E.1).
 //!
 //! Boundaries this CORE check does not yet compare — module-interface bindings and
 //! host-capability requirements (E.6/E.8), a mutation response that is not a plain
-//! projection, and a view over a nested or combinator source — are left
-//! unconstrained rather than mis-flagged, so the check never rejects a compatible
-//! release and defers those classes as documented seams.
+//! projection, and a view over a nested or combinator source (its output shape and
+//! its ordering alike) — are left unconstrained rather than mis-flagged, so the
+//! check never rejects a compatible release and defers those classes as documented
+//! seams.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use liasse_diag::SourceMap;
 use liasse_expr::ExprType;
-use liasse_syntax::{BlockMemberKind, DocValue, Expr, ExprKind, StmtKind};
+use liasse_syntax::{
+    parse_expression, BlockMember, BlockMemberKind, DocValue, Expr, ExprKind, StmtKind, UnaryOp,
+};
 use liasse_value::Type;
 
 use crate::compiled::{Compiled, CompiledMutation, CompiledSurfaceView};
@@ -46,6 +60,13 @@ struct Output {
     /// The `$key` fields of the collection the view projects — the exposed row
     /// identity (E.5). `None` when the source is not a plain top-level collection.
     identity: Option<Vec<String>>,
+    /// The exposed explicit ordering (E.2/E.5): the ordered `(key, descending)`
+    /// sequence the view's top-level projection `$sort` declares, normalized so
+    /// the §7.3 string/compact/structured spellings compare equal — empty when the
+    /// projection declares no `$sort`. `None` when the `$view` is not a plain
+    /// top-level projection whose ordering the check can read (a combinator or
+    /// nested source is a documented seam, left uncompared to avoid over-rejection).
+    ordering: Option<Vec<(String, bool)>>,
 }
 
 /// One exposed operation bound through a surface `$mut` (E.7): its accepted input
@@ -138,7 +159,8 @@ fn output_shape(view: &CompiledSurfaceView, decl: &DocValue, compiled: &Compiled
     let row = view.expr.ty().as_view().or_else(|| view.expr.ty().as_row())?;
     let members = row.fields().map(|(name, ty)| (name.clone(), ty.clone())).collect();
     let identity = view_source_collection(decl).and_then(|name| exposed_identity(&name, compiled));
-    Some(Output { members, identity })
+    let ordering = view_ordering(decl);
+    Some(Output { members, identity, ordering })
 }
 
 /// The declared parameters of a surface view (§10.1) as boundary contracts.
@@ -186,6 +208,17 @@ fn surface_narrowing(address: &str, active: &Surface, cand: &Surface) -> Option<
         {
             return Some(format!(
                 "surface `{address}` changes exposed row identity from {a:?} to {c:?}"
+            ));
+        }
+        // E.5: "changing explicit sort semantics" is a breaking output change. The
+        // exposed view's declared `$sort` ordering must be preserved on a same-major
+        // forward release; a flip, added/removed/replaced/reordered key alters the
+        // promised row order and narrows the ordering contract.
+        if let (Some(a), Some(c)) = (&active_out.ordering, &cand_out.ordering)
+            && a != c
+        {
+            return Some(format!(
+                "surface `{address}` changes the explicit view ordering from {a:?} to {c:?}"
             ));
         }
         for (member, active_ty) in &active_out.members {
@@ -368,4 +401,105 @@ fn view_source_collection(decl: &DocValue) -> Option<String> {
     let end = rest.find(|c: char| !(c.is_alphanumeric() || c == '_')).unwrap_or(rest.len());
     let name = rest.get(..end)?;
     (!name.is_empty()).then(|| name.to_owned())
+}
+
+/// The exposed explicit ordering of a surface view (E.2/E.5): the ordered
+/// `(key, descending)` sequence its top-level projection `$sort` declares, or an
+/// empty sequence when the projection declares no `$sort`. `None` when the
+/// `$view` is not a plain top-level projection whose ordering the check can read
+/// (a combinator or nested source is a documented seam, left uncompared so a
+/// compatible release is never mis-flagged). The `$sort` keys are normalized to
+/// the key expression text with the direction extracted, so the string
+/// (`"-name"`), compact (`-name`), and structured (`{ $by: name, $dir: desc }`)
+/// §7.3 spellings of the same ordering compare equal.
+fn view_ordering(decl: &DocValue) -> Option<Vec<(String, bool)>> {
+    let text = doc::member(decl, "$view").and_then(doc::string)?;
+    let mut sources = SourceMap::new();
+    let source = sources.add_label("compat-ordering", text.to_owned());
+    let parsed = parse_expression(source, text).ok()?;
+    let StmtKind::Bare(expr) = &parsed.statement().kind else {
+        return None;
+    };
+    let ExprKind::Block { members, .. } = &expr.kind else {
+        return None;
+    };
+    for member in members {
+        if let BlockMemberKind::Directive { name, value } = &member.kind
+            && name.text == "sort"
+        {
+            return sort_keys(value, text);
+        }
+    }
+    Some(Vec::new())
+}
+
+/// Normalize a projection `$sort` directive value — a §7.3 array of comparison
+/// keys — into the ordered `(key, descending)` sequence. `None` when the value
+/// is not the expected array form (a malformed `$sort` is left uncompared rather
+/// than mis-flagged).
+fn sort_keys(value: &Expr, text: &str) -> Option<Vec<(String, bool)>> {
+    let ExprKind::List(items) = &value.kind else {
+        return None;
+    };
+    items.iter().map(|item| sort_key(item, text)).collect()
+}
+
+/// Normalize one §7.3 sort key into `(key, descending)`. The three spellings all
+/// reduce to the same pair: a string `"-field"`, a compact `-field`, and a
+/// structured `{ $by: field, $dir: desc }` each yield `("field", true)`.
+fn sort_key(item: &Expr, text: &str) -> Option<(String, bool)> {
+    match &item.kind {
+        // Canonical wire form: the string holds the key expression, a leading `-`
+        // reversing it (§7.3).
+        ExprKind::Str(spelling) => {
+            let spelling = spelling.trim();
+            match spelling.strip_prefix('-') {
+                Some(body) => Some((body.trim().to_owned(), true)),
+                None => Some((spelling.to_owned(), false)),
+            }
+        }
+        // Compact DSL: a leading `-` reverses one key.
+        ExprKind::Unary { op: UnaryOp::Neg, operand } => Some((key_text(operand, text)?, true)),
+        // Structured form: `{ $by: field, $dir: asc|desc }`.
+        ExprKind::Object(members) => structured_sort_key(members, text),
+        // A bare ascending key expression.
+        _ => Some((key_text(item, text)?, false)),
+    }
+}
+
+/// Normalize a structured §7.3 sort key `{ $by: field, $dir: asc|desc }` into
+/// `(key, descending)`. `None` when `$by` is absent.
+fn structured_sort_key(members: &[BlockMember], text: &str) -> Option<(String, bool)> {
+    let mut by = None;
+    let mut descending = false;
+    for member in members {
+        let BlockMemberKind::Directive { name, value } = &member.kind else {
+            continue;
+        };
+        match name.text.as_str() {
+            "by" => {
+                by = Some(match &value.kind {
+                    ExprKind::Str(spelling) => spelling.trim().to_owned(),
+                    _ => key_text(value, text)?,
+                });
+            }
+            "dir" => {
+                if let ExprKind::Str(spelling) = &value.kind {
+                    descending = spelling.trim() == "desc";
+                }
+            }
+            _ => {}
+        }
+    }
+    Some((by?, descending))
+}
+
+/// The source text of a bare (non-string) sort-key expression, so a compact
+/// `-field` or structured `$by: field` key compares equal to its string
+/// spelling `"field"`. Outer whitespace is trimmed; inner spelling is compared
+/// verbatim.
+fn key_text(expr: &Expr, text: &str) -> Option<String> {
+    let start = expr.span.start() as usize;
+    let end = expr.span.end() as usize;
+    text.get(start..end).map(|slice| slice.trim().to_owned())
 }
