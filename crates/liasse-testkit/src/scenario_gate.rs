@@ -233,7 +233,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- hostfault:row-field ---
     ("05-state-model/named-type-recursive-shape", "host environment row-field shaping gap (engine invariant)"),
     ("06-expressions/caret-reads-lexical-parent-scope", "host environment row-field shaping gap (engine invariant)"),
-    ("06-expressions/selector-set-keys-follow-target-canonical-order", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/computed-field-equals-prefix-form", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/deep-nested-projection-loads", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/member-order-carries-no-semantics", "host environment row-field shaping gap (engine invariant)"),

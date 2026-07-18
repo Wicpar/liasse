@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use liasse_value::Type;
+use liasse_value::{RefTarget, Type};
 
 use crate::report::{code, Reporter};
 use crate::state::{Collection, Node, Reference, Shape};
@@ -83,9 +83,16 @@ fn resolve_shape(reporter: &mut Reporter, shape: &mut Shape, index: &Index) {
             Node::Struct(inner) => resolve_shape(reporter, inner, index),
             Node::Collection(collection) => resolve_shape(reporter, &mut collection.shape, index),
             Node::Set(set) => {
-                if let Type::Ref(_) = &set.element {
-                    // A set-of-refs element type is validated at declaration; a
-                    // deeper target check is a documented seam.
+                // §5.5/§5.6/A.9: a `$set` of `$ref` member is a governed inbound
+                // ref exactly like a scalar `$ref`, so its target key type must be
+                // resolved from the same collection index — not left at the `Json`
+                // placeholder `ref_node` seeds. `ref_node` snapshots the element
+                // type before this pass runs, so rebuild it from the now-resolved
+                // key so the ref's visible value type (the target's key type, A.9)
+                // is what the `$set` element carries into every RowType consumer.
+                if let Some(reference) = &mut set.element_ref {
+                    resolve_ref(reporter, reference, index);
+                    set.element = Type::Ref(RefTarget::for_key(&reference.key_type));
                 }
             }
             _ => {}

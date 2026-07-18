@@ -1107,6 +1107,17 @@ impl<'a> Interp<'a> {
     /// Apply a set `+`/`-` mutation to `field` of `row` (§8.5): union in (or
     /// difference out) every incoming member. The incoming operand is a single
     /// scalar or a set value; an unchanged result stages nothing (§8.9).
+    ///
+    /// Each operand member is decoded to the set's ELEMENT type before the
+    /// union/difference (§5.5/§5.6/A.9): a `$set` of `$ref` stores every member as
+    /// the `Value::Ref` carrier `$data` seeding produces and the §21.1 cascade
+    /// planner walks, while a mutation operand is the member's application-visible
+    /// target key (`Value::Text`, or a composite tuple). Because `Value`'s total
+    /// order discriminates variants (B.1), a raw-text operand would never equal a
+    /// stored `Ref` — a remove-by-key would silently no-op, an add would store a
+    /// planner-invisible pseudo-member (a dangling ref past deletion), and re-adding
+    /// an existing member would duplicate its identity. Scalar-element sets already
+    /// match the stored form, so they pass through unchanged.
     fn set_mutate(
         &mut self,
         row: &RowTarget,
@@ -1121,11 +1132,21 @@ impl<'a> Interp<'a> {
             Cell::Scalar(scalar) => vec![scalar],
             _ => return Err(Rejection::new(RejectionReason::TypeError, "a set mutation takes a member or a set")),
         };
+        let element_target = self
+            .compiled
+            .collection_at(&row.path)
+            .and_then(|c| c.field(field))
+            .and_then(|f| f.element_reference.as_ref())
+            .map(|info| info.target.clone());
         let mut members: BTreeSet<Value> = match self.prospective.get(&row.address).and_then(|f| f.get(field)) {
             Some(Value::Set(existing)) => existing.clone(),
             _ => BTreeSet::new(),
         };
         for member in incoming {
+            let member = match &element_target {
+                Some(target) => self.ref_member(target, member)?,
+                None => member,
+            };
             if add {
                 members.insert(member);
             } else {
@@ -1133,6 +1154,26 @@ impl<'a> Interp<'a> {
             }
         }
         self.write_field(row, field, Value::Set(members))
+    }
+
+    /// Decode a `$set`-of-`$ref` mutation operand into the `Value::Ref` carrier its
+    /// members are stored and compared as (§5.5/§5.6/A.9). A member already carried
+    /// as a `Ref` (the set-valued operand of a set-to-set mutation, or a `none`)
+    /// passes through; a bare application-visible key is normalized to its
+    /// `$key`-order identity and wrapped as the collection's uniform ref shape
+    /// through the same `refid::ref_of` construction `$data` decode and inbound-ref
+    /// rewrite use — never a second, divergent hand-rolled carrier.
+    fn ref_member(&self, target: &str, operand: Value) -> Result<Value, Rejection> {
+        if matches!(operand, Value::Ref(_) | Value::None) {
+            return Ok(operand);
+        }
+        let Some(names) = self.compiled.collection(target).map(|c| c.key.clone()) else {
+            return Ok(operand);
+        };
+        let normalized = materialize::normalize_key_operand(&names, operand)?;
+        let components: Vec<Value> =
+            materialize::key_value_of(&normalized).components().cloned().collect();
+        Ok(Value::Ref(crate::refid::ref_of(&names, &components)))
     }
 
     /// Construct and stage one row from `collection + { … }` (§8.4), applying
