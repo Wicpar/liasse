@@ -133,6 +133,17 @@ pub(crate) struct CompiledStruct {
     pub(crate) row_checks: Vec<CompiledCheck>,
 }
 
+impl CompiledStruct {
+    /// The raw `Type::Struct` this static struct member declares (§5.3), over its
+    /// compiled fields in field-name text order — the same field-name-ordered
+    /// struct `Type` the portable state codec and Annex E identity comparison build
+    /// on. Raw here means undecorated: the optional-wrapping the artifact decoder
+    /// applies (`singleton::optional_decode_struct`) is layered on top by the caller.
+    pub(crate) fn ty(&self) -> Type {
+        Type::Struct(StructType::new(self.fields.iter().map(|field| (field.name.clone(), field.ty.clone()))))
+    }
+}
+
 impl CompiledCollection {
     /// The field descriptor named `name`, if declared.
     pub(crate) fn field(&self, name: &str) -> Option<&CompiledField> {
@@ -148,10 +159,7 @@ impl CompiledCollection {
     /// for the Annex E exposed-row-identity comparison (A.9/E.5). `None` when no
     /// struct member of that name is declared.
     pub(crate) fn struct_type(&self, name: &str) -> Option<Type> {
-        let structure = self.structs.iter().find(|s| s.name == name)?;
-        Some(Type::Struct(StructType::new(
-            structure.fields.iter().map(|field| (field.name.clone(), field.ty.clone())),
-        )))
+        Some(self.structs.iter().find(|s| s.name == name)?.ty())
     }
 
     /// The nested child collection named `name`, if declared under this row.

@@ -70,31 +70,46 @@ fn struct_type(model: &Model, shape: &Shape) -> StructType {
 /// stored `none` is dropped from the canonical wire by absence (A.1,
 /// `Value::to_wire`), so a non-optional member's declared type would fault as a
 /// missing member on decode. Wrapping keeps the shared `Type::decode` total over
-/// the singleton row, so a `none` round-trips to `none` — the singleton analogue
-/// of `StateSection::row_type` for a keyed collection, extended through static
-/// structs because a root struct member is durable §8.2 state.
+/// the singleton row, so a `none` round-trips to `none`. The singleton and the
+/// keyed-collection codec (`StateSection::row_type`) share the one decode-type
+/// builder [`optional_decode_struct`]; here it is fed every singleton-eligible
+/// root member's declared type, so a root static struct — durable §8.2 state —
+/// decodes exactly as it serialized.
 #[must_use]
 pub(crate) fn row_type(model: &Model) -> Type {
-    Type::Struct(optional_struct_type(model, model.root()))
+    let members = model
+        .root()
+        .members
+        .iter()
+        .filter_map(|member| Some((member.name.as_str().to_owned(), member_type(model, &member.node)?)));
+    Type::Struct(optional_decode_struct(members))
 }
 
-/// The optional-wrapped [`StructType`] over a shape's singleton-eligible members,
-/// used to decode a stored singleton (or nested static struct) row.
-fn optional_struct_type(model: &Model, shape: &Shape) -> StructType {
-    StructType::new(shape.members.iter().filter_map(|member| {
-        let ty = decodable_member_type(model, &member.node)?;
-        Some((member.name.as_str().to_owned(), Type::Optional(Box::new(ty))))
-    }))
+/// The optional-wrapped [`StructType`] used to decode a stored portable row — a
+/// singleton §8.2 row or a keyed-collection §5.3 row — from its members' declared
+/// types: every member is wrapped in [`Type::Optional`], and a struct member's own
+/// members are wrapped in turn, recursively to any depth.
+///
+/// A stored `none` is dropped from the canonical wire by absence (A.1,
+/// `Value::to_wire`), so a non-optional member's declared type would fault as a
+/// missing member on decode. Wrapping every member keeps the shared
+/// [`Type::decode`] total over a captured row, so a `none` round-trips to `none`
+/// while a static struct decodes member-by-member. This is the single decode-type
+/// builder both portable paths share, so a §5.3 static struct round-trips
+/// identically whether declared at the root (§8.2) or in a keyed collection.
+pub(crate) fn optional_decode_struct(members: impl IntoIterator<Item = (String, Type)>) -> StructType {
+    StructType::new(members.into_iter().map(|(name, ty)| (name, Type::Optional(Box::new(optionalize(&ty))))))
 }
 
-/// Like [`member_type`], but a static struct's own members carry the recursive
-/// optional wrapper the artifact codec decodes with. `None` for a member that is
-/// not durable singleton state (a keyed collection, a view, a computed scalar).
-fn decodable_member_type(model: &Model, node: &Node) -> Option<Type> {
-    match node {
-        Node::Struct(shape) => Some(Type::Struct(optional_struct_type(model, shape))),
-        Node::Named(name) => decodable_member_type(model, model.types().get(name)?),
-        _ => member_type(model, node),
+/// The decode-facing form of one raw member type: a struct's own members are
+/// recursively optional-wrapped (via [`optional_decode_struct`]) so a nested
+/// static struct decodes member-by-member; every other type decodes as declared.
+fn optionalize(ty: &Type) -> Type {
+    match ty {
+        Type::Struct(structure) => Type::Struct(optional_decode_struct(
+            structure.fields().map(|(name, ty)| (name.clone(), ty.clone())),
+        )),
+        other => other.clone(),
     }
 }
 

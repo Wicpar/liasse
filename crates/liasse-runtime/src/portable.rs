@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 use liasse_ident::NameSegment;
 use liasse_model::{Model, Node};
 use liasse_store::{CollectionPath, InstanceStore, RowAddress, StoreError};
-use liasse_value::{StructType, Type};
+use liasse_value::Type;
 use serde_json::Value as J;
 
 use crate::compiled::{Compiled, CompiledCollection};
@@ -169,13 +169,22 @@ impl StateSection {
     }
 
     /// The optional-wrapped struct type used to decode one collection's rows: a
-    /// stored non-optional field may hold `none`, so wrapping each declared type
-    /// in [`Type::Optional`] keeps the shared decoder total over captured rows.
+    /// stored non-optional field may hold `none`, so wrapping each declared member
+    /// type in [`Type::Optional`] keeps the shared decoder total over captured rows.
+    ///
+    /// The row's declared members are its scalar/ref/set `fields` **and** its §5.3
+    /// static struct members (`structs`) — a static struct compiles into
+    /// `collection.structs`, not `fields`. [`StateSection::to_bytes`] serializes
+    /// every member of a row (`materialize::struct_of`), struct members included, so
+    /// the decode type must carry them too or `Type::Struct::decode` rejects the
+    /// serialized struct as an unexpected member and the artifact cannot restore
+    /// (§19.5/§19.10). Both member kinds feed the one decode-type builder the §8.2
+    /// singleton path uses ([`crate::singleton::optional_decode_struct`]), which
+    /// recursively optional-wraps a struct member's own members — so a keyed
+    /// collection's static struct round-trips exactly as a singleton's does.
     fn row_type(collection: &CompiledCollection) -> Type {
-        let fields = collection
-            .fields
-            .iter()
-            .map(|field| (field.name.clone(), Type::Optional(Box::new(field.ty.clone()))));
-        Type::Struct(StructType::new(fields))
+        let fields = collection.fields.iter().map(|field| (field.name.clone(), field.ty.clone()));
+        let structs = collection.structs.iter().map(|structure| (structure.name.clone(), structure.ty()));
+        Type::Struct(crate::singleton::optional_decode_struct(fields.chain(structs)))
     }
 }
