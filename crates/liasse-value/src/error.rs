@@ -128,6 +128,12 @@ pub enum ValueError {
     #[error("advancing a timestamp by this period overflows the representable calendar range")]
     PeriodOutOfRange,
 
+    #[error(
+        "calendar period `overflow: reject`: this recurrence boundary lands on a day absent from \
+         its destination month (§14.7/A.4), so the boundary is rejected rather than clamped"
+    )]
+    CalendarOverflowRejected,
+
     #[error("a recurrence period must advance strictly beyond the prior boundary (§14.5)")]
     NonAdvancingPeriod,
 

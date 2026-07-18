@@ -3,9 +3,10 @@
 //!
 //! A fixed period adds an exact elapsed duration. A calendar period applies its
 //! `(years, months, weeks, days)` magnitudes in its declared time zone — so a
-//! monthly step lands on the same day-of-month across months of different length,
-//! clamping an absent destination day (`overflow: clamp`) to the last valid day —
-//! then adds its exact `time` component. The zone rules come from `jiff`; a build
+//! monthly step lands on the same day-of-month across months of different length.
+//! An absent destination day is governed by `overflow` (§14.7/A.4): `clamp` lands on
+//! the last valid day of the month, `reject` fails the boundary computation. The
+//! exact `time` component is then added. The zone rules come from `jiff`; a build
 //! without a configured time-zone database can still advance UTC and fixed
 //! periods, and reports a named zone it cannot resolve rather than guessing.
 //!
@@ -18,11 +19,12 @@
 //! the start, and an unbounded series is generated only up to a caller-supplied
 //! horizon.
 
+use jiff::civil::Date;
 use jiff::tz::TimeZone;
 use jiff::{Span, Timestamp as JiffTimestamp};
 
 use crate::error::ValueError;
-use crate::period::{CalendarPeriod, Period};
+use crate::period::{CalendarPeriod, Overflow, Period};
 use crate::temporal::Timestamp;
 
 /// Nanoseconds per one tick at `precision`. Every declared precision divides one
@@ -36,9 +38,10 @@ impl Period {
     /// at `from`'s precision. Equivalent to [`Period::advance_from`] with one step.
     ///
     /// A fixed period adds its exact elapsed duration. A calendar period shifts by
-    /// its calendar magnitudes in its zone (clamping an overflowing day), then adds
-    /// its exact `time`. Fails if the shift leaves the representable range or names
-    /// a time zone this build cannot resolve.
+    /// its calendar magnitudes in its zone (clamping an overflowing day under
+    /// `overflow: clamp`), then adds its exact `time`. Fails if the shift leaves the
+    /// representable range, names a time zone this build cannot resolve, or lands on
+    /// a day absent from its destination month under `overflow: reject`.
     pub fn advance(&self, from: Timestamp) -> Result<Timestamp, ValueError> {
         self.advance_from(from, 1)
     }
@@ -51,8 +54,9 @@ impl Period {
     /// adds `steps` times its exact duration. A calendar period scales each of its
     /// `(years, months, weeks, days)` magnitudes and its `time` component by
     /// `steps`, then applies the single scaled shift in its zone (clamping an
-    /// overflowing day, `overflow: clamp`). Fails if the shift leaves the
-    /// representable range or names a time zone this build cannot resolve.
+    /// overflowing day under `overflow: clamp`). Fails if the shift leaves the
+    /// representable range, names a time zone this build cannot resolve, or lands on
+    /// a day absent from its destination month under `overflow: reject`.
     pub fn advance_from(&self, anchor: Timestamp, steps: i64) -> Result<Timestamp, ValueError> {
         match self {
             Self::Fixed(duration) => {
@@ -91,6 +95,22 @@ fn advance_calendar(
     let (years, months, weeks, days) = calendar.calendar_magnitudes();
     let scaled = |magnitude: i64| magnitude.checked_mul(steps).ok_or(ValueError::PeriodOutOfRange);
     let (years, months, weeks, days) = (scaled(years)?, scaled(months)?, scaled(weeks)?, scaled(days)?);
+
+    // §14.7 / Annex A.4: `overflow` governs the single "destination calendar date
+    // missing" condition — a year/month shift whose day-of-month is absent from the
+    // target month (a Jan-31 monthly anchor's "Feb 31"). `clamp` and `reject` are the
+    // two alternatives for that one condition: `clamp` lands on the last valid day
+    // (jiff's default day-constraining, applied below), `reject` MUST fail the
+    // boundary computation rather than silently produce the clamped instant.
+    //
+    // The sibling zone-resolution policies (`ambiguous`/`missing`) would hook in at
+    // this same site, but a build without a time-zone database never resolves a named
+    // IANA zone (`resolve_zone` errors first), so their branches are unreachable here.
+    let overflow = calendar.policies().0;
+    if overflow == Overflow::Reject && calendar_day_is_missing(zoned.date(), years, months)? {
+        return Err(ValueError::CalendarOverflowRejected);
+    }
+
     // `overflow: clamp` (§14.7) is jiff's default day handling: a calendar step
     // whose destination day is absent lands on the last valid day of the month.
     // The fallible `try_*` builders reject a scaled magnitude beyond jiff's
@@ -119,6 +139,28 @@ fn advance_calendar(
         .ok_or(ValueError::PeriodOutOfRange)?;
     let count = result_nanos.div_euclid(per_tick);
     Ok(Timestamp::new(count, anchor.precision()))
+}
+
+/// Whether a scaled year/month calendar shift from `anchor` lands on a day-of-month
+/// absent from its destination month — A.4's "destination calendar date missing".
+///
+/// The condition is decided *before* any clamp: the scaled `years`/`months` are added
+/// from the first of `anchor`'s month (a shift that never itself clamps, since day 1
+/// exists in every month), then the anchor's own day-of-month is tested for
+/// constructibility in the destination month. Reading the intent this way — rather
+/// than inferring it from jiff's post-clamp day — keeps a boundary that legitimately
+/// lands from being falsely rejected. Weeks, days, and the exact `time` component are
+/// elapsed offsets that never remove a calendar date, so they take no part.
+fn calendar_day_is_missing(anchor: Date, years: i64, months: i64) -> Result<bool, ValueError> {
+    let ym_span = Span::new()
+        .try_years(years)
+        .and_then(|s| s.try_months(months))
+        .map_err(|_| ValueError::PeriodOutOfRange)?;
+    let destination = anchor
+        .first_of_month()
+        .checked_add(ym_span)
+        .map_err(|_| ValueError::PeriodOutOfRange)?;
+    Ok(Date::new(destination.year(), destination.month(), anchor.day()).is_err())
 }
 
 /// Resolve a calendar period's zone name to a `jiff` time zone. An absent name or
