@@ -281,7 +281,10 @@ impl<'a> EvalCtx<'a> {
         let inputs = self.bucket_inputs(&base, now);
         let mut root = base.clone();
         for bucket in &self.compiled.source_buckets {
-            let rows = bucket.materialize(&inputs, now, true);
+            // The horizon is the exclusive upper bound on generated interval starts
+            // (§14.5); one tick past `now` keeps the interval whose start coincides
+            // with the clock (a period boundary landing exactly on `now`) in the pool.
+            let rows = bucket.materialize(&inputs, now.next_tick(), true);
             root = with_cell(root, &bucket.name, Cell::Collection(rows));
         }
         root
@@ -318,8 +321,9 @@ impl<'a> EvalCtx<'a> {
     }
 
     /// The full extant derived rows of every source-backed bucket at `now` (§14.2):
-    /// the working set a temporal selector re-derives activity over. Generated up to
-    /// `now` as the horizon for an unbounded recurring series (§14.5).
+    /// the working set a temporal selector re-derives activity over. The generation
+    /// horizon is the exclusive upper bound on interval starts (§14.5); one tick past
+    /// `now` keeps a period whose boundary coincides with the clock in the set.
     fn source_bucket_extant(&self, base_root: &Row, now: Timestamp) -> Vec<Vec<Row>> {
         if self.compiled.source_buckets.is_empty() {
             return Vec::new();
@@ -328,7 +332,7 @@ impl<'a> EvalCtx<'a> {
         self.compiled
             .source_buckets
             .iter()
-            .map(|bucket| bucket.materialize(&inputs, now, false))
+            .map(|bucket| bucket.materialize(&inputs, now.next_tick(), false))
             .collect()
     }
 

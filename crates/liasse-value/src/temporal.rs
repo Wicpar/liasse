@@ -92,6 +92,16 @@ impl Timestamp {
         self.precision
     }
 
+    /// The next representable instant at this precision — one tick later. Turning an
+    /// inclusive bound into the exclusive-start generation horizon a recurring series
+    /// stops below (§14.5) needs the successor of the last instant to cover. Saturates
+    /// at the representable maximum rather than overflowing — an instant no real
+    /// timestamp reaches.
+    #[must_use]
+    pub const fn next_tick(self) -> Self {
+        Self { count: self.count.saturating_add(1), precision: self.precision }
+    }
+
     /// The canonical base-10 string of the count (A.1).
     #[must_use]
     pub fn to_canonical_text(self) -> String {

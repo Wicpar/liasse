@@ -195,9 +195,13 @@ const SERIES_CAP: usize = 200_000;
 ///
 /// `from` is the series start (`$from`); `series_until` its optional upper bound
 /// (`$until`); `repeat` the recurrence period (`$repeat`), absent for a single
-/// interval; `horizon` bounds generation of an otherwise-unbounded series (the
-/// caller's read/evaluation instant), so an omitted `series_until` still yields a
-/// finite prefix covering the horizon.
+/// interval; `horizon` is the EXCLUSIVE upper bound on the interval starts of an
+/// otherwise-unbounded series: generation yields every interval whose start lies
+/// below it and computes exactly the one boundary that closes the last such interval
+/// — never the following boundary — so an omitted `series_until` still yields a finite
+/// prefix, and a horizon coinciding with a boundary stops there rather than stepping
+/// one further (which, under §14.7/A.4 `reject`, could needlessly fail on a boundary
+/// outside the window).
 ///
 /// Rejects a finite `series_until` at or before `from`, and a `repeat` that fails
 /// to advance strictly from a boundary (a zero, negative, or otherwise
@@ -241,9 +245,14 @@ pub fn recurring_intervals(
             }
             None => {
                 // §14.5: an unbounded series generates indefinitely; each period has a
-                // finite `$until` from its next boundary. Generate up to the horizon.
+                // finite `$until` from its next boundary. `horizon` is the exclusive
+                // upper bound on interval starts: stop as soon as a boundary REACHES it,
+                // so the boundary closing the last in-window interval is computed but the
+                // following one — a start at or past the horizon, and possibly a §A.4
+                // `reject` outside the window — is not. Mirrors the bounded branch's
+                // `next >= bound`.
                 intervals.push(Interval { index, from: boundary, until: Some(next) });
-                if next > horizon {
+                if next >= horizon {
                     break;
                 }
             }

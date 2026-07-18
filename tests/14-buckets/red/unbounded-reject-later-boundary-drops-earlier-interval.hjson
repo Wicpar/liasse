@@ -1,0 +1,89 @@
+{
+  format: 1
+  name: unbounded-reject-later-boundary-drops-earlier-interval
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.5", "§14.7", "§A.4"]
+  tags: ["calendar", "recurrence", "boundary", "temporal", "window"]
+  note: "Distinct from overflow-reject-detection-timing-unspecified (SPEC-ISSUES #13): there the queried answer depends on the missing boundary, so WHEN the reject surfaces is unpinned. Here the answer never touches the rejected boundary, and monotonicity of `.$between` in its upper bound pins it with no timing question. A monthly `overflow: reject` subscription is anchored on 2025-10-30, unbounded. Boundaries: b0=Oct 30, b1=Nov 30, b2=Dec 30, b3=Jan 30 (all real days), b4='Feb 31'... i.e. Feb 30, absent from Feb -> A.4 reject. So intervals 0..2 = [Oct30,Nov30), [Nov30,Dec30), [Dec30,Jan30) are all valid and fully determined by b0..b3. The virtual clock is 2026-01-01, so intervals 0 and 1 have already ended (inactive) and interval 2 is the only one active now. Two reads of the SAME collection: a narrow window [Nov 1, Jan 15) and a wider window [Nov 1, Jan 30) that shares its exclusive upper bound with b3. By §14.1 both select exactly {0,1,2} (interval 3 begins at Jan 30 = the window's exclusive bound, so the half-open rule excludes it and b4 is never needed), and by monotonicity the wider window's result MUST be a superset of the narrower's. The runtime instead returns fewer rows for the wider window: its generation horizon is the selector's own bound (max(b, now) = Jan 30 = b3), the generator's break test is strict (`next > horizon`), so after emitting interval 2 it steps once more to compute b4, hits A.4 reject, and `rows_for_source` discards the WHOLE regenerated series via `let Ok(intervals) = recurring_intervals(..) else { return }` (crates/liasse-runtime/src/source_bucket.rs). The temporal selector then falls back to the active-at-clock working set (crates/liasse-runtime/src/env.rs `working_set`), which holds only interval 2, so the read drops the already-ended intervals 0 and 1 — a §14.1 violation, and a violation of monotonicity, that has nothing to do with the rejected boundary the query never reaches."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.rejectdrop@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $public: {
+        periods: {
+          $params: { a: "timestamp", b: "timestamp" }
+          $view: '.credit_periods.$between(@a, @b) { index: $index, from: $from, until: $until, $sort: ["from"] }'
+        }
+      }
+    }
+    $data: {
+      plans: {
+        // months:1, reject a boundary landing on a day absent from the target month
+        strict_monthly: { credits: "100", period: { months: 1, zone: "UTC", overflow: "reject" } }
+      }
+      subscriptions: {
+        // anchor 2025-10-30T00:00:00Z, unbounded. b1=Nov 30, b2=Dec 30, b3=Jan 30
+        // are valid; b4 = Oct 30 + 4 months = 'Feb 30' 2026 is absent -> A.4 reject.
+        // Admission passes: the §14.5 validate horizon is the start itself and only
+        // reaches b1, so the far-off missing boundary is not seen at commit.
+        s1: { plan: "strict_monthly", starts_at: "1761782400000000" }
+      }
+    }
+  }
+
+  steps: [
+    // Narrow window [Nov 1 2025, Jan 15 2026). Horizon (max(b, now)) = Jan 15 sits
+    // below b3, so generation stops before b4 and every interval materializes.
+    // §14.1 selects intervals 0, 1, 2 (interval 3 starts at Jan 30 > Jan 15).
+    { watch: "public.periods"
+      args: { a: "1761955200000000", b: "1768435200000000" }
+      id: "w1"
+      expect_init: {
+        value: [
+          { index: "0", from: "1761782400000000", until: "1764460800000000" }
+          { index: "1", from: "1764460800000000", until: "1767052800000000" }
+          { index: "2", from: "1767052800000000", until: "1769731200000000" }
+        ]
+      } }
+
+    // Wider window [Nov 1 2025, Jan 30 2026); b = Jan 30 = b3 exactly. §14.1 still
+    // selects exactly {0,1,2} (interval 3 begins at the exclusive bound Jan 30 and
+    // is excluded), so by monotonicity this MUST be a superset of w1's result. The
+    // runtime over-generates to b4, hits A.4 reject, discards the series, and the
+    // selector falls back to the active-at-clock set {interval 2} — dropping the
+    // already-ended intervals 0 and 1. Expected {0,1,2}; runtime returns {2}.
+    { watch: "public.periods"
+      args: { a: "1761955200000000", b: "1769731200000000" }
+      id: "w2"
+      expect_init: {
+        value: [
+          { index: "0", from: "1761782400000000", until: "1764460800000000" }
+          { index: "1", from: "1764460800000000", until: "1767052800000000" }
+          { index: "2", from: "1767052800000000", until: "1769731200000000" }
+        ]
+      } }
+  ]
+}

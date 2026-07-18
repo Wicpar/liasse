@@ -129,17 +129,28 @@ impl<'a> RuntimeEnv<'a> {
         }
     }
 
-    /// The generation horizon a temporal selector drives (§14.5): the later of the
-    /// request clock and the selector's own explicit upper bound, so a past-or-
-    /// present read keeps the clock horizon (behaviour unchanged) and a future read
-    /// extends generation to cover its instant/window. `.$all` carries no bound and
-    /// stays at the clock — the checker forbids it over an unbounded recurring
-    /// bucket, so no unbounded enumeration escapes a bounded selector.
+    /// The generation horizon a temporal selector drives (§14.5): the EXCLUSIVE upper
+    /// bound on generated interval starts. The generator yields every interval whose
+    /// start lies below it and computes exactly the one boundary that closes the last
+    /// such interval, never the following one — so a horizon coinciding with a valid
+    /// boundary cannot force computing (and, under §14.7/A.4 `reject`, failing on) the
+    /// next boundary, which would drop the already-generated in-window series.
+    ///
+    /// Each selector maps its own half-open reach onto that bound, kept at least one
+    /// tick past the clock so the interval active at `now` is still generated for the
+    /// working-set reconciliation ([`Self::working_set`]):
+    /// - `.$at(t)` is inclusive on `t` (`from <= t`): the interval starting exactly at
+    ///   `t` must be generated, so the exclusive-start bound is one tick past it.
+    /// - `.$between(a, b)` is half-open on `b` (`from < b`): an interval starting at
+    ///   `b` is already excluded, so `b` itself is the bound — no boundary at or past
+    ///   it is computed; only the clock floor is nudged one tick past `now`.
+    /// - `.$all` carries no explicit bound and stays at the clock; the checker forbids
+    ///   it over an unbounded recurring bucket, so no unbounded enumeration escapes.
     fn horizon_for(&self, query: &TemporalQuery) -> Timestamp {
         match query {
-            TemporalQuery::All => self.now,
-            TemporalQuery::At(instant) => (*instant).max(self.now),
-            TemporalQuery::Between(_, end) => (*end).max(self.now),
+            TemporalQuery::All => self.now.next_tick(),
+            TemporalQuery::At(instant) => (*instant).max(self.now).next_tick(),
+            TemporalQuery::Between(_, end) => (*end).max(self.now.next_tick()),
         }
     }
 
