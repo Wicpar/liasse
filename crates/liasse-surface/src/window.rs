@@ -84,11 +84,23 @@ pub struct Window {
     gap: Option<FrozenGap>,
 }
 
-/// A window that could not open: its concrete anchor identified no current
-/// occurrence, violating the §12.2 "exactly one current occurrence" requirement.
+/// A window that could not open (§12.2). A bounded window presupposes a row
+/// stream to bound; it fails to open when either that presupposition is broken
+/// (the view is a scalar/aggregate, §7.5) or its concrete anchor names no current
+/// occurrence. Neither is an authorization refusal — no admission is involved.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("window anchor identifies zero current occurrences at window open")]
-pub struct WindowError;
+pub enum WindowError {
+    /// A concrete anchor identified no current occurrence, violating the §12.2
+    /// "exactly one current occurrence" requirement.
+    #[error("window anchor identifies zero current occurrences at window open")]
+    AbsentAnchor,
+    /// A window was requested over a scalar/aggregate view (§7.5). Such a view
+    /// delivers a single value, not a row stream, so it has no rows for a window to
+    /// bound; the subscription must open unwindowed (which delivers the scalar) or
+    /// read the scalar directly, rather than be presented as an empty window.
+    #[error("cannot open a bounded window over a scalar or aggregate view: it delivers a value, not rows")]
+    ScalarView,
+}
 
 impl Window {
     /// A first-`size`-rows window (the no-anchor default, §12.2).
@@ -122,9 +134,10 @@ impl Window {
     /// anchor MUST resolve to one current occurrence (§12.2).
     ///
     /// # Errors
-    /// [`WindowError`] when a concrete anchor identifies no current occurrence.
+    /// [`WindowError::AbsentAnchor`] when a concrete anchor identifies no current
+    /// occurrence.
     pub fn open(&mut self, result: &ViewResult) -> Result<Vec<ViewRow>, WindowError> {
-        self.select(result).ok_or(WindowError)
+        self.select(result).ok_or(WindowError::AbsentAnchor)
     }
 
     /// Recompute the window over `result` at a new frontier. Once the window has

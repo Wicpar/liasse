@@ -10,11 +10,15 @@
 //! included; for a scalar/aggregate view (§7.5) it is the value form — the new
 //! value when it changed, a frontier-only no-op when it did not.
 //!
-//! A bounded subscription's *client result is its window* (§12.2), so its delta is
-//! diffed over the window slices — the prior client-visible window against the
-//! refreshed one — not the full view: positions are window-relative and a row the
-//! window's shift evicts renders as a `remove`, so applying the delta to the
-//! client's prior window reproduces the new authorized window exactly.
+//! A bounded subscription over a ROW-STREAM view has its *client result be its
+//! window* (§12.2), so its delta is diffed over the window slices — the prior
+//! client-visible window against the refreshed one — not the full view: positions
+//! are window-relative and a row the window's shift evicts renders as a `remove`,
+//! so applying the delta to the client's prior window reproduces the new authorized
+//! window exactly. A scalar/aggregate view (§7.5) has no rows for a window to bound,
+//! so it keeps its value delta even under a window — the window-slice diff is a
+//! row-stream primitive only. (The surface layer refuses a window over a scalar view
+//! up front; this type still delivers the scalar if one is opened directly.)
 //!
 //! The runtime re-evaluates authorization and projection at every outgoing
 //! frontier; when the state removes the subscription's authority the runtime
@@ -203,24 +207,35 @@ impl Watch {
     /// Deliver the initial complete result at `frontier`, returning the `init`
     /// delta (§12.2). For an unwindowed subscription that is the full view: a
     /// row-stream view's complete rows, or a scalar/aggregate view's value (§7.5).
-    /// For a bounded subscription the client result is its WINDOW, so the `init`
-    /// ships the window's rows — opening the window over `result` first, which fails
-    /// when a concrete anchor identifies no current occurrence. Called once, when
-    /// the subscription opens.
+    ///
+    /// A scalar/aggregate view has no rows for a window to bound, so it delivers its
+    /// value even when a window was requested (§7.5) — `between_rows` is a
+    /// row-stream-only primitive, and diffing an empty window slice would drop the
+    /// scalar. For a bounded subscription over a ROW-STREAM view the client result is
+    /// its WINDOW, so the `init` ships the window's rows — opening the window over
+    /// `result` first, which fails when a concrete anchor identifies no current
+    /// occurrence. Called once, when the subscription opens.
     ///
     /// # Errors
-    /// [`WindowError`] when a bounded subscription's anchor is absent at open.
+    /// [`WindowError::AbsentAnchor`] when a bounded row-stream subscription's anchor
+    /// is absent at open.
     pub fn init(&mut self, result: ViewResult, frontier: CommitSeq) -> Result<ViewDelta, WindowError> {
-        let delta = if let Some(window) = &mut self.window {
-            // §12.2: a bounded subscription's client result is its window, so its
-            // init ships the window's rows and its later deltas diff against the
-            // window (see `advance`) — never the full view.
-            let rows = window.open(&result)?;
-            let delta = ViewDelta::between_rows(None, &rows);
-            self.windowed = Some(rows);
-            delta
-        } else {
-            ViewDelta::between(None, &result)
+        let delta = match &result {
+            // §7.5/§12.2: a scalar/aggregate view delivers its value regardless of any
+            // window — there are no rows for a window to slice.
+            ViewResult::Scalar(_) => ViewDelta::between(None, &result),
+            ViewResult::Rows { .. } => match &mut self.window {
+                // §12.2: a bounded subscription's client result is its window, so its
+                // init ships the window's rows and its later deltas diff against the
+                // window (see `advance`) — never the full view.
+                Some(window) => {
+                    let rows = window.open(&result)?;
+                    let delta = ViewDelta::between_rows(None, &rows);
+                    self.windowed = Some(rows);
+                    delta
+                }
+                None => ViewDelta::between(None, &result),
+            },
         };
         self.last = Some(result);
         self.frontier = frontier;
@@ -243,15 +258,23 @@ impl Watch {
     ///   client's prior window reproduces the new authorized window exactly, never
     ///   the whole view.
     pub fn advance(&mut self, result: ViewResult, frontier: CommitSeq) -> ViewDelta {
-        let delta = if let Some(window) = &mut self.window {
-            // §12.2: diff the client's own prior window against the refreshed one,
-            // so evictions become removes and positions stay inside the window.
-            let refreshed = window.refresh(&result);
-            let delta = ViewDelta::between_rows(self.windowed.as_deref(), &refreshed);
-            self.windowed = Some(refreshed);
-            delta
-        } else {
-            ViewDelta::between(self.last.as_ref(), &result)
+        let delta = match &result {
+            // §7.5/§12.2: a scalar/aggregate view delivers its value — the new value,
+            // or the frontier-only no-op when unchanged — regardless of any window,
+            // since a window has no rows to slice and `between_rows` is a
+            // row-stream-only primitive.
+            ViewResult::Scalar(_) => ViewDelta::between(self.last.as_ref(), &result),
+            ViewResult::Rows { .. } => match &mut self.window {
+                // §12.2: diff the client's own prior window against the refreshed one,
+                // so evictions become removes and positions stay inside the window.
+                Some(window) => {
+                    let refreshed = window.refresh(&result);
+                    let delta = ViewDelta::between_rows(self.windowed.as_deref(), &refreshed);
+                    self.windowed = Some(refreshed);
+                    delta
+                }
+                None => ViewDelta::between(self.last.as_ref(), &result),
+            },
         };
         self.last = Some(result);
         self.frontier = frontier;

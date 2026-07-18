@@ -22,7 +22,7 @@ use crate::request::{AuthSelection, SurfaceCall, SurfaceResume, SurfaceWatch};
 use crate::role::Role;
 use crate::router::Resolved;
 use crate::watch::{Watch, WatchAuthz};
-use crate::window::Window;
+use crate::window::{Window, WindowError};
 
 use super::barrier::Barrier;
 use super::{Subscription, SurfaceError, SurfaceHost};
@@ -336,6 +336,14 @@ impl<S: InstanceStore> SurfaceHost<S> {
         };
         match window {
             Some(window) => {
+                // §7.5/§12.2: a scalar/aggregate view delivers a single value, not a
+                // row stream, so there is nothing for a bounded window to bound.
+                // Refuse the window (like an absent anchor) rather than present the
+                // value as a lossy empty window — the client can subscribe unwindowed,
+                // which delivers the scalar.
+                if result.scalar().is_some() {
+                    return Ok(Subscription::Failed(WindowError::ScalarView));
+                }
                 let mut opened = Watch::windowed(view_name, authz, frontier, window).with_args(args);
                 if let Err(error) = opened.init(result, frontier) {
                     return Ok(Subscription::Failed(error));
