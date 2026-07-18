@@ -52,6 +52,11 @@ pub enum DeletePolicy {
     Clear,
     /// Patch the referencing row with the given planning-time assignments.
     Patch(Vec<(String, Value)>),
+    /// Remove this member value from the referencing `$set` field (§5.6/§21.1:
+    /// for a set of refs, `cascade` deletes the containing **set member**, not the
+    /// whole row). A surviving-row effect — the referencing row is kept and only
+    /// its membership of the deleted target is dropped.
+    DropMember(Value),
 }
 
 /// One inbound reference edge in the deletion graph: the referencing row, its
@@ -111,7 +116,8 @@ impl Graph {
         let deletes = self.cascade_closure(initial);
         self.check_restrict(&deletes)?;
         let patches = self.collect_patches(&deletes)?;
-        Ok(DeletionPlan { deletes, patches })
+        let member_removals = self.collect_member_removals(&deletes);
+        Ok(DeletionPlan { deletes, patches, member_removals })
     }
 
     /// Expand the initial targets to the cascade fixed point (§21.1). Each row is
@@ -165,7 +171,8 @@ impl Graph {
             let assignments = match &edge.policy {
                 DeletePolicy::Clear => vec![(edge.field.clone(), Value::None)],
                 DeletePolicy::Patch(assignments) => assignments.clone(),
-                DeletePolicy::Restrict | DeletePolicy::Cascade => continue,
+                // Row deletions and set-member drops are not field assignments.
+                DeletePolicy::Restrict | DeletePolicy::Cascade | DeletePolicy::DropMember(_) => continue,
             };
             let row_patch = patches.entry(edge.from.clone()).or_default();
             for (field, value) in assignments {
@@ -185,8 +192,35 @@ impl Graph {
         Ok(patches)
     }
 
-    /// Apply a plan atomically (§21.1): remove every deleted row, then apply each
-    /// surviving-row patch.
+    /// §5.6/§21.1: gather the set-member drops a `cascade` (or `none`/clear) on a
+    /// `$set`-of-`$ref` member induces. A drop applies only when the target is
+    /// deleted and the referencing row survives; a drop onto a row that is itself
+    /// deleted is redundant (the whole set vanishes with the row) and skipped —
+    /// mirroring the patch rule. The referencing row keeps its identity; only its
+    /// membership of the deleted target is removed, so a drop never propagates
+    /// through the cascade closure.
+    fn collect_member_removals(
+        &self,
+        deletes: &BTreeSet<RowRef>,
+    ) -> BTreeMap<RowRef, BTreeMap<String, Vec<Value>>> {
+        let mut removals: BTreeMap<RowRef, BTreeMap<String, Vec<Value>>> = BTreeMap::new();
+        for edge in &self.edges {
+            let DeletePolicy::DropMember(member) = &edge.policy else { continue };
+            if !deletes.contains(&edge.to) || deletes.contains(&edge.from) {
+                continue;
+            }
+            removals
+                .entry(edge.from.clone())
+                .or_default()
+                .entry(edge.field.clone())
+                .or_default()
+                .push(member.clone());
+        }
+        removals
+    }
+
+    /// Apply a plan atomically (§21.1): remove every deleted row, apply each
+    /// surviving-row patch, then drop each removed set member from surviving rows.
     pub fn apply(&mut self, plan: &DeletionPlan) {
         for row in &plan.deletes {
             self.rows.remove(row);
@@ -195,6 +229,16 @@ impl Graph {
             if let Some(fields) = self.rows.get_mut(row) {
                 for (field, value) in patch {
                     fields.insert(field.clone(), value.clone());
+                }
+            }
+        }
+        for (row, field_removals) in &plan.member_removals {
+            let Some(fields) = self.rows.get_mut(row) else { continue };
+            for (field, members) in field_removals {
+                if let Some(Value::Set(set)) = fields.get_mut(field) {
+                    for member in members {
+                        set.remove(member);
+                    }
                 }
             }
         }
@@ -207,6 +251,7 @@ impl Graph {
 pub struct DeletionPlan {
     deletes: BTreeSet<RowRef>,
     patches: BTreeMap<RowRef, BTreeMap<String, Value>>,
+    member_removals: BTreeMap<RowRef, BTreeMap<String, Vec<Value>>>,
 }
 
 impl DeletionPlan {
@@ -220,6 +265,13 @@ impl DeletionPlan {
     #[must_use]
     pub fn patches(&self) -> &BTreeMap<RowRef, BTreeMap<String, Value>> {
         &self.patches
+    }
+
+    /// The set-member drops this plan applies to surviving rows (§5.6/§21.1): for
+    /// each row, the members to remove from each of its `$set`-of-`$ref` fields.
+    #[must_use]
+    pub fn member_removals(&self) -> &BTreeMap<RowRef, BTreeMap<String, Vec<Value>>> {
+        &self.member_removals
     }
 }
 

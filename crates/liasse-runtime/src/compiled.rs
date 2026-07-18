@@ -832,8 +832,26 @@ fn compile_field(
                 ),
                 None => set.element.clone(),
             };
-            let element_reference = target
-                .map(|target| RefInfo { target, optional: false, on_delete: OnDelete::Undecided });
+            // §21.1/§5.6: a `$set` of `$ref` member is a governed inbound ref, so
+            // compile its DECLARED `$on_delete` (kept on the model's set field)
+            // through the same policy machinery as a scalar ref. Hardcoding
+            // `Undecided` here would load a declared restrict/cascade/patch policy
+            // but leave it inert at delete time, stranding set members at a removed
+            // row (§22.1). An undeclared policy stays `Undecided` — the §21.1 static
+            // gate proved the target undeletable, so no delete exercises this edge.
+            let element_reference = match target {
+                Some(target) => {
+                    let on_delete = match &set.element_ref {
+                        Some(reference) => {
+                            compile_on_delete(sources, schema, root_ty, row_ty, &target, reference)?
+                        }
+                        None => OnDelete::Undecided,
+                    };
+                    let optional = set.element_ref.as_ref().is_some_and(|reference| reference.optional);
+                    Some(RefInfo { target, optional, on_delete })
+                }
+                None => None,
+            };
             CompiledField {
                 name,
                 ty: Type::Set(Box::new(element)),

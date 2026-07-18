@@ -3,7 +3,10 @@
 //! A `collection - key` delete statement removes a row, but §21.1 makes that a
 //! graph operation: every inbound reference's declared policy — `restrict`,
 //! `cascade`, `none`, or a `= { … }` patch — decides the fate of the rows that
-//! point at a deleted one. This module reads the prospective state into the
+//! point at a deleted one. An inbound ref is a scalar `$ref` field or a member of
+//! a `$set` of `$ref` (§5.5/§5.6); a set member's `cascade` drops the member from
+//! its set rather than deleting the containing row. This module reads the
+//! prospective state into the
 //! [`Graph`](crate::deletion::Graph) the planner operates on, resolves each
 //! reference's compiled policy (evaluating a patch against the referencing row
 //! with the deleted target bound as `$target`), and returns the plan together
@@ -66,14 +69,46 @@ pub(crate) fn plan(
             let Some(step) = address.steps().last() else { continue };
             let from = RowRef::new(collection.name.clone(), materialize::key_identity(model, step.key()));
             for field in &collection.fields {
-                let Some(info) = &field.reference else { continue };
-                let Some(target_key) = ref_key(fields.get(&field.name)) else { continue };
-                let to = RowRef::new(info.target.clone(), target_key);
-                let Some(policy) = resolve_policy(compiled, ctx, prospective, &info.on_delete, &from, &to)?
-                else {
-                    continue;
-                };
-                graph.add_edge(RefEdge { from: from.clone(), field: field.name.clone(), to, policy });
+                if let Some(info) = &field.reference {
+                    let Some(target_key) = ref_key(fields.get(&field.name)) else { continue };
+                    let to = RowRef::new(info.target.clone(), target_key);
+                    let Some(policy) =
+                        resolve_policy(compiled, ctx, prospective, &info.on_delete, &from, &to)?
+                    else {
+                        continue;
+                    };
+                    graph.add_edge(RefEdge { from: from.clone(), field: field.name.clone(), to, policy });
+                }
+                // §5.5/§5.6: every member of a `$set` of `$ref` is a governed
+                // inbound ref (§21.1). Build one edge per live member so its
+                // policy decides the member's fate when the target is deleted — a
+                // set member's `cascade` drops the member (not the whole row).
+                if let Some(info) = &field.element_reference
+                    && let Some(Value::Set(members)) = fields.get(&field.name)
+                {
+                    for member in members {
+                        let Some(target_key) = ref_key(Some(member)) else { continue };
+                        let to = RowRef::new(info.target.clone(), target_key);
+                        let Some(policy) = resolve_member_policy(
+                            compiled,
+                            ctx,
+                            prospective,
+                            &info.on_delete,
+                            &from,
+                            &to,
+                            member,
+                        )?
+                        else {
+                            continue;
+                        };
+                        graph.add_edge(RefEdge {
+                            from: from.clone(),
+                            field: field.name.clone(),
+                            to,
+                            policy,
+                        });
+                    }
+                }
             }
         }
     }
@@ -112,6 +147,27 @@ fn resolve_policy(
             Some(DeletePolicy::Patch(patch_assignments(&cell)))
         }
     })
+}
+
+/// Resolve a `$set`-of-`$ref` member's `$on_delete` policy (§5.6/§21.1). For a
+/// set member the policy names differ from a scalar ref in the removing cases:
+/// `cascade` deletes the containing **set member** (not the whole row), and
+/// `none`/clear removes that membership — both are a [`DeletePolicy::DropMember`]
+/// on the surviving referencing row. `restrict`, `undecided`, and a `= patch`
+/// (which patches the containing row) resolve exactly as for a scalar ref.
+fn resolve_member_policy(
+    compiled: &Compiled,
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+    policy: &OnDelete,
+    from: &RowRef,
+    to: &RowRef,
+    member: &Value,
+) -> Result<Option<DeletePolicy>, Rejection> {
+    match policy {
+        OnDelete::Cascade | OnDelete::Clear => Ok(Some(DeletePolicy::DropMember(member.clone()))),
+        _ => resolve_policy(compiled, ctx, prospective, policy, from, to),
+    }
 }
 
 /// The `(field, value)` assignments a patch object evaluated to (§21.1). A patch

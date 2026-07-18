@@ -215,16 +215,29 @@ impl<'a> Builder<'a> {
     }
 
     fn set_node(&mut self, reporter: &mut Reporter, value: &DocValue, set: &DocMember) -> Node {
+        // A set of refs declares `$set: { $ref: ... }`. Keep the full member
+        // reference (target + `$on_delete`) on the set field so §21.1 governs each
+        // member exactly like a scalar ref (§5.6), instead of flattening it to a
+        // bare element type. Other object element shapes are a documented CORE seam
+        // (element must be a scalar type).
+        if set.value.member("$ref").is_some()
+            && let Node::Reference(reference) = self.ref_node(reporter, &set.value)
+        {
+            return Node::Set(SetField {
+                element: Type::Ref(liasse_value::RefTarget::for_key(&reference.key_type)),
+                element_ref: Some(reference),
+                span: value.span,
+            });
+        }
         let element = self.shape_or_type(reporter, &set.value);
-        // A set of refs declares `$set: { $ref: ... }`; other object element
-        // shapes are a documented CORE seam (element must be a scalar type).
         Node::Set(SetField {
             element,
+            element_ref: None,
             span: value.span,
         })
     }
 
-    /// Resolve a `$set` element type: a type string, or a ref element.
+    /// Resolve a non-ref `$set` element type: a type string or an inline enum.
     fn shape_or_type(&mut self, reporter: &mut Reporter, value: &DocValue) -> Type {
         if let Some(text) = value.as_string() {
             return match crate::types::TypeParser::parse(text.trim(), &self.named) {
@@ -234,11 +247,6 @@ impl<'a> Builder<'a> {
                     Type::Json
                 }
             };
-        }
-        if value.member("$ref").is_some()
-            && let Node::Reference(reference) = self.ref_node(reporter, value)
-        {
-            return Type::Ref(liasse_value::RefTarget::for_key(&reference.key_type));
         }
         // §5.5: "the value of `$set` is the shape of every member" — any scalar
         // member shape is admissible, including an inline enum type. An `{ $enum:

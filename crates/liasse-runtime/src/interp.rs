@@ -1495,6 +1495,23 @@ impl<'a> Interp<'a> {
             }
             self.place(address, decl, fields)?;
         }
+        // §5.6/§21.1: drop each removed set member from its surviving referencing
+        // row so a `cascade` on a `$set`-of-`$ref` member leaves no dangling
+        // membership at the deleted target (§22.1). The row keeps its identity; the
+        // set stays canonical after the removal, so re-placing it (which marks it
+        // touched for the finalize integrity pass) needs no re-normalization.
+        for (row, field_removals) in planned.plan.member_removals() {
+            let Some(address) = planned.addresses.get(row) else { continue };
+            let Some(mut fields) = self.prospective.get(address).cloned() else { continue };
+            for (field, members) in field_removals {
+                if let Some(Value::Set(set)) = fields.get_mut(field) {
+                    for member in members {
+                        set.remove(member);
+                    }
+                }
+            }
+            self.place(address, std::slice::from_ref(&row.collection), fields)?;
+        }
         Ok(())
     }
 

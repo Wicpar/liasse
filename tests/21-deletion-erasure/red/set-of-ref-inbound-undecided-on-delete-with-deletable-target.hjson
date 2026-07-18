@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: set-of-ref-inbound-undecided-on-delete-with-deletable-target
+  suite: static
+  // §21.1 / §5.6: introducing `.accounts - @id` gives `accounts` a deleting
+  // capability, so before that declaration can become active EVERY possible
+  // inbound ref MUST declare restrict/cascade/none/=patch (§21.1). A `$set` of
+  // `$ref` holds per-member references (§5.5/§5.6) and is such an inbound ref —
+  // §5.6 line 518 spells the set case out explicitly ("cascade delete the
+  // containing row/MEMBER with the target"). `reviews.reviewers` targets
+  // `/accounts` and leaves `$on_delete` undecided, so the whole package MUST be
+  // rejected exactly as the scalar-ref sibling
+  // (`deleting-capability-requires-inbound-ref-policy`) is.
+  //
+  // ATTACK (red): hide the undecided inbound ref inside a `$set` of `$ref`
+  // rather than a scalar `$ref` field, hoping the §21.1 deferred-decision
+  // checker only walks scalar `$ref` fields and never descends into a set's
+  // member reference — which would let a package that can strand set members at
+  // a deleted target load anyway.
+  spec: ["§21.1", "§5.6", "§5.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.setdel@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      reviews: {
+        $key: "id"
+        id: "text"
+        // A `$set` of `$ref` is an inbound reference to /accounts. Its members
+        // point at accounts, so it is a "possible inbound ref" for §21.1, and
+        // must declare $on_delete once accounts become deletable. It does not.
+        reviewers: { $set: { $ref: "/accounts" } }
+      }
+      $mut: {
+        // Deleting capability on the ref target with no inbound policy chosen.
+        delete_account: ".accounts - @id"
+      }
+      $public: {
+        accounts: {
+          $view: ".accounts { id, name }"
+          $mut: { delete: ".delete_account" }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§21.1"]
+    detail: "delete_account makes accounts deletable while the inbound set-of-ref reviews.reviewers leaves $on_delete undecided"
+  }
+}

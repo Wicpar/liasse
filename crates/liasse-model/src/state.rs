@@ -68,6 +68,12 @@ impl ScalarField {
 pub struct SetField {
     /// The element type.
     pub element: Type,
+    /// When the element is a `$ref` (§5.5 "set of refs"), the member reference:
+    /// its target relation and `$on_delete` policy. A set member is a governed
+    /// inbound ref exactly like a scalar `$ref` field (§5.6), so this is what the
+    /// §21.1 deferred-delete-decision gate collects and what the runtime compiles
+    /// its cascade policy from. `None` for a set of scalars or enum labels.
+    pub element_ref: Option<Reference>,
     /// The bytes of the declaration.
     pub span: ByteSpan,
 }

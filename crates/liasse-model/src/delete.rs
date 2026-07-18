@@ -92,6 +92,19 @@ fn collect_refs<'a>(shape: &'a Shape, prefix: &mut String, out: &mut Vec<Located
                 reference,
                 target: normalize(&reference.target),
             }),
+            // §5.5/§5.6: a `$set` of `$ref` holds a per-member reference to its
+            // target relation. That member reference is a governed inbound ref, so
+            // it MUST reach the §21.1 deferred-delete-decision gate exactly like a
+            // scalar `$ref` field — an undecided policy over a deletable target
+            // rejects the package, a decided one passes.
+            Node::Set(set) => {
+                if let Some(reference) = &set.element_ref {
+                    out.push(LocatedRef {
+                        reference,
+                        target: normalize(&reference.target),
+                    });
+                }
+            }
             Node::Struct(inner) => collect_refs(inner, prefix, out),
             Node::Collection(collection) => collect_refs(&collection.shape, prefix, out),
             _ => {}
