@@ -1,0 +1,29 @@
+{
+  "name": "@liasse/connect",
+  "version": "0.0.1",
+  "description": "Untrusted browser client for the Liasse client-sync connector (§12): a thin SSE + fetch transport shell over the liasse-connect-wasm core. Holds no authority.",
+  "type": "module",
+  "license": "MIT OR Apache-2.0",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "default": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src",
+    "src",
+    "wasm"
+  ],
+  "scripts": {
+    "build:wasm": "bash build-wasm.sh",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "pretest": "tsc",
+    "test": "node --test \"dist/test/**/*.test.js\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -1,0 +1,9 @@
+# Generated TypeScript output.
+dist/
+
+# Installed dependencies.
+node_modules/
+
+# Generated wasm-pack packages (built from crates/liasse-connect-wasm via build-wasm.sh).
+# These are large binaries reproduced by the build; they are never committed.
+wasm/
