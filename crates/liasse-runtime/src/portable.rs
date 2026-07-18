@@ -15,13 +15,15 @@
 //! special case.
 //!
 //! CORE scope mirrors the rest of the engine: top-level keyed collections with
-//! scalar/ref/set fields. Nested collections are a documented seam here as
+//! scalar/ref/set fields, plus the §8.2 package-root singleton reserved row (its
+//! own scalar/ref/set/static-struct members). Nested collections — whether
+//! top-level or under a singleton static struct — are a documented seam here as
 //! everywhere.
 
 use std::collections::BTreeMap;
 
 use liasse_ident::NameSegment;
-use liasse_model::Node;
+use liasse_model::{Model, Node};
 use liasse_store::{CollectionPath, InstanceStore, RowAddress, StoreError};
 use liasse_value::{StructType, Type};
 use serde_json::Value as J;
@@ -32,14 +34,21 @@ use crate::materialize::{self, FieldMap};
 use crate::schema::Schema;
 use crate::state::Prospective;
 
-/// A portable capture of one instance's committed writable state, grouped by
-/// top-level collection in Annex B order.
+/// A portable capture of one instance's committed writable state: every
+/// top-level collection's rows in Annex B order, and the §8.2 package-root
+/// singleton reserved row (absent when the package declares no singleton state).
 pub(crate) struct StateSection {
     collections: Vec<(String, Vec<FieldMap>)>,
+    /// The §8.2 singleton reserved row — the package root's writable scalar/ref/
+    /// set/static-struct members folded into one struct — as gathered under
+    /// [`crate::singleton::path`]. `None` when the instance holds no singleton row
+    /// (a package with no writable root member), so nothing is emitted or staged.
+    singleton: Option<FieldMap>,
 }
 
 impl StateSection {
-    /// Capture the committed rows of every top-level collection from `store`.
+    /// Capture the committed rows of every top-level collection and the §8.2
+    /// singleton reserved row from `store`.
     pub(crate) fn capture<S: InstanceStore>(
         schema: Schema<'_>,
         store: &S,
@@ -59,7 +68,12 @@ impl StateSection {
                 .collect();
             collections.push((name.to_owned(), rows));
         }
-        Ok(Self { collections })
+        // §8.2: `Prospective::gather` scans the singleton reserved row under
+        // `singleton::path()` into its working copy at `singleton::address()`;
+        // capture it through the same address so the artifact carries the durable
+        // root state the store persist/restart path already keeps.
+        let singleton = prospective.get(&crate::singleton::address()).cloned();
+        Ok(Self { collections, singleton })
     }
 
     /// The captured collections, name and rows.
@@ -77,11 +91,26 @@ impl StateSection {
                 .collect();
             object.insert(name.clone(), J::Array(wire));
         }
+        // §8.2: the singleton is one struct row, not a collection, so it serializes
+        // as a single object under the reserved `$root` name. That name is
+        // `$`-prefixed, which no application collection member can carry, so it never
+        // collides with a collection entry above.
+        if let Some(fields) = &self.singleton {
+            object.insert(
+                crate::singleton::ROOT_NAME.to_owned(),
+                materialize::struct_of(fields).to_wire(),
+            );
+        }
         serde_json::to_vec(&J::Object(object)).unwrap_or_default()
     }
 
-    /// Decode a state section against a definition's compiled field types.
-    pub(crate) fn from_bytes(bytes: &[u8], compiled: &Compiled) -> Result<Self, EngineError> {
+    /// Decode a state section against a definition's compiled field types and
+    /// model (the model resolves the §8.2 singleton row's decode type).
+    pub(crate) fn from_bytes(
+        bytes: &[u8],
+        compiled: &Compiled,
+        model: &Model,
+    ) -> Result<Self, EngineError> {
         let root: J = serde_json::from_slice(bytes)
             .map_err(|error| EngineError::Internal(format!("state section is not JSON: {error}")))?;
         let object = root
@@ -102,7 +131,20 @@ impl StateSection {
             }
             collections.push((collection.name.clone(), decoded));
         }
-        Ok(Self { collections })
+        // §8.2: decode the singleton reserved row, if the section carries one,
+        // through its optional-wrapped struct type — the same `Type::decode`
+        // discipline as a collection row, so a stored `none` (dropped from the wire
+        // by absence) round-trips back to `none`.
+        let singleton = match object.get(crate::singleton::ROOT_NAME) {
+            Some(row) => {
+                let value = crate::singleton::row_type(model).decode(row).map_err(|error| {
+                    EngineError::Internal(format!("state singleton row: {error}"))
+                })?;
+                Some(materialize::fields_of(&value))
+            }
+            None => None,
+        };
+        Ok(Self { collections, singleton })
     }
 
     /// The captured rows re-addressed to their key positions, ready to stage.
@@ -116,6 +158,12 @@ impl StateSection {
                 })?;
                 working.insert(materialize::top_address(name, key), fields.clone());
             }
+        }
+        // §8.2: the singleton reserved row is keyed by its own reserved address, not
+        // a model key field, so it re-addresses directly — the same address the
+        // store persist path stages it under (`singleton::address`).
+        if let Some(fields) = &self.singleton {
+            working.insert(crate::singleton::address(), fields.clone());
         }
         Ok(working)
     }

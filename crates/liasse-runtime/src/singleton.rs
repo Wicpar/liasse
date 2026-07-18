@@ -62,6 +62,42 @@ fn struct_type(model: &Model, shape: &Shape) -> StructType {
     )
 }
 
+/// The [`Type`] the portable artifact codec decodes the stored singleton row
+/// (§8.2) with: a struct over every singleton-eligible root member, each — and,
+/// recursively, each member of any static struct — wrapped in [`Type::Optional`].
+///
+/// The wrapper is the same discipline the collection codec applies per field: a
+/// stored `none` is dropped from the canonical wire by absence (A.1,
+/// `Value::to_wire`), so a non-optional member's declared type would fault as a
+/// missing member on decode. Wrapping keeps the shared `Type::decode` total over
+/// the singleton row, so a `none` round-trips to `none` — the singleton analogue
+/// of `StateSection::row_type` for a keyed collection, extended through static
+/// structs because a root struct member is durable §8.2 state.
+#[must_use]
+pub(crate) fn row_type(model: &Model) -> Type {
+    Type::Struct(optional_struct_type(model, model.root()))
+}
+
+/// The optional-wrapped [`StructType`] over a shape's singleton-eligible members,
+/// used to decode a stored singleton (or nested static struct) row.
+fn optional_struct_type(model: &Model, shape: &Shape) -> StructType {
+    StructType::new(shape.members.iter().filter_map(|member| {
+        let ty = decodable_member_type(model, &member.node)?;
+        Some((member.name.as_str().to_owned(), Type::Optional(Box::new(ty))))
+    }))
+}
+
+/// Like [`member_type`], but a static struct's own members carry the recursive
+/// optional wrapper the artifact codec decodes with. `None` for a member that is
+/// not durable singleton state (a keyed collection, a view, a computed scalar).
+fn decodable_member_type(model: &Model, node: &Node) -> Option<Type> {
+    match node {
+        Node::Struct(shape) => Some(Type::Struct(optional_struct_type(model, shape))),
+        Node::Named(name) => decodable_member_type(model, model.types().get(name)?),
+        _ => member_type(model, node),
+    }
+}
+
 /// Fold every singleton root member of `shape` into read-facing cells over the
 /// stored singleton `fields`. An absent member reads as `none` (a struct member
 /// as an all-`none` sub-row), matching how a collection materializes an

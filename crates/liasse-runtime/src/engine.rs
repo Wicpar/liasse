@@ -319,25 +319,19 @@ impl<S: InstanceStore> Engine<S> {
     }
 
     /// Stage every captured row as an insert against the current empty base and
-    /// commit it as the definition-load genesis (§19.10).
+    /// commit it as the definition-load genesis (§19.10). The captured rows are
+    /// re-addressed through [`StateSection::working`], which places each top-level
+    /// collection row at its key position and the §8.2 singleton reserved row at
+    /// its reserved address — so a restore reproduces the exported root singleton
+    /// state, not only its collections.
     fn install_state(
         &mut self,
         definition: &str,
         state: &crate::portable::StateSection,
     ) -> Result<(), EngineError> {
-        let schema = Schema::new(&self.model);
         let mut prospective = Prospective::empty();
-        for (name, rows) in state.collections() {
-            let Some(model) = schema.top_collection(name) else { continue };
-            for fields in rows {
-                let Some(key) = crate::materialize::row_key(model, fields) else {
-                    return Err(EngineError::Internal(format!(
-                        "captured row in `{name}` is missing a key field"
-                    )));
-                };
-                let address = crate::materialize::top_address(name, key);
-                prospective.insert(address, fields.clone());
-            }
+        for (address, fields) in state.working(Schema::new(&self.model))? {
+            prospective.insert(address, fields);
         }
         let changes = prospective.diff();
         let mut txn = self.store.begin();

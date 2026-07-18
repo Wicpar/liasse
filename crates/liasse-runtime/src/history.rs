@@ -323,7 +323,7 @@ fn decode_sections(opened: &Artifact) -> Result<(String, StateSection), ImportEr
         .to_owned();
     let compilation =
         compile_definition(&definition, &crate::host::HostSignatures::default()).map_err(ImportError::Engine)?;
-    let state = StateSection::from_bytes(opened.state_section(), &compilation.compiled)
+    let state = StateSection::from_bytes(opened.state_section(), &compilation.compiled, &compilation.model)
         .map_err(ImportError::Engine)?;
     Ok((definition, state))
 }
