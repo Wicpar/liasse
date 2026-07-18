@@ -1,0 +1,81 @@
+{
+  format: 1
+  name: union-masks-unbounded-recurring-enumeration
+  suite: static
+  spec: ["#buckets", "§14.5", "#views", "§7.4"]
+  tags: ["static", "ordering"]
+  note: '''An unbounded recurring collection MUST be read through a bounded temporal
+    selector; the checker rejects an expression requiring enumeration of an infinite
+    series (§14.5). A view combinator `a | b` is "union, left order then new right
+    identities" (§7.4): computing the union REQUIRES enumerating every row of the
+    RIGHT operand `b` to determine which identities are new. So the union
+    `.credit_periods.$at(@t) | .credit_periods` unconditionally enumerates
+    `.credit_periods` whole — exactly the infinite-series read §14.5 forbids — even
+    though its LEFT operand is bounded.
+
+    This is distinct from SPEC-ISSUES "conditional/fallback delivery order
+    under-specified": that item is about the ORDER of delivery in `? :` / `??`, not
+    about the enumeration guard. A `|`/`&` combinator enumerates both operands
+    UNCONDITIONALLY (no branch is skipped), so there is no delivery-order ambiguity to
+    hide behind — §14.5's rejection applies with full force.
+
+    The bug: the §14.5 enumeration guard fires only on the TERMINAL expression type
+    (check_expression, crates/liasse-expr/src/check/mod.rs), and the combinator
+    checker builds the union's result row from the LEFT operand alone
+    (check_combination, crates/liasse-expr/src/check/ops.rs: `acc_row` = left row),
+    discarding the RIGHT operand's unbounded-recurring marker. With a bounded left,
+    the terminal result is not marked unbounded, so the guard never fires and the
+    package loads — masking an infinite-series enumeration. The accepted read gives
+    the bounded selector the LAST word over the whole combined view, e.g.
+    `(.credit_periods | .other).$at(@t)`, or bounds every operand:
+    `.credit_periods.$at(@t) | .other.$at(@t)`.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.unionmask@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      // An UNBOUNDED source-backed recurring bucket: ends_at is optional and the plan
+      // period may be non-none, so the generated series can be infinite (§14.5).
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $public: {
+        // BUG: the RIGHT union operand `.credit_periods` is the bare unbounded
+        // recurring bucket, read whole. `|` must enumerate it to compute the union
+        // (§7.4), so this expression requires infinite enumeration and §14.5 rejects
+        // it. Both operands share one identity domain (the same bucket), so the
+        // combinator type-checks; the bounded LEFT then masks the right's unbounded
+        // marker and the package wrongly loads.
+        union: {
+          $params: { t: "timestamp" }
+          $view: ".credit_periods.$at(@t) | .credit_periods"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§14.5"]
+    detail: "a `|` view combinator enumerates the unbounded recurring bucket in its right operand whole; the union requires enumerating every right row, so the expression needs infinite enumeration despite the bounded left operand"
+  }
+}

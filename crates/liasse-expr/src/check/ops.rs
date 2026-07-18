@@ -77,8 +77,13 @@ impl Checker<'_> {
     fn check_sub(&mut self, expr: &Expr, lhs: &Expr, rhs: &Expr) -> Option<TypedExpr> {
         let left = self.check(lhs)?;
         let right = self.check(rhs)?;
-        if let (ExprType::View(row), ExprType::View(_)) = (left.ty(), right.ty()) {
-            let row = row.clone();
+        if let (ExprType::View(row), ExprType::View(other)) = (left.ty(), right.ty()) {
+            // §14.5/§7.4: computing `a - b` enumerates every row of `b` to build the
+            // removal set, so the difference is unbounded if EITHER operand is — an
+            // unbounded recurring bucket on either side forces an infinite-series
+            // read. A bounding selector over the whole difference still clears it.
+            let unbounded = row.is_unbounded() || other.is_unbounded();
+            let row = row.clone().unbounded(unbounded);
             return Some(TypedExpr::new(
                 expr.span,
                 ExprType::View(row),
@@ -299,7 +304,14 @@ impl Checker<'_> {
         let primary = self.check(lhs)?;
         let other = self.check(rhs)?;
         let ty = match (primary.ty(), other.ty()) {
-            (ExprType::View(row), ExprType::View(_)) => ExprType::View(row.clone()),
+            // §14.5: a static checker cannot prove the fallback branch is never taken,
+            // so the result is unbounded if EITHER branch is — `[] ?? b` with an
+            // unbounded `b` can deliver `b` whole. Copying only the primary's row
+            // dropped the fallback's marker; OR it in. A bounding selector clears it.
+            (ExprType::View(row), ExprType::View(other_row)) => {
+                let unbounded = row.is_unbounded() || other_row.is_unbounded();
+                ExprType::View(row.clone().unbounded(unbounded))
+            }
             (ExprType::Scalar(Type::Optional(inner)), _) => ExprType::scalar((**inner).clone()),
             (ExprType::Scalar(_), _) => primary.ty().clone(),
             _ => return self.error(expr, "`??` operands must be two views or an optional value"),
@@ -328,7 +340,14 @@ impl Checker<'_> {
         let then = self.check(then)?;
         let otherwise = self.check(otherwise)?;
         let ty = match (then.ty(), otherwise.ty()) {
-            (ExprType::View(row), ExprType::View(_)) => ExprType::View(row.clone()),
+            // §14.5: a static checker cannot prove which branch is taken, so the
+            // result is unbounded if EITHER branch is — `@flag ? [] : b` with an
+            // unbounded `b` can deliver `b` whole. Copying only one branch's row
+            // dropped the other's marker; OR it in. A bounding selector clears it.
+            (ExprType::View(row), ExprType::View(other)) => {
+                let unbounded = row.is_unbounded() || other.is_unbounded();
+                ExprType::View(row.clone().unbounded(unbounded))
+            }
             (a, b) if a == b => a.clone(),
             // §7.4: `cond ? view : []` — an empty view branch adopts the other.
             (ExprType::View(row), _) | (_, ExprType::View(row)) => ExprType::View(row.clone()),
@@ -363,14 +382,14 @@ impl Checker<'_> {
             return self.error(expr, "a `|`/`&` view combination has no operands");
         };
         let mut acc = self.check(first)?;
-        let acc_row = match acc.ty() {
+        let mut acc_row = match acc.ty() {
             ExprType::View(row) => row.clone(),
             _ => return self.error(first, "a `|`/`&` combinator operand must be a view"),
         };
         for (operand, op) in iter.zip(operators.iter()) {
             let right = self.check(operand)?;
-            match right.ty() {
-                ExprType::View(row) if row.key() == acc_row.key() => {}
+            let right_unbounded = match right.ty() {
+                ExprType::View(row) if row.key() == acc_row.key() => row.is_unbounded(),
                 ExprType::View(_) => {
                     return self.error(
                         operand,
@@ -378,11 +397,20 @@ impl Checker<'_> {
                     );
                 }
                 _ => return self.error(operand, "a `|`/`&` combinator operand must be a view"),
-            }
+            };
             let combine = match op {
                 CombinatorOp::Union => CombineOp::Union,
                 CombinatorOp::Intersect => CombineOp::Intersect,
             };
+            // §14.5/§7.4: computing `a | b` / `a & b` enumerates every row of BOTH
+            // operands (a union reads the right for its new identities, §7.4; an
+            // intersection reads both), so the combined view is unbounded if EITHER
+            // operand is — an unbounded recurring bucket on either side forces an
+            // infinite-series read the terminal guard must reject. Copying only the
+            // left's row dropped the right's marker; OR it in. A bounding selector
+            // over the WHOLE combined view still clears it (`check_temporal_call`).
+            let unbounded = acc_row.is_unbounded() || right_unbounded;
+            acc_row = acc_row.unbounded(unbounded);
             acc = TypedExpr::new(
                 expr.span,
                 ExprType::View(acc_row.clone()),
