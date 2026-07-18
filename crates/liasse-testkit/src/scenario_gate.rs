@@ -359,7 +359,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("12-clients-live-views/window-anchor-survives-rekey", "view result diverges from expectation"),
     ("14-buckets/expiration-preserves-row-in-all", "view result diverges from expectation"),
     ("22-runtime-semantics/concurrent-appends-either-order-both-atomic", "view result diverges from expectation"),
-    ("22-runtime-semantics/cross-connection-sequential-order-unspecified", "view result diverges from expectation"),
     ("annex-c-grammar/patch-block-is-one-statement", "view result diverges from expectation"),
     // ========================================================================
     // CONCURRENT RUNTIME REGRESSION (not a testkit capability gap)

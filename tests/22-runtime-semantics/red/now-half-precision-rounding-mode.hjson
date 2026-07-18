@@ -1,0 +1,63 @@
+{
+  // Boundary probe on §22.5 / Annex A.5. A now() instant landing exactly on a
+  // half-unit boundary of the target precision. SPEC-ISSUES #27 pins the
+  // tie-break: precision conversion to a coarser fractional-second precision
+  // rounds a halfway value AWAY FROM ZERO, matching the decimal default of A.6
+  // and the PostgreSQL integer-timestamp rule. So the recorded value is
+  // deterministic and deducible from SPEC.md text alone.
+  format: 1
+  name: now-half-precision-rounding-mode
+  suite: scenario
+  spec: ["#runtime", "§22.5", "§A.5"]
+  tags: ["time", "boundary"]
+  note: '''
+    §22.5/§A.5 now pin that precision conversion to a coarser fractional-second
+    precision rounds a halfway value away from zero (matching the decimal default
+    of A.6 and the PostgreSQL integer-timestamp rule). The virtual clock is
+    advanced by exactly half a second (PT0.5S) from genesis, so now() =
+    1767225600.500000 s at the micros clock. Reducing that to the field's
+    declared whole-second precision lands exactly half-way; rounding away from
+    zero records 1767225601 (not 1767225600). The value is externally deducible.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.rounding@1.0.0"
+    // §4.4/§A.5: the package declares whole-second timestamp precision, so the
+    // stored `at` field is at second precision while the engine clock (and
+    // now()) stay at the finer micro-second precision.
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      events: {
+        $key: "id"
+        id: "text"
+        at: { $type: "timestamp", $default: "= now()" }
+      }
+      $mut: {
+        mark: ".events + { id: @id }"
+      }
+      $public: {
+        events: {
+          $view: ".events { id, at }"
+          $mut: { mark: ".mark" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { advance_time: "PT0.5S" }
+    {
+      // now() = 1767225600.500000 s exactly; rescaled to the field's declared
+      // second precision, the exact half rounds away from zero to 1767225601.
+      call: "public.events.mark"
+      args: { id: "e" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    // The recorded `at` is the half-away-from-zero whole-second value (§22.5/§A.5).
+    { watch: "public.events", id: "w1", on: "c1",
+      expect_init: { value: [ { id: "e", at: "1767225601" } ] } }
+  ]
+}

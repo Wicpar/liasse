@@ -10,7 +10,7 @@
 use liasse_expr::Cell;
 use liasse_ident::NameSegment;
 use liasse_store::{CollectionPath, RowAddress};
-use liasse_value::{RefKey, Value};
+use liasse_value::{Precision, RefKey, Timestamp, Value};
 
 use crate::compiled::{Compiled, CompiledCollection};
 use crate::error::{Rejection, RejectionReason};
@@ -72,13 +72,18 @@ fn absent_value(ty: &liasse_value::Type) -> Value {
 /// re-validated against the *current* declared set (not blindly trusted), so a
 /// migrated value stranded by a narrowed closed set rejects (§20.1/§22.1);
 /// `none` (an absent optional) is untouched.
+///
+/// This is also the timestamp field-write boundary (§22.5/§A.5): a `timestamp`
+/// field value (a `now()` default, a supplied wire count) is rescaled to the
+/// field's declared fractional-second precision, rounding a halfway value away
+/// from zero, so a coarser-precision field never stores a finer-precision count.
 pub(crate) fn coerce_fields(
     collection: &CompiledCollection,
     fields: &mut FieldMap,
     where_path: &str,
 ) -> Result<(), Rejection> {
     for field in &collection.fields {
-        if enum_of(&field.ty).is_none() {
+        if enum_of(&field.ty).is_none() && timestamp_precision(&field.ty).is_none() {
             continue;
         }
         let Some(value) = fields.get(&field.name) else { continue };
@@ -163,6 +168,10 @@ pub(crate) fn coerce_value(
     use liasse_value::{Struct, Type};
     match ty {
         Type::Enum(enum_ty) => coerce_enum_leaf(enum_ty, value, field_name, where_path),
+        // §22.5/§A.5: convert a written `timestamp` value to the field's declared
+        // precision. A `none` (absent optional) is untouched; any non-timestamp
+        // value is left to the ordinary assignability check.
+        Type::Timestamp(target) => Ok(rescale_timestamp(value, *target)),
         // An `optional` around an enum leaf: `none` is absence (untouched); a
         // present value re-validates against the inner type.
         Type::Optional(inner) => match value {
@@ -267,6 +276,51 @@ fn enum_of(ty: &liasse_value::Type) -> Option<&liasse_value::EnumType> {
         liasse_value::Type::Optional(inner) => enum_of(inner),
         _ => None,
     }
+}
+
+/// The declared fractional-second precision of a `timestamp` field, unwrapping
+/// `optional`. Gates the timestamp field-write rescale (§22.5/§A.5) so a
+/// non-timestamp field is skipped, exactly as [`enum_of`] gates enum coercion.
+fn timestamp_precision(ty: &liasse_value::Type) -> Option<Precision> {
+    match ty {
+        liasse_value::Type::Timestamp(precision) => Some(*precision),
+        liasse_value::Type::Optional(inner) => timestamp_precision(inner),
+        _ => None,
+    }
+}
+
+/// Rescale a written timestamp `value` to a field's declared `target` precision
+/// (§22.5/§A.5). A non-timestamp value or one already at `target` is returned
+/// unchanged; otherwise it is converted through [`to_precision`].
+fn rescale_timestamp(value: &Value, target: Precision) -> Value {
+    match value {
+        Value::Timestamp(timestamp) if timestamp.precision() != target => {
+            Value::Timestamp(to_precision(*timestamp, target))
+        }
+        _ => value.clone(),
+    }
+}
+
+/// Convert `timestamp` to `target` precision (§22.5/§A.5). The precisions are
+/// exact powers of ten, so scaling to a finer (or equal) precision multiplies the
+/// count exactly; scaling to a coarser precision divides by the exact ratio,
+/// rounding a halfway value away from zero (`…600.500000 s` → `…601 s`), matching
+/// the decimal default of §A.6 and the PostgreSQL integer-timestamp rule.
+/// Saturates rather than overflowing, so no conversion can panic.
+fn to_precision(timestamp: Timestamp, target: Precision) -> Timestamp {
+    let from = timestamp.precision().ticks_per_second();
+    let to = target.ticks_per_second();
+    let count = timestamp.count();
+    let new_count = if to >= from {
+        count.saturating_mul(to / from)
+    } else {
+        let ratio = (from / to).unsigned_abs();
+        let magnitude = count.unsigned_abs();
+        let rounded = magnitude.saturating_add(ratio / 2) / ratio;
+        let rounded = i128::try_from(rounded).unwrap_or(i128::MAX);
+        if count < 0 { -rounded } else { rounded }
+    };
+    Timestamp::new(new_count, target)
 }
 
 /// Whether a declared type carries an enum anywhere — a bare enum, or one nested

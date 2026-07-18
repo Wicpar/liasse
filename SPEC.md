@@ -2859,7 +2859,9 @@ More controlled policy:
 }
 ```
 
-`$usage` is the set of permitted key operations. When omitted, the checker infers the minimal operation set required by every package call site using the keyring. A duration `$rotate` is shorthand for automatic rotation at that cadence. In the object form, `$every` sets the cadence, omitted `$overlap` means zero lead time, and omitted `$mode` means `automatic`. Omitting `$rotate` disables scheduled rotation and leaves activation manual. `$retain` controls how long a retired version remains accepted for verification; when omitted, retired public versions remain accepted until explicit revocation or destruction. `$protection` states the required provider protection class; omission adds no requirement beyond the provider's declared capabilities.
+`$usage` is the set of permitted protected key operations. When omitted, the checker infers the minimal operation set required by every package call site using the keyring. A duration `$rotate` is shorthand for automatic rotation at that cadence. In the object form, `$every` sets the cadence, omitted `$overlap` means zero lead time, and omitted `$mode` means `automatic`. Omitting `$rotate` disables scheduled rotation and leaves activation manual. `$retain` controls how long a retired version remains accepted for verification; when omitted, retired public versions remain accepted until explicit revocation or destruction. `$protection` states the required provider protection class; omission adds no requirement beyond the provider's declared capabilities.
+
+`$overlap` MUST be strictly less than `$every`. A declaration whose `$overlap` is greater than or equal to `$every` is rejected at load (§9.2 step 5, Annex C.16) with a keyring diagnostic, guaranteeing that at most one pending version is exposed at one admitted state position (§17.3). A declared `$usage` MUST include every protected operation any package call site performs on the keyring; a call site requiring a protected operation outside the declared `$usage` is rejected at load (§9.2 step 5). `$usage: []` is therefore legal only when no call site performs a protected operation on the ring. Verification is a public operation and is never required in `$usage`.
 
 The declaration defines observable policy. The provider and runtime choose physical key storage, processes, and devices.
 
@@ -2874,21 +2876,22 @@ ring.$public       public key values for accepted versions
 ring.$versions     all retained version metadata
 ```
 
-A version exposes:
+`$current` yields at most one version — the single active version (§17.3), a 0-or-1 singleton. `$accepted`, `$public`, and `$versions` yield collections; `$public` projects the public-key material of the versions in `$accepted`.
+
+A version exposes these members:
 
 ```text
 id
 algorithm
-public key
+public_key
 created_at
 activated_at?
 retired_at?
 revoked_at?
-provider metadata safe for application views
 attestation?
 ```
 
-Private key bytes and provider credentials are never application values.
+An optional member marked `?` (`activated_at`, `retired_at`, `revoked_at`, `attestation`) is omitted when absent rather than carried as `none`. Private key bytes and provider credentials are never application values; only public-key material and provider metadata safe for application views ever appear.
 
 ### 17.3 Version lifecycle
 
@@ -2905,6 +2908,8 @@ pending -> active -> retired -> destroyed
 
 At most one signing version is active for a keyring at one admitted state position. A package surface that requires an active keyring becomes available only after that keyring has one active version. During initial `create`, automatic mode generates and activates the first version as part of bootstrap; manual mode requires the host to bind and activate one before the dependent surface is enabled.
 
+A pending version appears in `$versions` but is not accepted for verification: it is not a member of `$accepted` or `$public` until it is activated. Only the active version and each retired version still inside its `$retain` window are accepted; pending, revoked, and destroyed versions are not.
+
 ### 17.4 Rotation
 
 Automatic rotation performs this logical sequence:
@@ -2917,6 +2922,8 @@ Automatic rotation performs this logical sequence:
 6. disable and destroy provider versions according to policy.
 
 Rotation transitions are system commits with no actor. A runtime MAY schedule them or perform a due rotation before the next operation. The resulting logical order and key selection are identical.
+
+A retired version's recorded `retired_at` is the scheduled cadence boundary (`activated_at + $every`), independent of when a lazy rotation is actually performed — so an eager runtime and a runtime that rotates before the next operation record the same instant. A retired version is accepted for verification over the half-open window `[retired_at, retired_at + $retain)`; the instant `retired_at + $retain` is already not accepted.
 
 A manual policy exposes an operator mutation that binds an externally created provider handle, validates its public metadata, and activates it through the same transition.
 
@@ -3714,6 +3721,8 @@ Every admitted request occupies one position in a serial execution order. The im
 
 Once that mechanism establishes `A` before `B`, final admission MUST preserve `A < B`. Internal scheduling events outside the declared admission mechanism add no precedence. When the relation contains no path between two concurrent requests, either relative order is valid. The committed serial order is a linear extension of the established relation.
 
+Whether an operation whose committed response a client has observed precedes any operation that client subsequently issues on another connection is an implementation-declared property of the admission mechanism; a conforming implementation MUST document whether it provides it. This reference implementation does: admission assigns one monotone serial position, so an operation issued after an observed commit is ordered after it — a client that appends on one connection, waits for that commit, then appends on a second connection observes the first append ordered before the second.
+
 Applications requiring a specific outcome under otherwise unordered concurrency express it in state or assertions:
 
 ```hjson
@@ -3749,7 +3758,7 @@ Each withdrawal checks the balance at its own serial position. One MAY succeed a
 
 ### 22.5 Time and recorded timestamps
 
-A `timestamp` is a signed Unix-time count at a declared precision. `now()` follows transaction-timestamp semantics: one best-effort wall-clock instant is fixed for the complete external request, load, migration, or system transition, and every `now()` call in that operation returns that same instant converted to the target precision. Precision conversion rounds to the requested fractional-second precision.
+A `timestamp` is a signed Unix-time count at a declared precision. `now()` follows transaction-timestamp semantics: one best-effort wall-clock instant is fixed for the complete external request, load, migration, or system transition, and every `now()` call in that operation returns that same instant converted to the target precision. Precision conversion rounds to the requested fractional-second precision; conversion to a coarser fractional-second precision rounds a halfway value away from zero (for example `1767225600.500000 s` recorded at second precision is `1767225601 s`), matching the decimal default of Annex A.6 and the PostgreSQL integer-timestamp rule. A package MAY select another rounding mode through the `$semantics` rounding values Annex A.6 defines.
 
 A request that waits for locks or final serial admission keeps its fixed `now()` value, just as its other generated inputs remain fixed. Later commits MAY contain an earlier timestamp when the host wall clock moves backward; timestamps never establish commit order unless an implementation has separately declared a receive-time precedence relation. Commit order comes from admission order.
 
@@ -4505,7 +4514,7 @@ ns   nanoseconds
 
 The package default is `us`, matching PostgreSQL timestamp precision. A timestamp value is a signed count since `1970-01-01T00:00:00Z`. Arithmetic converts operands to a common exact precision. A value exceeding the declared range produces a diagnostic.
 
-`now()` follows transaction-start semantics: one host wall-clock sample is fixed for the complete admitted operation and every call observes that same instant. Precision conversion follows the PostgreSQL timestamp precision rule. The represented precision is an application contract; clock accuracy remains best effort. This shared-instant rule is specific to `now()`, whose value means the instant the transaction ran; `uuid()` is the symmetric opposite — a fresh, distinct value on every evaluation, so one field-default call site across several rows yields a distinct value per row and two rows never share a generated `uuid()` (§5.1, §8.12).
+`now()` follows transaction-start semantics: one host wall-clock sample is fixed for the complete admitted operation and every call observes that same instant. Precision conversion follows the PostgreSQL timestamp precision rule. Conversion to a coarser fractional-second precision rounds a halfway value away from zero (so `…600.500000 s` at second precision is `…601 s`), matching the decimal default of A.6 and the PostgreSQL integer-timestamp rule; a package MAY select another rounding mode through the same `$semantics` rounding values A.6 defines. The represented precision is an application contract; clock accuracy remains best effort. This shared-instant rule is specific to `now()`, whose value means the instant the transaction ran; `uuid()` is the symmetric opposite — a fresh, distinct value on every evaluation, so one field-default call site across several rows yields a distinct value per row and two rows never share a generated `uuid()` (§5.1, §8.12).
 
 ### A.6 Decimal semantics
 
@@ -5041,6 +5050,8 @@ $keyring: {
   $protection?: name
 }
 ```
+
+`$overlap` MUST be strictly less than `$every`; a declaration with `$overlap` greater than or equal to `$every` is rejected at load (§17.1).
 
 ### C.17 Blob storage
 

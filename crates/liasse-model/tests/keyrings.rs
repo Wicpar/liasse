@@ -153,3 +153,53 @@ fn keyring_managed_collection_not_seedable() {
     assert!(built.has_code("M-SEED"), "expected a seed rejection, got: {}", built.rendered());
     assert!(built.rendered().contains("§9.1"));
 }
+
+/// §17.1 (SPEC-ISSUES #18) — `$overlap` MUST be strictly less than `$every`, so
+/// at most one pending version is ever exposed (§17.3). An `$overlap` at or
+/// beyond `$every` would require a successor pending version before its
+/// predecessor activated; it is rejected at load with a keyring diagnostic.
+#[test]
+fn overlap_at_or_beyond_cadence_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.k@1.0.0", "$model": {
+            "session_keys": { "$keyring": {
+              "$provider": "hsm", "$algorithm": "Ed25519",
+              "$rotate": { "$every": "P30D", "$overlap": "P40D" }, "$retain": "P45D"
+            } }
+        } }"#,
+    );
+    assert!(built.has_code("M-KEYRING"), "expected a keyring rejection, got: {}", built.rendered());
+    assert!(built.has_hint());
+    assert!(built.points_at("P40D"), "the diagnostic points at the `$overlap`: {}", built.rendered());
+}
+
+/// §17.1 (SPEC-ISSUES #18) — an `$overlap` equal to `$every` is also rejected:
+/// the bound is strict, so the equal case leaves no window for a single pending
+/// version to precede the cutover.
+#[test]
+fn overlap_equal_to_cadence_rejected() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.k@1.0.0", "$model": {
+            "session_keys": { "$keyring": {
+              "$provider": "hsm", "$algorithm": "Ed25519",
+              "$rotate": { "$every": "P30D", "$overlap": "P30D" }, "$retain": "P45D"
+            } }
+        } }"#,
+    );
+    assert!(built.has_code("M-KEYRING"), "expected a keyring rejection, got: {}", built.rendered());
+}
+
+/// §17.1 — an `$overlap` strictly shorter than `$every` loads (the ordinary
+/// controlled-policy form): the strict bound admits a real lead time.
+#[test]
+fn overlap_below_cadence_loads() {
+    let built = build(
+        r#"{ "$liasse": 1, "$app": "t.k@1.0.0", "$model": {
+            "session_keys": { "$keyring": {
+              "$provider": "hsm", "$algorithm": "Ed25519",
+              "$rotate": { "$every": "P30D", "$overlap": "P2D" }, "$retain": "P45D"
+            } }
+        } }"#,
+    );
+    built.expect_ok();
+}

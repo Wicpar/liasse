@@ -1,17 +1,17 @@
 {
   format: 1
-  name: usage-excluding-callsite-operation-unspecified
+  name: usage-excluding-callsite-operation
   suite: static
   tags: ["boundary"]
   spec: ["#keyrings", "§17.1", "§17.6", "§9.2"]
   // Pedantic corner: $usage is declared as the empty set — "the set of
-  // permitted key operations" (§17.1) permits nothing — while a package call
-  // site (cose.sign) requires the sign operation. The spec states usage
-  // inference when $usage is omitted, and §17.6 checks the PROVIDER's
-  // operation set, but it never states the consequence of a declared $usage
-  // that excludes an operation a call site requires, nor whether an empty
-  // $usage is itself valid.
-  note: "Genuine gap: §17.1 defines $usage as the permitted operation set but the spec never pins where a call site requiring an operation outside $usage is rejected (static validation per §9.2 step 5, keyring activation, or per-request admission), nor whether $usage: [] is legal at all. A conforming reading arguably cannot let cose.sign succeed at runtime, but the outcome class and phase are unpinned."
+  // permitted protected key operations" (§17.1) permits nothing — while a
+  // package call site (cose.sign) performs the protected sign operation.
+  // §17.1 now pins that a declared $usage MUST include every protected
+  // operation a call site performs; a call site requiring an operation outside
+  // the declared $usage is rejected at load (§9.2 step 5). $usage: [] is legal
+  // only when no call site signs, so this declaration is statically rejected.
+  note: "SPEC-ISSUES #18: declared $usage [] excludes the protected `sign` operation the login mutation's cose.sign(/session_keys, ...) call site performs. §17.1 pins a declared $usage as a superset of the inferred set, rejected at load (§9.2 step 5)."
 
   hosts: {
     namespaces: { cose: "liasse.cose@1" }
@@ -64,8 +64,8 @@
   }
 
   expect: {
-    outcome: unspecified
-    
-    detail: "call site requires 'sign' but declared $usage permits no operations; enforcement point and outcome are not pinned by the spec"
+    outcome: invalid
+    violates: ["§17.1", "§9.2"]
+    detail: "the login call site performs cose.sign(/session_keys, ...) but declared $usage [] permits no protected operation; rejected at load (§17.1, §9.2 step 5)"
   }
 }

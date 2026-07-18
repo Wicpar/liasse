@@ -111,13 +111,23 @@ fn check_rotate(reporter: &mut Reporter, value: &DocValue) {
         return;
     };
     let mut has_every = false;
+    let mut every: Option<Duration> = None;
+    let mut overlap: Option<(Duration, liasse_diag::ByteSpan)> = None;
     for member in members {
         match member.name.text.as_str() {
             "$every" => {
                 has_every = true;
                 check_duration(reporter, &member.value, "$every");
+                every = member.value.as_string().and_then(|text| Duration::parse(text).ok());
             }
-            "$overlap" => check_duration(reporter, &member.value, "$overlap"),
+            "$overlap" => {
+                check_duration(reporter, &member.value, "$overlap");
+                overlap = member
+                    .value
+                    .as_string()
+                    .and_then(|text| Duration::parse(text).ok())
+                    .map(|duration| (duration, member.value.span));
+            }
             "$mode" => check_mode(reporter, &member.value),
             other => reporter.reject(
                 member.span,
@@ -125,6 +135,21 @@ fn check_rotate(reporter: &mut Reporter, value: &DocValue) {
                 format!("`{other}` is not a `$rotate` member"),
             ),
         }
+    }
+    // §17.1: the pending-version lead time MUST be strictly shorter than the
+    // rotation cadence, so at most one pending version is ever exposed. An
+    // `$overlap` at or beyond `$every` would require a successor to appear before
+    // its predecessor activated, which the lifecycle's single pending version
+    // (§17.3) does not admit — reject it at load.
+    if let (Some(every), Some((overlap, span))) = (every, overlap)
+        && overlap >= every
+    {
+        reporter.reject_hint(
+            span,
+            code::KEYRING,
+            "`$overlap` must be strictly less than `$every`",
+            "shorten the overlap lead time below the rotation cadence so at most one pending version exists (§17.1)",
+        );
     }
     if !has_every {
         reporter.reject_hint(

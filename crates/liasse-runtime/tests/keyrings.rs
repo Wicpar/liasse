@@ -481,3 +481,72 @@ fn keyring_selectors_materialize_bootstrapped_version() {
     assert_eq!(current.len(), 1, "still exactly one active version after rotation");
     assert_eq!(current.rows()[0].field("id"), Some(&Value::Int(liasse_value::Integer::from(2))));
 }
+
+/// §17.1 / §9.2 step 5 (SPEC-ISSUES #18): the keyring `$usage` rule enforced at
+/// load. A mutation call site that signs (`cose.sign(/ring, …)`) performs the
+/// protected `sign` operation; a declared `$usage` must be a superset of the
+/// inferred set, an omitted `$usage` is inferred to it, and a declared `$usage`
+/// that excludes a required operation rejects the load.
+mod usage_enforcement {
+    use liasse_ident::InstanceId;
+    use liasse_runtime::{Engine, EngineError, FixedGenerators, Registry};
+    use liasse_store::MemoryStore;
+    use liasse_value::{Precision, Timestamp};
+
+    /// A package whose `login` mutation signs with `/session_keys`, with the
+    /// keyring's `$usage` line spliced in verbatim (`""` for an omitted `$usage`).
+    fn package(usage_line: &str) -> String {
+        format!(
+            r#"{{
+              "$liasse": 1,
+              "$app": "t.usage@1.0.0",
+              "$requires": {{ "cose": "liasse.cose@1" }},
+              "$model": {{
+                "session_keys": {{ "$keyring": {{
+                  "$provider": "test-kp", "$algorithm": "Ed25519"{usage_line}, "$rotate": "P30D"
+                }} }},
+                "accounts": {{ "$key": "id", "id": "text", "name": "text" }},
+                "sessions": {{ "$key": "id", "id": "uuid = uuid()", "account": {{ "$ref": "/accounts" }} }},
+                "$mut": {{ "login": [
+                  "session = /sessions + {{ account: @account }}",
+                  "token = cose.sign(/session_keys, {{ auth: 'session', session: session.$key }})",
+                  "return {{ token }}"
+                ] }},
+                "$public": {{ "login": {{ "$mut": {{ "login": ".login" }} }} }}
+              }},
+              "$data": {{ "accounts": {{ "alice": {{ "name": "Alice" }} }} }}
+            }}"#
+        )
+    }
+
+    fn load(usage_line: &str) -> Result<Engine<MemoryStore>, EngineError> {
+        let store = MemoryStore::new(InstanceId::new("i1"));
+        let mut generator = FixedGenerators::at(Timestamp::new(1_700_000_000_000_000, Precision::Micros));
+        Engine::load_with_hosts(store, &package(usage_line), &mut generator, Registry::new())
+    }
+
+    /// A declared `$usage: []` excludes the `sign` a call site performs, so the
+    /// load is rejected (§17.1, §9.2 step 5).
+    #[test]
+    fn empty_usage_with_sign_callsite_rejected() {
+        let result = load(r#", "$usage": []"#);
+        assert!(
+            matches!(result, Err(EngineError::Invalid(_))),
+            "an empty $usage on a signed ring must reject the load"
+        );
+    }
+
+    /// A declared `$usage: ["sign"]` covers the required operation, so the load
+    /// succeeds.
+    #[test]
+    fn declared_sign_usage_loads() {
+        assert!(load(r#", "$usage": ["sign"]"#).is_ok(), "declared sign usage covers the call site");
+    }
+
+    /// An omitted `$usage` is inferred from the call sites (§17.1), so the load
+    /// succeeds against a provider that can sign.
+    #[test]
+    fn omitted_usage_infers_sign_and_loads() {
+        assert!(load("").is_ok(), "an omitted $usage is inferred to the required sign operation");
+    }
+}

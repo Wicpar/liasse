@@ -8,10 +8,15 @@
 //! program with its parameter scope, and each view into a typed expression. The
 //! result is an owned [`Compiled`] the engine holds beside the model and store.
 
-use liasse_diag::{SourceId, SourceMap};
+use std::collections::BTreeSet;
+
+use liasse_diag::{Diagnostic, Diagnostics, SourceId, SourceMap, Span};
 use liasse_expr::{check_statement, ExprType, HostPosition, RowType, Scope, SortOrder, TypedExpr, ViewOrders};
+use liasse_host::KeyOperation;
 use liasse_model::{Collection, Model, Node, Shape};
-use liasse_syntax::{parse_expression, Stmt};
+use liasse_syntax::{
+    parse_expression, Arg, BlockMember, BlockMemberKind, Expr, ExprKind, Selector, Stmt, StmtKind,
+};
 use liasse_value::{StructType, Type};
 
 use crate::doc;
@@ -1322,6 +1327,192 @@ fn compile_keyrings(schema: Schema<'_>, model_doc: &liasse_syntax::DocValue) -> 
         }
     }
     out
+}
+
+/// Enforce the §17.1 keyring `$usage` rule at load (§9.2 step 5). Every keyring a
+/// mutation call site signs with (`cose.sign(/ring, …)`) requires the protected
+/// `sign` operation. A declared `$usage` MUST include every protected operation a
+/// call site performs; a declared `$usage` that excludes a required operation is a
+/// load rejection, so `$usage: []` on a signed ring rejects. An omitted `$usage`
+/// is inferred to the required set. Verification is a public operation and is
+/// never required in `$usage`, so verifier call sites are not consulted here.
+pub(crate) fn enforce_keyring_usage(
+    mutations: &[CompiledMutation],
+    keyrings: &mut [CompiledKeyring],
+    model_doc: &liasse_syntax::DocValue,
+    src: SourceId,
+) -> Result<(), EngineError> {
+    if keyrings.is_empty() {
+        return Ok(());
+    }
+    let signed = signed_rings(mutations);
+    for keyring in keyrings {
+        if !signed.contains(&keyring.name) {
+            continue;
+        }
+        // The one protected operation a mutation call site infers today is `sign`.
+        let required = KeyOperation::Sign;
+        match declared_usage_span(model_doc, &keyring.name) {
+            Some(usage_span) => {
+                if !keyring.policy.usage.contains(&required) {
+                    return Err(keyring_usage_rejection(&keyring.name, src, usage_span));
+                }
+            }
+            // §17.1: an omitted `$usage` is the inferred minimal operation set.
+            None => {
+                keyring.policy.usage.insert(required);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The declared keyrings a mutation program signs with, gathered from every
+/// `X.sign(/ring, …)` call site anywhere in a mutation statement (§17.7).
+fn signed_rings(mutations: &[CompiledMutation]) -> BTreeSet<String> {
+    let mut signed = BTreeSet::new();
+    for mutation in mutations {
+        for statement in &mutation.program {
+            walk_stmt(&statement.stmt, &mut signed);
+        }
+    }
+    signed
+}
+
+fn walk_stmt(stmt: &Stmt, signed: &mut BTreeSet<String>) {
+    match &stmt.kind {
+        StmtKind::Return(expr) | StmtKind::Clear(expr) | StmtKind::Bare(expr) => walk_expr(expr, signed),
+        StmtKind::Assign { target, value } => {
+            walk_expr(target, signed);
+            walk_expr(value, signed);
+        }
+    }
+}
+
+fn walk_expr(expr: &Expr, signed: &mut BTreeSet<String>) {
+    if let Some(ring) = signed_ring_of(expr) {
+        signed.insert(ring.to_owned());
+    }
+    walk_children(expr, signed);
+}
+
+/// The keyring name `expr` signs with when it is exactly a `X.sign(/ring, …)`
+/// call whose first argument is a `/ring` root path (§17.7).
+fn signed_ring_of(expr: &Expr) -> Option<&str> {
+    let ExprKind::Call { callee, args } = &expr.kind else { return None };
+    let ExprKind::Field { member, .. } = &callee.kind else { return None };
+    if member.structural || member.text != "sign" {
+        return None;
+    }
+    keyring_path(arg_value(args.first()?))
+}
+
+fn arg_value(arg: &Arg) -> &Expr {
+    match arg {
+        Arg::Positional(value) | Arg::Named { value, .. } => value,
+    }
+}
+
+/// The ring name a `/ring` root-field path addresses (§17.7): `Field { base:
+/// Root, member }` with a non-structural member.
+fn keyring_path(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Field { base, member } if matches!(base.kind, ExprKind::Root) && !member.structural => {
+            Some(&member.text)
+        }
+        _ => None,
+    }
+}
+
+fn walk_children(expr: &Expr, signed: &mut BTreeSet<String>) {
+    match &expr.kind {
+        ExprKind::None
+        | ExprKind::Bool(_)
+        | ExprKind::Int(_)
+        | ExprKind::Decimal(_)
+        | ExprKind::Str(_)
+        | ExprKind::Root
+        | ExprKind::Current
+        | ExprKind::Parent(_)
+        | ExprKind::Import(_)
+        | ExprKind::Param(_)
+        | ExprKind::Structural(_)
+        | ExprKind::Name(_) => {}
+        ExprKind::List(items) => items.iter().for_each(|item| walk_expr(item, signed)),
+        ExprKind::Object(members) => members.iter().for_each(|member| walk_member(member, signed)),
+        ExprKind::Field { base, .. } | ExprKind::SameName { base, .. } => walk_expr(base, signed),
+        ExprKind::Select { base, selector } => {
+            walk_expr(base, signed);
+            walk_selector(selector, signed);
+        }
+        ExprKind::Call { callee, args } => {
+            walk_expr(callee, signed);
+            args.iter().for_each(|arg| walk_expr(arg_value(arg), signed));
+        }
+        ExprKind::Block { base, members } => {
+            walk_expr(base, signed);
+            members.iter().for_each(|member| walk_member(member, signed));
+        }
+        ExprKind::Unary { operand, .. } => walk_expr(operand, signed),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            walk_expr(lhs, signed);
+            walk_expr(rhs, signed);
+        }
+        ExprKind::Ternary { cond, then, otherwise } => {
+            walk_expr(cond, signed);
+            walk_expr(then, signed);
+            walk_expr(otherwise, signed);
+        }
+        ExprKind::Combination { operands, .. } => operands.iter().for_each(|operand| walk_expr(operand, signed)),
+    }
+}
+
+fn walk_selector(selector: &Selector, signed: &mut BTreeSet<String>) {
+    match selector {
+        Selector::Keys(keys) => keys.iter().for_each(|key| walk_expr(key, signed)),
+        Selector::Bind { condition, .. } => {
+            if let Some(condition) = condition {
+                walk_expr(condition, signed);
+            }
+        }
+    }
+}
+
+fn walk_member(member: &BlockMember, signed: &mut BTreeSet<String>) {
+    match &member.kind {
+        BlockMemberKind::Directive { value, .. } | BlockMemberKind::Assign { value, .. } => {
+            walk_expr(value, signed);
+        }
+        BlockMemberKind::Named { value: Some(value), .. } | BlockMemberKind::Shorthand(value) => {
+            walk_expr(value, signed);
+        }
+        BlockMemberKind::Named { value: None, .. } | BlockMemberKind::Clear(_) => {}
+    }
+}
+
+/// The byte span of a keyring's declared `$usage` member, or `None` when it is
+/// omitted (§17.1 inference applies).
+fn declared_usage_span(model_doc: &liasse_syntax::DocValue, name: &str) -> Option<liasse_diag::ByteSpan> {
+    let path = [name.to_owned()];
+    let shape = doc::shape_at(model_doc, &path)?;
+    let keyring = doc::member(shape, "$keyring")?;
+    doc::member(keyring, "$usage").map(|usage| usage.span)
+}
+
+/// The §17.1 load rejection for a declared `$usage` that excludes a required
+/// protected operation.
+fn keyring_usage_rejection(name: &str, src: SourceId, span: liasse_diag::ByteSpan) -> EngineError {
+    let mut diagnostics = Diagnostics::new();
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "keyring `{name}` declares a `$usage` that excludes the `sign` operation a call site requires"
+        ))
+        .code("keyring")
+        .primary(Span::new(src, span), "this `$usage` permits no signing")
+        .help("add `sign` to `$usage`, or omit `$usage` to infer it from the call sites (§17.1)")
+        .build(),
+    );
+    EngineError::Invalid(Box::new(diagnostics))
 }
 
 /// Compile each top-level keyed collection's `$bucket` interval expressions

@@ -1,19 +1,17 @@
 {
   format: 1
-  name: pending-version-acceptance-during-overlap-unspecified
+  name: pending-version-acceptance-during-overlap
   suite: scenario
   tags: ["rotation", "boundary"]
   spec: ["#keyrings", "§17.2", "§17.3", "§17.4"]
   // Pedantic corner with a security edge: during the $overlap window a pending
-  // version is "recorded and exposed" (§17.4 step 3). §17.2 defines
-  // ring.$accepted as "versions accepted for verification" and ring.$public as
-  // "public key values for accepted versions", while §17.3 only says retired
-  // versions remain accepted and active is selected for new operations. The
-  // spec never states whether a PENDING version is already accepted for
-  // verification before activation. If it is, a signature made with the
-  // pending key's private counterpart (e.g. an externally bound key an
-  // attacker touched pre-activation) verifies a full $overlap early.
-  note: "Genuine gap: §17.4 step 3 exposes pending public metadata, but neither §17.2 nor §17.3 pins pending membership in $accepted/$public before activation. The first watch asserts only the pinned part (a pending version exists at day 29 with v1 still active); the second records the unpinned acceptance question."
+  // version is "recorded and exposed" (§17.4 step 3). SPEC-ISSUES #18 pins the
+  // security-correct reading: a pending version appears in $versions but is
+  // NOT a member of $accepted/$public until it is activated (§17.3). Only the
+  // active version and in-$retain-window retired versions are accepted, so at
+  // day 29 — pending v2 exposed, v1 still active — $accepted holds exactly the
+  // one active version, never the pending key an attacker could touch early.
+  note: "SPEC-ISSUES #18: a pending version is exposed in $versions (first watch) but excluded from $accepted/$public until activation (§17.3). At day 29 $accepted holds exactly the single active v1; the pending v2 is not accepted for verification."
 
   hosts: {
     namespaces: { cose: "liasse.cose@1" }
@@ -78,8 +76,11 @@
         { id: "$any", activated_at: "$any:timestamp", retired_at: "$absent", "...": true }
         { id: "$any", activated_at: "$absent", retired_at: "$absent", "...": true }
       ] } } }
-    // Unpinned: does $accepted contain 1 entry (active only) or 2 (plus pending)?
+    // Pinned (§17.3): $accepted holds exactly the one active version (v1); the
+    // pending v2 is exposed in $versions but is NOT accepted for verification.
     { watch: "public.ring_accepted", id: "w2",
-      expect_init: { outcome: unspecified } }
+      expect_init: { value: { $unordered: [
+        { id: "$any", activated_at: "$any:timestamp", retired_at: "$absent", revoked_at: "$absent", "...": true }
+      ] } } }
   ]
 }

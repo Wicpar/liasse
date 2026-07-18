@@ -88,7 +88,16 @@ pub(crate) fn compile_definition(
         .and_then(doc::string)
         .and_then(liasse_value::Precision::parse)
         .unwrap_or(liasse_value::Precision::DEFAULT);
-    let compiled = Compiled::build(&mut sources, &model, &model_doc, precision, hosts)?;
+    let mut compiled = Compiled::build(&mut sources, &model, &model_doc, precision, hosts)?;
+    // §17.1 / §9.2 step 5: infer or enforce each keyring's `$usage` against the
+    // protected operations its call sites perform, rejecting a declared `$usage`
+    // that excludes a required operation (`$usage: []` on a signed ring).
+    crate::compiled::enforce_keyring_usage(
+        &compiled.mutations,
+        &mut compiled.keyrings,
+        &model_doc,
+        src,
+    )?;
     let data = doc::member(document.root(), "$data").cloned();
     let requires = read_requires(document.root());
     Ok(Compilation { sources, model, compiled, data, requires })

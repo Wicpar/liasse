@@ -1,0 +1,69 @@
+{
+  // Ordering probe on §22.3. On ONE connection, a request submitted after an
+  // earlier one returned `committed` is ordered after it (§22.7 read-your-
+  // writes). ACROSS connections, §22.3 keeps the precedence relation
+  // implementation-defined but SPEC-ISSUES #27 pins it as a DECLARED property:
+  // an implementation MUST document whether an operation issued after an
+  // observed commit precedes it on another connection, and this reference
+  // implementation DOES (one monotone serial admission position). So when
+  // append A on c1 returns before append B on c2 is issued, A is ordered before
+  // B and the committed trace is "ab". B's own connection (c2) surfaces this by
+  // read-your-writes: B commits onto A's "a", so c2 reads "ab".
+  format: 1
+  name: cross-connection-sequential-order
+  suite: scenario
+  spec: ["#runtime", "§22.3", "§22.7"]
+  tags: ["ordering", "concurrency", "boundary"]
+  note: '''
+    SPEC-ISSUES #27: §22.3 keeps the precedence relation implementation-defined
+    but requires each implementation to declare whether it provides cross-
+    connection external-causal precedence. This reference implementation does —
+    admission assigns one monotone serial position, so append A (observed
+    committed on c1) is ordered before append B (issued afterward on c2), giving
+    the committed trace "ab". The assertion reads the board from c2, whose own
+    commit of B lands on A's "a" (§22.7 read-your-writes), so c2 observes exactly
+    "ab". (Reading from c1 instead would show only "a": a c1 subscription does
+    not advance through c2's commit — a distinct §22.7 cross-connection
+    subscription-advancement seam, not the ordering pinned here.)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.crossorder@1.0.0"
+    $model: {
+      board: {
+        $key: "id"
+        id: "text"
+        trace: "text"
+        $mut: {
+          append: ".trace = .trace + @c"
+        }
+      }
+      $public: {
+        board: {
+          $view: ".board { id, trace }"
+          $mut: { append: ".board[@id].append" }
+        }
+      }
+    }
+    $data: {
+      board: { "b1": { trace: "" } }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { connect: "c2" }
+    // A completes on c1 before B is issued on c2. The reference implementation's
+    // single monotone serial admission orders A before B (§22.3 declared
+    // property, SPEC-ISSUES #27).
+    { call: "public.board.append", args: { id: "b1", c: "a" }, on: "c1",
+      expect: { outcome: ok } }
+    { call: "public.board.append", args: { id: "b1", c: "b" }, on: "c2",
+      expect: { outcome: ok } }
+    // Observe from c2, whose commit of B (onto A's "a") its own frontier
+    // reflects by read-your-writes (§22.7): the committed trace is "ab".
+    { watch: "public.board", on: "c2", id: "w1",
+      expect_init: { value: [ { id: "b1", trace: "ab" } ] } }
+  ]
+}

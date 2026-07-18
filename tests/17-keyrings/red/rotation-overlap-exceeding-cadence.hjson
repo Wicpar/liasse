@@ -1,16 +1,17 @@
 {
   format: 1
-  name: rotation-overlap-exceeding-cadence-unspecified
+  name: rotation-overlap-exceeding-cadence
   suite: static
   tags: ["boundary"]
   spec: ["#keyrings", "§17.1", "§17.4", "§C.16"]
   // Boundary abuse: $overlap (pending lead time) longer than $every (cadence).
   // Taken literally, the pending version for rotation N+1 would have to be
   // exposed BEFORE rotation N activates, so several pending versions per ring
-  // would coexist. §17.1 and §17.4 define $every/$overlap semantics but never
-  // constrain $overlap relative to $every, and §17.3's lifecycle text speaks
-  // of "a pending public version" in the singular.
-  note: "Genuine gap: the spec neither forbids $overlap > $every (a static validation question, §C.16 grammar allows any duration) nor defines the rotation schedule that would result (multiple concurrent pending versions vs clamping vs rejection)."
+  // would coexist. §17.3's lifecycle admits at most one pending version, so
+  // §17.1 (and §C.16) now pin `$overlap` strictly less than `$every`: a
+  // declaration with `$overlap >= $every` is rejected at load (§9.2 step 5)
+  // with a keyring diagnostic.
+  note: "SPEC-ISSUES #18: $overlap P40D at/beyond $every P30D would require a successor pending version before its predecessor activates. §17.1/§C.16 pin `$overlap` strictly less than `$every`; this declaration is statically rejected."
 
   hosts: {
     key_providers: {
@@ -40,8 +41,8 @@
   }
 
   expect: {
-    outcome: unspecified
-    
-    detail: "$overlap P40D exceeds $every P30D; the spec neither rejects this statically nor defines the resulting schedule"
+    outcome: invalid
+    violates: ["§17.1", "§C.16"]
+    detail: "$overlap P40D is not strictly less than $every P30D; the declaration is rejected at load (§17.1)"
   }
 }

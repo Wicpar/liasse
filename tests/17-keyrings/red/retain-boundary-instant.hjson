@@ -1,22 +1,20 @@
 {
   format: 1
-  name: retain-boundary-instant-unspecified
+  name: retain-boundary-instant
   suite: scenario
   tags: ["boundary", "rotation"]
   spec: ["#keyrings", "§17.1", "§17.3", "§17.4", "§22.5"]
   // Exact-boundary probe: v1 is signed at day 0, rotation is due at exactly
   // day 30, and $retain is P45D — the authentication attempt lands at exactly
-  // day 75 = retirement + $retain. Two compounding gaps:
-  //   (a) §17.1/§17.3 never say whether the instant retired_at + $retain is
-  //       itself still accepted (inclusive) or already rejected (exclusive);
-  //   (b) §17.4 lets the rotation run as a scheduled system commit or lazily
-  //       "before the next operation" with identical logical order and key
-  //       selection — but it pins neither whether a rotation is already "due"
-  //       at exactly the cadence instant nor whether the RECORDED retirement
-  //       instant is the due instant or the triggering instant. The virtual
-  //       clock makes the triggering login and the due instant coincide at
-  //       day 30, narrowing but not closing gap (b).
-  note: "Both readings are conforming as written: outcome ok (inclusive boundary) and outcome denied (exclusive boundary). One second earlier or later is deterministic, as retain-window-bounds-retired-acceptance shows."
+  // day 75 = retirement + $retain. SPEC-ISSUES #18 pins both readings:
+  //   (a) §17.4 pins the acceptance window half-open `[retired_at,
+  //       retired_at + $retain)`, so the instant retired_at + $retain is
+  //       already NOT accepted (exclusive boundary);
+  //   (b) §17.4 pins the RECORDED retired_at at the scheduled cadence boundary
+  //       (activated_at + $every = day 30), independent of when the lazy
+  //       rotation fires, so retired_at + $retain is exactly day 75.
+  // Day 75 is therefore the first instant v1 is no longer accepted: denied.
+  note: "SPEC-ISSUES #18: half-open acceptance window `[retired_at, retired_at + $retain)`; retired_at is the scheduled boundary (day 30). Day 75 = day 30 + P45D is the exclusive end, so verification is denied. One second earlier is accepted (retain-window-bounds-retired-acceptance)."
 
   hosts: {
     namespaces: { cose: "liasse.cose@1" }
@@ -94,10 +92,11 @@
     { advance_time: "P30D" }
     { call: "public.login.login", args: { account: "alice" }, on: "c1",
       expect: { outcome: ok, value: { token: "$any" } } }
-    // Exactly retirement + $retain.
+    // Exactly retirement + $retain = day 75, the exclusive end of the half-open
+    // acceptance window: v1 is no longer accepted, so verification is denied.
     { advance_time: "P45D" }
     { connect: "c2",
       authenticate: { role: "member", auth: "session", credential: "$ref:tok1" },
-      expect: { outcome: unspecified } }
+      expect: { outcome: denied, violates: ["§17.4", "§17.3"] } }
   ]
 }

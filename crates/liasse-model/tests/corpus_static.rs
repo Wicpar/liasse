@@ -90,6 +90,10 @@ const SKIP: &[(&str, &str)] = &[
         "inferred keyring usage vs provider operation-set check (§17.6/§17.1); provider seam",
     ),
     (
+        "17-keyrings/usage-excluding-callsite-operation",
+        "declared $usage vs signing call-site cross-check (§17.1/§9.2 step 5) runs in the runtime compile phase (liasse-runtime), not the CORE static model; enforced and tested there",
+    ),
+    (
         "17-keyrings/provider-name-unicode-confusable-invalid",
         "provider-name identity/registry resolution (§17/Annex D); provider seam",
     ),
