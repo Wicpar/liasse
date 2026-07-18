@@ -210,6 +210,30 @@ impl ViewDelta {
             (_, ViewResult::Scalar(value)) => Self::Scalar(Some(value.clone())),
         }
     }
+
+    /// The §12.2 delta between two ordered ROW SLICES — the primitive a bounded
+    /// window (§12.2) uses to carry its prior client-visible window to the newly
+    /// refreshed one.
+    ///
+    /// A window's client result is a `Vec<ViewRow>`, the bounded slice the client
+    /// tracks, not a full [`ViewResult`]; §12.2 fixes the same init/patch contract
+    /// on it, so every position is relative to the window and a row the window's
+    /// shift pushed past its bound renders as a `remove`. `prev` is `None` at the
+    /// first observation (the window's [`Init`], shipping its rows); otherwise the
+    /// ordered [`crate::patch::diff`] carries `prev` to `next` EXACTLY. This mirrors
+    /// [`ViewDelta::between`] but over the client-visible slice rather than the full
+    /// authorized view — a window is always a row stream, so there is no scalar
+    /// case — keeping a windowed subscription §12.2-coherent against its own window
+    /// instead of the whole view.
+    ///
+    /// [`Init`]: ViewDelta::Init
+    #[must_use]
+    pub fn between_rows(prev: Option<&[ViewRow]>, next: &[ViewRow]) -> Self {
+        match prev {
+            Some(prev) => Self::Patch(crate::patch::diff(prev, next)),
+            None => Self::Init(next.to_vec()),
+        }
+    }
 }
 
 fn view_row(row: &liasse_expr::Row) -> ViewRow {

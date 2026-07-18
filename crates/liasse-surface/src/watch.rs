@@ -4,11 +4,17 @@
 //! ordered patches; after applying every patch the client result MUST equal the
 //! authorized declared view at the new frontier (§12.2). This layer recomputes the
 //! view at each frontier through the engine's [`ViewResult`] and emits the §12.2
-//! [`ViewDelta`] between the prior result and the new one. For a row-stream view
-//! that is the ordered `insert`/`remove`/`move`/`update` sequence carrying the
-//! client's prior ordered result to the recomputed view, order included; for a
-//! scalar/aggregate view (§7.5) it is the value form — the new value when it
-//! changed, a frontier-only no-op when it did not.
+//! [`ViewDelta`] between the client's prior result and the new one. For a
+//! row-stream view that is the ordered `insert`/`remove`/`move`/`update` sequence
+//! carrying the client's prior ordered result to the recomputed view, order
+//! included; for a scalar/aggregate view (§7.5) it is the value form — the new
+//! value when it changed, a frontier-only no-op when it did not.
+//!
+//! A bounded subscription's *client result is its window* (§12.2), so its delta is
+//! diffed over the window slices — the prior client-visible window against the
+//! refreshed one — not the full view: positions are window-relative and a row the
+//! window's shift evicts renders as a `remove`, so applying the delta to the
+//! client's prior window reproduces the new authorized window exactly.
 //!
 //! The runtime re-evaluates authorization and projection at every outgoing
 //! frontier; when the state removes the subscription's authority the runtime
@@ -86,9 +92,10 @@ impl WatchAuthz {
 
 /// A live subscription's tracked state.
 ///
-/// `last` retains the full authorized view for delta continuity and for the
-/// window's neighbor tracking; `windowed`, present only for a bounded
-/// subscription (§12.2), is the client-visible slice of that view.
+/// `last` retains the full authorized view for the window's neighbor tracking (and
+/// as an unwindowed subscription's delta-continuity prior); `windowed`, present
+/// only for a bounded subscription (§12.2), is the client-visible slice of that
+/// view and the prior slice each windowed delta is diffed against.
 pub struct Watch {
     view: String,
     authz: WatchAuthz,
@@ -194,34 +201,58 @@ impl Watch {
     }
 
     /// Deliver the initial complete result at `frontier`, returning the `init`
-    /// delta (§12.2): a row-stream view's complete rows, or a scalar/aggregate
-    /// view's value (§7.5). Called once, when the subscription opens. A bounded
-    /// subscription also opens its window over `result`, which fails when a
-    /// concrete anchor identifies no current occurrence.
+    /// delta (§12.2). For an unwindowed subscription that is the full view: a
+    /// row-stream view's complete rows, or a scalar/aggregate view's value (§7.5).
+    /// For a bounded subscription the client result is its WINDOW, so the `init`
+    /// ships the window's rows — opening the window over `result` first, which fails
+    /// when a concrete anchor identifies no current occurrence. Called once, when
+    /// the subscription opens.
     ///
     /// # Errors
     /// [`WindowError`] when a bounded subscription's anchor is absent at open.
     pub fn init(&mut self, result: ViewResult, frontier: CommitSeq) -> Result<ViewDelta, WindowError> {
-        let delta = ViewDelta::between(None, &result);
-        if let Some(window) = &mut self.window {
-            self.windowed = Some(window.open(&result)?);
-        }
+        let delta = if let Some(window) = &mut self.window {
+            // §12.2: a bounded subscription's client result is its window, so its
+            // init ships the window's rows and its later deltas diff against the
+            // window (see `advance`) — never the full view.
+            let rows = window.open(&result)?;
+            let delta = ViewDelta::between_rows(None, &rows);
+            self.windowed = Some(rows);
+            delta
+        } else {
+            ViewDelta::between(None, &result)
+        };
         self.last = Some(result);
         self.frontier = frontier;
         Ok(delta)
     }
 
     /// Advance to `result` at `frontier`, returning the coherent delta from the
-    /// prior result (§12.2): a row-stream view's ordered patch, or a scalar view's
-    /// new value (frontier-only when unchanged, §7.5). The applied client result
-    /// equals `result` — the recomputed authorized view — by construction; a
-    /// bounded subscription re-slices its window over the recomputed view, tracking
-    /// its anchor across gaps and reappearances.
+    /// client's prior result (§12.2). After applying it the client result equals
+    /// the authorized declared view at the new frontier — and *the client result is
+    /// what the client tracks*:
+    ///
+    /// - an unwindowed subscription tracks the full view, so the delta diffs the
+    ///   full prior result against `result`: a row-stream view's ordered patch, or a
+    ///   scalar view's new value (frontier-only when unchanged, §7.5);
+    /// - a bounded subscription tracks its WINDOW, so it re-slices the window over
+    ///   the recomputed view (following its anchor across gaps and reappearances)
+    ///   and the delta diffs the *prior window slice* against the *refreshed window
+    ///   slice*. Positions are window-relative, and a row the window's shift pushed
+    ///   past its `$size` bound renders as a `remove` — so applying the delta to the
+    ///   client's prior window reproduces the new authorized window exactly, never
+    ///   the whole view.
     pub fn advance(&mut self, result: ViewResult, frontier: CommitSeq) -> ViewDelta {
-        let delta = ViewDelta::between(self.last.as_ref(), &result);
-        if let Some(window) = &mut self.window {
-            self.windowed = Some(window.refresh(&result));
-        }
+        let delta = if let Some(window) = &mut self.window {
+            // §12.2: diff the client's own prior window against the refreshed one,
+            // so evictions become removes and positions stay inside the window.
+            let refreshed = window.refresh(&result);
+            let delta = ViewDelta::between_rows(self.windowed.as_deref(), &refreshed);
+            self.windowed = Some(refreshed);
+            delta
+        } else {
+            ViewDelta::between(self.last.as_ref(), &result)
+        };
         self.last = Some(result);
         self.frontier = frontier;
         delta
