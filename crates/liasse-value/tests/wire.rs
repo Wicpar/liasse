@@ -278,6 +278,71 @@ fn blob_descriptor_wire_has_string_byte_count_and_canonically_sorted_keys(
     Ok(())
 }
 
+#[test]
+fn blob_uppercase_sha512_rejected_at_wire_boundary() {
+    // §18.1 / SPEC-ISSUES item 20: `$sha512` is exactly 128 lowercase-hex chars.
+    // Uppercase hex decodes to the same 64 bytes but is a non-canonical descriptor
+    // member, rejected at the wire boundary like every other non-canonical scalar
+    // (item 2) and matching the §18.7 upload verifier — never silently case-folded.
+    let wire = serde_json::json!({
+        "$sha512": "AB".repeat(64),
+        "$bytes": "5",
+        "$media": "text/plain",
+    });
+    assert!(matches!(
+        Type::Blob.decode_wire(&wire),
+        Err(ValueError::NonCanonicalScalar { ty: "sha512", .. })
+    ));
+}
+
+#[test]
+fn blob_uppercase_sha512_normalizes_at_authoring_boundary() -> Result<(), ValueError> {
+    // The authoring boundary stays lenient: uppercase hex is accepted and
+    // canonicalized to the lowercase descriptor.
+    let wire = serde_json::json!({
+        "$sha512": "AB".repeat(64),
+        "$bytes": "5",
+        "$media": "text/plain",
+    });
+    let expected = Value::Blob(Box::new(BlobDescriptor::new(
+        Sha512::parse(&"ab".repeat(64))?,
+        5,
+        MediaType::new("text/plain"),
+        None,
+    )));
+    assert_eq!(Type::Blob.decode(&wire)?, expected);
+    Ok(())
+}
+
+#[test]
+fn blob_leading_zero_byte_count_rejected_at_wire_boundary() {
+    // `$bytes` is a canonical `int` (A.1): a leading-zero spelling is non-canonical
+    // and rejected at the wire boundary, though it is normalized when authored.
+    let wire = serde_json::json!({
+        "$sha512": "ab".repeat(64),
+        "$bytes": "05",
+        "$media": "text/plain",
+    });
+    assert!(matches!(
+        Type::Blob.decode_wire(&wire),
+        Err(ValueError::NonCanonicalScalar { ty: "int", .. })
+    ));
+}
+
+#[test]
+fn blob_canonical_descriptor_passes_the_wire_boundary() -> Result<(), ValueError> {
+    // The canonical descriptor — 128 lowercase-hex `$sha512`, string `$bytes` —
+    // crosses the wire boundary unchanged, giving the same value as the authoring
+    // decode.
+    let wire = serde_json::json!({
+        "$sha512": "ab".repeat(64),
+        "$bytes": "5",
+        "$media": "text/plain",
+    });
+    assert_eq!(Type::Blob.decode_wire(&wire)?, Type::Blob.decode(&wire)?);
+    Ok(())
+}
+
 // ---- decode rejections Annex A calls out -----------------------------------
 
 #[test]

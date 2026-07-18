@@ -49,6 +49,10 @@ impl DeclName {
 
 /// A validated package name (§2.5): dot-separated lowercase identifiers over
 /// `a`–`z`, `0`–`9`, `_`, each component beginning with a letter.
+///
+/// A single-component name (no dot) is well-formed (§2.5, SPEC-ISSUES item 26):
+/// any minimum component count is registry policy, not a grammar constraint, so
+/// this parser imposes no minimum.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackageName(String);
 
@@ -96,12 +100,11 @@ impl PackageName {
 /// A semantic version (§4.3, Annex E.1): `major.minor.patch`, each a base-10
 /// integer.
 ///
-/// Prerelease and build metadata are left unspecified by v0.5 (SPEC-ISSUES item
-/// 26). Pending resolution this parser takes the strict least-surprising
-/// reading of "package identifiers use semantic versions" with only the
-/// documented major/minor/patch roles and rejects anything beyond three numeric
-/// components, so a version can always participate in the Annex E compatibility
-/// algorithm.
+/// A package version is exactly the three numeric components (§4.3, Annex E.1,
+/// SPEC-ISSUES item 26): pre-release identifiers (`1.0.0-rc.1`) and build
+/// metadata (`1.0.0+build`) are rejected, since the Annex E compatibility
+/// algorithm assigns roles to `major`/`minor`/`patch` alone and no pre-release
+/// may alias its own final release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Version {
     /// May change or remove boundary contracts (E.1).

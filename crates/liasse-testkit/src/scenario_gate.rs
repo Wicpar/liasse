@@ -95,7 +95,7 @@ pub const SKIP: &[(&str, &str)] = &[
     // residuals below stay blocked on a distinct §12.2 view-shape seam, not the
     // record-placement seam. A `claim` residual keeps its binding note.
     ("18-blobs/same-content-different-metadata-distinct-descriptors", "a declared `$name` must bind into the mutation call, which the honest blob parameter drops"),
-    ("18-blobs/descriptor-bytes-encoding-unspecified", "a verifying client-declared descriptor must bind into the mutation call, which the honest-only blob parameter does not expose"),
+    ("18-blobs/descriptor-bytes-encoding", "a verifying client-declared descriptor must bind into the mutation call, which the honest-only blob parameter does not expose; the harness's DeclaredDescriptor also erases the $bytes string-vs-number wire spelling (#20)"),
     // §18.3 pins eager connector resolution: a store-row write feeding a declared
     // placement is rejected at admission when its connector is unregistered. The
     // runtime `Engine` holds no blob-connector registry (connectors live in the

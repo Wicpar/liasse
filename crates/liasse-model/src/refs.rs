@@ -1,10 +1,12 @@
 //! Reference resolution (SPEC.md §5.6, A.9).
 //!
 //! Every `$ref` names a target collection that MUST exist; the ref's visible
-//! value type is that collection's key type. This pass indexes the model's
-//! collections, then fills each [`Reference`]'s key type or rejects an
-//! unresolvable target. Building the index first and mutating references second
-//! keeps the tree free of aliasing.
+//! value type is that collection's key type. For a nested target this is the
+//! target row's full identity (§5.4/§D.1/§A.9, SPEC-ISSUES item 26): every
+//! ancestor collection `$key` followed by the local `$key`, in ancestor-then-local
+//! order. This pass indexes the model's collections, then fills each
+//! [`Reference`]'s key type or rejects an unresolvable target. Building the index
+//! first and mutating references second keeps the tree free of aliasing.
 //!
 //! CORE scope: targets resolve against collections reachable by an absolute
 //! `/segment/segment` path of collection names; a ref to a keyed *view* (§7.6)
@@ -25,44 +27,80 @@ struct Index {
 impl Index {
     fn build(root: &Shape) -> Self {
         let mut keys = BTreeMap::new();
-        Self::walk(root, &mut String::new(), &mut keys);
+        Self::walk(root, &mut String::new(), &[], &mut keys);
         Self { keys }
     }
 
-    fn walk(shape: &Shape, prefix: &mut String, keys: &mut BTreeMap<String, Type>) {
+    fn walk(
+        shape: &Shape,
+        prefix: &mut String,
+        ancestors: &[(String, Type)],
+        keys: &mut BTreeMap<String, Type>,
+    ) {
         for member in &shape.members {
             let base = prefix.len();
             prefix.push('/');
             prefix.push_str(member.name.as_str());
             match &member.node {
                 Node::Collection(collection) => {
-                    keys.insert(prefix.clone(), Self::key_type(collection));
-                    Self::walk(&collection.shape, prefix, keys);
+                    // §5.4/§D.1/§A.9 (SPEC-ISSUES item 26): a `$ref` to a nested
+                    // collection carries the target row's FULL identity — every
+                    // ancestor collection `$key` followed by this collection's local
+                    // `$key`, in ancestor-then-local order. A root collection has no
+                    // ancestors, so its ref key stays exactly its local `$key`
+                    // (scalar or composite), unchanged.
+                    let local = Self::key_components(collection, None);
+                    let mut full = ancestors.to_vec();
+                    full.extend(local.iter().cloned());
+                    keys.insert(prefix.clone(), Self::compose(full));
+                    // Descendants see this collection's key as an ancestor; qualify
+                    // it by the declaration segment so an ancestor and a descendant
+                    // sharing a key-field name (both `id`) stay distinct components.
+                    let mut child_ancestors = ancestors.to_vec();
+                    child_ancestors
+                        .extend(Self::key_components(collection, Some(member.name.as_str())));
+                    Self::walk(&collection.shape, prefix, &child_ancestors, keys);
                 }
-                Node::Struct(inner) => Self::walk(inner, prefix, keys),
+                Node::Struct(inner) => Self::walk(inner, prefix, ancestors, keys),
                 _ => {}
             }
             prefix.truncate(base);
         }
     }
 
-    fn key_type(collection: &Collection) -> Type {
-        let mut components: Vec<(String, Type)> = Vec::new();
-        for field in &collection.key {
-            let ty = collection
-                .shape
-                .member(field.as_str())
-                .and_then(|member| match &member.node {
-                    Node::Scalar(scalar) => Some(scalar.ty.clone()),
-                    // A.8: a struct `$key` target carries a struct key type, so a
-                    // `$ref` to a struct-keyed collection resolves to that struct
-                    // (matching the stored key), not the `json` fallback.
-                    Node::Struct(shape) => Some(shape.key_struct_type()),
-                    _ => None,
-                })
-                .unwrap_or(Type::Json);
-            components.push((field.as_str().to_owned(), ty));
-        }
+    /// This collection's local `$key` components as `(name, type)` pairs in `$key`
+    /// order. `qualifier` prefixes each component name with the collection's
+    /// declaration segment (`companies.id`) when the components are threaded down
+    /// as a descendant's ancestor identity; `None` keeps the bare field name for a
+    /// ref's own key type.
+    fn key_components(collection: &Collection, qualifier: Option<&str>) -> Vec<(String, Type)> {
+        collection
+            .key
+            .iter()
+            .map(|field| {
+                let ty = collection
+                    .shape
+                    .member(field.as_str())
+                    .and_then(|member| match &member.node {
+                        Node::Scalar(scalar) => Some(scalar.ty.clone()),
+                        // A.8: a struct `$key` target carries a struct key type, so a
+                        // `$ref` to a struct-keyed collection resolves to that struct
+                        // (matching the stored key), not the `json` fallback.
+                        Node::Struct(shape) => Some(shape.key_struct_type()),
+                        _ => None,
+                    })
+                    .unwrap_or(Type::Json);
+                let name = match qualifier {
+                    Some(segment) => format!("{segment}.{}", field.as_str()),
+                    None => field.as_str().to_owned(),
+                };
+                (name, ty)
+            })
+            .collect()
+    }
+
+    /// One key component is a scalar key type; several are a composite (A.9).
+    fn compose(components: Vec<(String, Type)>) -> Type {
         match components.as_slice() {
             [(_, ty)] => ty.clone(),
             _ => Type::Composite(components),

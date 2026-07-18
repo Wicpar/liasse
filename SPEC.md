@@ -64,7 +64,7 @@ Feature-specific terms are defined in the chapter that introduces them.
 
 Hjson examples show the recommended authoring form. The built `liasse.json` definition is strict normalized JSON inside a `.liasse` artifact. In expressions, `.` denotes the current value or receiver, `@name` denotes a mutation or view parameter, and names beginning with `$` are Liasse declarations or structural bindings. Annex C contains the compact syntax index.
 
-Application declaration names MUST begin with an ASCII letter and contain only ASCII letters, digits, and `_`. Names beginning with `$` are reserved by Liasse. Package names are dot-separated lowercase identifiers containing `a`–`z`, `0`–`9`, and `_`, with each component beginning with a letter. Unknown members in a declaration object are invalid unless that declaration explicitly accepts application-defined member names.
+Application declaration names MUST begin with an ASCII letter and contain only ASCII letters, digits, and `_`. Names beginning with `$` are reserved by Liasse. Package names are dot-separated lowercase identifiers containing `a`–`z`, `0`–`9`, and `_`, with each component beginning with a letter. A single-component name — one identifier, no dot — is a well-formed package name; any minimum component count is registry policy, not a grammar constraint. Unknown members in a declaration object are invalid unless that declaration explicitly accepts application-defined member names.
 
 ---
 
@@ -255,7 +255,7 @@ A module definition uses `$module` instead of `$app` and MAY also declare `$conf
 }
 ```
 
-`$path` is a relative archive path, `$media` is its media type, and `$sha256` is the digest of the exact entry bytes. Paths MUST remain inside the archive root and MUST identify one entry. Every declared digest is verified before activation. Package expressions and registered namespaces refer to resources by logical name.
+`$path` is a relative archive path, `$media` is its media type, and `$sha256` is the digest of the exact entry bytes. A `$path` MUST resolve to an entry below `resources/`, MUST remain inside the archive root, and MUST identify one entry; a `$path` naming any other archive entry — a structural member such as `liasse.json`, or a `state/`, `history/`, or `blobs/` entry — is rejected, so a `$sha256` never folds non-resource archive bytes into the definition identity. Every declared digest is verified before activation. Package expressions and registered namespaces refer to resources by logical name.
 
 ### 4.2 Authoring and definition identity
 
@@ -285,7 +285,7 @@ Other expression positions, such as `$view`, `$check`, `$normalize`, and mutatio
 "$module": "vendor.feature@1.0.0"
 ```
 
-The name identifies the compatibility line. The version controls update compatibility as specified in Annex E. The canonical `liasse.json` identity identifies the exact definition independently of registry or archive location.
+The name identifies the compatibility line. The version controls update compatibility as specified in Annex E; it is exactly `major.minor.patch` (Annex E.1), and pre-release or build-metadata suffixes are rejected. The canonical `liasse.json` identity identifies the exact definition independently of registry or archive location.
 
 Each active application or module installation is a package instance with an immutable incarnation. Two installations of the same definition have separate incarnations, states, histories, configurations, bindings, and descendants. Rekeying or remounting an existing instance preserves its incarnation; uninstall followed by installation creates a new one.
 
@@ -510,6 +510,8 @@ A ref exposes the target's key type and MUST resolve to one occurrence in its de
 ```hjson
 "owner": { "$ref": "/accounts" }
 ```
+
+A `$ref` MAY target a nested collection. Its target is named by the `/`-separated declaration-name path (`/companies/offices`) — the same path root as every other Liasse path (Annex C.5); a dot-separated spelling such as `/companies.offices` is not a valid ref target. A ref to a nested collection carries the target row's full identity (§5.4, Annex D.1): the ordered composite of every ancestor collection `$key` followed by the target's local `$key`, wire-encoded as the Annex A.9 composite array in ancestor-then-local order.
 
 The application-visible value is the target's current typed key. Internally, the ref remains attached to the target row incarnation, so atomic rekeying changes the visible key while preserving the relationship. Deleting and reinserting the same key creates a new incarnation and does not transfer existing refs.
 
@@ -3034,6 +3036,8 @@ A `blob` field contains a descriptor for binary content:
 
 `$sha512`, `$bytes`, and `$media` are required; `$name` is optional. `$sha512` is 64 SHA-512 bytes encoded as lowercase hexadecimal, `$bytes` is a non-negative integer byte count, and `$media` is a canonical media type. The content hash identifies and verifies the byte sequence. The complete descriptor is the application value: two descriptors MAY name the same content while carrying different media or filename metadata.
 
+The blob descriptor is a composite value (Annex A.1); each member carries its type's canonical Annex A wire form — `$sha512` is the 64 content-hash bytes as exactly 128 lowercase hexadecimal characters, `$bytes` is an `int` (canonical base-10 JSON string, no sign or leading zeros), `$media` is `text`, and `$name` is optional `text`. Only the canonical form is accepted at the machine wire/request boundary: a `$sha512` that is not 128 lowercase-hexadecimal characters — uppercase hex, for example — is rejected as a malformed descriptor value even when it would decode to the correct bytes, and a non-canonical `$bytes` is rejected by the general non-canonical-input rule (Annex A.1). Descriptor equality and Annex B.4 ordering are computed over the decoded content-hash bytes and the canonical member forms, not the incidental input spelling.
+
 Expressions read descriptor metadata and placement state. Raw content crosses the connector boundary through upload and fetch operations.
 
 ### 18.2 Accepted blob types
@@ -4556,7 +4560,7 @@ Every scalar key component MUST have non-empty canonical key text (D.2). A key v
 
 ### A.9 Refs
 
-`ref<T>` has the exact key type of its target collection or keyed view. A scalar key uses its scalar wire value. A composite key uses an array of component wire values in `$key` order; named object selectors are authoring syntax for the same typed tuple. Target path information comes from the field declaration.
+`ref<T>` has the exact key type of its target collection or keyed view. A scalar key uses its scalar wire value. A composite key uses an array of component wire values in `$key` order; named object selectors are authoring syntax for the same typed tuple. When the target is a nested collection, its key type is the full row identity of §D.1 — every ancestor collection `$key` followed by the target's local `$key`, in ancestor-then-local order — encoded as one composite array. Target path information comes from the field declaration.
 
 ---
 
@@ -5243,7 +5247,7 @@ This annex is normative.
 
 ### E.1 Version rule
 
-Package identifiers use semantic versions.
+Package identifiers use semantic versions. A package version is exactly `major.minor.patch` — three base-10 integers. Pre-release identifiers (`1.0.0-rc.1`) and build metadata (`1.0.0+build`) are not part of a package version and are rejected: the compatibility algorithm below assigns roles to `major`, `minor`, and `patch` alone, so every accepted version participates fully in it and no pre-release can alias its own final release.
 
 ```text
 major    may change or remove boundary contracts

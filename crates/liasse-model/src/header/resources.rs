@@ -241,5 +241,23 @@ fn check_resource_path(reporter: &mut Reporter, field: &DocMember) {
             format!("resource `$path` `{path}` must stay inside the archive root"),
             "use a relative path such as `resources/invoice.html`",
         );
+        return;
+    }
+    // §4.1 / SPEC-ISSUES item 26: a resource `$path` MUST resolve to an entry
+    // *below* `resources/`. A `$path` naming any other archive entry — a
+    // structural member such as `liasse.json`, or a `state/`/`history/`/`blobs/`
+    // entry — is rejected, so its `$sha256` never folds non-resource archive bytes
+    // into the definition identity (§D.4). The leading-`/`/`..` escape is already
+    // rejected above, so here `resources/<name>` with a non-empty remainder is the
+    // one admissible shape.
+    let inside_resources =
+        path.strip_prefix("resources/").is_some_and(|rest| !rest.is_empty());
+    if !inside_resources {
+        reporter.reject_hint(
+            field.value.span,
+            code::HEADER,
+            format!("resource `$path` `{path}` must name an entry below `resources/`"),
+            "point `$path` at a packaged resource, e.g. `resources/invoice.html`",
+        );
     }
 }

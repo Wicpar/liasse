@@ -1,0 +1,80 @@
+{
+  format: 1
+  name: uppercase-hex-sha512-rejected
+  suite: scenario
+  spec: ["#blobs", "§18.1", "§18.7"]
+  tags: ["blob", "canonicalization", "identity", "tampering"]
+  note: '''
+    §18.1 pins the blob descriptor as a composite value whose members carry their
+    canonical Annex-A wire form: $sha512 is exactly 128 LOWERCASE hexadecimal
+    characters. This client declares the CORRECT digest of the streamed bytes but
+    spells it in UPPER-CASE hex, so there is no content mismatch — the claimed hex
+    decodes to exactly the streamed content's digest; only its case is
+    non-canonical. Resolution (SPEC-ISSUES #20, consistent with #2's canonical-
+    input rule): only the canonical form is accepted at the wire boundary, so a
+    non-canonical (uppercase) $sha512 is rejected as a malformed descriptor value
+    even though it would decode to the correct bytes — it is never silently
+    case-folded. The §18.7 upload verifier rejects the non-canonical digest before
+    any state transition.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.hexcase@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['primary']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add: [
+          "doc = .docs + { id: @id, file: @file }"
+          "return doc { id }"
+        ]
+      }
+      count: { $view: "= size(.docs)" }
+      $public: {
+        docs: {
+          $view: ".count"
+          $mut: { add: ".add" }
+        }
+      }
+    }
+    $data: { stores: { primary: { connector: "fs-a" } } }
+  }
+
+  hosts: {
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: "0" } }
+    { blob_put: {
+        call: "public.docs.add"
+        param: "file"
+        args: { id: "d1" }
+        content: "hello"
+        media: "text/plain"
+        // Correct SHA-512 of "hello", but spelled in uppercase hexadecimal — a
+        // non-canonical descriptor member.
+        claim: { $sha512: "9B71D224BD62F3785D96D46AD3EA3D73319BFBC2890CAADAE2DFF72519673CA72323C3D99BA5C11D7C7ACC6E14B8C5DA0C4663475C2E5C3ADEF46F73BCDEC043" }
+        on: "c1"
+      }
+      expect: { outcome: rejected, violates: ["#blobs", "§18.1"],
+                detail: "a non-canonical (uppercase) $sha512 is rejected as a malformed descriptor value even though it decodes to the correct bytes" } }
+    { expect_view: { watch: "w1", value: "0" } }
+  ]
+}

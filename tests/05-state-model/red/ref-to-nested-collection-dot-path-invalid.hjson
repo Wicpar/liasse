@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: ref-to-nested-collection-dot-path-invalid
+  suite: static
+  spec: ["#state-model", "§5.6", "#annex-a", "§A.9", "#annex-c", "§C.5"]
+  tags: ["identity", "aliasing"]
+  note: '''Resolution (SPEC-ISSUES #26): a $ref to a nested collection is addressed by
+the /-separated declaration-name path (/companies/offices) — the same path root as every
+other Liasse path (§C.5). A dot-separated spelling such as /companies.offices is NOT a
+valid ref target: it names no collection under the /-separated index, so it is rejected
+as an unresolvable target. This keeps ref targets consistent with every other Liasse
+path rather than inventing a second path syntax.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.nestedrefdot@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        offices: {
+          $key: "id"
+          id: "text"
+        }
+      }
+      links: {
+        $key: "id"
+        id: "text"
+        office: { $ref: "/companies.offices" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#state-model", "§5.6", "#annex-c", "§C.5"]
+    detail: "'/companies.offices' uses a dot separator; a nested-collection ref target is the /-separated path '/companies/offices'"
+  }
+}

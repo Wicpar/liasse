@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: ref-to-nested-collection-key-form
+  suite: static
+  spec: ["#state-model", "§5.4", "§5.6", "#annex-a", "§A.9", "#annex-d", "§D.1"]
+  tags: ["identity"]
+  note: '''Resolution (SPEC-ISSUES #26). §5.4 requires the runtime to update
+'every ref that targets one of its descendants whose full identity contains that key',
+which presupposes refs into nested collections. Pinned: a $ref MAY target a nested
+collection, addressed by its /-separated declaration-name path (the same path root as
+every other Liasse path, §C.5). The ref carries the target row's FULL identity (§5.4,
+§D.1): the ordered composite of every ancestor collection $key followed by the local
+$key, wire-encoded as the §A.9 composite array in ancestor-then-local order. Here
+links.office resolves to /companies/offices and carries the composite (companies.id,
+office.id). The package loads. (The composite key TYPE is an internal type property a
+static load does not surface directly; the load-success outcome and the ancestor-then-
+local composite are gated at the model layer.)'''
+
+  package: {
+    $liasse: 1
+    $app: "t.nestedref@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        offices: {
+          $key: "id"
+          id: "text"
+        }
+      }
+      links: {
+        $key: "id"
+        id: "text"
+        office: { $ref: "/companies/offices" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: ok
+  }
+}

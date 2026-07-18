@@ -107,7 +107,7 @@ impl Type {
             }
             Type::Period => self.decode_period(wire, mode),
             Type::Json => Ok(Value::Json(Json::from_wire(wire)?)),
-            Type::Blob => self.decode_blob(wire),
+            Type::Blob => self.decode_blob(wire, mode),
             Type::Enum(declared) => Ok(Value::Enum(declared.parse(self.expect_string(wire)?)?)),
             // A.1 / A.7 / SPEC-ISSUES item 29: `none` is absence, not a value with a
             // wire sentinel. A wire `null` disambiguates by the inner type, which is
@@ -156,12 +156,26 @@ impl Type {
         ty: &'static str,
         canonical: String,
     ) -> Result<(), ValueError> {
-        if let (DecodeMode::Wire, J::String(text)) = (mode, wire)
-            && *text != canonical
-        {
+        match wire {
+            J::String(text) => Self::ensure_canonical_text(mode, ty, text, canonical),
+            _ => Ok(()),
+        }
+    }
+
+    /// The string-spelling half of [`Self::ensure_canonical`], reusable where the
+    /// canonical member string is already in hand (the blob descriptor's `$sha512`
+    /// and `$bytes`, SPEC-ISSUES item 20): at the wire boundary a spelling that
+    /// differs from its canonical form is rejected; authoring never rejects.
+    fn ensure_canonical_text(
+        mode: DecodeMode,
+        ty: &'static str,
+        found: &str,
+        canonical: String,
+    ) -> Result<(), ValueError> {
+        if mode == DecodeMode::Wire && found != canonical {
             return Err(ValueError::NonCanonicalScalar {
                 ty,
-                found: text.clone(),
+                found: found.to_owned(),
                 canonical,
             });
         }
@@ -225,7 +239,7 @@ impl Type {
         Ok(Value::Bytes(Bytes::from_base64(text)?))
     }
 
-    fn decode_blob(&self, wire: &J) -> Result<Value, ValueError> {
+    fn decode_blob(&self, wire: &J, mode: DecodeMode) -> Result<Value, ValueError> {
         let object = self.expect_object(wire)?;
         let sha = Self::required_str(object, "$sha512")?;
         let bytes_text = Self::required_str(object, "$bytes")?;
@@ -235,15 +249,22 @@ impl Type {
             Some(_) => return Err(ValueError::UnexpectedMember("$name".to_owned())),
             None => None,
         };
+        // Blobs §18.1 / SPEC-ISSUES item 20: the descriptor is a composite value
+        // whose members carry their canonical Annex-A wire form. `$sha512` is
+        // exactly 128 lowercase-hex characters and `$bytes` is a canonical `int`;
+        // at the wire boundary a non-canonical spelling (uppercase hex, a
+        // leading-zero count) is rejected as malformed even when it decodes to the
+        // correct value — the same canonical-input rule as every other scalar
+        // (item 2), matching the §18.7 upload verifier. `Sha512::parse` itself
+        // stays the lenient authoring parse, so authored `$data` is canonicalized.
+        let digest = Sha512::parse(sha)?;
+        Self::ensure_canonical_text(mode, "sha512", sha, digest.to_canonical_text())?;
         let byte_count: u64 = bytes_text
             .parse()
             .map_err(|_| ValueError::MalformedInt(bytes_text.to_owned()))?;
-        let descriptor = BlobDescriptor::new(
-            Sha512::parse(sha)?,
-            byte_count,
-            MediaType::new(media.to_owned()),
-            name,
-        );
+        Self::ensure_canonical_text(mode, "int", bytes_text, byte_count.to_string())?;
+        let descriptor =
+            BlobDescriptor::new(digest, byte_count, MediaType::new(media.to_owned()), name);
         Ok(Value::Blob(Box::new(descriptor)))
     }
 

@@ -32,8 +32,13 @@
 //!
 //! Where Annex A still leaves observable behavior unpinned, this crate makes the
 //! least-surprising choice and cites the SPEC-ISSUES item at the definition:
-//! decimal trailing-zero spelling (item 1, [`Decimal::to_canonical_text`]) and
-//! uppercase-hex SHA-512 (item 20, [`Sha512::parse`]).
+//! decimal trailing-zero spelling (item 1, [`Decimal::to_canonical_text`]).
+//!
+//! The blob descriptor's `$sha512`/`$bytes` members are now pinned (item 20,
+//! resolved with item 2): [`Sha512::parse`] is the lenient authoring parse, and
+//! [`Type::decode_wire`] rejects a non-canonical descriptor member (uppercase
+//! hex, a leading-zero byte count) exactly as it rejects every other
+//! non-canonical scalar at the wire boundary.
 
 mod blob;
 mod decimal;

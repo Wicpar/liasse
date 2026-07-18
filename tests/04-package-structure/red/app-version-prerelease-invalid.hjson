@@ -1,0 +1,22 @@
+{
+  format: 1
+  name: app-version-prerelease-invalid
+  suite: static
+  spec: ["#annex-e", "§E.1", "#package-structure", "§4.3"]
+  tags: ["boundary", "identity"]
+  note: "Resolution (SPEC-ISSUES #26): a package version is exactly major.minor.patch — three base-10 integers. Pre-release identifiers ('1.0.0-rc.1') and build metadata are not part of a package version and are rejected, because the Annex E compatibility algorithm assigns roles to major/minor/patch alone and no pre-release may alias its own final release. So '$app: t.app@1.0.0-rc.1' is invalid."
+
+  package: {
+    $liasse: 1
+    $app: "t.app@1.0.0-rc.1"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-e", "§E.1", "#package-structure", "§4.3"]
+    detail: "the version '1.0.0-rc.1' carries a pre-release suffix; a package version is exactly major.minor.patch"
+  }
+}

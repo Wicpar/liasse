@@ -14,9 +14,13 @@ pub struct Sha512([u8; 64]);
 impl Sha512 {
     /// Decode a hex SHA-512.
     ///
-    /// The canonical output is lowercase (Blobs §); uppercase-hex input is
-    /// unpinned (SPEC-ISSUES item 20), so we take the least-surprising decoder
-    /// stance and accept either case, normalizing to lowercase.
+    /// The canonical form is exactly 128 lowercase-hex characters (Blobs §18.1).
+    /// This is the lenient **authoring** parse: it accepts either case and
+    /// normalizes to lowercase, so authored `$data` stays lenient. Non-canonical
+    /// (e.g. uppercase) input at the machine wire/request boundary is rejected by
+    /// the descriptor decoder (`Type::decode_wire` via `decode_blob`), matching the
+    /// §18.7 upload verifier — SPEC-ISSUES item 20, resolved consistently with the
+    /// canonical-input rule of item 2.
     pub fn parse(text: &str) -> Result<Self, ValueError> {
         let bytes = HEXLOWER_PERMISSIVE
             .decode(text.as_bytes())

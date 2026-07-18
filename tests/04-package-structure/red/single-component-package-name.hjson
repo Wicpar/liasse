@@ -1,0 +1,20 @@
+{
+  format: 1
+  name: single-component-package-name
+  suite: static
+  spec: ["#conformance", "§2.5", "#package-structure", "§4.3"]
+  tags: ["boundary", "identity"]
+  note: "Resolution (SPEC-ISSUES #26): §2.5 defines package names as 'dot-separated lowercase identifiers ... with each component beginning with a letter'. A single identifier is trivially 'dot-separated' with zero dots, and the grammar states no two-component minimum. A single-component name like 'admin' is therefore a well-formed package name; any minimum component count is registry policy, not a grammar constraint, so 'admin@1.0.0' loads."
+
+  package: {
+    $liasse: 1
+    $app: "admin@1.0.0"
+    $model: {
+      note: "text"
+    }
+  }
+
+  expect: {
+    outcome: ok
+  }
+}
