@@ -78,27 +78,103 @@ pub(crate) fn coerce_fields(
     Ok(())
 }
 
-/// Coerce one value to an enum-typed field's declared label set (§5.9), or return
-/// it unchanged when the type is not an enum. A supplied `text`/`enum` value is
-/// parsed against the closed label set; an undeclared label rejects.
+/// Coerce a value against a field type by re-validating every enum leaf it
+/// carries against that enum's *current* declared label set (§5.9), returning the
+/// value unchanged when the type has no enum leaf. A supplied `text`/`enum` leaf
+/// is parsed against the closed set; an undeclared label rejects.
 ///
 /// An already-positioned [`Value::Enum`] is NOT blindly trusted: its label — the
-/// wire identity of an enum value (A.1) — is re-resolved against the *current*
+/// wire identity of an enum value (A.1) — is re-resolved against the current
 /// declared set. A label the current enum still declares re-derives its
 /// declaration-order ordinal (so a reorder settles on the current position),
-/// while a label the set no longer declares is out of domain and rejects. This
-/// is what makes the §20.1 compatible same-identity copy of an enum value fail
-/// when a narrowing release drops its label, rather than stranding an
-/// undeclared label in committed target state (§22.1 field types).
+/// while a label the set no longer declares is out of domain and rejects. This is
+/// what makes the §20.1 compatible same-identity copy of an enum value fail when a
+/// narrowing release drops its label, rather than stranding an undeclared label in
+/// committed target state (§22.1 field types).
+///
+/// The check DESCENDS into containers — `optional`, `set`, `struct`, `map`, and
+/// composite — so an enum nested any number of layers down (a struct field, a
+/// set/map element, a struct-in-struct) is re-validated exactly like a top-level
+/// enum field (§20.1/§22.1). Re-deriving a leaf's ordinal can move it, so a
+/// touched container is rebuilt from its re-validated members; a `set`/`map`
+/// re-sorts under the new ordering. Members whose declared type carries no enum —
+/// and any member the target type no longer declares — are copied verbatim, so the
+/// walk changes nothing but enum leaves.
 pub(crate) fn coerce_value(
     ty: &liasse_value::Type,
     value: &Value,
     field_name: &str,
     where_path: &str,
 ) -> Result<Value, Rejection> {
-    let Some(enum_ty) = enum_of(ty) else { return Ok(value.clone()) };
+    use liasse_value::{Struct, Type};
+    match ty {
+        Type::Enum(enum_ty) => coerce_enum_leaf(enum_ty, value, field_name, where_path),
+        // An `optional` around an enum leaf: `none` is absence (untouched); a
+        // present value re-validates against the inner type.
+        Type::Optional(inner) => match value {
+            Value::None => Ok(Value::None),
+            _ => coerce_value(inner, value, field_name, where_path),
+        },
+        Type::Set(inner) if contains_enum(inner) => {
+            let Value::Set(members) = value else { return Ok(value.clone()) };
+            members
+                .iter()
+                .map(|member| coerce_value(inner, member, field_name, where_path))
+                .collect::<Result<std::collections::BTreeSet<_>, _>>()
+                .map(Value::Set)
+        }
+        Type::Struct(struct_ty) if contains_enum(ty) => {
+            let Value::Struct(existing) = value else { return Ok(value.clone()) };
+            let mut rebuilt = Vec::new();
+            for (name, member) in existing.fields() {
+                let coerced = match struct_ty.field(name.as_str()) {
+                    Some(member_ty) => coerce_value(member_ty, member, name.as_str(), where_path)?,
+                    None => member.clone(),
+                };
+                rebuilt.push((name.clone(), coerced));
+            }
+            Ok(Value::Struct(Struct::new(rebuilt)))
+        }
+        Type::Map(key_ty, val_ty) if contains_enum(ty) => {
+            let Value::Map(entries) = value else { return Ok(value.clone()) };
+            entries
+                .iter()
+                .map(|(key, val)| {
+                    Ok::<_, Rejection>((
+                        coerce_value(key_ty, key, field_name, where_path)?,
+                        coerce_value(val_ty, val, field_name, where_path)?,
+                    ))
+                })
+                .collect::<Result<std::collections::BTreeMap<_, _>, _>>()
+                .map(Value::Map)
+        }
+        Type::Composite(components) if contains_enum(ty) => {
+            let Value::Composite(values) = value else { return Ok(value.clone()) };
+            if values.len() != components.len() {
+                return Ok(value.clone());
+            }
+            components
+                .iter()
+                .zip(values)
+                .map(|((name, comp_ty), comp)| coerce_value(comp_ty, comp, name, where_path))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Value::Composite)
+        }
+        _ => Ok(value.clone()),
+    }
+}
+
+/// Re-validate one enum leaf against its declared label set (§5.9). A `text`/`enum`
+/// value is parsed against the closed set; an undeclared label rejects. `none`
+/// (an absent optional) is untouched.
+fn coerce_enum_leaf(
+    enum_ty: &liasse_value::EnumType,
+    value: &Value,
+    field_name: &str,
+    where_path: &str,
+) -> Result<Value, Rejection> {
     let label = match value {
-        Value::None => return Ok(value.clone()),
+        Value::None => return Ok(Value::None),
         Value::Text(text) => text.as_str().to_owned(),
         Value::Enum(existing) => existing.label().to_owned(),
         _ => {
@@ -122,7 +198,9 @@ pub(crate) fn coerce_value(
     Ok(Value::Enum(parsed))
 }
 
-/// Whether a field's declared type is an enum (possibly optional).
+/// Whether a field's declared type is an enum (possibly optional). Used by the
+/// admission assign path, which coerces a scalar written to a top-level enum field
+/// and leaves container-typed assignments to the ordinary assignability check.
 #[must_use]
 pub(crate) fn is_enum_field(ty: &liasse_value::Type) -> bool {
     enum_of(ty).is_some()
@@ -134,6 +212,23 @@ fn enum_of(ty: &liasse_value::Type) -> Option<&liasse_value::EnumType> {
         liasse_value::Type::Enum(en) => Some(en),
         liasse_value::Type::Optional(inner) => enum_of(inner),
         _ => None,
+    }
+}
+
+/// Whether a declared type carries an enum anywhere — a bare enum, or one nested
+/// inside an `optional`, `set`, `struct`, `map`, `view`, or composite. Gates the
+/// §20.1 migrated-value re-validation so a container field whose enum leaf a
+/// narrowing release stranded is descended into (`coerce_value`), not skipped.
+#[must_use]
+pub(crate) fn contains_enum(ty: &liasse_value::Type) -> bool {
+    use liasse_value::Type;
+    match ty {
+        Type::Enum(_) => true,
+        Type::Optional(inner) | Type::Set(inner) | Type::View(inner) => contains_enum(inner),
+        Type::Map(key, val) => contains_enum(key) || contains_enum(val),
+        Type::Struct(fields) => fields.fields().any(|(_, member)| contains_enum(member)),
+        Type::Composite(components) => components.iter().any(|(_, member)| contains_enum(member)),
+        _ => false,
     }
 }
 

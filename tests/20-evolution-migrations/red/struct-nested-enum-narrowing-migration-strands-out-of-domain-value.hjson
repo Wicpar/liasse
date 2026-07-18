@@ -1,0 +1,80 @@
+{
+  format: 1
+  name: struct-nested-enum-narrowing-migration-strands-out-of-domain-value
+  suite: scenario
+  // Struct-nested analogue of enum-narrowing-migration-out-of-domain-value-rejected.
+  //
+  // §20.1: "The complete prospective target is checked under ordinary keys, refs,
+  // uniqueness, checks, buckets, meters, modules, and interfaces before the package
+  // update commits." §22.1 lists "field and shape types" among the state
+  // constraints that hold in EVERY committed state, and §5.9 makes a `$enum` a
+  // CLOSED label set — an insert/assign of an undeclared label is rejected.
+  //
+  // A major release narrows the enum `profile.status` from {draft, active, archived}
+  // to {draft, active}. The enum here is a member of a STRUCT field (`profile`), not
+  // a top-level field. The live row t1 holds `archived` inside that struct; the
+  // migration copies the struct by compatible same-identity copy (§20.1). In the
+  // prospective TARGET state that copied member is no longer a declared label of the
+  // target enum, so the target state violates the §5.9 field type and the migration
+  // MUST be rejected (1.0.0 stays active) — exactly as the top-level variant is.
+  //
+  // ATTACK (red): the §20.1 migrated-enum re-validation only unwraps `optional`
+  // around a top-level enum field (`rules::enum_of` / `is_enum_field`), so an enum
+  // one struct layer down is copied verbatim and never re-checked against the
+  // target's closed set. The dropped label's ordinal is out of range for the
+  // 2-label target set, so B.1 ordering/equality become undefined and the committed
+  // row is no longer materializable under the target shape.
+  spec: ["#evolution", "§20.1", "#state-model", "§5.9", "#runtime", "§22.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.structenum@1.0.0"
+    $model: {
+      things: {
+        $key: "id"
+        id: "text"
+        profile: {
+          status: { $enum: ["draft", "active", "archived"] }
+          note: "text"
+        }
+      }
+      $public: {
+        things: { $view: ".things { id, status: .profile.status }" }
+      }
+    }
+    $data: {
+      things: { t1: { profile: { status: "archived", note: "n" } } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.structenum@2.0.0"
+          $model: {
+            things: {
+              $key: "id"
+              id: "text"
+              profile: {
+                // narrowed: `archived` is dropped from the closed label set
+                status: { $enum: ["draft", "active"] }
+                note: "text"
+              }
+            }
+            $public: {
+              things: { $view: ".things { id, status: .profile.status }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.1", "§5.9"]
+        detail: "the live profile.status 'archived' is no longer a declared label of the target $enum, so the prospective target state violates the enum field type"
+      } }
+    // the rejected migration left 1.0.0 active, so t1 still reads under the v1 shape
+    { watch: "public.things", id: "w1",
+      expect_init: { value: [ { id: "t1", status: "archived" } ] } }
+  ]
+}

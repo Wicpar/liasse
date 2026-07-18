@@ -406,7 +406,10 @@ fn coerce_and_require(
         // narrowing release that drops its label leaves it out of the target's
         // domain, so it rejects here rather than stranding an undeclared label in
         // committed state; a retained label is re-resolved to its current ordinal.
-        if rules::is_enum_field(&field.ty)
+        // The re-validation DESCENDS into containers (`rules::coerce_value`), so an
+        // enum a struct/set/map layer down — not only a top-level enum field — is
+        // re-checked too, gated on `contains_enum` rather than `is_enum_field`.
+        if rules::contains_enum(&field.ty)
             && let Some(value) = fields.get(&field.name)
         {
             let coerced = rules::coerce_value(&field.ty, value, &field.name, &address.render())?;
@@ -421,6 +424,24 @@ fn coerce_and_require(
                 format!("migration left required field `{}` unpopulated", field.name),
             )
             .at(address.render()));
+        }
+    }
+    // §5.9/§20.1/§22.1: a migrated static-struct member (§5.3) carries its own enum
+    // leaves; re-validate each against the TARGET's closed label set by descending
+    // into the reconstructed struct type (`rules::coerce_value`). A struct member
+    // compiles into `collection.structs`, not `fields`, so the field loop above
+    // skips it — the path a narrowing release used to strand an out-of-domain label
+    // one struct layer down (the top-level fix of 80fac2c reached only `fields`).
+    for struct_meta in &collection.structs {
+        let Some(struct_ty) = collection.struct_type(&struct_meta.name) else { continue };
+        if rules::contains_enum(&struct_ty)
+            && let Some(value) = fields.get(&struct_meta.name)
+        {
+            let coerced = rules::coerce_value(&struct_ty, value, &struct_meta.name, &address.render())?;
+            if &coerced != value {
+                fields.insert(struct_meta.name.clone(), coerced);
+                changed = true;
+            }
         }
     }
     if changed {
@@ -557,6 +578,17 @@ fn map_row(
         } else if let Some(value) = old_row.get(&field.name) {
             // §20.1 compatible same-identity copy.
             fields.insert(field.name.clone(), value.clone());
+        }
+    }
+    // §20.1/§5.3 compatible same-identity copy of static struct members: a struct
+    // member (§5.3) compiles into `collection.structs`, not `fields`, so the loop
+    // above never touches it. Carry each forward verbatim from the source row, so a
+    // struct-nested value is part of the EXPLICIT migrated state — where its enum
+    // leaves are re-validated against the target's closed set in `coerce_and_require`
+    // — rather than a stale value the store would otherwise silently retain.
+    for struct_meta in &collection.structs {
+        if let Some(value) = old_row.get(&struct_meta.name) {
+            fields.insert(struct_meta.name.clone(), value.clone());
         }
     }
     Ok(fields)
