@@ -58,6 +58,66 @@ pub fn check_expression(
     }
 }
 
+/// Validate the object operand of a `collection - { object }` delete against the
+/// target collection's composite key at load (§6.3/§8.5/A.9).
+///
+/// This is the direct-delete position of the ONE composite-key coercion the
+/// `[{..}]` selector, `==`, and `in` already apply through
+/// [`Checker::coerce_composite_key`]: the `collection` base is type-checked to
+/// recover its key type, and only when that key is composite and the `operand` is
+/// an authoring object is the object required to be a *key of the target* — naming
+/// every `$key` component with its declared type and carrying no extra field
+/// (A.9). A non-conforming object is rejected with the same `E-EXPR` type error
+/// the peer positions emit, before the delete can activate.
+///
+/// A scalar-keyed target, a bare parameter key operand, a set operand, a
+/// positional composite (another row's `$key`), or a base that is not a keyed
+/// view is left untouched: this gate only rejects a non-conforming composite
+/// object, matching the other positions exactly rather than over-rejecting the
+/// forms whose key the runtime carrier owns.
+pub fn check_composite_delete_operand(
+    scope: &dyn Scope,
+    source: SourceId,
+    collection: &Expr,
+    operand: &Expr,
+) -> Result<(), Diagnostics> {
+    // Recover the target collection's composite key type, if any. The collection
+    // reference and the remainder of the delete belong to the mutation layer and
+    // the runtime; a base that is not a composite-keyed view has no object-operand
+    // form to gate here, so the delete is left untouched.
+    let Some(key) = composite_key_of(scope, source, collection) else {
+        return Ok(());
+    };
+    let mut checker = Checker::new(scope, source);
+    let Some(operand) = checker.check(operand) else {
+        // An operand that does not type on its own is a pre-existing structural
+        // seam of the mutation phase, not this composite-key gate's concern.
+        return Ok(());
+    };
+    // Route through the single validate-and-normalize point; the normalized
+    // carrier is discarded (the runtime rebuilds it) — only a conformance
+    // rejection is meaningful at load.
+    checker.coerce_composite_key(operand, Some(&key));
+    if checker.diags.has_errors() {
+        Err(checker.diags)
+    } else {
+        Ok(())
+    }
+}
+
+/// The composite `$key` type of the view `collection` names, if it is a keyed
+/// view with a composite key. Diagnostics from resolving the base are discarded:
+/// the base belongs to the mutation/runtime layers, and this helper only reports
+/// whether a composite-key object operand needs gating.
+fn composite_key_of(scope: &dyn Scope, source: SourceId, collection: &Expr) -> Option<ExprType> {
+    let mut checker = Checker::new(scope, source);
+    let key = match checker.check(collection)?.ty() {
+        ExprType::View(row) => row.key().cloned(),
+        _ => None,
+    }?;
+    matches!(key.as_scalar(), Some(Type::Composite(_))).then_some(key)
+}
+
 /// One lexical frame introduced *within* an expression (a filter row, a `::`
 /// traversal, a projection source row, or an accumulating projection output).
 pub(crate) struct Frame {

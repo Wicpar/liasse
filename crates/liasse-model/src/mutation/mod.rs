@@ -701,6 +701,19 @@ impl MutPhase<'_, '_> {
             self.check_assert(expr, args, scope, source);
             return;
         }
+        // §8.5/§6.3/A.9: a direct `collection - { object }` delete names its removed
+        // rows by key. The object operand is authoring syntax for the target's
+        // composite `$key` tuple and must be a *key of that target*, so it is
+        // validated at load through the SAME coercion the `[{..}]` selector, `==`,
+        // and `in` apply — a wrong-typed, wrong-arity, or extra-field operand is
+        // rejected here rather than silently no-ooping (or over-deleting) at
+        // runtime. `type_value` below accepts the delete's mutation operator
+        // structurally, so this is the operand's only load-time gate.
+        if let ExprKind::Binary { op: BinaryOp::Sub, lhs, rhs } = &expr.kind
+            && let Err(diags) = liasse_expr::check_composite_delete_operand(scope, source, lhs, rhs)
+        {
+            self.reporter.emit_all(diags);
+        }
         self.type_value(expr, scope, source);
     }
 

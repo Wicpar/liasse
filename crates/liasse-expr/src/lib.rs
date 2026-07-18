@@ -47,7 +47,7 @@ mod scope;
 mod ty;
 mod typed;
 
-pub use check::{check_expression, check_statement};
+pub use check::{check_composite_delete_operand, check_expression, check_statement};
 pub use env::{
     BlobPlacement, CallSite, Cell, Environment, KeyringSelector, Row, RowId, RowIdPart,
     TemporalQuery,

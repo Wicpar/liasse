@@ -142,7 +142,8 @@ fn row_cell_at(
 /// whose application-visible key identity (§5.4) equals `row.key`.
 ///
 /// `row.key` is already an application identity — a bare scalar for a single-field
-/// `$key`, or the name-sorted key struct for a composite one (the `from` edge
+/// `$key`, or the positional [`Value::Composite`] tuple in `$key` order for a
+/// composite one (the `from` edge
 /// carries `materialize::key_identity`, the `to` edge the ref's typed key). So the
 /// stored row's positional `$key`-order `components` must be normalized through the
 /// SAME `refid::identity_of` the reference-resolution and restrict/cascade/clear

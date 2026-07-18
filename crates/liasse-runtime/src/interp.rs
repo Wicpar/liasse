@@ -1317,8 +1317,8 @@ impl<'a> Interp<'a> {
         let key_fields = self.collection_at(&loc.decl)?.key.clone();
         let normalize = |value: Value| materialize::normalize_key_operand(&key_fields, value);
         let targets: Vec<Value> = match self.scalar_value(keys, source, &current)? {
-            Value::Set(members) => members.into_iter().map(normalize).collect(),
-            scalar => vec![normalize(scalar)],
+            Value::Set(members) => members.into_iter().map(normalize).collect::<Result<_, _>>()?,
+            scalar => vec![normalize(scalar)?],
         };
         // §5.4/§21.1: the cascade planner operates over the top-level graph; a
         // nested collection's row (a meter spend/pool, §15) has no inbound refs in

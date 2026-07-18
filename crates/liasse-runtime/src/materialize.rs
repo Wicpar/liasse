@@ -20,6 +20,7 @@ use liasse_model::{Collection, Node};
 use liasse_store::{AddressStep, CollectionPath, KeyValue, RowAddress};
 use liasse_value::{Struct, Text, Timestamp, Value};
 
+use crate::error::{Rejection, RejectionReason};
 use crate::schema::Schema;
 
 /// The half-open `[from, until)` interval of one bucketed row, evaluated once at
@@ -102,17 +103,45 @@ pub(crate) fn key_identity(collection: &Collection, key: &KeyValue) -> Value {
 /// delete operand matches the row's key exactly as the `[{..}]` selector form
 /// does. A value that already carries the positional composite (another row's
 /// `$key`) or is a plain scalar passes through unchanged.
-pub(crate) fn normalize_key_operand(key_fields: &[String], value: Value) -> Value {
+///
+/// Defense in depth for the load gate (`liasse_expr::check_composite_delete_operand`,
+/// §6.3/§8.5/A.9): an object operand must name *exactly* the `$key` components.
+/// A missing component is refused rather than silently filled with `Value::None`
+/// (which would match no row and no-op the delete), and an extra non-component
+/// field is refused rather than silently dropped (which would delete on a
+/// malformed key). The load check rejects such operands first; this guarantees the
+/// runtime never acts on a non-key operand even if one reaches it.
+pub(crate) fn normalize_key_operand(
+    key_fields: &[String],
+    value: Value,
+) -> Result<Value, Rejection> {
     match key_fields {
-        [_] => value,
+        [_] => Ok(value),
         _ => match value {
-            Value::Struct(fields) => Value::Composite(
-                key_fields
-                    .iter()
-                    .map(|name| fields.get(name).cloned().unwrap_or(Value::None))
-                    .collect(),
-            ),
-            other => other,
+            Value::Struct(fields) => {
+                let mut components = Vec::with_capacity(key_fields.len());
+                for name in key_fields {
+                    match fields.get(name) {
+                        Some(component) => components.push(component.clone()),
+                        None => {
+                            return Err(Rejection::new(
+                                RejectionReason::Malformed,
+                                format!(
+                                    "composite delete operand is missing `$key` component `{name}` (§6.3, A.9)"
+                                ),
+                            ));
+                        }
+                    }
+                }
+                if fields.fields().count() != key_fields.len() {
+                    return Err(Rejection::new(
+                        RejectionReason::Malformed,
+                        "composite delete operand carries a field that is not a `$key` component (§6.3, A.9)",
+                    ));
+                }
+                Ok(Value::Composite(components))
+            }
+            other => Ok(other),
         },
     }
 }
