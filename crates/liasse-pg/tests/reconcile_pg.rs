@@ -259,11 +259,14 @@ fn populated_orphan_table_is_refused() {
     assert_eq!(count, 1, "the orphan's data must survive a refused reconcile");
 }
 
-/// Removing a collection leaves NO orphan rows in `nodes`, while the kept collection
+/// Removing a collection leaves NO LIVE rows in `nodes`, while the kept collection
 /// and all history remain readable. A collection is a subtree of the node tree (its
 /// direct rows share a `(parent_id, step_name)`), so the runtime expresses a §20
-/// removal as a Delete per row — the only way a removal reaches the store, and
-/// exactly what must leave no residue among the nodes.
+/// removal as a Delete per row — the only way a removal reaches the store. Each
+/// Delete tombstones its node (`value` NULL); no live row of the removed collection
+/// survives. The inert tombstones that linger — deleted leaf rows with no descendant
+/// to keep addressable — are a future GC opportunity, correctness-neutral, so this
+/// gate counts LIVE rows (`value IS NOT NULL`).
 #[test]
 fn removing_a_collection_leaves_no_orphan_rows() {
     let handle = support::acquire();
@@ -309,21 +312,26 @@ fn removing_a_collection_leaves_no_orphan_rows() {
         txn.commit().expect("commit migration");
     }
 
-    // Node/catalog oracle: not one `drop` node survives under the root sentinel;
+    // Node/catalog oracle: not one LIVE `drop` node survives under the root sentinel;
     // both `keep` nodes do. `keep`/`drop` are top-level collections, so their direct
-    // rows are nodes with `parent_id = 0` (the sentinel) and the matching `step_name`.
+    // rows are nodes with `parent_id = 0` (the sentinel) and the matching `step_name`;
+    // `value IS NOT NULL` counts live rows, ignoring the inert tombstones a Delete
+    // leaves behind (a GC opportunity, correctness-neutral).
     let mut client = factory.connect().expect("connect");
     let s = schema.quoted();
     let count_collection = |client: &mut Client, name: &str| -> i64 {
         client
             .query_one(
-                &format!("SELECT COUNT(*) FROM {s}.nodes WHERE parent_id = 0 AND step_name = $1"),
+                &format!(
+                    "SELECT COUNT(*) FROM {s}.nodes \
+                     WHERE parent_id = 0 AND step_name = $1 AND value IS NOT NULL"
+                ),
                 &[&name],
             )
             .expect("count nodes by collection")
             .get(0)
     };
-    assert_eq!(count_collection(&mut client, "drop"), 0, "removed collection left orphan nodes");
+    assert_eq!(count_collection(&mut client, "drop"), 0, "removed collection left live rows");
     assert_eq!(count_collection(&mut client, "keep"), 2, "kept collection nodes must remain");
 
     // History is retained (§21): both commits and the recorded point survive.

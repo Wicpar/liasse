@@ -38,10 +38,11 @@ pub struct Projection {
     head: CommitSeq,
     next_incarnation: u64,
     current: BTreeMap<RowAddress, StoredRow>,
-    /// Each live row's surrogate node id in the `nodes` adjacency tree. Kept out of
-    /// the shared [`StoredRow`] (the id is a backend-private handle, never observed
-    /// through the contract) and used only by the dual-write path to apply node ops
-    /// by id. Maintained in lock-step with `current` after every commit succeeds.
+    /// Each *live* row's surrogate node id in the `nodes` adjacency tree (tombstones
+    /// carry no entry). Kept out of the shared [`StoredRow`] (the id is a
+    /// backend-private handle, never observed through the contract) and used only by
+    /// the dual-write path to apply node ops by id. Maintained in lock-step with
+    /// `current` after every commit succeeds.
     by_id: BTreeMap<RowAddress, i64>,
     log: Vec<CommittedTransition>,
     points: BTreeMap<HistoryPoint, CommitSeq>,
@@ -205,9 +206,10 @@ impl Projection {
 
     /// Advance the projection by a committed transition — the exact operations the
     /// same SQL transaction just wrote to PostgreSQL — and to the `nodes` tree.
-    /// `new_node_ids` holds the surrogate id of each `Insert` op in op order (the
-    /// `RETURNING id`s the node dual-write collected), so `by_id` stays in lock-step
-    /// with the durable node identities. Applied only after the commit succeeds.
+    /// `new_node_ids` holds the surrogate id each op established at a live address, one
+    /// per `Insert` and one per `Rekey` (target), in op order — the `RETURNING id`s the
+    /// node dual-write collected — so `by_id` stays in lock-step with the durable node
+    /// identities. Applied only after the commit succeeds.
     pub fn apply_committed(
         &mut self,
         transition: CommittedTransition,
@@ -248,11 +250,13 @@ impl Projection {
         }
     }
 
-    /// Advance `by_id` by one op, mirroring the node dual-write's effect on node
-    /// identity: an insert takes the next `RETURNING id`; a delete drops the id and
-    /// every descendant's (the node write cascades the subtree by id); a rekey moves
-    /// the *same* id to the new address (so descendants keep resolving); an update
-    /// leaves identity untouched.
+    /// Advance `by_id` (which holds only *live* rows) by one op, mirroring the node
+    /// dual-write's effect on node identity: an insert takes the next established id
+    /// (a fresh node, or a revived tombstone keeping its id); a delete drops ONLY the
+    /// addressed id (the node write tombstones just that node, leaving descendants —
+    /// still live rows — in place, so their ids stay); a rekey drops the source id
+    /// (its node is tombstoned) and takes the next established id for the target (a
+    /// fresh or revived node); an update leaves identity untouched.
     fn apply_node_id(&mut self, op: &CommittedRowOp, fresh_ids: &mut impl Iterator<Item = i64>) {
         match op {
             CommittedRowOp::Insert { address, .. } => {
@@ -263,28 +267,15 @@ impl Projection {
             CommittedRowOp::Update { .. } => {}
             CommittedRowOp::Delete { address, .. } => {
                 self.by_id.remove(address);
-                // The node write deleted the whole subtree by id, so drop every
-                // descendant's id too, keeping `by_id` equal to the durable tree.
-                let descendants: Vec<RowAddress> =
-                    self.by_id.keys().filter(|held| is_descendant(address, held)).cloned().collect();
-                for descendant in descendants {
-                    self.by_id.remove(&descendant);
-                }
             }
             CommittedRowOp::Rekey { from, to, .. } => {
-                if let Some(id) = self.by_id.remove(from) {
+                self.by_id.remove(from);
+                if let Some(id) = fresh_ids.next() {
                     self.by_id.insert(to.clone(), id);
                 }
             }
         }
     }
-}
-
-/// Whether `held` is a strict descendant of `ancestor`: deeper, and sharing every
-/// one of the ancestor's address levels as a prefix.
-fn is_descendant(ancestor: &RowAddress, held: &RowAddress) -> bool {
-    held.depth() > ancestor.depth()
-        && ancestor.steps().zip(held.steps()).all(|(a, b)| a == b)
 }
 
 /// Encode a composition into the `instance_meta.composition` JSONB.

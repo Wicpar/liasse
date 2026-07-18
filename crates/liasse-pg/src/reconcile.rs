@@ -21,8 +21,9 @@
 //!   are safe.
 //! - **Orphan rows.** Handled by the write path, not here: a collection is a subtree
 //!   of the `nodes` adjacency tree, so a §20 migration removing it issues a `Delete`
-//!   per row (the node write cascades each subtree) and leaves no residue (proven by
-//!   the crate's no-orphan-rows gate).
+//!   per row, which tombstones each node in place. No LIVE row of the removed
+//!   collection survives (proven by the crate's no-orphan-rows gate); the inert
+//!   tombstones that remain are a future GC opportunity, correctness-neutral.
 //!
 //! Create and clean are driven from the *same* enumerable [`Schema::tables`] /
 //! [`Schema::indexes`] data, so the desired set has one source of truth. The whole

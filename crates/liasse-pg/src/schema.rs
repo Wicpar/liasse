@@ -31,8 +31,12 @@
 ///
 /// Bumped to 2 when a model-derived key-order index was added; to 3 when the
 /// node-adjacency `nodes` table and its `node_key_lookup` unique index became the
-/// sole durable row representation (the earlier flat `rows` table was removed).
-pub const SCHEMA_VERSION: i32 = 3;
+/// sole durable row representation (the earlier flat `rows` table was removed); to
+/// 4 when `nodes.value`/`nodes.incarnation` became NULLABLE to carry *tombstones* —
+/// a deleted non-leaf ancestor kept as a structural-only position so its retained
+/// descendants (logical orphans, §5.4) stay addressable, replacing the earlier
+/// subtree cascade.
+pub const SCHEMA_VERSION: i32 = 4;
 
 /// A per-instance schema namespace: a validated PostgreSQL identifier.
 #[derive(Debug, Clone)]
@@ -203,11 +207,19 @@ impl Schema {
     /// (`factory::ensure` seeds it), so `parent_id` is `NOT NULL` everywhere. It is
     /// the sole durable row representation; reads are served from an in-memory
     /// projection rebuilt from it on open. The self-FK is `DEFERRABLE INITIALLY
-    /// DEFERRED` so a parent-first delete within one transaction is tolerated, and it
-    /// carries no `ON DELETE CASCADE` — every delete is issued explicitly by id, so
-    /// the node tree stays an exact fold of the reachable committed state. `key_enc`
-    /// is the order-preserving lookup/scan key; `key_wire` is the canonical, decodable
-    /// key a load reconstructs the address from.
+    /// DEFERRED` so a parent-first insert within one transaction is tolerated.
+    ///
+    /// A node is a structural *position*; a *row* is a node carrying a value.
+    /// `value`/`incarnation` are therefore NULLABLE: a live row has both non-NULL,
+    /// while a **tombstone** — a deleted non-leaf ancestor retained so its descendant
+    /// rows (logical orphans, §5.4) stay addressable — has both NULL. The
+    /// `CHECK ((value IS NULL) = (incarnation IS NULL))` makes the mixed state
+    /// unrepresentable, so `value IS NOT NULL` alone distinguishes a row from a
+    /// tombstone. Delete tombstones a node in place rather than cascading its subtree,
+    /// so descendants are untouched; a re-insert at a tombstoned address revives the
+    /// same node (`ON CONFLICT DO UPDATE`), re-parenting its retained descendants
+    /// under the live row again. `key_enc` is the order-preserving lookup/scan key;
+    /// `key_wire` is the canonical, decodable key a load reconstructs the address from.
     #[must_use]
     pub fn tables(&self) -> [TableSpec; 6] {
         [
@@ -233,8 +245,9 @@ impl Schema {
                           step_name TEXT NOT NULL, \
                           key_enc BYTEA NOT NULL, \
                           key_wire JSONB NOT NULL, \
-                          incarnation TEXT NOT NULL, \
-                          value JSONB NOT NULL",
+                          incarnation TEXT, \
+                          value JSONB, \
+                          CHECK ((value IS NULL) = (incarnation IS NULL))",
             },
             TableSpec {
                 name: "commit_log",

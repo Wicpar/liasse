@@ -3,22 +3,44 @@
 //!
 //! The `nodes` tree is the sole durable representation of committed rows: reads are
 //! served from an in-memory projection rebuilt from it ([`crate::node_load`]), and
-//! this module is the only writer. Every op is applied **by the surrogate node
-//! id**, resolved in O(1) from a per-transaction map ([`NodeWriter::staged`])
-//! layered over the committed [`by_id`](crate::projection) side map:
+//! this module is the only writer.
 //!
-//! - **Insert** allocates a fresh node under its parent (the root sentinel `0` at
-//!   depth 1, else the parent row's node) and returns its id.
+//! # A node is a position; a row is a node with a value
+//!
+//! `value`/`incarnation` are nullable: a **live row** has both non-NULL, a
+//! **tombstone** has both NULL. A tombstone is a structural-only position — a
+//! deleted non-leaf ancestor kept solely so its descendant rows stay addressable —
+//! never itself observed as a row. This is what lets the durable tree represent the
+//! state the runtime actually produces on a top-level drop (§21.1): the top-level
+//! row is deleted while its nested rows are left as *logical orphans* (§5.4), still
+//! at their addresses. The earlier design cascade-deleted the whole subtree here,
+//! which dropped those orphans — an [observable divergence from the reference store
+//! across a reopen](../../tests/redteam_cascade_delete_orphan_reopen.rs), since the
+//! in-memory projection (removing only the addressed row) and the reopened tree then
+//! disagreed. Tombstoning removes that divergence.
+//!
+//! Every op is applied **by the surrogate node id**, resolved in O(1) from a
+//! per-transaction map ([`NodeWriter::staged`]) layered over the committed
+//! [`by_id`](crate::projection) side map (which now holds only *live* rows):
+//!
+//! - **Insert** creates a node under its parent (the root sentinel `0` at depth 1,
+//!   else the parent row's node) and returns its id. `ON CONFLICT DO UPDATE` makes
+//!   an insert at a *tombstoned* address REVIVE that node in place, keeping its id so
+//!   any descendants it retained are re-parented under the live row again — matching
+//!   the reference store, which allocates a fresh incarnation on re-insert. (A valid
+//!   op stream never inserts over a *live* row; admission staging rejects that.)
 //! - **Update** rewrites the resolved node's value/incarnation in place.
-//! - **Delete** removes the resolved node AND its descendant subtree by id (§5.4):
-//!   the runtime does not always emit a `Delete` per nested row (a top-level drop
-//!   leaves the nested rows as logical orphans, unreachable), but an adjacency tree
-//!   cannot dangle a child off a deleted parent, so the subtree is cascaded by id —
-//!   keeping the tree a walkable fold of *reachable* state (exactly what the runtime
-//!   observes), and tolerating a parent-first delete via the `DEFERRABLE` self-FK.
-//! - **Rekey** moves the *same* id to a new parent/key, so the row's descendants —
-//!   whose `parent_id` still names that stable id — move with it untouched. This is
-//!   the whole reason for a surrogate id.
+//! - **Delete** TOMBSTONES the resolved node (`value = NULL, incarnation = NULL`) and
+//!   leaves its descendants untouched, so a nested row whose ancestor was dropped
+//!   survives as an orphan — exactly the reference-store semantics. No subtree is
+//!   cascaded. A fully-dead subtree (a tombstone with no live descendant) is inert
+//!   and a future GC opportunity; retaining it is correctness-neutral.
+//! - **Rekey** moves ONLY the addressed row (§5.4 reference semantics): it places the
+//!   row's value/incarnation at the target address (reviving a tombstone there or
+//!   creating a fresh node, same as Insert) and TOMBSTONES the source node, so the
+//!   source's descendants remain orphans under the source address. The subtree is
+//!   NOT id-moved — moving it would relocate descendants the reference store leaves
+//!   in place.
 //!
 //! `key_enc` (the order-preserving `BYTEA`) is written for lookup/scan order;
 //! `key_wire` (canonical, self-describing JSONB) is written so a load can decode
@@ -26,7 +48,9 @@
 
 use std::collections::BTreeMap;
 
+use liasse_ident::RowIncarnation;
 use liasse_store::{AddressStep, CommittedRowOp, KeyValue, RowAddress, StoreError};
+use liasse_value::Value;
 use postgres::Transaction;
 use serde_json::Value as J;
 
@@ -50,8 +74,11 @@ pub(crate) struct NodeWriter<'a> {
     /// Addresses inserted or rekeyed-into during THIS transaction, and their ids;
     /// consulted before `committed` so a nested child sees its just-inserted parent.
     staged: BTreeMap<RowAddress, i64>,
-    /// The id of each freshly inserted node, in op order — handed to the projection
-    /// so it can advance `by_id` after the commit succeeds.
+    /// The surrogate id each op *establishes at a live address*, in op order: one per
+    /// `Insert` (the created-or-revived node) and one per `Rekey` (its target node).
+    /// Handed to the projection so it can advance `by_id` after the commit succeeds;
+    /// the projection consumes one for each `Insert` and each `Rekey` in the same
+    /// order. `Update`/`Delete` establish no new live address and contribute none.
     new_ids: Vec<i64>,
 }
 
@@ -61,8 +88,9 @@ impl<'a> NodeWriter<'a> {
         Self { schema, committed, staged: BTreeMap::new(), new_ids: Vec::new() }
     }
 
-    /// The ids of the nodes this transaction inserted, one per `Insert` op in op
-    /// order — the projection replays the same op order to advance `by_id`.
+    /// The ids each op established at a live address, one per `Insert` and one per
+    /// `Rekey` in op order — the projection replays the same op order to advance
+    /// `by_id`.
     pub(crate) fn into_new_ids(self) -> Vec<i64> {
         self.new_ids
     }
@@ -75,29 +103,7 @@ impl<'a> NodeWriter<'a> {
     ) -> Result<(), StoreError> {
         match op {
             CommittedRowOp::Insert { address, incarnation, value } => {
-                let parent = self.resolve_parent(address)?;
-                let step = last_step(address)?;
-                let row = txn
-                    .query_one(
-                        &format!(
-                            "INSERT INTO {}.nodes \
-                             (parent_id, step_name, key_enc, key_wire, incarnation, value) \
-                             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
-                            self.schema
-                        ),
-                        &[
-                            &parent,
-                            &step.name().as_str(),
-                            &key_enc::encode_key_value(step.key()),
-                            &jsonb_text::to_jsonb(&encode_key_wire(step.key())),
-                            &incarnation.as_str(),
-                            &jsonb_text::to_jsonb(&value_codec::encode(value)),
-                        ],
-                    )
-                    .map_err(backend)?;
-                let id = cell::<i64>(&row, "nodes", "id")?;
-                self.staged.insert(address.clone(), id);
-                self.new_ids.push(id);
+                self.place(txn, address, incarnation, value)?;
             }
             CommittedRowOp::Update { address, incarnation, value } => {
                 let id = self.resolve_id(address)?;
@@ -116,59 +122,81 @@ impl<'a> NodeWriter<'a> {
             }
             CommittedRowOp::Delete { address, .. } => {
                 let id = self.resolve_id(address)?;
-                // Delete the node AND its whole descendant subtree, by id. A row's
-                // nested rows are its descendants (§5.4), so removing a row removes
-                // them — a proper hierarchy. The runtime does not always emit an
-                // explicit `Delete` per descendant: a top-level row drop (§21.1)
-                // removes only the row itself and leaves its nested rows as logical
-                // orphans (unreachable). An adjacency tree cannot: an orphaned child
-                // node would dangle off a deleted parent and violate the self-FK.
-                // Cascading by id here keeps the tree a valid, walkable fold of
-                // *reachable* state — issued by id, not by SQL `ON DELETE CASCADE`, so
-                // the delete set stays explicit. A node already gone (a child whose
-                // parent was deleted first) makes the recursion match nothing, so a
-                // redundant per-row delete is a no-op.
-                txn.execute(
-                    &format!(
-                        "WITH RECURSIVE subtree(id) AS (\
-                           SELECT id FROM {schema}.nodes WHERE id = $1 \
-                           UNION ALL \
-                           SELECT n.id FROM {schema}.nodes n JOIN subtree s ON n.parent_id = s.id\
-                         ) DELETE FROM {schema}.nodes WHERE id IN (SELECT id FROM subtree)",
-                        schema = self.schema
-                    ),
-                    &[&id],
-                )
-                .map_err(backend)?;
+                self.tombstone(txn, id)?;
                 self.staged.remove(address);
             }
-            CommittedRowOp::Rekey { from, to, incarnation: _, value } => {
-                // A rekey keeps the row's incarnation (unchanged here) and its
-                // surrogate id, so descendants that reference the id move with it.
-                let id = self.resolve_id(from)?;
-                let parent = self.resolve_parent(to)?;
-                let step = last_step(to)?;
-                txn.execute(
-                    &format!(
-                        "UPDATE {}.nodes SET \
-                         parent_id = $1, step_name = $2, key_enc = $3, key_wire = $4, value = $5 \
-                         WHERE id = $6",
-                        self.schema
-                    ),
-                    &[
-                        &parent,
-                        &step.name().as_str(),
-                        &key_enc::encode_key_value(step.key()),
-                        &jsonb_text::to_jsonb(&encode_key_wire(step.key())),
-                        &jsonb_text::to_jsonb(&value_codec::encode(value)),
-                        &id,
-                    ],
-                )
-                .map_err(backend)?;
+            CommittedRowOp::Rekey { from, to, incarnation, value } => {
+                // Move ONLY the addressed row (§5.4): place its value/incarnation at
+                // the target (reviving a tombstone there or creating fresh), then
+                // tombstone the source so its descendants stay orphans under the
+                // source address. The subtree is NOT id-moved — the reference store
+                // leaves those descendants where they are. The op carries the
+                // source's preserved incarnation, so the target reads back the same
+                // incarnation the reference store keeps across a rekey.
+                let from_id = self.resolve_id(from)?;
+                self.place(txn, to, incarnation, value)?;
+                self.tombstone(txn, from_id)?;
                 self.staged.remove(from);
-                self.staged.insert(to.clone(), id);
             }
         }
+        Ok(())
+    }
+
+    /// Place `value`/`incarnation` at `address` — reviving a tombstone there or
+    /// creating a fresh node — and record its surrogate id. The unique
+    /// `node_key_lookup` index is the `ON CONFLICT` arbiter, so a re-place at a
+    /// tombstoned address updates that same node in place, keeping its id and with it
+    /// any descendants it retained. A valid op stream never places over a *live* row
+    /// (admission staging rejects an insert/rekey onto an occupied address), so the
+    /// conflict target is always either free or a tombstone.
+    fn place(
+        &mut self,
+        txn: &mut Transaction<'_>,
+        address: &RowAddress,
+        incarnation: &RowIncarnation,
+        value: &Value,
+    ) -> Result<i64, StoreError> {
+        let parent = self.resolve_parent(address)?;
+        let step = last_step(address)?;
+        let row = txn
+            .query_one(
+                &format!(
+                    "INSERT INTO {}.nodes \
+                     (parent_id, step_name, key_enc, key_wire, incarnation, value) \
+                     VALUES ($1, $2, $3, $4, $5, $6) \
+                     ON CONFLICT (parent_id, step_name, key_enc) \
+                     DO UPDATE SET incarnation = EXCLUDED.incarnation, value = EXCLUDED.value \
+                     RETURNING id",
+                    self.schema
+                ),
+                &[
+                    &parent,
+                    &step.name().as_str(),
+                    &key_enc::encode_key_value(step.key()),
+                    &jsonb_text::to_jsonb(&encode_key_wire(step.key())),
+                    &incarnation.as_str(),
+                    &jsonb_text::to_jsonb(&value_codec::encode(value)),
+                ],
+            )
+            .map_err(backend)?;
+        let id = cell::<i64>(&row, "nodes", "id")?;
+        self.staged.insert(address.clone(), id);
+        self.new_ids.push(id);
+        Ok(id)
+    }
+
+    /// Tombstone the node `id`: null its value/incarnation so it is no longer a row,
+    /// while leaving the node — and every descendant hanging off it — in place. This
+    /// is how a deletion retains logical orphans (§21.1/§5.4): a nested row survives
+    /// its ancestor's deletion, addressable through the tombstone. A fully-dead
+    /// subtree (a tombstone with no live descendant) is inert and a future GC
+    /// opportunity; retaining it is correctness-neutral.
+    fn tombstone(&self, txn: &mut Transaction<'_>, id: i64) -> Result<(), StoreError> {
+        txn.execute(
+            &format!("UPDATE {}.nodes SET value = NULL, incarnation = NULL WHERE id = $1", self.schema),
+            &[&id],
+        )
+        .map_err(backend)?;
         Ok(())
     }
 

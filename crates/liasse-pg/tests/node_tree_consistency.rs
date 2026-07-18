@@ -1,22 +1,21 @@
-//! The node-adjacency dual-write consistency gate.
+//! The node-adjacency committed-state consistency gate.
 //!
-//! Phase 1 dual-writes every committed row op into a second physical layout — the
-//! `nodes` adjacency tree — beside the authoritative flat `rows` table, in the
-//! same admission transaction. This test proves the two layouts encode the *same*
-//! committed state, so a later phase can flip reads onto `nodes` with no observable
-//! change.
+//! The `nodes` adjacency tree is the SOLE durable row representation: every
+//! committed row op is applied to it in the admission transaction, and reads are
+//! served from an in-memory projection rebuilt from it. This test proves the durable
+//! tree encodes exactly the committed state the in-memory reference does.
 //!
 //! It runs one op sequence — inserts, updates, a delete, and both a same-parent and
 //! a cross-parent leaf rekey, over three collection levels (`orgs` → `teams` →
 //! `members`) — against BOTH a [`PgStore`] and the in-memory reference, then:
 //!
 //! 1. reconstructs committed state purely from the NODE tree (read each node, walk
-//!    its `parent_id` chain to the root sentinel `id = 0`, and assemble the address
-//!    from each level's `step_name` + `key_wire`), and asserts it equals the state
-//!    read straight from the flat `rows` table — the node tree is an exact mirror of
-//!    `rows`;
-//! 2. asserts the PostgreSQL store's own (rows-derived) reads equal the in-memory
-//!    reference row-for-row, incarnations included — the `== MemoryStore` leg.
+//!    its `parent_id` chain to the root sentinel `id = 0` — through tombstones,
+//!    which contribute an address level but are not rows — and assemble the address
+//!    from each level's `step_name` + `key_wire`), and asserts it holds exactly the
+//!    LIVE rows the workload leaves;
+//! 2. asserts the PostgreSQL store's own reads equal the in-memory reference
+//!    row-for-row, incarnations included — the `== MemoryStore` leg.
 //!
 //! The node reconstruction is an INDEPENDENT oracle: it reads the raw catalog with
 //! `serde_json`, never the crate's private codec, so a pass means the durable node
@@ -122,14 +121,20 @@ fn canon(value: &JsonV) -> String {
 /// Committed state reconstructed purely from the NODE tree: read every node, then
 /// for each non-sentinel node walk its `parent_id` chain to the root sentinel
 /// (`id = 0`), assembling the address from each level's `step_name` + `key_wire`
-/// — exactly the `[[name, [key-components…]], …]` shape the `rows` address key has.
+/// — exactly the `[[name, [key-components…]], …]` shape the row address key has.
+///
+/// Only LIVE nodes (`value IS NOT NULL`) are emitted as rows. A tombstone
+/// (`value`/`incarnation` NULL — a deleted ancestor retained so its descendants stay
+/// addressable) is not a row, so it is skipped when emitting; but the parent-walk
+/// still traverses tombstones, since a tombstone contributes its `step_name` +
+/// `key_wire` to a descendant's address.
 fn state_from_nodes(client: &mut Client, schema: &str) -> BTreeMap<String, (String, String)> {
     struct Node {
         parent: i64,
         name: String,
         key_wire: JsonV,
-        incarnation: String,
-        value: JsonV,
+        incarnation: Option<String>,
+        value: Option<JsonV>,
     }
     let mut nodes: BTreeMap<i64, Node> = BTreeMap::new();
     for row in client
@@ -159,9 +164,14 @@ fn state_from_nodes(client: &mut Client, schema: &str) -> BTreeMap<String, (Stri
 
     let mut state = BTreeMap::new();
     for (&id, node) in &nodes {
+        // Emit only live rows; a tombstone carries no value/incarnation.
+        let (Some(incarnation), Some(value)) = (&node.incarnation, &node.value) else {
+            continue;
+        };
         let mut levels: Vec<JsonV> = Vec::new();
         let mut cursor = id;
         loop {
+            // The walk traverses tombstones too — they still contribute an address level.
             let current = nodes.get(&cursor).expect("node parent chain is intact");
             levels.push(json!([current.name, current.key_wire]));
             if current.parent == 0 {
@@ -172,7 +182,7 @@ fn state_from_nodes(client: &mut Client, schema: &str) -> BTreeMap<String, (Stri
         }
         levels.reverse();
         let address = JsonV::Array(levels);
-        state.insert(canon(&address), (node.incarnation.clone(), canon(&node.value)));
+        state.insert(canon(&address), (incarnation.clone(), canon(value)));
     }
     state
 }
@@ -195,21 +205,23 @@ fn node_tree_mirrors_rows_and_memory() {
 
     // (1) The node tree is now the SOLE durable row representation. Reconstruct the
     // committed set from parent_id/key_wire and confirm it is a sound, non-empty
-    // walk (every node's parent chain reaches the sentinel; deletes cascade the
-    // subtree, rekeys keep the node id).
+    // walk (every node's parent chain reaches the sentinel; deletes tombstone the
+    // node in place, rekeys move only the addressed row).
     let mut client = pg_factory.connect().expect("connect a raw client");
     let s = schema.quoted();
     let nodes_state = state_from_nodes(&mut client, &s);
     assert!(!nodes_state.is_empty(), "the workload must leave committed nodes to compare");
 
     // (2) The PostgreSQL store's node-derived reads equal the in-memory reference,
-    // incarnations included — presence AND absence at every touched address.
+    // incarnations included — presence AND absence at every touched address. The
+    // absent addresses are now tombstones (deleted or rekeyed-away nodes), which
+    // `state_from_nodes` skips, so the live count still equals `present`.
     let present = [org(1), org(2), team(1, 10), team(1, 30), member(1, 10, 200)];
     let absent = [team(2, 20), member(1, 10, 100), member(1, 10, 101)];
     assert_eq!(
         nodes_state.len(),
         present.len(),
-        "the node tree holds exactly the reachable rows after the workload, got {nodes_state:?}"
+        "the node tree holds exactly the live rows after the workload, got {nodes_state:?}"
     );
     for address in present.iter().chain(absent.iter()) {
         let pg_row = pg.row(address).expect("pg row read");

@@ -13,10 +13,19 @@
 //! - `by_id`: address → surrogate node id — the write path's O(1) parent/id
 //!   resolver ([`crate::node_write`]).
 //!
-//! The tree only ever holds the *reachable* set (a node `Delete` cascades its
-//! subtree, so a nested row whose parent row was dropped is not retained), which is
-//! exactly the state the runtime observes — reconstructing `current` from it is
-//! observationally identical to the former flat-`rows` load.
+//! # Rows vs tombstones
+//!
+//! A node is a structural *position*; a *row* is a node carrying a value. `current`
+//! and `by_id` hold only **live** nodes (`value IS NOT NULL`). A **tombstone**
+//! (`value IS NULL`) is a deleted non-leaf ancestor retained so its descendant rows
+//! stay addressable (§5.4 logical orphans); it is not itself a row, so it is never
+//! emitted. But the parent-chain walk MUST still traverse tombstones: a tombstone
+//! contributes its `step_name` + decoded `key_wire` to a descendant's address even
+//! though it is not a row. All non-sentinel nodes are therefore read into the map
+//! that the walk indexes, and the live/tombstone distinction is applied only when
+//! deciding what to emit. This is what makes a reopen reproduce the exact live
+//! projection: a top-level drop leaves its nested rows as orphans, and the walk
+//! reconstructs their addresses through the tombstoned ancestor.
 //!
 //! `key_wire` is the canonical, self-describing key form (decoded here); `key_enc`
 //! is never inverted — it exists only for the lookup/scan index.
@@ -44,11 +53,14 @@ pub(crate) struct NodeTree {
     pub by_id: BTreeMap<RowAddress, i64>,
 }
 
-/// One decoded node: its parent link, its own address level, and its stored row.
+/// One decoded node: its parent link, its own address level, and — for a *row*, as
+/// opposed to a tombstone — its stored value. `row` is `None` for a tombstone: it
+/// still contributes its level to descendants' addresses (so it is kept in the map
+/// the parent-walk indexes) but is never emitted as a row.
 struct Node {
     parent: i64,
     step: AddressStep,
-    row: StoredRow,
+    row: Option<StoredRow>,
 }
 
 /// Reconstruct the whole committed row set from `schema`'s `nodes` table.
@@ -70,23 +82,33 @@ pub(crate) fn load(client: &mut Client, schema: &str) -> Result<NodeTree, StoreE
         let parent = cell::<i64>(&row, "nodes", "parent_id")?;
         let name = cell::<String>(&row, "nodes", "step_name")?;
         let key = decode_key_wire(&jsonb_text::from_jsonb(&cell::<J>(&row, "nodes", "key_wire")?))?;
-        let incarnation = RowIncarnation::new(cell::<String>(&row, "nodes", "incarnation")?);
-        let value = value_codec::decode(&jsonb_text::from_jsonb(&cell::<J>(&row, "nodes", "value")?))?;
+        // A live row has both `value` and `incarnation`; a tombstone has neither (the
+        // schema's `CHECK` keeps them co-NULL). Decode a row, or record a tombstone
+        // that still carries its address level for the walk.
+        let value = cell::<Option<J>>(&row, "nodes", "value")?;
+        let incarnation = cell::<Option<String>>(&row, "nodes", "incarnation")?;
+        let node = match (value, incarnation) {
+            (Some(value), Some(incarnation)) => Some(StoredRow::new(
+                RowIncarnation::new(incarnation),
+                value_codec::decode(&jsonb_text::from_jsonb(&value))?,
+            )),
+            (None, None) => None,
+            _ => return Err(corrupt("node has exactly one of value/incarnation set")),
+        };
         nodes.insert(
             id,
-            Node {
-                parent,
-                step: AddressStep::new(NameSegment::new(name), key),
-                row: StoredRow::new(incarnation, value),
-            },
+            Node { parent, step: AddressStep::new(NameSegment::new(name), key), row: node },
         );
     }
 
+    // Emit only live nodes as rows, but reconstruct each address by walking the
+    // parent chain through ALL nodes (tombstones included).
     let mut current = BTreeMap::new();
     let mut by_id = BTreeMap::new();
     for (&id, node) in &nodes {
+        let Some(row) = &node.row else { continue };
         let address = reconstruct(id, &nodes)?;
-        current.insert(address.clone(), node.row.clone());
+        current.insert(address.clone(), row.clone());
         by_id.insert(address, id);
     }
     Ok(NodeTree { current, by_id })

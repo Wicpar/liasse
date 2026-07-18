@@ -220,27 +220,30 @@ fn every_query_pattern_is_index_served() {
     let items = "items";
 
     // (1) Node point lookup by (parent_id, step_name, key_enc) — the write path's
-    // row resolution, served by the `node_key_lookup` unique index.
+    // row resolution, served by the `node_key_lookup` unique index. `value IS NOT
+    // NULL` excludes tombstones (deleted ancestors kept only so descendants stay
+    // addressable); a live-row read must never surface one.
     let key = key_enc(COLLECTION / 2);
     let plan = explain(
         &mut client,
         &format!(
             "SELECT id, incarnation, value FROM {s}.nodes \
-             WHERE parent_id = $1 AND step_name = $2 AND key_enc = $3"
+             WHERE parent_id = $1 AND step_name = $2 AND key_enc = $3 AND value IS NOT NULL"
         ),
         &[&parent, &items, &key],
     );
     assert_index_only(&plan, "node point lookup by (parent_id, step_name, key_enc)");
 
-    // (2) Collection scan in Annex B key order — all direct rows of one collection
-    // in `key_enc` order, served by the same `node_key_lookup` index. `key_enc` is
-    // BYTEA (unsigned `memcmp`), so the index supplies the order with no `COLLATE`
-    // and the plan carries no `Sort`.
+    // (2) Collection scan in Annex B key order — all direct LIVE rows of one
+    // collection in `key_enc` order, served by the same `node_key_lookup` index.
+    // `key_enc` is BYTEA (unsigned `memcmp`), so the index supplies the order with no
+    // `COLLATE` and the plan carries no `Sort`; `value IS NOT NULL` (an in-scan
+    // filter) excludes tombstones without disturbing the index order.
     let plan = explain(
         &mut client,
         &format!(
             "SELECT id, key_enc, incarnation, value FROM {s}.nodes \
-             WHERE parent_id = $1 AND step_name = $2 ORDER BY key_enc"
+             WHERE parent_id = $1 AND step_name = $2 AND value IS NOT NULL ORDER BY key_enc"
         ),
         &[&parent, &items],
     );
