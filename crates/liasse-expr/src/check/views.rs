@@ -1,10 +1,12 @@
 //! Typing of selectors, `::` traversal, calls (aggregates, built-ins, `now`,
 //! `uuid`), and object literals (§6.3, §6.4, §6.5, §7.5).
 
+use liasse_diag::Span;
 use liasse_syntax::{Arg, BlockMember, BlockMemberKind, Expr, ExprKind, Selector};
 use liasse_value::{StructType, Type};
 
 use crate::check::Checker;
+use crate::env::CallSite;
 use crate::host::HostOp;
 use crate::ty::ExprType;
 use crate::typed::{AggFunc, BuiltinFn, TypedExpr, TypedKind, TypedSelector};
@@ -246,7 +248,16 @@ impl Checker<'_> {
                 ExprType::scalar(Type::timestamp()),
                 TypedKind::Now,
             )),
-            "uuid" => Some(TypedExpr::new(expr.span, ExprType::scalar(Type::Uuid), TypedKind::Uuid)),
+            "uuid" => Some(TypedExpr::new(
+                expr.span,
+                ExprType::scalar(Type::Uuid),
+                // §5.1/§8.12 (SPEC-ISSUES item 4): pin the call site to its OWN
+                // sub-source here. `expr.span` is a local byte offset within this
+                // default's sub-source, so two byte-identical `uuid()` defaults on
+                // one row share it; pairing it with `self.source` makes the site
+                // globally unique, so the runtime derives a distinct UUID for each.
+                TypedKind::Uuid(CallSite::new(Span::new(self.source, expr.span))),
+            )),
             "size" => self.check_size(expr, args),
             "has" => self.check_builtin(expr, BuiltinFn::Has, args, ExprType::scalar(Type::Bool)),
             "assert" => {

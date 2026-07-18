@@ -21,7 +21,7 @@
 use liasse_diag::ByteSpan;
 use liasse_value::Value;
 
-use crate::env::KeyringSelector;
+use crate::env::{CallSite, KeyringSelector};
 use crate::ty::ExprType;
 
 /// A type-checked expression: its span, its resolved result type, and its
@@ -277,9 +277,11 @@ pub(crate) enum TypedKind {
     },
     /// `now()` — the fixed transaction sample (A.5).
     Now,
-    /// `uuid()` — a generated UUID (§8.12); carries its call site so the
-    /// environment can resolve per-call-site identity (SPEC-ISSUES item 4).
-    Uuid,
+    /// `uuid()` — a generated UUID (§8.12); carries its globally unique
+    /// [`CallSite`] (source + span) so the environment resolves a distinct value
+    /// per call site, even for two byte-identical defaults compiled into
+    /// different sub-sources (SPEC-ISSUES item 4, §5.1/§8.12).
+    Uuid(CallSite),
     /// A temporal selector over a bucketed base view (§14.1): `.$at`,
     /// `.$between`, `.$all`. Evaluation reduces the query's instants and defers
     /// activity resolution to the environment's temporal index.

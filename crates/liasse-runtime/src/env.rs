@@ -85,8 +85,9 @@ pub(crate) struct RuntimeEnv<'a> {
     seed: u64,
     /// The generated-value generation this environment evaluates under
     /// (SPEC-ISSUES item 4, §5.1/§8.12): fixed for the whole evaluation, so two
-    /// `uuid()` sites in one evaluation stay distinct by span while the *same*
-    /// site across two rows of one request stays distinct by generation. A view,
+    /// `uuid()` sites in one evaluation stay distinct by call site (source +
+    /// span) while the *same* site across two rows of one request stays distinct
+    /// by generation. A view,
     /// check, or computed read carries [`Generation::ROOT`]; a per-row default
     /// resolution carries the fresh ordinal the admission advanced for that row.
     generation: Generation,
@@ -275,7 +276,11 @@ impl Environment for RuntimeEnv<'_> {
     }
 
     fn uuid(&self, site: CallSite) -> Uuid {
-        derive_uuid(self.seed, site.span(), self.generation)
+        // §5.1/§8.12: feed BOTH the call site's source and its span into the
+        // derivation. Two byte-identical `uuid()` defaults on one row share the
+        // seed and this environment's single generation, so the source is what
+        // keeps their otherwise-identical local spans apart.
+        derive_uuid(self.seed, site.source(), site.span(), self.generation)
     }
 
     /// Resolve a temporal selector over a bucketed base view (§14.1). Each row's

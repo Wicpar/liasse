@@ -208,9 +208,10 @@ impl Evaluator<'_> {
                 self.eval_host_call(namespace, function, args)
             }
             TypedKind::Now => Ok(Cell::Scalar(Value::Timestamp(self.env.now()))),
-            TypedKind::Uuid => Ok(Cell::Scalar(Value::Uuid(
-                self.env.uuid(crate::env::CallSite::new(expr.span())),
-            ))),
+            // §5.1/§8.12: the call site was pinned to its own sub-source at check
+            // time, so two byte-identical `uuid()` defaults on one row carry
+            // distinct sites and the environment derives distinct values.
+            TypedKind::Uuid(site) => Ok(Cell::Scalar(Value::Uuid(self.env.uuid(*site)))),
             TypedKind::Key(base) => self.eval_key(base),
             TypedKind::Temporal { base, query } => self.eval_temporal(base, query),
             TypedKind::Keyring { base, selector } => self.eval_keyring(expr, base, *selector),

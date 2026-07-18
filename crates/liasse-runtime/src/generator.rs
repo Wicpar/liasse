@@ -4,17 +4,22 @@
 //! The engine samples both **once** at the start of an admission and holds the
 //! concrete values in the request environment, so evaluation stays a pure
 //! function of that environment (no interior mutability during a `&self`
-//! evaluation). `uuid()` is then a pure derivation of three inputs
+//! evaluation). `uuid()` is then a pure derivation of FOUR inputs
 //! (SPEC-ISSUES item 4, §5.1/§8.12): the per-request `seed` keeps two requests'
 //! identifiers apart; the [`Generation`] ordinal keeps two rows of one request
 //! apart, so one `uuid()` field-default call site evaluated across the several
-//! rows of a single request yields a distinct value per row; and the call-site
-//! span keeps two distinct `uuid()` sites of one row apart. `now()` is the
-//! symmetric opposite (A.5): a single instant shared by every call in the
-//! request. Replay needs no re-derivation — a generated value that enters
-//! committed state is materialized at admission and read back verbatim.
+//! rows of a single request yields a distinct value per row; and the call site —
+//! its `SourceId` **and** its span — keeps two distinct `uuid()` sites of one row
+//! apart. The `SourceId` is load-bearing: each field/`$key` default compiles into
+//! its own sub-source, so two byte-identical `uuid()` defaults (`"uuid()"`) carry
+//! the identical LOCAL span `[0..6)`; only the source that measures the span tells
+//! them apart, so a `secret: uuid = uuid()` never collapses onto a public
+//! `id: uuid = uuid()`. `now()` is the symmetric opposite (A.5): a single instant
+//! shared by every call in the request. Replay needs no re-derivation — a
+//! generated value that enters committed state is materialized at admission and
+//! read back verbatim.
 
-use liasse_diag::ByteSpan;
+use liasse_diag::{ByteSpan, SourceId};
 use liasse_value::{Precision, Timestamp, Uuid};
 
 /// A per-request, per-occurrence ordinal that distinguishes each generated-value
@@ -59,24 +64,32 @@ pub trait Generators {
     fn next_seed(&mut self) -> u64;
 }
 
-/// Derive the UUID for a `uuid()` call at `site` under a request `seed` and the
-/// current [`Generation`] (SPEC-ISSUES item 4, §5.1/§8.12). Pure: identical
-/// `(seed, site, generation)` always yields the same UUID, and a change to any
-/// one of the three yields a distinct UUID. The 128 bits are filled from a
-/// SplitMix64-style avalanche of all three inputs, which spreads adjacent spans,
-/// sequential seeds, AND sequential generations apart — so one field-default
-/// call site (one fixed `site`) evaluated across the rows of a single request
-/// (one fixed `seed`, an advancing `generation`) never repeats a value.
+/// Derive the UUID for a `uuid()` call in `source` at `site` under a request
+/// `seed` and the current [`Generation`] (SPEC-ISSUES item 4, §5.1/§8.12). Pure:
+/// identical `(seed, source, site, generation)` always yields the same UUID, and
+/// a change to any one of the four yields a distinct UUID. The 128 bits are
+/// filled from a SplitMix64-style avalanche of all four inputs, which spreads
+/// adjacent spans, adjacent sources, sequential seeds, AND sequential generations
+/// apart — so one field-default call site (one fixed `source`+`site`) evaluated
+/// across the rows of a single request (one fixed `seed`, an advancing
+/// `generation`) never repeats a value, and two byte-identical defaults in
+/// DIFFERENT sub-sources (same local `site`, different `source`) never collide.
 #[must_use]
-pub fn derive_uuid(seed: u64, site: ByteSpan, generation: Generation) -> Uuid {
+pub fn derive_uuid(seed: u64, source: SourceId, site: ByteSpan, generation: Generation) -> Uuid {
     let ordinal = generation.ordinal();
+    // The per-label sub-source index: two defaults compiled into one package
+    // share a `SourceMap`, so their indices differ even when their local spans
+    // are identical. Mixed into both halves so the source discriminates the site.
+    let source = u64::from(source.index());
     let lo = mix(
         seed ^ u64::from(site.start()).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ source.wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
             ^ ordinal.wrapping_mul(0x2545_F491_4F6C_DD1D),
     );
     let hi = mix(
         seed.rotate_left(32)
             ^ u64::from(site.end()).wrapping_add(0xD1B5_4A32_D192_ED03)
+            ^ source.rotate_left(17).wrapping_mul(0x1656_67B1_9E37_79F9)
             ^ ordinal.rotate_left(29).wrapping_mul(0xBF58_476D_1CE4_E5B9),
     );
     let mut bytes = [0u8; 16];

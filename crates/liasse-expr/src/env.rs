@@ -22,7 +22,7 @@
 
 use std::collections::BTreeMap;
 
-use liasse_diag::ByteSpan;
+use liasse_diag::{ByteSpan, SourceId, Span};
 use liasse_value::{BlobDescriptor, Text, Timestamp, Uuid, Value};
 
 use crate::error::EvalError;
@@ -230,22 +230,40 @@ impl Row {
     }
 }
 
-/// The byte range of a generative call (`uuid()` / `now()`), passed to the
-/// environment so it MAY resolve per-call-site identity (SPEC-ISSUES item 4).
+/// The *globally unique* identity of one generative call site (`uuid()`), passed
+/// to the environment so it can resolve per-call-site identity (SPEC-ISSUES item
+/// 4, §5.1/§8.12).
+///
+/// It is a [`Span`] — a `SourceId` **and** a `ByteSpan` — never a bare span. Each
+/// field/`$key` default compiles into its OWN sub-source, so its spans are LOCAL
+/// offsets: two byte-identical `uuid()` defaults (`"uuid()"`) on one row would
+/// carry the identical span `[0..6)` and could not be told apart by span alone.
+/// Pairing the span with the source that measures it is what keeps two distinct
+/// `uuid()` sites of one row apart, so the environment derives a distinct value
+/// for each and a `secret` never collapses onto a public `id`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct CallSite(ByteSpan);
+pub struct CallSite(Span);
 
 impl CallSite {
-    /// The call's source span.
+    /// The call's located source span (the source that measures it plus the
+    /// byte offsets within it).
     #[must_use]
-    pub fn new(span: ByteSpan) -> Self {
+    pub fn new(span: Span) -> Self {
         Self(span)
     }
 
-    /// The underlying span.
+    /// The source the call site lives in — the discriminator that keeps two
+    /// byte-identical defaults in different sub-sources apart.
+    #[must_use]
+    pub fn source(self) -> SourceId {
+        self.0.source()
+    }
+
+    /// The byte offsets within [`Self::source`], distinguishing two `uuid()`
+    /// sites that share one source.
     #[must_use]
     pub fn span(self) -> ByteSpan {
-        self.0
+        self.0.bytes()
     }
 }
 
