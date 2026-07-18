@@ -35,6 +35,11 @@ pub struct Projection {
     head: CommitSeq,
     next_incarnation: u64,
     current: BTreeMap<RowAddress, StoredRow>,
+    /// Each live row's surrogate node id in the `nodes` adjacency tree. Kept out of
+    /// the shared [`StoredRow`] (the id is a backend-private handle, never observed
+    /// through the contract) and used only by the dual-write path to apply node ops
+    /// by id. Maintained in lock-step with `current` after every commit succeeds.
+    by_id: BTreeMap<RowAddress, i64>,
     log: Vec<CommittedTransition>,
     points: BTreeMap<HistoryPoint, CommitSeq>,
     blobs: BTreeMap<Sha512, Vec<u8>>,
@@ -121,7 +126,27 @@ impl Projection {
             blobs.insert(digest, cell::<Vec<u8>>(&row, "blobs", "bytes")?);
         }
 
-        Ok(Self { head, next_incarnation, current, log, points, blobs, definition, composition })
+        // The dual-written node tree carries the surrogate ids the write path applies
+        // ops by; rebuild the address→id map from it (walking each node's parent chain
+        // to the root sentinel). Reads stay served from `current` above.
+        let by_id = crate::node_write::load_by_id(client, &s)?;
+
+        Ok(Self {
+            head,
+            next_incarnation,
+            current,
+            by_id,
+            log,
+            points,
+            blobs,
+            definition,
+            composition,
+        })
+    }
+
+    /// The live rows' surrogate node ids — the dual-write path's parent/id resolver.
+    pub fn by_id(&self) -> &BTreeMap<RowAddress, i64> {
+        &self.by_id
     }
 
     /// The current head position.
@@ -190,16 +215,22 @@ impl Projection {
         self.next_incarnation
     }
 
-    /// Advance the projection by a committed transition — the exact operations
-    /// the same SQL transaction just wrote to PostgreSQL.
+    /// Advance the projection by a committed transition — the exact operations the
+    /// same SQL transaction just wrote to PostgreSQL — and to the `nodes` tree.
+    /// `new_node_ids` holds the surrogate id of each `Insert` op in op order (the
+    /// `RETURNING id`s the node dual-write collected), so `by_id` stays in lock-step
+    /// with the durable node identities. Applied only after the commit succeeds.
     pub fn apply_committed(
         &mut self,
         transition: CommittedTransition,
         definition: Option<DefinitionText>,
         composition: Option<Composition>,
+        new_node_ids: Vec<i64>,
     ) {
+        let mut fresh_ids = new_node_ids.into_iter();
         for op in transition.ops() {
             self.apply_op(op);
+            self.apply_node_id(op, &mut fresh_ids);
         }
         if let Some(definition) = definition {
             self.definition = Some(definition);
@@ -228,6 +259,44 @@ impl Projection {
             }
         }
     }
+
+    /// Advance `by_id` by one op, mirroring the node dual-write's effect on node
+    /// identity: an insert takes the next `RETURNING id`; a delete drops the id and
+    /// every descendant's (the node write cascades the subtree by id); a rekey moves
+    /// the *same* id to the new address (so descendants keep resolving); an update
+    /// leaves identity untouched.
+    fn apply_node_id(&mut self, op: &CommittedRowOp, fresh_ids: &mut impl Iterator<Item = i64>) {
+        match op {
+            CommittedRowOp::Insert { address, .. } => {
+                if let Some(id) = fresh_ids.next() {
+                    self.by_id.insert(address.clone(), id);
+                }
+            }
+            CommittedRowOp::Update { .. } => {}
+            CommittedRowOp::Delete { address, .. } => {
+                self.by_id.remove(address);
+                // The node write deleted the whole subtree by id, so drop every
+                // descendant's id too, keeping `by_id` equal to the durable tree.
+                let descendants: Vec<RowAddress> =
+                    self.by_id.keys().filter(|held| is_descendant(address, held)).cloned().collect();
+                for descendant in descendants {
+                    self.by_id.remove(&descendant);
+                }
+            }
+            CommittedRowOp::Rekey { from, to, .. } => {
+                if let Some(id) = self.by_id.remove(from) {
+                    self.by_id.insert(to.clone(), id);
+                }
+            }
+        }
+    }
+}
+
+/// Whether `held` is a strict descendant of `ancestor`: deeper, and sharing every
+/// one of the ancestor's address levels as a prefix.
+fn is_descendant(ancestor: &RowAddress, held: &RowAddress) -> bool {
+    held.depth() > ancestor.depth()
+        && ancestor.steps().zip(held.steps()).all(|(a, b)| a == b)
 }
 
 /// Encode a composition into the `instance_meta.composition` JSONB.

@@ -18,6 +18,7 @@ use sha2::{Digest as _, Sha512 as Sha512Hasher};
 
 use crate::backend::{backend, cell, corrupt};
 use crate::jsonb_text;
+use crate::node_write::NodeWriter;
 use crate::projection::{Projection, encode_composition};
 use crate::record_codec::{address_key, encode_op};
 use crate::schema::Schema;
@@ -127,9 +128,16 @@ impl PgStore {
             &[&seq_num, &transaction_id, &ops_wire],
         )
         .map_err(backend)?;
+        // Dual-write: every op lands in the authoritative flat `rows` table AND in
+        // the `nodes` adjacency tree, in the SAME admission transaction. Reads still
+        // come from `rows`; the node ids are collected so the projection can advance
+        // its `by_id` map once the commit succeeds.
+        let mut node_writer = NodeWriter::new(&s, self.projection.by_id());
         for op in &ops {
             Self::apply_op_sql(&mut txn, &s, op)?;
+            node_writer.apply(&mut txn, op)?;
         }
+        let new_node_ids = node_writer.into_new_ids();
         txn.execute(
             &format!(
                 "UPDATE {s}.instance_meta SET \
@@ -144,7 +152,7 @@ impl PgStore {
         txn.commit().map_err(backend)?;
 
         let committed = CommittedTransition::new(seq, ops, transaction);
-        self.projection.apply_committed(committed, definition, composition);
+        self.projection.apply_committed(committed, definition, composition, new_node_ids);
         Ok(CommitOutcome::Committed(self.projection.head()))
     }
 

@@ -7,12 +7,12 @@
 //! in against the PostgreSQL system catalog, which is the **external oracle**: what
 //! objects physically exist is read from `pg_catalog`/`information_schema`, never
 //! from the crate's own bookkeeping, and compared to an independently-known desired
-//! set (the six fixed tables and the declared secondary indexes).
+//! set (the seven fixed tables and the declared secondary indexes).
 //!
 //! The three orphan classes the reconciler eliminates each get a gate:
 //!
 //! - orphan **indexes** — a stray secondary index is dropped, the declared ones kept;
-//! - orphan **tables** — a stray base table is dropped, the six fixed ones (incl. the
+//! - orphan **tables** — a stray base table is dropped, the seven fixed ones (incl. the
 //!   §21-retained `commit_log`/`history_points`/`blobs`) kept;
 //! - orphan **rows** — removing a collection (expressed as row deletes, the only way
 //!   a removal reaches the store) leaves no residue in `rows` while history is kept.
@@ -39,16 +39,18 @@ use postgres::Client;
 
 use support::SchemaGuard;
 
-/// The six fixed tables every instance schema owns — the externally-known desired
-/// table set the live catalog is diffed against. `commit_log`/`history_points`/
-/// `blobs` are the §21-retained stores that must never be treated as orphans.
-const FIXED_TABLES: [&str; 6] =
-    ["schema_version", "instance_meta", "rows", "commit_log", "history_points", "blobs"];
+/// The seven fixed tables every instance schema owns — the externally-known
+/// desired table set the live catalog is diffed against. `commit_log`/
+/// `history_points`/`blobs` are the §21-retained stores that must never be treated
+/// as orphans; `nodes` is the node-adjacency tree dual-written beside `rows`.
+const FIXED_TABLES: [&str; 7] =
+    ["schema_version", "instance_meta", "rows", "nodes", "commit_log", "history_points", "blobs"];
 
 /// The secondary indexes the current model declares — the externally-known desired
-/// index set. Intrinsic primary-key/unique indexes are not in this set (they are
-/// intrinsic to their tables and are never reconciled).
-const DECLARED_INDEXES: [&str; 1] = ["rows_key_order"];
+/// index set. Intrinsic primary-key indexes and `UNIQUE` table constraints are not
+/// in this set (they drop with their tables and are never reconciled); a bare
+/// `CREATE UNIQUE INDEX` like `node_key_lookup` is a managed secondary index and is.
+const DECLARED_INDEXES: [&str; 2] = ["rows_key_order", "node_key_lookup"];
 
 /// The live base tables in `schema`, read straight from `information_schema` — the
 /// oracle for the desired-table diff.
@@ -93,7 +95,7 @@ fn expected_indexes() -> BTreeSet<String> {
     DECLARED_INDEXES.iter().map(|name| (*name).to_owned()).collect()
 }
 
-/// A fresh `create` materializes exactly the declared objects — the six fixed
+/// A fresh `create` materializes exactly the declared objects — the seven fixed
 /// tables and every declared secondary index — and nothing extra.
 #[test]
 fn fresh_create_materializes_exactly_declared_objects() {
@@ -109,7 +111,7 @@ fn fresh_create_materializes_exactly_declared_objects() {
     assert_eq!(
         live_tables(&mut client, &schema),
         expected_tables(),
-        "a fresh schema must hold exactly the six fixed tables, nothing more"
+        "a fresh schema must hold exactly the seven fixed tables, nothing more"
     );
     assert_eq!(
         live_secondary_indexes(&mut client, &schema),
@@ -178,7 +180,7 @@ fn orphan_index_is_dropped() {
 }
 
 /// A base table not in the fixed set is an orphan (a leftover from a prior backend
-/// layout) the reconciler must drop, while the six fixed tables — including the
+/// layout) the reconciler must drop, while the seven fixed tables — including the
 /// §21-retained history and blob stores — survive.
 #[test]
 fn orphan_table_is_dropped() {
@@ -203,12 +205,12 @@ fn orphan_table_is_dropped() {
         "the stray table must exist before reconciliation, or the gate proves nothing"
     );
 
-    // Opening reconciles: the orphan must go, the six fixed tables must stay.
+    // Opening reconciles: the orphan must go, the seven fixed tables must stay.
     drop(factory.reopen(instance).expect("reopen reconciles"));
 
     let live = live_tables(&mut client, &schema);
     assert!(!live.contains("stray_orphan_table"), "orphan table survived reconciliation: {live:?}");
-    assert_eq!(live, expected_tables(), "reconciliation must leave exactly the six fixed tables");
+    assert_eq!(live, expected_tables(), "reconciliation must leave exactly the seven fixed tables");
     for retained in ["commit_log", "history_points", "blobs"] {
         assert!(live.contains(retained), "reconciliation dropped the §21-retained `{retained}`");
     }

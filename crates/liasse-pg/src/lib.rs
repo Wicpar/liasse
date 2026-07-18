@@ -43,13 +43,12 @@
 mod backend;
 mod factory;
 mod jsonb_text;
-// The order-preserving `key_enc` BYTEA codec (Stage 1, encode-only). Nothing
-// references it yet — it is wired into the durable write/scan path in a later
-// stage — so the `dead_code` allows are TEMPORARY and removed at that point.
-#[allow(dead_code)]
+// The order-preserving `key_enc` BYTEA codec: the `nodes` write path
+// ([`node_write`]) encodes each level key with it for the `key_enc` lookup/scan
+// column.
 mod key_enc;
-#[allow(dead_code)]
 mod key_enc_num;
+mod node_write;
 mod projection;
 mod reconcile;
 mod record_codec;

@@ -81,6 +81,25 @@ impl PgStoreFactory {
                 &[&instance_id],
             )
             .map_err(backend)?;
+        // Seed the self-referential root sentinel node (id = 0, parent_id = 0) that
+        // every depth-1 row node hangs under, so `parent_id` is NOT NULL everywhere
+        // and a load can stop the parent-walk at it. `OVERRIDING SYSTEM VALUE`
+        // supplies the id = 0 the `GENERATED ALWAYS AS IDENTITY` column would refuse
+        // (on PG17 the identity sequence still starts at 1 for real inserts); the
+        // `ON CONFLICT (id) DO NOTHING` makes the seed idempotent across reopens.
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {}.nodes \
+                     (id, parent_id, step_name, key_enc, key_wire, incarnation, value) \
+                     OVERRIDING SYSTEM VALUE \
+                     VALUES (0, 0, '', '\\x'::bytea, '{{}}'::jsonb, '', '{{}}') \
+                     ON CONFLICT (id) DO NOTHING",
+                    schema.quoted()
+                ),
+                &[],
+            )
+            .map_err(backend)?;
         Ok(())
     }
 }

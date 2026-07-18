@@ -19,16 +19,21 @@
 //! index idempotently (`CREATE … IF NOT EXISTS`), and because the sets are data a
 //! later reconciliation round (see [`crate::reconcile`]) can diff the live objects
 //! against them and drop any orphan the active model no longer declares — no
-//! migration leaves orphaned structures behind. Primary-key and unique indexes are
-//! intrinsic to their table declarations (they vanish with the table) and so are
-//! not part of the derived index set.
+//! migration leaves orphaned structures behind. Primary-key indexes and `UNIQUE`
+//! *table constraints* are intrinsic to their table declarations (they vanish with
+//! the table) and so are not part of the derived index set; a bare
+//! `CREATE UNIQUE INDEX` — like the node lookup — is a managed secondary index and
+//! is in the set.
 
 /// The schema version this build writes and understands. Opening a schema with a
 /// higher stamp is refused rather than guessed at; opening an older one applies
 /// the current DDL (idempotently) and bumps the stamp forward.
 ///
-/// Bumped to 2 when the model-derived `rows_key_order` index was added.
-pub const SCHEMA_VERSION: i32 = 2;
+/// Bumped to 2 when the model-derived `rows_key_order` index was added; to 3 when
+/// the node-adjacency `nodes` table and its `node_key_lookup` unique index landed
+/// alongside `rows` (Phase 1: `rows` stays authoritative for reads, `nodes` is
+/// dual-written in the same admission transaction).
+pub const SCHEMA_VERSION: i32 = 3;
 
 /// A per-instance schema namespace: a validated PostgreSQL identifier.
 #[derive(Debug, Clone)]
@@ -48,6 +53,7 @@ pub struct IndexSpec {
     name: &'static str,
     table: &'static str,
     key: &'static str,
+    unique: bool,
 }
 
 impl IndexSpec {
@@ -64,11 +70,23 @@ impl IndexSpec {
         self.table
     }
 
-    /// Idempotent creation DDL, scoped to `schema`.
+    /// Whether the index is unique — a `CREATE UNIQUE INDEX`. A unique secondary
+    /// index (unlike a `UNIQUE` table constraint) is a bare index this backend
+    /// manages and reconciles, so it is declared here as data, not baked into the
+    /// table body.
+    #[must_use]
+    pub fn is_unique(&self) -> bool {
+        self.unique
+    }
+
+    /// Idempotent creation DDL, scoped to `schema`. A unique index emits
+    /// `CREATE UNIQUE INDEX`, so the index doubles as a declared secondary index
+    /// (droppable/reconcilable) rather than an intrinsic table constraint.
     #[must_use]
     pub fn create_sql(&self, schema: &Schema) -> String {
+        let unique = if self.unique { "UNIQUE " } else { "" };
         format!(
-            "CREATE INDEX IF NOT EXISTS {} ON {}.{} ({});",
+            "CREATE {unique}INDEX IF NOT EXISTS {} ON {}.{} ({});",
             quote(self.name),
             schema.quoted(),
             quote(self.table),
@@ -106,14 +124,15 @@ impl TableSpec {
     /// Idempotent creation DDL, scoped to `schema`. The primary-key and unique
     /// constraints in the column body materialize the intrinsic indexes the
     /// reconciler preserves.
+    ///
+    /// A `{schema}` token in the column body is expanded to the quoted schema
+    /// name — the one interpolation a column body needs, for a schema-qualified
+    /// self-referential foreign key (`nodes.parent_id REFERENCES {schema}.nodes`).
+    /// Column bodies without the token are unaffected.
     #[must_use]
     pub fn create_sql(&self, schema: &Schema) -> String {
-        format!(
-            "CREATE TABLE IF NOT EXISTS {}.{} ({});",
-            schema.quoted(),
-            quote(self.name),
-            self.columns
-        )
+        let columns = self.columns.replace("{schema}", &schema.quoted());
+        format!("CREATE TABLE IF NOT EXISTS {}.{} ({columns});", schema.quoted(), quote(self.name))
     }
 }
 
@@ -150,10 +169,10 @@ impl Schema {
     /// index-coverage gates). The set is data, so opening creates each idempotently
     /// and reconciliation can drop any that fall out of the active model.
     ///
-    /// Primary-key indexes (`rows(addr_key)`, `commit_log(seq)`, `blobs(digest)`,
-    /// `history_points(lineage, point)`) are intrinsic to the table declarations
-    /// and are not listed here — they serve every point lookup and the seq-ordered
-    /// log reads directly, and drop with their table.
+    /// Primary-key indexes (`rows(addr_key)`, `nodes(id)`, `commit_log(seq)`,
+    /// `blobs(digest)`, `history_points(lineage, point)`) are intrinsic to the
+    /// table declarations and are not listed here — they serve every point lookup
+    /// and the seq-ordered log reads directly, and drop with their table.
     #[must_use]
     pub fn indexes(&self) -> Vec<IndexSpec> {
         vec![
@@ -164,19 +183,45 @@ impl Schema {
             // some locales, decline the index entirely. A `COLLATE "C"` index gives
             // the prefix range a deterministic, byte-ordered, index-served path on
             // every cluster, so the scan never degrades to a Seq Scan + Sort.
-            IndexSpec { name: "rows_key_order", table: "rows", key: "addr_key COLLATE \"C\"" },
+            IndexSpec {
+                name: "rows_key_order",
+                table: "rows",
+                key: "addr_key COLLATE \"C\"",
+                unique: false,
+            },
+            // The node-adjacency point lookup and uniqueness: a row's node is found
+            // by `(parent_id, step_name, key_enc)`, and no two sibling rows may share
+            // a level key. `key_enc` is the order-preserving `BYTEA` encoding, so this
+            // unique index also serves an ordered sibling scan when reads flip onto
+            // the node tree. It is a bare `CREATE UNIQUE INDEX` (not a table
+            // constraint), so the reconciler manages it as a declared secondary index.
+            IndexSpec {
+                name: "node_key_lookup",
+                table: "nodes",
+                key: "parent_id, step_name, key_enc",
+                unique: true,
+            },
         ]
     }
 
     /// The fixed tables every instance schema owns, as data so the same list
     /// drives the creating DDL and the reconciler's desired-set (§21 retains
-    /// `commit_log`/`history_points`/`blobs`; none of the six is ever an orphan).
+    /// `commit_log`/`history_points`/`blobs`; none of the seven is ever an orphan).
     ///
-    /// The application collections do not each get a table: every collection's
-    /// rows live in the single `rows` table keyed by `addr_key`, so this set is
-    /// model-independent and evolves only when the backend layout itself does.
+    /// The application collections do not each get a table. Two backend layouts
+    /// hold every collection's rows, model-independent and evolving only when the
+    /// backend itself does: the flat `rows` table keyed by `addr_key` (still
+    /// authoritative for reads in this phase), and the `nodes` adjacency tree keyed
+    /// by a surrogate id — each node is one address level under its parent node,
+    /// rooted at the self-referential sentinel `id = 0` (`factory::ensure` seeds it),
+    /// so `parent_id` is `NOT NULL` everywhere. The self-FK is `DEFERRABLE INITIALLY
+    /// DEFERRED` so a parent-first delete within one transaction is tolerated, and it
+    /// carries no `ON DELETE CASCADE` — every delete is issued explicitly by id, so
+    /// the node tree stays an exact fold of the commit log. `key_enc` is the
+    /// order-preserving lookup/scan key; `key_wire` is the canonical, decodable key
+    /// a load reconstructs the address from.
     #[must_use]
-    pub fn tables(&self) -> [TableSpec; 6] {
+    pub fn tables(&self) -> [TableSpec; 7] {
         [
             TableSpec {
                 name: "schema_version",
@@ -195,6 +240,17 @@ impl Schema {
             TableSpec {
                 name: "rows",
                 columns: "addr_key TEXT PRIMARY KEY, incarnation TEXT NOT NULL, value JSONB NOT NULL",
+            },
+            TableSpec {
+                name: "nodes",
+                columns: "id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY, \
+                          parent_id BIGINT NOT NULL REFERENCES {schema}.nodes(id) \
+                          DEFERRABLE INITIALLY DEFERRED, \
+                          step_name TEXT NOT NULL, \
+                          key_enc BYTEA NOT NULL, \
+                          key_wire JSONB NOT NULL, \
+                          incarnation TEXT NOT NULL, \
+                          value JSONB NOT NULL",
             },
             TableSpec {
                 name: "commit_log",
@@ -244,7 +300,7 @@ impl Schema {
 
     /// Idempotent DDL dropping a stray `table` by its live catalog name — a
     /// leftover from a prior backend layout — cascading its dependents. The
-    /// reconciler never passes a fixed table here, so the six are never dropped.
+    /// reconciler never passes a fixed table here, so the seven are never dropped.
     #[must_use]
     pub(crate) fn drop_table_sql(&self, table: &str) -> String {
         format!("DROP TABLE IF EXISTS {}.{} CASCADE;", self.quoted(), quote(table))
