@@ -15,12 +15,14 @@ mod correction;
 mod erasure;
 mod history;
 mod operator;
+mod update;
 
 pub use components::{HostComponentError, KeyringErrorOr, VerifyErrorOr};
 pub use correction::{
     ChooseMap, ChooseSide, ConflictCoordinate, CorrectionError, CorrectionOutcome,
 };
 pub use erasure::EraseOutcome;
+pub use update::UpdateOutcome;
 
 use std::collections::BTreeMap;
 

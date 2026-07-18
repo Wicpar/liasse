@@ -14,11 +14,11 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use liasse_runtime::{CommitSeq, ImportError, ImportRelation, Precision, Timestamp};
+use liasse_runtime::{CommitSeq, EngineError, ImportError, ImportRelation, Precision, Timestamp};
 use liasse_store::InstanceStore;
 use liasse_surface::{
-    AuthResult, OperationKey, OperationStatus, SurfaceAddress, SurfaceCall, SurfaceHost,
-    SurfaceResume, SurfaceWatch, VirtualClock as SurfaceClock,
+    AuthResult, OperationKey, OperationStatus, SurfaceAddress, SurfaceCall, SurfaceError,
+    SurfaceHost, SurfaceResume, SurfaceWatch, UpdateOutcome,
 };
 
 use crate::clock::VirtualClock;
@@ -473,46 +473,71 @@ impl<S: InstanceStore> Instance for Runtime<S> {
     }
 
     fn host_load(&mut self, package: &serde_json::Value) -> Result<Observation, AdapterError> {
-        let loaded = self.take_loaded()?;
-        let old_routing = loaded.routing.clone();
-        let blobs = loaded.blobs;
-        let blob_hosts = loaded.blob_hosts;
-        let (mut engine, old_router, mut clock) = loaded.host.into_parts();
         // §9.2 host lifecycle reload: a `load(target)` step carries no `hosts`
         // block, so its verifier tables are unchanged from the base load. A
         // host-namespace authenticator therefore stays as wired before.
         let plan = AuthPlan::derive(package, None);
-        match apply_host_load(&mut engine, &mut clock, package, &plan) {
-            Ok((completion, router, routing)) => {
-                self.reinstate(Loaded {
-                    host: SurfaceHost::new(engine, router, clock),
-                    routing,
-                    blobs,
-                    blob_hosts,
-                });
-                self.reopen_connections();
-                self.replay_watches();
-                Ok(Observation {
-                    outcome: Outcome::Ok,
-                    value: None,
-                    completion: Some(completion),
-                    extra: Default::default(),
-                })
-            }
-            Err(observed) => {
-                // The engine is unchanged (update is atomic); rebuild over the
-                // prior router so later steps still resolve the active package.
-                self.reinstate(Loaded {
-                    host: SurfaceHost::new(engine, old_router, clock),
-                    routing: old_routing,
-                    blobs,
-                    blob_hosts,
-                });
-                self.reopen_connections();
-                self.replay_watches();
-                Ok(Observation::outcome(observed))
-            }
+        // Try the richest surface lift first, falling back to fewer synthetic
+        // declarations (exactly as the initial load does) until one migrates cleanly.
+        let lift = SurfaceLift::derive(package);
+        let mut attempts = vec![lift.clone()];
+        if !lift.views_only().is_empty() {
+            attempts.push(lift.views_only());
         }
+        if !lift.is_empty() {
+            attempts.push(SurfaceLift::default());
+        }
+
+        let mut last = Outcome::Error;
+        for attempt in attempts {
+            let Some(definition) = super::prepared_definition(package, &plan, &attempt) else {
+                continue;
+            };
+            // Migrate IN PLACE (§9.2/§20): the host keeps its live connections and
+            // subscriptions across the definition change, so the completion barrier
+            // closes a subscription whose surface the migration removed and patches
+            // every survivor (§12.2). The router is rebound against the migrated model
+            // from inside `update` — the target's surfaces exist only once the update
+            // is admitted. `Engine::update` is atomic, so a refused attempt leaves the
+            // host untouched and the next lift can be tried; the old rebuild+replay of
+            // prior revisions swallowed the now-unresolvable re-open and never
+            // delivered the mandated close.
+            let mut rebuilt: Option<Routing> = None;
+            let outcome = self.loaded()?.host.update(&definition, |engine| {
+                let (router, mut routing) = super::router::build(engine.model(), package, &plan, &attempt)
+                    .map_err(|err| {
+                        SurfaceError::Engine(EngineError::Internal(format!(
+                            "router rebind after migration: {err}"
+                        )))
+                    })?;
+                routing.load_view_param_types(engine);
+                rebuilt = Some(routing);
+                Ok(router)
+            });
+            let outcome = outcome.map_err(host_fault)?;
+            let completion = match &outcome {
+                UpdateOutcome::Committed(_) => Completion::Committed,
+                UpdateOutcome::Unchanged(_) => Completion::Unchanged,
+                UpdateOutcome::Rejected(_) | UpdateOutcome::Incompatible(_) => {
+                    last = Outcome::Rejected;
+                    continue;
+                }
+                UpdateOutcome::Invalid(_) => {
+                    last = Outcome::Invalid;
+                    continue;
+                }
+            };
+            if let Some(routing) = rebuilt {
+                self.loaded()?.routing = routing;
+            }
+            return Ok(Observation {
+                outcome: Outcome::Ok,
+                value: None,
+                completion: Some(completion),
+                extra: Default::default(),
+            });
+        }
+        Ok(Observation::outcome(last))
     }
 
     fn operator(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
@@ -718,57 +743,6 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         // connections, and live subscriptions — so a `/ring.$*` metadata watch
         // opened after the transition reads the new version view.
         self.rebuild_engine(|engine| spec.apply(engine))
-    }
-}
-
-/// Run [`Engine::update`] for a reloaded `package`, injecting the same synthetic
-/// views/mutations a fresh load would and rebinding the router. Tries the richest
-/// surface lift first, falling back to fewer synthetic declarations (exactly as
-/// the initial load does) before giving up.
-fn apply_host_load<S: InstanceStore>(
-    engine: &mut liasse_runtime::Engine<S>,
-    clock: &mut SurfaceClock,
-    package: &serde_json::Value,
-    plan: &AuthPlan,
-) -> Result<(Completion, liasse_surface::SurfaceRouter, Routing), Outcome> {
-    let lift = SurfaceLift::derive(package);
-    let mut attempts = vec![lift.clone()];
-    if !lift.views_only().is_empty() {
-        attempts.push(lift.views_only());
-    }
-    if !lift.is_empty() {
-        attempts.push(SurfaceLift::default());
-    }
-    let mut last = Outcome::Error;
-    for attempt in attempts {
-        let Some(definition) = super::prepared_definition(package, plan, &attempt) else {
-            continue;
-        };
-        let before = engine.head();
-        match engine.update(&definition, clock) {
-            Ok(_) => {
-                let completion =
-                    if engine.head() == before { Completion::Unchanged } else { Completion::Committed };
-                match super::router::build(engine.model(), package, plan, &attempt) {
-                    Ok((router, mut routing)) => {
-                        routing.load_view_param_types(engine);
-                        return Ok((completion, router, routing));
-                    }
-                    Err(_) => last = Outcome::Error,
-                }
-            }
-            Err(error) => last = update_outcome(&error),
-        }
-    }
-    Err(last)
-}
-
-/// Map an [`Engine::update`] failure to the harness outcome class (§9.4, §20).
-fn update_outcome(error: &liasse_runtime::UpdateError) -> Outcome {
-    use liasse_runtime::UpdateError as U;
-    match error {
-        U::Rejected(_) | U::Incompatible(_) => Outcome::Rejected,
-        U::Engine(_) => Outcome::Invalid,
     }
 }
 

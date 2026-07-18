@@ -90,7 +90,7 @@ pub use connection::{Connection, DEFAULT_CONTEXT};
 pub use host::{
     AuthResult, ChooseMap, ChooseSide, ConflictCoordinate, CorrectionError, CorrectionOutcome,
     EraseOutcome, HostComponentError, KeyringErrorOr, Subscription, SurfaceError, SurfaceHost,
-    VerifyErrorOr,
+    UpdateOutcome, VerifyErrorOr,
 };
 pub use operation::{OperationKey, OperationLog, OperationStatus, RequestModel};
 pub use outcome::{Completion, Denial, DenialReason, SurfaceOutcome};
