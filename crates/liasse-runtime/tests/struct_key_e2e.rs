@@ -14,12 +14,10 @@
 //!
 //! The durable rekey-and-reopen leg, and memory-vs-PostgreSQL agreement, are
 //! exercised at the semantics-free store layer (the value-keyed layer that
-//! actually holds a struct key) in `liasse-pg`'s `struct_key_divergence`. Note a
-//! known model limitation this test deliberately does not depend on: a struct
-//! `$key`'s *declared* key type still resolves to `json` (the resolver /
-//! runtime-schema key-type fallback treats a non-scalar key node as `json`), so a
-//! struct-key *selector* operand (`.cells[@k]`) cannot yet be typed in a mutation
-//! prototype — insert and read do not need the key type and work regardless.
+//! actually holds a struct key) in `liasse-pg`'s `struct_key_divergence`. This
+//! test covers insert and scan, which do not consult the declared key type; the
+//! struct-key *selector* path (a `.cells[@k]` operand typed against the struct
+//! key) is now covered end-to-end in `struct_key_selector_e2e`.
 
 mod support;
 

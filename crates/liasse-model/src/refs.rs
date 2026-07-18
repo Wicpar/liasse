@@ -54,6 +54,10 @@ impl Index {
                 .member(field.as_str())
                 .and_then(|member| match &member.node {
                     Node::Scalar(scalar) => Some(scalar.ty.clone()),
+                    // A.8: a struct `$key` target carries a struct key type, so a
+                    // `$ref` to a struct-keyed collection resolves to that struct
+                    // (matching the stored key), not the `json` fallback.
+                    Node::Struct(shape) => Some(shape.key_struct_type()),
                     _ => None,
                 })
                 .unwrap_or(Type::Json);

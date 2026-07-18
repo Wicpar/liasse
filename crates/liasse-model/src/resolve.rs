@@ -118,12 +118,17 @@ impl<'a> Resolver<'a> {
     fn key_type(&self, collection: &Collection, depth: u32) -> ExprType {
         let mut components: Vec<(String, Type)> = Vec::new();
         for field in &collection.key {
-            let ty = collection
-                .shape
-                .member(field.as_str())
-                .map(|member| self.node_at(&member.node, depth + 1))
-                .and_then(|et| et.as_scalar().cloned())
-                .unwrap_or(Type::Json);
+            let ty = match collection.shape.member(field.as_str()).map(|member| &member.node) {
+                // A.8: a struct `$key` field's declared key type is the struct
+                // itself (field-name ordered), matching the `Value::Struct` the
+                // store carries — not the `json` the old `as_scalar` fallback
+                // produced, which left a struct-key selector operand untypable.
+                Some(Node::Struct(shape)) => shape.key_struct_type(),
+                Some(node) => {
+                    self.node_at(node, depth + 1).as_scalar().cloned().unwrap_or(Type::Json)
+                }
+                None => Type::Json,
+            };
             components.push((field.as_str().to_owned(), ty));
         }
         match components.as_slice() {

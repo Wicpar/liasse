@@ -457,10 +457,12 @@ impl MutPhase<'_, '_> {
         self.infer_context_object(members, params);
     }
 
-    /// A composite-key object selector `[{ comp: @p, ... }]` (§6.3): each member
-    /// names a key component, so its parameter inherits that component's scalar
-    /// type from the composite key struct — matched by component name, not member
-    /// position (Annex A.9).
+    /// An object key selector `[{ comp: @p, ... }]` (§6.3): each member names a
+    /// key component, so its parameter inherits that component's type — matched by
+    /// component name, not member position (Annex A.9). Both multi-component key
+    /// forms spell a component by name: a composite key by its `$key`-ordered
+    /// components, and a struct `$key` (A.8) by its field-name-ordered members;
+    /// each addressed the same way here.
     fn infer_composite_key(
         &self,
         members: &[liasse_syntax::BlockMember],
@@ -468,17 +470,22 @@ impl MutPhase<'_, '_> {
         params: &mut Params,
     ) {
         use liasse_syntax::BlockMemberKind;
-        let Some(components) = key_ty.as_scalar().and_then(Type::composite_components) else {
-            return;
-        };
+        let Some(key) = key_ty.as_scalar() else { return };
         for member in members {
             let (comp, value) = match &member.kind {
                 BlockMemberKind::Named { name, value: Some(value) } => (&name.text, value),
                 BlockMemberKind::Assign { target, value } => (&target.text, value),
                 _ => continue,
             };
+            let component = match key {
+                Type::Composite(components) => {
+                    components.iter().find(|(name, _)| name == comp).map(|(_, ty)| ty)
+                }
+                Type::Struct(fields) => fields.field(comp),
+                _ => None,
+            };
             if let ExprKind::Param(param) = &value.kind
-                && let Some((_, ty)) = components.iter().find(|(name, _)| name == comp)
+                && let Some(ty) = component
             {
                 record(params, &param.text, ExprType::scalar(ty.clone()));
             }

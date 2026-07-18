@@ -12,7 +12,7 @@
 //! [`Resolver`](crate::resolve::Resolver) with a recursion guard.
 
 use liasse_diag::ByteSpan;
-use liasse_value::Type;
+use liasse_value::{RefTarget, StructType, Type};
 
 use crate::names::DeclName;
 
@@ -127,6 +127,28 @@ pub enum Node {
     Named(String),
 }
 
+impl Node {
+    /// The value [`Type`] this node contributes when it is a `$key` field, or a
+    /// member of a struct `$key`, of a collection (A.8): a scalar's declared
+    /// type, a nested struct's field-name-ordered [`Type::Struct`], a ref's
+    /// target key type, a set's set type.
+    ///
+    /// A node with no key-usable value type (a computed view, a nested
+    /// collection, a `$like`/`$types` shape) yields `json`, but that arm is
+    /// unreachable for a validated key: [`crate::build`] rejects such a member
+    /// before the tree exists, so this only ever runs over members the key
+    /// builder already proved key-eligible. Used by [`Shape::key_struct_type`].
+    fn key_component_type(&self) -> Type {
+        match self {
+            Self::Scalar(field) => field.ty.clone(),
+            Self::Struct(shape) => shape.key_struct_type(),
+            Self::Reference(reference) => Type::Ref(RefTarget::for_key(&reference.key_type)),
+            Self::Set(set) => Type::Set(Box::new(set.element.clone())),
+            Self::View(_) | Self::Collection(_) | Self::Named(_) => Type::Json,
+        }
+    }
+}
+
 /// A struct or collection body: named members plus shape-level checks.
 ///
 /// Mutations (§8) and surfaces (§10) are *not* held here: they are collected
@@ -150,6 +172,24 @@ impl Shape {
     #[must_use]
     pub fn member(&self, name: &str) -> Option<&Member> {
         self.members.iter().find(|m| m.name.as_str() == name)
+    }
+
+    /// The [`Type::Struct`] this shape declares when it is a struct `$key` field
+    /// (A.8: "structs composed solely of key-eligible required fields"): each
+    /// member contributes its key value type, held in field-name text order.
+    ///
+    /// This is the *declared* key type of an accepted struct key, and it is equal
+    /// member-for-member to the [`Value::Struct`](liasse_value::Value::Struct) the
+    /// store carries for that key — so a struct-key selector operand types against
+    /// the same struct the row is keyed by (§5.4, §6.3). Mirrors the struct
+    /// [`Type`] the key builder ([`crate::build`]) validates for eligibility.
+    #[must_use]
+    pub fn key_struct_type(&self) -> Type {
+        Type::Struct(StructType::new(
+            self.members
+                .iter()
+                .map(|member| (member.name.as_str().to_owned(), member.node.key_component_type())),
+        ))
     }
 }
 
