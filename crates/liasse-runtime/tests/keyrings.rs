@@ -146,8 +146,21 @@ fn scheduled_rotation_retires_prior_active() {
 
     let current = ring.current().expect("v2");
     assert_ne!(current.id(), first, "a new version is active");
+    // §17.4: the lazy cutover is placed at the scheduled cadence boundary
+    // (activated_at + $every), not the late trigger instant, so the result is
+    // identical to a runtime that rotated on schedule.
+    assert_eq!(
+        current.activated_at(),
+        Some(at(NOW + P30D)),
+        "the replacement activates at the scheduled boundary, not the late trigger",
+    );
     let retired = ring.versions().iter().find(|v| v.id() == first).expect("v1 retained");
     assert_eq!(retired.state(), KeyState::Retired, "the prior version retired");
+    assert_eq!(
+        retired.retired_at(),
+        Some(at(NOW + P30D)),
+        "the prior version retires atomically at the same boundary instant",
+    );
     assert_eq!(
         ring.versions().iter().filter(|v| v.state() == KeyState::Active).count(),
         1,
@@ -198,14 +211,23 @@ fn retain_window_bounds_retired_acceptance() {
     let mut ring = Keyring::load("ring", full_provider(), auto_policy()).expect("loads");
     ring.bootstrap(at(NOW)).expect("bootstrap");
     let first = ring.current().expect("v1").id();
-    let rotate_at = NOW + P30D + 1;
-    ring.ensure_current(at(rotate_at));
+    ring.ensure_current(at(NOW + P30D + 1));
+
+    // §17.4: the version retires at the scheduled cadence boundary, so the
+    // `$retain` window is measured from that boundary, not the late trigger.
+    let retired_at = ring
+        .versions()
+        .iter()
+        .find(|v| v.id() == first)
+        .and_then(|v| v.retired_at())
+        .expect("v1 retired")
+        .count();
 
     // Just inside the retain window after retirement: still accepted.
-    let within = rotate_at + P45D - 1;
+    let within = retired_at + P45D - 1;
     assert!(ring.accepted(at(within)).iter().any(|v| v.id() == first), "accepted within retain");
     // Past the retain window: no longer accepted.
-    let beyond = rotate_at + P45D + 1;
+    let beyond = retired_at + P45D + 1;
     assert!(!ring.accepted(at(beyond)).iter().any(|v| v.id() == first), "expired past retain");
 }
 

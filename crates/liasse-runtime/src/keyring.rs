@@ -375,9 +375,15 @@ impl<P: KeyProvider> Keyring<P> {
         }
     }
 
-    /// Perform a due rotation before the next operation (§17.4). Idempotent for
-    /// a given clock: rotating twice at the same instant is one rotation. A
-    /// provider failure keeps the current version active (§17.9).
+    /// Perform any due rotation before the next operation (§17.4). One idle gap
+    /// that spans several cadences is caught up in full: one rotation is
+    /// performed for EVERY whole elapsed cadence, each atomic cutover placed at
+    /// its scheduled boundary instant, so the lazy result's logical order and
+    /// key selection are identical to a runtime that rotated on schedule, and the
+    /// next boundary continues from the last boundary rather than the late
+    /// operation time (no cadence drift). Idempotent for a given clock: a second
+    /// call at the same instant finds nothing due. A provider failure keeps the
+    /// current version active and stops the catch-up (§17.9).
     pub fn ensure_current(&mut self, now: Timestamp) -> RotationOutcome {
         let Some(schedule) = self.policy.rotate else { return RotationOutcome::NotDue };
         if schedule.mode != RotationMode::Automatic {
@@ -385,22 +391,43 @@ impl<P: KeyProvider> Keyring<P> {
         }
         let Some(active) = self.current() else { return RotationOutcome::NotDue };
         let Some(activated_at) = active.activated_at else { return RotationOutcome::NotDue };
-        let due_at = instant_add(activated_at, schedule.every);
+        let mut due_at = instant_add(activated_at, schedule.every);
         if now < due_at {
             self.expose_pending(now, schedule, due_at);
             return RotationOutcome::NotDue;
         }
-        match self.rotate(now) {
-            Ok(id) => {
-                self.overdue = false;
-                RotationOutcome::Rotated(id)
+        // At least one whole cadence has elapsed. §17.4 fixes the lazy result to
+        // the scheduled one: rotate once per elapsed cadence, each cutover at its
+        // scheduled boundary (`due_at`) — NOT the late operation time `now`.
+        // Activating at the boundary keeps the logical order, key selection, and
+        // the prior version's retirement/`$retain` instants identical to a
+        // scheduled runtime, and leaves the next boundary at `boundary + $every`
+        // so no missed cadence is silently absorbed (§17.3/§17.4).
+        let mut outcome = RotationOutcome::NotDue;
+        while now >= due_at {
+            match self.rotate(due_at) {
+                Ok(id) => {
+                    self.overdue = false;
+                    outcome = RotationOutcome::Rotated(id);
+                }
+                Err(_) => {
+                    // §17.9: keep the current version active, report overdue, and
+                    // stop catching up.
+                    self.overdue = true;
+                    return RotationOutcome::KeptCurrentOverdue;
+                }
             }
-            Err(_) => {
-                // §17.9: keep the current version active and report overdue.
-                self.overdue = true;
-                RotationOutcome::KeptCurrentOverdue
+            let next_due = instant_add(due_at, schedule.every);
+            if next_due <= due_at {
+                // A non-advancing cadence (a zero/negative `$every`, one below a
+                // single clock tick, or a saturated clock) defines no further
+                // boundary. Bound the catch-up to this one rotation so a
+                // degenerate policy cannot spin instead of looping forever.
+                break;
             }
+            due_at = next_due;
         }
+        outcome
     }
 
     /// Expose the next version as `pending` once the `$overlap` lead is reached
