@@ -38,11 +38,16 @@ pub struct Projection {
     head: CommitSeq,
     next_incarnation: u64,
     current: BTreeMap<RowAddress, StoredRow>,
-    /// Each *live* row's surrogate node id in the `nodes` adjacency tree (tombstones
-    /// carry no entry). Kept out of the shared [`StoredRow`] (the id is a
-    /// backend-private handle, never observed through the contract) and used only by
-    /// the dual-write path to apply node ops by id. Maintained in lock-step with
-    /// `current` after every commit succeeds.
+    /// The structural node index: EVERY node's address → its surrogate id in the
+    /// `nodes` adjacency tree — live rows AND tombstones (a deleted non-leaf ancestor
+    /// retained so its descendants stay addressable, §5.4). The dual-write path
+    /// resolves a row's parent against this map, so a child places under a tombstoned
+    /// ancestor exactly as the read path walks through it. Occupancy is NEVER read
+    /// from here: `current` is the live-row index (reads/occupancy), `by_id` is the
+    /// structural index (parent resolution) — a tombstoned address is present here but
+    /// absent from `current`. The id is a backend-private handle (never observed
+    /// through the contract), kept out of the shared [`StoredRow`]. Maintained in
+    /// lock-step with the node tree after every commit succeeds.
     by_id: BTreeMap<RowAddress, i64>,
     log: Vec<CommittedTransition>,
     points: BTreeMap<HistoryPoint, CommitSeq>,
@@ -133,7 +138,8 @@ impl Projection {
         })
     }
 
-    /// The live rows' surrogate node ids — the dual-write path's parent/id resolver.
+    /// The structural node index (every node, live or tombstoned) — the dual-write
+    /// path's parent/id resolver, so a child places under a tombstoned ancestor.
     pub fn by_id(&self) -> &BTreeMap<RowAddress, i64> {
         &self.by_id
     }
@@ -250,13 +256,16 @@ impl Projection {
         }
     }
 
-    /// Advance `by_id` (which holds only *live* rows) by one op, mirroring the node
-    /// dual-write's effect on node identity: an insert takes the next established id
-    /// (a fresh node, or a revived tombstone keeping its id); a delete drops ONLY the
-    /// addressed id (the node write tombstones just that node, leaving descendants —
-    /// still live rows — in place, so their ids stay); a rekey drops the source id
-    /// (its node is tombstoned) and takes the next established id for the target (a
-    /// fresh or revived node); an update leaves identity untouched.
+    /// Advance `by_id` (the structural node index — EVERY node, live or tombstoned)
+    /// by one op, mirroring the node dual-write's effect on node identity: an insert
+    /// takes the next established id (a fresh node, or a revived tombstone keeping its
+    /// id); a delete LEAVES the entry in place (the node write tombstones the node
+    /// rather than removing it, so a later child still resolves the tombstoned
+    /// ancestor); a rekey KEEPS the source entry (its node is tombstoned in place) and
+    /// takes the next established id for the target (a fresh or revived node); an
+    /// update leaves identity untouched. The live-row index `current` is advanced
+    /// separately by [`Self::apply_op`], which is where a delete/rekey-source drops
+    /// the row — occupancy stays live-only while `by_id` stays structural.
     fn apply_node_id(&mut self, op: &CommittedRowOp, fresh_ids: &mut impl Iterator<Item = i64>) {
         match op {
             CommittedRowOp::Insert { address, .. } => {
@@ -265,11 +274,12 @@ impl Projection {
                 }
             }
             CommittedRowOp::Update { .. } => {}
-            CommittedRowOp::Delete { address, .. } => {
-                self.by_id.remove(address);
-            }
-            CommittedRowOp::Rekey { from, to, .. } => {
-                self.by_id.remove(from);
+            // The node is tombstoned in place, not removed, so its structural entry
+            // stays — a later child still resolves this tombstoned ancestor.
+            CommittedRowOp::Delete { .. } => {}
+            CommittedRowOp::Rekey { to, .. } => {
+                // The source node is tombstoned in place (its `from` entry stays in
+                // `by_id`); the target establishes a fresh-or-revived live node.
                 if let Some(id) = fresh_ids.next() {
                     self.by_id.insert(to.clone(), id);
                 }

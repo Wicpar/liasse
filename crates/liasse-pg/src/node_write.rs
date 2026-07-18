@@ -21,7 +21,8 @@
 //!
 //! Every op is applied **by the surrogate node id**, resolved in O(1) from a
 //! per-transaction map ([`NodeWriter::staged`]) layered over the committed
-//! [`by_id`](crate::projection) side map (which now holds only *live* rows):
+//! [`by_id`](crate::projection) side map (the structural node index — EVERY node,
+//! live or tombstoned — so a nested op resolves its parent even under a tombstone):
 //!
 //! - **Insert** creates a node under its parent (the root sentinel `0` at depth 1,
 //!   else the parent row's node) and returns its id. `ON CONFLICT DO UPDATE` makes

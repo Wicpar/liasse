@@ -7,25 +7,31 @@
 //! level's `step_name` + decoded `key_wire`, and decode its stored `value`. The
 //! same pass yields both maps the store keeps:
 //!
-//! - `current`: address → [`StoredRow`] — the base every `&self` read overlays. The
-//!   `BTreeMap` self-sorts to Annex B order ([`RowAddress`]'s `Ord`), so a scan
-//!   enumerates a collection in key order with no explicit sort.
-//! - `by_id`: address → surrogate node id — the write path's O(1) parent/id
-//!   resolver ([`crate::node_write`]).
+//! - `current`: address → [`StoredRow`] — the base every `&self` read overlays, and
+//!   the sole occupancy oracle. Holds only **live** nodes. The `BTreeMap` self-sorts
+//!   to Annex B order ([`RowAddress`]'s `Ord`), so a scan enumerates a collection in
+//!   key order with no explicit sort.
+//! - `by_id`: address → surrogate node id — the **structural** node index (EVERY
+//!   non-sentinel node, live rows AND tombstones), the write path's O(1) parent/id
+//!   resolver ([`crate::node_write`]), so a nested op resolves its parent even when
+//!   that ancestor is a tombstone.
 //!
 //! # Rows vs tombstones
 //!
 //! A node is a structural *position*; a *row* is a node carrying a value. `current`
-//! and `by_id` hold only **live** nodes (`value IS NOT NULL`). A **tombstone**
-//! (`value IS NULL`) is a deleted non-leaf ancestor retained so its descendant rows
-//! stay addressable (§5.4 logical orphans); it is not itself a row, so it is never
-//! emitted. But the parent-chain walk MUST still traverse tombstones: a tombstone
-//! contributes its `step_name` + decoded `key_wire` to a descendant's address even
-//! though it is not a row. All non-sentinel nodes are therefore read into the map
-//! that the walk indexes, and the live/tombstone distinction is applied only when
-//! deciding what to emit. This is what makes a reopen reproduce the exact live
-//! projection: a top-level drop leaves its nested rows as orphans, and the walk
-//! reconstructs their addresses through the tombstoned ancestor.
+//! holds only **live** nodes (`value IS NOT NULL`); `by_id` indexes **every**
+//! non-sentinel node. A **tombstone** (`value IS NULL`) is a deleted non-leaf
+//! ancestor retained so its descendant rows stay addressable (§5.4 logical orphans);
+//! it is not itself a row, so it is never emitted into `current` — but it keeps its
+//! `by_id` entry, because the write path must be able to place a child under it. The
+//! parent-chain walk MUST also still traverse tombstones: a tombstone contributes its
+//! `step_name` + decoded `key_wire` to a descendant's address even though it is not a
+//! row. All non-sentinel nodes are therefore read into the map that the walk indexes,
+//! and the live/tombstone distinction is applied only when deciding what to emit into
+//! `current`. This is what makes a reopen reproduce the exact live projection AND its
+//! structural index: a top-level drop leaves its nested rows as orphans, the walk
+//! reconstructs their addresses through the tombstoned ancestor, and the tombstone
+//! stays in `by_id` so a later child still places under it.
 //!
 //! `key_wire` is the canonical, self-describing key form (decoded here); `key_enc`
 //! is never inverted — it exists only for the lookup/scan index.
@@ -45,9 +51,10 @@ use crate::value_codec;
 /// the terminus of every parent-walk. It is not itself a row.
 const ROOT_SENTINEL_ID: i64 = 0;
 
-/// The committed row set reconstructed from the node tree: the current rows keyed
-/// by address (the read path's base) and each row's surrogate node id (the write
-/// path's resolver).
+/// The committed state reconstructed from the node tree: `current` is the live rows
+/// keyed by address (the read path's base and occupancy oracle); `by_id` is the
+/// structural node index (every node, live or tombstoned) the write path resolves
+/// parents against.
 pub(crate) struct NodeTree {
     pub current: BTreeMap<RowAddress, StoredRow>,
     pub by_id: BTreeMap<RowAddress, i64>,
@@ -101,14 +108,18 @@ pub(crate) fn load(client: &mut Client, schema: &str) -> Result<NodeTree, StoreE
         );
     }
 
-    // Emit only live nodes as rows, but reconstruct each address by walking the
-    // parent chain through ALL nodes (tombstones included).
+    // Index EVERY non-sentinel node's reconstructed address → id in `by_id` (the
+    // structural node map — tombstones included — the write path resolves parents
+    // against), but emit only *live* nodes into `current` (the live-row base every
+    // read overlays). Each address is reconstructed by walking the parent chain
+    // through ALL nodes (tombstones included).
     let mut current = BTreeMap::new();
     let mut by_id = BTreeMap::new();
     for (&id, node) in &nodes {
-        let Some(row) = &node.row else { continue };
         let address = reconstruct(id, &nodes)?;
-        current.insert(address.clone(), row.clone());
+        if let Some(row) = &node.row {
+            current.insert(address.clone(), row.clone());
+        }
         by_id.insert(address, id);
     }
     Ok(NodeTree { current, by_id })

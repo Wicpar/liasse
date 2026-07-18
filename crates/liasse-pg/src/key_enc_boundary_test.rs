@@ -19,7 +19,13 @@
 //! `MemoryStore` sorts by, so an all-pairs pass over a boundary-dense set is a
 //! deterministic witness that the durable key order matches the reference for
 //! exactly the corners a random sweep is least likely to hit.
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::too_many_lines)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::too_many_lines,
+    clippy::indexing_slicing
+)]
 
 use core::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
