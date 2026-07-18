@@ -19,14 +19,12 @@
   spec: ["#runtime", "§22.8", "§10.2", "§6.2", "§6.3"]
   tags: ["authz", "provenance", "boundary"]
   note: '''
-    §22.8 and §10.2 state only that public requests run without an actor. They
-    do not define the result of a public mutation reading `$actor`. §6.2
-    ("Structural bindings exist only in the feature context that defines them")
-    supports static invalidity — `$actor` is out of scope on a public surface.
-    §6.3 ("a $actor context MUST receive exactly one occurrence; zero … reject
-    that evaluation") supports admission-time rejection — an unbound actor is
-    zero occurrences. A null/absent binding is a third reading. SPEC.md pins
-    none of the three, so `outcome: unspecified` with the readings enumerated.
+    Pinned (SPEC-ISSUES #9). §22.8 now states that reading `$actor`/`$session`
+    where no actor is bound is an error, never a none binding. Here the public
+    surface reaches `$actor` through the declared model mutation `.add` (a
+    mutation a role could also invoke), so the declaration stays valid and the
+    read faults at admission as an unbound structural read (§6.3), rejecting this
+    one anonymous request. A null/absent binding is never produced.
   '''
 
   package: {
@@ -60,9 +58,10 @@
       call: "public.notes.add"
       args: { body: "who am i" }
       on: "c1"
-      // (a) invalid, (b) rejected, or (c) ok with author absent/null — SPEC.md
-      // does not pin which. See note.
-      expect: { outcome: unspecified }
+      // Reaches $actor through the declared mutation `.add`; with no actor bound
+      // the read faults at admission as an unbound structural, rejecting this
+      // request (§22.8, §6.3).
+      expect: { outcome: rejected, violates: ["#runtime", "§22.8", "#expressions", "§6.3"] }
     }
   ]
 }

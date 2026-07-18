@@ -21,7 +21,7 @@
   suite: scenario
   spec: ["#rust-host", "§23.5", "#runtime", "§22.8", "#expressions", "§6.2", "§6.3"]
   tags: ["operator", "provenance", "actor"]
-  note: "§23.5 records host provenance separately from the application actor field and §22.8 runs engine maintenance without an actor, but neither pins what a mutation reading $actor observes under a host operator transition. §6.2 (structural bindings exist only in their defining feature context) supports static invalidity; §6.3 (a $actor context MUST receive exactly one occurrence; zero rejects that evaluation) supports admission-time rejection; a null/absent binding is a third reading. SPEC.md pins none, nor whether the host provenance is application-readable. The outcome of the operator call is therefore unspecified."
+  note: "Pinned (SPEC-ISSUES #9). §22.8 now states that reading $actor where no actor is bound is an error, never a none binding. A host-operator transition binds no actor, so the mutation reading $actor.id faults at admission as an unbound structural read (§6.3), rejecting the operator call. §22.8 also pins that the host provenance recorded for the transition (§23.5) is not application-readable, so $actor never resolves to it."
 
   package: {
     $liasse: 1
@@ -45,6 +45,6 @@
 
   steps: [
     { operator: { call: "stamp", args: { id: "n1", body: "hi" } },
-      expect: { outcome: unspecified } }
+      expect: { outcome: rejected, violates: ["#runtime", "§22.8", "#rust-host", "§23.5", "#expressions", "§6.3"] } }
   ]
 }

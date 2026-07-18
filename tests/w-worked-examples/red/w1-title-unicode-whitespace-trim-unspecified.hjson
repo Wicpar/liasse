@@ -5,15 +5,13 @@
   spec: ["W1", "#mutations", "§8.8", "#expressions", "§6"]
   tags: [unicode, ambiguity]
   note: '''
-    W1 normalizes the title with string.trim(.). A title consisting solely of a
-    non-breaking space (U+00A0) probes whether string.trim strips non-ASCII
-    Unicode whitespace. If it does, the title normalizes to "" and the size>0
-    check rejects the add (outcome rejected). If string.trim only strips ASCII
-    whitespace, the title survives as U+00A0 (size 1) and the add succeeds
-    (outcome ok). SPEC.md — §6 expressions and Annex A — does not define which
-    whitespace class string.trim removes, so the outcome is not externally
-    deducible. Captured as an ambiguity rather than guessing implementation
-    behavior. The title argument below is the JSON escape " " so the exact
+    Pinned (SPEC-ISSUES #5). W1 normalizes the title with string.trim(.). §6.5
+    now states that string.trim removes leading and trailing Unicode scalar
+    values carrying the Unicode White_Space property (the scalars Rust's
+    str::trim removes). A title consisting solely of a non-breaking space
+    (U+00A0) therefore normalizes to "", and because $normalize runs before
+    $check (§8.8) the size(.) > 0 check rejects the add (outcome rejected).
+    The title argument below is the JSON escape " " so the exact
     code point is unambiguous in the case file.
   '''
 
@@ -50,7 +48,7 @@
   steps: [
     // title is exactly one U+00A0 NO-BREAK SPACE
     { call: "public.tasks.add", args: { title: " " }
-      expect: { outcome: unspecified }
-      note: "rejected if string.trim strips U+00A0 (then size 0), ok if it does not" }
+      expect: { outcome: rejected, violates: ["#expressions", "§6.5", "#mutations", "§8.8"] }
+      note: "string.trim strips U+00A0 so the title normalizes to empty and the size(.) > 0 check rejects the add" }
   ]
 }

@@ -1,28 +1,36 @@
 {
   format: 1
   name: integer-remainder-sign-unspecified
-  suite: static
+  suite: scenario
   spec: ["#expressions", "§6.1", "§A.6"]
   tags: ["boundary"]
-  note: "Spec gap. §6.1 adopts 'CEL syntax, operator precedence, and static typing' — syntax only, not CEL evaluation semantics — so the % operator parses, but no rule assigns its meaning: Annex A.6 pins integer division (truncates toward zero) and is silent on remainder. For -7 % 2 the result could be -1 (remainder follows dividend) or 1 (mathematical modulus), and it is not even pinned whether the checker accepts % as part of the arithmetic surface at all. Both the load outcome and the runtime value are unpinned."
+  note: "Pinned (SPEC-ISSUES #3). Annex A.6 now makes `%` part of the arithmetic surface for int and decimal, defined as a - trunc(a / b) * b with the quotient truncated toward zero, so the remainder takes the dividend's sign: -7 % 2 = -1 (matches PostgreSQL mod). The computed field r reads the sign back through a keyed-collection view."
 
   package: {
     $liasse: 1
     $app: "t.intmod@1.0.0"
     $model: {
-      a: "int"
-      b: "int"
-      r: "= .a % .b"
+      calc: {
+        $key: "id"
+        id: "text"
+        a: "int"
+        b: "int"
+        r: "= .a % .b"
+      }
+      $public: {
+        calc: { $view: ".calc { id, r }" }
+      }
     }
     $data: {
-      a: "-7"
-      b: "2"
+      calc: {
+        x: { a: "-7", b: "2" }
+      }
     }
   }
 
-  expect: {
-    outcome: unspecified
-    
-    detail: "remainder operator has CEL syntax but no Liasse-defined semantics; neither load acceptance nor the sign of a negative-operand result is pinned"
-  }
+  steps: [
+    // -7 % 2 = -1: the remainder follows the dividend's sign (truncated division).
+    { watch: "public.calc", id: "w1",
+      expect_init: { value: [ { id: "x", r: "-1" } ] } }
+  ]
 }

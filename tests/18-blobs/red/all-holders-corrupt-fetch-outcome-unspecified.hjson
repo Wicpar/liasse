@@ -5,15 +5,13 @@
   spec: ["#blobs", "§18.8", "§18.9"]
   tags: ["blob", "fetch", "integrity", "unspecified"]
   note: '''
-    §18.9: at fetch, hash verification occurs "before delivering a successful
-    result", and §18.8: "A successful fetch returns exactly the bytes
-    identified by $sha512." When the only holder's object is corrupt there is
-    no verified holder to serve (the §18.8 plan "contains accessible verified
-    holders", here none), so the runtime MUST NOT deliver wrong bytes. What it
-    returns instead is not pinned: §18 names no error/denied/unavailable
-    outcome for a fetch with zero deliverable verified holders, nor whether the
-    fetch blocks pending repair. Recorded as an ambiguity: only the negative
-    guarantee (no successful delivery of non-matching bytes) is normative.
+    Pinned (SPEC-ISSUES #19). §18.8 now states that a runtime-driven fetch
+    attempts each accessible verified holder in $serve order and succeeds iff at
+    least one delivers hash-clean content; when none does the fetch fails with an
+    `unavailable` outcome, distinct from `denied`, without blocking on
+    reconciliation. Here the sole copy is corrupt, so no holder can deliver a
+    hash-clean result and the fetch is a no-clean-holder failure (mapped to the
+    corpus `error` outcome, §18.9).
   '''
 
   package: {
@@ -78,7 +76,7 @@
         at: ".file"
         on: "c1"
       }
-      expect: { outcome: unspecified,
-                detail: "no verified holder can deliver a hash-clean result; §18 pins no failure outcome" } }
+      expect: { outcome: error, violates: ["#blobs", "§18.8", "§18.9"],
+                detail: "no accessible verified holder can deliver a hash-clean result; the runtime-driven fetch fails (no-clean-holder)" } }
   ]
 }

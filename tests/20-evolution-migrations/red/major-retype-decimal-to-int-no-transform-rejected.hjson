@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: major-retype-decimal-to-int-no-transform-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#runtime", "§22.1"]
+  note: '''
+    Pinned (SPEC-ISSUES #35). §20.1 now defines a *compatible copy* as a value
+    whose canonical Annex-A wire form is directly decodable under the target
+    field's type through the §19 portable codec, with no cross-type value
+    coercion. A major-bump retype of `total` from `decimal` to `int` with no
+    $from/$as must copy the compatible value, but the live decimal `1.0` keeps
+    its fractional scale on the wire ("1.0") and does not decode as `int`. It is
+    therefore not compatible and, absent an explicit `$as`, is rejected exactly
+    as an unpopulated required field is (an implicit lossy decimal->int coercion
+    is never inferred). The v1 composition stays active, so no ill-typed value
+    enters committed state (§22.1).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.retype@1.0.0"
+    $model: {
+      orders: {
+        $key: "id"
+        id: "text"
+        total: "decimal"
+      }
+      $public: {
+        orders: { $view: ".orders { id, total }" }
+      }
+    }
+    $data: {
+      orders: { o1: { total: "1.0" } }
+    }
+  }
+
+  steps: [
+    // Major bump 2.0.0 retypes total: decimal -> int with no $from/$as.
+    // decimal 1.0 keeps its scale on the wire, so it is not a compatible copy
+    // and the migration is rejected (no implicit decimal->int coercion).
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.retype@2.0.0"
+          $model: {
+            orders: {
+              $key: "id"
+              id: "text"
+              total: "int"
+            }
+            $public: {
+              orders: { $view: ".orders { id, total }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#evolution", "§20.1", "#runtime", "§22.1"]
+        detail: "decimal 1.0 is not directly decodable as int (its canonical wire keeps the fractional scale); absent an explicit $as it is rejected like an unpopulated required field"
+      } }
+    // v1 stays active atomically: the row survives with its decimal total.
+    { watch: "public.orders", id: "w1",
+      expect_init: { value: [ { id: "o1", total: "$any" } ] } }
+  ]
+}

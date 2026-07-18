@@ -34,7 +34,7 @@
   suite: scenario
   spec: ["#rust-host", "§23.3", "#blobs", "§18.8", "§18.9"]
   tags: ["connector", "integrity", "tampering", "blob", "nonconforming-host"]
-  note: "A registered read connector lies (returns bytes that do not match $sha512) while a second verified holder is honest, and the tampered copy is not observed corrupt. §18.9 forbids delivering the tampered bytes as a successful fetch (verification precedes a successful result) — that negative guarantee is normative. But §18.8 makes probing other holders and replacing ranges from a mismatching source a client MAY, so whether this single fetch recovers from the honest holder (ok + true bytes) or fails is not pinned even though a clean holder exists. The fetch outcome is therefore unspecified; only the no-tampered-success invariant is deducible. Parallels tests/18-blobs/red/all-holders-corrupt-fetch-outcome-unspecified."
+  note: "Pinned (SPEC-ISSUES #19). §18.8 now requires a runtime-driven fetch to attempt each accessible verified holder in $serve order and succeed iff at least one delivers hash-clean content. The serve-preferred connector fs-a lies (bytes fail $sha512, §18.9 forbids delivering them as success) but the honest holder fs-b still holds the true bytes, so the fetch recovers and returns exactly the-true-bytes. Recovery across verified holders is now mandatory, not a client MAY. Parallels tests/18-blobs/red/all-holders-corrupt-fetch-outcome-unspecified, where no holder is clean and the fetch fails."
 
   package: {
     $liasse: 1
@@ -103,7 +103,6 @@
     // deducible constraint is that a successful result never carries tampered
     // bytes.
     { blob_get: { surface: "public.docs", args: { id: "d1" }, at: ".file", on: "c1" },
-      expect: { outcome: unspecified,
-                detail: "a successful fetch MUST NOT return bytes other than the-true-bytes; recovery from the honest holder fs-b vs a fetch failure is a §18.8 client MAY and is not pinned" } }
+      expect: { outcome: ok, value: "the-true-bytes" } }
   ]
 }

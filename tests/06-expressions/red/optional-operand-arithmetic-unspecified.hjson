@@ -2,9 +2,9 @@
   format: 1
   name: optional-operand-arithmetic-unspecified
   suite: static
-  spec: ["#expressions", "§6.1", "§6.2", "§5.2"]
+  spec: ["#expressions", "§6.1", "§A.6"]
   tags: ["absence"]
-  note: "Spec gap. §6.2 defines 'none' as the absent optional value and §5.2 says a computed expression yielding none is an absent optional, but no rule states how an arithmetic operator treats an optional operand: the checker could reject 'int - int?' as a static type mismatch (CEL static typing, §6.1), or none could propagate making the computed value optional, or absence could act as a zero/identity. Aggregates explicitly skip absent inputs (§7.5) and ordering explicitly places none (Annex B.2) — operators have no such sentence. Load acceptance itself is therefore unpinned."
+  note: "Pinned (SPEC-ISSUES #3). Annex A.6 now requires present (non-optional) numeric operands for the arithmetic and remainder operators; an optional<T> operand is a static type error at load. `total: = .price - .discount` with `discount: int?` is therefore rejected at load — the author must coalesce (`.discount ?? 0`) or narrow first. Operators do not propagate or zero-fill none (contrast §7.5 aggregates and Annex B.2 ordering)."
 
   package: {
     $liasse: 1
@@ -21,8 +21,8 @@
   }
 
   expect: {
-    outcome: unspecified
-    
-    detail: "arithmetic over an optional operand: neither static rejection nor none-propagation is mandated"
+    outcome: invalid
+    violates: ["#expressions", "§6.1", "§A.6"]
+    detail: "arithmetic over an optional operand (int - int?) is a static type error at load; the operand must be coalesced or narrowed first"
   }
 }

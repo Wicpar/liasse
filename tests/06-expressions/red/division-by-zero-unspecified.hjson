@@ -2,9 +2,9 @@
   format: 1
   name: division-by-zero-unspecified
   suite: scenario
-  spec: ["#expressions", "§6.5", "§A.6"]
+  spec: ["#expressions", "§A.6"]
   tags: ["boundary"]
-  note: "Spec gap. Annex A.6 defines exact decimal/integer arithmetic and division scale selection but no behavior for a zero divisor, and no other chapter mandates one. Dividing by a zero read from state cannot be excluded statically. Whether the call errors, rejects the transition with a diagnostic, or produces some value is unpinned; only the load of the package (statically well-typed) is uncontroversial."
+  note: "Pinned (SPEC-ISSUES #3). Annex A.6 now states that a zero divisor in `/` or `%` produces no value: it is a typed evaluation error that rejects the containing evaluation with a diagnostic and never panics, yields none, or yields a non-finite value. Because the divisor is read from state (b = 0 in $data), the fault is detected at evaluation, so the call is rejected."
 
   package: {
     $liasse: 1
@@ -29,6 +29,6 @@
 
   steps: [
     { call: "public.math.read", args: {},
-      expect: { outcome: unspecified } }
+      expect: { outcome: rejected, violates: ["#expressions", "§A.6"] } }
   ]
 }

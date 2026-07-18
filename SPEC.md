@@ -593,6 +593,8 @@ A named shape is a reusable structural state or interface definition. It avoids 
 
 Type names provide reuse and readable contracts. Satisfaction is structural: a value or view with the required fields, types, and identity satisfies the shape.
 
+Structural satisfaction is closed. A value or view satisfies a struct or named shape only when it presents exactly the declared members: every required member present and type-conformant, every optional member present-and-conformant or absent (carrying `none`), and no member the shape does not declare. A value carrying an undeclared member does not satisfy the shape. This governs produced and returned values; the treatment of undeclared members in an untrusted external argument object is a separate question and is not decided by this rule.
+
 `$like` remains available for positional recursion:
 
 ```hjson
@@ -744,6 +746,8 @@ convert    checked conversions
 time       Unix time, date, duration, and period utilities
 ```
 
+`string.trim` removes the leading and trailing Unicode scalar values that carry the Unicode `White_Space` property (equivalently, the scalars Rust's `str::trim` removes); `string.lower`, `string.upper`, and `string.casefold` apply the corresponding Unicode default case and casefold operations. Non-ASCII whitespace — including U+00A0 NO-BREAK SPACE — is therefore trimmed, and a value consisting solely of `White_Space` scalars normalizes to the empty string; because `$normalize` runs before a `$check` (§8.8), such a value fails a `size(.) > 0` check.
+
 Packages MAY require additional typed namespaces from the Rust context, as described in [Host namespaces](#host-namespaces). Package loading validates every function name, type, determinism class, and namespace contract.
 
 The compact grammar index is in Annex C.
@@ -825,6 +829,8 @@ A projection MAY declare a synthetic `$key` for grouping or a new identity:
 A scalar projection `$key` names one output field. An array groups several output fields into one composite key, in the listed order.
 
 Rows sharing the synthetic key form one group. `group` is the source-row view for that output row. Every non-key source value MUST be aggregated or derived solely from key values.
+
+This constraint applies to every projection that declares a synthetic `$key`, whether the key collapses several source rows into one group or re-identifies each source row under a new identity. Validity is a property of the declaration, not of the current data, so a plain non-key source value is rejected even when the synthetic key is unique per row and no rows actually share it. To carry a source field that is determined by the key, wrap it in an aggregate over `group` — for example `min(group.f)` — which is well-defined and equals the field when the group is a single row.
 
 ### 7.3 Sorting and bounds
 
@@ -1152,6 +1158,8 @@ A filtered bulk operation selecting no rows succeeds as an expression. When the 
 
 A keyed row patch targets one existing row; a missing target rejects the call.
 
+Delete by key is a set operation, not a single-row receiver context: `collection - keys` removes each key that identifies a live row and contributes nothing for a key that is absent, exactly as `$set - values` removes present members and ignores absent ones (§8.5). Deleting a key that names no live row therefore stages no change; if the complete program produces no other change the call returns `unchanged`. A `restrict` inbound reference or an undecided `$on_delete` edge still rejects (§21.1, §22.1). This differs from a keyed patch or field write, whose exactly-one-row receiver (§6.3) rejects an absent target.
+
 ### 8.10 Returning committed views
 
 `return` MAY appear only as the final program statement:
@@ -1220,6 +1228,10 @@ The map member supplies the local key. A repeated key field MUST agree with it. 
 Computed values, views, source-backed bucket rows, module spaces, and keyring-managed versions cannot be seeded directly. Their values derive from writable state, installed packages, or provider transitions.
 
 Seed rows pass through the same defaults, normalization, checks, key, ref, uniqueness, bucket, and meter rules as mutation inserts. All seeded row identities and supplied values form one prospective state before defaults resolve. Defaults are then evaluated by dependency; source-object member order and field order have no semantic effect.
+
+Within this single atomic seed load, every seeded row identity and supplied value is visible to every seed default: a default such as `count(/items) + 1` observes all sibling seeded rows. §5.1's rule that rows of one bulk insertion become selectable only after resolution sequences external reads across separate mutation statements; it does not subdivide the genesis seed load.
+
+A `= expr` in `$data` is the literal-or-expression position of §4.2 and Annex C.4: it is evaluated once, at the insertion that seeds the field, and its scalar result is stored as ordinary writable state. It is not a computed value (§5.2) and is never re-evaluated; a stored field seeded from a cross-instance expression freezes at insertion.
 
 ### 9.2 Host lifecycle operations
 
@@ -2646,7 +2658,7 @@ The returned funding view contains the fixed allocation:
 
 Changing or removing a plan or subscription affects future admissions and current pool views. Earlier funding remains attached to its spend even when the source row later disappears.
 
-Every funding row records the source name, enforced meter level, pool identity, allocated quantity, interval bounds, and any projected funding metadata used by the response. Later source edits never rewrite that recorded allocation. Applications that want subscription terms frozen at purchase copy the period, quantity, and price onto the subscription row; applications that keep plan references intentionally let later plan changes affect future periods and admissions.
+The frozen admission fact retains the enforced meter level, source name, pool identity, allocated quantity, and interval bounds so replay and audit are deterministic; the observable funding view exposes only source, pool, and amount (§15.6). Later source edits never rewrite that recorded allocation. Applications that want subscription terms frozen at purchase copy the period, quantity, and price onto the subscription row; applications that keep plan references intentionally let later plan changes affect future periods and admissions.
 
 ### 15.4 Hierarchical limits
 
@@ -2679,6 +2691,8 @@ spend.funding                            fixed admission allocation for that spe
 The parameterless forms are valid when `$eligible` and source selection require no spend-specific member beyond the meter's default current time. When eligibility references `$amount`, `$time`, or named spend metadata, the accessor call MUST supply every referenced value. The result uses the same source evaluation, duplicate-pool coalescing, order, and remaining-capacity rules as admission.
 
 `funding` is a keyed view identified by meter, enforced level, source, and pool identity. The implementation MAY materialize or reconstruct it while preserving the recorded allocation.
+
+The observable `spend.funding` view has exactly the members `source` (text), `pool` (opaque pool identity), and `amount` (decimal). Its shape is fixed and independent of the meter's source projection. Source-projected metadata (for example `price`), the enforced level, and interval bounds participate in `$order`, `$eligible`, and the §15.2 duplicate-pool agreement, and are retained in the frozen admission fact for replay and audit, but are not members of the returned funding view; an application that needs such metadata attached to a spend copies it onto a row (§15.3).
 
 ---
 
@@ -2748,6 +2762,8 @@ generated   may use randomness, clocks, or provider operations; one successful
 ```
 
 Pure functions MAY run during views, checks, and replay. Verifiers run during external request admission. Generated functions run in mutation/write-time positions. A generated result affecting state, identity, funding, authorization, or another durable admission fact is recorded.
+
+A host namespace return that does not satisfy its declared result type — including a struct return carrying an undeclared member (§5.8) — is a §2.1 nonconformance: the runtime rejects the call and commits no effect, exactly as for any off-contract return. The runtime does not coerce, widen, or strip an off-contract return.
 
 Arbitrary untracked external side effects are outside expression evaluation. Integrations represent them through explicit provider workflows and committed observations.
 
@@ -3137,6 +3153,8 @@ Visibility of a `blob` value through a currently authorized surface grants fetch
 
 The plan contains accessible verified holders in `$serve` order and connector-specific access data. A client MAY probe holders, use ranged and resumable reads, combine ranges, compute SHA-512 while streaming, and replace ranges received from a mismatching source. A successful fetch returns exactly the bytes identified by `$sha512`.
 
+When the runtime performs the fetch on the caller's behalf, it MUST attempt each accessible verified holder in `$serve` order and apply the §18.9 fetch verification to each. The fetch succeeds — returning exactly the bytes identified by `$sha512` — if and only if at least one accessible verified holder delivers hash-clean content. If none does, the fetch fails with an `unavailable` outcome, distinct from the `denied` outcome of a metadata-only or revoked projection; the fetch does not block on reconciliation (§18.6), so a fetch retried after repair MAY then succeed. The client-side probing, ranged and resumable reads, range combination, and mismatching-range replacement remain permitted transfer strategies but do not alter this outcome as a function of the current holder state.
+
 ### 18.9 Integrity
 
 Hash verification occurs:
@@ -3443,7 +3461,7 @@ A target field MAY identify its previous source. The members of the expanded dec
 }
 ```
 
-Without `$as`, the compatible value is copied. The same shorthand renames a collection:
+Without `$as`, the compatible value is copied. A value is a *compatible copy* only when its canonical Annex-A wire form is directly decodable under the target field's type through the §19 portable codec; the copy preserves representation and performs no cross-type value coercion. A change of scalar base type therefore copies only values whose existing representation already satisfies the target type — for example every `int` decodes as `decimal`. A value that does not — a `decimal` with a fractional scale into `int`, or any `text` into `int` — is not compatible; absent an explicit `$as` transform producing the target type it is rejected exactly as an unpopulated required field is. Lossy or value-dependent conversions (`decimal`→`int`, other narrowings) MUST be requested explicitly with `$as` — checked conversions live in the `convert` namespace (§16.1) — and are never implicit, so a migration's success never depends on a particular stored value or on an unpinned decimal scale spelling (Annex A.1). The same shorthand renames a collection:
 
 ```hjson
 "clients": {
@@ -3716,6 +3734,8 @@ A connection loss before admission MAY cancel the request. A loss during admissi
 
 Only authenticated external interface requests bind `$actor`. Public requests and engine maintenance run without an actor. Internal calls preserve the original bindings.
 
+Reading `$actor` or `$session` where no actor is bound — a public request (§10.2), a host-operator transition (§23.5), or engine maintenance — is an error, never a `none` binding. A reference lexically inside a public surface's inline `$mut` program or inline `$view`, a context that can never bind an actor, is rejected at load (§10.2, §6.2). A reference reached indirectly — through a declared mutation that an authenticated role could also invoke, or through an operator or maintenance transition — keeps the declaration valid and faults at admission as an unbound structural read (§6.3), rejecting that one request. The host provenance recorded for an operator transition (§23.5) is not application-readable: no expression binding exposes it, and `$actor` never resolves to it.
+
 Request inputs remain local to admission. A mutation makes selected values durable through explicit state writes. Generated and provider results enter durable state or retained history when required to reproduce committed state or another durable admission fact. Namespace-defined audit projections may record sanitized typed results suitable for diagnostics and replay.
 
 ---
@@ -3831,7 +3851,7 @@ A PostgreSQL implementation MAY use:
 - `ORDER BY` expressions matching Annex B, including explicit absence placement;
 - materialized views or incremental tables for expensive computed data.
 
-This is one conforming strategy. The normative contract is the logical behavior rather than the physical layout.
+This is one conforming strategy. The normative contract is the logical behavior rather than the physical layout. A backend-internal encoding — such as a reversible NUL-safe escape for `jsonb` and `text` storage so U+0000 and every other `text` scalar survive (Annex A.1) — is exactly such an implementation-owned choice: it preserves the logical value and order without appearing at any logical surface.
 
 ### 23.8 Diagnostics
 
@@ -4321,6 +4341,8 @@ This annex is normative.
 
 JSON `null` is a value of `json`. `none` is absence in the Liasse type system.
 
+`text` is a sequence of Unicode scalar values (U+0000..U+10FFFF, excluding surrogate code points), preserved exactly. No scalar value is excluded; in particular U+0000 (NUL) is a legal `text` scalar. A backend whose native string or document storage cannot represent a given scalar value MUST apply a reversible, backend-internal encoding that preserves the value losslessly and does not alter any observable result — value equality, Annex B order, row keys, or opaque identity tokens. Per §23.3 that encoding is implementation-owned and MUST NOT appear at any logical surface.
+
 ### A.2 Type expressions
 
 ```text
@@ -4431,6 +4453,8 @@ The package default is `us`, matching PostgreSQL timestamp precision. A timestam
 ### A.6 Decimal semantics
 
 Decimals are exact base-10 values. Addition, subtraction, and multiplication are exact. Integer division truncates toward zero. `avg` converts its inputs to `decimal` and returns `decimal?`.
+
+The remainder operator `%` is part of the arithmetic surface for `int` and `decimal`. It is defined as `a − trunc(a ÷ b) × b`, where the quotient truncates toward zero; the remainder therefore takes the sign of the dividend and satisfies `(a ÷ b)·b + (a % b) = a`, matching PostgreSQL `mod` (`-7 % 2 = -1`, `7 % -2 = 1`). A zero divisor in `/` or `%` produces no value: it is a typed evaluation error that rejects the containing evaluation — computed field, check, or mutation — with a diagnostic, and never panics, yields `none`, or yields a non-finite value. Because a divisor MAY be read from state, this is detected at evaluation rather than at load; a short-circuiting operator (`&&`, `||`, `?:`, `??`) never evaluates an unreached divisor. Arithmetic and remainder operators require present (non-optional) numeric operands (`int` or `decimal`; `+` additionally concatenates two `text`). An `optional<T>` operand is a static type error at load — coalesce it (`x ?? 0`) or narrow it first. Operators do not skip, propagate, or zero-fill `none`, in contrast to the explicit aggregate rule (§7.5) and ordering rule (Annex B.2).
 
 The default decimal division and rounding semantics follow PostgreSQL `numeric`:
 

@@ -25,6 +25,9 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
    division by zero; arithmetic over an optional operand (static type error vs
    `none` propagation). `06/integer-remainder-sign`, `06/division-by-zero`,
    `06/optional-operand-arithmetic`.
+   **RESOLVED (pending SPEC.md merge):** Annex A.6 amended; corpus pinned
+   (remainder-sign now a scenario asserting `-1`, division-by-zero → `rejected`,
+   optional-operand → `invalid`).
 4. **Generated-value identity per call-site.** §5.1/§8.12 "produced once for
    the admitted request" read literally makes two `uuid()` key defaults in one
    request collide; Annex A.5 disambiguates `now()` but nothing disambiguates
@@ -32,6 +35,8 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
 5. **`string.trim` and non-ASCII whitespace.** Does a U+00A0-only title
    normalize to empty (and fail `size(.) > 0`)?
    `w-worked-examples/w1-title-unicode-whitespace-trim`.
+   **RESOLVED (pending SPEC.md merge):** §6.5 amended (Unicode `White_Space`);
+   W1 case pinned → `rejected`.
 
 ## Mutations, calls, and surfaces
 
@@ -41,6 +46,8 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
 7. **Delete-by-key of an absent key.** §8.9 rejects an absent keyed patch but
    lets zero-match filtered ops succeed unchanged; `collection - key` is
    unassigned. `08/delete-absent-key-outcome`.
+   **RESOLVED (pending SPEC.md merge):** §8.9 amended (delete-by-key is a set
+   operation); case pinned → `ok`/`unchanged`.
 8. **Failure class for unresolvable/ungranted names.** §10.4/§12.1 mandate
    failure but pin no category (denied vs not-found), and don't require a
    nonexistent surface to be indistinguishable from an ungranted one
@@ -50,6 +57,8 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
    transition: static reject (§6.2) vs admission reject (§6.3) vs null
    binding; whether host provenance is application-readable is also unpinned.
    `22/public-request-references-actor`, `23/operator-commit-actor-provenance`.
+   **RESOLVED (pending SPEC.md merge):** §22.8 amended (fail-closed; host
+   provenance not application-readable); both cases pinned → `rejected`.
 10. **Surface `$view` parameter inference.** Inference is defined for
     mutations only (§8.3). `06/surface-view-parameter-inference`.
 11. **Interface addressing edges.** Recursive-descendant mutation addressing;
@@ -64,6 +73,8 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
     synthetic key "for grouping OR a new identity"; application to a per-row
     unique identity is undisambiguated.
     `07/synthetic-key-new-identity-nonaggregated`.
+    **RESOLVED (pending SPEC.md merge):** §7.2 amended (constraint is
+    unconditional); case pinned → `invalid`.
 
 ## Buckets, meters, timing
 
@@ -75,6 +86,8 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
 14. **Funding-row projected metadata.** Whether a source-projected member
     (e.g. `price`) appears in each §15.3 funding row.
     `w-worked-examples/w3-funding-projected-metadata-shape`.
+    **RESOLVED (pending SPEC.md merge):** §15.3/§15.6 amended (fixed
+    `{source,pool,amount}` shape); W3 case pinned → `ok` with that shape.
 
 ## Host components
 
@@ -107,6 +120,9 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
     a client MAY, so the single-fetch outcome is unpinned even when an honest
     holder exists. `18/all-holders-corrupt-fetch-outcome`,
     `23/connector-tampered-read-refetched-from-verified-holder`.
+    **RESOLVED (pending SPEC.md merge):** §18.8/§18.9 amended (runtime fetch
+    recovers across verified holders); tampered case pinned → `ok` + true bytes,
+    all-corrupt case pinned → `error` (no-clean-holder).
 20. **Wire details.** Descriptor bytes encoding; uppercase-hex sha512
     handling. `18/descriptor-bytes-encoding`, `18/uppercase-hex-sha512`.
 
@@ -132,6 +148,13 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
     `05/seed-default-sibling-visibility`,
     `w-worked-examples/w4-seed-computed-enabled-reevaluation`,
     `09/reload-divergent-seed-data`.
+    **PARTIALLY RESOLVED (pending SPEC.md merge):** §9.1 amended for (A) sibling
+    visibility and (B) one-shot `= expr` freeze; `05/seed-default-sibling-visibility`
+    pinned → `(3,3)`. (B)'s `w4` case stays blocked (SKIP ledger, §13 child-compile
+    seam). **ESCALATE (impl does not match):** leg (C) reload-genesis-only — the
+    engine returns completion `committed`, not `unchanged`, on a byte-identical
+    reload (consistent with §9.3's "a definition-only update creates a commit"),
+    so the §9.4 clause and `09/reload-divergent-seed-data` pin were left out.
 24. **Erasure scope.** Scrub scope over a cascade-deleted row's retained
     history. `21/erase-cascade-scrub-scope`.
 
@@ -199,6 +222,10 @@ implementation bug, which gets fixed against the spec instead).
     survives the storage layer, so conforming backends agree. (The
     implementation must still make its two backends agree regardless — tracked
     as a fix, not left here.)
+    **RESOLVED (pending SPEC.md merge):** Annex A.1 amended (U+0000 legal;
+    backend-preservation obligation) with a §23.7 cross-reference. No logical
+    corpus case added: backend preservation is impl-tested (memory-vs-PG
+    agreement in `liasse-pg`), and a literal NUL in a corpus file is fragile.
 
 33. **§19.5 `entries` membership scope.** "`entries` covers every required
     direct archive entry other than `manifest.json`" states one exclusion, but
@@ -212,6 +239,11 @@ implementation bug, which gets fixed against the spec instead).
     the strict closed-struct reading rejects it. This is the return-value
     analogue of item 5 (unknown members in call arguments): reject vs ignore
     is unstated. Surfaced by host-conformance red-teaming.
+    **RESOLVED (pending SPEC.md merge):** §5.8 amended (closed structural
+    satisfaction) and §16.3 (a nonconforming host return, incl. an extra member,
+    is rejected as a §2.1 nonconformance). No corpus case added: the sim host has
+    no extra-member-return behavior to drive one without engine changes, and the
+    impl already rejects (`liasse-host` `conform.rs` `UnexpectedField`).
 
 35. **§20.1 "compatible value is copied" across an incompatible scalar type
     change.** A `major`-bump migration that retypes a field with no `$from`/
@@ -226,6 +258,9 @@ implementation bug, which gets fixed against the spec instead).
     `"1.0"`). Whether §20.1 intends a lossless numeric down-conversion
     (`decimal 1.0`→`int 1`) as an implicit compatible copy, or requires an
     explicit `$as: "int(.)"`, is unpinned. Surfaced by migration red-teaming.
+    **RESOLVED (pending SPEC.md merge):** §20.1 amended (compatible copy =
+    representation-preserving; `decimal`→`int` needs explicit `$as`). New case
+    `20/major-retype-decimal-to-int-no-transform-rejected` pinned → `rejected`.
 
 36. **§19.9 merge-conflict coordinate for a §8.2 root-singleton member.** A
     three-way merge conflict on a root-singleton field is reported with the

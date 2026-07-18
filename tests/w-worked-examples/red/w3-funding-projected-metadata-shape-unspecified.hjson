@@ -5,16 +5,13 @@
   spec: ["#meters", "W3", "§15.3"]
   tags: [meters, ambiguity]
   note: '''
-    Ambiguity in the returned funding shape. W3's source projects a `price`
-    member alongside $quantity, and §15.3 says "Every funding row records ...
-    any projected funding metadata used by the response" and "any projected
-    funding metadata used by the response." Yet the one normative funding-view
-    example in §15.3 lists only { source, pool, amount } per row, and §15.6 says
-    only that `funding` "is a keyed view identified by meter, enforced level,
-    source, and pool identity." Whether each returned funding row exposes the
-    projected `price` (and under what member name) is therefore NOT externally
-    deducible, so the exact returned value of consume's `funding` cannot be
-    pinned. Recorded as an ambiguity rather than guessing the member set.
+    Pinned (SPEC-ISSUES #14). §15.6 now fixes the observable spend.funding view
+    to exactly { source (text), pool (opaque identity), amount (decimal) },
+    independent of the meter's source projection. W3's source projects a `price`
+    member for $order only; price is retained in the frozen admission fact but is
+    NOT a member of the returned funding view. So the weekly funding row for a
+    spend of 10 is { source: "subscription", pool: <opaque>, amount: "10" } with
+    no `price` member.
   '''
 
   package: {
@@ -67,7 +64,7 @@
 
   steps: [
     { call: "public.wallet.consume", args: { account: "a1", amount: "10" }
-      expect: { outcome: unspecified }
-      note: "call succeeds (ok), but whether funding[].price is present/how named is not deducible from §15.3/§15.6" }
+      expect: { outcome: ok, value: { id: "$any:uuid", amount: "10", funding: [ { source: "subscription", pool: "$any", amount: "10" } ] } }
+      note: "the funding row carries exactly source/pool/amount; the source-projected price is not a member of the funding view (§15.6)" }
   ]
 }

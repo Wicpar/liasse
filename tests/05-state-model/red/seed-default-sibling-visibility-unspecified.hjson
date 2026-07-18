@@ -4,15 +4,12 @@
   suite: scenario
   spec: ["#state-model", "§5.1", "§9.1"]
   tags: ["ordering"]
-  note: '''Genuine spec ambiguity. §5.1 says rows of one bulk insertion 'become selectable
-together only after every row in that statement has resolved' and that seed rows 'pass
-through the same defaults ... rules as mutation inserts' (§9.1) — under that reading a
-seed-time default `count(/items) + 1` sees 0 rows and both rows get pos = 1. But §9.1
-also says 'All seeded row identities and supplied values form one prospective state
-before defaults resolve' — under that reading count(/items) sees both seeded rows and
-each gets pos = 3. Note that §9.1's order-independence rule ('source-object member
-order and field order have no semantic effect') rules out the serial answer (1, 2)
-either way, but the spec does not pin (1, 1) versus (3, 3). Recorded as unspecified.'''
+  note: '''Pinned (SPEC-ISSUES #23). §9.1 now states that within the single atomic seed
+load every seeded row identity and supplied value is visible to every seed default:
+`count(/items) + 1` observes all sibling seeded rows. §5.1's become-selectable-only-after-
+resolution rule sequences external reads across separate mutation statements; it does not
+subdivide the genesis seed load. With two seeded rows a and b, count(/items) sees both, so
+each row's pos resolves to 3 (the (3, 3) reading).'''
 
   package: {
     $liasse: 1
@@ -38,7 +35,8 @@ either way, but the spec does not pin (1, 1) versus (3, 3). Recorded as unspecif
   }
 
   steps: [
-    // the load succeeds; the pos values it produced are not pinned by the spec
-    { watch: "public.items", id: "w1", expect_init: { outcome: unspecified } }
+    // Each seed default count(/items) + 1 observes both sibling seeded rows -> pos = 3.
+    { watch: "public.items", id: "w1",
+      expect_init: { value: { $unordered: [ { id: "a", pos: "3" }, { id: "b", pos: "3" } ] } } }
   ]
 }
