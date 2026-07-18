@@ -693,6 +693,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "liasse-connect"
+version = "0.0.1"
+dependencies = [
+ "liasse-ident",
+ "liasse-model",
+ "liasse-runtime",
+ "liasse-store",
+ "liasse-surface",
+ "liasse-value",
+ "liasse-wire",
+ "thiserror",
+]
+
+[[package]]
 name = "liasse-diag"
 version = "0.0.1"
 dependencies = [

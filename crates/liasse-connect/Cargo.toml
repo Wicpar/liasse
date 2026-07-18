@@ -1,0 +1,36 @@
+[package]
+name = "liasse-connect"
+description = "Transport-agnostic sync core and reference SSE+HTTP binding for the Liasse client-sync connector (§12)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[features]
+default = ["std-http"]
+# The reference transport binding: std::net blocking HTTP/1.1 + SSE. The core is
+# transport-agnostic and depends on none of it; an axum adapter is a later stage.
+std-http = []
+
+[dependencies]
+liasse-surface = { path = "../liasse-surface" }
+liasse-wire = { path = "../liasse-wire" }
+# `Type::decode` (strict, type-directed decode of hostile inbound values) and the
+# admission rejection taxonomy are not re-exported through liasse-surface, so the
+# codec names them directly. Both are already transitive dependencies of
+# liasse-surface; declaring them adds no new code to the dependency graph and keeps
+# the connect layer HTTP-dependency-free.
+liasse-value = { path = "../liasse-value" }
+liasse-runtime = { path = "../liasse-runtime" }
+# `InstanceStore` (the store bound `SurfaceHost<S>` requires) is not re-exported
+# through liasse-surface, so the generic core names it directly.
+liasse-store = { path = "../liasse-store" }
+thiserror = "2"
+
+[dev-dependencies]
+liasse-model = { path = "../liasse-model" }
+liasse-ident = { path = "../liasse-ident" }
+
+[lints]
+workspace = true
