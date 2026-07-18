@@ -1,10 +1,10 @@
 {
   format: 1
-  name: overflow-reject-detection-timing-unspecified
+  name: overflow-reject-detection-timing
   suite: scenario
   spec: ["#buckets", "§14.5", "§14.7", "§A.4"]
-  tags: ["calendar", "recurrence", "boundary", "unspecified"]
-  note: "A.4 defines overflow: reject — when a generated boundary lands on a calendar date missing from the destination month, that policy rejects rather than clamps. Here a monthly series anchored on Jan 31 must produce b1 = Feb 31, which does not exist. The OUTCOME (a rejection) is pinned, but the spec does not pin WHEN it surfaces: §14.5 states the reject rule only for non-advancing recurrence, and neither §14.5 nor A.4 says whether an overflow: reject boundary is validated eagerly at the source-row transition (admission) or lazily only when a temporal read requires that boundary. Even for this finite series eager detection is possible but not mandated, so the admission-time outcome is genuinely unspecified."
+  tags: ["calendar", "recurrence", "boundary"]
+  note: "A.4 defines overflow: reject — when a generated boundary lands on a calendar date missing from the destination month, that policy rejects rather than clamps. Here a monthly series anchored on Jan 31 with a finite series bound (Mar 31) must produce b1 = Feb 31, which does not exist. Per the eager-enforcement decision (§14.5, §14.7), an overflow: reject boundary within an enumerable series is validated eagerly at the source transition: the subscription insert that establishes the series is rejected at admission, never deferred to a later temporal read. Committed state therefore never holds a finite source-backed series that would, on enumeration, hit an overflow: reject boundary."
 
   package: {
     $liasse: 1
@@ -53,10 +53,11 @@
 
   steps: [
     // finite series [Jan 31, Mar 31); computing it requires b1 = Feb 31 (missing).
-    // Whether this rejects at admission (eager) or is admitted and only rejects a
-    // read that reaches the missing boundary (lazy) is not fixed by the spec.
+    // The overflow: reject boundary within this enumerable series is validated
+    // eagerly at the source transition, so the insert is rejected at admission
+    // (§14.5, §14.7) rather than admitted to fault only at a later temporal read.
     { call: "public.subs.add"
       args: { id: "s1", plan: "strict_monthly", starts_at: "1769817600000000", ends_at: "1774915200000000" }
-      expect: { outcome: unspecified } }
+      expect: { outcome: rejected, violates: ["#buckets", "§14.7"] } }
   ]
 }

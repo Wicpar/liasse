@@ -1,16 +1,15 @@
 {
   format: 1
-  name: negative-pool-quantity-enforcement-unspecified
+  name: negative-pool-quantity-enforcement
   suite: scenario
   spec: ["#meters", "§15.1"]
-  note: '''SPEC §15.1 says pool $quantity MUST be non-negative, but does not state where
-that rule is enforced when $quantity is projected from a writable field: (a) the
-transition inserting the pool row whose projected $quantity is negative is rejected;
-(b) the insert is admitted and the violation only surfaces when the meter is evaluated
-(rejecting spends, or treating the pool as zero). The enforcement point is not pinned,
-so the outcome of admitting a topup of -100 is recorded as unspecified. An
-implementation choosing (b) would let a negative pool silently poison later
-allocation arithmetic, which is why the gap matters.'''
+  note: '''SPEC §15.1 pins pool $quantity MUST be non-negative and (as of the eager-
+enforcement decision) enforces it at the transition that would establish the offending
+value, never lazily at a later meter read. A topup whose projected pool $quantity
+(`.topups { $quantity: .amount }`) is negative is therefore rejected at admission of the
+insert — committed state never contains a negative projected pool. The control positive
+topup is an ordinary insert; the -100 topup is rejected at the insert, not admitted to
+poison later allocation arithmetic.'''
 
   package: {
     $liasse: 1
@@ -61,8 +60,9 @@ allocation arithmetic, which is why the gap matters.'''
     // control: a positive topup is an ordinary insert
     { call: "public.wallet.add_topup", args: { user: "u1", topup: "t1", amount: "50" },
       expect: { outcome: ok } }
-    // the pool quantity projected from this row would be negative
+    // the pool quantity projected from this row would be negative: rejected eagerly
+    // at admission of the insert (§15.1), never admitted to surface later at a read
     { call: "public.wallet.add_topup", args: { user: "u1", topup: "t2", amount: "-100" },
-      expect: { outcome: unspecified } }
+      expect: { outcome: rejected, violates: ["#meters", "§15.1"] } }
   ]
 }

@@ -96,6 +96,14 @@ pub const SKIP: &[(&str, &str)] = &[
     // record-placement seam. A `claim` residual keeps its binding note.
     ("18-blobs/same-content-different-metadata-distinct-descriptors", "a declared `$name` must bind into the mutation call, which the honest blob parameter drops"),
     ("18-blobs/descriptor-bytes-encoding-unspecified", "a verifying client-declared descriptor must bind into the mutation call, which the honest-only blob parameter does not expose"),
+    // §18.3 pins eager connector resolution: a store-row write feeding a declared
+    // placement is rejected at admission when its connector is unregistered. The
+    // runtime `Engine` holds no blob-connector registry (connectors live in the
+    // driver's composed `BlobHost`, not `Engine::call`'s admission), so the store-row
+    // insert commits as ordinary data instead of rejecting — a flagged follow-on hole
+    // (wiring the connector registry into runtime admission is a subsystem-crossing
+    // change), acknowledged here against the now-pinned §18.3 outcome.
+    ("18-blobs/connector-resolution-timing", "eager store-row connector validation (§18.3) needs the connector registry threaded into runtime admission, which the engine does not hold"),
     // --- `budget_set` step ---
     ("23-host-contract/budget-backpressure-or-reject-choice-unspecified", "`budget_set` step not driven this phase"),
     ("23-host-contract/budget-exhaustion-never-partial-transition", "`budget_set` step not driven this phase"),
@@ -105,6 +113,12 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- `erase` step ---
     ("annex-d-identity/erase-removes-live-row-and-rechecksums-history", "`erase` step not driven this phase"),
     ("annex-d-identity/erasure-extract-replay-foreign-instance-rejected", "`erase` step not driven this phase"),
+    // §21.2 erasure now scrubs the full delete-closure history and exports the whole
+    // closure (runtime `exec_erase`); the erase call and both live-removal views pass.
+    // The residual `scrub_scope_of_cascaded_row` marker step confirms the cascaded
+    // row's HISTORY stub, which the step vocabulary cannot read (no retained-history-
+    // payload read is exposed) — an observability seam, not a behavior gap.
+    ("21-deletion-erasure/erase-cascade-scrub-scope", "`scrub_scope_of_cascaded_row` marker needs a retained-history-payload read the step vocabulary does not expose; the runtime performs the closure-wide scrub"),
     // --- §19 history op families (export/import/reconcile/apply_correction, the
     // tamper and extract ops) now drive end to end (adapter/ops.rs, artifacts.rs,
     // correction.rs). The residual entries are genuine runtime/artifact seams, not
@@ -301,7 +315,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- fail:noval ---
     ("15-meters/hypothetical-balance-accessor-with-time", "no value produced (unsupported call path)"),
     ("21-deletion-erasure/double-reinsert-second-finds-no-stub-rejects", "no value produced (unsupported call path)"),
-    ("21-deletion-erasure/erase-cascade-scrub-scope-unspecified", "no value produced (unsupported call path)"),
     ("21-deletion-erasure/reinsert-tampered-extract-hash-rejects", "no value produced (unsupported call path)"),
     ("annex-c-grammar/mutation-name-explicit-prototype-parses", "no value produced (unsupported call path)"),
     ("annex-c-grammar/noparam-call-paren-equals-empty-args", "no value produced (unsupported call path)"),

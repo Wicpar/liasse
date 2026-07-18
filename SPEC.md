@@ -2354,7 +2354,7 @@ $from  = bi
 $until = min(bi+1, source-series-until) when the series has an upper bound
 ```
 
-A clipped final interval is included when its start is below its end. An omitted series `$until` generates periods indefinitely. Each generated period still has a finite `$until` supplied by its next boundary. Every recurrence step MUST advance strictly from the prior boundary; a zero, negative, or otherwise non-advancing period rejects the source row or the transition that produced it. A finite series bound MUST be greater than its initial `$from`.
+A clipped final interval is included when its start is below its end. An omitted series `$until` generates periods indefinitely. Each generated period still has a finite `$until` supplied by its next boundary. Every recurrence step MUST advance strictly from the prior boundary; a zero, negative, or otherwise non-advancing period rejects the source row or the transition that produced it. A finite series bound MUST be greater than its initial `$from`. These series-validity conditions — a non-advancing step, an ill-ordered bound, and (for a calendar `$repeat`) an `overflow: reject` boundary within the enumerable series (§14.7) — are all checked eagerly at the transition that established the series, never deferred to a temporal read.
 
 When `$repeat` evaluates to `none`, the source produces one interval using the series bounds.
 
@@ -2430,7 +2430,9 @@ Example rows:
 }
 ```
 
-Fixed periods add exact elapsed duration. Calendar periods apply their fields in the declared time zone using the package's pinned time-rule data. `overflow` controls dates absent from the destination month; `clamp` chooses its final valid day. Annex A defines the complete period value.
+Fixed periods add exact elapsed duration. Calendar periods apply their fields in the declared time zone using the package's pinned time-rule data. `overflow` controls dates absent from the destination month; `clamp` chooses its final valid day, while `reject` fails the boundary. Annex A defines the complete period value.
+
+An `overflow: reject` boundary is validated eagerly, at the source transition. When a recurrence boundary of an enumerable series — a series whose upper bound is finite, or the prefix of an unbounded series that a bounded temporal selector requires (§14.5) — lands on a calendar date missing from its destination month, the transition that established that series (the source-row insert or edit, or a change to the referenced `period` data) is rejected at admission. The overflow is never deferred to a later temporal read: a committed source-backed bucket never holds a finite series that would, on enumeration, produce an `overflow: reject` boundary. An unbounded series is read only through a bounded selector (§14.5), so an overflow beyond every committed bound is caught when that selector first enumerates the offending boundary, not silently admitted.
 
 Because the period belongs to the plan row, one bucket collection handles weekly, monthly, quarterly, lifetime, and custom subscriptions together.
 
@@ -2471,6 +2473,8 @@ $sources    views supplying capacity or accounting intervals
 `$limits` maps meter names to meter declarations. Within one declaration, `$sources` maps stable source labels to pool views; the label becomes part of funding identity. `$order` lists successive pool comparison keys from highest to lowest priority.
 
 A meter begins with zero capacity. Pool `$quantity` and spend `$amount` are exact decimal quantities and MUST be non-negative. Zero is valid and produces no funding rows. An admitted spend receives capacity only from declared eligible sources.
+
+This non-negativity is enforced eagerly, at the transition that would establish the offending value, never lazily at a later meter read. A transition whose committed state would project a pool `$quantity` below zero — a source row whose projected capacity is negative — is rejected at admission of that transition, so committed state never contains a negative projected pool. Likewise a spend whose `$amount` evaluates below zero is rejected when the spend is admitted. A conforming runtime therefore never observes a negative pool at read time: the invariant holds in every committed state (§22.1).
 
 #### Simple credits
 
@@ -3043,6 +3047,8 @@ A connector is a Rust provider registered in the Liasse context. A store row sel
 
 Secrets remain in host configuration or vault handles resolved by the connector. Store rows MAY be scoped to companies, users, or modules like ordinary data.
 
+A store row selects its connector eagerly. The `connector` value a store row carries is resolved and validated against the registered connectors at admission of the transition that writes the row — not deferred to the first blob upload that routes to it. When a store row is reachable by a declared placement (§18.4), admitting a write that names a connector the context has not registered, or whose advertised capabilities cannot satisfy the placement and client behavior it is routed by, is rejected at that transition exactly as an unmet load-time requirement is (§18.12, §2.1). Committed state therefore never contains a placement-reachable store row bound to an unresolvable connector, and no blob can be routed to one. This is the runtime-write analogue of the §18.12 load-time validation, which resolves the connectors named by store rows and placement present at activation.
+
 ### 18.4 Placement policy
 
 `$blob_storage` applies to blob fields below the declaration. The nearest declaration wins.
@@ -3487,7 +3493,7 @@ For splits, merges, one-to-many changes, or coordinated collection transforms, t
 
 Migration order is: compatible same-identity copy, local `$from` mappings in dependency order, then the selected package-level statements in array order. Source values absent from the target remain available in preceding history and exports but are absent from live target state. A migration that needs to preserve them live must copy them explicitly.
 
-The complete prospective target is checked under ordinary keys, refs, uniqueness, checks, buckets, meters, modules, and interfaces before the package update commits.
+The complete prospective target is checked under ordinary keys, refs, uniqueness, checks, buckets, meters, modules, and interfaces before the package update commits. This is the same full admission suite an ordinary transition runs, applied eagerly to the whole migrated state: a migration commits only when the prospective target satisfies every invariant. In particular the meter suite (§15) re-funds every migrated spend against the migrated pools and rejects the migration when eligible capacity is insufficient or a projected pool `$quantity` is negative, and the bucket suite (§14.5, §14.7) rejects a migrated source-backed series that is non-advancing, ill-bounded, or reaches an `overflow: reject` boundary. A migration that would leave any of these invariants violated is rejected as a whole and the prior package remains active (§20.3).
 
 ### 20.2 Reversible transforms and downgrade
 
@@ -3593,16 +3599,20 @@ An ordinary collection deletion removes the target from live state. Its prior va
 
 `erase(row)` is an explicit operation for removing live data and scrubbing retained payload bytes while preserving verifiable history structure.
 
+Erasure removes exactly the reachable set an ordinary deletion of the same target would: the §21.1 delete-closure — the direct target plus every row a `cascade` policy pulls in to a fixed point, under the identical `restrict`/`none`/`= patch`/set-member effects. Its live-state scope is thus identical to deletion's. Erasure differs from deletion only in history: whereas deletion retains the prior values of removed rows in history (§21.1), erasure ALSO scrubs the retained history of every row in that closure — the right-to-be-forgotten — replacing each scrubbed occurrence with a digest stub. A cascade-deleted row is therefore scrubbed on the same footing as the direct target; a surviving row that is only patched keeps its history unscrubbed, exactly as under deletion.
+
+Erasure is relocation, not destruction. Everything scrubbed — each scrubbed occurrence's payload, its row identity, and its retained history — is exported as a portable reintegration bundle (the extract), and capturing that bundle is a commit precondition. The operation is fail-closed: if the complete bundle cannot be durably captured, the erasure does not commit and no bytes are scrubbed, so scrubbed data is never made unrecoverable. A later load-action re-admits the bundle to reintegrate it (§21.3).
+
 The operation atomically:
 
-1. plans the same live removal and `$on_delete` effects as ordinary deletion;
-2. creates a durable extract containing every payload required for possible reinsertion;
-3. replaces each scrubbed occurrence with a digest stub representing the same logical leaf hash;
+1. plans the same live removal and `$on_delete` effects as ordinary deletion, expanding the delete-closure to a fixed point;
+2. captures, for every row in that closure, the retained payload required for possible reinsertion into the durable extract — the reintegration bundle carrying each occurrence's payload, identity, and retained history;
+3. replaces each scrubbed occurrence in that closure with a digest stub representing the same logical leaf hash;
 4. records the extract hash, occurrence map, and required attestations;
 5. verifies the resulting retained history and artifact-entry checksums under the stub representation;
-6. admits the erasure commit and returns the extract.
+6. admits the erasure commit only once the bundle is captured, and yields the extract.
 
-A failure in extraction, durability, stubbing, hash verification, or attestation rejects the entire operation.
+A failure in closure planning, extraction, bundle capture, durability, stubbing, hash verification, or attestation rejects the entire operation, leaving live state and retained history unchanged.
 
 Authorization uses an explicitly exposed erasure call for the target. A delete grant does not silently become an erasure grant.
 

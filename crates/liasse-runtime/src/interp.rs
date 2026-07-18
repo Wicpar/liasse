@@ -113,6 +113,13 @@ pub(crate) struct Interp<'a> {
     /// `return` because the erase mutated state and cannot be re-evaluated
     /// post-commit as a pure expression.
     pub(crate) erase_result: Option<Value>,
+    /// The reintegration bundles every `erase(row)` in this program produced
+    /// (§21.2), in execution order — the export sink. Each erase pushes its extract
+    /// here whether it was a `return erase(row)` or a bare `erase(row)` statement,
+    /// so the produced bundle is always captured (relocation, not destruction) and
+    /// a bare erase never silently drops it. The engine reads this back after the
+    /// program so no committed erasure leaves an uncaptured bundle.
+    pub(crate) erase_exports: Vec<Value>,
     /// Lexical locals bound by `name = …` statements (§8.1), in declaration
     /// order, visible to later statements and to the `return`.
     pub(crate) locals: BTreeMap<String, LocalBind>,
@@ -778,6 +785,7 @@ impl<'a> Interp<'a> {
             touched: Vec::new(),
             ret: None,
             erase_result: None,
+            erase_exports: Vec::new(),
             locals: BTreeMap::new(),
             depth: self.depth + 1,
         };
@@ -1436,33 +1444,43 @@ impl<'a> Interp<'a> {
             Cell::Row(row) => vec![row.key().clone()],
             Cell::Scalar(scalar) => vec![scalar],
         };
-        // §21.2 step 2: capture each targeted live row's retained payload before the
-        // removal, under a stable occurrence identity (its canonical wire form).
+        // §21.2 step 1: plan the SAME live removal an ordinary deletion would — the
+        // §21.1 delete-closure (the direct targets plus every `cascade` row expanded
+        // to a fixed point). Planned before any effect so the closure is computed
+        // from the pre-erase state.
+        let initial: Vec<RowRef> = keys.into_iter().map(|key| RowRef::new(name.clone(), key)).collect();
+        let planned = cascade::plan(self.compiled, self.ctx, self.prospective, &initial)?;
+        // §21.2 step 2: capture the retained payload of EVERY row in the delete-closure
+        // (not just the direct targets) into the reintegration bundle, under a stable
+        // occurrence identity. Erasure differs from deletion only in history: a
+        // cascade-deleted row is scrubbed on the same footing as the direct target,
+        // so its payload MUST be exported too, before the removal is applied. A
+        // surviving-but-patched row is NOT in the closure and keeps its history.
         let mut history = Erasure::new();
         let mut occurrences = Vec::new();
-        for key in &keys {
-            // §5.4/B.4: a composite key identity is the positional `Value::Composite`
-            // tuple, so it must decompose into the N-component `KeyValue` the row was
-            // stored under; wrapping the whole tuple as one component would address a
-            // non-existent one-component row, the lookup would miss, no occurrence
-            // would be recorded, and the §21.2 extract would come back empty even
-            // though the live-state removal (keyed by the un-wrapped identity) succeeds.
-            let address = materialize::top_address(&name, materialize::key_value_of(key));
-            let Some(fields) = self.prospective.get(&address) else { continue };
+        for row_ref in planned.plan.deletes() {
+            let Some(address) = planned.addresses.get(row_ref) else { continue };
+            let Some(fields) = self.prospective.get(address) else { continue };
             let payload = materialize::struct_of(fields);
-            let occurrence = Occurrence::new(payload.to_canonical_json_string());
+            let occurrence = Occurrence::new(occurrence_id(row_ref, &payload));
             history.record(occurrence.clone(), payload);
             occurrences.push(occurrence);
         }
-        // §21.2 step 1: the same §21.1 live removal an ordinary deletion performs.
-        let initial: Vec<RowRef> = keys.into_iter().map(|key| RowRef::new(name.clone(), key)).collect();
-        self.delete_rows(initial)?;
-        // §21.2 steps 3–6: scrub each captured payload to a digest stub, producing
-        // the durable extract this call returns.
+        // §21.2 step 1 (apply): the planned §21.1 live removal, atomically.
+        self.apply_deletion(&planned)?;
+        // §21.2 steps 3–6: scrub every captured closure payload to a digest stub and
+        // produce the durable extract — the portable reintegration bundle. Capturing
+        // it is a commit precondition and fail-closed: a payload that cannot be
+        // captured rejects the whole erasure (a scrubbed byte is never left
+        // unrecoverable, §21.2). The bundle is retained on the interpreter's export
+        // sink so a bare `erase(row)` statement captures it too, not only a
+        // `return erase(row)`.
         let extract = history
             .erase(&occurrences)
             .map_err(|error| Rejection::new(RejectionReason::Evaluation, error.to_string()))?;
-        Ok(extract_response(&extract))
+        let response = extract_response(&extract);
+        self.erase_exports.push(response.clone());
+        Ok(response)
     }
 
     /// Plan and apply the deletion of `initial` (§21.1): a delete is a graph
@@ -1774,6 +1792,20 @@ fn is_assert(callee: &Expr) -> bool {
 /// Whether a call names the `erase(row)` builtin (§21.2): a bare `erase(...)`.
 fn is_erase(callee: &Expr) -> bool {
     matches!(&callee.kind, ExprKind::Name(id) if id.text == "erase")
+}
+
+/// A stable occurrence identity for one scrubbed closure row (§21.2 step 2): its
+/// collection and key identity, plus its payload's canonical wire form. Keying on
+/// the row identity — not the payload alone — keeps two distinct closure rows that
+/// happen to project equal payloads separate occurrences, so the reintegration
+/// bundle covers the whole delete-closure without collision.
+fn occurrence_id(row: &RowRef, payload: &Value) -> String {
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        row.collection,
+        row.key.to_canonical_json_string(),
+        payload.to_canonical_json_string()
+    )
 }
 
 /// The response value an `erase(row)` returns (§21.2 step 6): the extract's

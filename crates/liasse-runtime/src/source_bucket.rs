@@ -395,9 +395,15 @@ impl CompiledSourceBucket {
         )
     }
 
-    /// Validate every source row's series (§14.5) for admission: a finite series
-    /// bound MUST sit above its start, and every recurrence step MUST advance
-    /// strictly. Rejects the whole transition on the first offending source row.
+    /// Validate every source row's series (§14.5, §14.7) for admission, eagerly at
+    /// the source transition: a finite series bound MUST sit above its start, every
+    /// recurrence step MUST advance strictly, and (for a calendar `$repeat`) no
+    /// boundary of the enumerable series may land on an `overflow: reject` date
+    /// missing from its destination month (§14.7). [`recurring_intervals`] surfaces
+    /// each of these as an error over the enumerable series — a finite series is
+    /// generated in full here regardless of the minimal horizon, so an overflow at a
+    /// later boundary is caught at admission, not deferred to a temporal read.
+    /// Rejects the whole transition on the first offending source row.
     pub(crate) fn validate(&self, inputs: &BucketInputs<'_>) -> Result<(), Rejection> {
         for source_row in self.source_rows(inputs) {
             let Some((from, until, repeat)) = self.bounds(inputs, &source_row) else { continue };

@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: connector-resolution-timing
+  suite: scenario
+  spec: ["#blobs", "§18.3", "§18.12", "§2.1"]
+  tags: ["blob", "loading"]
+  note: '''
+    Per the eager-enforcement decision (§18.3), a store row selects its connector
+    eagerly: the `connector` value is resolved against the registered connectors at
+    admission of the transition that writes the row — not deferred to the first blob
+    upload that routes to it. This store row IS routed to by a declared placement
+    (`$in: /stores['dynamic']`) and names the unregistered connector "ghost", so the
+    insert is rejected at admission, the runtime-write analogue of the §18.12/§2.1
+    load-time validation ("Loading validates connector capabilities required by
+    declared placement"; "a package requiring an unavailable ... component fails
+    validation before activation"). Committed state therefore never holds a
+    placement-reachable store row bound to an unresolvable connector. (The seeded/
+    genesis form is covered by common/unregistered-connector-fails-load; the
+    downstream floor that no blob lands in an unregistered store by
+    red/no-writable-store-rejects-upload.)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.blobs.dyncon@1.0.0"
+    $model: {
+      stores: {
+        $key: "id"
+        id: "text"
+        connector: "text"
+        enabled: "bool = true"
+      }
+      docs: {
+        $key: "id"
+        $blob_storage: { $in: "/stores['dynamic']" }
+        id: "text"
+        file: {
+          $type: "blob"
+          $max_bytes: "10485760"
+          $media: ["text/plain"]
+        }
+      }
+      $mut: {
+        add_store: [
+          "s = .stores + { id: @id, connector: @connector }"
+          "return s { id }"
+        ]
+      }
+      $public: {
+        stores: { $mut: { add: ".add_store" } }
+      }
+    }
+    // No stores seeded; at load the placement view `/stores['dynamic']` yields
+    // nothing, so load-time connector validation (§18.12) has nothing to bind.
+    $data: {}
+  }
+
+  hosts: {
+    // Only fs-a exists; the store row inserted below names "ghost".
+    connectors: { "fs-a": { capabilities: ["stream_upload", "checksum"] } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // Insert a store row whose connector "ghost" is unregistered and to which a
+    // declared placement routes: rejected eagerly at admission of the write (§18.3),
+    // the runtime-write analogue of §18.12/§2.1 load-time connector validation.
+    { call: "public.stores.add", args: { id: "dynamic", connector: "ghost" }, on: "c1",
+      expect: { outcome: rejected, violates: ["#blobs", "§18.3"] } }
+  ]
+}

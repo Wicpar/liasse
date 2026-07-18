@@ -95,6 +95,52 @@ pub(crate) fn resolve_pools(
     Ok(pools)
 }
 
+/// §15.1: reject a transition whose committed state would project a negative pool
+/// `$quantity` at `enforcing_address` — a pool `$quantity` MUST be non-negative,
+/// enforced eagerly at the producing transition, not at a later meter read.
+///
+/// Every source with a projected `$quantity` is evaluated over the enforcing row
+/// at the current instant and each projected capacity is checked; a negative one
+/// rejects the whole admission. Unlike [`resolve_pools`], this does NOT gate by
+/// `$eligible` — the non-negativity invariant is unconditional (§15.1). A source
+/// row that a bare bucketed pool view leaves inactive at the read instant is not
+/// re-projected here (its capacity is not currently observable); the invariant is
+/// re-checked whenever a transition touches such a row.
+pub(crate) fn check_pool_quantities(
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+    meter: &CompiledMeter,
+    enforcing_address: &liasse_store::RowAddress,
+) -> Result<(), Rejection> {
+    let now = ctx.now();
+    let Some(enforcing) = ctx.materialize_row_at(prospective, &meter.path, enforcing_address, now) else {
+        return Ok(());
+    };
+    let current = Cell::Row(Box::new(enforcing));
+    let zero = BigDecimal::from(0);
+    for source in &meter.sources {
+        if !source.has_quantity {
+            continue;
+        }
+        for row in source_rows(ctx, prospective, source, &current, now)? {
+            if let Some(quantity) = pool_quantity(&row)?
+                && quantity < zero
+            {
+                return Err(Rejection::new(
+                    RejectionReason::Evaluation,
+                    format!(
+                        "meter `{}` source `{}` projects a negative pool $quantity ({quantity}): \
+                         a pool $quantity MUST be non-negative (§15.1)",
+                        meter.name, source.label
+                    ),
+                )
+                .at(enforcing_address.render()));
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Evaluate one `$sources` view over the enforcing row at `time`.
 fn source_rows(
     ctx: &EvalCtx<'_>,

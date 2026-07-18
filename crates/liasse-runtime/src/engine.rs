@@ -866,6 +866,7 @@ impl<S: InstanceStore> Engine<S> {
             touched: Vec::new(),
             ret: None,
             erase_result: None,
+            erase_exports: Vec::new(),
             locals: BTreeMap::new(),
             depth: 0,
         };
@@ -875,6 +876,10 @@ impl<S: InstanceStore> Engine<S> {
         let touched = std::mem::take(&mut interp.touched);
         let ret = interp.ret.take();
         let erase_result = interp.erase_result.take();
+        // §21.2: every reintegration bundle the program's erases produced, captured
+        // whether returned or from a bare `erase(row)` statement, so no committed
+        // erasure leaves its export undelivered (relocation, not destruction).
+        let erase_exports = std::mem::take(&mut interp.erase_exports);
         let locals = std::mem::take(&mut interp.locals);
         let receiver = interp.receiver.take();
 
@@ -931,6 +936,13 @@ impl<S: InstanceStore> Engine<S> {
                 Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
             }
         };
+        // §21.2: a bare `erase(row)` statement with no explicit `return` still
+        // delivers its captured reintegration bundle, so a committed erasure never
+        // silently drops the export. A program with its own `return` keeps that
+        // response; the bundle stays captured on the sink for the deferred
+        // reintegration load-action.
+        let response = response
+            .or_else(|| erase_exports.last().cloned().map(|value| ResponseValue::new(Cell::Scalar(value))));
 
         if !state_changed {
             // §8.9: no state change → `unchanged`; the frontier does not advance.

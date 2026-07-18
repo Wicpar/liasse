@@ -362,6 +362,21 @@ fn build_migrated<G: crate::generator::Generators>(
     // current key.
     let addresses = rekey_coerced(schema, &target.compiled, &mut prospective, addresses)?;
     rules::finalize(&target.compiled, &ctx, &prospective, &addresses)?;
+    // §20.1: the migrated state runs the SAME eager admission suite an ordinary
+    // transition does, not just keys/refs/uniqueness/checks. §14.5/§14.7: reject a
+    // migrated source-backed series that is non-advancing, ill-bounded, or reaches
+    // an `overflow: reject` boundary.
+    ctx.validate_source_series(&prospective)?;
+    // §15: re-fund every migrated spend against the migrated pools and reject the
+    // migration when eligible capacity is insufficient (§15.2) or a migrated pool
+    // projects a negative `$quantity` (§15.1) — the pool-`$quantity` check covers
+    // top-level enforcing rows and root-derived pools (e.g. a `/credit_periods`
+    // source). Spend re-funding over NESTED spend collections is inert here because
+    // migration stages only top-level rows in CORE (the documented nested-collection
+    // seam); a nested-spend re-fund under prospective migrated state, and the
+    // module/interface aggregate enforcement (`EvalCtx.modules` is `None` on this
+    // path), remain flagged follow-on holes rather than a subsystem-crossing change.
+    crate::meter::admit::enforce(&ctx, &target.compiled.meters, &mut prospective, &addresses)?;
     Ok(addresses
         .into_iter()
         .filter_map(|address| prospective.get(&address).map(|fields| (address.clone(), fields.clone())))
@@ -424,6 +439,7 @@ fn run_program(
         touched: Vec::new(),
         ret: None,
         erase_result: None,
+        erase_exports: Vec::new(),
         locals: BTreeMap::new(),
         depth: 0,
     };

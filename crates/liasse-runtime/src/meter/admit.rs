@@ -38,6 +38,13 @@ pub(crate) fn enforce(
     prospective: &mut Prospective,
     touched: &[RowAddress],
 ) -> Result<(), Rejection> {
+    // §15.1: every projected pool `$quantity` in committed state MUST be
+    // non-negative. Check it eagerly, at admission of the producing transition,
+    // before any spend funding — a pool source insert/edit that drives a projected
+    // capacity below zero is rejected here, never deferred to a later meter read.
+    // Runs even when the package declares no spend (pools without consumers still
+    // hold the invariant).
+    enforce_pool_quantities(ctx, meters, prospective)?;
     if meters.spends.is_empty() {
         return Ok(());
     }
@@ -47,6 +54,40 @@ pub(crate) fn enforce(
         fund_spend(ctx, meters, prospective, address, &decl, spend)?;
     }
     Ok(())
+}
+
+/// §15.1: reject any transition whose committed state would project a negative
+/// pool `$quantity`. Every limiting meter's live enforcing rows are re-projected
+/// and each projected capacity is checked, so a pool-source write anywhere —
+/// including a root-collection-derived pool that lives outside the enforcing row's
+/// subtree — is caught at admission. Because committed state already satisfies the
+/// invariant inductively, this is the only new surface an admission can introduce.
+fn enforce_pool_quantities(
+    ctx: &EvalCtx<'_>,
+    meters: &CompiledMeters,
+    prospective: &Prospective,
+) -> Result<(), Rejection> {
+    for meter in &meters.meters {
+        if !meter.limiting {
+            continue;
+        }
+        for enforcing in enforcing_addresses(prospective, &meter.path) {
+            super::resolve::check_pool_quantities(ctx, prospective, meter, &enforcing)?;
+        }
+    }
+    Ok(())
+}
+
+/// The addresses of the live enforcing rows of a meter declared at `path`: every
+/// working row whose declaration-name path equals `path` (§15.4). One meter
+/// declaration enforces at each such row instance.
+fn enforcing_addresses(prospective: &Prospective, path: &[String]) -> Vec<RowAddress> {
+    prospective
+        .working()
+        .keys()
+        .filter(|address| decl_path(address) == path)
+        .cloned()
+        .collect()
 }
 
 /// Fund one spend row: clear any prior allocation, evaluate each consumed meter's

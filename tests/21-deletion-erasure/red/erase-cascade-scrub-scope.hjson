@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: erase-cascade-scrub-scope
+  suite: scenario
+  tags: [erasure, cascade, privacy]
+  note: '''Privacy scope, now pinned. §21.2: erasure removes exactly the §21.1
+delete-closure (the direct target plus every cascade row to a fixed point) and
+differs from deletion only in history — it ALSO scrubs the retained history of
+every row in that closure, and exports each scrubbed row (payload + identity +
+retained history) as the reintegration bundle. Erasing user u1 cascades to
+profile pr1; pr1 is in the delete-closure, so its retained-history payload is
+scrubbed on the same footing as the direct target (not merely deleted with its
+bytes retained per §21.1), and the exported extract covers pr1 too. Both live
+rows leave live state (deducible and asserted). The scrub of pr1's HISTORY leaf
+is now performed by the runtime (erase captures the full closure), but the step
+vocabulary exposes no retained-history-payload read to confirm the stub directly
+— that observability is the remaining gap the marker step records.'''
+  spec: ["#deletion", "§21.2", "§21.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+      }
+      profiles: {
+        $key: "id"
+        id: "text"
+        bio: "text"
+        user: {
+          $ref: "/users"
+          $on_delete: "cascade"
+        }
+      }
+      $mut: {
+        erase_user: "return erase(.users[@id])"
+      }
+      users_view: { $view: ".users { id }" }
+      profiles_view: { $view: ".profiles { id, bio, user }" }
+      $public: {
+        users: { $view: ".users_view", $mut: { erase: ".erase_user" } }
+        profiles: { $view: ".profiles_view" }
+      }
+    }
+    $data: {
+      users: { u1: {} }
+      profiles: { pr1: { bio: "sensitive", user: "u1" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.users", id: "wu", expect_init: { value: [ { id: "u1" } ] } }
+    { watch: "public.profiles", id: "wp", expect_init: { value: [ { id: "pr1", bio: "sensitive", user: "u1" } ] } }
+    // deducible: both leave live state (erase target + cascade)
+    { call: "public.users.erase", args: { id: "u1" }, expect: { outcome: ok, value: "$bind:extract" } }
+    { expect_view: { watch: "wu", value: [] } }
+    { expect_view: { watch: "wp", value: [] } }
+    // Pinned (§21.2): the cascaded profile pr1 is in the delete-closure, so its
+    // retained-history payload is scrubbed on the same footing as the erase target,
+    // and the exported bundle covers it. The runtime now performs this closure-wide
+    // scrub; the marker records that the step vocabulary still exposes no retained-
+    // history read to confirm the resulting stub directly (the observability seam).
+    { scrub_scope_of_cascaded_row: { collection: "profiles", key: "pr1" },
+      expect: { outcome: ok } }
+  ]
+}

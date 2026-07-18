@@ -496,6 +496,16 @@ impl Extract {
         &self.hash
     }
 
+    /// The number of scrubbed occurrences this reintegration bundle covers (§21.2
+    /// step 2). Erasure captures every row in the delete-closure, so an erase whose
+    /// `$on_delete: cascade` pulled in extra rows carries their occurrences too — the
+    /// bundle covers the whole closure, not only the direct target. Exposes the
+    /// coverage COUNT for auditing without ever exposing a scrubbed byte.
+    #[must_use]
+    pub fn occurrences(&self) -> usize {
+        self.payloads.len()
+    }
+
     /// A tampered copy of this extract whose content no longer matches its hash
     /// (§21.3): the reinsertion of such an extract must reject.
     #[must_use]

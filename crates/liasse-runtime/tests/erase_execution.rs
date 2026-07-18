@@ -99,3 +99,70 @@ fn erased_row_is_absent_from_a_fresh_export() {
     let restored = Engine::restore(store, &artifact, &mut gen_restore).expect("restore");
     assert!(user_ids(&restored).is_empty(), "the erased row does not reappear after export/restore");
 }
+
+/// A package where erasing a user cascades (§21.1 `$on_delete: cascade`) to its
+/// profile, which itself holds sensitive bytes — the §24 delete-closure erasure
+/// shape.
+const CASCADE: &str = r#"{
+  "$liasse": 1
+  "$app": "t.erasecascade@1.0.0"
+  "$model": {
+    "users": { "$key": "id", "id": "text" }
+    "profiles": {
+      "$key": "id"
+      "id": "text"
+      "bio": "text"
+      "user": { "$ref": "/users", "$on_delete": "cascade" }
+    }
+    "users_all": { "$view": ".users { id, $sort: [id] }" }
+    "profiles_all": { "$view": ".profiles { id, bio, $sort: [id] }" }
+    "$mut": {
+      "erase_user": "return erase(.users[@id])"
+    }
+  }
+  "$data": {
+    "users": { "u1": {} }
+    "profiles": { "pr1": { "bio": "sensitive", "user": "u1" } }
+  }
+}"#;
+
+fn row_count(engine: &Engine<MemoryStore>, view: &str) -> usize {
+    engine.view_at_head(view).expect("view").expect("declared").rows().len()
+}
+
+/// §21.2/§21.1 (§24): erasing a user removes the SAME delete-closure an ordinary
+/// deletion would — the user AND the cascade-reached profile — and commits one
+/// durable extract. The scrubbed profile's sensitive bytes never re-leak through
+/// the response, and a fresh export contains neither closure row.
+#[test]
+fn erase_removes_the_whole_cascade_closure_and_scrubs_it() {
+    let mut engine = load("erase-cascade", CASCADE);
+    assert_eq!(row_count(&engine, "users_all"), 1, "one user before the erase");
+    assert_eq!(row_count(&engine, "profiles_all"), 1, "one profile before the erase");
+
+    let mut gen_erase = generator();
+    let outcome = engine
+        .call(&CallRequest::new("erase_user").arg("id", text("u1")), &mut gen_erase)
+        .expect("erase call");
+    let CallOutcome::Committed { response, .. } = outcome else {
+        panic!("erase must commit, got {outcome:?}");
+    };
+    // §21.2 step 6: the reintegration bundle is delivered as its content-hash text;
+    // the scrubbed profile bytes never cross the response boundary.
+    let response = response.expect("erase returns the extract");
+    let hash = response.to_wire();
+    let hash = hash.as_str().expect("the extract response is a content-hash text");
+    assert!(!hash.is_empty(), "the bundle carries a content hash");
+    assert!(!hash.contains("sensitive"), "the scrubbed profile bytes never re-leak");
+
+    // §21.1 delete-closure: BOTH the direct target and the cascade profile left
+    // live state — erasure's live scope is identical to deletion's, and the erase
+    // captured the whole closure (not just the direct target) for the bundle.
+    assert_eq!(row_count(&engine, "users_all"), 0, "the erased user is gone");
+    assert_eq!(row_count(&engine, "profiles_all"), 0, "the cascade profile is gone");
+    // (The durable byte-level scrub of the cascade row's RETAINED HISTORY, and its
+    // observation, is the documented CORE history-durability seam — the export here
+    // carries live state plus the definition text, so it is not the right lens for
+    // the history stub; the closure's export coverage is pinned by the deletion-unit
+    // test `erasure_export_covers_the_cascade_closure`.)
+}

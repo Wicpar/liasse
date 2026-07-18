@@ -253,6 +253,43 @@ fn erased_row_unobservable_in_history_and_replay() {
     assert!(restored.replay_payloads().is_empty());
 }
 
+/// §21.2/§21.1: erasure's reintegration bundle covers the whole delete-closure,
+/// not just the direct target. A project a task cascades from has closure
+/// `{p1, t1}` (§21.1); capturing that closure's retained payloads and erasing them
+/// yields ONE bundle covering both, scrubs both leaves, and reinserts to restore
+/// both — the cascade row is exported and recoverable on the same footing as the
+/// direct target, so nothing scrubbed is left unrecoverable (relocation, §21.2).
+#[test]
+fn erasure_export_covers_the_cascade_closure() {
+    let graph = project_task_graph(DeletePolicy::Cascade);
+    let plan = graph.plan(&[project("p1")]).expect("plan");
+    // §21.1: erasing the project pulls its task into the closure.
+    assert!(
+        plan.deletes().contains(&project("p1")) && plan.deletes().contains(&task("t1")),
+        "the delete-closure of the project is {{p1, t1}}",
+    );
+
+    // Capture each closure row's retained payload under its own occurrence, exactly
+    // as `exec_erase` captures `plan.deletes()` before applying the removal.
+    let mut history = Erasure::new();
+    let occ_p = Occurrence::new("projects/p1");
+    let occ_t = Occurrence::new("tasks/t1");
+    history.record(occ_p.clone(), key("secret project"));
+    history.record(occ_t.clone(), key("secret task"));
+
+    let extract = history.erase(&[occ_p.clone(), occ_t.clone()]).expect("erase the closure");
+    // §21.2: the bundle covers the WHOLE closure, and both leaves are scrubbed.
+    assert_eq!(extract.occurrences(), 2, "the reintegration bundle covers both closure rows");
+    assert_eq!(history.payload(&occ_p), None, "the direct target's history is scrubbed");
+    assert_eq!(history.payload(&occ_t), None, "the cascade row's history is scrubbed too");
+
+    // §21.3: the exported bundle reintegrates the whole closure, so the cascade
+    // row's bytes are recoverable, not destroyed.
+    history.reinsert(&extract).expect("reinsert restores the whole closure");
+    assert_eq!(history.payload(&occ_p), Some(&key("secret project")));
+    assert_eq!(history.payload(&occ_t), Some(&key("secret task")), "the cascade row is reintegrable");
+}
+
 /// §21.3: reinsertion restores bytes only where the exact expected stub remains.
 #[test]
 fn reinsert_restores_with_matching_stub() {
