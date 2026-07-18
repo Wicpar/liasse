@@ -212,3 +212,25 @@ implementation bug, which gets fixed against the spec instead).
     the strict closed-struct reading rejects it. This is the return-value
     analogue of item 5 (unknown members in call arguments): reject vs ignore
     is unstated. Surfaced by host-conformance red-teaming.
+
+35. **§20.1 "compatible value is copied" across an incompatible scalar type
+    change.** A `major`-bump migration that retypes a field with no `$from`/
+    `$as` must, per §20.1, copy the "compatible" value — but §20.1 never
+    defines "compatible" for a scalar *type* change (`text`→`int`,
+    `decimal`→`int`, widen/narrow). The implementation pins the observable
+    §22.1 outcome (no ill-typed value in committed state) by treating a value
+    as committable iff it decodes under the target type's Annex-A/§19 portable
+    codec: representable → coerced, otherwise rejected like an unpopulated
+    required field. Under that boundary `decimal 1.0 → int` *rejects* (the
+    canonical `decimal` wire keeps its scale, so `Integer::parse` refuses
+    `"1.0"`). Whether §20.1 intends a lossless numeric down-conversion
+    (`decimal 1.0`→`int 1`) as an implicit compatible copy, or requires an
+    explicit `$as: "int(.)"`, is unpinned. Surfaced by migration red-teaming.
+
+36. **§19.9 merge-conflict coordinate for a §8.2 root-singleton member.** A
+    three-way merge conflict on a root-singleton field is reported with the
+    internal reserved collection name (`$root`) and an empty key rather than a
+    §D.3 application address (e.g. `.flag`). The merge *semantics* are correct;
+    only the `ConflictCoordinate` rendering leaks the internal name. §19.9/§D.3
+    do not pin the coordinate form for a singleton member. Surfaced by
+    merge/rollback red-teaming.
