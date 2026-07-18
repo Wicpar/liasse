@@ -330,12 +330,18 @@ fn put_period(value: &Period, out: &mut Vec<u8>) {
             key_enc_num::write_ob_i64(out, weeks);
             key_enc_num::write_ob_i64(out, days);
             key_enc_num::write_ob_i128(out, calendar.time().as_nanos());
+            // B.4 / SPEC-ISSUES item 30: an absent optional member sorts *after* a
+            // present one (none-last), matching `CalendarPeriod`'s
+            // `cmp_optional_none_last` zone ordering. A present zone takes the low
+            // tag `0x00`, an absent zone the high tag `0x01`, so `memcmp` places
+            // the zone-bearing period first — the opposite of `Option`'s derived
+            // `None`-first order.
             match calendar.zone() {
-                None => out.push(0x00),
                 Some(zone) => {
-                    out.push(0x01);
+                    out.push(0x00);
                     put_escaped(zone.as_bytes(), out);
                 }
+                None => out.push(0x01),
             }
             let (overflow, ambiguous, missing) = calendar.policies();
             out.push(overflow_rank(overflow));
@@ -355,12 +361,17 @@ fn put_blob(value: &BlobDescriptor, out: &mut Vec<u8>) {
     }
     out.extend_from_slice(&value.byte_count().to_be_bytes());
     put_escaped(value.media().as_str().as_bytes(), out);
+    // B.4 / SPEC-ISSUES item 30: an absent `$name` sorts *after* a present one
+    // (none-last), matching `BlobDescriptor`'s `cmp_optional_none_last` name
+    // ordering. A present name takes the low tag `0x00`, an absent name the high
+    // tag `0x01`, so `memcmp` places the name-bearing descriptor first — the
+    // opposite of `Option`'s derived `None`-first order.
     match value.name() {
-        None => out.push(0x00),
         Some(name) => {
-            out.push(0x01);
+            out.push(0x00);
             put_escaped(name.as_bytes(), out);
         }
+        None => out.push(0x01),
     }
 }
 

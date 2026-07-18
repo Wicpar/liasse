@@ -10,9 +10,10 @@
 //!
 //! Each field is decoded through an *optional* wrapper of its declared type: a
 //! stored row may hold `none` in a non-optional field (admission fills every
-//! declared field, §5.1), and the optional wrapper is exactly what lets the
-//! shared decoder accept that `{ "$none": true }` without a schema-fragility
-//! special case.
+//! declared field, §5.1). A `none` is written as *absence* — an omitted member,
+//! not a `{ "$none": true }` sentinel (SPEC-ISSUES item 29; the sentinel is gone)
+//! — so the optional wrapper is exactly what lets the shared decoder read that
+//! omitted member back as `none` without a schema-fragility special case.
 //!
 //! CORE scope mirrors the rest of the engine: top-level keyed collections with
 //! scalar/ref/set fields, plus the §8.2 package-root singleton reserved row (its

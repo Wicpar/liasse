@@ -44,8 +44,9 @@ fn row_to_wire(row: &Row) -> serde_json::Value {
     let mut map = serde_json::Map::new();
     for (name, cell) in row.cells() {
         // A `none` optional field is an absent optional value: its field-position
-        // wire form is an omitted member (SPEC Annex A "omitted optional field"),
-        // not `{ "$none": true }` (which is the generic-value-slot spelling).
+        // wire form is an omitted member (SPEC Annex A "omitted optional field" /
+        // SPEC-ISSUES item 29 — `none` is absence, no `{ "$none": true }` sentinel),
+        // so it is dropped rather than serialized.
         if matches!(cell, Cell::Scalar(liasse_value::Value::None)) {
             continue;
         }

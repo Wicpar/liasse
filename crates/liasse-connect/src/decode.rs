@@ -3,11 +3,15 @@
 //!
 //! Every value a client supplies (`args`, `params`, a credential, a context name)
 //! arrives as an opaque [`Json`]. Here it is decoded against the type the model
-//! declares for it via [`Type::decode`], so a successful decode is proof the
-//! argument is well-formed and of the right shape (parse, don't validate). A value
-//! that does not decode, or an argument the schema never declared, is refused — it
-//! never reaches admission as an ill-typed [`Value`]. Decoding is total: no input
-//! shape panics.
+//! declares for it via [`Type::decode_wire`] — the strict **machine wire/request**
+//! boundary (SPEC-ISSUES item 2): a scalar MUST already be canonical (Annex A.1 /
+//! D.2), and a non-canonical spelling (uppercase uuid, leading-zero int, …) is
+//! refused as malformed at admission rather than silently normalized. A successful
+//! decode is proof the argument is well-formed and of the right shape (parse, don't
+//! validate). A value that does not decode, or an argument the schema never
+//! declared, is refused — it never reaches admission as an ill-typed [`Value`], and
+//! a non-canonical spelling never mints a second identity. Decoding is total: no
+//! input shape panics.
 
 use std::collections::BTreeMap;
 
@@ -55,7 +59,7 @@ pub fn decode_args(
     for (name, ty) in contract {
         if let Some(value) = object.get(name) {
             let decoded = ty
-                .decode(value)
+                .decode_wire(value)
                 .map_err(|error| DecodeError::Malformed(format!("argument `{name}`: {error}")))?;
             args.insert(name.clone(), decoded);
         }
@@ -72,7 +76,10 @@ pub fn decode_selection(schema: &Schema, wire: &Json) -> Result<AuthSelection, D
     let auth = object.get("auth").and_then(Json::as_str).ok_or(DecodeError::Credential)?;
     let credential_wire = object.get("credential").ok_or(DecodeError::Credential)?;
     let ty = schema.credential(auth).ok_or(DecodeError::Credential)?;
-    let value = ty.decode(credential_wire).map_err(|_| DecodeError::Credential)?;
+    // The credential is client-supplied hostile wire input, so it decodes through
+    // the strict machine-wire boundary too (SPEC-ISSUES item 2): a non-canonical
+    // scalar credential is refused rather than normalized.
+    let value = ty.decode_wire(credential_wire).map_err(|_| DecodeError::Credential)?;
     Ok(AuthSelection::new(auth.to_owned(), Credential::new(value)))
 }
 
