@@ -507,14 +507,14 @@ fn rekey_coerced(
     }
     // Detach every moving row first, so a new address another move vacates does not
     // read as a collision; then re-place each, rejecting a collision with a
-    // surviving row or an already-re-placed move, and rewrite inbound references.
+    // surviving row or an already-re-placed move.
     let mut detached: Vec<(RowAddress, RowAddress, FieldMap)> = Vec::with_capacity(relocations.len());
     for (old, new) in &relocations {
         let Some(fields) = prospective.get(old).cloned() else { continue };
         prospective.remove(old);
         detached.push((old.clone(), new.clone(), fields));
     }
-    for (old, new, fields) in &detached {
+    for (_old, new, fields) in &detached {
         if prospective.contains(new) {
             return Err(Rejection::new(
                 RejectionReason::DuplicateKey,
@@ -523,6 +523,15 @@ fn rekey_coerced(
             .at(new.render()));
         }
         prospective.insert(new.clone(), fields.clone());
+    }
+    // Rewrite inbound references only AFTER every moving row is back in place. A
+    // moving referrer whose source-ordinal key sorts after its referent's is still
+    // detached while the referent is re-placed; running the rewrite per-row would
+    // never revisit it, stranding its outbound ref at the source ordinal so a valid
+    // §5.4 reorder self-reference dangles. Rewriting against the complete post-move
+    // row set makes every referrer — scalar `$ref` and `$set`-of-`$ref` alike
+    // ([`rewrite_inbound_refs_across`]) — follow its target regardless of sort order.
+    for (old, new, _fields) in &detached {
         if let (Some(name), Some(old_step), Some(new_step)) =
             (new.steps().last().map(|s| s.name().as_str().to_owned()), old.steps().last(), new.steps().last())
         {
