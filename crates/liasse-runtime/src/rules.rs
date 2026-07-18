@@ -58,8 +58,10 @@ fn absent_value(ty: &liasse_value::Type) -> Value {
 /// the `$enum` array is a closed set, so a supplied value whose label is not
 /// declared rejects the transition, and an accepted label is carried as a
 /// positioned [`Value::Enum`] so ordering (B.1) and equality follow declaration
-/// order rather than raw text. A value that already parsed to the enum on the
-/// wire is left as is; `none` (an absent optional) is untouched.
+/// order rather than raw text. A value that already carries an enum position is
+/// re-validated against the *current* declared set (not blindly trusted), so a
+/// migrated value stranded by a narrowed closed set rejects (§20.1/§22.1);
+/// `none` (an absent optional) is untouched.
 pub(crate) fn coerce_fields(
     collection: &CompiledCollection,
     fields: &mut FieldMap,
@@ -79,6 +81,15 @@ pub(crate) fn coerce_fields(
 /// Coerce one value to an enum-typed field's declared label set (§5.9), or return
 /// it unchanged when the type is not an enum. A supplied `text`/`enum` value is
 /// parsed against the closed label set; an undeclared label rejects.
+///
+/// An already-positioned [`Value::Enum`] is NOT blindly trusted: its label — the
+/// wire identity of an enum value (A.1) — is re-resolved against the *current*
+/// declared set. A label the current enum still declares re-derives its
+/// declaration-order ordinal (so a reorder settles on the current position),
+/// while a label the set no longer declares is out of domain and rejects. This
+/// is what makes the §20.1 compatible same-identity copy of an enum value fail
+/// when a narrowing release drops its label, rather than stranding an
+/// undeclared label in committed target state (§22.1 field types).
 pub(crate) fn coerce_value(
     ty: &liasse_value::Type,
     value: &Value,
@@ -87,8 +98,9 @@ pub(crate) fn coerce_value(
 ) -> Result<Value, Rejection> {
     let Some(enum_ty) = enum_of(ty) else { return Ok(value.clone()) };
     let label = match value {
-        Value::None | Value::Enum(_) => return Ok(value.clone()),
+        Value::None => return Ok(value.clone()),
         Value::Text(text) => text.as_str().to_owned(),
+        Value::Enum(existing) => existing.label().to_owned(),
         _ => {
             return Err(Rejection::new(
                 RejectionReason::TypeError,

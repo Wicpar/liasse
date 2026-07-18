@@ -370,8 +370,10 @@ fn run_program(
 
 /// Coerce a migrated row for the §20.1 final check and enforce population: a
 /// ref-typed field carrying a scalar key (a program's literal `team: "ghost"`) is
-/// decoded to a typed ref so the refs check resolves it; a required field the
-/// migration left unpopulated is a §5.1/§20.1 state-population gap and rejects.
+/// decoded to a typed ref so the refs check resolves it; a migrated enum value is
+/// re-validated against the target's closed label set so a narrowed set rejects
+/// (§5.9/§22.1); a required field the migration left unpopulated is a §5.1/§20.1
+/// state-population gap and rejects.
 fn coerce_and_require(
     compiled: &Compiled,
     prospective: &mut Prospective,
@@ -382,12 +384,11 @@ fn coerce_and_require(
     let Some(mut fields) = prospective.get(address).cloned() else { return Ok(()) };
     let mut changed = false;
     for field in &collection.fields {
-        let value = fields.get(&field.name);
         if field.reference.is_some() {
             // A ref value produced as a plain scalar key is decoded to a typed
             // ref so the §5.6/§20.1 refs check resolves (or rejects) it. A
             // required-but-absent ref is left for the refs check to report.
-            if let Some(value) = value
+            if let Some(value) = fields.get(&field.name)
                 && !matches!(value, Value::None | Value::Ref(_))
             {
                 let coerced = field.ty.decode(&value.to_wire()).map_err(|error| {
@@ -399,7 +400,22 @@ fn coerce_and_require(
             }
             continue;
         }
-        if is_required(&field.ty) && matches!(value, None | Some(Value::None)) {
+        // §5.9/§20.1/§22.1: a migrated enum value — the compatible same-identity
+        // copy of a value that parsed under the SOURCE enum, or a program/`$as`
+        // result — is re-validated against the TARGET's closed label set. A
+        // narrowing release that drops its label leaves it out of the target's
+        // domain, so it rejects here rather than stranding an undeclared label in
+        // committed state; a retained label is re-resolved to its current ordinal.
+        if rules::is_enum_field(&field.ty)
+            && let Some(value) = fields.get(&field.name)
+        {
+            let coerced = rules::coerce_value(&field.ty, value, &field.name, &address.render())?;
+            if &coerced != value {
+                fields.insert(field.name.clone(), coerced);
+                changed = true;
+            }
+        }
+        if is_required(&field.ty) && matches!(fields.get(&field.name), None | Some(Value::None)) {
             return Err(Rejection::new(
                 RejectionReason::Check,
                 format!("migration left required field `{}` unpopulated", field.name),
