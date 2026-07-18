@@ -6,11 +6,12 @@
 //! SQL a hand-written query would issue, over the same populated tables.
 //!
 //! The read ops (`row`, `scan`, `snapshot`, `get_blob`) are answered by `PgStore`
-//! from its in-memory projection, so their raw-SQL counterparts measure the cost
-//! the projection saves versus a round trip to PostgreSQL. The write op (`commit`)
-//! is SQL either way — the backend's three-statement admission transaction versus
-//! the identical statements issued by hand against an isolated twin schema — so
-//! that axis is a like-for-like overhead measurement.
+//! from its in-memory projection, so their raw-SQL counterparts (the indexed `nodes`
+//! point lookup and ordered collection scan) measure the cost the projection saves
+//! versus a round trip to PostgreSQL. The write op (`commit`) is SQL either way — the
+//! backend's node-admission transaction versus the identical statements issued by
+//! hand against an isolated twin schema — so that axis is a like-for-like overhead
+//! measurement.
 //!
 //! These require a database, resolved (or bootstrapped) by the shared test
 //! support module exactly as the integration tests do; `cargo bench --no-run` only
@@ -44,13 +45,6 @@ fn payload(key: i64) -> Value {
     Value::Text(Text::new(format!("row-{key:08}")))
 }
 
-/// The `rows` primary key text for `items` row `key`, byte-identical to what the
-/// backend's record codec writes (a compact JSON address with an `int` key
-/// component rendered as its canonical decimal text).
-fn addr_key_text(key: i64) -> String {
-    format!(r#"[["items",[{{"i":"{key}"}}]]]"#)
-}
-
 fn backend_vs_raw(c: &mut Criterion) {
     let handle = support::acquire();
     let mut factory = handle.factory("bench");
@@ -82,32 +76,45 @@ fn backend_vs_raw(c: &mut Criterion) {
 
     let mut client = factory.connect().expect("raw client");
     client
-        .batch_execute(&format!("ANALYZE {s}.rows; ANALYZE {s}.commit_log; ANALYZE {s}.blobs;"))
+        .batch_execute(&format!("ANALYZE {s}.nodes; ANALYZE {s}.commit_log; ANALYZE {s}.blobs;"))
         .expect("analyze");
 
-    let (scan_lo, scan_hi): (String, String) = {
+    // A representative `items` node's parent id and order-preserving key_enc, read
+    // back so the raw-SQL point lookup and ordered scan bind exactly what the backend
+    // wrote (the `int` keys' `key_enc` is opaque bytes this bench never reconstructs).
+    let (lookup_parent, lookup_key_enc): (i64, Vec<u8>) = {
         let row = client
-            .query_one(&format!("SELECT min(addr_key), max(addr_key) FROM {s}.rows"), &[])
-            .expect("bounds");
+            .query_one(
+                &format!(
+                    "SELECT parent_id, key_enc FROM {s}.nodes \
+                     WHERE step_name = 'items' ORDER BY key_enc OFFSET $1 LIMIT 1"
+                ),
+                &[&(POP / 2)],
+            )
+            .expect("pick a representative item node");
         (row.get(0), row.get(1))
     };
 
-    // Axis 1: point lookup by canonical key.
+    // Axis 1: point lookup by (parent_id, step_name, key_enc).
     let lookup_addr = address(POP / 2);
-    let lookup_key = addr_key_text(POP / 2);
     {
         let mut group = c.benchmark_group("key_lookup");
         group.bench_function("backend_projection", |b| {
             b.iter(|| black_box(store.row(black_box(&lookup_addr)).expect("row")));
         });
         group.bench_function("raw_sql", |b| {
-            let sql = format!("SELECT incarnation, value FROM {s}.rows WHERE addr_key = $1");
-            b.iter(|| black_box(client.query_opt(&sql, &[&lookup_key]).expect("raw row")));
+            let sql = format!(
+                "SELECT id, incarnation, value FROM {s}.nodes \
+                 WHERE parent_id = $1 AND step_name = 'items' AND key_enc = $2"
+            );
+            b.iter(|| {
+                black_box(client.query_opt(&sql, &[&lookup_parent, &lookup_key_enc]).expect("raw row"))
+            });
         });
         group.finish();
     }
 
-    // Axis 2: collection scan in Annex B key order.
+    // Axis 2: collection scan in Annex B key order (index-served on `key_enc`).
     let collection = CollectionPath::top(NameSegment::new("items"));
     {
         let mut group = c.benchmark_group("ordered_scan");
@@ -116,11 +123,10 @@ fn backend_vs_raw(c: &mut Criterion) {
         });
         group.bench_function("raw_sql", |b| {
             let sql = format!(
-                "SELECT addr_key, incarnation, value FROM {s}.rows \
-                 WHERE addr_key COLLATE \"C\" >= $1 AND addr_key COLLATE \"C\" <= $2 \
-                 ORDER BY addr_key COLLATE \"C\""
+                "SELECT id, key_enc, incarnation, value FROM {s}.nodes \
+                 WHERE parent_id = $1 AND step_name = 'items' ORDER BY key_enc"
             );
-            b.iter(|| black_box(client.query(&sql, &[&scan_lo, &scan_hi]).expect("raw scan")));
+            b.iter(|| black_box(client.query(&sql, &[&lookup_parent]).expect("raw scan")));
         });
         group.finish();
     }
@@ -177,8 +183,9 @@ fn backend_vs_raw(c: &mut Criterion) {
     }
 }
 
-/// Issue the three-statement admission transaction `PgStore::commit_transition`
-/// runs — head lock, log append, row insert, head bump — by hand against `rs`.
+/// Issue the admission transaction `PgStore::commit_transition` runs — head lock,
+/// log append, node insert (a top-level `items` row under the root sentinel), head
+/// bump — by hand against `rs`.
 fn raw_commit(client: &mut Client, rs: &str, seq: i64) {
     let mut txn = client.transaction().expect("begin");
     txn.execute(&format!("SELECT head FROM {rs}.instance_meta WHERE id = 1 FOR UPDATE"), &[])
@@ -188,11 +195,15 @@ fn raw_commit(client: &mut Client, rs: &str, seq: i64) {
         &[&seq],
     )
     .expect("append log");
+    let key_enc = seq.to_be_bytes().to_vec();
     txn.execute(
-        &format!("INSERT INTO {rs}.rows (addr_key, incarnation, value) VALUES ($1, $2, $3)"),
-        &[&format!("raw-{seq}"), &format!("row-{seq}"), &serde_json::json!({"s": seq.to_string()})],
+        &format!(
+            "INSERT INTO {rs}.nodes (parent_id, step_name, key_enc, key_wire, incarnation, value) \
+             VALUES (0, 'items', $1, '{{}}'::jsonb, $2, $3)"
+        ),
+        &[&key_enc, &format!("row-{seq}"), &serde_json::json!({"s": seq.to_string()})],
     )
-    .expect("insert row");
+    .expect("insert node");
     txn.execute(&format!("UPDATE {rs}.instance_meta SET head = $1 WHERE id = 1"), &[&seq])
         .expect("bump head");
     txn.commit().expect("commit");

@@ -20,10 +20,9 @@ use crate::backend::{backend, cell, corrupt};
 use crate::jsonb_text;
 use crate::node_write::NodeWriter;
 use crate::projection::{Projection, encode_composition};
-use crate::record_codec::{address_key, encode_op};
+use crate::record_codec::encode_op;
 use crate::schema::Schema;
 use crate::transition::PgTransition;
-use crate::value_codec;
 
 /// A PostgreSQL-backed store for one package instance.
 pub struct PgStore {
@@ -128,13 +127,12 @@ impl PgStore {
             &[&seq_num, &transaction_id, &ops_wire],
         )
         .map_err(backend)?;
-        // Dual-write: every op lands in the authoritative flat `rows` table AND in
-        // the `nodes` adjacency tree, in the SAME admission transaction. Reads still
-        // come from `rows`; the node ids are collected so the projection can advance
-        // its `by_id` map once the commit succeeds.
+        // Every op lands in the `nodes` adjacency tree — the sole durable row
+        // representation — in this one admission transaction. The freshly inserted
+        // node ids are collected so the projection can advance its `by_id` map once
+        // the commit succeeds.
         let mut node_writer = NodeWriter::new(&s, self.projection.by_id());
         for op in &ops {
-            Self::apply_op_sql(&mut txn, &s, op)?;
             node_writer.apply(&mut txn, op)?;
         }
         let new_node_ids = node_writer.into_new_ids();
@@ -154,60 +152,6 @@ impl PgStore {
         let committed = CommittedTransition::new(seq, ops, transaction);
         self.projection.apply_committed(committed, definition, composition, new_node_ids);
         Ok(CommitOutcome::Committed(self.projection.head()))
-    }
-
-    fn apply_op_sql(
-        txn: &mut postgres::Transaction<'_>,
-        schema: &str,
-        op: &CommittedRowOp,
-    ) -> Result<(), StoreError> {
-        match op {
-            CommittedRowOp::Insert { address, incarnation, value } => {
-                let key = address_key(address)?;
-                txn.execute(
-                    &format!(
-                        "INSERT INTO {schema}.rows (addr_key, incarnation, value) VALUES ($1, $2, $3)"
-                    ),
-                    &[&key, &incarnation.as_str(), &jsonb_text::to_jsonb(&value_codec::encode(value))],
-                )
-                .map_err(backend)?;
-            }
-            CommittedRowOp::Update { address, incarnation, value } => {
-                let key = address_key(address)?;
-                txn.execute(
-                    &format!(
-                        "UPDATE {schema}.rows SET incarnation = $2, value = $3 WHERE addr_key = $1"
-                    ),
-                    &[&key, &incarnation.as_str(), &jsonb_text::to_jsonb(&value_codec::encode(value))],
-                )
-                .map_err(backend)?;
-            }
-            CommittedRowOp::Delete { address, .. } => {
-                let key = address_key(address)?;
-                txn.execute(
-                    &format!("DELETE FROM {schema}.rows WHERE addr_key = $1"),
-                    &[&key],
-                )
-                .map_err(backend)?;
-            }
-            CommittedRowOp::Rekey { from, to, incarnation, value } => {
-                let from_key = address_key(from)?;
-                let to_key = address_key(to)?;
-                txn.execute(
-                    &format!("DELETE FROM {schema}.rows WHERE addr_key = $1"),
-                    &[&from_key],
-                )
-                .map_err(backend)?;
-                txn.execute(
-                    &format!(
-                        "INSERT INTO {schema}.rows (addr_key, incarnation, value) VALUES ($1, $2, $3)"
-                    ),
-                    &[&to_key, &incarnation.as_str(), &jsonb_text::to_jsonb(&value_codec::encode(value))],
-                )
-                .map_err(backend)?;
-            }
-        }
-        Ok(())
     }
 }
 

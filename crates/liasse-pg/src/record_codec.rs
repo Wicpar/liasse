@@ -3,9 +3,8 @@
 //! Addresses and log operations are built from typed [`Value`]s, so they inherit
 //! the same schema-free constraint as [`crate::value_codec`]: they must persist
 //! in a self-describing form the store can decode without a schema. Both encode
-//! to pure JSON arrays of tagged values, which makes the compact string form of
-//! an address deterministic — [`address_key`] uses it as the durable primary key
-//! of the `rows` table, injective because the value codec is.
+//! to pure JSON arrays of tagged values — the form the durable `commit_log` carries
+//! each op (and its addresses) in, decodable on load without a schema.
 
 use liasse_ident::{NameSegment, RowIncarnation};
 use liasse_store::{AddressStep, CommittedRowOp, RowAddress, StoreError, key_from_components};
@@ -13,17 +12,6 @@ use liasse_value::Value;
 use serde_json::{Map, Value as J};
 
 use crate::value_codec;
-
-/// The deterministic compact-JSON string of an address — its `rows` primary key.
-///
-/// A serialization failure must never be swallowed into the empty string: that
-/// would make two distinct addresses share the primary key `""`, breaking the
-/// injectivity the `rows` table relies on. The error is propagated as a
-/// corruption instead.
-pub fn address_key(address: &RowAddress) -> Result<String, StoreError> {
-    serde_json::to_string(&encode_address(address))
-        .map_err(|error| corrupt(format!("address key could not be serialized: {error}")))
-}
 
 /// Encode a row address as a JSON array of `[name, [key-components…]]` steps.
 ///

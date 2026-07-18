@@ -29,10 +29,9 @@
 /// higher stamp is refused rather than guessed at; opening an older one applies
 /// the current DDL (idempotently) and bumps the stamp forward.
 ///
-/// Bumped to 2 when the model-derived `rows_key_order` index was added; to 3 when
-/// the node-adjacency `nodes` table and its `node_key_lookup` unique index landed
-/// alongside `rows` (Phase 1: `rows` stays authoritative for reads, `nodes` is
-/// dual-written in the same admission transaction).
+/// Bumped to 2 when a model-derived key-order index was added; to 3 when the
+/// node-adjacency `nodes` table and its `node_key_lookup` unique index became the
+/// sole durable row representation (the earlier flat `rows` table was removed).
 pub const SCHEMA_VERSION: i32 = 3;
 
 /// A per-instance schema namespace: a validated PostgreSQL identifier.
@@ -169,32 +168,21 @@ impl Schema {
     /// index-coverage gates). The set is data, so opening creates each idempotently
     /// and reconciliation can drop any that fall out of the active model.
     ///
-    /// Primary-key indexes (`rows(addr_key)`, `nodes(id)`, `commit_log(seq)`,
-    /// `blobs(digest)`, `history_points(lineage, point)`) are intrinsic to the
-    /// table declarations and are not listed here — they serve every point lookup
-    /// and the seq-ordered log reads directly, and drop with their table.
+    /// Primary-key indexes (`nodes(id)`, `commit_log(seq)`, `blobs(digest)`,
+    /// `history_points(lineage, point)`) are intrinsic to the table declarations and
+    /// are not listed here — they serve every point lookup and the seq-ordered log
+    /// reads directly, and drop with their table.
     #[must_use]
     pub fn indexes(&self) -> Vec<IndexSpec> {
         vec![
-            // `InstanceStore::scan` enumerates a collection's direct rows in Annex B
-            // key order over a shared `addr_key` prefix. The primary key on
-            // `addr_key` orders by the database's *default* collation, which is not
-            // guaranteed to be byte order — so a prefix range walk could sort or, on
-            // some locales, decline the index entirely. A `COLLATE "C"` index gives
-            // the prefix range a deterministic, byte-ordered, index-served path on
-            // every cluster, so the scan never degrades to a Seq Scan + Sort.
-            IndexSpec {
-                name: "rows_key_order",
-                table: "rows",
-                key: "addr_key COLLATE \"C\"",
-                unique: false,
-            },
             // The node-adjacency point lookup and uniqueness: a row's node is found
             // by `(parent_id, step_name, key_enc)`, and no two sibling rows may share
             // a level key. `key_enc` is the order-preserving `BYTEA` encoding, so this
-            // unique index also serves an ordered sibling scan when reads flip onto
-            // the node tree. It is a bare `CREATE UNIQUE INDEX` (not a table
-            // constraint), so the reconciler manages it as a declared secondary index.
+            // unique index serves both the point lookup and an ordered sibling scan
+            // (`WHERE parent_id = ? AND step_name = ? ORDER BY key_enc`) with no sort —
+            // `BYTEA` compares by unsigned `memcmp`, so no `COLLATE` is needed. It is a
+            // bare `CREATE UNIQUE INDEX` (not a table constraint), so the reconciler
+            // manages it as a declared secondary index.
             IndexSpec {
                 name: "node_key_lookup",
                 table: "nodes",
@@ -206,22 +194,22 @@ impl Schema {
 
     /// The fixed tables every instance schema owns, as data so the same list
     /// drives the creating DDL and the reconciler's desired-set (§21 retains
-    /// `commit_log`/`history_points`/`blobs`; none of the seven is ever an orphan).
+    /// `commit_log`/`history_points`/`blobs`; none of the six is ever an orphan).
     ///
-    /// The application collections do not each get a table. Two backend layouts
-    /// hold every collection's rows, model-independent and evolving only when the
-    /// backend itself does: the flat `rows` table keyed by `addr_key` (still
-    /// authoritative for reads in this phase), and the `nodes` adjacency tree keyed
-    /// by a surrogate id — each node is one address level under its parent node,
-    /// rooted at the self-referential sentinel `id = 0` (`factory::ensure` seeds it),
-    /// so `parent_id` is `NOT NULL` everywhere. The self-FK is `DEFERRABLE INITIALLY
+    /// The application collections do not each get a table. The `nodes` adjacency
+    /// tree holds every collection's rows — model-independent, evolving only when the
+    /// backend itself does — keyed by a surrogate id: each node is one address level
+    /// under its parent node, rooted at the self-referential sentinel `id = 0`
+    /// (`factory::ensure` seeds it), so `parent_id` is `NOT NULL` everywhere. It is
+    /// the sole durable row representation; reads are served from an in-memory
+    /// projection rebuilt from it on open. The self-FK is `DEFERRABLE INITIALLY
     /// DEFERRED` so a parent-first delete within one transaction is tolerated, and it
     /// carries no `ON DELETE CASCADE` — every delete is issued explicitly by id, so
-    /// the node tree stays an exact fold of the commit log. `key_enc` is the
-    /// order-preserving lookup/scan key; `key_wire` is the canonical, decodable key
-    /// a load reconstructs the address from.
+    /// the node tree stays an exact fold of the reachable committed state. `key_enc`
+    /// is the order-preserving lookup/scan key; `key_wire` is the canonical, decodable
+    /// key a load reconstructs the address from.
     #[must_use]
-    pub fn tables(&self) -> [TableSpec; 7] {
+    pub fn tables(&self) -> [TableSpec; 6] {
         [
             TableSpec {
                 name: "schema_version",
@@ -236,10 +224,6 @@ impl Schema {
                           definition_source TEXT, \
                           definition_id TEXT, \
                           composition JSONB",
-            },
-            TableSpec {
-                name: "rows",
-                columns: "addr_key TEXT PRIMARY KEY, incarnation TEXT NOT NULL, value JSONB NOT NULL",
             },
             TableSpec {
                 name: "nodes",
@@ -300,10 +284,18 @@ impl Schema {
 
     /// Idempotent DDL dropping a stray `table` by its live catalog name — a
     /// leftover from a prior backend layout — cascading its dependents. The
-    /// reconciler never passes a fixed table here, so the seven are never dropped.
+    /// reconciler never passes a fixed table here, so the six are never dropped.
     #[must_use]
     pub(crate) fn drop_table_sql(&self, table: &str) -> String {
         format!("DROP TABLE IF EXISTS {}.{} CASCADE;", self.quoted(), quote(table))
+    }
+
+    /// A probe returning whether an orphan `table` holds any row (`present`), so the
+    /// reconciler can refuse to silently `CASCADE`-drop a populated legacy table (a
+    /// pre-node `rows`, say) rather than destroying data. An empty orphan still drops.
+    #[must_use]
+    pub(crate) fn table_nonempty_sql(&self, table: &str) -> String {
+        format!("SELECT EXISTS (SELECT 1 FROM {}.{}) AS present", self.quoted(), quote(table))
     }
 }
 

@@ -48,6 +48,7 @@ mod jsonb_text;
 // column.
 mod key_enc;
 mod key_enc_num;
+mod node_load;
 mod node_write;
 mod projection;
 mod reconcile;

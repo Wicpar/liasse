@@ -12,10 +12,10 @@
 //! The three orphan classes the reconciler eliminates each get a gate:
 //!
 //! - orphan **indexes** — a stray secondary index is dropped, the declared ones kept;
-//! - orphan **tables** — a stray base table is dropped, the seven fixed ones (incl. the
-//!   §21-retained `commit_log`/`history_points`/`blobs`) kept;
+//! - orphan **tables** — a stray (empty) base table is dropped, the six fixed ones
+//!   (incl. the §21-retained `commit_log`/`history_points`/`blobs`) kept;
 //! - orphan **rows** — removing a collection (expressed as row deletes, the only way
-//!   a removal reaches the store) leaves no residue in `rows` while history is kept.
+//!   a removal reaches the store) leaves no residue in `nodes` while history is kept.
 //!
 //! Plus: reconciliation is idempotent (a second run neither creates nor drops), and
 //! a fresh `create` materializes exactly the declared objects and nothing more.
@@ -39,18 +39,18 @@ use postgres::Client;
 
 use support::SchemaGuard;
 
-/// The seven fixed tables every instance schema owns — the externally-known
-/// desired table set the live catalog is diffed against. `commit_log`/
-/// `history_points`/`blobs` are the §21-retained stores that must never be treated
-/// as orphans; `nodes` is the node-adjacency tree dual-written beside `rows`.
-const FIXED_TABLES: [&str; 7] =
-    ["schema_version", "instance_meta", "rows", "nodes", "commit_log", "history_points", "blobs"];
+/// The six fixed tables every instance schema owns — the externally-known desired
+/// table set the live catalog is diffed against. `commit_log`/`history_points`/
+/// `blobs` are the §21-retained stores that must never be treated as orphans;
+/// `nodes` is the node-adjacency tree, the sole durable row representation.
+const FIXED_TABLES: [&str; 6] =
+    ["schema_version", "instance_meta", "nodes", "commit_log", "history_points", "blobs"];
 
 /// The secondary indexes the current model declares — the externally-known desired
 /// index set. Intrinsic primary-key indexes and `UNIQUE` table constraints are not
 /// in this set (they drop with their tables and are never reconciled); a bare
 /// `CREATE UNIQUE INDEX` like `node_key_lookup` is a managed secondary index and is.
-const DECLARED_INDEXES: [&str; 2] = ["rows_key_order", "node_key_lookup"];
+const DECLARED_INDEXES: [&str; 1] = ["node_key_lookup"];
 
 /// The live base tables in `schema`, read straight from `information_schema` — the
 /// oracle for the desired-table diff.
@@ -95,7 +95,7 @@ fn expected_indexes() -> BTreeSet<String> {
     DECLARED_INDEXES.iter().map(|name| (*name).to_owned()).collect()
 }
 
-/// A fresh `create` materializes exactly the declared objects — the seven fixed
+/// A fresh `create` materializes exactly the declared objects — the six fixed
 /// tables and every declared secondary index — and nothing extra.
 #[test]
 fn fresh_create_materializes_exactly_declared_objects() {
@@ -111,7 +111,7 @@ fn fresh_create_materializes_exactly_declared_objects() {
     assert_eq!(
         live_tables(&mut client, &schema),
         expected_tables(),
-        "a fresh schema must hold exactly the seven fixed tables, nothing more"
+        "a fresh schema must hold exactly the six fixed tables, nothing more"
     );
     assert_eq!(
         live_secondary_indexes(&mut client, &schema),
@@ -162,7 +162,7 @@ fn orphan_index_is_dropped() {
     let mut client = factory.connect().expect("connect");
     client
         .batch_execute(&format!(
-            "CREATE INDEX stray_orphan_idx ON {}.rows (incarnation);",
+            "CREATE INDEX stray_orphan_idx ON {}.nodes (incarnation);",
             schema.quoted()
         ))
         .expect("create a stray index");
@@ -179,9 +179,10 @@ fn orphan_index_is_dropped() {
     assert_eq!(live, expected_indexes(), "reconciliation must leave exactly the declared indexes");
 }
 
-/// A base table not in the fixed set is an orphan (a leftover from a prior backend
-/// layout) the reconciler must drop, while the seven fixed tables — including the
-/// §21-retained history and blob stores — survive.
+/// An *empty* base table not in the fixed set is an orphan (a leftover from a prior
+/// backend layout) the reconciler must drop, while the six fixed tables — including
+/// the §21-retained history and blob stores — survive. (A *populated* orphan is
+/// refused rather than dropped; `populated_orphan_table_is_refused` covers that.)
 #[test]
 fn orphan_table_is_dropped() {
     let handle = support::acquire();
@@ -192,7 +193,7 @@ fn orphan_table_is_dropped() {
 
     drop(factory.create(instance.clone()).expect("create"));
 
-    // Inject a stray table the fixed set never contains.
+    // Inject a stray EMPTY table the fixed set never contains.
     let mut client = factory.connect().expect("connect");
     client
         .batch_execute(&format!(
@@ -205,21 +206,64 @@ fn orphan_table_is_dropped() {
         "the stray table must exist before reconciliation, or the gate proves nothing"
     );
 
-    // Opening reconciles: the orphan must go, the seven fixed tables must stay.
+    // Opening reconciles: the empty orphan must go, the six fixed tables must stay.
     drop(factory.reopen(instance).expect("reopen reconciles"));
 
     let live = live_tables(&mut client, &schema);
     assert!(!live.contains("stray_orphan_table"), "orphan table survived reconciliation: {live:?}");
-    assert_eq!(live, expected_tables(), "reconciliation must leave exactly the seven fixed tables");
+    assert_eq!(live, expected_tables(), "reconciliation must leave exactly the six fixed tables");
     for retained in ["commit_log", "history_points", "blobs"] {
         assert!(live.contains(retained), "reconciliation dropped the §21-retained `{retained}`");
     }
 }
 
-/// Removing a collection leaves NO orphan rows in `rows`, while the kept collection
-/// and all history remain readable. A collection is only a key prefix in the single
-/// `rows` table, so the runtime expresses a §20 removal as a Delete per row — the
-/// only way a removal reaches the store, and exactly what must leave no residue.
+/// A *populated* orphan table is REFUSED, not silently `CASCADE`-dropped: reopening
+/// a legacy layout whose leftover table still holds data must fail loudly rather
+/// than destroy it. The refusal rolls the reconcile back, so the orphan and its
+/// rows survive for a manual export/drop.
+#[test]
+fn populated_orphan_table_is_refused() {
+    let handle = support::acquire();
+    let mut factory = handle.factory("poporphan");
+    let instance = InstanceId::new("populated-orphan");
+    let _guard = SchemaGuard::new(&factory, instance.clone());
+    let schema = factory.schema_for(&instance);
+
+    drop(factory.create(instance.clone()).expect("create"));
+
+    // Inject a stray table AND put a row in it — a stand-in for a pre-node `rows`
+    // table a legacy database still carries.
+    let mut client = factory.connect().expect("connect");
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {s}.legacy_rows (x INT PRIMARY KEY); \
+             INSERT INTO {s}.legacy_rows (x) VALUES (1);",
+            s = schema.quoted()
+        ))
+        .expect("create and populate a stray table");
+
+    // Reopening reconciles: the populated orphan must be refused, not dropped.
+    let refused = factory.reopen(instance);
+    assert!(refused.is_err(), "reopening over a populated orphan table must be refused");
+
+    // The refusal rolled back untouched: the orphan and its row are still there.
+    let live = live_tables(&mut client, &schema);
+    assert!(
+        live.contains("legacy_rows"),
+        "a refused reconcile must not have dropped the populated orphan: {live:?}"
+    );
+    let count: i64 = client
+        .query_one(&format!("SELECT COUNT(*) FROM {}.legacy_rows", schema.quoted()), &[])
+        .expect("count legacy rows")
+        .get(0);
+    assert_eq!(count, 1, "the orphan's data must survive a refused reconcile");
+}
+
+/// Removing a collection leaves NO orphan rows in `nodes`, while the kept collection
+/// and all history remain readable. A collection is a subtree of the node tree (its
+/// direct rows share a `(parent_id, step_name)`), so the runtime expresses a §20
+/// removal as a Delete per row — the only way a removal reaches the store, and
+/// exactly what must leave no residue among the nodes.
 #[test]
 fn removing_a_collection_leaves_no_orphan_rows() {
     let handle = support::acquire();
@@ -265,20 +309,22 @@ fn removing_a_collection_leaves_no_orphan_rows() {
         txn.commit().expect("commit migration");
     }
 
-    // Row/catalog oracle: not one `drop` row survives; both `keep` rows do.
+    // Node/catalog oracle: not one `drop` node survives under the root sentinel;
+    // both `keep` nodes do. `keep`/`drop` are top-level collections, so their direct
+    // rows are nodes with `parent_id = 0` (the sentinel) and the matching `step_name`.
     let mut client = factory.connect().expect("connect");
     let s = schema.quoted();
-    let count_prefix = |client: &mut Client, prefix: &str| -> i64 {
+    let count_collection = |client: &mut Client, name: &str| -> i64 {
         client
             .query_one(
-                &format!("SELECT COUNT(*) FROM {s}.rows WHERE addr_key LIKE $1"),
-                &[&format!("{prefix}%")],
+                &format!("SELECT COUNT(*) FROM {s}.nodes WHERE parent_id = 0 AND step_name = $1"),
+                &[&name],
             )
-            .expect("count rows by prefix")
+            .expect("count nodes by collection")
             .get(0)
     };
-    assert_eq!(count_prefix(&mut client, r#"[["drop","#), 0, "removed collection left orphan rows");
-    assert_eq!(count_prefix(&mut client, r#"[["keep","#), 2, "kept collection rows must remain");
+    assert_eq!(count_collection(&mut client, "drop"), 0, "removed collection left orphan nodes");
+    assert_eq!(count_collection(&mut client, "keep"), 2, "kept collection nodes must remain");
 
     // History is retained (§21): both commits and the recorded point survive.
     let commits: i64 = client

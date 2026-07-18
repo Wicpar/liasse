@@ -13,12 +13,16 @@
 //!   declared set and drops the difference.
 //! - **Orphan tables.** A base table present in the instance schema but absent from
 //!   the fixed set ([`Schema::tables`]) is a leftover from an earlier layout and is
-//!   dropped `CASCADE`. The six fixed tables are never orphans, so the retained
-//!   history and blob stores (§21: `commit_log`/`history_points`/`blobs`) are safe.
-//! - **Orphan rows.** Handled by the write path, not here: a collection lives as a
-//!   key prefix in the single `rows` table, so a §20 migration removing it issues a
-//!   `Delete` per row and each leaves the table with no residue (proven by the
-//!   crate's no-orphan-rows gate).
+//!   dropped `CASCADE` — but only when empty. A *populated* orphan (a pre-node `rows`
+//!   table from a legacy layout being reopened) is refused loudly instead of silently
+//!   destroyed: the reconciler returns an actionable [`StoreError`] naming the table,
+//!   never a data-losing `CASCADE`. The six fixed tables are never orphans, so the
+//!   retained history and blob stores (§21: `commit_log`/`history_points`/`blobs`)
+//!   are safe.
+//! - **Orphan rows.** Handled by the write path, not here: a collection is a subtree
+//!   of the `nodes` adjacency tree, so a §20 migration removing it issues a `Delete`
+//!   per row (the node write cascades each subtree) and leaves no residue (proven by
+//!   the crate's no-orphan-rows gate).
 //!
 //! Create and clean are driven from the *same* enumerable [`Schema::tables`] /
 //! [`Schema::indexes`] data, so the desired set has one source of truth. The whole
@@ -89,9 +93,26 @@ pub(crate) fn reconcile(client: &mut Client, schema: &Schema) -> Result<(), Stor
     }
     let fixed_tables = schema.tables();
     for live in live_tables(&mut txn, schema)? {
-        if !fixed_tables.iter().any(|fixed: &TableSpec| fixed.name() == live) {
-            txn.batch_execute(&schema.drop_table_sql(&live)).map_err(backend)?;
+        if fixed_tables.iter().any(|fixed: &TableSpec| fixed.name() == live) {
+            continue;
         }
+        // An empty orphan drops; a populated one is refused rather than silently
+        // `CASCADE`-dropped, so reopening a legacy layout can never destroy data
+        // undetected. The refusal rolls this whole transaction back untouched.
+        let present: bool = cell(
+            &txn.query_one(&schema.table_nonempty_sql(&live), &[]).map_err(backend)?,
+            "orphan_table_probe",
+            "present",
+        )?;
+        if present {
+            return Err(refuse(format!(
+                "orphan table `{live}` in schema `{}` still holds rows; refusing to drop it. \
+                 A populated legacy table (e.g. a pre-node `rows`) is never silently discarded — \
+                 export or drop it manually, then reopen.",
+                schema.name()
+            )));
+        }
+        txn.batch_execute(&schema.drop_table_sql(&live)).map_err(backend)?;
     }
 
     txn.commit().map_err(backend)

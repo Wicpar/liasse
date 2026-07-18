@@ -11,6 +11,10 @@
 //! construction. Reopening a store rebuilds an identical projection from the
 //! tables, which is what makes durability observable (the crate's reopen test
 //! proves it) and lets frontier snapshots fold the durable log (§19.2, §22.7).
+//!
+//! The current rows are reconstructed from the `nodes` adjacency tree — the sole
+//! durable row representation ([`crate::node_load`]) — while the log, points,
+//! blobs, and metadata come from their own tables.
 
 use std::collections::BTreeMap;
 
@@ -25,9 +29,8 @@ use serde_json::{Map, Value as J};
 
 use crate::backend::{backend, cell, corrupt};
 use crate::jsonb_text;
-use crate::record_codec::{decode_address, decode_op};
+use crate::record_codec::decode_op;
 use crate::schema::Schema;
-use crate::value_codec;
 
 /// A committed-state read model for one instance.
 #[derive(Debug)]
@@ -89,22 +92,6 @@ impl Projection {
             log.push(CommittedTransition::new(seq, ops, transaction));
         }
 
-        // Current state is the authoritative `rows` table; it must agree with a
-        // fold of the log, which the store's snapshot path exercises.
-        let mut current = BTreeMap::new();
-        for row in client
-            .query(&format!("SELECT addr_key, incarnation, value FROM {s}.rows"), &[])
-            .map_err(backend)?
-        {
-            let addr_key: String = cell(&row, "rows", "addr_key")?;
-            let wire: J = serde_json::from_str(&addr_key)
-                .map_err(|error| corrupt(format!("stored address key is not JSON: {error}")))?;
-            let address = decode_address(&wire)?;
-            let incarnation = RowIncarnation::new(cell::<String>(&row, "rows", "incarnation")?);
-            let value = value_codec::decode(&jsonb_text::from_jsonb(&cell::<J>(&row, "rows", "value")?))?;
-            current.insert(address, StoredRow::new(incarnation, value));
-        }
-
         let mut points = BTreeMap::new();
         for row in client
             .query(&format!("SELECT lineage, point, seq FROM {s}.history_points"), &[])
@@ -126,10 +113,11 @@ impl Projection {
             blobs.insert(digest, cell::<Vec<u8>>(&row, "blobs", "bytes")?);
         }
 
-        // The dual-written node tree carries the surrogate ids the write path applies
-        // ops by; rebuild the address→id map from it (walking each node's parent chain
-        // to the root sentinel). Reads stay served from `current` above.
-        let by_id = crate::node_write::load_by_id(client, &s)?;
+        // Reconstruct the current rows AND the address→id map from the node tree —
+        // the sole durable row representation — in one pass: each node's parent chain
+        // gives its address, its `key_wire`/`value` decode to the level key and stored
+        // value, and its surrogate id feeds the write path's `by_id` resolver.
+        let crate::node_load::NodeTree { current, by_id } = crate::node_load::load(client, &s)?;
 
         Ok(Self {
             head,

@@ -24,14 +24,15 @@
 //! # Relationship to the runtime read path
 //!
 //! `PgStore` answers the contract's `&self` reads from an in-memory projection
-//! rebuilt from these durable tables on open (the contract's reads are `&self`
-//! while the synchronous driver is `&mut`, and interior mutability is forbidden).
-//! So these gates are a property of the durable *schema*: they guarantee that
-//! every query pattern the backend runs against PostgreSQL — the write path's
-//! keyed row mutations today, and the load / replay / any future SQL-served read
-//! path — has an index to ride, so it can never silently become a full scan. The
-//! row-by-key gate covers a query the write path issues verbatim
-//! (`UPDATE`/`DELETE ... WHERE addr_key = $1`).
+//! rebuilt from the `nodes` tree on open (the contract's reads are `&self` while the
+//! synchronous driver is `&mut`, and interior mutability is forbidden). So these
+//! gates are a property of the durable *schema*: they guarantee every query pattern
+//! the backend runs against PostgreSQL — the write path's keyed node mutations, the
+//! load, and any future SQL-served read path — has an index to ride, so it can never
+//! silently become a full scan. The node point lookup covers the query the write path
+//! issues by `(parent_id, step_name, key_enc)`; the ordered node scan covers a
+//! collection read in Annex B key order (`key_enc` is `BYTEA`, compared by unsigned
+//! `memcmp`, so the index supplies the order with no `COLLATE` and no `Sort`).
 //!
 //! The `instance_meta` / `schema_version` head-and-version reads (`WHERE id = 1`)
 //! are deliberately absent: those tables are constrained to a single row
@@ -52,9 +53,15 @@ use serde_json::Value as J;
 
 use support::SchemaGuard;
 
-/// Rows to insert before `ANALYZE` — comfortably past any small-table seq-scan
-/// preference, so a selective indexed read is unambiguously the cheaper plan.
+/// Sibling "noise" nodes to insert before `ANALYZE` — comfortably past any
+/// small-table seq-scan preference, so a selective indexed read is unambiguously the
+/// cheaper plan.
 const POP: i64 = 20_000;
+
+/// Direct rows in the one target collection whose point lookup and ordered scan the
+/// gates plan. Kept small (a selective fraction of `POP`), so the node lookup index
+/// is decisively preferred over a full scan of the table.
+const COLLECTION: i64 = 64;
 
 /// Provision the real schema DDL over a raw connection, returning the client and
 /// the schema so a gate can populate its tables and `EXPLAIN` its patterns. A
@@ -67,10 +74,11 @@ fn provision(factory: &PgStoreFactory, instance: &InstanceId) -> (Client, Schema
     (client, schema)
 }
 
-/// The canonical `rows` primary key for the `items` collection at integer `n`,
-/// byte-identical to what the SQL populator generates.
-fn item_key(n: i64) -> String {
-    format!(r#"[["items",[{{"i":"{n:08}"}}]]]"#)
+/// The 8-byte big-endian `key_enc` for integer `n` — byte-identical to Postgres
+/// `int8send(n)` (which the SQL populator uses), memcmp-ordered for the non-negative
+/// keys these gates seed.
+fn key_enc(n: i64) -> Vec<u8> {
+    n.to_be_bytes().to_vec()
 }
 
 /// Run `EXPLAIN (FORMAT JSON) <sql>` with `params` bound, returning the top plan
@@ -133,16 +141,53 @@ fn assert_index_ordered(plan: &J, label: &str) {
     );
 }
 
-/// Populate every table this gate suite queries, then `ANALYZE`.
-fn populate(client: &mut Client, schema: &Schema) {
+/// Populate every table this gate suite queries, then `ANALYZE`; return the
+/// surrogate id of the container node whose `items` collection the node gates plan.
+///
+/// The node tree is seeded so the target collection is a *selective* slice: one
+/// container parent holds a small `items` collection, while a large body of sibling
+/// "noise" nodes bloats the table — so `WHERE parent_id = P AND step_name = 'items'`
+/// selects a tiny fraction and the planner rides `node_key_lookup` rather than
+/// scanning the whole table.
+fn populate(client: &mut Client, schema: &Schema) -> i64 {
     let s = schema.quoted();
+    // Root sentinel (id = 0) every depth-1 node hangs under.
+    client
+        .execute(
+            &format!(
+                "INSERT INTO {s}.nodes \
+                 (id, parent_id, step_name, key_enc, key_wire, incarnation, value) \
+                 OVERRIDING SYSTEM VALUE \
+                 VALUES (0, 0, '', '\\x'::bytea, '{{}}'::jsonb, '', '{{}}'::jsonb) \
+                 ON CONFLICT (id) DO NOTHING"
+            ),
+            &[],
+        )
+        .expect("seed root sentinel");
+    // One container parent under the sentinel; capture its surrogate id.
+    let parent: i64 = client
+        .query_one(
+            &format!(
+                "INSERT INTO {s}.nodes \
+                 (parent_id, step_name, key_enc, key_wire, incarnation, value) \
+                 VALUES (0, 'orgs', $1, '{{}}'::jsonb, '', '{{}}'::jsonb) RETURNING id"
+            ),
+            &[&key_enc(1)],
+        )
+        .expect("insert container node")
+        .get("id");
     client
         .batch_execute(&format!(
-            "INSERT INTO {s}.rows (addr_key, incarnation, value) \
-               SELECT format('[[\"items\",[{{\"i\":\"%s\"}}]]]', lpad(g::text, 8, '0')), \
-                      'row-' || g, \
+            "INSERT INTO {s}.nodes \
+               (parent_id, step_name, key_enc, key_wire, incarnation, value) \
+               SELECT {parent}, 'items', int8send(g::int8), '{{}}'::jsonb, 'row-' || g, \
                       jsonb_build_object('s', g::text) \
-               FROM generate_series(0, {last}) AS g;\n\
+               FROM generate_series(0, {collection_last}) AS g;\n\
+             INSERT INTO {s}.nodes \
+               (parent_id, step_name, key_enc, key_wire, incarnation, value) \
+               SELECT 0, 'noise', int8send(g::int8), '{{}}'::jsonb, 'row-' || g, \
+                      jsonb_build_object('s', g::text) \
+               FROM generate_series(1, {pop}) AS g;\n\
              INSERT INTO {s}.commit_log (seq, transaction_id, ops) \
                SELECT g, NULL, '[]'::jsonb FROM generate_series(1, {pop}) AS g;\n\
              INSERT INTO {s}.history_points (lineage, point, seq) \
@@ -150,12 +195,13 @@ fn populate(client: &mut Client, schema: &Schema) {
              INSERT INTO {s}.blobs (digest, bytes) \
                SELECT lpad(g::text, 128, '0'), decode(md5(g::text), 'hex') \
                FROM generate_series(1, {pop}) AS g;\n\
-             ANALYZE {s}.rows; ANALYZE {s}.commit_log; \
+             ANALYZE {s}.nodes; ANALYZE {s}.commit_log; \
              ANALYZE {s}.history_points; ANALYZE {s}.blobs;",
-            last = POP - 1,
+            collection_last = COLLECTION - 1,
             pop = POP,
         ))
         .expect("populate and analyze");
+    parent
 }
 
 /// Every enumerated backend query pattern is index-served on a populated table.
@@ -169,34 +215,36 @@ fn every_query_pattern_is_index_served() {
     let _guard = SchemaGuard::new(&factory, instance.clone());
 
     let (mut client, schema) = provision(&factory, &instance);
-    populate(&mut client, &schema);
+    let parent = populate(&mut client, &schema);
     let s = schema.quoted();
+    let items = "items";
 
-    // (1) Row lookup by canonical key — the write path's UPDATE/DELETE ... WHERE
-    // addr_key = $1, served by the `rows` primary key.
-    let key = item_key(POP / 2);
-    let plan = explain(
-        &mut client,
-        &format!("SELECT incarnation, value FROM {s}.rows WHERE addr_key = $1"),
-        &[&key],
-    );
-    assert_index_only(&plan, "row lookup by canonical key");
-
-    // (2) Collection scan in Annex B key order — a prefix range over `addr_key`,
-    // served in byte order by the model-derived `rows_key_order` index with no
-    // sort. Bounds share the collection prefix and select a narrow slice.
-    let lo = format!(r#"[["items",[{{"i":"{:08}"#, POP / 2);
-    let hi = format!(r#"[["items",[{{"i":"{:08}"#, POP / 2 + 50);
+    // (1) Node point lookup by (parent_id, step_name, key_enc) — the write path's
+    // row resolution, served by the `node_key_lookup` unique index.
+    let key = key_enc(COLLECTION / 2);
     let plan = explain(
         &mut client,
         &format!(
-            "SELECT addr_key, incarnation, value FROM {s}.rows \
-             WHERE addr_key COLLATE \"C\" >= $1 AND addr_key COLLATE \"C\" < $2 \
-             ORDER BY addr_key COLLATE \"C\""
+            "SELECT id, incarnation, value FROM {s}.nodes \
+             WHERE parent_id = $1 AND step_name = $2 AND key_enc = $3"
         ),
-        &[&lo, &hi],
+        &[&parent, &items, &key],
     );
-    assert_index_ordered(&plan, "collection scan in key order");
+    assert_index_only(&plan, "node point lookup by (parent_id, step_name, key_enc)");
+
+    // (2) Collection scan in Annex B key order — all direct rows of one collection
+    // in `key_enc` order, served by the same `node_key_lookup` index. `key_enc` is
+    // BYTEA (unsigned `memcmp`), so the index supplies the order with no `COLLATE`
+    // and the plan carries no `Sort`.
+    let plan = explain(
+        &mut client,
+        &format!(
+            "SELECT id, key_enc, incarnation, value FROM {s}.nodes \
+             WHERE parent_id = $1 AND step_name = $2 ORDER BY key_enc"
+        ),
+        &[&parent, &items],
+    );
+    assert_index_ordered(&plan, "node collection scan in key order");
 
     // (3) Commit-log read from a seq (log_from / replay) — WHERE seq >= $1 ORDER BY
     // seq, served in order by the `commit_log` primary key.

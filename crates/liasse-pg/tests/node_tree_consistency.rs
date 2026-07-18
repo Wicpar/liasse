@@ -119,23 +119,6 @@ fn canon(value: &JsonV) -> String {
     }
 }
 
-/// Committed state read straight from the flat `rows` table:
-/// canonical address JSON -> (incarnation, canonical value JSON).
-fn state_from_rows(client: &mut Client, schema: &str) -> BTreeMap<String, (String, String)> {
-    let mut state = BTreeMap::new();
-    for row in client
-        .query(&format!("SELECT addr_key, incarnation, value FROM {schema}.rows"), &[])
-        .expect("scan rows")
-    {
-        let addr_key: String = row.get("addr_key");
-        let address: JsonV = serde_json::from_str(&addr_key).expect("addr_key is JSON");
-        let incarnation: String = row.get("incarnation");
-        let value: JsonV = row.get("value");
-        state.insert(canon(&address), (incarnation, canon(&value)));
-    }
-    state
-}
-
 /// Committed state reconstructed purely from the NODE tree: read every node, then
 /// for each non-sentinel node walk its `parent_id` chain to the root sentinel
 /// (`id = 0`), assembling the address from each level's `step_name` + `key_wire`
@@ -210,21 +193,24 @@ fn node_tree_mirrors_rows_and_memory() {
     let mut pg = pg_factory.create(instance.clone()).expect("create pg store");
     apply_workload(&mut pg);
 
-    // (1) The node tree is an exact mirror of the flat `rows` table.
+    // (1) The node tree is now the SOLE durable row representation. Reconstruct the
+    // committed set from parent_id/key_wire and confirm it is a sound, non-empty
+    // walk (every node's parent chain reaches the sentinel; deletes cascade the
+    // subtree, rekeys keep the node id).
     let mut client = pg_factory.connect().expect("connect a raw client");
     let s = schema.quoted();
-    let rows_state = state_from_rows(&mut client, &s);
     let nodes_state = state_from_nodes(&mut client, &s);
-    assert!(!rows_state.is_empty(), "the workload must leave committed rows to compare");
-    assert_eq!(
-        nodes_state, rows_state,
-        "the node tree reconstructed from parent_id/key_wire diverged from the authoritative `rows` table"
-    );
+    assert!(!nodes_state.is_empty(), "the workload must leave committed nodes to compare");
 
-    // (2) The PostgreSQL store's rows-derived reads equal the in-memory reference,
+    // (2) The PostgreSQL store's node-derived reads equal the in-memory reference,
     // incarnations included — presence AND absence at every touched address.
     let present = [org(1), org(2), team(1, 10), team(1, 30), member(1, 10, 200)];
     let absent = [team(2, 20), member(1, 10, 100), member(1, 10, 101)];
+    assert_eq!(
+        nodes_state.len(),
+        present.len(),
+        "the node tree holds exactly the reachable rows after the workload, got {nodes_state:?}"
+    );
     for address in present.iter().chain(absent.iter()) {
         let pg_row = pg.row(address).expect("pg row read");
         let memory_row = memory.row(address).expect("memory row read");
