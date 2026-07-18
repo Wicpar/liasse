@@ -165,11 +165,11 @@ impl SurfacePhase<'_, '_> {
         for member in members {
             match member.name.text.as_str() {
                 "$params" => {}
-                "$view" => {
-                    if public {
-                        self.check_view(&member.value, &params);
-                    }
-                }
+                // §8.8: a surface `$view` is a pure read position whether granted
+                // publicly or through a role, so the generated-call gate runs in
+                // both cases; only the public path is additionally fully typed (a
+                // role `$view`'s `$actor` typing stays a documented seam).
+                "$view" => self.check_view(&member.value, &params, public),
                 "$mut" => self.surface_muts(&member.value, public, &mut calls),
                 // §10.5: a scoped surface MAY propagate through a checked
                 // descendant relation. Its shape and predicate types are
@@ -440,16 +440,18 @@ impl SurfacePhase<'_, '_> {
         }
     }
 
-    fn check_view(&mut self, value: &liasse_syntax::DocValue, params: &[(String, ExprType)]) {
+    /// Validate a surface `$view`. The §8.8 pure-position gate (an AST walk that
+    /// needs no type information) runs for every `$view` — public or role-granted —
+    /// so a generated `now()`/`uuid()` is rejected in this materialized read
+    /// position regardless of how the surface is exposed. Full type-checking runs
+    /// only for a `public` surface: a role `$view` may read `$actor`, whose row
+    /// type is resolved by a later pass (the documented seam, see the module docs),
+    /// so it is purity-gated but not yet fully typed here.
+    fn check_view(&mut self, value: &liasse_syntax::DocValue, params: &[(String, ExprType)], public: bool) {
         let Some(text) = value.as_string() else {
             self.reporter.reject(value.span, code::SURFACE, "`$view` must be an expression string");
             return;
         };
-        let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
-            .with_optional_structural("config", self.config.as_ref());
-        for (name, ty) in params {
-            scope = scope.with_param(name.clone(), ty.clone());
-        }
         // The parsed AST's spans index `sub`; the type checker must render its
         // diagnostics against that same source, so `sub` is reused rather than
         // re-registered against unrelated text.
@@ -462,6 +464,14 @@ impl SurfacePhase<'_, '_> {
             }
         };
         self.reject_generated(&parsed, sub);
+        if !public {
+            return;
+        }
+        let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
+            .with_optional_structural("config", self.config.as_ref());
+        for (name, ty) in params {
+            scope = scope.with_param(name.clone(), ty.clone());
+        }
         // §7.1/§10.1/§12.2: a surface `$view` result may be a row stream, a
         // single row (a root or struct projection like `. { exact_sum }`), or a
         // scalar (an aggregate/computed value); §12.2 delivers a single-row or
