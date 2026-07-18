@@ -1,0 +1,46 @@
+{
+  format: 1
+  name: generated-value-per-call-site
+  suite: scenario
+  spec: ["#expressions", "§6.5", "§5.1", "§8.12", "#annex-a", "§A.5"]
+  tags: ["purity", "identity"]
+  // SPEC-ISSUES #4 (pinned): `uuid()` yields a FRESH, DISTINCT value on every
+  // evaluation — including one field-default call site evaluated across the
+  // several rows of one request, so two rows never share a generated key. §5.1
+  // and §8.12 now say "produced once" is a recording/replay guarantee, not a
+  // statement that distinct occurrences share one value; Annex A.5 keeps `now()`
+  // as the shared transaction-start instant (the symmetric opposite). Here
+  // `add_two` inserts two rows whose `id` defaults from the SAME `uuid()` call
+  // site: they get distinct ids, so neither insert collides on the key and the
+  // call returns count 2.
+  note: "SPEC-ISSUES #4: each `uuid()` evaluation is independent, so the two rows' `id: uuid = uuid()` defaults (one call site, two rows) do not collide (§5.1/§8.12); the standard machine-generated surrogate-key idiom bulk-inserts cleanly and the call returns 2. Contrast `now()` (§A.5), fixed once per request."
+
+  package: {
+    $liasse: 1
+    $app: "t.uuidgen@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "uuid = uuid()"
+        name: "text"
+      }
+      $mut: {
+        add_two: [
+          ".rows + { name: 'x' }"
+          ".rows + { name: 'y' }"
+          "return count(.rows)"
+        ]
+      }
+      $public: {
+        rows: {
+          $mut: { add_two: ".add_two" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.rows.add_two", args: {},
+      expect: { outcome: ok, value: "2" } }
+  ]
+}

@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: empty-mutation-program-array-invalid
+  suite: static
+  tags: [grammar, mutations, empty, boundary]
+  // Boundary probe: a mutation whose program is the empty statement array.
+  // Annex C.9: 'name: [statement, statement, ...]' and §8.1: "An array is one
+  // sequential, atomic program." SPEC-ISSUES #25 (pinned): a mutation program
+  // MUST contain at least one statement; the empty statement array [] is a static
+  // load error ("a mutation program has no statements"), not a valid no-op commit.
+  note: "SPEC-ISSUES #25: an empty mutation-program array `[]` has no statements; §8.1 / Annex C.9 make it a static load error rather than a silent no-op commit — a program must contain at least one statement."
+  spec: ["#annex-c", "§C.9", "#mutations", "§8.1"]
+
+  package: {
+    $liasse: 1
+    $app: "t.emptymut@1.0.0"
+    $model: {
+      doc: {
+        n: "int = 0"
+      }
+      $mut: {
+        noop: []
+      }
+      view_doc: { $view: ".doc { n }" }
+      $public: {
+        doc: {
+          $view: ".view_doc"
+          $mut: { noop: ".noop" }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.9", "#mutations", "§8.1"]
+    detail: "the mutation `noop` has an empty statement array; a mutation program must contain at least one statement"
+  }
+}

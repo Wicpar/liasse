@@ -19,6 +19,7 @@ use crate::bucket;
 use crate::compiled::{Compiled, CompiledCollection, CompiledComputed};
 use crate::env::{NamedExtant, RuntimeEnv};
 use crate::error::Rejection;
+use crate::generator::Generation;
 use crate::materialize::{self, FieldMap, Interval, Temporal};
 use crate::schema::Schema;
 use crate::state::Prospective;
@@ -90,6 +91,33 @@ impl<'a> EvalCtx<'a> {
             self.with_context(structurals),
             self.now,
             self.seed,
+            // A view/mutation-statement/patch read produces at most one occurrence
+            // per generated call site, so it evaluates at the root generation; a
+            // per-row default resolution uses [`Self::env_generative`] instead.
+            Generation::ROOT,
+            self.temporal_index(prospective),
+            self.source_horizon(prospective, self.now),
+            self.keyrings.to_vec(),
+            self.placements.clone(),
+            self.hosts,
+        )
+    }
+
+    /// The evaluation environment for one admitted row's default resolution
+    /// (SPEC-ISSUES item 4, §5.1/§8.12), tagged with `generation` so a `uuid()`
+    /// default is fresh per row (two rows of one request never share a generated
+    /// key), while a state-derived default still reads the same pre-statement
+    /// state. It carries the request context (`$config`/`$actor`/`$session`) and
+    /// no lexical locals, exactly as [`Self::env`].
+    fn env_generative(&self, prospective: &Prospective, generation: Generation) -> RuntimeEnv<'a> {
+        RuntimeEnv::new(
+            self.root(prospective),
+            self.params.clone(),
+            BTreeMap::new(),
+            self.with_context(BTreeMap::new()),
+            self.now,
+            self.seed,
+            generation,
             self.temporal_index(prospective),
             self.source_horizon(prospective, self.now),
             self.keyrings.to_vec(),
@@ -116,6 +144,9 @@ impl<'a> EvalCtx<'a> {
             self.context.clone(),
             self.now,
             self.seed,
+            // A folded computed value / view produces at most one occurrence per
+            // generated call site per row, so it reads at the root generation.
+            Generation::ROOT,
             temporal,
             source_horizon,
             self.keyrings.to_vec(),
@@ -486,6 +517,8 @@ impl<'a> EvalCtx<'a> {
             self.with_context(structurals),
             now,
             self.seed,
+            // A spend-time meter accessor evaluation produces no generated key.
+            Generation::ROOT,
             index,
             self.source_horizon(prospective, now),
             self.keyrings.to_vec(),
@@ -546,6 +579,22 @@ impl<'a> EvalCtx<'a> {
         current: &Cell,
     ) -> Result<Cell, Rejection> {
         let env = self.env(prospective);
+        typed.evaluate(&env, current).map_err(Rejection::from)
+    }
+
+    /// Evaluate one admitted row's insertion default at `generation` (SPEC-ISSUES
+    /// item 4, §5.1/§8.12): a `uuid()` call site yields a distinct value per row
+    /// because each row draws a fresh generation, while a state-derived default
+    /// still reads the same pre-statement state. The default-resolution analogue
+    /// of [`Self::eval`], reached from [`crate::rules::apply_defaults`].
+    pub(crate) fn eval_generative(
+        &self,
+        prospective: &Prospective,
+        typed: &TypedExpr,
+        current: &Cell,
+        generation: Generation,
+    ) -> Result<Cell, Rejection> {
+        let env = self.env_generative(prospective, generation);
         typed.evaluate(&env, current).map_err(Rejection::from)
     }
 

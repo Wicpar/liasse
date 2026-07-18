@@ -16,7 +16,7 @@ use liasse_expr::{
 };
 use liasse_value::{BlobDescriptor, Timestamp, Uuid, Value};
 
-use crate::generator::derive_uuid;
+use crate::generator::{derive_uuid, Generation};
 use crate::host::HostDispatch;
 use crate::keyring_view::{snapshot_for, KeyringSnapshot};
 use crate::materialize::row_interval;
@@ -83,6 +83,13 @@ pub(crate) struct RuntimeEnv<'a> {
     structurals: BTreeMap<String, Cell>,
     now: Timestamp,
     seed: u64,
+    /// The generated-value generation this environment evaluates under
+    /// (SPEC-ISSUES item 4, §5.1/§8.12): fixed for the whole evaluation, so two
+    /// `uuid()` sites in one evaluation stay distinct by span while the *same*
+    /// site across two rows of one request stays distinct by generation. A view,
+    /// check, or computed read carries [`Generation::ROOT`]; a per-row default
+    /// resolution carries the fresh ordinal the admission advanced for that row.
+    generation: Generation,
     /// The full extant rows of each STORED bucketed collection (§14.2), each
     /// tagged with its collection name ([`NamedExtant`]) and carrying its
     /// `$from`/`$until` interval cells. A temporal selector reads over the full set
@@ -128,6 +135,7 @@ impl<'a> RuntimeEnv<'a> {
         structurals: BTreeMap<String, Cell>,
         now: Timestamp,
         seed: u64,
+        generation: Generation,
         temporal: Vec<NamedExtant>,
         source_horizon: Option<SourceBucketHorizon<'a>>,
         keyrings: Vec<KeyringSnapshot>,
@@ -141,6 +149,7 @@ impl<'a> RuntimeEnv<'a> {
             structurals,
             now,
             seed,
+            generation,
             temporal,
             source_horizon,
             keyrings,
@@ -266,7 +275,7 @@ impl Environment for RuntimeEnv<'_> {
     }
 
     fn uuid(&self, site: CallSite) -> Uuid {
-        derive_uuid(self.seed, site.span())
+        derive_uuid(self.seed, site.span(), self.generation)
     }
 
     /// Resolve a temporal selector over a bucketed base view (§14.1). Each row's

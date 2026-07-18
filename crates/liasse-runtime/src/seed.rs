@@ -77,7 +77,12 @@ pub(crate) fn admit(
     // evaluated by dependency").
     for entry in &staged {
         let mut fields = prospective.get(&entry.address).cloned().unwrap_or_else(FieldMap::new);
-        rules::apply_defaults(entry.collection, &mut fields, ctx, prospective)?;
+        // §5.1/§8.12: each seeded row draws its own generation, so a `uuid()`
+        // default seeding a key is fresh per row across the genesis load, while a
+        // state-derived default still observes the whole seed set (SPEC-ISSUES
+        // item 4). §9.1's single atomic seed load does not subdivide those reads.
+        let generation = prospective.next_generation();
+        rules::apply_defaults(entry.collection, &mut fields, ctx, prospective, generation)?;
         rules::normalize_all(entry.collection, &mut fields, ctx, prospective)?;
         prospective.replace(&entry.address, fields);
         touched.push(entry.address.clone());

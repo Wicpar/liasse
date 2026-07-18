@@ -32,6 +32,12 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
    the admitted request" read literally makes two `uuid()` key defaults in one
    request collide; Annex A.5 disambiguates `now()` but nothing disambiguates
    `uuid()`. `06/generated-value-per-call-site`.
+   **RESOLVED (pending SPEC.md merge):** §5.1/§8.12/§16.3 amended and Annex A.5
+   cross-referenced — `uuid()` yields a fresh, distinct value per evaluation
+   (per row for one field-default call site); "produced once" is a
+   recording/replay guarantee; `now()` stays the shared request instant. Runtime
+   mixes a per-row generation ordinal into the `uuid()` derivation; the corpus
+   case is now a scenario asserting `count == 2`.
 5. **`string.trim` and non-ASCII whitespace.** Does a U+00A0-only title
    normalize to empty (and fail `size(.) > 0`)?
    `w-worked-examples/w1-title-unicode-whitespace-trim`.
@@ -167,6 +173,14 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
     `annex-c/conflicting-key-and-set-markers`,
     `annex-c/combinators-lack-precedence-and-grouping`,
     `annex-c/empty-mutation-program-array`.
+    **RESOLVED (pending SPEC.md merge):** all four pinned as fail-closed static
+    load errors — §4.2/C.4 (bare `=` empty body), §5.3/C.2 (two mutually-
+    exclusive kind markers, names both), §7.4/C.8 (`|`/`&` share one precedence
+    level, mixed chains MUST be parenthesized with `( )`, else a static error;
+    homogeneous chains stay left-associative), §8.1/C.9 (empty program array).
+    Runtime: an explicit conflicting-marker check and a mixed-combinator
+    rejection added; the empty-`=` seed and empty-program array already rejected.
+    The four corpus cases are now `-invalid`.
 
 ## Package identity (§4, Annex D/E)
 

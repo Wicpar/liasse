@@ -272,6 +272,8 @@ In `$data` and expanded `$default` positions, a string beginning with `=` is an 
 "formula": "'= total + tax"
 ```
 
+A `$data` or expanded `$default` value of `=` alone — the expression marker with an empty body — is a static (load-time) error; the expression after `=` MUST be non-empty. It is neither the literal text `=` nor an empty result. A literal `=` is written `'=` (the leading `'` escape above).
+
 Other expression positions, such as `$view`, `$check`, `$normalize`, and mutation bodies, contain bare expressions.
 
 ### 4.3 Application, module, and instance identities
@@ -382,6 +384,8 @@ Fields and object members form named structure; their source order has no semant
 
 External reads made by a default observe the transaction state produced by preceding mutation statements. Rows created by one bulk insertion statement become selectable together only after every row in that statement has resolved. A model requiring one inserted row to observe another uses separate mutation statements to establish that sequence. Generative values such as `uuid()` and `now()` are produced once for the admitted insertion.
 
+These two generative values differ, and the difference is observable whenever one insertion creates several rows. `now()` observes a single instant fixed for the whole admitted request, so every call in the request yields the same timestamp (Annex A.5) — a timestamp means the instant the transaction ran. `uuid()` instead yields a fresh, distinct value on every evaluation, including each row when one field-default call site is evaluated across the several rows of a single insertion; two rows of one request therefore never share a generated `uuid()`. "Produced once" is a recording guarantee, not a statement that distinct occurrences share a value: a generated value that enters committed state or another durable admission fact is materialized at admission, reused verbatim on replay and in audit projections, and never re-generated. This is what lets the standard machine-generated surrogate-key idiom (`id: "uuid = uuid()"` with `$key: "id"`) bulk-insert many rows without a self-collision on the key, while a state-derived default (`count(/items) + 1`) still observes the same pre-statement state every row of one bulk insertion sees.
+
 ### 5.2 Computed values
 
 A computed value is a read-only value determined by an expression. It exposes derived state without prescribing whether the runtime computes, caches, indexes, or materializes it.
@@ -412,6 +416,8 @@ A plain object is a static struct:
 ```
 
 Struct members are unordered named fields. Their dependency relationships determine evaluation where expressions refer to one another. Structs MAY contain fields, structs, sets, views, and nested keyed collections.
+
+An object's node kind is fixed by exactly one kind marker among `$key`, `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$modules`, and `$like` (Annex C.2); `$bucket` composes with `$key` (§14) and otherwise declares a source-backed bucket. A plain object bearing none of these markers is a static struct. An object bearing two mutually-exclusive kind markers — for example both `$key` and `$set` — has no uniquely determined node kind and is a static (load-time) error that names both conflicting markers; no marker silently wins.
 
 ### 5.4 Keyed collections
 
@@ -889,12 +895,15 @@ view ?? other  fallback when the first view is empty
 
 Operands share row shape and identity domain. Projection into a common synthetic key can adapt heterogeneous sources.
 
+The set combinators `|` and `&` share one precedence level. A chain repeating a single combinator (`a | b | c`, `a & b & c`) is left-associative. A chain that mixes `|` and `&` without grouping — `a | b & c` — is a static (load-time) error, not a silently chosen grouping: because `|` and `&` each take their row order, projection, and identity from the left operand, the two readings `(a | b) & c` and `a | (b & c)` can yield different rows and a different shape, so the ambiguous chain MUST be parenthesized. Grouping uses `( )` (the CEL expression syntax of §6.1). Difference (`-`) binds at the arithmetic-subtraction level, tighter than `|` and `&`; `??` and the `? :` conditional occupy their own levels above the combinators.
+
 Examples:
 
 ```text
 .projects[:p | p.archived] & .projects[:p | p.overdue]
 .imports - .people
 has(#billing) ? #billing.customers : []
+(.overdue | .urgent) & .assigned
 ```
 
 ### 7.5 Aggregates
@@ -945,7 +954,7 @@ A mutation is a typed sequential program that proposes one atomic state transiti
 }
 ```
 
-A single expression is a one-statement program. An array is one sequential, atomic program. Later statements observe the prospective effects of earlier statements.
+A single expression is a one-statement program. An array is one sequential, atomic program. Later statements observe the prospective effects of earlier statements. A mutation program MUST contain at least one statement; the empty statement array `[]` is a static (load-time) error, not a valid no-op commit.
 
 ### 8.2 Declaration context and receiver
 
@@ -1191,7 +1200,7 @@ The argument object maps parameter names to values; member order has no effect. 
 
 ### 8.12 Generated and provider values
 
-`uuid()`, `now()`, and registered generated/provider operations produce their value once for an admitted request. A generated or provider result is recorded when it enters committed state or another durable admission fact. Namespace audit projections MAY record a sanitized typed result defined by that namespace; raw request arguments remain call-local.
+`uuid()`, `now()`, and registered generated/provider operations produce their value once for an admitted request. "Once" is a recording guarantee (§5.1): a generated or provider result that enters committed state or another durable admission fact is recorded at admission and reused verbatim on replay and in audit projections, never re-generated. It does not make distinct occurrences share one value. `now()` observes a single request-fixed instant, so every call yields the same timestamp (Annex A.5); `uuid()` yields a fresh, distinct value on every evaluation, so one field-default call site evaluated across the several rows of one insertion produces a distinct value per row and two rows never share a generated `uuid()`. Namespace audit projections MAY record a sanitized typed result defined by that namespace; raw request arguments remain call-local.
 
 Pure computed expressions remain functions of logical inputs and MAY be reevaluated freely.
 
@@ -2771,7 +2780,7 @@ generated   may use randomness, clocks, or provider operations; one successful
             result is fixed for the admitted operation
 ```
 
-Pure functions MAY run during views, checks, and replay. Verifiers run during external request admission. Generated functions run in mutation/write-time positions. A generated result affecting state, identity, funding, authorization, or another durable admission fact is recorded.
+Pure functions MAY run during views, checks, and replay. Verifiers run during external request admission. Generated functions run in mutation/write-time positions. A generated result affecting state, identity, funding, authorization, or another durable admission fact is recorded. "One successful result is fixed for the admitted operation" scopes a single generated call — its result is fixed once produced and reused verbatim on replay (§8.12) — not a field default evaluated once per row: a `uuid()` default across several rows is several evaluations, each with its own fresh result (§5.1).
 
 A host namespace return that does not satisfy its declared result type — including a struct return carrying an undeclared member (§5.8) — is a §2.1 nonconformance: the runtime rejects the call and commits no effect, exactly as for any off-contract return. The runtime does not coerce, widen, or strip an off-contract return.
 
@@ -4476,7 +4485,7 @@ ns   nanoseconds
 
 The package default is `us`, matching PostgreSQL timestamp precision. A timestamp value is a signed count since `1970-01-01T00:00:00Z`. Arithmetic converts operands to a common exact precision. A value exceeding the declared range produces a diagnostic.
 
-`now()` follows transaction-start semantics: one host wall-clock sample is fixed for the complete admitted operation and every call observes that same instant. Precision conversion follows the PostgreSQL timestamp precision rule. The represented precision is an application contract; clock accuracy remains best effort.
+`now()` follows transaction-start semantics: one host wall-clock sample is fixed for the complete admitted operation and every call observes that same instant. Precision conversion follows the PostgreSQL timestamp precision rule. The represented precision is an application contract; clock accuracy remains best effort. This shared-instant rule is specific to `now()`, whose value means the instant the transaction ran; `uuid()` is the symmetric opposite — a fresh, distinct value on every evaluation, so one field-default call site across several rows yields a distinct value per row and two rows never share a generated `uuid()` (§5.1, §8.12).
 
 ### A.6 Decimal semantics
 
@@ -4720,7 +4729,7 @@ $history    minimum recoverable-history policy
 $blob_storage blob placement policy
 ```
 
-A plain object without a shape marker is a static struct.
+A plain object without a shape marker is a static struct. An object's node kind is fixed by exactly one kind marker among `$key`, `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$modules`, and `$like`; `$bucket` composes with `$key`. An object bearing two mutually-exclusive kind markers is a static error that names both (§5.3).
 
 ### C.3 Field forms
 
@@ -4762,10 +4771,12 @@ Default expressions, including the `T = default_expression` shorthand, use the f
 In literal-or-expression positions:
 
 ```text
-"= expr"      expression
+"= expr"      expression (expr MUST be non-empty)
 "'= text"     literal text beginning with =
 "'text"       literal text with one leading ' removed
 ```
+
+The bare marker `"="` — the expression form with an empty body — is a static error, neither a literal `=` nor an empty result; write `"'="` for the literal (§4.2).
 
 ### C.5 Roots and names
 
@@ -4818,10 +4829,13 @@ source {
 a | b
 a & b
 a - b
+( a )                grouping
 condition ? a : b
 a ?? b
 []
 ```
+
+`|` and `&` share one precedence level: a chain repeating one combinator is left-associative, but a chain mixing `|` and `&` MUST be parenthesized, otherwise it is a static error. Grouping uses `( )` (§6.1). Difference (`-`) binds at the arithmetic-subtraction level, tighter than `|` and `&`; `??` and the `? :` conditional occupy their own levels (§7.4).
 
 ### C.9 Mutation programs
 
@@ -4832,6 +4846,8 @@ $mut: {
   "name({ explicit: Type })": ...
 }
 ```
+
+A program is one statement (a bare string) or an ordered array of statements. The array MUST contain at least one statement; the empty array `[]` is a static error (§8.1).
 
 Statements:
 

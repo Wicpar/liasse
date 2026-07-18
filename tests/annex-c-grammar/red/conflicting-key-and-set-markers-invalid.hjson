@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: conflicting-key-and-set-markers-invalid
+  suite: static
+  tags: [grammar, shape-markers, adversarial]
+  // Attack: put two contradictory shape markers on one object to see which one
+  // wins (or whether the object is smuggled past validation). SPEC-ISSUES #25
+  // (pinned): an object's node kind is fixed by EXACTLY ONE kind marker among
+  // $key, $set, $view, $ref, $enum, $type, $keyring, $modules, $like ($bucket
+  // composes with $key). An object bearing two mutually-exclusive kind markers
+  // ($key and $set) is a static error that names both — neither marker silently
+  // wins.
+  note: "SPEC-ISSUES #25: an object bearing two mutually-exclusive node-kind markers ($key and $set) has no uniquely determined node kind; §5.3 / Annex C.2 make it a static load error that names both markers, rather than letting the first-dispatched marker silently win."
+  spec: ["#annex-c", "§C.2", "#state-model", "§5.3", "§5.4", "§5.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.twomarkers@1.0.0"
+    $model: {
+      things: {
+        $key: "id"
+        $set: "text"
+        id: "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.2", "#state-model", "§5.3"]
+    detail: "the object bears two mutually-exclusive kind markers `$key` and `$set`; exactly one kind marker fixes an object's node kind"
+  }
+}

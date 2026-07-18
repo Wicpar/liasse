@@ -268,7 +268,11 @@ fn build_migrated<G: crate::generator::Generators>(
         for old_row in old_rows {
             let mut fields =
                 map_row(collection, migration, old_row, old_collection, &ctx, &mut sources, &root_ty, &codec_sigs)?;
-            rules::apply_defaults(collection, &mut fields, &ctx, &prospective)?;
+            // §5.1/§8.12: each migrated row draws its own generation, so a newly
+            // added field defaulted from `uuid()` is fresh per row (SPEC-ISSUES
+            // item 4).
+            let generation = prospective.next_generation();
+            rules::apply_defaults(collection, &mut fields, &ctx, &prospective, generation)?;
             rules::normalize_all(collection, &mut fields, &ctx, &prospective)?;
             let address = key_address(schema, collection, &fields)?;
             if prospective.contains(&address) {

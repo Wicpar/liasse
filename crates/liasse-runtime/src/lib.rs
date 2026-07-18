@@ -192,7 +192,7 @@ pub use liasse_host::{
     ConformanceGuard, ContractName, ContractRef, CoseClaims, CoseToken, EffectClass, HostNamespace,
     InterfaceHash, KeyProvider, NamespaceDescriptor, OpSignature, Registry, Version,
 };
-pub use generator::{derive_uuid, FixedGenerators, Generators};
+pub use generator::{derive_uuid, FixedGenerators, Generation, Generators};
 pub use history::{
     ConflictCoordinate, ConflictKind, ImportError, ImportRelation, ImportReport, MergeConflict,
     MergeOutcome,

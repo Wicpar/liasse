@@ -14,6 +14,7 @@ use liasse_model::{Collection, Node};
 use liasse_store::{CollectionPath, InstanceStore, RowAddress, Snapshot, StoreError};
 use liasse_value::Value;
 
+use crate::generator::Generation;
 use crate::materialize::{self, FieldMap};
 use crate::schema::Schema;
 
@@ -40,6 +41,14 @@ pub(crate) enum Change {
 pub(crate) struct Prospective {
     committed: BTreeMap<RowAddress, Value>,
     working: BTreeMap<RowAddress, FieldMap>,
+    /// A monotonic per-admission ordinal handed to each row's default resolution
+    /// so a `uuid()` field default shared across the several rows of one request
+    /// yields a distinct value per row (SPEC-ISSUES item 4, §5.1/§8.12). It is
+    /// admission bookkeeping, not committed state — [`Self::diff`] ignores it and
+    /// it is never staged. Every nested internal call (§8.11) threads the same
+    /// `&mut Prospective`, so two rows anywhere in one request draw distinct
+    /// ordinals even across a parent and its callee.
+    next_generation: u64,
 }
 
 impl Prospective {
@@ -80,12 +89,23 @@ impl Prospective {
             working.insert(address.clone(), materialize::fields_of(&value));
             committed.insert(address, value);
         }
-        Ok(Self { committed, working })
+        Ok(Self { committed, working, next_generation: 0 })
     }
 
     /// An empty prospective state (genesis, before any seed).
     pub(crate) fn empty() -> Self {
-        Self { committed: BTreeMap::new(), working: BTreeMap::new() }
+        Self { committed: BTreeMap::new(), working: BTreeMap::new(), next_generation: 0 }
+    }
+
+    /// Take the next generated-value generation for one row's default resolution
+    /// (SPEC-ISSUES item 4, §5.1/§8.12), advancing the admission's monotonic
+    /// ordinal. Each admitted row occurrence draws its own generation, so a
+    /// `uuid()` field default is fresh per row while a state-derived default
+    /// (`count(/coll) + 1`) still reads the same pre-statement state (§5.1).
+    pub(crate) fn next_generation(&mut self) -> Generation {
+        let generation = Generation::new(self.next_generation);
+        self.next_generation += 1;
+        generation
     }
 
     /// The current working rows, keyed by address, for temporal-aware root

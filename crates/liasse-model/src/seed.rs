@@ -38,7 +38,20 @@ pub(crate) fn check_seed(reporter: &mut Reporter, root: &Shape, data: &DocValue)
 }
 
 fn check_node(reporter: &mut Reporter, node: &Node, value: &DocValue) {
-    if is_expression(value) {
+    if let Some(body) = expression_body(value) {
+        // §4.2/C.4 (SPEC-ISSUES 25): a `= expr` seed is evaluated, not decoded —
+        // but the bare `=` marker with an EMPTY body is a malformed expression, a
+        // static load error rather than a silent empty/literal value. A literal
+        // `=` is written `'=` (§4.2). The non-empty body is left to evaluation.
+        if body.trim().is_empty() {
+            reporter.reject_hint(
+                value.span,
+                code::SEED,
+                "a `$data` value of `=` alone is the expression marker with an empty body; the \
+                 expression after `=` must be non-empty (§4.2, Annex C.4)",
+                "write `= <expression>`, or `'=` to store the literal text `=`",
+            );
+        }
         return; // `= expr` seeds are evaluated, not decoded.
     }
     match node {
@@ -119,11 +132,11 @@ fn check_collection(reporter: &mut Reporter, shape: &Shape, value: &DocValue) {
     }
 }
 
-/// Whether a string seed value is a `= expr` expression (§4.2).
-fn is_expression(value: &DocValue) -> bool {
-    value
-        .as_string()
-        .is_some_and(|text| text.trim_start().starts_with('='))
+/// The expression body of a `= expr` seed value (§4.2), or `None` for a literal
+/// seed. `Some("")` (equivalently, an all-whitespace body) is the degenerate
+/// bare-`=` marker with no expression after it (SPEC-ISSUES 25).
+fn expression_body(value: &DocValue) -> Option<&str> {
+    value.as_string().and_then(|text| text.trim_start().strip_prefix('='))
 }
 
 /// Convert a spanned document value to a strict-JSON wire value for decoding.

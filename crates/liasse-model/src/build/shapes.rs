@@ -16,6 +16,13 @@ use crate::state::{ExprSource, Member, Node, Reference, SetField, Shape};
 use super::{absolute_path, placeholder, Builder};
 
 impl<'a> Builder<'a> {
+    /// The mutually-exclusive node-kind shape markers (Annex C.2, SPEC-ISSUES
+    /// 25). Exactly one fixes an object's node kind; `$bucket` is deliberately
+    /// absent because it COMPOSES with `$key` (a keyed lifecycle collection) and
+    /// otherwise declares a source-backed bucket, so it never conflicts here.
+    const KIND_MARKERS: &'static [&'static str] =
+        &["$key", "$set", "$view", "$ref", "$enum", "$type", "$keyring", "$modules", "$like"];
+
     /// Dispatch an object-valued member on its shape marker (Annex C.2).
     pub(super) fn object_node(
         &mut self,
@@ -24,6 +31,28 @@ impl<'a> Builder<'a> {
         path: &[String],
     ) -> Node {
         let value = &member.value;
+        // SPEC-ISSUES 25 / Annex C.2: an object's node kind is fixed by exactly
+        // one kind marker. Two mutually-exclusive markers leave the kind
+        // undetermined — reject with a marker-aware diagnostic that names them,
+        // rather than letting the first-checked marker silently win and the loser
+        // surface (or not) as an incidental "unexpected member". The dispatch
+        // below still runs so one node is returned, but the recorded rejection
+        // fails the load.
+        let present: Vec<&str> =
+            Self::KIND_MARKERS.iter().copied().filter(|m| value.member(m).is_some()).collect();
+        if present.len() > 1 {
+            reporter.reject_hint(
+                value.span,
+                code::SHAPE,
+                format!(
+                    "conflicting shape markers {} on one object: an object's node kind is fixed by \
+                     exactly one of {} (Annex C.2)",
+                    present.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(" and "),
+                    Self::KIND_MARKERS.iter().map(|m| format!("`{m}`")).collect::<Vec<_>>().join(", "),
+                ),
+                "keep exactly one kind marker; split the others into separate declarations",
+            );
+        }
         if value.member("$keyring").is_some() {
             return self.keyring_node(reporter, value);
         }

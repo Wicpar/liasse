@@ -364,16 +364,36 @@ impl Checker<'_> {
         ))
     }
 
-    /// A flat `|` / `&` chain (§7.4). SPEC-ISSUES item 25 leaves relative
-    /// precedence and grouping unpinned, so this folds strictly left-to-right
-    /// and documents that as the chosen reading. Every operand must be a view
-    /// sharing the left's identity domain (key type).
+    /// A flat `|` / `&` chain (§7.4). Per SPEC-ISSUES item 25's resolution, `|`
+    /// (union) and `&` (intersection) share one precedence level: a chain
+    /// repeating a single combinator (`a | b | c`) is well-formed and folds
+    /// strictly left-to-right, but a chain MIXING the two (`a | b & c`) is
+    /// ambiguous — the two groupings differ observably in row order, projection,
+    /// and identity (§7.4) — and is a static error the author disambiguates with
+    /// `( )` grouping (CEL syntax, §6.1): `(a | b) & c` or `a | (b & c)`.
+    /// Difference (`-`), `??`, and the `? :` conditional bind at their own
+    /// grammar levels, so they never appear in this flat operator list. Every
+    /// operand must be a view sharing the left's identity domain (key type).
     pub(crate) fn check_combination(
         &mut self,
         expr: &Expr,
         operands: &[Expr],
         operators: &[CombinatorOp],
     ) -> Option<TypedExpr> {
+        // §7.4 / SPEC-ISSUES 25: reject an un-parenthesized chain mixing `|` and
+        // `&` before typing it, so the ambiguous grouping never silently resolves
+        // to the left-fold reading. A homogeneous chain (all-`|` or all-`&`) is
+        // left-associative and passes.
+        let unions = operators.iter().filter(|op| **op == CombinatorOp::Union).count();
+        if unions != 0 && unions != operators.len() {
+            return self.error(
+                expr,
+                "an un-parenthesized view combination that mixes `|` (union) and `&` \
+                 (intersection) is ambiguous: the two groupings give different rows, \
+                 projection, and identity (§7.4). Group it explicitly with `( )` — \
+                 e.g. `(a | b) & c` or `a | (b & c)`",
+            );
+        }
         let mut iter = operands.iter();
         // The grammar always parses at least one operand; an empty chain can
         // only reach here through a hand-built AST. Still a diagnostic, never a

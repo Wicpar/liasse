@@ -381,6 +381,9 @@ impl CompiledSourceBucket {
             merged,
             inputs.now,
             inputs.seed,
+            // A source-backed bucket row is derived, not admitted, so its key never
+            // draws a fresh generated value; it evaluates at the root generation.
+            crate::generator::Generation::ROOT,
             Vec::new(),
             // A source view / derived-row key reads stored collections directly and
             // evaluates no temporal selector, so it needs no source-bucket horizon.

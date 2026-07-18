@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: combinators-lack-precedence-and-grouping-invalid
+  suite: static
+  tags: [grammar, combinators, precedence, adversarial]
+  // Pedantic-implementer probe: chain three view combinators of different kinds
+  // where the grouping changes the result. '.a | .b & .c' evaluates to
+  // '(.a | .b) & .c' or '.a | (.b & .c)' with different membership, projection,
+  // and identity (§7.4). SPEC-ISSUES #25 (pinned): `|` and `&` share ONE
+  // precedence level; a chain repeating one combinator (a|b|c) is left-
+  // associative, but a chain MIXING `|` and `&` is a static error the author must
+  // disambiguate with `( )` grouping (CEL syntax, §6.1) — e.g. `(a | b) & c` or
+  // `a | (b & c)`. So the un-parenthesized mixed chain below is rejected at load.
+  note: "SPEC-ISSUES #25: `|` and `&` share one precedence level; a chain mixing them without `( )` grouping is ambiguous (the groupings differ in order/projection/identity, §7.4) and is a static load error. A repeated single combinator stays left-associative; grouping uses `( )` (§6.1)."
+  spec: ["#annex-c", "§C.8", "#views", "§7.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.combprec@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        a: "bool"
+        b: "bool"
+        c: "bool"
+      }
+      mixed: {
+        $view: ".items[:i | i.a] { id } | .items[:i | i.b] { id } & .items[:i | i.c] { id }"
+      }
+      $public: {
+        items: { $view: ".mixed" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#annex-c", "§C.8", "#views", "§7.4"]
+    detail: "the view `.items[a] { id } | .items[b] { id } & .items[c] { id }` mixes `|` and `&` without `( )` grouping; the ambiguous chain is rejected"
+  }
+}

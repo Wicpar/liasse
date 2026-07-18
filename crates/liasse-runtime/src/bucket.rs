@@ -155,6 +155,8 @@ fn eval_bound(
         BTreeMap::new(),
         now,
         0,
+        // A bucket bound produces no generated identifier.
+        crate::generator::Generation::ROOT,
         Vec::new(),
         // A bucket bound is a pure row expression; no source-backed bucket horizon.
         None,

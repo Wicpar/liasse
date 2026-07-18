@@ -20,6 +20,9 @@ pub mod code {
     pub const NAME_GRAMMAR: &str = "M-NAME";
     /// A reserved `$`-prefixed member is not a known Liasse declaration (§2.5).
     pub const RESERVED_MEMBER: &str = "M-RESERVED";
+    /// An object bears two mutually-exclusive node-kind shape markers (Annex C.2,
+    /// §5.3-§5.9): its node kind is not uniquely determined (SPEC-ISSUES 25).
+    pub const SHAPE: &str = "M-SHAPE";
     /// An unknown member in a closed declaration object (§2.5, Annex C).
     pub const UNKNOWN_MEMBER: &str = "M-UNKNOWN";
     /// A required member is missing (§4.1, Annex C.1).

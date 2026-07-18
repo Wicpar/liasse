@@ -15,17 +15,27 @@ use liasse_value::{RefKey, Value};
 use crate::compiled::{Compiled, CompiledCollection};
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
+use crate::generator::Generation;
 use crate::materialize::FieldMap;
 use crate::refid::{identity_of, ref_identity};
 use crate::state::Prospective;
 
 /// Resolve insertion defaults for the omitted fields of a new row (§5.1), then
 /// fill any still-absent declared field with `none`, so the row is complete.
+///
+/// `generation` is the admitted row occurrence's generated-value ordinal
+/// (SPEC-ISSUES item 4, §5.1/§8.12): every default of this one row evaluates at
+/// it, so two `uuid()` defaults of the row stay distinct by call site while the
+/// *same* `uuid()` default across two rows of one request — each drawing its own
+/// generation — stays distinct by generation. A state-derived default
+/// (`count(/coll) + 1`) is unaffected: it still observes the same pre-statement
+/// state every row of one bulk insertion sees (§5.1).
 pub(crate) fn apply_defaults(
     collection: &CompiledCollection,
     fields: &mut FieldMap,
     ctx: &EvalCtx<'_>,
     prospective: &Prospective,
+    generation: Generation,
 ) -> Result<(), Rejection> {
     for field in &collection.fields {
         if fields.contains_key(&field.name) {
@@ -33,7 +43,7 @@ pub(crate) fn apply_defaults(
         }
         if let Some((typed, _)) = &field.default {
             let current = row_cell(collection, fields);
-            let value = scalar(ctx.eval(prospective, typed, &current)?);
+            let value = scalar(ctx.eval_generative(prospective, typed, &current, generation)?);
             fields.insert(field.name.clone(), value);
         }
     }

@@ -936,7 +936,11 @@ impl<'a> Interp<'a> {
                     fields.insert(name.clone(), value.clone());
                 }
             }
-            rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective)?;
+            // §5.1/§8.12: each row of the batch draws its own generation, so a
+            // `uuid()` default is fresh per row while a state-derived default reads
+            // the same pre-statement state (SPEC-ISSUES item 4).
+            let generation = self.prospective.next_generation();
+            rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective, generation)?;
             rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
             rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."))?;
             let address = self.key_address(&loc.store_path, &loc.decl, &fields)?;
@@ -993,7 +997,10 @@ impl<'a> Interp<'a> {
                     fields.insert(name.clone(), value.clone());
                 }
             }
-            rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective)?;
+            // §5.1/§8.12: each replacement row draws its own generation, so a
+            // `uuid()` default is fresh per row (SPEC-ISSUES item 4).
+            let generation = self.prospective.next_generation();
+            rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective, generation)?;
             rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
             rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."))?;
             let address = self.key_address(&loc.store_path, &loc.decl, &fields)?;
@@ -1186,7 +1193,11 @@ impl<'a> Interp<'a> {
                 fields.insert(field, value);
             }
         }
-        rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective)?;
+        // §5.1/§8.12: this inserted row draws its own generation, so a `uuid()`
+        // default here differs from the one another `+` statement of the same
+        // request produces (SPEC-ISSUES item 4).
+        let generation = self.prospective.next_generation();
+        rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective, generation)?;
         rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
         rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."))?;
         let address = self.key_address(&loc.store_path, &loc.decl, &fields)?;
@@ -1238,7 +1249,10 @@ impl<'a> Interp<'a> {
                     fields.insert(name.clone(), value.clone());
                 }
             }
-            rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective)?;
+            // §5.1/§8.12: each nested-initializer row draws its own generation, so
+            // a `uuid()` default is fresh per row (SPEC-ISSUES item 4).
+            let generation = self.prospective.next_generation();
+            rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective, generation)?;
             rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
             rules::coerce_fields(compiled, &mut fields, &decl.join("."))?;
             let address = self.key_address(&store_path, &decl, &fields)?;
