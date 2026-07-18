@@ -19,13 +19,20 @@
 //!   uninstall independently, so no local reasoning can prove the target is
 //!   undeletable. Omission is rejected here.
 //!
-//! CORE scope: the deleting-capability set is computed from directly authored
-//! deleting operators. Transitive capability across mutation *calls* and across
-//! cascade-induced row removal (also §21.1) is a documented runtime seam; the
-//! same-module deferral this pass models catches the authored capabilities the
-//! chapter's static cases pin. Which concrete peer instance a `#handle` binds is
-//! a composition-runtime concern; the immediate `$on_delete` requirement itself
-//! is decided here from the single package.
+//! §21.1 "computes possible deletion transitively": the deleting-capability set
+//! starts from directly authored deleting operators and is then closed to a FIXED
+//! POINT over cascade-induced row removal. A scalar (non-set) `$ref` with
+//! `$on_delete: cascade` deletes its containing ROW when the target is deleted
+//! (§5.6), so the owning collection becomes deletable in turn; iterating this to a
+//! fixed point marks every collection a chain of row-removing cascades can empty.
+//! Only the row-removing form propagates: `restrict`/`none`/`= patch` keep the
+//! row, and a `$set`-of-`$ref` member `cascade` drops only the member, not the row
+//! (§5.6), so neither carries deletability onward — the conservative reading of
+//! the set-member case is that it does NOT propagate, which avoids over-rejecting.
+//! Transitive capability across mutation *calls* remains a runtime seam,
+//! backstopped fail-closed in the runtime cascade planner. Which concrete peer
+//! instance a `#handle` binds is a composition-runtime concern; the immediate
+//! `$on_delete` requirement itself is decided here from the single package.
 
 use std::collections::BTreeSet;
 
@@ -39,9 +46,9 @@ use crate::state::{Node, Reference, Shape};
 
 /// Validate `$on_delete` policy shapes and the §21.1 deferred-decision rule.
 pub(crate) fn check(reporter: &mut Reporter, sources: &mut SourceMap, root: &Shape, raw: &[RawMut]) {
-    let deletable = deletable_targets(sources, raw);
     let mut refs = Vec::new();
-    collect_refs(root, &mut String::new(), &mut refs);
+    collect_refs(root, &mut String::new(), None, &mut refs);
+    let deletable = deletable_targets(sources, raw, &refs);
     for reference in &refs {
         check_policy(reporter, reference.reference);
         // §13.12: a ref crossing a module boundary (`#handle` target) must declare
@@ -76,13 +83,23 @@ pub(crate) fn check(reporter: &mut Reporter, sources: &mut SourceMap, root: &Sha
     }
 }
 
-/// One located `$ref` and the normalized absolute path of its target.
+/// One located `$ref`: the reference, the normalized absolute path of its target,
+/// the nearest enclosing collection path (the ROW a `cascade` over it removes,
+/// `None` when the ref is outside any collection), and whether it is a
+/// `$set`-of-`$ref` member (a set-member `cascade` drops only the member).
 struct LocatedRef<'a> {
     reference: &'a Reference,
     target: String,
+    owner: Option<String>,
+    set_member: bool,
 }
 
-fn collect_refs<'a>(shape: &'a Shape, prefix: &mut String, out: &mut Vec<LocatedRef<'a>>) {
+fn collect_refs<'a>(
+    shape: &'a Shape,
+    prefix: &mut String,
+    collection: Option<&str>,
+    out: &mut Vec<LocatedRef<'a>>,
+) {
     for member in &shape.members {
         let base = prefix.len();
         prefix.push('/');
@@ -91,6 +108,8 @@ fn collect_refs<'a>(shape: &'a Shape, prefix: &mut String, out: &mut Vec<Located
             Node::Reference(reference) => out.push(LocatedRef {
                 reference,
                 target: normalize(&reference.target),
+                owner: collection.map(normalize),
+                set_member: false,
             }),
             // §5.5/§5.6: a `$set` of `$ref` holds a per-member reference to its
             // target relation. That member reference is a governed inbound ref, so
@@ -102,11 +121,19 @@ fn collect_refs<'a>(shape: &'a Shape, prefix: &mut String, out: &mut Vec<Located
                     out.push(LocatedRef {
                         reference,
                         target: normalize(&reference.target),
+                        owner: collection.map(normalize),
+                        set_member: true,
                     });
                 }
             }
-            Node::Struct(inner) => collect_refs(inner, prefix, out),
-            Node::Collection(collection) => collect_refs(&collection.shape, prefix, out),
+            Node::Struct(inner) => collect_refs(inner, prefix, collection, out),
+            // Entering a collection: its own path (the current prefix) is the
+            // nearest enclosing collection for refs in its row shape — a `cascade`
+            // over such a ref removes a row of THIS collection (§5.6).
+            Node::Collection(inner) => {
+                let path = prefix.clone();
+                collect_refs(&inner.shape, prefix, Some(&path), out);
+            }
             _ => {}
         }
         prefix.truncate(base);
@@ -141,8 +168,42 @@ fn check_policy(reporter: &mut Reporter, reference: &Reference) {
     }
 }
 
-/// The set of collection paths a mutation can delete from (§21.1 capabilities).
-fn deletable_targets(sources: &mut SourceMap, raw: &[RawMut]) -> BTreeSet<String> {
+/// The collection paths a mutation can delete a row from (§21.1 capabilities),
+/// closed to a FIXED POINT over cascade-induced row removal. The seed is the set
+/// of directly-authored deleting operators; then any collection holding a scalar
+/// `$ref` with `$on_delete: cascade` to an already-deletable target is itself
+/// deletable (that cascade removes its containing row, §5.6), iterated until no
+/// collection is newly reached. A set-member `cascade` drops only the member, not
+/// the row, so it does not propagate — matching §21.1's "computes possible
+/// deletion transitively" while staying conservative on the set-member case.
+fn deletable_targets(
+    sources: &mut SourceMap,
+    raw: &[RawMut],
+    refs: &[LocatedRef<'_>],
+) -> BTreeSet<String> {
+    let mut targets = direct_deletable_targets(sources, raw);
+    loop {
+        let mut grew = false;
+        for reference in refs {
+            let Some(owner) = &reference.owner else { continue };
+            if !reference.set_member
+                && is_cascade(reference.reference)
+                && targets.contains(&reference.target)
+                && targets.insert(owner.clone())
+            {
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    targets
+}
+
+/// The collection paths a directly-authored deleting operator names (§21.1):
+/// `collection - keys`, `-row_source`, `collection = view`, `erase(row)`.
+fn direct_deletable_targets(sources: &mut SourceMap, raw: &[RawMut]) -> BTreeSet<String> {
     let mut targets = BTreeSet::new();
     for entry in raw {
         for text in statement_texts(entry) {
@@ -153,6 +214,12 @@ fn deletable_targets(sources: &mut SourceMap, raw: &[RawMut]) -> BTreeSet<String
         }
     }
     targets
+}
+
+/// Whether a ref's declared `$on_delete` is exactly `cascade` — the only policy
+/// that removes the containing row and so propagates deletability (§5.6/§21.1).
+fn is_cascade(reference: &Reference) -> bool {
+    reference.on_delete.as_ref().is_some_and(|policy| policy.text.trim() == "cascade")
 }
 
 fn statement_texts(entry: &RawMut) -> Vec<String> {

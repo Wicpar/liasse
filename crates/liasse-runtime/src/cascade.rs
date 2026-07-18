@@ -121,8 +121,10 @@ pub(crate) fn plan(
 
 /// Resolve a compiled `$on_delete` policy to the planner's [`DeletePolicy`],
 /// evaluating a patch object against the referencing row with `$target` bound to
-/// the deleted target row. `None` skips an edge whose policy never applies (an
-/// undecided ref, or a patch whose target row is not live).
+/// the deleted target row. An undecided ref resolves to the fail-closed
+/// [`DeletePolicy::Undecided`] backstop edge (§22.1): the planner rejects rather
+/// than skips if such an edge's target is actually removed. `None` still skips an
+/// edge whose policy cannot apply — a patch whose target row is not live.
 fn resolve_policy(
     compiled: &Compiled,
     ctx: &EvalCtx<'_>,
@@ -132,7 +134,7 @@ fn resolve_policy(
     to: &RowRef,
 ) -> Result<Option<DeletePolicy>, Rejection> {
     Ok(match policy {
-        OnDelete::Undecided => None,
+        OnDelete::Undecided => Some(DeletePolicy::Undecided),
         OnDelete::Restrict => Some(DeletePolicy::Restrict),
         OnDelete::Cascade => Some(DeletePolicy::Cascade),
         OnDelete::Clear => Some(DeletePolicy::Clear),
@@ -244,6 +246,15 @@ fn delete_rejection(error: &DeleteError) -> Rejection {
         DeleteError::ConflictingPatch { row, field } => Rejection::new(
             RejectionReason::Restricted,
             format!("conflicting `$on_delete` patches on `{field}` of {:?}", row.key),
+        ),
+        // §22.1 fail-closed backstop: an undecided inbound ref whose target is
+        // being removed would dangle, so the transition is refused (§21.1).
+        DeleteError::DanglingUndecided { referencing, field, target } => Rejection::new(
+            RejectionReason::DanglingRef,
+            format!(
+                "cannot delete {:?}: {:?} references it via `{field}` with an undecided `$on_delete`",
+                target.key, referencing.key
+            ),
         ),
         other => Rejection::new(RejectionReason::Evaluation, other.to_string()),
     }

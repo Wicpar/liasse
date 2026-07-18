@@ -57,6 +57,12 @@ pub enum DeletePolicy {
     /// whole row). A surviving-row effect — the referencing row is kept and only
     /// its membership of the deleted target is dropped.
     DropMember(Value),
+    /// The inbound ref left `$on_delete` UNDECIDED. The §21.1 static gate proves
+    /// this can never reach a live deletion for a statically-known ref, so an
+    /// undecided edge is a fail-closed backstop only: if the target is removed
+    /// while the referencing row survives, the plan is rejected rather than
+    /// silently committing a dangling reference (§22.1).
+    Undecided,
 }
 
 /// One inbound reference edge in the deletion graph: the referencing row, its
@@ -115,6 +121,7 @@ impl Graph {
     pub fn plan(&self, initial: &[RowRef]) -> Result<DeletionPlan, DeleteError> {
         let deletes = self.cascade_closure(initial);
         self.check_restrict(&deletes)?;
+        self.check_undecided(&deletes)?;
         let patches = self.collect_patches(&deletes)?;
         let member_removals = self.collect_member_removals(&deletes);
         Ok(DeletionPlan { deletes, patches, member_removals })
@@ -156,6 +163,30 @@ impl Graph {
         Ok(())
     }
 
+    /// §22.1/§21.1 fail-closed backstop: an inbound ref that left `$on_delete`
+    /// UNDECIDED must never outlive its target's removal — that would commit a
+    /// dangling reference. The static §21.1 gate proves this unreachable for a
+    /// statically-known ref, so reaching here means a residual deleting-capability
+    /// seam (e.g. across a mutation call) drove a removal the checker could not
+    /// see; reject rather than silently skip the edge. A drop when the referencing
+    /// row is itself deleted is harmless (the whole row vanishes), so it mirrors
+    /// the `restrict`/patch rule of ignoring effects on deleted rows.
+    fn check_undecided(&self, deletes: &BTreeSet<RowRef>) -> Result<(), DeleteError> {
+        for edge in &self.edges {
+            if edge.policy == DeletePolicy::Undecided
+                && deletes.contains(&edge.to)
+                && !deletes.contains(&edge.from)
+            {
+                return Err(DeleteError::DanglingUndecided {
+                    referencing: Box::new(edge.from.clone()),
+                    field: edge.field.clone(),
+                    target: Box::new(edge.to.clone()),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// §21.1: gather `none`-clear and `= patch` effects on surviving rows,
     /// combining disjoint or equal assignments and rejecting a conflict. Patches
     /// to a row that is itself deleted are ignored.
@@ -171,8 +202,13 @@ impl Graph {
             let assignments = match &edge.policy {
                 DeletePolicy::Clear => vec![(edge.field.clone(), Value::None)],
                 DeletePolicy::Patch(assignments) => assignments.clone(),
-                // Row deletions and set-member drops are not field assignments.
-                DeletePolicy::Restrict | DeletePolicy::Cascade | DeletePolicy::DropMember(_) => continue,
+                // Row deletions, set-member drops, and undecided backstop edges are
+                // not field assignments (an undecided edge that reaches a live
+                // target is already rejected by `check_undecided`).
+                DeletePolicy::Restrict
+                | DeletePolicy::Cascade
+                | DeletePolicy::DropMember(_)
+                | DeletePolicy::Undecided => continue,
             };
             let row_patch = patches.entry(edge.from.clone()).or_default();
             for (field, value) in assignments {
@@ -296,6 +332,19 @@ pub enum DeleteError {
         row: Box<RowRef>,
         /// The conflicting field.
         field: String,
+    },
+    /// An inbound ref with an UNDECIDED `$on_delete` would be left dangling by
+    /// its target's removal (§22.1/§21.1). A fail-closed backstop for the residual
+    /// deleting-capability seam the static §21.1 gate cannot see; boxed so the
+    /// error stays small on the common `Ok` path.
+    #[error("row {referencing:?} references removed row {target:?} via `{field}` with an undecided `$on_delete`")]
+    DanglingUndecided {
+        /// The surviving referencing row.
+        referencing: Box<RowRef>,
+        /// The referencing field.
+        field: String,
+        /// The removed target the ref would dangle at.
+        target: Box<RowRef>,
     },
     /// The erased occurrence has no retained payload to scrub.
     #[error("no retained payload for occurrence `{0}`")]
