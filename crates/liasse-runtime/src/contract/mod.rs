@@ -60,9 +60,13 @@ struct Param {
 /// and the exposed row identity, when it derives from a plain collection source.
 struct Output {
     members: BTreeMap<String, ExprType>,
-    /// The `$key` fields of the collection the view projects — the exposed row
-    /// identity (E.5). `None` when the source is not a plain top-level collection.
-    identity: Option<Vec<String>>,
+    /// The exposed row identity (A.9/E.5): the collection's `$key` components in
+    /// `$key` order, each `(name, type)`. A key is a *typed tuple* (A.9), so the
+    /// identity carries each component's type — a component retype (composite or
+    /// scalar) with unchanged names is still an identity change E.3 mechanically
+    /// compares and E.5 forbids. `None` when the source is not a plain top-level
+    /// collection.
+    identity: Option<Vec<(String, Type)>>,
     /// The exposed explicit ordering (E.2/E.5): the ordered `(key, descending)`
     /// sequence the view's top-level projection `$sort` declares, normalized so
     /// the §7.3 string/compact/structured spellings compare equal — empty when the
@@ -208,11 +212,9 @@ fn surface_narrowing(address: &str, active: &Surface, cand: &Surface) -> Option<
             return Some(format!("surface `{address}` no longer exposes its view output"));
         };
         if let (Some(a), Some(c)) = (&active_out.identity, &cand_out.identity)
-            && a != c
+            && let Some(reason) = identity_narrowing(address, a, c)
         {
-            return Some(format!(
-                "surface `{address}` changes exposed row identity from {a:?} to {c:?}"
-            ));
+            return Some(reason);
         }
         // E.5: "changing explicit sort semantics" is a breaking output change. The
         // exposed view's declared `$sort` ordering must be preserved on a same-major
@@ -249,6 +251,35 @@ fn surface_narrowing(address: &str, active: &Surface, cand: &Surface) -> Option<
             && let Some(reason) = projection_narrowing(&what, "response member", active_resp, cand_resp)
         {
             return Some(reason);
+        }
+    }
+    None
+}
+
+/// The first way `cand` narrows the exposed row identity `active` promises
+/// (A.9/E.3/E.5). The identity is a *typed tuple*: its `$key` component names in
+/// order **and** each component's type. Identity is invariant across a same-major
+/// forward release — E.5 makes any change to the "exposed row identity" breaking —
+/// so a renamed, reordered, added, or removed component narrows it, and so does a
+/// retyped component. A component retype (composite OR scalar) is judged by the
+/// same [`output_narrows`] the projected-output path uses, so a `text`→`int` key
+/// component is caught here exactly as it would be as a projected output member
+/// (E.3: "types … are what the mechanical comparison is made of").
+fn identity_narrowing(address: &str, active: &[(String, Type)], cand: &[(String, Type)]) -> Option<String> {
+    let names = |identity: &[(String, Type)]| identity.iter().map(|(name, _)| name.clone()).collect::<Vec<_>>();
+    let (active_names, cand_names) = (names(active), names(cand));
+    if active_names != cand_names {
+        return Some(format!(
+            "surface `{address}` changes exposed row identity from {active_names:?} to {cand_names:?}"
+        ));
+    }
+    for ((name, active_ty), (_, cand_ty)) in active.iter().zip(cand) {
+        if output_narrows(&ExprType::scalar(active_ty.clone()), &ExprType::scalar(cand_ty.clone())) {
+            return Some(format!(
+                "surface `{address}` changes exposed row identity: component `{name}` retyped from `{}` to `{}`",
+                active_ty.name(),
+                cand_ty.name()
+            ));
         }
     }
     None
@@ -426,11 +457,23 @@ fn local_type(value: &Expr, scope: &RuntimeScope, source: SourceId) -> Option<Ex
     check_expression(scope, source, value).ok().map(|typed| typed.ty().clone())
 }
 
-/// The exposed row identity of a surface view: the `$key` fields of the top-level
-/// collection its projection reads (E.5). `None` when the source is not a plain
-/// top-level collection.
-fn exposed_identity(collection: &str, compiled: &Compiled) -> Option<Vec<String>> {
-    compiled.collection(collection).map(|collection| collection.key.clone())
+/// The exposed row identity of a surface view (A.9/E.5): the top-level
+/// collection's `$key` components in `$key` order, each `(name, type)`. The key is
+/// a typed tuple (A.9), so each component carries its declared field type; a
+/// component that names no writable field falls back to `json`, matching the
+/// schema's own key-typing (§5.4). `None` when the source is not a plain top-level
+/// collection.
+fn exposed_identity(collection: &str, compiled: &Compiled) -> Option<Vec<(String, Type)>> {
+    let collection = compiled.collection(collection)?;
+    let identity = collection
+        .key
+        .iter()
+        .map(|name| {
+            let ty = collection.field(name).map_or(Type::Json, |field| field.ty.clone());
+            (name.clone(), ty)
+        })
+        .collect();
+    Some(identity)
 }
 
 /// The top-level collection a view text projects, taken from its leading
