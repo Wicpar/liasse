@@ -1,0 +1,46 @@
+[package]
+name = "liasse-connect-wasm"
+description = "WASM client core over liasse-wire: folds §12.2 downstream frames into a per-subscription replica and serializes upstream requests, holding no authority"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[lib]
+# `cdylib` produces the `.wasm` the web shell loads; `rlib` lets the native test
+# target link the pure core (the wasm-bindgen boundary is `cfg`'d out off wasm32).
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+liasse-wire = { path = "../liasse-wire" }
+serde = { version = "1.0", features = ["derive"] }
+thiserror = "2"
+
+# The wasm-bindgen boundary is the ONLY consumer of these, and it is `cfg`'d to
+# wasm32, so a native `cargo check --workspace` never compiles them. `js-sys`
+# (not serde-wasm-bindgen) marshals values through `JSON.parse`/`stringify`, which
+# preserves the arbitrary-precision numbers liasse-wire carries — a serde bridge
+# would render them as the internal `$serde_json::private::Number` object instead.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.126"
+js-sys = "0.3"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[lints.rust]
+# wasm-bindgen's generated ABI glue contains `unsafe`; this crate writes none of its
+# own — the pure core is engine-free safe Rust. The workspace `unsafe_code = "forbid"`
+# is therefore not inherited here; the per-crate clippy denies below keep the
+# no-unwrap/no-panic discipline (AGENTS.md) on the code this crate actually writes,
+# including the hand-written marshaling at the wasm-bindgen boundary.
+unsafe_code = "allow"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
