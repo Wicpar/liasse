@@ -59,6 +59,8 @@ mod transition;
 mod value_codec;
 
 #[cfg(test)]
+mod key_enc_boundary_test;
+#[cfg(test)]
 mod key_enc_proptest;
 
 pub use factory::PgStoreFactory;

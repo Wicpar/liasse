@@ -192,7 +192,11 @@ fn put_number(value: &BigDecimal, out: &mut Vec<u8>) {
     // value = mantissa * 10^-scale; write it as 0.<digits> * 10^exponent with the
     // significand's trailing zeros stripped, so 1.0, 1.00 and 1 share one body.
     let digits = mantissa.magnitude().to_str_radix(10);
-    let exponent = digits.len() as i64 - scale;
+    // `scale` is bounded (|scale| <= 2^14) for every decimal that can be a key, so
+    // this subtraction never actually saturates; `saturating_sub` only removes a
+    // panic on a pathological unbounded `from_big_decimal` scale (unreachable via a
+    // key), honoring the no-panic rule without changing any reachable encoding.
+    let exponent = (digits.len() as i64).saturating_sub(scale);
     let significand = digits.trim_end_matches('0');
     let mut body = Vec::new();
     key_enc_num::write_signed_i64(&mut body, exponent);
