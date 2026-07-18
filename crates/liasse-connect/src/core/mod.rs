@@ -26,7 +26,7 @@ use liasse_wire::{
 use crate::decode;
 use crate::error::ConnectError;
 use crate::mount::Schema;
-use crate::token::{Nonce, TokenMinter, UnsignedMinter};
+use crate::token::{ConnKeys, TokenMinter, UnsignedMinter};
 
 use registry::{ConnState, Emitted};
 
@@ -76,7 +76,7 @@ impl<S: InstanceStore> ConnectCore<S> {
     #[must_use]
     pub fn frontier_position(&self, conn: &ConnectionToken, ft: &Ft) -> Option<u64> {
         let state = self.connections.get(conn)?;
-        state.nonce().open_frontier(self.minter.as_ref(), ft.as_str())
+        state.keys().open_frontier(self.minter.as_ref(), ft.as_str())
     }
 
     /// Dispatch one decoded inbound frame (§12.1). `operation` is the §12.3 capability
@@ -133,10 +133,13 @@ impl<S: InstanceStore> ConnectCore<S> {
         auth: Option<&liasse_wire::serde_json::Value>,
         context: Option<&liasse_wire::serde_json::Value>,
     ) -> Result<Reply, ConnectError> {
-        let nonce: Nonce = self.minter.nonce().into();
-        let token = nonce.connection_token();
+        // Two independent high-entropy draws: the secret credential `C` (the token /
+        // cookie / registry key) and the public id `P` embedded in this connection's
+        // ft/occ. `C` never enters a token, so a leaked ft/occ never yields it.
+        let keys = ConnKeys::new(self.minter.nonce(), self.minter.nonce());
+        let token = keys.connection_token();
         self.host.connect(token.as_str());
-        self.connections.insert(token.clone(), ConnState::new(nonce, self.capacity));
+        self.connections.insert(token.clone(), ConnState::new(keys, self.capacity));
 
         if let Some(auth) = auth
             && let Ok(hello) = decode::decode_hello_auth(&self.schema, auth)
@@ -173,7 +176,7 @@ impl<S: InstanceStore> ConnectCore<S> {
         let outcome = match state.operation_key(operation) {
             Some(key) => {
                 let status = self.host.operation_status(key);
-                crate::encode::status_outcome(&status, |seq| state.nonce().frontier(self.minter.as_ref(), seq.get()))
+                crate::encode::status_outcome(&status, |seq| state.keys().frontier(self.minter.as_ref(), seq.get()))
             }
             None => liasse_wire::Outcome::Unknown,
         };
@@ -190,7 +193,7 @@ impl<S: InstanceStore> ConnectCore<S> {
             if let Some(sub_state) = state.sub_mut(sub) {
                 sub_state.closed = true;
             }
-            let ft = state.nonce().frontier(self.minter.as_ref(), seq);
+            let ft = state.keys().frontier(self.minter.as_ref(), seq);
             state.outbound_mut().enqueue(
                 ft,
                 seq,
@@ -287,7 +290,7 @@ impl<S: InstanceStore> ConnectCore<S> {
         let seq = self.frontier_seq(conn);
         if let Some(state) = self.connections.get_mut(conn) {
             state.outbound_mut().mark_delivered();
-            let ft = state.nonce().frontier(self.minter.as_ref(), seq);
+            let ft = state.keys().frontier(self.minter.as_ref(), seq);
             if let Some(reason) = reset {
                 state.outbound_mut().enqueue(ft, seq, Downstream::Reset { reason });
             }

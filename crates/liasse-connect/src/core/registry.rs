@@ -2,8 +2,9 @@
 //! occurrence bijection, and the bounded outbound ring (§12).
 //!
 //! One [`ConnState`] is the whole server-side memory of one logical connection: the
-//! nonce that authenticates its tokens, the dense counter behind its occurrence
-//! capabilities, and the ring of frames it has emitted (for `Last-Event-ID` replay).
+//! [`ConnKeys`] (secret credential + public id) that bind its tokens, the dense
+//! counter behind its occurrence capabilities, and the ring of frames it has emitted
+//! (for `Last-Event-ID` replay).
 //! Each [`SubState`] holds the RowId→[`Occ`] bijection that projects a subscription's
 //! internal identities onto opaque tokens, and the *wire snapshot* — the exact rows
 //! the client currently holds — that D6 diffs the recomputed view against, so a
@@ -14,13 +15,14 @@ use std::collections::{BTreeMap, VecDeque};
 use liasse_surface::RowId;
 use liasse_wire::{Downstream, Ft, Occ, Sub, WireRow};
 
-use crate::token::{Nonce, TokenMinter};
+use crate::token::{ConnKeys, TokenMinter};
 
 /// The whole server state of one logical connection.
 pub struct ConnState {
-    /// The nonce authenticating this connection's tokens; also its host connection
-    /// id and its wire [`ConnectionToken`](liasse_wire::ConnectionToken).
-    nonce: Nonce,
+    /// The connection's [`ConnKeys`]: its secret credential (also the registry key
+    /// and wire [`ConnectionToken`](liasse_wire::ConnectionToken)) and the public id
+    /// embedded in the ft/occ tokens it mints.
+    keys: ConnKeys,
     /// The dense counter behind occurrence capabilities — monotone, so a token is
     /// never reused for a different occurrence even after a row leaves the view.
     occ_counter: u64,
@@ -40,12 +42,12 @@ pub struct ConnState {
 }
 
 impl ConnState {
-    /// Open connection state under `nonce`, buffering up to `capacity` outbound
+    /// Open connection state under `keys`, buffering up to `capacity` outbound
     /// frames before backpressure.
     #[must_use]
-    pub fn new(nonce: Nonce, capacity: usize) -> Self {
+    pub fn new(keys: ConnKeys, capacity: usize) -> Self {
         Self {
-            nonce,
+            keys,
             occ_counter: 0,
             occ_index: BTreeMap::new(),
             subs: BTreeMap::new(),
@@ -55,10 +57,10 @@ impl ConnState {
         }
     }
 
-    /// The connection's minting nonce.
+    /// The connection's [`ConnKeys`] (secret credential and public id).
     #[must_use]
-    pub fn nonce(&self) -> &Nonce {
-        &self.nonce
+    pub fn keys(&self) -> &ConnKeys {
+        &self.keys
     }
 
     /// The bounded outbound ring.
@@ -116,13 +118,13 @@ impl ConnState {
         self.operations.get(id)
     }
 
-    /// Resolve an inbound occurrence token to the row it names, checking the nonce
-    /// first (a forged token never reaches the index). `Ok(None)` is a well-formed
+    /// Resolve an inbound occurrence token to the row it names, checking the public
+    /// id first (a forged token never reaches the index). `Ok(None)` is a well-formed
     /// token for an occurrence this connection does not currently hold — an absent
     /// anchor, not a fault.
     #[must_use]
     pub fn resolve_occ(&self, minter: &dyn TokenMinter, occ: &Occ) -> AnchorResolution {
-        if self.nonce.open_occurrence(minter, occ.as_str()).is_none() {
+        if self.keys.open_occurrence(minter, occ.as_str()).is_none() {
             return AnchorResolution::Forged;
         }
         match self.occ_index.get(occ) {
@@ -147,7 +149,7 @@ impl ConnState {
         }
         let counter = self.occ_counter;
         self.occ_counter += 1;
-        let occ = self.nonce.occurrence(minter, counter);
+        let occ = self.keys.occurrence(minter, counter);
         self.occ_index.insert(occ.clone(), (sub.clone(), row.clone()));
         if let Some(state) = self.subs.get_mut(sub) {
             state.occ_of.insert(row.clone(), occ.clone());
@@ -163,7 +165,7 @@ pub enum AnchorResolution {
     /// A well-formed token for an occurrence this connection does not hold — the
     /// window fails to open (absent anchor), not a fault.
     Absent,
-    /// The token did not authenticate against the connection nonce — a fault.
+    /// The token did not carry this connection's public id — a fault.
     Forged,
 }
 

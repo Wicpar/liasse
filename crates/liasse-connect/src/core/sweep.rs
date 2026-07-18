@@ -83,7 +83,7 @@ impl<S: InstanceStore> ConnectCore<S> {
             sub_state.snapshot = new_snapshot;
         }
         if !ops.is_empty() {
-            let ft = state.nonce().frontier(minter, seq);
+            let ft = state.keys().frontier(minter, seq);
             state.outbound_mut().enqueue(ft, seq, Downstream::Patch { sub: sub.clone(), ops });
         }
     }
@@ -99,7 +99,7 @@ impl<S: InstanceStore> ConnectCore<S> {
             if let Some(sub_state) = state.sub_mut(sub) {
                 sub_state.scalar_value = Some(value.clone());
             }
-            let ft = state.nonce().frontier(minter, seq);
+            let ft = state.keys().frontier(minter, seq);
             state.outbound_mut().enqueue(ft, seq, Downstream::Scalar { sub: sub.clone(), value });
         }
     }
@@ -127,7 +127,7 @@ impl<S: InstanceStore> ConnectCore<S> {
                 if let Some(sub_state) = state.sub_mut(sub) {
                     sub_state.scalar_value = Some(value.clone());
                 }
-                let ft = state.nonce().frontier(minter, seq);
+                let ft = state.keys().frontier(minter, seq);
                 state.outbound_mut().enqueue(ft, seq, Downstream::Scalar { sub: sub.clone(), value });
             }
             return;
@@ -139,7 +139,7 @@ impl<S: InstanceStore> ConnectCore<S> {
         if let Some(sub_state) = state.sub_mut(sub) {
             sub_state.snapshot = snapshot.clone();
         }
-        let ft = state.nonce().frontier(minter, seq);
+        let ft = state.keys().frontier(minter, seq);
         state.outbound_mut().enqueue(ft, seq, Downstream::Init { sub: sub.clone(), rows: snapshot });
     }
 
@@ -163,7 +163,7 @@ impl<S: InstanceStore> ConnectCore<S> {
         if let Some(sub_state) = state.sub_mut(sub) {
             sub_state.closed = true;
         }
-        let ft = state.nonce().frontier(minter, seq);
+        let ft = state.keys().frontier(minter, seq);
         state.outbound_mut().enqueue(ft, seq, Downstream::Close { sub: sub.clone(), reason });
     }
 }

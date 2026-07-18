@@ -118,9 +118,16 @@ impl<S: InstanceStore> ConnectCore<S> {
             Ok(args) => args,
             Err(error) => return Ok(Reply::Outcome(encode::decode_error(&error))),
         };
+        // §12.3 / BUG 2: a PUBLIC operation id is bound to this connection's secret
+        // before it reaches the host's dedup log, so two anonymous connections never
+        // share one op-id namespace — a peer can neither replay this connection's
+        // retained response nor burn its id. A ROLE id keeps its SPEC authenticator
+        // scope. The bound value is server-internal; the client still echoes the raw
+        // id (its §12.3 status-query capability).
+        let scoped = operation.as_ref().map(|id| self.scope_operation(token, &addr, id));
         let mut call = SurfaceCall::new(addr.clone(), decoded);
-        if let Some(id) = &operation {
-            call = call.with_operation_id(id.as_str());
+        if let Some(scoped) = &scoped {
+            call = call.with_operation_id(scoped);
         }
         if let Some(name) = &context_name {
             call = call.with_context(name.clone());
@@ -136,7 +143,10 @@ impl<S: InstanceStore> ConnectCore<S> {
         if let Some(id) = operation
             && !matches!(outcome, SurfaceOutcome::Denied(_))
         {
-            let key = self.operation_key(token, &addr, &call, &id);
+            // Record under the RAW id the client will present at status time, keyed by
+            // the SCOPED id the host actually deduplicated on.
+            let effective = scoped.as_deref().unwrap_or_else(|| id.as_str());
+            let key = self.operation_key(token, &addr, &call, effective);
             if let Some(state) = self.connections.get_mut(token) {
                 state.record_operation(id, key);
             }
@@ -148,7 +158,7 @@ impl<S: InstanceStore> ConnectCore<S> {
         let minter = self.minter.as_ref();
         let state = self.connections.get(token).ok_or(ConnectError::NoConnection)?;
         let wire = encode::outcome_of(&outcome, |seq: CommitSeq| {
-            state.nonce().frontier(minter, seq.get())
+            state.keys().frontier(minter, seq.get())
         });
         Ok(Reply::Outcome(wire))
     }
@@ -219,7 +229,7 @@ impl<S: InstanceStore> ConnectCore<S> {
         if let Some(sub_state) = state.sub_mut(sub) {
             sub_state.snapshot = snapshot.clone();
         }
-        let ft = state.nonce().frontier(minter, seq);
+        let ft = state.keys().frontier(minter, seq);
         state.outbound_mut().enqueue(ft.clone(), seq, Downstream::Init { sub: sub.clone(), rows: snapshot });
         Ok(ft)
     }
@@ -238,7 +248,7 @@ impl<S: InstanceStore> ConnectCore<S> {
         if let Some(sub_state) = state.sub_mut(sub) {
             sub_state.scalar_value = Some(value.clone());
         }
-        let ft = state.nonce().frontier(minter, seq);
+        let ft = state.keys().frontier(minter, seq);
         state.outbound_mut().enqueue(ft.clone(), seq, Downstream::Scalar { sub: sub.clone(), value });
         Ok(ft)
     }
@@ -268,15 +278,33 @@ impl<S: InstanceStore> ConnectCore<S> {
         }
     }
 
-    /// Reconstruct the §12.3 operation scope key for a status query. Public calls
-    /// introduce no actor (no authenticator); a role call keys on its selection's
-    /// authenticator, falling back to the connection context's.
+    /// The effective operation identifier handed to the host's §12.3 dedup log. A
+    /// PUBLIC id is bound to this connection's secret (BUG 2) so a peer connection
+    /// cannot forge, replay, or burn it; a ROLE id keeps its SPEC scope
+    /// (application + target + authenticator + id, §12.3/§D.8) unchanged, so the same
+    /// actor's at-most-once retry still deduplicates. Missing connection state (the
+    /// call would already fault at the host) falls back to the raw id, never panics.
+    fn scope_operation(&self, token: &ConnectionToken, addr: &SurfaceAddress, id: &OperationId) -> String {
+        match addr.authority() {
+            Authority::Public => self
+                .connections
+                .get(token)
+                .map_or_else(|| id.as_str().to_owned(), |state| state.keys().scope_operation(id.as_str())),
+            Authority::Role(_) => id.as_str().to_owned(),
+        }
+    }
+
+    /// Reconstruct the §12.3 operation scope key a later status query reads. It MUST
+    /// equal the key the host deduplicated on, so `op_id` is the already-scoped
+    /// effective identifier. Public calls introduce no actor (no authenticator); a
+    /// role call keys on its selection's authenticator, falling back to the
+    /// connection context's.
     fn operation_key(
         &self,
         token: &ConnectionToken,
         addr: &SurfaceAddress,
         call: &SurfaceCall,
-        id: &OperationId,
+        op_id: &str,
     ) -> OperationKey {
         let auth = match addr.authority() {
             Authority::Public => None,
@@ -288,7 +316,7 @@ impl<S: InstanceStore> ConnectCore<S> {
                     .map(str::to_owned)
             }),
         };
-        OperationKey::new(addr.surface_prefix(), auth, id.as_str())
+        OperationKey::new(addr.surface_prefix(), auth, op_id)
     }
 }
 

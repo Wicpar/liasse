@@ -47,4 +47,4 @@ pub use crate::core::{ConnectCore, Reply};
 pub use decode::DecodeError;
 pub use error::ConnectError;
 pub use mount::{Schema, SchemaBuilder};
-pub use token::{Nonce, TokenMinter, UnsignedMinter};
+pub use token::{ConnKeys, TokenMinter, UnsignedMinter};
