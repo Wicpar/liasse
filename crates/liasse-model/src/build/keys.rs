@@ -3,7 +3,7 @@
 //! shape-walking core lives in [`super`]. Continues the same [`Builder`] impl.
 
 use liasse_syntax::{DocMember, DocValue};
-use liasse_value::Type;
+use liasse_value::{RefTarget, StructType, Type};
 
 use crate::doc::DocValueExt;
 use crate::names::DeclName;
@@ -115,9 +115,20 @@ impl<'a> Builder<'a> {
                     DeclName::parse(name).map_err(|_| format!("`{name}` is not a valid field name"))
                 };
             }
+            // A.8: a `$key` MAY name a "struct composed solely of key-eligible
+            // required fields". An inline struct field builds to a `Node::Struct`
+            // (`build/shapes.rs`); build its struct `Type` from the shape and let
+            // `Type::is_key_eligible` judge it — accepting an all-eligible struct
+            // and rejecting one that launders an ineligible member (json,
+            // optional, …) with a diagnostic naming that member.
+            Node::Struct(shape) => {
+                return Self::struct_key_type(shape).and_then(|_key_type| {
+                    DeclName::parse(name).map_err(|_| format!("`{name}` is not a valid field name"))
+                });
+            }
             _ => {
                 return Err(format!(
-                    "`$key` field `{name}` must be a writable scalar or a required ref field"
+                    "`$key` field `{name}` must be a writable scalar, a struct of key-eligible required fields, or a required ref field"
                 ));
             }
         };
@@ -133,6 +144,47 @@ impl<'a> Builder<'a> {
             ));
         }
         DeclName::parse(name).map_err(|_| format!("`{name}` is not a valid field name"))
+    }
+
+    /// The key `Type` of a struct field named as a `$key` component (A.8:
+    /// "structs composed solely of key-eligible required fields"). Builds the
+    /// struct `Type` from the shape's members so [`Type::is_key_eligible`] judges
+    /// the whole; on the first ineligible member it returns a diagnostic naming
+    /// that member and its type, so a struct key laundering an ineligible member
+    /// (a `json`/`optional`/… field one level down) is rejected for the member,
+    /// not merely "not a scalar".
+    fn struct_key_type(shape: &Shape) -> Result<Type, String> {
+        let mut fields = Vec::with_capacity(shape.members.len());
+        for member in &shape.members {
+            let name = member.name.as_str();
+            let ty = Self::member_key_type(name, &member.node)?;
+            if !ty.is_key_eligible() {
+                return Err(format!(
+                    "struct key component '{name}' is {}, which is not key-eligible (A.8)",
+                    ty.name()
+                ));
+            }
+            fields.push((name.to_owned(), ty));
+        }
+        Ok(Type::Struct(StructType::new(fields)))
+    }
+
+    /// The declared `Type` of one struct member, for the A.8 key-eligibility
+    /// judgement. A nested struct recurses (so a deep ineligible member is named
+    /// at its own level); a ref/set contributes its non-key-eligible type so the
+    /// containing struct is refused. A member with no value type usable as a key
+    /// (a computed view, a nested collection, a `$like` shape) is refused
+    /// directly, naming the member.
+    fn member_key_type(name: &str, node: &Node) -> Result<Type, String> {
+        match node {
+            Node::Scalar(field) => Ok(field.ty.clone()),
+            Node::Struct(inner) => Self::struct_key_type(inner),
+            Node::Reference(reference) => Ok(Type::Ref(RefTarget::for_key(&reference.key_type))),
+            Node::Set(set) => Ok(Type::Set(Box::new(set.element.clone()))),
+            Node::View(_) | Node::Collection(_) | Node::Named(_) => Err(format!(
+                "struct key component '{name}' is not a field with a key-eligible type (A.8)"
+            )),
+        }
     }
 
     /// Parse `$unique` candidate keys (§5.7).

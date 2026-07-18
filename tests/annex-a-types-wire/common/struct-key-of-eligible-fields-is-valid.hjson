@@ -1,0 +1,35 @@
+{
+  format: 1
+  name: struct-key-of-eligible-fields-is-valid
+  suite: static
+  spec: ["§A.8", "§5.4"]
+  tags: ["key", "struct"]
+  note: '''Annex A.8 (SPEC.md line 4472) lists the types a collection key field MAY use and
+names, alongside the scalars, "structs composed solely of key-eligible required fields".
+This is the positive of the sibling exclusion cases: `json-type-in-struct-key-excluded`
+rejects a struct key with a `json` member, and `optional-key-field-invalid` rejects an
+optional key — but A.8 equally MANDATES that a struct whose members are ALL key-eligible
+and required is itself a valid `$key`. Here `loc` is a struct of two required
+key-eligible fields (`int` + `text`), so the collection MUST load. (A struct key with an
+ineligible or optional member would be the excluded case; that laundering path is already
+covered adversarially. This case pins the accept side A.8 grants.)'''
+
+  package: {
+    $liasse: 1
+    $app: "t.structkey.ok@1.0.0"
+    $model: {
+      cells: {
+        $key: "loc"
+        loc: {
+          x: "int"
+          y: "text"
+        }
+        value: "text"
+      }
+    }
+  }
+
+  expect: {
+    outcome: ok
+  }
+}
