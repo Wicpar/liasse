@@ -99,6 +99,49 @@ impl<'a> Builder<'a> {
         }
     }
 
+    /// Resolve a scalar shape to a [`Type`]: a type-name string (including a
+    /// named `$types` shape) or an inline `{ $enum: [...] }` (§5.9). Returns
+    /// `None` when the value is neither, so the caller emits a diagnostic worded
+    /// for its position (a `$set` element or an expanded field's `$type`). The
+    /// base type of a scalar field and a set's element type share this
+    /// vocabulary, so both go through here rather than duplicating enum logic.
+    pub(super) fn scalar_shape(&mut self, reporter: &mut Reporter, value: &DocValue) -> Option<Type> {
+        if let Some(text) = value.as_string() {
+            return Some(match TypeParser::parse(text.trim(), &self.named) {
+                Ok(ty) => ty,
+                Err(reason) => {
+                    reporter.reject(value.span, code::TYPE, reason);
+                    Type::Json
+                }
+            });
+        }
+        if let Some(en) = value.member("$enum") {
+            return Some(match self.enum_node(reporter, en) {
+                Node::Scalar(field) => field.ty,
+                _ => Type::Json,
+            });
+        }
+        None
+    }
+
+    /// Resolve an expanded field's `$type` value (§5.1, A.3). A base type is a
+    /// type name or an inline `{ $enum: [...] }` (§5.9); the other inline shapes
+    /// (`$set`, `$ref`, a struct) are field-level forms dispatched before an
+    /// expanded field is reached, so they are not valid here. Per parse-don't-
+    /// validate, any other `$type` value is REJECTED rather than silently kept as
+    /// `json` — which would drop the declared type and skip its §5.9 checks.
+    fn base_type(&mut self, reporter: &mut Reporter, value: &DocValue) -> Type {
+        self.scalar_shape(reporter, value).unwrap_or_else(|| {
+            reporter.reject_hint(
+                value.span,
+                code::TYPE,
+                "an expanded field's `$type` must be a type name or an inline `{ $enum: [...] }`",
+                "e.g. `\"$type\": \"text\"` or `\"$type\": { \"$enum\": [\"draft\", \"active\"] }`",
+            );
+            Type::Json
+        })
+    }
+
     /// The expanded field form `{ $type, $optional, $default, $normalize,
     /// $check, $unique }` (§5.1, A.3).
     pub(super) fn expanded_field(&mut self, reporter: &mut Reporter, value: &DocValue) -> Node {
@@ -114,14 +157,7 @@ impl<'a> Builder<'a> {
         let mut optional = false;
         for member in value.as_object().unwrap_or(&[]) {
             match member.name.text.as_str() {
-                "$type" => {
-                    if let Some(text) = member.value.as_string() {
-                        match TypeParser::parse(text.trim(), &self.named) {
-                            Ok(ty) => base_ty = ty,
-                            Err(reason) => reporter.reject(member.value.span, code::TYPE, reason),
-                        }
-                    }
-                }
+                "$type" => base_ty = self.base_type(reporter, &member.value),
                 "$optional" => optional = member.value.as_bool() == Some(true),
                 "$default" => field.default = Some(default_source(&member.value)),
                 "$normalize" => field.normalize = Some(expr_source(&member.value)),

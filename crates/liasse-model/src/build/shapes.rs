@@ -237,33 +237,21 @@ impl<'a> Builder<'a> {
         })
     }
 
-    /// Resolve a non-ref `$set` element type: a type string or an inline enum.
+    /// Resolve a non-ref `$set` element type. §5.5: "the value of `$set` is the
+    /// shape of every member" — any scalar member shape is admissible: a type
+    /// string or an inline `{ $enum: [...] }` (§5.9), the same base-type
+    /// vocabulary an expanded field's `$type` accepts. A `{ $ref: ... }` element
+    /// is handled by the caller before this point.
     fn shape_or_type(&mut self, reporter: &mut Reporter, value: &DocValue) -> Type {
-        if let Some(text) = value.as_string() {
-            return match crate::types::TypeParser::parse(text.trim(), &self.named) {
-                Ok(ty) => ty,
-                Err(reason) => {
-                    reporter.reject(value.span, code::TYPE, reason);
-                    Type::Json
-                }
-            };
-        }
-        // §5.5: "the value of `$set` is the shape of every member" — any scalar
-        // member shape is admissible, including an inline enum type. An `{ $enum:
-        // [...] }` element declares a set of enum labels (§5.9).
-        if let Some(en) = value.member("$enum") {
-            if let Node::Scalar(field) = self.enum_node(reporter, en) {
-                return field.ty;
-            }
-            return Type::Json;
-        }
-        reporter.reject_hint(
-            value.span,
-            code::TYPE,
-            "a `$set` element must be a type, an inline `{ $enum: [...] }`, or a `{ $ref: ... }`",
-            "e.g. `\"tags\": { \"$set\": \"text\" }`",
-        );
-        Type::Json
+        self.scalar_shape(reporter, value).unwrap_or_else(|| {
+            reporter.reject_hint(
+                value.span,
+                code::TYPE,
+                "a `$set` element must be a type, an inline `{ $enum: [...] }`, or a `{ $ref: ... }`",
+                "e.g. `\"tags\": { \"$set\": \"text\" }`",
+            );
+            Type::Json
+        })
     }
 
     fn view_node(&mut self, _reporter: &mut Reporter, view: &DocMember) -> Node {
