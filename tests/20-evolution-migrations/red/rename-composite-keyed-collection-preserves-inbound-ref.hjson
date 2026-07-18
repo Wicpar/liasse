@@ -1,0 +1,79 @@
+{
+  format: 1
+  name: rename-composite-keyed-collection-preserves-inbound-ref
+  suite: scenario
+  tags: [migration, composite, ref, identity]
+  // §20.1: renaming a COMPOSITE-keyed collection via `$from` adopts its rows with
+  // keys and fields copied. An inbound composite ref (`holders.home`), retargeted
+  // to the renamed collection, must still resolve after migration — its stored
+  // positional key value is unchanged, so it points at the same composite row now
+  // living under the new collection name. The migrated state's ordinary refs check
+  // (§20.1 final check) must pass and the ref must read back as the key-order array.
+  spec: ["#evolution", "§20.1", "#deletion", "§5.6"]
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.ck@1.0.0"
+    $model: {
+      regions: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+        label: "text"
+      }
+      holders: {
+        $key: "id"
+        id: "text"
+        home: { $ref: "/regions" }
+      }
+      $public: {
+        holders: { $view: ".holders { id, home, $sort: [id] }" }
+      }
+    }
+    $data: {
+      regions: {
+        "eu:x": { region: "eu", code: "x", label: "EU-X" }
+      }
+      holders: {
+        h1: { home: { region: "eu", code: "x" } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.holders", id: "wh", expect_init: { value: [
+      { id: "h1", home: ["eu", "x"] }
+    ] } }
+    // major bump renames `regions` -> `zones` (composite key unchanged) and
+    // retargets the inbound composite ref to `/zones`.
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.ck@2.0.0"
+          $model: {
+            zones: {
+              $from: "regions"
+              $key: ["region", "code"]
+              region: "text"
+              code: "text"
+              label: "text"
+            }
+            holders: {
+              $key: "id"
+              id: "text"
+              home: { $ref: "/zones" }
+            }
+            $public: {
+              holders: { $view: ".holders { id, home, $sort: [id] }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    // the inbound composite ref survived the rename and still resolves to the
+    // same composite row, read back as the $key-order array.
+    { watch: "public.holders", id: "wh2", expect_init: { value: [
+      { id: "h1", home: ["eu", "x"] }
+    ] } }
+  ]
+}

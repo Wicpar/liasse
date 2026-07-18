@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: delete-selection-form-cascades-composite-target
+  suite: scenario
+  tags: [cascade, composite, identity]
+  // §21.1: the `-selection` delete form (`-.coll[selector]`) is a distinct
+  // entry point from `collection - key`; it derives each target key from the
+  // evaluated selected row rather than normalizing an operand object. For a
+  // COMPOSITE-keyed target the selected row's key identity must still be the
+  // positional composite tuple, so the cascade planner connects the inbound
+  // `cascade` ref and removes the referencing row.
+  spec: ["#deletion", "§21.1", "§8.5", "§5.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      regions: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+      }
+      holders: {
+        $key: "id"
+        id: "text"
+        home: {
+          $ref: "/regions"
+          $on_delete: "cascade"
+        }
+      }
+      $mut: {
+        del_region: "-.regions[{ region: @region, code: @code }]"
+      }
+      regions_view: { $view: ".regions { region, code, $sort: [region, code] }" }
+      holders_view: { $view: ".holders { id, home, $sort: [id] }" }
+      $public: {
+        regions: { $view: ".regions_view", $mut: { del: ".del_region" } }
+        holders: { $view: ".holders_view" }
+      }
+    }
+    $data: {
+      regions: {
+        "eu:x": { region: "eu", code: "x" }
+        "us:y": { region: "us", code: "y" }
+      }
+      holders: {
+        h1: { home: { region: "eu", code: "x" } }
+        h2: { home: { region: "us", code: "y" } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.holders", id: "wh", expect_init: { value: [
+      { id: "h1", home: ["eu", "x"] }
+      { id: "h2", home: ["us", "y"] }
+    ] } }
+    // delete region eu:x through the `-selection` form -> h1 cascades away.
+    { call: "public.regions.del", args: { region: "eu", code: "x" },
+      expect: { outcome: ok, "...": true } }
+    { expect_view: { watch: "wh", value: [
+      { id: "h2", home: ["us", "y"] }
+    ] } }
+  ]
+}

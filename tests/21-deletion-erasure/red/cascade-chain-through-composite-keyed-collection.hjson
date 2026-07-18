@@ -1,0 +1,93 @@
+{
+  format: 1
+  name: cascade-chain-through-composite-keyed-collection
+  suite: scenario
+  tags: [cascade, composite, identity]
+  // §21.1: the cascade fixed point must follow inbound refs across a chain in
+  // which the INTERMEDIATE collection is itself composite-keyed. Deleting the
+  // composite-keyed `regions` row cascades to the composite-keyed `holders` row
+  // (its `home` ref), which in turn cascades to the scalar `tokens` row (its
+  // `holder` ref). The composite intermediate must be matched by full positional
+  // key identity at BOTH hops (as the cascade target of hop 1 and the cascade
+  // source of hop 2), or a hop is silently dropped and rows survive.
+  spec: ["#deletion", "§21.1", "§5.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      regions: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+      }
+      holders: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+        home: {
+          $ref: "/regions"
+          $on_delete: "cascade"
+        }
+      }
+      tokens: {
+        $key: "id"
+        id: "text"
+        holder: {
+          $ref: "/holders"
+          $on_delete: "cascade"
+        }
+      }
+      $mut: {
+        del_region: ".regions - { region: @region, code: @code }"
+      }
+      regions_view: { $view: ".regions { region, code, $sort: [region, code] }" }
+      holders_view: { $view: ".holders { region, code, home, $sort: [region, code] }" }
+      tokens_view: { $view: ".tokens { id, holder, $sort: [id] }" }
+      $public: {
+        regions: { $view: ".regions_view", $mut: { del: ".del_region" } }
+        holders: { $view: ".holders_view" }
+        tokens: { $view: ".tokens_view" }
+      }
+    }
+    $data: {
+      regions: {
+        "eu:x": { region: "eu", code: "x" }
+        "us:y": { region: "us", code: "y" }
+      }
+      holders: {
+        // holder eu:x refs region eu:x; holder us:y refs region us:y
+        "eu:x": { region: "eu", code: "x", home: { region: "eu", code: "x" } }
+        "us:y": { region: "us", code: "y", home: { region: "us", code: "y" } }
+      }
+      tokens: {
+        t1: { holder: { region: "eu", code: "x" } }
+        t2: { holder: { region: "us", code: "y" } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.holders", id: "wh", expect_init: { value: [
+      { region: "eu", code: "x", home: ["eu", "x"] }
+      { region: "us", code: "y", home: ["us", "y"] }
+    ] } }
+    { watch: "public.tokens", id: "wt", expect_init: { value: [
+      { id: "t1", holder: ["eu", "x"] }
+      { id: "t2", holder: ["us", "y"] }
+    ] } }
+    // delete the composite-keyed region eu:x — cascades through the composite
+    // holder eu:x to the scalar token t1, in one atomic transition.
+    { call: "public.regions.del", args: { region: "eu", code: "x" },
+      expect: { outcome: ok, "...": true } }
+    // holder eu:x cascaded away; us:y survives.
+    { expect_view: { watch: "wh", value: [
+      { region: "us", code: "y", home: ["us", "y"] }
+    ] } }
+    // token t1 cascaded away with holder eu:x (hop 2 through the composite
+    // intermediate); t2 survives.
+    { expect_view: { watch: "wt", value: [
+      { id: "t2", holder: ["us", "y"] }
+    ] } }
+  ]
+}

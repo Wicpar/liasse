@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: migration-program-builds-composite-keyed-collection
+  suite: scenario
+  tags: [migration, composite]
+  // §20.1: a `$migrations` program MAY build a COMPOSITE-keyed target collection
+  // from the read-only `$old` source. Each produced row's positional composite
+  // key (a, b) must be derived from its fields and admitted under the ordinary
+  // key pipeline (§20.1 final check). Distinct (a, b) pairs coexist; the produced
+  // rows read back as the composite view.
+  spec: ["#evolution", "§20.1", "§5.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.cprog@1.0.0"
+    $model: {
+      pairs: {
+        $key: "id"
+        id: "text"
+        a: "text"
+        b: "text"
+      }
+      $public: {
+        pairs: { $view: ".pairs { id, a, b, $sort: [id] }" }
+      }
+    }
+    $data: {
+      pairs: {
+        p1: { a: "x", b: "1" }
+        p2: { a: "x", b: "2" }
+        p3: { a: "y", b: "1" }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.cprog@2.0.0"
+          $model: {
+            grid: {
+              $key: ["a", "b"]
+              a: "text"
+              b: "text"
+            }
+            $migrations: {
+              "1.0.0": [
+                ".grid = $old.pairs { a: .a, b: .b }"
+              ]
+            }
+            $public: {
+              grid: { $view: ".grid { a, b, $sort: [a, b] }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    // the program produced three distinct composite-keyed rows.
+    { watch: "public.grid", id: "wg", expect_init: { value: [
+      { a: "x", b: "1" }
+      { a: "x", b: "2" }
+      { a: "y", b: "1" }
+    ] } }
+  ]
+}

@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: restrict-blocks-delete-of-composite-keyed-target
+  suite: scenario
+  tags: [restrict, composite, identity]
+  // §21.1: a `restrict` inbound ref to a COMPOSITE-keyed target must block the
+  // target's deletion while a referencing row survives. The restrict edge is
+  // matched by the target's full positional composite identity; an arity-limited
+  // match would fail to connect the edge and the delete would slip through.
+  spec: ["#deletion", "§21.1", "§5.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      regions: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+      }
+      holders: {
+        $key: "id"
+        id: "text"
+        home: {
+          $ref: "/regions"
+          $on_delete: "restrict"
+        }
+      }
+      $mut: {
+        del_region: ".regions - { region: @region, code: @code }"
+      }
+      regions_view: { $view: ".regions { region, code, $sort: [region, code] }" }
+      $public: {
+        regions: { $view: ".regions_view", $mut: { del: ".del_region" } }
+      }
+    }
+    $data: {
+      regions: {
+        "eu:x": { region: "eu", code: "x" }
+      }
+      holders: {
+        h1: { home: { region: "eu", code: "x" } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.regions", id: "wr", expect_init: { value: [
+      { region: "eu", code: "x" }
+    ] } }
+    // h1 still references region eu:x via a restrict ref -> deletion blocked.
+    { call: "public.regions.del", args: { region: "eu", code: "x" },
+      expect: { outcome: rejected, violates: ["§21.1"] } }
+    // the region survives the rejected deletion.
+    { expect_view: { watch: "wr", value: [
+      { region: "eu", code: "x" }
+    ] } }
+  ]
+}

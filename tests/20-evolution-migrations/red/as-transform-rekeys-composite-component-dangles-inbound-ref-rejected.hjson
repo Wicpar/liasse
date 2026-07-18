@@ -1,0 +1,77 @@
+{
+  format: 1
+  name: as-transform-rekeys-composite-component-dangles-inbound-ref-rejected
+  suite: scenario
+  tags: [migration, composite, ref, identity]
+  // §20.1: a local `$from`/`$as` transform on a COMPOSITE key component rekeys the
+  // target rows (here `code` is upper-cased, so region (eu, x) becomes (eu, X)).
+  // An inbound composite ref that is NOT co-migrated still carries the old key
+  // (eu, x), which no longer names any row in the prospective target. The §20.1
+  // final check ("checked under ordinary keys, refs, uniqueness") must catch the
+  // dangling composite ref and reject the whole migration; silently keeping the
+  // stale ref (or dropping the arity mismatch) would admit an invalid state.
+  spec: ["#evolution", "§20.1", "#deletion", "§5.6"]
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.rekey@1.0.0"
+    $model: {
+      regions: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+      }
+      holders: {
+        $key: "id"
+        id: "text"
+        home: { $ref: "/regions" }
+      }
+      $public: {
+        holders: { $view: ".holders { id, home, $sort: [id] }" }
+      }
+    }
+    $data: {
+      regions: {
+        "eu:x": { region: "eu", code: "x" }
+      }
+      holders: {
+        h1: { home: { region: "eu", code: "x" } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.holders", id: "wh", expect_init: { value: [
+      { id: "h1", home: ["eu", "x"] }
+    ] } }
+    // major bump upper-cases the `code` key component, rekeying region
+    // (eu, x) -> (eu, X). The inbound ref h1.home still says (eu, x) and is not
+    // co-migrated, so the prospective target has a dangling composite ref.
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.rekey@2.0.0"
+          $model: {
+            regions: {
+              $key: ["region", "code"]
+              region: "text"
+              code: {
+                $type: "text"
+                $from: "code"
+                $as: "string.upper(.)"
+              }
+            }
+            holders: {
+              $key: "id"
+              id: "text"
+              home: { $ref: "/regions" }
+            }
+            $public: {
+              holders: { $view: ".holders { id, home, $sort: [id] }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: rejected, violates: ["§20.1"] } }
+  ]
+}

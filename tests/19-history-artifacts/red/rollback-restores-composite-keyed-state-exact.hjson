@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: rollback-restores-composite-keyed-state-exact
+  suite: scenario
+  tags: [composite, rollback, identity]
+  // §19.8/§19.3: importing an earlier own point with rollback policy restores
+  // that exact state. Exercised over a COMPOSITE-keyed collection: after the
+  // export boundary a composite row is added and another removed; rolling back to
+  // the boundary must reproduce the composite-keyed state exactly — the added row
+  // gone, the removed row back, each identified by its positional composite key.
+  spec: ["#history", "§19.8", "§19.3", "§5.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist.ckrb@1.0.0"
+    $model: {
+      vat: {
+        $key: ["country", "code"]
+        country: "text"
+        code: "text"
+        rate: "int"
+      }
+      $mut: {
+        add: ".vat + { country: @country, code: @code, rate: @rate }"
+        drop: ".vat - { country: @country, code: @code }"
+      }
+      all: { $view: ".vat { country, code, rate, $sort: [country, code] }" }
+      $public: {
+        vat: {
+          $view: ".all"
+          $mut: { add: ".add", drop: ".drop" }
+        }
+      }
+    }
+    $data: {
+      vat: {
+        "fr:std": { country: "fr", code: "std", rate: "20" }
+        "fr:red": { country: "fr", code: "red", rate: "5" }
+      }
+    }
+  }
+
+  steps: [
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    // mutate past the boundary: add a new composite row, drop an existing one.
+    { call: "public.vat.add", args: { country: "de", code: "std", rate: "19" },
+      expect: { outcome: ok, "...": true } }
+    { call: "public.vat.drop", args: { country: "fr", code: "red" },
+      expect: { outcome: ok, "...": true } }
+    { watch: "public.vat", id: "w1", expect_init: { value: [
+      { country: "de", code: "std", rate: "19" }
+      { country: "fr", code: "std", rate: "20" }
+    ] } }
+    // roll back to the exported boundary.
+    { import: { from: "a1", policy: ["rollback"] },
+      expect: { outcome: ok, value: { relation: "rollback", applied: true, "...": true } } }
+    // exact composite-keyed state at the boundary: de:std gone, fr:red back.
+    { watch: "public.vat", id: "w2", expect_init: { value: [
+      { country: "fr", code: "red", rate: "5" }
+      { country: "fr", code: "std", rate: "20" }
+    ] } }
+  ]
+}

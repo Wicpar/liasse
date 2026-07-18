@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: erase-reinsert-composite-row-via-mutation
+  suite: scenario
+  tags: [erasure, reinsert, composite, identity]
+  note: '''Composite-key mirror of `reinsert-historical-does-not-recreate-live-row`.
+§21.2 step 2 requires the erase extract to carry "every payload required for
+possible reinsertion"; §21.3 accepts a reinsert of that extract. For a
+COMPOSITE-keyed row the erase must still (a) remove the row from live state and
+(b) produce an extract the subsequent reinsert accepts. Whether the LIVE row
+returns after reinsert is unspecified (§21.3, as in the scalar case), so the
+post-reinsert view is asserted with expect_one_of. What IS deducible: the erase
+removes the composite row and the reinsert call is accepted.'''
+  spec: ["#deletion", "§21.2", "§21.3", "§5.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      codes: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+        secret: "text"
+      }
+      $mut: {
+        erase_code: "return erase(.codes[{ region: @region, code: @code }])"
+        reinsert_code: "reinsert(@extract)"
+      }
+      all: { $view: ".codes { region, code, secret, $sort: [region, code] }" }
+      $public: {
+        codes: {
+          $view: ".all"
+          $mut: { erase: ".erase_code", reinsert: ".reinsert_code" }
+        }
+      }
+    }
+    $data: {
+      codes: {
+        "eu:x": { region: "eu", code: "x", secret: "s1" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.codes", id: "w1", expect_init: { value: [
+      { region: "eu", code: "x", secret: "s1" }
+    ] } }
+    { call: "public.codes.erase", args: { region: "eu", code: "x" },
+      expect: { outcome: ok, value: "$bind:extract" } }
+    // deducible: the composite row is gone from live state.
+    { expect_view: { watch: "w1", value: [] } }
+    // the reinsert of the composite erase's extract is accepted (§21.3).
+    { call: "public.codes.reinsert", args: { extract: "$ref:extract" },
+      expect: { outcome: ok, "...": true } }
+    // whether the LIVE composite row returns is unspecified (§21.3).
+    { expect_view: { watch: "w1" }, expect_one_of: [
+      { value: [] }
+      { value: [ { region: "eu", code: "x", secret: "s1" } ] }
+    ] }
+  ]
+}

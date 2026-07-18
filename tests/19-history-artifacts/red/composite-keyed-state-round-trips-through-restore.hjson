@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: composite-keyed-state-round-trips-through-restore
+  suite: scenario
+  tags: [composite, artifact, identity]
+  // §19.10/§19.2: restoring an artifact reproduces the same owned logical state.
+  // The portable state section captures each row as its struct and reconstructs
+  // the positional composite key from the field values on restore. A composite
+  // key AND an inbound composite ref must survive the export/restore round trip
+  // exactly — the ref read back as the $key-order array, the sibling sharing one
+  // key component preserved as a distinct row.
+  spec: ["#history", "§19.10", "§19.2", "§5.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist.ck@1.0.0"
+    $model: {
+      regions: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+        label: "text"
+      }
+      holders: {
+        $key: "id"
+        id: "text"
+        home: { $ref: "/regions" }
+      }
+      $public: {
+        regions: { $view: ".regions { region, code, label, $sort: [region, code] }" }
+        holders: { $view: ".holders { id, home, $sort: [id] }" }
+      }
+    }
+    $data: {
+      regions: {
+        "eu:x": { region: "eu", code: "x", label: "EU-X" }
+        "eu:y": { region: "eu", code: "y", label: "EU-Y" }
+      }
+      holders: {
+        h1: { home: { region: "eu", code: "y" } }
+      }
+    }
+  }
+
+  steps: [
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1" }, expect: { outcome: ok } }
+      // composite keys reproduced exactly, both siblings distinct
+      { watch: "public.regions", id: "wr", expect_init: { value: [
+        { region: "eu", code: "x", label: "EU-X" }
+        { region: "eu", code: "y", label: "EU-Y" }
+      ] } }
+      // the inbound composite ref reproduced exactly, read as the key-order array
+      { watch: "public.holders", id: "wh", expect_init: { value: [
+        { id: "h1", home: ["eu", "y"] }
+      ] } }
+    ] }
+  ]
+}

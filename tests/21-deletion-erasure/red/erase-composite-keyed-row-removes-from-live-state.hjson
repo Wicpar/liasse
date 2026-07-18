@@ -1,0 +1,55 @@
+{
+  format: 1
+  name: erase-composite-keyed-row-removes-from-live-state
+  suite: scenario
+  tags: [erasure, composite, identity]
+  // §21.2: erase(row) on a COMPOSITE-keyed row plans the same live removal as an
+  // ordinary deletion (step 1) and returns the extract (step 6). This asserts the
+  // deducible live-state effect: after the exposed erasure call naming the
+  // composite row by its component object, that row is gone from the live view
+  // while a sibling sharing one component survives. (Extract shape is not pinned;
+  // §21.2 and NOTES.md.)
+  spec: ["#deletion", "§21.2", "§5.4"]
+
+  package: {
+    $liasse: 1
+    $app: "t.del@1.0.0"
+    $model: {
+      codes: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+        secret: "text"
+      }
+      $mut: {
+        erase_code: "return erase(.codes[{ region: @region, code: @code }])"
+      }
+      all: { $view: ".codes { region, code, secret, $sort: [region, code] }" }
+      $public: {
+        codes: {
+          $view: ".all"
+          $mut: { erase: ".erase_code" }
+        }
+      }
+    }
+    $data: {
+      codes: {
+        "eu:x": { region: "eu", code: "x", secret: "hunter2" }
+        "eu:y": { region: "eu", code: "y", secret: "keepme" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.codes", id: "w1", expect_init: { value: [
+      { region: "eu", code: "x", secret: "hunter2" }
+      { region: "eu", code: "y", secret: "keepme" }
+    ] } }
+    { call: "public.codes.erase", args: { region: "eu", code: "x" },
+      expect: { outcome: ok, value: "$bind:extract" } }
+    // the erased composite row is gone; the sibling sharing `region` survives.
+    { expect_view: { watch: "w1", value: [
+      { region: "eu", code: "y", secret: "keepme" }
+    ] } }
+  ]
+}
