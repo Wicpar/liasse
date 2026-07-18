@@ -8,6 +8,8 @@
 //! Every capability the untrusted client carries is an opaque, branded string it only
 //! echoes back — never a value it mints or interprets.
 
+import type { ConnectError } from "./errors.js";
+
 /// A JSON value carried verbatim from the engine's projection. The shell never
 /// inspects its shape (Annex A): a row value or a scalar is opaque data.
 export type Json =
@@ -105,20 +107,41 @@ export type Outcome =
   | { readonly status: "failed"; readonly code: "absent-anchor" | "scalar-view" }
   | { readonly status: "unknown" };
 
+/// The lifecycle of a subscription, distinguishing the states a non-awaiting reactive
+/// consumer must tell apart (§12.2):
+///
+/// - `pending` — subscribed, but no `init`/`scalar` has arrived yet: the empty `rows`
+///   mean "still loading", NOT "the view is empty";
+/// - `open` — the first `init`/`scalar` frame arrived, so `rows`/`scalar` are the
+///   authoritative view (which may legitimately be empty);
+/// - `closed` — the subscription terminated (a `close`/`unsubscribe`); `closeReason`
+///   says why;
+/// - `failed` — the `view` request the shell POSTed was refused; `error` carries why.
+///
+/// A `reset` clears the replica and the shell re-opens the view, so the state drops back
+/// to `pending` until the fresh `init` — never a stale `open`.
+export type ViewStatus = "pending" | "open" | "closed" | "failed";
+
 /// The current observable state of a subscription's replica — the store snapshot.
 export interface ViewState {
   /// The subscription this state belongs to.
   readonly sub: SubId;
-  /// The rows the replica holds, in view order (empty for a scalar or closed view).
+  /// The subscription's lifecycle status — the always-correct signal a reactive
+  /// consumer branches on (loading vs empty vs terminated vs refused).
+  readonly status: ViewStatus;
+  /// The rows the replica holds, in view order (empty for a scalar or closed view, and
+  /// — while `pending` — empty because nothing has loaded yet).
   readonly rows: WireRow[];
   /// The scalar value, for a scalar/aggregate view (`null` otherwise).
   readonly scalar: Json | null;
   /// The frontier last observed for this subscription.
   readonly frontier: FrontierToken | undefined;
-  /// Whether the subscription has terminated.
+  /// Whether the subscription has terminated (`status === "closed"`).
   readonly closed: boolean;
   /// Why it closed, if it did.
   readonly closeReason: CloseReason | undefined;
+  /// Why the view was refused, when `status === "failed"` (otherwise `undefined`).
+  readonly error: ConnectError | undefined;
 }
 
 // --- the wasm core surface -----------------------------------------------------------

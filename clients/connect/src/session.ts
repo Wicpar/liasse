@@ -266,12 +266,16 @@ export class Session {
     }
   }
 
-  /// POST a `view` binding a subscription to the current stream-session (§12.2). Waits
-  /// for the stream-session first, resolves when the view opened; on failure delivers a
-  /// handled error to the subscription and rejects (the rejection is always observed).
+  /// POST a `view` binding a subscription to the current stream-session (§12.2). Marks
+  /// the subscription as re-opening first (so its status returns to `pending` — after a
+  /// `reset` the replica is cleared and must not read as a stale `open`), waits for the
+  /// stream-session, and resolves when the view opened. On failure it moves the
+  /// subscription to `failed` with the error IN its state AND delivers it to the error
+  /// listeners, then rejects (the rejection is always observed).
   private bindView(subscription: Subscription): Promise<void> {
+    subscription.beginOpen();
     const opened = this.postView(subscription);
-    opened.catch((thrown) => subscription.deliverError(toConnectError(thrown, "view failed")));
+    opened.catch((thrown) => subscription.fail(toConnectError(thrown, "view failed")));
     return opened;
   }
 

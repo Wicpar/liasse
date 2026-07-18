@@ -269,3 +269,79 @@ test("a dropped stream reconnects, gets a fresh session, and re-binds subscripti
   server.stream.push(initFrame(sub.sub, [{ id: "z", value: { title: "again" } }]), "g0");
   assert.deepEqual(sub.rows.map((row) => row.id), ["z"]);
 });
+
+// --- ViewState.status: the always-correct lifecycle signal --------------------------
+
+test("a view is pending until the first frame, then open — even when the view is empty", async () => {
+  const { server, session } = await openSession();
+  const sub = session.subscribe("public.tasks");
+  await sub.ready;
+
+  // Subscribed, view accepted, but no init/scalar yet: PENDING. The empty rows here mean
+  // "still loading", which a consumer must be able to tell apart from an empty view.
+  assert.equal(sub.snapshot().status, "pending", "no frame yet is pending, not open");
+  assert.equal(sub.snapshot().rows.length, 0);
+
+  // An EMPTY init still OPENS the view: the rows are now authoritative (and empty).
+  server.stream.push(initFrame(sub.sub, []), "f0");
+  assert.equal(sub.snapshot().status, "open", "an empty init is open, not pending");
+  assert.equal(sub.snapshot().rows.length, 0, "an open-but-empty view has rows: [] with status open");
+});
+
+test("a refused view moves the subscription to failed with the error in its state", async () => {
+  const server = new MockServer();
+  server.failViews = true;
+  const session = await connect("http://liasse.test", {}, {
+    core,
+    fetch: server.fetch,
+    eventSource: server.eventSource,
+  });
+
+  const sub = session.subscribe("public.tasks");
+  const states: ViewState[] = [];
+  sub.subscribe((state) => states.push(state));
+  // The view POST is refused; the rejection is always observed by the shell.
+  await sub.ready.catch(() => {});
+  await tick();
+
+  // The refusal is IN the state (status failed + the error), not only on the error path.
+  const state = sub.snapshot();
+  assert.equal(state.status, "failed");
+  assert.ok(state.error, "the failure reason is carried in the state");
+  assert.equal(state.error?.kind, "fault");
+  // And a non-awaiting reactive consumer was NOTIFIED of the failed transition.
+  assert.equal(states.at(-1)?.status, "failed", "the failed transition was broadcast");
+  assert.ok(states.at(-1)?.error, "the broadcast state carries the error");
+});
+
+test("unsubscribe moves the subscription to closed", async () => {
+  const { server, session } = await openSession();
+  const sub = session.subscribe("public.tasks");
+  await sub.ready;
+  server.stream.push(initFrame(sub.sub, [{ id: "a", value: { title: "one" } }]), "f0");
+  assert.equal(sub.snapshot().status, "open");
+
+  // Unsubscribe; the server closes the sub on the stream.
+  await sub.unsubscribe();
+  server.stream.push(closeFrame(sub.sub, "unsubscribed"), "f1");
+  assert.equal(sub.snapshot().status, "closed", "an unsubscribed view is closed");
+  assert.equal(sub.snapshot().closeReason, "unsubscribed");
+});
+
+test("a reset returns the subscription to pending, then open on the fresh init", async () => {
+  const { server, session } = await openSession();
+  const sub = session.subscribe("public.tasks");
+  await sub.ready;
+  server.stream.push(initFrame(sub.sub, [{ id: "a", value: { title: "one" } }]), "f0");
+  assert.equal(sub.snapshot().status, "open");
+
+  // A reset drops the replica and the shell re-opens the view: the status must fall back
+  // to PENDING (not a stale open) until the fresh init re-establishes the rows.
+  server.stream.push(resetFrame("server-reset"), "");
+  assert.equal(sub.snapshot().status, "pending", "a reset falls back to pending, not stale open");
+  await tick();
+
+  server.stream.push(initFrame(sub.sub, [{ id: "z", value: { title: "again" } }]), "f2");
+  assert.equal(sub.snapshot().status, "open", "the fresh init re-opens the view");
+  assert.deepEqual(sub.rows.map((row) => row.id), ["z"]);
+});

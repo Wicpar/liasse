@@ -52,6 +52,7 @@ export type {
   SubId,
   SubscribeOptions,
   ViewState,
+  ViewStatus,
   WireClientCore,
   WireCore,
   WireRow,

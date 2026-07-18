@@ -111,6 +111,9 @@ export class MockServer {
   fetchValue: unknown = { title: "snapshot" };
   operationOutcome: unknown = { status: "unknown" };
   manifestBody: unknown = { surfaces: ["public.tasks"] };
+  /// When set, the server refuses every `view` POST with a transport fault (a 4xx), so a
+  /// test can drive the subscription's `failed` state.
+  failViews = false;
 
   readonly requests: Recorded[] = [];
   readonly streams: MockEventSource[] = [];
@@ -172,6 +175,13 @@ export class MockServer {
       case "view": {
         const sub = String(body["sub"]);
         this.viewCounts.set(sub, this.viewCount(sub) + 1);
+        if (this.failViews) {
+          return {
+            ok: false,
+            status: 400,
+            text: JSON.stringify({ type: "fault", code: "malformed", message: "view refused" }),
+          };
+        }
         return ok(JSON.stringify({ frontier: "f0" }));
       }
       case "unsubscribe":

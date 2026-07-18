@@ -8,7 +8,7 @@
 
 import { parseCloseReason, parseFrontier, parseRows, parseScalar } from "./boundary.js";
 import type { ConnectError } from "./errors.js";
-import type { Json, SubId, ViewState, WireClientCore, WireRow } from "./types.js";
+import type { Json, SubId, ViewState, ViewStatus, WireClientCore, WireRow } from "./types.js";
 
 /// The parameters a subscription was opened with — retained so the session can reopen
 /// it verbatim after a §12.2 `reset`.
@@ -39,6 +39,10 @@ export class Subscription {
   private readonly closeFn: () => Promise<void>;
   private readonly stateListeners = new Set<StateListener>();
   private readonly errorListeners = new Set<ErrorListener>();
+  /// The client-side bit the replica cannot know: the error a refused `view` POST
+  /// carried. `undefined` unless the view was refused; cleared when the view is
+  /// (re)opened. Everything else in the state is derived from the authoritative replica.
+  private failure: ConnectError | undefined;
 
   constructor(sub: SubId, intent: ViewIntent, client: WireClientCore, closeFn: () => Promise<void>) {
     this.sub = sub;
@@ -46,6 +50,7 @@ export class Subscription {
     this.client = client;
     this.closeFn = closeFn;
     this.ready = Promise.resolve();
+    this.failure = undefined;
   }
 
   /// The rows the replica currently holds, in view order.
@@ -63,16 +68,55 @@ export class Subscription {
     return this.client.isClosed(this.sub);
   }
 
+  /// The subscription's lifecycle status (§12.2). `open`/`closed` are DERIVED from the
+  /// authoritative replica — `open` once it has observed a frontier (the first
+  /// `init`/`scalar`), `closed` once it has terminated — so they never disagree with the
+  /// rows; only the client-side `failed` and the "not-loaded-yet" `pending` are tracked
+  /// here. A `reset` clears the replica (no frontier), so the state falls back to
+  /// `pending` until the re-opened view's fresh `init`, never a stale `open`.
+  private status(): ViewStatus {
+    if (this.client.isClosed(this.sub)) {
+      return "closed";
+    }
+    if (this.failure !== undefined) {
+      return "failed";
+    }
+    if (this.client.frontier(this.sub) !== undefined) {
+      return "open";
+    }
+    return "pending";
+  }
+
   /// A point-in-time snapshot of the whole view state.
   snapshot(): ViewState {
     return {
       sub: this.sub,
+      status: this.status(),
       rows: parseRows(this.client.rows(this.sub)),
       scalar: parseScalar(this.client.scalar(this.sub)),
       frontier: parseFrontier(this.client.frontier(this.sub)),
       closed: this.client.isClosed(this.sub),
       closeReason: parseCloseReason(this.client.closeReason(this.sub)),
+      error: this.failure,
     };
+  }
+
+  /// Begin a fresh `view` open attempt: clear any prior failure (back to `pending`,
+  /// unless the replica already holds the view) and broadcast, so a reactive consumer
+  /// sees `pending` when the shell re-opens after a `reset` rather than a stale state.
+  /// Internal to the shell.
+  beginOpen(): void {
+    this.failure = undefined;
+    this.notify();
+  }
+
+  /// Record that the `view` POST was refused: put the error IN the state (so the store's
+  /// status becomes `failed` with the reason), broadcast the transition, and deliver the
+  /// error to the error listeners. Internal to the shell.
+  fail(error: ConnectError): void {
+    this.failure = error;
+    this.notify();
+    this.deliverError(error);
   }
 
   /// Subscribe to state changes (readable-store contract): `run` fires immediately

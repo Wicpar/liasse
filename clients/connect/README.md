@@ -103,10 +103,11 @@ const session = await connect("https://app.example/liasse", { auth });
 // as init/patch frames arrive over the SSE stream.
 const tasks = session.subscribe("public.tasks", { params: { open: true } });
 const stop = tasks.subscribe(
-  (state) => render(state.rows),        // fires with the current snapshot, then on each change
+  (state) => render(state),             // fires with the current snapshot, then on each change
   (error) => report(error),            // faults and (re)subscribe failures, handled — never a throw
 );
 await tasks.ready;                       // optional: resolves when the server opened the view
+tasks.snapshot().status;                 // "pending" | "open" | "closed" | "failed" (see below)
 tasks.rows;                              // current rows: { id, value }[]
 tasks.scalar;                            // scalar/aggregate value, or null
 tasks.closed;                            // terminal state; state.closeReason says why
@@ -124,6 +125,25 @@ const manifest = await session.manifest();
 await tasks.unsubscribe();
 session.close();
 ```
+
+### Store contract: `ViewState.status`
+
+`subscribe()` returns synchronously, but the view opens asynchronously — so the store
+snapshot carries an always-correct `status` a non-awaiting reactive consumer (Vue, React,
+Svelte) can branch on without racing `ready`:
+
+- `pending` — subscribed, but no `init`/`scalar` has arrived yet. `rows` is `[]` because
+  the view is **still loading**, which is distinct from an empty view.
+- `open` — the first `init`/`scalar` frame arrived; `rows`/`scalar` are the authoritative
+  view and **may legitimately be empty** (`{ status: "open", rows: [] }`).
+- `closed` — the subscription terminated (`close`/`unsubscribe`); `closeReason` says why.
+- `failed` — the `view` request was refused; `error` carries the reason. The refusal is
+  put IN the store state (and broadcast to state listeners), not only to the error
+  listener, so a consumer that only renders state still sees it.
+
+`open`/`closed` are derived from the authoritative wasm replica, so they never disagree
+with the rows. A `reset` clears the replica and the shell re-opens the view, so the status
+drops back to `pending` until the fresh `init` — never a stale `open`.
 
 The client is deliberately dumb: on a §12.2 `reset` it reopens its subscriptions from
 scratch; on a `close` it surfaces the reason through the store state; on a `fault` it
