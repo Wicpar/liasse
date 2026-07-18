@@ -533,7 +533,13 @@ impl<'a> Interp<'a> {
         let rows: Vec<liasse_expr::Row> = ordered
             .iter()
             .filter_map(|key| {
-                let address = materialize::top_address(&collection, KeyValue::single(key.clone()));
+                // §5.4/§8.4: `key` is the captured row's application-visible identity,
+                // which for a composite key is the positional `Value::Composite`
+                // tuple. Decompose it into the N-component `KeyValue` the row was
+                // stored under (`key_value_of`); `KeyValue::single` would wrap the
+                // whole tuple as one component, the lookup would miss, and the
+                // delete-and-return view would come back empty. Mirrors 3fdb601.
+                let address = materialize::top_address(&collection, materialize::key_value_of(key));
                 let fields = self.prospective.get(&address)?;
                 match self.ctx.row_cell_of(self.prospective, compiled, fields) {
                     Cell::Row(row) => Some(*row),
@@ -1325,7 +1331,16 @@ impl<'a> Interp<'a> {
         // CORE scope, so it is removed directly with its descendant subtree.
         if loc.decl.len() > 1 {
             for key in targets {
-                self.remove_subtree(&loc.store_path.row(KeyValue::single(key)));
+                // §5.4/B.4: `key` is the application-visible identity, which for a
+                // composite key is the positional `Value::Composite` tuple. Route it
+                // through `key_value_of` so it decomposes into the N-component
+                // `KeyValue` the row was stored under (`materialize::row_key`);
+                // `KeyValue::single` would wrap the whole tuple as one component and
+                // address a non-existent one-component row, so `remove_subtree`'s
+                // `contains` guard would miss and the delete would silently no-op.
+                // A single-field key passes through as a lone component unchanged.
+                // Mirrors the 3fdb601 fix on the sibling `exec_erase` path.
+                self.remove_subtree(&loc.store_path.row(materialize::key_value_of(&key)));
             }
             return Ok(());
         }
@@ -1509,7 +1524,12 @@ impl<'a> Interp<'a> {
             let targets = keys
                 .into_iter()
                 .map(|key| RowTarget {
-                    address: loc.store_path.row(KeyValue::single(key)),
+                    // §5.4/§8.9: `key` is a row's application-visible identity, a
+                    // positional `Value::Composite` for a composite key; route it
+                    // through `key_value_of` so a bulk patch over a composite-keyed
+                    // collection addresses the stored N-component row rather than a
+                    // never-matching one-component `KeyValue::single`.
+                    address: loc.store_path.row(materialize::key_value_of(&key)),
                     path: loc.decl.clone(),
                 })
                 .collect();
@@ -1662,7 +1682,12 @@ impl<'a> Interp<'a> {
                 }
                 Ok(KeyValue::composite(first, rest))
             }
-            (_, scalar) => Ok(KeyValue::single(scalar)),
+            // A composite-keyed collection selected by a non-struct value: when that
+            // value is the positional `Value::Composite` tuple (another row's `$key`
+            // identity), decompose it into the stored N-component key rather than
+            // wrapping the whole tuple as one component (§5.4). A plain scalar (a
+            // malformed composite selector) stays single and fails closed at lookup.
+            (_, scalar) => Ok(materialize::key_value_of(&scalar)),
         }
     }
 

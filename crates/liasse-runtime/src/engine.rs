@@ -1294,9 +1294,14 @@ fn bind_context(
     let mut context = BTreeMap::new();
     let mut bind = |name: &str, path: &Option<Vec<String>>, key: Option<&liasse_value::Value>| {
         let (Some(path), Some(key)) = (path, key) else { return };
+        // §5.4/§11.1: the actor/session row's key is its application-visible
+        // identity — a positional `Value::Composite` when the actor/session
+        // collection is composite-keyed. Route it through `key_value_of` so the
+        // binding addresses the stored N-component row rather than a one-component
+        // `KeyValue::single` that would never match (fail-closed, unbound §6.3).
         let address = crate::materialize::top_address(
             &path.join("/"),
-            liasse_store::KeyValue::single(key.clone()),
+            crate::materialize::key_value_of(key),
         );
         if let Some(cell) = ctx.materialize_row_cell(prospective, path, &address) {
             context.insert(name.to_owned(), cell);
