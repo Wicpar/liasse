@@ -280,27 +280,49 @@ fn build_migrated<G: crate::generator::Generators>(
         }
     }
 
-    // §20.1/§8.2 compatible same-identity copy of the root singleton reserved row.
-    // The singleton is one reserved row of the package root's writable scalar/ref/
-    // set/static-struct members (§8.2); a member both models declare unchanged is a
-    // compatible same-identity member exactly like a keyed-collection field, so it
-    // MUST be carried into migrated live state. Iterating the TARGET's singleton-
-    // eligible members (the same `member_type` gate the seed/materialize paths use)
-    // carries each old value forward and drops a member the target removed — the
-    // singleton analogue of the collection compatible copy in `map_row`. Staging it
+    // §20.1/§8.2 carry of the root singleton reserved row. The singleton is one
+    // reserved row of the package root's writable scalar/ref/set/static-struct
+    // members (§8.2); each target member takes either its local `$from`/`$as`
+    // mapping (the singleton analogue of `map_row`, applied through the same
+    // [`apply_mapping`]) or — with no mapping — the compatible same-identity copy of
+    // the same-named old value, and a member the target removed is dropped. Iterating
+    // the TARGET's singleton-eligible members (the same `member_type` gate the
+    // seed/materialize paths use) is what carries only declared state. Staging it
     // BEFORE the program means an explicit `$migrations` write of a singleton member
     // overwrites the carried value by read-your-writes (`interp::write_singleton_field`
     // stages onto the same reserved address), so a deliberate migration of the
     // singleton still wins while every member the program leaves alone keeps its
-    // §20.1 compatible copy.
+    // §20.1 compatible copy. Every carried value is re-validated against its target
+    // type in `coerce_and_require` before commit.
     let singleton_address = crate::singleton::address();
     if let Some(old_singleton) = old_working.get(&singleton_address) {
         let mut migrated_singleton = FieldMap::new();
         for member in &target.model.root().members {
-            if crate::singleton::member_type(&target.model, &member.node).is_some()
-                && let Some(value) = old_singleton.get(member.name.as_str())
-            {
-                migrated_singleton.insert(member.name.as_str().to_owned(), value.clone());
+            let Some(target_ty) = crate::singleton::member_type(&target.model, &member.node) else { continue };
+            let name = member.name.as_str();
+            if let Some(mapping) = plan.singleton_fields.get(name) {
+                // §20.1: a `$from` must name a durable singleton member of the SOURCE
+                // model; a name that names none (a typo, a Unicode confusable) resolves
+                // to no source and rejects, rather than silently leaving the target
+                // member unpopulated — the singleton analogue of `map_row`'s check.
+                let old_node = old_schema.model().root().member(&mapping.from).map(|m| &m.node);
+                let Some(old_ty) = old_node.and_then(|node| crate::singleton::member_type(old_schema.model(), node))
+                else {
+                    return Err(Rejection::new(
+                        RejectionReason::Malformed,
+                        format!(
+                            "migration `$from: \"{}\"` for singleton member `{name}` names no durable \
+                             singleton member of the source package (§8.2/§20.1)",
+                            mapping.from
+                        ),
+                    ));
+                };
+                let Some(source) = old_singleton.get(&mapping.from) else { continue };
+                let value =
+                    apply_mapping(mapping, source, old_ty, &target_ty, &ctx, &mut sources, &root_ty, &codec_sigs, name)?;
+                migrated_singleton.insert(name.to_owned(), value);
+            } else if let Some(value) = old_singleton.get(name) {
+                migrated_singleton.insert(name.to_owned(), value.clone());
             }
         }
         if !migrated_singleton.is_empty() {
@@ -410,12 +432,29 @@ fn run_program(
     Ok(())
 }
 
-/// Coerce a migrated row for the §20.1 final check and enforce population: a
-/// ref-typed field carrying a scalar key (a program's literal `team: "ghost"`) is
-/// decoded to a typed ref so the refs check resolves it; a migrated enum value is
-/// re-validated against the target's closed label set so a narrowed set rejects
-/// (§5.9/§22.1); a required field the migration left unpopulated is a §5.1/§20.1
-/// state-population gap and rejects.
+/// Re-validate a migrated row against its declared TARGET shape for the §20.1
+/// final check, and enforce population. Every migrated value — the compatible
+/// same-identity copy, a `$from`/`$as` result, or a `$migrations` program write —
+/// is re-decoded against its declared target type through the SAME portable codec
+/// the §19 export/restore path enforces ([`Type::decode`] over the value's
+/// canonical wire), so a representable value is coerced to the new type and an
+/// unrepresentable one rejects, exactly as ordinary admission would. This closes
+/// the class where a breaking scalar type change, a wrong-typed `$as` result, or a
+/// narrowed enum committed type-invalid state that later failed export (§19.10):
+///
+/// - a scalar field (`decimal`→`int`, `text`→`int`, …): a canonical-representable
+///   value is decoded to the target type; a non-representable one (`decimal 1.5`,
+///   `"hello"` into `int`) rejects — a breaking type change needs an explicit `$as`;
+/// - an enum leaf (top-level or nested): a label the target still declares
+///   re-derives its declaration-order ordinal (§5.9/§5.4); a dropped label rejects;
+/// - a ref field: a value produced as a plain scalar key (a program's literal
+///   `team: "ghost"`) decodes to a typed ref so the §5.6 refs check resolves it;
+/// - a required field the migration left unpopulated rejects (§5.1/§20.1).
+///
+/// The rule that a value "is compatible" iff it decodes under the target type is
+/// pinned to §20.1 ("the *compatible* value is copied") and §22.1 (field/shape
+/// types hold in EVERY committed state): the committable states are exactly those
+/// the §19 codec can round-trip, which is the invariant a migration must preserve.
 fn coerce_and_require(
     compiled: &Compiled,
     prospective: &mut Prospective,
@@ -442,19 +481,28 @@ fn coerce_and_require(
             }
             continue;
         }
-        // §5.9/§20.1/§22.1: a migrated enum value — the compatible same-identity
-        // copy of a value that parsed under the SOURCE enum, or a program/`$as`
-        // result — is re-validated against the TARGET's closed label set. A
-        // narrowing release that drops its label leaves it out of the target's
-        // domain, so it rejects here rather than stranding an undeclared label in
-        // committed state; a retained label is re-resolved to its current ordinal.
-        // The re-validation DESCENDS into containers (`rules::coerce_value`), so an
-        // enum a struct/set/map layer down — not only a top-level enum field — is
-        // re-checked too, gated on `contains_enum` rather than `is_enum_field`.
-        if rules::contains_enum(&field.ty)
-            && let Some(value) = fields.get(&field.name)
+        // §5.5/§5.6: a `$set` of `$ref` is validated member-by-member by the refs
+        // check (its members may be carried as bare scalar keys), not re-decoded
+        // here — leave it untouched, exactly as before.
+        if field.element_reference.is_some() {
+            continue;
+        }
+        // §20.1/§22.1/§5.9: re-decode every other migrated value against its
+        // declared target type. `decode(value.to_wire())` coerces a representable
+        // value (a canonical `decimal`/`text` that parses as the target scalar, an
+        // enum label still declared, a reordered enum re-derived to its ordinal) and
+        // rejects an unrepresentable one — the same total, no-hand-rolled codec the
+        // §19 portable path uses, descending into every container leaf.
+        if let Some(value) = fields.get(&field.name)
+            && !matches!(value, Value::None)
         {
-            let coerced = rules::coerce_value(&field.ty, value, &field.name, &address.render())?;
+            let coerced = field.ty.decode(&value.to_wire()).map_err(|error| {
+                Rejection::new(
+                    RejectionReason::TypeError,
+                    format!("migrated field `{}` is not representable in its target type: {error}", field.name),
+                )
+                .at(address.render())
+            })?;
             if &coerced != value {
                 fields.insert(field.name.clone(), coerced);
                 changed = true;
@@ -468,18 +516,25 @@ fn coerce_and_require(
             .at(address.render()));
         }
     }
-    // §5.9/§20.1/§22.1: a migrated static-struct member (§5.3) carries its own enum
-    // leaves; re-validate each against the TARGET's closed label set by descending
-    // into the reconstructed struct type (`rules::coerce_value`). A struct member
-    // compiles into `collection.structs`, not `fields`, so the field loop above
-    // skips it — the path a narrowing release used to strand an out-of-domain label
-    // one struct layer down (the top-level fix of 80fac2c reached only `fields`).
+    // §5.3/§20.1/§22.1: a migrated static-struct member (§5.3) — including the §8.2
+    // singleton's static structs, now compiled into `root_singleton.structs` —
+    // carries its own scalar/enum leaves; re-decode the whole struct against its
+    // reconstructed target struct type, so a struct-nested scalar type change or a
+    // narrowed struct enum is coerced-or-rejected exactly like a top-level field. A
+    // struct member compiles into `collection.structs`, not `fields`, so the field
+    // loop above never reaches it.
     for struct_meta in &collection.structs {
         let Some(struct_ty) = collection.struct_type(&struct_meta.name) else { continue };
-        if rules::contains_enum(&struct_ty)
-            && let Some(value) = fields.get(&struct_meta.name)
+        if let Some(value) = fields.get(&struct_meta.name)
+            && !matches!(value, Value::None)
         {
-            let coerced = rules::coerce_value(&struct_ty, value, &struct_meta.name, &address.render())?;
+            let coerced = struct_ty.decode(&value.to_wire()).map_err(|error| {
+                Rejection::new(
+                    RejectionReason::TypeError,
+                    format!("migrated struct `{}` is not representable in its target type: {error}", struct_meta.name),
+                )
+                .at(address.render())
+            })?;
             if &coerced != value {
                 fields.insert(struct_meta.name.clone(), coerced);
                 changed = true;
@@ -689,22 +744,10 @@ fn map_row(
                 ));
             }
             let Some(source) = old_row.get(&mapping.from) else { continue };
-            let value = match &mapping.transform {
-                Some(text) => {
-                    let old_ty = old_collection
-                        .and_then(|c| c.field(&mapping.from))
-                        .map_or(Type::Json, |f| f.ty.clone());
-                    let transformed =
-                        transform(text, source, old_ty.clone(), ctx, sources, root_ty, codec_sigs, &field.name)?;
-                    if let Some(back) = &mapping.back {
-                        verify_reversible(
-                            back, source, &transformed, &field.ty, ctx, sources, root_ty, codec_sigs, &field.name,
-                        )?;
-                    }
-                    transformed
-                }
-                None => source.clone(),
-            };
+            let old_ty = old_collection
+                .and_then(|c| c.field(&mapping.from))
+                .map_or(Type::Json, |f| f.ty.clone());
+            let value = apply_mapping(mapping, source, old_ty, &field.ty, ctx, sources, root_ty, codec_sigs, &field.name)?;
             fields.insert(field.name.clone(), value);
         } else if let Some(value) = old_row.get(&field.name) {
             // §20.1 compatible same-identity copy.
@@ -723,6 +766,37 @@ fn map_row(
         }
     }
     Ok(fields)
+}
+
+/// Apply one field's local migration mapping to a source value (§20.1): a `$as`
+/// transform (with an optional `$back` round-trip verification, §20.2) or, without
+/// `$as`, the compatible same-identity copy. `old_ty` types the transform's `.`;
+/// the result is re-validated against `target_ty` by [`coerce_and_require`], so a
+/// wrong-typed `$as` result rejects rather than committing. Shared by the keyed-
+/// collection [`map_row`] and the §8.2 singleton carry so a singleton `$from`
+/// rename copies/transforms exactly like a collection field.
+#[allow(clippy::too_many_arguments)]
+fn apply_mapping(
+    mapping: &FieldMigration,
+    source: &Value,
+    old_ty: Type,
+    target_ty: &Type,
+    ctx: &EvalCtx<'_>,
+    sources: &mut SourceMap,
+    root_ty: &ExprType,
+    codec_sigs: &HostSignatures,
+    field: &str,
+) -> Result<Value, Rejection> {
+    match &mapping.transform {
+        Some(text) => {
+            let transformed = transform(text, source, old_ty, ctx, sources, root_ty, codec_sigs, field)?;
+            if let Some(back) = &mapping.back {
+                verify_reversible(back, source, &transformed, target_ty, ctx, sources, root_ty, codec_sigs, field)?;
+            }
+            Ok(transformed)
+        }
+        None => Ok(source.clone()),
+    }
 }
 
 /// Evaluate a `$as`/`$from` transform expression with `.` bound to the old value.
@@ -825,9 +899,14 @@ fn scalar(cell: Cell) -> Value {
 }
 
 /// The parsed migration mappings of a target definition (§20.1): per collection,
-/// an optional collection rename and each field's `$from`/`$as`/`$back`.
+/// an optional collection rename and each field's `$from`/`$as`/`$back`, plus the
+/// local mappings on §8.2 root singleton members.
 struct MigrationPlan {
     collections: BTreeMap<String, CollectionMigration>,
+    /// Local `$from`/`$as`/`$back` mappings on §8.2 root singleton members, keyed
+    /// by the TARGET member name — the singleton analogue of a collection field's
+    /// mapping, applied by the singleton carry loop in [`build_migrated`].
+    singleton_fields: BTreeMap<String, FieldMigration>,
 }
 
 /// One collection's migration: its optional source collection and field mappings.
@@ -853,20 +932,33 @@ impl MigrationPlan {
         let document =
             parse_document(src, definition).map_err(|d| EngineError::Invalid(Box::new(d)))?;
         let mut collections = BTreeMap::new();
+        let mut singleton_fields = BTreeMap::new();
         let Some(model) = doc::member(document.root(), "$model") else {
-            return Ok(Self { collections });
+            return Ok(Self { collections, singleton_fields });
         };
         let Some(members) = doc::object(model) else {
-            return Ok(Self { collections });
+            return Ok(Self { collections, singleton_fields });
         };
         for member in members {
             let Some(shape) = doc::object(&member.value) else { continue };
-            let migration = Self::read_collection(shape);
-            if migration.from.is_some() || !migration.fields.is_empty() {
-                collections.insert(member.name.text.clone(), migration);
+            // §5.4 vs §8.2: a top-level member declaring `$key` is a keyed
+            // collection — its `$from` is a collection rename and its field members
+            // carry their own mappings. A top-level member with no `$key` but a
+            // `$from` is a §8.2 singleton member rename/transform. Routing the
+            // singleton member here — rather than mis-filing its `{ $type, $from }`
+            // object under `collections`, where the singleton carry never reads it —
+            // is what lets a singleton `$from` copy/transform its value like a
+            // collection field (§20.1).
+            if shape.iter().any(|m| m.name.text == "$key") {
+                let migration = Self::read_collection(shape);
+                if migration.from.is_some() || !migration.fields.is_empty() {
+                    collections.insert(member.name.text.clone(), migration);
+                }
+            } else if let Some(field) = Self::read_field(&member.value) {
+                singleton_fields.insert(member.name.text.clone(), field);
             }
         }
-        Ok(Self { collections })
+        Ok(Self { collections, singleton_fields })
     }
 
     fn read_collection(shape: &[liasse_syntax::DocMember]) -> CollectionMigration {

@@ -1064,11 +1064,14 @@ fn compile_root_computed(
 /// Compile the root singleton row as a pseudo-collection (§8.2): each writable
 /// scalar / reference / set member declared directly under `$model` becomes a
 /// [`CompiledField`] carrying its checks, its scalar-ref target, and — for a
-/// `$set` of `$ref` — its element target. The reserved `$root` row has no key, so
-/// the final rule pass (`rules::finalize`) and the atomic-rekey inbound-ref
+/// `$set` of `$ref` — its element target, and each static-struct member (§5.3)
+/// becomes a [`CompiledStruct`] in `structs`. The reserved `$root` row has no key,
+/// so the final rule pass (`rules::finalize`) and the atomic-rekey inbound-ref
 /// rewrite validate/rewrite the singleton row exactly like a keyed row (§5.4,
-/// §5.6, §22.1). Field checks type with the member's own value as `.`, so a
-/// negative `count` under `$check: [(. >= 0), …]` rejects (§8.8).
+/// §5.6, §22.1); the compiled `structs` let the migration final check re-validate
+/// a struct-nested scalar/enum leaf the same way it does for a keyed collection
+/// (§20.1). Field checks type with the member's own value as `.`, so a negative
+/// `count` under `$check: [(. >= 0), …]` rejects (§8.8).
 fn compile_root_singleton(
     sources: &mut SourceMap,
     schema: Schema<'_>,
@@ -1078,9 +1081,24 @@ fn compile_root_singleton(
 ) -> Result<CompiledCollection, EngineError> {
     let row_scope = RuntimeScope::new(root_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
     let mut fields = Vec::new();
+    let mut structs = Vec::new();
     let mut unique = Vec::new();
     let mut computed = Vec::new();
     for member in &schema.model().root().members {
+        // §5.3/§8.2: a root static-struct member is durable singleton state whose
+        // own scalar/enum leaves must be re-validated on migration exactly like a
+        // keyed collection's struct member. Compile it into `structs` so the
+        // singleton pseudo-collection carries it — `compile_field` returns
+        // `Ok(None)` for a `Node::Struct`, which used to drop it entirely, leaving
+        // `root_singleton.structs` empty and the migration final check unable to
+        // re-validate a struct-nested narrowed enum (§20.1/§22.1).
+        if let Node::Struct(shape) = &member.node {
+            let path = vec![member.name.as_str().to_owned()];
+            structs.push(compile_struct(
+                sources, schema, root_ty, model_doc, &path, member.name.as_str(), shape, hosts,
+            )?);
+            continue;
+        }
         let member_doc = doc::member(model_doc, member.name.as_str());
         if let Some(field) = compile_field(
             sources, schema, root_ty, root_ty, &row_scope, member, &mut unique, &mut computed, member_doc, hosts,
@@ -1095,7 +1113,7 @@ fn compile_root_singleton(
         fields,
         computed: Vec::new(),
         row_checks: Vec::new(),
-        structs: Vec::new(),
+        structs,
         children: Vec::new(),
         views: Vec::new(),
     })
