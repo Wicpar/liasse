@@ -58,14 +58,13 @@ and `$members` failure — are asserted as `denied`, FORMAT.md's class for "reje
 authentication, roles, or permissions". Cases assert the class only, never diagnostic
 text or codes.
 
-## Spec ambiguities captured as `outcome: unspecified`
+## Resolved (SPEC-ISSUES #8)
 
-- `red/public-surface-authenticator-selection-unspecified`: §11.4 says public
-  surfaces "carry no authenticator selection" and §10.2 says a public operation
-  "has no `$actor` or `$session`", but neither pins the outcome when a client
-  *does* attach an authenticator selection + credential to a public address.
-  Ignore-the-selection (proceed actor-less) and reject-the-malformed-request are
-  both defensible; the outcome is genuinely unspecified.
+- `red/public-surface-authenticator-selection`: §11.4 now pins that a request to
+  a public address carrying an authenticator selection or credential is malformed
+  and is rejected — the runtime does not drop the selection and serve the request
+  actor-less, and refuses before verifying the attached credential. The case
+  asserts `rejected`.
 
 ## Known coverage gaps (see also structured report)
 

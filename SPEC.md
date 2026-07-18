@@ -1407,6 +1407,8 @@ Roles MAY be nested on application rows. Their location defines scope. An extern
 
 A surface grants named access to package-defined expressions. The caller supplies typed parameters; the declared view or mutation determines which state it MAY read or change.
 
+An external operation the caller is not authorized to have served — because the named public surface, role, surface, or call does not exist, is not exposed, or names an internal declaration; or because the resolved actor does not hold the targeted role — fails as an authorization denial (the `denied` class). There is no distinct not-found outcome. The denial MUST NOT reveal whether a surface of the named address exists: for a fixed caller and authentication context, the observable denial — its class and any diagnostic code — for a name that does not exist MUST be identical to that for a name that exists but is not granted to that caller. A runtime therefore evaluates role membership before revealing whether a named surface or call exists, so a caller who is not a member of the targeted role cannot enumerate that role's surface catalog. Membership- or existence-specific diagnostics are permitted only toward a caller that has already established authority over the target.
+
 ### 10.5 Recursive surface coverage
 
 Recursive coverage applies one declared surface through a checked descendant relation. It avoids duplicating the same role API across application-owned hierarchies while preserving scope and pruning rules.
@@ -1561,7 +1563,7 @@ The targeted role determines the accepted authenticators before the credential i
 }
 ```
 
-A string `$auth` accepts one named authenticator. A sequence accepts any listed authenticator. Every authenticated request names both the role and one accepted authenticator, including roles that accept exactly one. Public surfaces use their public address and carry no authenticator selection.
+A string `$auth` accepts one named authenticator. A sequence accepts any listed authenticator. Every authenticated request names both the role and one accepted authenticator, including roles that accept exactly one. Public surfaces use their public address and carry no authenticator selection. A request to a public address that nonetheless carries an authenticator selection or credential is malformed and is rejected — the runtime does not drop the selection and serve the request actor-less, and it refuses the request before verifying the attached credential.
 
 ```hjson
 {
@@ -1704,6 +1706,8 @@ The request pipeline is:
 7. commit atomically or return `unchanged`/`rejected`;
 8. advance authorized live results on the calling connection before returning success.
 
+An argument object presented to a `call` or `view` request is closed: it MUST contain only names that are declared parameters of the targeted mutation or view. A member whose name is not a declared parameter — including any reserved `$`-prefixed name — makes the request malformed; the runtime rejects it during parameter parsing (step 3), before admission, with no partial effect. There is no width subtyping over external argument objects, and an undeclared member is never silently dropped.
+
 External parameter values remain call-local unless mutation statements write derived or supplied values into state. Typed values are bound into package expressions; the wire carries no executable source.
 
 ### 12.2 Live frontiers and resumable views
@@ -1752,6 +1756,8 @@ A mutation commits before its response is emitted. Receiving `committed` proves 
 A connection loss before admission MAY cancel the request. A connection loss while admission or response delivery is in progress leaves the outcome unknown to that client: the request may have committed, and a committed transition remains final.
 
 An external call MAY carry a high-entropy operation identifier. Its scope is the application, public or scoped-role target, selected authenticator when present, and identifier. Reusing the same scoped identifier with an equivalent request provides at-most-once execution. Reusing it with different request metadata rejects the call. A call without an identifier is a new operation on every submission.
+
+Because argument objects are closed (§12.1), a request's identity for this deduplication is its fully-decoded set of declared arguments: two submissions of one operation identifier are equivalent exactly when those decoded argument sets are equal. No ignored-but-present member can silently vary between two submissions the runtime would otherwise treat as one operation.
 
 Operation status is runtime metadata rather than application state or exported history. A retained record reports one of:
 

@@ -364,31 +364,54 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         let auth_name = selection.as_ref().map(|s| s.auth().to_owned());
         let (observation, op_record) = {
             let loaded = self.loaded()?;
-            let address = SurfaceAddress::parse(&request.target)
-                .map_err(|err| AdapterError::Host(format!("malformed address `{}`: {err}", request.target)))?;
-            // §12.3: the retained operation scopes to the surface target, the selected
-            // authenticator, and the identifier — the exact key the host records under.
-            let surface_prefix = address.surface_prefix();
-            let types = loaded.routing.arg_types(&request.target);
-            let args = wire::decode_args(&request.args, &types);
-            let mut call = SurfaceCall::new(address, args);
-            if let Some(operation_id) = &request.operation_id {
-                call = call.with_operation_id(operation_id.clone());
+            // §8.11/§12.1 step 3 (SPEC-ISSUES item 6): the argument object is a
+            // CLOSED shape. A member the target call does not declare (including
+            // any reserved `$`-prefixed name) makes the request malformed and is
+            // rejected here — at parameter parsing, before admission and before any
+            // §18.7 blob parameter is streamed in — never silently dropped, so the
+            // §12.3 dedup identity stays exactly the decoded declared argument set.
+            // The check applies only where the router reconstructed a non-empty
+            // declared shape. A call the model reports as taking *no* declared
+            // parameter (e.g. a `reinsert(@extract)` erasure mutation, whose
+            // `@extract` the model does not surface in `mutation.params`) has no
+            // reliable shape to close against here, so it is left unchecked rather
+            // than over-rejecting a legitimate argument — see the reported limitation.
+            let unknown_member = loaded
+                .routing
+                .call_param_names(&request.target)
+                .filter(|declared| !declared.is_empty())
+                .zip(request.args.as_object())
+                .is_some_and(|(declared, object)| object.keys().any(|name| !declared.contains(name)));
+            if unknown_member {
+                (Observation::outcome(Outcome::Rejected), None)
+            } else {
+                let address = SurfaceAddress::parse(&request.target).map_err(|err| {
+                    AdapterError::Host(format!("malformed address `{}`: {err}", request.target))
+                })?;
+                // §12.3: the retained operation scopes to the surface target, the selected
+                // authenticator, and the identifier — the exact key the host records under.
+                let surface_prefix = address.surface_prefix();
+                let types = loaded.routing.arg_types(&request.target);
+                let args = wire::decode_args(&request.args, &types);
+                let mut call = SurfaceCall::new(address, args);
+                if let Some(operation_id) = &request.operation_id {
+                    call = call.with_operation_id(operation_id.clone());
+                }
+                if let Some(selection) = selection {
+                    call = call.with_auth(selection);
+                }
+                // §11.8: on a multiplexed connection the call names which authenticated
+                // context it runs under, so the request binds the actor of that context.
+                if let Some(context) = &request.context {
+                    call = call.with_context(context.clone());
+                }
+                let outcome = loaded.host.call(&connection, &call).map_err(host_fault)?;
+                let op_record = request
+                    .operation_id
+                    .as_ref()
+                    .map(|opid| (opid.clone(), OperationKey::new(surface_prefix, auth_name, opid.clone())));
+                (observe_call(&outcome), op_record)
             }
-            if let Some(selection) = selection {
-                call = call.with_auth(selection);
-            }
-            // §11.8: on a multiplexed connection the call names which authenticated
-            // context it runs under, so the request binds the actor of that context.
-            if let Some(context) = &request.context {
-                call = call.with_context(context.clone());
-            }
-            let outcome = loaded.host.call(&connection, &call).map_err(host_fault)?;
-            let op_record = request
-                .operation_id
-                .as_ref()
-                .map(|opid| (opid.clone(), OperationKey::new(surface_prefix, auth_name, opid.clone())));
-            (observe_call(&outcome), op_record)
         };
         if let Some((opid, key)) = op_record {
             self.op_keys.insert(opid, key);

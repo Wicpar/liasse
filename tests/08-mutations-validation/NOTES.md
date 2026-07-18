@@ -59,12 +59,11 @@ No new *step keys* were invented; all steps use the FORMAT.md vocabulary
    delete-by-key (`collection - key`) when the key is absent. §6.3 selector
    semantics (absent key contributes zero rows) suggest `unchanged`; the
    keyed-patch precedent suggests rejection.
-2. `red/unknown-argument-name-unspecified` — no rule pins the outcome of an
-   external call whose argument object carries a member that is not a
-   declared parameter. §2.5's unknown-member rule covers declaration objects
-   in package source only; §8.11 defines the argument object as a map from
-   parameter names to values without stating whether extra members reject
-   the call or are ignored.
+
+**Resolved (SPEC-ISSUES #6).** `red/unknown-argument-name` is no longer
+unspecified: §12.1 now pins the external argument object as a closed shape, so a
+member that is not a declared parameter makes the request malformed and is
+rejected at parameter parsing, before admission. The case asserts `rejected`.
 
 ## Known coverage gaps (deliberate)
 

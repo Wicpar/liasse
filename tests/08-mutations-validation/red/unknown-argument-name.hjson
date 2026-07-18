@@ -1,0 +1,45 @@
+{
+  // An external call supplying an argument name that is not a declared
+  // parameter. §8.11 defines the argument object as a map from parameter names
+  // to values, and §12.1 step 3 parses parameters against the declared shape.
+  // SPEC-ISSUES #6 pins that shape as CLOSED: an argument object MUST contain
+  // only declared parameter (and receiver-key) names; a member the contract does
+  // not declare — here `debug` — makes the request malformed and is rejected at
+  // parameter parsing, before admission, with no partial effect. The extra
+  // member is never silently swallowed, closing the smuggling seam.
+  format: 1
+  name: unknown-argument-name
+  suite: scenario
+  spec: ["#mutations", "§8.11", "#clients", "§12.1"]
+  tags: ["boundary"]
+  note: "SPEC-ISSUES #6: the argument object presented to a `call` is a closed shape (§8.11/§12.1). An undeclared member — including any reserved `$`-prefixed name — is rejected as malformed at parameter parsing, before admission, with no partial effect, so hostile extra members cannot be smuggled past the shape and §12.3's equivalent-request dedup stays well-defined."
+
+  package: {
+    $liasse: 1
+    $app: "t.extraarg@1.0.0"
+    $model: {
+      profiles: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $mut: {
+        rename: ".profiles[@id] { name = @name }"
+      }
+      $public: {
+        profiles: { $mut: { rename: ".rename" } }
+      }
+    }
+    $data: {
+      profiles: { p1: { name: "old" } }
+    }
+  }
+
+  steps: [
+    {
+      call: "public.profiles.rename"
+      args: { id: "p1", name: "new", debug: "1" }
+      expect: { outcome: rejected, violates: ["#mutations", "§8.11"] }
+    }
+  ]
+}

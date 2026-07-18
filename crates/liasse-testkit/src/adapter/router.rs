@@ -33,6 +33,13 @@ use super::shape::ViewShapes;
 #[derive(Debug, Clone, Default)]
 pub struct Routing {
     call_arg_types: BTreeMap<String, BTreeMap<String, Type>>,
+    /// The complete set of declared argument names (receiver keys + parameters)
+    /// of each exposed call, keyed by full call address — the CLOSED argument
+    /// shape a `call` request must match (§8.11, §12.1, SPEC-ISSUES item 6). This
+    /// is the whole name set, including parameters whose declared type is not a
+    /// scalar (and so dropped from `call_arg_types`), so the closed-shape check
+    /// never mistakes a declared non-scalar parameter for an unknown member.
+    call_param_names: BTreeMap<String, BTreeSet<String>>,
     /// Per-surface-view argument-type tables, keyed by surface address
     /// (`<prefix>.<surface>`): the declared `$params` of a `$view` a `watch`
     /// decodes its arguments against (§10.1, §12.1 `view` operation).
@@ -56,6 +63,15 @@ impl Routing {
     #[must_use]
     pub fn arg_types(&self, address: &str) -> BTreeMap<String, Type> {
         self.call_arg_types.get(address).cloned().unwrap_or_default()
+    }
+
+    /// The complete declared argument names (receiver keys and parameters) of the
+    /// call at `address`, or `None` when the address names no exposed call. Used
+    /// to reject an argument object that carries an undeclared member — the closed
+    /// argument shape of §8.11/§12.1 (SPEC-ISSUES item 6).
+    #[must_use]
+    pub fn call_param_names(&self, address: &str) -> Option<&BTreeSet<String>> {
+        self.call_param_names.get(address)
     }
 
     /// The declared `$params` types of the surface view at `address`
@@ -266,6 +282,12 @@ fn surface_binding(
             else {
                 continue;
             };
+            // §8.11/§12.1 (SPEC-ISSUES item 6): record the CLOSED argument shape —
+            // the call's complete receiver-key and parameter names — so a `call`
+            // carrying an undeclared member is rejected as malformed.
+            let names: BTreeSet<String> =
+                call_binding.receiver().iter().chain(call_binding.params()).cloned().collect();
+            routing.call_param_names.insert(call_address.clone(), names);
             binding = binding.with_call(call.clone(), call_binding);
             arg_types.push((call_address, types));
         }

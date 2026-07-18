@@ -2,19 +2,19 @@
   format: 1
   name: unknown-parameter-member
   suite: scenario
-  spec: ["#clients"]
+  spec: ["#clients", "§12.1", "#mutations", "§8.11"]
   tags: ["boundary", "protocol"]
   note: '''
     Attack: attach an undeclared member to the call arguments, either to
     smuggle data past the shape or to probe for structural directives.
-    §12.1 step 3 says the runtime "parses parameters against the inferred or
-    explicit shape", and §2.5's strictness about unknown members applies to
-    declarations, not wire arguments. The specification does not state
-    whether an unknown argument member fails parsing or is ignored, so the
-    outcome is unspecified. The gap matters beyond this call: §12.3
-    deduplication compares "equivalent request" metadata, which is ill-defined
-    for ignored-but-present members. The same question applies to reserved
-    $-prefixed members such as { $sort: [...] } sent as arguments.
+    SPEC-ISSUES #6 pins the argument object as a CLOSED shape (§8.11/§12.1):
+    §12.1 step 3 parses parameters against the declared shape, and a member the
+    shape does not declare — here `extra` — makes the request malformed and is
+    rejected before admission, never ignored. This keeps §12.3 deduplication
+    well-defined: a request's identity is exactly its decoded set of declared
+    arguments, with no ignored-but-present member left to vary silently. The
+    same closed shape rejects a reserved $-prefixed member such as { $sort: [...] }
+    sent as an argument.
   '''
 
   package: {
@@ -52,7 +52,7 @@
       call: "public.tasks.add"
       args: { title: "a", extra: 1 }
       on: "c1"
-      expect: { outcome: unspecified }
+      expect: { outcome: rejected, violates: ["#clients", "§12.1"] }
     }
   ]
 }

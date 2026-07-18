@@ -1,25 +1,24 @@
 {
   format: 1
-  name: public-surface-authenticator-selection-unspecified
+  name: public-surface-authenticator-selection
   suite: scenario
   spec: ["#authentication", "§11.4", "#interfaces", "§10.2"]
   tags: ["authz"]
   note: '''
-    outcome: unspecified. §11.4 states "Public surfaces use their public
-    address and carry no authenticator selection", and §10.2 says a public
-    operation "has no $actor or $session" and "is callable without an
-    authenticated actor". But the spec does not pin what happens when a client
-    nonetheless attaches an authenticator selection and credential to a public
-    address: it is silent on whether the extraneous selection is ignored (call
-    proceeds actor-less) or the malformed request is rejected. Both are
-    defensible readings of §11.4/§10.2, so the outcome is genuinely
-    unspecified. A future spec revision should state one.
+    SPEC-ISSUES #8: §11.4 states a public address "carries no authenticator
+    selection", and §10.2 says a public operation "has no $actor or $session".
+    A public request that nonetheless attaches an authenticator selection and
+    credential is malformed and is REJECTED — the runtime does not drop the
+    selection and serve the request actor-less. Rejecting fail-closed avoids
+    silently coercing a hostile request into an actor-less one and avoids a
+    public endpoint verifying a credential it must not (a needless timing
+    side-channel). The credential is refused without being verified.
   '''
 
   // Adversarial framing: an attacker with a valid session token attaches it to
-  // a public call, hoping to smuggle an actor into an actor-less surface (or to
-  // find divergent implementation behavior). The spec neither promises the
-  // actor is honored nor mandates rejection here.
+  // a public call, hoping to smuggle an actor into an actor-less surface. §11.4
+  // makes the extraneous selection a malformed request, rejected before any
+  // credential verification.
 
   package: {
     $liasse: 1
@@ -96,6 +95,6 @@
     // A public address carrying an authenticator selection it should not carry.
     { call: "public.feedback.add", args: { body: "hi" }, on: "c1",
       auth: { auth: "session", credential: "tok-alice" },
-      expect: { outcome: unspecified } }
+      expect: { outcome: rejected, violates: ["#authentication", "§11.4"] } }
   ]
 }

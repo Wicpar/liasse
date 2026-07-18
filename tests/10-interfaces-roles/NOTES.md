@@ -50,13 +50,18 @@ steps are used:
 
 The spec mandates that a request naming anything not exposed to the caller
 must fail without executing (§10.1 "$mut maps external call names", §10.4
-"A surface grants named access", §12.1 step 1 resolution), but it defines no
-diagnostic taxonomy. This corpus maps every such failure — nonexistent
-surface, undeclared call name, internal declaration name, role the actor is
-not a member of, authenticator not accepted by the role — to `denied`
-(FORMAT.md: "rejected by authentication, roles, or permissions"), because
-exposure/grant is Liasse's permission mechanism. The underlying spec gap is
-recorded once, in `red/unresolvable-name-outcome-unspecified`.
+"A surface grants named access", §12.1 step 1 resolution). SPEC-ISSUES #8 now
+pins the taxonomy: every such failure — nonexistent surface, undeclared call
+name, internal declaration name, role the actor is not a member of,
+authenticator not accepted by the role — is the `denied` class (FORMAT.md:
+"rejected by authentication, roles, or permissions"); there is no distinct
+not-found outcome. §10.4 further requires the denial to be *indistinguishable*
+across existence: for a fixed caller and authentication context, a name that
+does not exist and a name that exists but is not granted MUST deny identically
+(class and diagnostic code), so a non-member cannot enumerate a role's surface
+catalog. This is asserted in `red/unresolvable-name` (the `denied` class through
+the step vocabulary) and, at the wire-code level, in
+`crates/liasse-connect/tests/authz.rs`.
 
 `rejected` is reserved for admission failures of an otherwise well-addressed
 request (receiver cardinality per §10.1 "Zero or several selected rows

@@ -94,6 +94,63 @@ impl SurfaceRouter {
         }
     }
 
+    /// Resolve a public surface's `$mut` call binding, or deny it as unresolvable
+    /// (§12.1 step 1). A view-target address (no call segment) is not a call and is
+    /// unresolved here.
+    ///
+    /// # Errors
+    /// Returns a [`Denial`] when the public surface or call is not exposed.
+    pub fn public_call(&self, address: &SurfaceAddress) -> Result<&CallBinding, Denial> {
+        let surface = self.public.get(address.surface()).ok_or_else(Self::unresolved)?;
+        let call = address.call().ok_or_else(Self::unresolved)?;
+        surface.call(call).ok_or_else(Self::unresolved)
+    }
+
+    /// Resolve a role surface's `$mut` call binding once the caller is a confirmed
+    /// member — the enumeration-safe second phase of a role call (§12.1,
+    /// SPEC-ISSUES item 8). Membership is evaluated *before* this reveals whether
+    /// the named surface/call exists, so an unauthorized caller never distinguishes
+    /// an ungranted surface from a nonexistent one. A view-target address is not a
+    /// call and is unresolved here.
+    ///
+    /// # Errors
+    /// Returns a [`Denial`] when the role, surface, or call is not exposed.
+    pub fn role_call(&self, role: &str, address: &SurfaceAddress) -> Result<&CallBinding, Denial> {
+        let grant = self.roles.get(role).ok_or_else(Self::unresolved)?;
+        let surface = grant.surfaces.get(address.surface()).ok_or_else(Self::unresolved)?;
+        let call = address.call().ok_or_else(Self::unresolved)?;
+        surface.call(call).ok_or_else(Self::unresolved)
+    }
+
+    /// Resolve a public surface's `$view` binding (§12.1 step 1). A call-target
+    /// address (a call segment present) is not a view and is unresolved here.
+    ///
+    /// # Errors
+    /// Returns a [`Denial`] when the public surface or its view is not exposed.
+    pub fn public_view(&self, address: &SurfaceAddress) -> Result<&ViewBinding, Denial> {
+        if address.call().is_some() {
+            return Err(Self::unresolved());
+        }
+        let surface = self.public.get(address.surface()).ok_or_else(Self::unresolved)?;
+        surface.view().ok_or_else(Self::unresolved)
+    }
+
+    /// Resolve a role surface's `$view` binding once the caller is a confirmed
+    /// member — the enumeration-safe second phase of a role subscription (§12.2,
+    /// SPEC-ISSUES item 8). A call-target address is not a view and is unresolved
+    /// here.
+    ///
+    /// # Errors
+    /// Returns a [`Denial`] when the role, surface, or its view is not exposed.
+    pub fn role_view(&self, role: &str, address: &SurfaceAddress) -> Result<&ViewBinding, Denial> {
+        if address.call().is_some() {
+            return Err(Self::unresolved());
+        }
+        let grant = self.roles.get(role).ok_or_else(Self::unresolved)?;
+        let surface = grant.surfaces.get(address.surface()).ok_or_else(Self::unresolved)?;
+        surface.view().ok_or_else(Self::unresolved)
+    }
+
     fn unresolved() -> Denial {
         Denial::new(DenialReason::Unresolved, "the address names no exposed surface")
     }

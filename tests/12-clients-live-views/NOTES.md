@@ -136,10 +136,12 @@ Captured as `outcome: unspecified` cases:
   a frontier issued for a **different** subscription stream is not pinned
   (§12.2 makes frontiers opaque and per-stream but mandates nothing for
   foreign tokens).
-- `red/unknown-parameter-member.hjson` — whether an undeclared call-argument
-  member fails §12.1 step-3 parsing or is ignored is not stated; this also
-  makes §12.3's "equivalent request" comparison ill-defined for
-  ignored-but-present members.
+
+Resolved (SPEC-ISSUES #6): `red/unknown-parameter-member.hjson` is no longer a
+gap — §12.1 now pins the argument object as a closed shape, so an undeclared
+member fails step-3 parsing (rejected), which also makes §12.3's "equivalent
+request" comparison well-defined (a request's identity is its decoded set of
+declared arguments). The case asserts `rejected`.
 
 Noted inside case comments (outcome still pinned):
 

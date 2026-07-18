@@ -1,0 +1,79 @@
+{
+  format: 1
+  name: unresolvable-name
+  suite: scenario
+  spec: ["#interfaces", "§10.3", "§10.4", "#clients", "§12.1"]
+  tags: ["authz", "enumeration"]
+  note: '''
+    SPEC-ISSUES #8 pins both halves this case probes.
+    (1) Failure classification: an external operation the caller is not
+    authorized to have served — because the named surface does not exist, or
+    because the resolved actor does not hold the targeted role — fails as an
+    authorization denial (the `denied` class, §10.4/§12.1). There is no distinct
+    not-found outcome.
+    (2) Enumeration: the denial MUST NOT reveal whether a surface of the named
+    address exists. alice authenticates against `admin` but is not a member
+    (is_admin is false), so she is not authorized over the role. Probing an
+    EXISTING ungranted surface ("admin.control.wipe") and a NONEXISTENT one
+    ("admin.mirage.wipe") therefore both deny identically — the runtime evaluates
+    membership before revealing surface existence, so a non-member cannot
+    enumerate which surfaces the role declares. (The step vocabulary observes the
+    `denied` class; the wire-code identity the resolution also requires is pinned
+    at the transport layer, crates/liasse-connect/tests/authz.rs.)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.enum_probe@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        is_admin: "bool = false"
+      }
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        wipe_notes: "-.notes[:n]"
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts"
+          notes: { $view: ".notes { id, body }" }
+        }
+        admin: {
+          $auth: "token"
+          $members: ".accounts[:a | a.is_admin]"
+          control: {
+            $mut: { wipe: ".wipe_notes" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: { alice: {} }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+    // Existing surface, ungranted actor (not a member): an authorization denial.
+    { call: "admin.control.wipe", args: {}, on: "c1",
+      expect: { outcome: denied, violates: ["#interfaces", "§10.4"] } }
+    // Nonexistent surface under the same role: the SAME `denied` outcome, so the
+    // response does not reveal whether `control` exists but `mirage` does not.
+    { call: "admin.mirage.wipe", args: {}, on: "c1",
+      expect: { outcome: denied, violates: ["#interfaces", "§10.4"] } }
+  ]
+}

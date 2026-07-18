@@ -109,13 +109,16 @@ fn revoked_session_is_denied_at_next_request() {
 #[test]
 fn disabled_account_fails_role_membership() {
     // bob authenticates (the session and account resolve) but is not a member —
-    // membership excludes disabled accounts (§10.3), so the call denies.
+    // membership excludes disabled accounts (§10.3), so the call denies. Per
+    // SPEC-ISSUES item 8 the denial is the uniform unresolvable-name outcome
+    // (`Unresolved`), indistinguishable from a name that does not exist, so a
+    // non-member cannot enumerate the role's surfaces.
     let mut host = host();
     host.connect("c1");
     let id = add_task(&mut host, "c1", "t");
     assert!(matches!(authenticate_member(&mut host, "c1", "s_bob"), AuthResult::Bound), "bob authenticates");
     let outcome = host.call("c1", &call("member.tasks.complete", [("id", id), ("title", text("x"))])).expect("call");
-    assert_eq!(call_denial(&outcome), DenialReason::NotAMember);
+    assert_eq!(call_denial(&outcome), DenialReason::Unresolved);
 }
 
 #[test]

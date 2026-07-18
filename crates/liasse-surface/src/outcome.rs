@@ -112,14 +112,27 @@ impl SurfaceOutcome {
 }
 
 /// Why the surface layer refused a request before (or instead of) admission —
-/// the `denied` outcome class. The corpus asserts only the class, never the
-/// finer reason (§10/§11 `NOTES.md`), so this enum documents the taxonomy the
-/// spec leaves open (SPEC-ISSUES item 8: `denied` vs `not-found` is unpinned,
-/// and a nonexistent surface need not be distinguishable from an ungranted one).
+/// the `denied` outcome class (§10.4, §12.1).
+///
+/// SPEC-ISSUES item 8 pins two things this enum now honors. First, an
+/// unresolvable or ungranted name fails as `denied`; there is no distinct
+/// not-found class. Second, that failure must not reveal whether a named surface
+/// exists to a caller not authorized over it: a caller who is not a confirmed
+/// member of the targeted role never reaches surface resolution (`host/call.rs`
+/// checks membership first), and a membership failure is reported as
+/// [`DenialReason::Unresolved`] — identical, class and diagnostic code, to a
+/// name that does not exist. Existence- or membership-revealing reasons are
+/// therefore observable only by a caller who has already established authority
+/// over the target. The auth-context reasons below (unauthenticated, unverified,
+/// …) are name-independent — they fire before surface resolution — so they leak
+/// no catalog either.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DenialReason {
     /// The address named no surface/call exposed to the caller — a nonexistent
-    /// surface, an undeclared call, or an internal declaration (§10.1, §12.1).
+    /// surface, an undeclared call, an internal declaration, or a role the
+    /// caller is not a member of (§10.1, §10.4, §12.1). These collapse to one
+    /// reason so an unauthorized caller cannot enumerate a role's catalog
+    /// (SPEC-ISSUES item 8).
     Unresolved,
     /// A role surface was addressed with no authenticated actor (§10.2, §11).
     Unauthenticated,
@@ -138,8 +151,6 @@ pub enum DenialReason {
     SessionInvalid,
     /// `$actor` resolved zero or several rows (§11.3).
     ActorUnresolved,
-    /// The resolved actor is not a member of the targeted role (§10.3).
-    NotAMember,
 }
 
 /// A surface-layer refusal: its reason and a human-readable diagnostic. It never

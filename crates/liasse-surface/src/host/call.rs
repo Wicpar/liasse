@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 use liasse_runtime::{CallOutcome, CallRequest, CommitSeq, Rejection, RejectionReason, Value, ViewQuery};
 use liasse_store::InstanceStore;
 
+use crate::address::{Authority, SurfaceAddress};
 use crate::authn::AuthContext;
 use crate::binding::CallBinding;
 use crate::connection::{Connection, DEFAULT_CONTEXT};
@@ -20,7 +21,6 @@ use crate::outcome::{Denial, DenialReason, SurfaceOutcome};
 use crate::reader::EngineReader;
 use crate::request::{AuthSelection, SurfaceCall, SurfaceResume, SurfaceWatch};
 use crate::role::Role;
-use crate::router::Resolved;
 use crate::watch::{Watch, WatchAuthz};
 use crate::window::{Window, WindowError};
 
@@ -40,7 +40,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
         }
         let (binding, context) = match self.resolve_call(id, call) {
             Ok(pair) => pair,
-            Err(denial) => return Ok(SurfaceOutcome::Denied(denial)),
+            Err(outcome) => return Ok(outcome),
         };
         let (request, model) = match Self::build_request(&binding, call.args(), context.as_ref()) {
             Ok(pair) => pair,
@@ -142,20 +142,58 @@ impl<S: InstanceStore> SurfaceHost<S> {
     /// Resolve a call's target binding and the authenticated context that admitted
     /// it (`None` for a public call — no actor is introduced, §11.1). The context
     /// carries the resolved `$actor`/`$session` the runtime binds for the program.
-    fn resolve_call(&self, id: &str, call: &SurfaceCall) -> Result<(CallBinding, Option<AuthContext>), Denial> {
-        match self.router.resolve(call.address())? {
-            Resolved::PublicCall(binding) => Ok((binding.clone(), None)),
-            Resolved::RoleCall { role, binding } => {
-                let selection = self.call_selection(id, call)?;
+    ///
+    /// A refusal is returned as the [`SurfaceOutcome`] the caller reports: a
+    /// resolution or authorization failure is `Denied`, while a public request that
+    /// carries an authenticator selection it must not carry is `Rejected`
+    /// (malformed, §10.2/§11.4).
+    ///
+    /// For a role call the pipeline resolves the role, verifies the selection, and
+    /// confirms membership *before* the specific surface/call binding is resolved
+    /// (SPEC-ISSUES item 8): a caller who is not a confirmed member never learns
+    /// whether the named surface or call exists, so an ungranted surface is
+    /// indistinguishable from a nonexistent one.
+    fn resolve_call(
+        &self,
+        id: &str,
+        call: &SurfaceCall,
+    ) -> Result<(CallBinding, Option<AuthContext>), SurfaceOutcome> {
+        match call.address().authority() {
+            Authority::Public => {
+                let binding = self.router.public_call(call.address()).map_err(SurfaceOutcome::Denied)?;
+                // §10.2/§11.4 (SPEC-ISSUES item 8): a public address carries no
+                // authenticator selection. A public request that nonetheless
+                // attaches one is malformed — rejected here, never dropped and
+                // served actor-less.
+                if call.auth().is_some() {
+                    return Err(SurfaceOutcome::Rejected(Rejection::new(
+                        RejectionReason::Malformed,
+                        "a public address carries no authenticator selection",
+                    )));
+                }
+                Ok((binding.clone(), None))
+            }
+            Authority::Role(role) => {
+                let role_def =
+                    self.router.role(role).ok_or_else(|| SurfaceOutcome::Denied(Self::unresolved_name()))?;
+                let selection = self.call_selection(id, call).map_err(SurfaceOutcome::Denied)?;
                 let now = self.clock.instant();
                 let reader = EngineReader::new(&self.engine, now);
-                let context = self.authorize_role(role, &selection, &reader)?;
+                let context =
+                    self.authorize_role(role_def, &selection, &reader).map_err(SurfaceOutcome::Denied)?;
+                // Member confirmed: only now may the surface/call binding's
+                // existence be revealed (SPEC-ISSUES item 8).
+                let binding = self.router.role_call(role, call.address()).map_err(SurfaceOutcome::Denied)?;
                 Ok((binding.clone(), Some(context)))
             }
-            Resolved::PublicView(_) | Resolved::RoleView { .. } => {
-                Err(Denial::new(DenialReason::Unresolved, "the address targets a view, not a call"))
-            }
         }
+    }
+
+    /// The uniform unresolvable-name denial (§10.4, §12.1): one `denied` outcome
+    /// for every name a caller is not authorized to have served, so a nonexistent
+    /// name is indistinguishable from an ungranted one (SPEC-ISSUES item 8).
+    fn unresolved_name() -> Denial {
+        Denial::new(DenialReason::Unresolved, "the address names nothing exposed to this caller")
     }
 
     /// The selection a role call uses: its per-request `auth`, or the connection's
@@ -186,13 +224,17 @@ impl<S: InstanceStore> SurfaceHost<S> {
         reader: &EngineReader<'_, S>,
     ) -> Result<AuthContext, Denial> {
         let context = self.verify_selection(role, selection, reader)?;
+        // §10.3/§12.1 (SPEC-ISSUES item 8): a non-member — and an unreadable
+        // membership, fail-closed — denies as the uniform unresolvable-name
+        // outcome, indistinguishable (class and diagnostic code) from a name that
+        // does not exist, so a non-member cannot enumerate the role's surfaces.
         let member = role
             .holds(context.actor().key(), reader)
-            .map_err(|_| Denial::new(DenialReason::NotAMember, "membership is unreadable"))?;
+            .map_err(|_| Self::unresolved_name())?;
         if member {
             Ok(context)
         } else {
-            Err(Denial::new(DenialReason::NotAMember, "the actor is not a member of the role"))
+            Err(Self::unresolved_name())
         }
     }
 
@@ -374,15 +416,22 @@ impl<S: InstanceStore> SurfaceHost<S> {
     fn resolve_view(
         &self,
         id: &str,
-        address: &crate::address::SurfaceAddress,
+        address: &SurfaceAddress,
         context: Option<&str>,
         selection: Option<&AuthSelection>,
     ) -> Result<(String, WatchAuthz, Option<AuthContext>), Denial> {
-        match self.router.resolve(address)? {
-            Resolved::PublicView(binding) => {
+        match address.authority() {
+            Authority::Public => {
+                let binding = self.router.public_view(address)?;
                 Ok((binding.view().to_owned(), WatchAuthz::public(), None))
             }
-            Resolved::RoleView { role, binding } => {
+            Authority::Role(role) => {
+                // §12.2 (SPEC-ISSUES item 8): resolve the role, verify the
+                // selection, and confirm membership before the surface view's
+                // existence is revealed, so a non-member cannot enumerate a role's
+                // views. A nonexistent role and a non-member both deny as the
+                // uniform unresolvable-name outcome.
+                let role_def = self.router.role(role).ok_or_else(Self::unresolved_name)?;
                 // §11.4: a per-request `auth` selection admits the subscription
                 // without a connection-stored context; otherwise fall back to the
                 // context the connection bound at `authenticate`.
@@ -412,9 +461,10 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 // §11.1/§11.3: resolve `$actor`/`$session` so a role `$view`
                 // reading them is served the authenticated identity, not the
                 // unbound (fail-closed) read.
-                let auth_context = self.authorize_role(role, &selection, &reader)?;
+                let auth_context = self.authorize_role(role_def, &selection, &reader)?;
+                let binding = self.router.role_view(role, address)?;
                 let context = context.unwrap_or(DEFAULT_CONTEXT).to_owned();
-                let mut authz = WatchAuthz::role(context, role.name().to_owned());
+                let mut authz = WatchAuthz::role(context, role_def.name().to_owned());
                 // §12.2: a subscription opened under a per-request selection
                 // re-authorizes from that credential at every frontier, since no
                 // connection context backs it.
@@ -423,10 +473,6 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 }
                 Ok((binding.view().to_owned(), authz, Some(auth_context)))
             }
-            Resolved::PublicCall(_) | Resolved::RoleCall { .. } => Err(Denial::new(
-                DenialReason::Unresolved,
-                "the address targets a call, not a view",
-            )),
         }
     }
 }

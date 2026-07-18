@@ -128,7 +128,7 @@ fn every_outcome_frame_round_trips() {
     round_trip(Outcome::Committed { frontier: Ft::new("f2"), commit: Ft::new("f1"), response: None });
     round_trip(Outcome::Unchanged { frontier: Ft::new("f1"), response: None });
     round_trip(Outcome::Rejected { code: Code::new("duplicate-key"), message: "key `a` exists".into() });
-    round_trip(Outcome::Denied { code: Code::new("not-a-member"), message: "refused".into() });
+    round_trip(Outcome::Denied { code: Code::new("unresolved"), message: "refused".into() });
     round_trip(Outcome::Failed { code: FailedCode::AbsentAnchor });
     round_trip(Outcome::Failed { code: FailedCode::ScalarView });
     round_trip(Outcome::Unknown);
