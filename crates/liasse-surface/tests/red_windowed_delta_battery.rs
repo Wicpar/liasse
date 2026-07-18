@@ -34,7 +34,7 @@ use liasse_surface::{
     WatchAuthz, Window,
 };
 use liasse_value::Integer;
-use support::{call, store, text, NOW};
+use support::{apply_patch, call, store, text, NOW};
 
 const APP: &str = r#"{
   "$liasse": 1
@@ -145,51 +145,10 @@ fn labels(rows: &[ViewRow]) -> Vec<String> {
         .collect()
 }
 
-/// A faithful §12.2 windowed client: each `$at`/`$to` is read in the CURRENT
-/// windowed result; a position outside it is a malformed windowed patch.
-fn apply_patch(prior: &[ViewRow], delta: &ViewDelta) -> Vec<ViewRow> {
-    match delta {
-        ViewDelta::Init(rows) => rows.clone(),
-        ViewDelta::Patch(ops) => {
-            let mut rows = prior.to_vec();
-            for op in ops {
-                match op {
-                    PatchOp::Remove { id } => {
-                        let at = position(&rows, id, "remove");
-                        rows.remove(at);
-                    }
-                    PatchOp::Update { row } => {
-                        let at = position(&rows, row.id(), "update");
-                        rows[at] = row.clone();
-                    }
-                    PatchOp::Move { id, to } => {
-                        let at = position(&rows, id, "move");
-                        let row = rows.remove(at);
-                        assert!(*to <= rows.len(), "§12.2: `move $to={to}` outside the window (len {})", rows.len());
-                        rows.insert(*to, row);
-                    }
-                    PatchOp::Insert { at, row } => {
-                        assert!(
-                            *at <= rows.len(),
-                            "§12.2: `insert $at={at}` outside the current window (len {}) — a full-view position leaked in",
-                            rows.len(),
-                        );
-                        rows.insert(*at, row.clone());
-                    }
-                    PatchOp::Rekey { .. } => unreachable!("between_rows renders a key change as remove+insert"),
-                }
-            }
-            rows
-        }
-        ViewDelta::Scalar(_) => unreachable!("a row view never yields a scalar delta"),
-    }
-}
-
-fn position(rows: &[ViewRow], id: &RowId, op: &str) -> usize {
-    rows.iter()
-        .position(|row| row.id() == id)
-        .unwrap_or_else(|| panic!("§12.2: `{op}` targets an occurrence absent from the current window"))
-}
+// A faithful §12.2 windowed client — each `$at`/`$to` read in the CURRENT windowed
+// result; a position outside it is a malformed windowed patch — is
+// `support::apply_patch`, shared by every red_* test and backed by the one
+// `liasse_wire::apply`.
 
 /// Advance `watch` to the current authorized view, apply the emitted delta to
 /// `prior` with a faithful client, and assert BOTH the client result AND the

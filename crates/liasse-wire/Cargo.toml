@@ -1,0 +1,19 @@
+[package]
+name = "liasse-wire"
+description = "Engine-free wire schema, JSON codec, and §12.2 patch apply for the Liasse client-sync connector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+# `arbitrary_precision` keeps wire JSON numbers exact and matches the build the
+# rest of the workspace unifies on (liasse-value, liasse-runtime, …), so the
+# `serde_json::Value` payloads the engine renders round-trip losslessly here.
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+thiserror = "2"
+
+[lints]
+workspace = true

@@ -12,12 +12,13 @@ use std::collections::BTreeMap;
 use liasse_ident::InstanceId;
 use liasse_store::MemoryStore;
 use liasse_surface::{
-    CallBinding, Claims, Credential, Engine, Precision, Role, RowSource, SessionAuthenticator,
-    SessionSource, SurfaceAddress, SurfaceBinding, SurfaceCall, SurfaceHost, SurfaceOutcome,
-    SurfaceRouter, SurfaceRouterBuilder, Timestamp, Value, Verifier, VerifyFailure, ViewBinding,
-    VirtualClock,
+    CallBinding, Claims, Credential, Engine, PatchOp, Precision, Role, RowId, RowSource,
+    SessionAuthenticator, SessionSource, SurfaceAddress, SurfaceBinding, SurfaceCall, SurfaceHost,
+    SurfaceOutcome, SurfaceRouter, SurfaceRouterBuilder, Timestamp, Value, Verifier, VerifyFailure,
+    ViewBinding, ViewDelta, ViewRow, VirtualClock,
 };
 use liasse_value::Text;
+use liasse_wire::{Occ, WireRow};
 
 /// The fixed micro-precision "now" the tests run at — well before the seeded
 /// sessions' `expires_at`.
@@ -268,4 +269,103 @@ pub fn authenticate_member(
         liasse_surface::AuthSelection::new("token", Credential::new(text(credential))),
     );
     host.authenticate(conn, &request).expect("authenticate")
+}
+
+// --- the ONE §12.2 client-side patch applier, shared by every red_* test --------
+//
+// The runtime's `patch::diff` produces a `ViewDelta`; applying it existed only as
+// five duplicated copies inside these tests. This adapter is the single applier
+// they now share: it projects the runtime's `ViewRow`/`RowId` onto the engine-free
+// wire types, delegates to `liasse_wire::apply` (the one source of truth for §12.2
+// apply semantics), and maps the result back. The tests' own `visible(..)`
+// assertions are unchanged, so the fact that they still pass proves the wire applier
+// matches what each local copy used to compute.
+
+/// A per-call, injective `RowId` -> occurrence-token map. The occurrence identity a
+/// client sees is opaque (SPEC.md §12.2), so the wire never carries the `RowId`; a
+/// dense counter keyed by `RowId` is a faithful stand-in for the bijection the
+/// server would mint per subscription.
+#[derive(Default)]
+struct OccMap {
+    next: u64,
+    ids: BTreeMap<RowId, String>,
+}
+
+impl OccMap {
+    fn of(&mut self, id: &RowId) -> String {
+        if let Some(token) = self.ids.get(id) {
+            return token.clone();
+        }
+        let token = format!("occ-{}", self.next);
+        self.next += 1;
+        self.ids.insert(id.clone(), token.clone());
+        token
+    }
+}
+
+/// A faithful §12.2 client that applies `delta` to `prior` by delegating to the
+/// shared `liasse_wire::apply`. The result carries the same occurrences, values, and
+/// order the local copies produced, so callers assert on it exactly as before.
+#[must_use]
+pub fn apply_patch(prior: &[ViewRow], delta: &ViewDelta) -> Vec<ViewRow> {
+    let ops = match delta {
+        ViewDelta::Init(rows) => return rows.clone(),
+        ViewDelta::Scalar(_) => panic!("a row-stream view never yields a scalar delta"),
+        ViewDelta::Patch(ops) => ops,
+    };
+
+    // `occ` is the RowId<->token bijection; `registry` remembers the latest `ViewRow`
+    // behind each token so the applied wire rows can be mapped straight back to the
+    // runtime rows the assertions compare (a `ViewRow` cannot be reconstructed from
+    // the wire alone — its fields are private to the runtime).
+    let mut occ = OccMap::default();
+    let mut registry: BTreeMap<String, ViewRow> = BTreeMap::new();
+
+    let prev: Vec<WireRow> = prior.iter().map(|row| wire_row(row, &mut occ, &mut registry)).collect();
+    let wire_ops: Vec<liasse_wire::PatchOp> =
+        ops.iter().map(|op| wire_op(op, &mut occ, &mut registry)).collect();
+
+    let applied = liasse_wire::apply(&prev, &wire_ops)
+        .expect("liasse_wire::apply reproduces the diff result without error");
+
+    applied
+        .iter()
+        .map(|row| registry.get(row.occ().as_str()).cloned().expect("every applied occ was registered"))
+        .collect()
+}
+
+/// Project one runtime row onto a wire row, recording it under its token. The wire
+/// value is left as `null`: these tests assert on occurrence identity and order
+/// (`visible(..)`), which the reconstruction recovers from the registry, so the
+/// carried value is immaterial here — `apply`'s value handling is proven by
+/// `liasse-wire`'s own unit tests.
+fn wire_row(row: &ViewRow, occ: &mut OccMap, registry: &mut BTreeMap<String, ViewRow>) -> WireRow {
+    let token = register(row, occ, registry);
+    WireRow::new(Occ::new(token), liasse_wire::Value::Null)
+}
+
+/// Translate one runtime patch op to its wire form, registering any row it carries.
+fn wire_op(op: &PatchOp, occ: &mut OccMap, registry: &mut BTreeMap<String, ViewRow>) -> liasse_wire::PatchOp {
+    match op {
+        PatchOp::Insert { at, row } => {
+            let token = register(row, occ, registry);
+            liasse_wire::PatchOp::Insert { at: *at, occ: Occ::new(token), value: liasse_wire::Value::Null }
+        }
+        PatchOp::Update { row } => {
+            let token = register(row, occ, registry);
+            liasse_wire::PatchOp::Update { occ: Occ::new(token), value: liasse_wire::Value::Null }
+        }
+        PatchOp::Remove { id } => liasse_wire::PatchOp::Remove { occ: Occ::new(occ.of(id)) },
+        PatchOp::Move { id, to } => liasse_wire::PatchOp::Move { occ: Occ::new(occ.of(id)), to: *to },
+        PatchOp::Rekey { .. } => panic!("diff renders a key change as remove+insert, never rekey"),
+    }
+}
+
+/// Mint (or reuse) the token for `row`'s occurrence and record the latest row
+/// behind it, so an `update` reconstructs to the new row and an `insert` to the new
+/// occurrence.
+fn register(row: &ViewRow, occ: &mut OccMap, registry: &mut BTreeMap<String, ViewRow>) -> String {
+    let token = occ.of(row.id());
+    registry.insert(token.clone(), row.clone());
+    token
 }

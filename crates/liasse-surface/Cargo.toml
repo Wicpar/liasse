@@ -18,5 +18,11 @@ liasse-host = { path = "../liasse-host" }
 liasse-ident = { path = "../liasse-ident" }
 thiserror = "2"
 
+[dev-dependencies]
+# The §12.2 patch applier the surface tests exercise lives once in liasse-wire;
+# the tests reach it through the shared `support::apply_patch` adapter so there is
+# a single source of truth for apply semantics.
+liasse-wire = { path = "../liasse-wire" }
+
 [lints]
 workspace = true

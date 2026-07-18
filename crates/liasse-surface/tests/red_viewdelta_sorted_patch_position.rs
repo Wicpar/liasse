@@ -35,59 +35,12 @@ use liasse_surface::{
     SurfaceRouterBuilder, Value, ViewBinding, ViewDelta, ViewResult, ViewRow, VirtualClock,
 };
 use liasse_value::Integer;
-use support::{add_task, call, host, store, text, NOW};
+use support::{add_task, apply_patch, call, host, store, text, NOW};
 
-// --- the faithful §12.2 client -------------------------------------------------
-
-/// Apply an ordered §12.2 patch to the client's prior ordered rows exactly as the
-/// spec's op semantics dictate, one op at a time.
-///
-/// - `remove { $id }` drops the occurrence.
-/// - `update { $id, $value }` replaces the value, PRESERVING identity and
-///   position (a reposition is a separate `move`).
-/// - `move { $id, $to }` relocates the occurrence to `$to` in the current result.
-/// - `insert { $at, $id, $value }` places a new occurrence at `$at`.
-///
-/// Positions are read in the working result as it stands when each op runs. The
-/// client never re-sorts — §12.2 delivers positions, it does not ask the client
-/// to recompute order.
-fn apply_patch(prior: &[ViewRow], delta: &ViewDelta) -> Vec<ViewRow> {
-    match delta {
-        ViewDelta::Init(rows) => rows.clone(),
-        ViewDelta::Patch(ops) => {
-            let mut rows = prior.to_vec();
-            for op in ops {
-                match op {
-                    PatchOp::Remove { id } => {
-                        let at = position(&rows, id, "remove");
-                        rows.remove(at);
-                    }
-                    PatchOp::Update { row } => {
-                        let at = position(&rows, row.id(), "update");
-                        rows[at] = row.clone();
-                    }
-                    PatchOp::Move { id, to } => {
-                        let at = position(&rows, id, "move");
-                        let row = rows.remove(at);
-                        rows.insert(*to, row);
-                    }
-                    PatchOp::Insert { at, row } => rows.insert(*at, row.clone()),
-                    PatchOp::Rekey { .. } => unreachable!(
-                        "ViewDelta::between renders a key change as remove+insert, never rekey"
-                    ),
-                }
-            }
-            rows
-        }
-        ViewDelta::Scalar(_) => unreachable!("a sorted row view never yields a scalar delta"),
-    }
-}
-
-fn position(rows: &[ViewRow], id: &RowId, op: &str) -> usize {
-    rows.iter()
-        .position(|row| row.id() == id)
-        .unwrap_or_else(|| panic!("{op} targets a present occurrence"))
-}
+// The faithful §12.2 client that applies an ordered patch to the client's prior
+// ordered rows — each `$at`/`$to` read in the working result as it stands, the
+// client never re-sorting — is `support::apply_patch`, shared by every red_* test
+// and backed by the one `liasse_wire::apply`.
 
 /// The client-visible content of a result: each occurrence's identity and exposed
 /// output fields, in order. This is what §12.2 requires the client result to

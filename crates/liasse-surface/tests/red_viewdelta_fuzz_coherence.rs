@@ -28,56 +28,15 @@ use std::collections::BTreeMap;
 
 use liasse_store::MemoryStore;
 use liasse_surface::{
-    CallBinding, Engine, PatchOp, Precision, RowId, SurfaceBinding, SurfaceHost, SurfaceOutcome,
+    CallBinding, Engine, Precision, RowId, SurfaceBinding, SurfaceHost, SurfaceOutcome,
     SurfaceRouter, SurfaceRouterBuilder, Value, ViewBinding, ViewDelta, ViewResult, ViewRow,
     VirtualClock,
 };
 use liasse_value::Integer;
-use support::{call, store, text, NOW};
+use support::{apply_patch, call, store, text, NOW};
 
-// --- faithful §12.2 client (identical semantics to the shipped oracle) ---------
-
-fn apply_patch(prior: &[ViewRow], delta: &ViewDelta) -> Vec<ViewRow> {
-    match delta {
-        ViewDelta::Init(rows) => rows.clone(),
-        ViewDelta::Patch(ops) => {
-            let mut rows = prior.to_vec();
-            for op in ops {
-                match op {
-                    PatchOp::Remove { id } => {
-                        let at = position(&rows, id, "remove");
-                        rows.remove(at);
-                    }
-                    PatchOp::Update { row } => {
-                        let at = position(&rows, row.id(), "update");
-                        rows[at] = row.clone();
-                    }
-                    PatchOp::Move { id, to } => {
-                        let at = position(&rows, id, "move");
-                        let row = rows.remove(at);
-                        assert!(*to <= rows.len(), "move $to={to} out of range (len {})", rows.len());
-                        rows.insert(*to, row);
-                    }
-                    PatchOp::Insert { at, row } => {
-                        assert!(*at <= rows.len(), "insert $at={at} out of range (len {})", rows.len());
-                        rows.insert(*at, row.clone());
-                    }
-                    PatchOp::Rekey { .. } => {
-                        unreachable!("between renders a key change as remove+insert")
-                    }
-                }
-            }
-            rows
-        }
-        ViewDelta::Scalar(_) => unreachable!("the row `listing` view never yields a scalar delta"),
-    }
-}
-
-fn position(rows: &[ViewRow], id: &RowId, op: &str) -> usize {
-    rows.iter().position(|row| row.id() == id).unwrap_or_else(|| {
-        panic!("{op} targets an occurrence not present in the current client result")
-    })
-}
+// The faithful §12.2 client applier is `support::apply_patch`, shared by every
+// red_* test and backed by the one `liasse_wire::apply`.
 
 /// The client-visible content: each occurrence identity + exposed fields, in
 /// order. This is exactly what §12.2 requires the client result to equal.

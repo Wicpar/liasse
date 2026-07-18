@@ -38,12 +38,12 @@ use std::collections::BTreeMap;
 
 use liasse_store::MemoryStore;
 use liasse_surface::{
-    CallBinding, Engine, PatchOp, Precision, RowId, SurfaceBinding, SurfaceHost, SurfaceOutcome,
-    SurfaceRouter, SurfaceRouterBuilder, Value, ViewBinding, ViewDelta, ViewResult, ViewRow,
+    CallBinding, Engine, Precision, RowId, SurfaceBinding, SurfaceHost, SurfaceOutcome,
+    SurfaceRouter, SurfaceRouterBuilder, Value, ViewBinding, ViewResult, ViewRow,
     VirtualClock, Watch, WatchAuthz, Window,
 };
 use liasse_value::Integer;
-use support::{call, store, text, NOW};
+use support::{apply_patch, call, store, text, NOW};
 
 // --- app: `open` = live rows, projected `id`+`label`, sorted `[rank, id]` --------
 //
@@ -120,56 +120,9 @@ fn int(v: i64) -> Value {
     Value::Int(Integer::from(v))
 }
 
-// --- faithful §12.2 windowed client (each `$at`/`$to` read in the CURRENT window) -
-
-fn apply_patch(prior: &[ViewRow], delta: &ViewDelta) -> Vec<ViewRow> {
-    match delta {
-        ViewDelta::Init(rows) => rows.clone(),
-        ViewDelta::Patch(ops) => {
-            let mut rows = prior.to_vec();
-            for op in ops {
-                match op {
-                    PatchOp::Remove { id } => {
-                        let at = position(&rows, id, "remove");
-                        rows.remove(at);
-                    }
-                    PatchOp::Update { row } => {
-                        let at = position(&rows, row.id(), "update");
-                        rows[at] = row.clone();
-                    }
-                    PatchOp::Move { id, to } => {
-                        let at = position(&rows, id, "move");
-                        let row = rows.remove(at);
-                        assert!(
-                            *to <= rows.len(),
-                            "§12.2: `move $to={to}` outside the current windowed result (len {})",
-                            rows.len(),
-                        );
-                        rows.insert(*to, row);
-                    }
-                    PatchOp::Insert { at, row } => {
-                        assert!(
-                            *at <= rows.len(),
-                            "§12.2: `insert $at={at}` outside the current windowed result (len {}) \
-                             — a full-view position leaked into a windowed patch",
-                            rows.len(),
-                        );
-                        rows.insert(*at, row.clone());
-                    }
-                    PatchOp::Rekey { .. } => unreachable!("between_rows renders a key change as remove+insert"),
-                }
-            }
-            rows
-        }
-        ViewDelta::Scalar(_) => unreachable!("a row view never yields a scalar delta"),
-    }
-}
-
-fn position(rows: &[ViewRow], id: &RowId, op: &str) -> usize {
-    rows.iter()
-        .position(|row| row.id() == id)
-        .unwrap_or_else(|| panic!("§12.2: `{op}` targets an occurrence absent from the current window"))
-}
+// The faithful §12.2 windowed client applier is `support::apply_patch` (each
+// `$at`/`$to` read in the CURRENT window), shared by every red_* test and backed by
+// the one `liasse_wire::apply`.
 
 fn visible(rows: &[ViewRow]) -> Vec<(RowId, BTreeMap<String, Value>)> {
     rows.iter()

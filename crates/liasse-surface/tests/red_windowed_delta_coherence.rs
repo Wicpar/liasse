@@ -40,11 +40,11 @@ use std::collections::BTreeMap;
 
 use liasse_store::MemoryStore;
 use liasse_surface::{
-    CallBinding, Engine, PatchOp, Precision, RowId, SurfaceBinding, SurfaceHost, SurfaceRouter,
-    SurfaceRouterBuilder, Value, ViewBinding, ViewDelta, ViewResult, ViewRow, VirtualClock, Watch,
+    CallBinding, Engine, Precision, RowId, SurfaceBinding, SurfaceHost, SurfaceRouter,
+    SurfaceRouterBuilder, Value, ViewBinding, ViewResult, ViewRow, VirtualClock, Watch,
     WatchAuthz, Window,
 };
-use support::{call, store, text, NOW};
+use support::{apply_patch, call, store, text, NOW};
 
 /// A tiny keyed, `id`-sorted collection with an `add` mutation — the shape §12.2's
 /// window examples need, kept minimal and seedless so each probe builds an exact,
@@ -104,60 +104,11 @@ fn visible(rows: &[ViewRow]) -> Vec<(RowId, BTreeMap<String, Value>)> {
         .collect()
 }
 
-/// A faithful §12.2 client applying the ordered patch to its prior CLIENT-VISIBLE
-/// result (the window), one op at a time, each `$at`/`$to` read in the current
-/// windowed result. A position outside the client-visible window is a malformed
-/// patch for that client (§12.2: positions are "in the current result").
-fn apply_patch(prior: &[ViewRow], delta: &ViewDelta) -> Vec<ViewRow> {
-    match delta {
-        ViewDelta::Init(rows) => rows.clone(),
-        ViewDelta::Patch(ops) => {
-            let mut rows = prior.to_vec();
-            for op in ops {
-                match op {
-                    PatchOp::Remove { id } => {
-                        let at = position(&rows, id, "remove");
-                        rows.remove(at);
-                    }
-                    PatchOp::Update { row } => {
-                        let at = position(&rows, row.id(), "update");
-                        rows[at] = row.clone();
-                    }
-                    PatchOp::Move { id, to } => {
-                        let at = position(&rows, id, "move");
-                        let row = rows.remove(at);
-                        assert!(
-                            *to <= rows.len(),
-                            "§12.2: `move $to={to}` is outside the current windowed client result \
-                             (len {}); the emitted patch is not a windowed patch",
-                            rows.len(),
-                        );
-                        rows.insert(*to, row);
-                    }
-                    PatchOp::Insert { at, row } => {
-                        assert!(
-                            *at <= rows.len(),
-                            "§12.2: `insert $at={at}` is outside the current windowed client \
-                             result (len {}); the emitted patch carries a full-view position, not \
-                             a windowed one",
-                            rows.len(),
-                        );
-                        rows.insert(*at, row.clone());
-                    }
-                    PatchOp::Rekey { .. } => unreachable!("between renders a key change as remove+insert"),
-                }
-            }
-            rows
-        }
-        ViewDelta::Scalar(_) => unreachable!("a row view never yields a scalar delta"),
-    }
-}
-
-fn position(rows: &[ViewRow], id: &RowId, op: &str) -> usize {
-    rows.iter().position(|row| row.id() == id).unwrap_or_else(|| {
-        panic!("§12.2: `{op}` targets an occurrence absent from the current windowed client result")
-    })
-}
+// A faithful §12.2 client applying the ordered patch to its prior CLIENT-VISIBLE
+// result (the window), one op at a time with each `$at`/`$to` read in the current
+// windowed result, is `support::apply_patch` — shared by every red_* test and
+// backed by the one `liasse_wire::apply`. A position outside the client-visible
+// window is a malformed patch there (§12.2: positions are "in the current result").
 
 /// The `id` text of each row, in order — for readable failure output.
 fn ids(rows: &[ViewRow]) -> Vec<String> {
