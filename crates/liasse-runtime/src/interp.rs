@@ -1411,7 +1411,13 @@ impl<'a> Interp<'a> {
         let mut history = Erasure::new();
         let mut occurrences = Vec::new();
         for key in &keys {
-            let address = materialize::top_address(&name, KeyValue::single(key.clone()));
+            // §5.4/B.4: a composite key identity is the positional `Value::Composite`
+            // tuple, so it must decompose into the N-component `KeyValue` the row was
+            // stored under; wrapping the whole tuple as one component would address a
+            // non-existent one-component row, the lookup would miss, no occurrence
+            // would be recorded, and the §21.2 extract would come back empty even
+            // though the live-state removal (keyed by the un-wrapped identity) succeeds.
+            let address = materialize::top_address(&name, materialize::key_value_of(key));
             let Some(fields) = self.prospective.get(&address) else { continue };
             let payload = materialize::struct_of(fields);
             let occurrence = Occurrence::new(payload.to_canonical_json_string());

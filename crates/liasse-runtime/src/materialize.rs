@@ -93,6 +93,25 @@ pub(crate) fn key_identity(collection: &Collection, key: &KeyValue) -> Value {
     }
 }
 
+/// The typed storage [`KeyValue`] that addresses a row carrying application-visible
+/// key identity `key` — the inverse of [`key_identity`] (§5.4, Annex B.4).
+///
+/// A composite key identity is the positional [`Value::Composite`] tuple in `$key`
+/// order, so it decomposes into the N-component [`KeyValue`] the row was stored
+/// under (`{ first } :: rest`); any other value is a single-field key. Wrapping the
+/// whole composite tuple as one component instead would build a one-component key
+/// that never equals the stored composite [`RowAddress`], so a lookup by an erase
+/// or delete target's `row.key()` would miss the row.
+pub(crate) fn key_value_of(key: &Value) -> KeyValue {
+    match key {
+        Value::Composite(components) => match components.as_slice() {
+            [first, rest @ ..] => KeyValue::composite(first.clone(), rest.iter().cloned()),
+            [] => KeyValue::single(Value::Composite(Vec::new())),
+        },
+        other => KeyValue::single(other.clone()),
+    }
+}
+
 /// Normalize an authoring key operand to the application-visible key identity a
 /// row carries (§6.3, A.9), given the collection's ordered `$key` field names.
 ///
