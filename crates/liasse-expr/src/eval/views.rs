@@ -364,15 +364,40 @@ impl Evaluator<'_> {
     }
 }
 
-/// The binding name a `::` base contributes: a field's name, or a nested
-/// traversal's innermost member. Also the collection identity a bare bucketed
-/// temporal base addresses (§7.1), read by [`Evaluator::eval_temporal`].
+/// The single collection a view base ADDRESSES by name (§7.1): the field or
+/// traversal member it ranges over, recovered through the row-narrowing and
+/// row-reshaping operators that leave that source collection intact.
+///
+/// A bare `Field`/`Traverse` names the collection directly. A `Select` (a
+/// `[:name | …]` filter or a `[key]` selection) and a `Project` still range over
+/// the ONE collection their inner base names — the operator narrows or reshapes
+/// rows but never changes which collection they come from — so the name is
+/// recovered by recursing into that inner base. A multi-source operator
+/// (`Combine`, `Fallback`, `Ternary`) ranges over more than one collection and
+/// names none: the recursion reaches it through the `_` arm and yields `None`,
+/// even wrapped in a filter (`(.a ∪ .b)[:x | …]`), since the multi-source node
+/// answers `None` at its own level. The recursion is bounded by the syntax
+/// nesting cap that bounds every structural walk in this crate, so it cannot
+/// overflow.
+///
+/// Two callers read this:
+/// - [`Evaluator::eval_temporal`] resolves a bucketed temporal read against the
+///   collection the selector names (§14.1). A dormant filtered or projected base
+///   has the empty active-at-clock identity set — non-distinguishing, shared by
+///   every empty-active bucket — so recovering the addressed name is what keeps
+///   the read from colliding with an earlier empty-active collection.
+/// - [`Evaluator::eval_traverse`] binds a `::` base's traversed collection to its
+///   field name (§6.4); recursing through `Select`/`Project` matches the checker's
+///   `traverse_binds` scope model, which walks the same single-source spine.
 ///
 /// [`Evaluator::eval_temporal`]: crate::eval::Evaluator::eval_temporal
+/// [`Evaluator::eval_traverse`]: crate::eval::Evaluator::eval_traverse
 pub(super) fn bind_name_of(expr: &TypedExpr) -> Option<String> {
     match expr.kind() {
         TypedKind::Field { name, .. } => Some(name.clone()),
         TypedKind::Traverse { member, .. } => Some(member.clone()),
+        TypedKind::Select { base, .. } => bind_name_of(base),
+        TypedKind::Project { source, .. } => bind_name_of(source),
         _ => None,
     }
 }

@@ -1,0 +1,115 @@
+{
+  format: 1
+  name: filtered-base-shadows-empty-active-stored-temporal-read
+  suite: scenario
+  spec: ["#views", "§7.1", "#buckets", "§14.1", "§14.2"]
+  tags: ["temporal", "identity", "boundary", "regression"]
+  note: '''A temporal read whose base is a FILTERED bucketed collection is mis-attributed
+    to a DIFFERENT bucketed collection when both are dormant (no row active at the clock).
+    This is the SAME collection-misattribution the 4885c12 fix closed for a BARE base
+    (second-source-bucket-shadows-empty-active-temporal-read), left UNCLOSED for a
+    filtered/projected base — the regression hole in that fix.
+
+    4885c12 threads the addressed collection`s NAME through `Environment::temporal` into
+    `RuntimeEnv::working_set` (crates/liasse-runtime/src/env.rs) ONLY when the base is a
+    bare `Field`/`Traverse` — `bind_name_of` (crates/liasse-expr/src/eval/views.rs:372)
+    returns `Some(name)` for those and `None` for everything else. A filtered base
+    `.sessions_b[:s | ...]` is a `Select` node, so `bind_name_of` returns `None`,
+    `eval_temporal` passes `base_name = None`, and `working_set` falls back to the OLD
+    identity-set-equality heuristic: it returns the first extant whose rows ACTIVE AT NOW
+    equal the base`s identity set. A dormant filtered base has the empty active set — the
+    exact non-distinguishing key the fix commit itself calls out — which equals the empty
+    active set of ANY other dormant bucket, so the earlier-declared collection shadows the
+    one the selector names.
+
+    Repro: two stored lifecycle buckets, `sessions_a` (declared first, label AAA) and
+    `sessions_b` (declared second, label BBB). Both hold a single row whose interval is
+    entirely in the future ([2026-03-01, 2026-04-01)), so both are dormant at the
+    2026-01-01 clock and both carry the empty active-at-now identity set. The read instant
+    2026-03-15 lies inside BOTH intervals.
+
+    Step 1 (control): `.sessions_b.$at(2026-03-15)` is a BARE base — `base_name =
+    Some("sessions_b")` — and correctly answers from sessions_b: [{label: "BBB"}]. This
+    passes, proving the setup is sound and the fix works for a bare base.
+
+    Step 2 (bug): `.sessions_b[:s | s.starts < s.ends].$at(2026-03-15)` filters
+    sessions_b by an always-true predicate (every valid interval has starts < ends), so it
+    still ranges over sessions_b (§7.1: a view ranges over the collection it NAMES) and
+    §14.1 selects the sessions_b row active at 2026-03-15 = [{label: "BBB"}]. The filter
+    makes the base a `Select`, `base_name` is `None`, and `working_set` iterates the
+    stored extants in declaration order, matches sessions_a first (empty active set ==
+    empty base set), and ranges the selector over sessions_a`s extant instead. It returns
+    [{label: "AAA"}] — a row from sessions_a, a collection the selector never named. A
+    §7.1 / §14.1 violation with no recurrence, source generation, or boundary involved.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.filtshadow@1.0.0"
+    $model: {
+      // Declared FIRST: a dormant lifecycle bucket whose interval also covers the read
+      // instant, so a misattributed read returns its row (label AAA) rather than [].
+      sessions_a: {
+        $key: "id"
+        $bucket: { $from: ".starts", $until: ".ends" }
+        id: "text"
+        label: "text"
+        starts: "timestamp"
+        ends: "timestamp"
+      }
+      // Declared SECOND: the bucket the selector actually names. Dormant at the clock,
+      // so its base identity set is empty and collides with sessions_a under the fallback.
+      sessions_b: {
+        $key: "id"
+        $bucket: { $from: ".starts", $until: ".ends" }
+        id: "text"
+        label: "text"
+        starts: "timestamp"
+        ends: "timestamp"
+      }
+      $public: {
+        // Control: a BARE bucketed base carries its name (§7.1) and resolves correctly.
+        read_bare: {
+          $params: { t: "timestamp" }
+          $view: ".sessions_b.$at(@t) { label }"
+        }
+        // Bug: a FILTERED base is a Select — no carried name — and falls back to the
+        // buggy identity-set heuristic, shadowed by the earlier dormant sessions_a.
+        read_filtered: {
+          $params: { t: "timestamp" }
+          $view: ".sessions_b[:s | s.starts < s.ends].$at(@t) { label }"
+        }
+      }
+    }
+    $data: {
+      // Both rows: interval [2026-03-01T00:00:00Z, 2026-04-01T00:00:00Z), entirely in
+      // the future relative to the 2026-01-01 clock, so both buckets are dormant.
+      sessions_a: {
+        sa: { label: "AAA", starts: "1772323200000000", ends: "1775001600000000" }
+      }
+      sessions_b: {
+        sb: { label: "BBB", starts: "1772323200000000", ends: "1775001600000000" }
+      }
+    }
+  }
+
+  steps: [
+    // Control: bare base at 2026-03-15T00:00:00Z resolves against sessions_b by name.
+    { watch: "public.read_bare", args: { t: "1773532800000000" }, id: "w1"
+      expect_init: {
+        value: [
+          { label: "BBB" }
+        ]
+      } }
+
+    // Bug: filtered base at the same instant must still range over sessions_b (§7.1),
+    // selecting its active row (§14.1) = [{label: "BBB"}]. The runtime returns
+    // [{label: "AAA"}] because sessions_a (dormant, declared first) shadows the empty
+    // base in working_set's identity-set fallback.
+    { watch: "public.read_filtered", args: { t: "1773532800000000" }, id: "w2"
+      expect_init: {
+        value: [
+          { label: "BBB" }
+        ]
+      } }
+  ]
+}
