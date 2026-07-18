@@ -1104,6 +1104,14 @@ impl<'a> Interp<'a> {
             _ => BTreeSet::new(),
         };
         for member in incoming {
+            // §5.5 / A.1: `none` is absence, never a set member. Adding `none` is a
+            // no-op that yields the same set, and `none` is never present to remove —
+            // so a `none` operand is a no-op in BOTH directions. Skipping it leaves the
+            // set byte-for-byte unchanged, which `prospective.diff()` reports as
+            // `Unchanged` when it was the only change.
+            if matches!(member, Value::None) {
+                continue;
+            }
             let member = match &element_target {
                 Some(target) => self.ref_member(target, member)?,
                 None => member,
