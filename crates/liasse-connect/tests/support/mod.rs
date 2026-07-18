@@ -9,6 +9,8 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::collections::BTreeMap;
+use std::io::{Read, Write};
+use std::net::{SocketAddr, TcpStream};
 
 use liasse_connect::{ConnectCore, Reply, Schema};
 use liasse_ident::InstanceId;
@@ -232,6 +234,49 @@ pub fn app() -> ConnectCore<MemoryStore> {
 }
 
 // --- driving helpers ---------------------------------------------------------------
+
+/// A raw HTTP/1.1 request over a fresh loopback connection to the reference binding,
+/// returning the response status, lower-cased headers, and body. `target` is the
+/// request-line target (e.g. `/` or `/?last-event-id=…`); the reference server closes
+/// the socket after each response, so one call is one exchange.
+pub fn http_request(
+    addr: SocketAddr,
+    method: &str,
+    target: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> (u16, BTreeMap<String, String>, String) {
+    let mut stream = TcpStream::connect(addr).expect("connect");
+    let mut request =
+        format!("{method} {target} HTTP/1.1\r\nHost: localhost\r\nContent-Length: {}\r\n", body.len());
+    for (name, value) in headers {
+        request.push_str(name);
+        request.push_str(": ");
+        request.push_str(value);
+        request.push_str("\r\n");
+    }
+    request.push_str("\r\n");
+    request.push_str(body);
+    stream.write_all(request.as_bytes()).expect("write");
+
+    let mut raw = Vec::new();
+    stream.read_to_end(&mut raw).expect("read");
+    let text = String::from_utf8(raw).expect("utf8 response");
+    let (head, body) = text.split_once("\r\n\r\n").expect("response has a body separator");
+    let mut lines = head.lines();
+    let status = lines
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|code| code.parse().ok())
+        .expect("status code");
+    let mut response_headers = BTreeMap::new();
+    for line in lines {
+        if let Some((name, value)) = line.split_once(':') {
+            response_headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_owned());
+        }
+    }
+    (status, response_headers, body.to_owned())
+}
 
 /// A text value.
 #[must_use]

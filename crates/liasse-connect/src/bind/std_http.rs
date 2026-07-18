@@ -9,6 +9,19 @@
 //! stream and closes; the client reconnects to resume (§12.2) — enough for the
 //! reference and the socket smoke, while an axum adapter (a later stage) can hold the
 //! stream open.
+//!
+//! # Binding the stream by an ambient cookie (security)
+//! The connection capability is a bearer credential, so it must never travel in a URL:
+//! a capability in the SSE URL leaks through browser history, server access logs, and
+//! the `Referer` header, and whoever saw it could reopen the stream and *steal* the
+//! victim's already-authorized frames. So `hello` sets the capability as an **HttpOnly,
+//! Secure, SameSite** cookie (untrusted JS cannot read it; the browser resends it
+//! automatically), and the SSE `GET` — which a native `EventSource` opens with no
+//! custom header and no URL token — is bound to its connection by reading that cookie.
+//! A header-capable / injected transport may instead present the `Liasse-Connection`
+//! header, which takes precedence. The connection is NEVER read from the URL. Only the
+//! non-secret resume cursor (a frontier token, useless without the connection) may ride
+//! the `last-event-id` query.
 
 use std::net::{TcpListener, TcpStream};
 use std::sync::mpsc::{self, Sender};
@@ -24,6 +37,11 @@ use crate::core::{ConnectCore, Reply};
 use crate::error::ConnectError;
 
 use super::http::{Request, write_response, write_sse};
+
+/// The cookie the `hello` response sets to bind the SSE stream to its connection. A
+/// native browser `EventSource` sends no custom header, so this ambient cookie is the
+/// only channel the connection capability can reach the GET on.
+const CONNECTION_COOKIE: &str = "liasse_connection";
 
 /// One unit of work for the actor thread: a request to dispatch, or an SSE (re)connect
 /// to serve. Each carries the reply channel the handler waits on.
@@ -125,13 +143,15 @@ fn route(stream: &mut TcpStream, tx: &Sender<Job>, request: Request) -> std::io:
     }
 }
 
-/// Serve the SSE stream (GET).
+/// Serve the SSE stream (GET). The connection is bound by the ambient cookie (or an
+/// injected `Liasse-Connection` header), never the URL; the resume cursor may arrive on
+/// the `Last-Event-ID` header (browser auto-reconnect) or the `last-event-id` query
+/// (manual rebuild).
 fn serve_stream(stream: &mut TcpStream, tx: &Sender<Job>, request: &Request) -> std::io::Result<()> {
-    let Some(conn) = request.header("liasse-connection") else {
+    let Some(conn) = connection_of(request) else {
         return fault(stream, 400, FaultCode::BadToken, "missing connection");
     };
-    let conn = ConnectionToken::new(conn);
-    let last = request.header("last-event-id").map(str::to_owned);
+    let last = resume_id(request);
     let (reply_tx, reply_rx) = mpsc::channel();
     if tx.send(Job::Resume { conn, last, reply: reply_tx }).is_err() {
         return fault(stream, 500, FaultCode::Internal, "actor unavailable");
@@ -152,7 +172,7 @@ fn serve_submit(stream: &mut TcpStream, tx: &Sender<Job>, request: &Request) -> 
         Ok(frame) => frame,
         Err(_) => return fault(stream, 400, FaultCode::Malformed, "frame did not parse"),
     };
-    let conn = request.header("liasse-connection").map(ConnectionToken::new);
+    let conn = connection_of(request);
     let operation = request.header("liasse-operation-id").map(OperationId::new);
     let (reply_tx, reply_rx) = mpsc::channel();
     if tx.send(Job::Submit { conn, operation, frame: Box::new(frame), reply: reply_tx }).is_err() {
@@ -170,12 +190,16 @@ fn write_reply(stream: &mut TcpStream, reply: Reply) -> std::io::Result<()> {
     match reply {
         Reply::Hello { connection } => {
             let body = json!({ "connection": connection.as_str() }).to_string();
+            // The body carries the capability for the header-based POST path; the
+            // Set-Cookie binds the SSE stream for a browser `EventSource` that cannot
+            // send a header (see the module security note).
+            let cookie = connection_cookie(&connection);
             write_response(
                 stream,
                 200,
                 "application/json",
                 body.as_bytes(),
-                &[("Liasse-Connection", connection.as_str())],
+                &[("Set-Cookie", cookie.as_str()), ("Liasse-Connection", connection.as_str())],
             )
         }
         Reply::Manifest(surfaces) => {
@@ -213,4 +237,40 @@ fn status_of(error: &ConnectError) -> u16 {
         ConnectError::Oversized { .. } => 413,
         ConnectError::Host(_) => 500,
     }
+}
+
+/// The connection capability a request presents. Precedence: an explicit
+/// `Liasse-Connection` header wins (a header-capable / injected transport that names
+/// the capability outright), otherwise the ambient HttpOnly connection cookie the
+/// browser resends (a native `EventSource` can send no header). The connection is NEVER
+/// read from the URL — a capability there leaks and lets a stream be stolen. A malformed
+/// or absent cookie yields `None`, taking the existing no-connection path.
+fn connection_of(request: &Request) -> Option<ConnectionToken> {
+    request
+        .header("liasse-connection")
+        .or_else(|| request.cookie(CONNECTION_COOKIE))
+        .map(ConnectionToken::new)
+}
+
+/// The §12.2 resume cursor a GET presents. Precedence: the `Last-Event-ID` header (a
+/// browser replays it automatically on an auto-reconnect) wins, otherwise the
+/// `last-event-id` URL query (the client's manual rebuild). The frontier token is not a
+/// credential — it cannot open a stream on its own — so it may ride the URL.
+fn resume_id(request: &Request) -> Option<String> {
+    request
+        .header("last-event-id")
+        .map(str::to_owned)
+        .or_else(|| request.query_param("last-event-id"))
+}
+
+/// The `Set-Cookie` value binding the SSE stream to this connection. `HttpOnly` so
+/// untrusted JS cannot read the capability, `Secure` so it never crosses plaintext,
+/// `SameSite=Strict` to resist CSRF and cross-site theft, `Path=/` so it is presented on
+/// both the SSE GET and the POSTs, and a session cookie (no `Max-Age`) since a
+/// connection is volatile (§22).
+fn connection_cookie(connection: &ConnectionToken) -> String {
+    format!(
+        "{CONNECTION_COOKIE}={}; Path=/; HttpOnly; Secure; SameSite=Strict",
+        connection.as_str(),
+    )
 }

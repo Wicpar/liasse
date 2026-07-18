@@ -31,12 +31,15 @@ impl From<std::io::Error> for HttpError {
     }
 }
 
-/// A parsed request: method, lower-cased headers, and the body bytes. The path is
-/// parsed for well-formedness but not retained — the binding routes by method (POST
-/// requests, GET the SSE stream).
+/// A parsed request: method, the target's query string, lower-cased headers, and the
+/// body bytes. The path is parsed for well-formedness but not retained — the binding
+/// routes by method (POST requests, GET the SSE stream); only the query string is kept,
+/// because the non-secret resume cursor may ride it (§12.2).
 pub struct Request {
     /// The request method (`GET`, `POST`).
     pub method: String,
+    /// The request target's query string (the part after `?`), if any.
+    pub query: Option<String>,
     /// Header fields, keyed by their lower-cased name.
     pub headers: BTreeMap<String, String>,
     /// The request body.
@@ -55,8 +58,10 @@ impl Request {
         }
         let mut parts = request_line.split_whitespace();
         let method = parts.next().ok_or(HttpError::BadRequest)?.to_owned();
-        // The path is required in the request line but not retained.
-        parts.next().ok_or(HttpError::BadRequest)?;
+        // The request target is required. Its query string is retained (the §12.2
+        // resume cursor may ride it); the path is not — the binding routes by method.
+        let target = parts.next().ok_or(HttpError::BadRequest)?;
+        let query = target.split_once('?').map(|(_, q)| q.to_owned());
 
         let mut headers = BTreeMap::new();
         let mut header_bytes = request_line.len();
@@ -87,13 +92,78 @@ impl Request {
         }
         let mut body = vec![0u8; length];
         reader.read_exact(&mut body)?;
-        Ok(Self { method, headers, body })
+        Ok(Self { method, query, headers, body })
     }
 
     /// A header value by lower-cased name.
     #[must_use]
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers.get(name).map(String::as_str)
+    }
+
+    /// The value of cookie `name` from the untrusted `Cookie` request header, if
+    /// present and well-formed. A browser's native `EventSource` can send no custom
+    /// header, so the connection capability rides this ambient cookie instead. Parsing
+    /// is total: a malformed or absent header simply yields `None`, never a panic
+    /// (AGENTS.md — bound and sanitize hostile input at the boundary).
+    #[must_use]
+    pub fn cookie(&self, name: &str) -> Option<&str> {
+        self.header("cookie")?.split(';').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key.trim() == name).then(|| value.trim())
+        })
+    }
+
+    /// A named URL query parameter from the request target, percent-decoded. The
+    /// resume cursor (`last-event-id`) is a non-secret frontier token, so it may ride
+    /// the URL; the connection capability never does (a capability in a URL leaks via
+    /// history, access logs, and `Referer`). Absent if the target had no such key.
+    #[must_use]
+    pub fn query_param(&self, name: &str) -> Option<String> {
+        let query = self.query.as_deref()?;
+        query.split('&').find_map(|pair| {
+            let (key, value) = pair.split_once('=')?;
+            (key == name).then(|| percent_decode(value))
+        })
+    }
+}
+
+/// Percent-decode a URL query value, matching the client's `encodeURIComponent`. An
+/// incomplete or non-hex `%` sequence is kept verbatim, so decoding is total and never
+/// panics or indexes on hostile input (AGENTS.md). Frontier tokens under the default
+/// minter need no decoding; this keeps the resume cursor correct across the token seam.
+fn percent_decode(value: &str) -> String {
+    let mut out: Vec<u8> = Vec::with_capacity(value.len());
+    let mut rest = value.as_bytes();
+    while let Some((&first, tail)) = rest.split_first() {
+        if first == b'%'
+            && let Some((&hi, &lo, remainder)) = two(tail)
+            && let (Some(high), Some(low)) = (hex_nibble(hi), hex_nibble(lo))
+        {
+            out.push((high << 4) | low);
+            rest = remainder;
+        } else {
+            out.push(first);
+            rest = tail;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The first two bytes of `bytes` and the remainder, without indexing.
+fn two(bytes: &[u8]) -> Option<(&u8, &u8, &[u8])> {
+    let (hi, tail) = bytes.split_first()?;
+    let (lo, remainder) = tail.split_first()?;
+    Some((hi, lo, remainder))
+}
+
+/// The numeric value of a single hex digit, or `None` if the byte is not one.
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
