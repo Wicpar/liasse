@@ -375,6 +375,29 @@ pub trait Environment {
         Err(EvalError::NoTemporalIndex)
     }
 
+    /// The rows of the bucketed collection `name` that are active for `query`
+    /// (§14.1), recovered by the name the selector *addresses* (§7.1) — the FULL
+    /// extant of that collection filtered to `query`'s active region, before any
+    /// filter/projection the base view applies.
+    ///
+    /// This is the single-source counterpart to [`Self::temporal`]: a bare or a
+    /// filtered/projected base names ONE collection, so the environment recovers
+    /// that collection's extant directly and the evaluator re-applies the base's
+    /// own filter/projection to the returned rows (`.X[pred]`/`.X{proj}` narrows or
+    /// reshapes X's extant, never the whole collection). Returning the extant
+    /// *un*-transformed here is what lets the evaluator honor the predicate: it can
+    /// re-run the base's transform against these rows, so an inactive/future row
+    /// that satisfies the predicate stays eligible.
+    ///
+    /// `None` means `name` addresses no bucketed collection this environment holds
+    /// (a non-bucketed or unregistered base) — the caller then falls back to
+    /// [`Self::temporal`] over the evaluated base rows. The default owns no temporal
+    /// index and answers `None`, so only the bucket-aware runtime resolves it.
+    fn temporal_by_name(&self, name: &str, query: &TemporalQuery) -> Option<Vec<Row>> {
+        let _ = (name, query);
+        None
+    }
+
     /// Resolve a keyring public version selector (§17.2) over a keyring's version
     /// rows. `base` is the evaluated keyring's version metadata rows; the
     /// environment returns the versions `selector` exposes according to the

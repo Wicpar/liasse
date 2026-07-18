@@ -174,20 +174,22 @@ impl<'a> RuntimeEnv<'a> {
         }
     }
 
-    /// The working set a temporal selector ranges over (§14.1). When `base` is a
-    /// bare bucketed collection it re-derives activity from that collection's
-    /// *full* extant set, so `.$all` and a back-dated `.$at` see inactive rows
-    /// (§14.2); otherwise (a filtered or projected base) the query ranges over
-    /// `base` as given, using each row's carried interval.
+    /// The full extant a temporal selector ranges over (§14.1/§14.2), from which
+    /// [`Environment::temporal`] then selects the rows active for the query. A
+    /// single-source base (bare or filtered/projected) is resolved *by name*
+    /// upstream through [`Environment::temporal_by_name`], which recovers the
+    /// addressed collection's extant and lets the evaluator re-apply the base's own
+    /// filter/projection; this fallback serves the cases that path leaves open — a
+    /// MULTI-source/anonymous base (`base_name` `None`) and a base whose name
+    /// addresses no bucketed collection.
     ///
-    /// `base_name` is the collection the selector ADDRESSES (§7.1) — `Some` for a
-    /// bare bucketed base, `None` for a filtered/projected one. When present, the
-    /// full extant is recovered by that name: an empty (dormant) base's identity
-    /// set is shared by every empty-active bucket, so it is not a distinguishing
-    /// key, whereas the addressed name is. When absent, the collection is
-    /// recovered by identity-set equality (a filtered base whose active rows equal
-    /// a collection's still re-derives that collection's inactive rows), and a
-    /// base matching none ranges over itself.
+    /// `base_name` is the collection the selector ADDRESSES (§7.1). When present and
+    /// it names a bucket, its full extant is recovered by that name — an empty
+    /// (dormant) base's identity set is shared by every empty-active bucket, so it
+    /// is not a distinguishing key, whereas the addressed name is. Otherwise the
+    /// collection is recovered by identity-set equality (a base whose active rows
+    /// equal a collection's re-derives that collection's inactive rows), and a base
+    /// matching none ranges over itself as given.
     ///
     /// `source` is the freshly regenerated source-bucket extant set for this
     /// query's horizon (§14.5); it is searched after the stored buckets. Stored
@@ -200,10 +202,9 @@ impl<'a> RuntimeEnv<'a> {
         source: &'w [NamedExtant],
     ) -> &'w [Row] {
         if let Some(name) = base_name
-            && let Some(extant) =
-                self.temporal.iter().chain(source.iter()).find(|extant| extant.name == name)
+            && let Some(rows) = self.named_extant(name, source)
         {
-            return &extant.rows;
+            return rows;
         }
         let base_ids: BTreeSet<&RowId> = base.iter().map(Row::id).collect();
         for extant in self.temporal.iter().chain(source.iter()) {
@@ -214,6 +215,28 @@ impl<'a> RuntimeEnv<'a> {
             }
         }
         base
+    }
+
+    /// The full extant rows of the bucketed collection `name` (§14.2), searched
+    /// across the stored buckets and the freshly regenerated `source` set. Stored
+    /// and source-backed buckets never share a name, so the lookup is unambiguous;
+    /// `None` when no bucketed collection carries the name.
+    fn named_extant<'w>(&'w self, name: &str, source: &'w [NamedExtant]) -> Option<&'w [Row]> {
+        self.temporal
+            .iter()
+            .chain(source.iter())
+            .find(|extant| extant.name == name)
+            .map(|extant| extant.rows.as_slice())
+    }
+
+    /// The source-backed buckets' extant set regenerated up to the horizon this
+    /// `query` drives (§14.5); empty when the package declares none, leaving
+    /// stored-bucket resolution exactly as before.
+    fn regenerated_source(&self, query: &TemporalQuery) -> Vec<NamedExtant> {
+        match &self.source_horizon {
+            Some(horizon) => horizon.extant_to(self.horizon_for(query)),
+            None => Vec::new(),
+        }
     }
 }
 
@@ -258,18 +281,24 @@ impl Environment for RuntimeEnv<'_> {
     ) -> Result<Vec<Row>, EvalError> {
         // §14.5: regenerate the source-backed buckets' extant set up to the horizon
         // this selector's own bound drives, so a read past the clock still generates
-        // the covering periods. Empty when the package has no source-backed bucket,
-        // leaving stored-bucket resolution exactly as before.
-        let source = match &self.source_horizon {
-            Some(horizon) => horizon.extant_to(self.horizon_for(query)),
-            None => Vec::new(),
-        };
+        // the covering periods.
+        let source = self.regenerated_source(query);
         Ok(self
             .working_set(base, base_name, &source)
             .iter()
             .filter(|row| selects(row, query))
             .cloned()
             .collect())
+    }
+
+    /// Recover the collection `name` addresses (§7.1) and return its extant rows
+    /// active for `query` (§14.1) — the full extant (source-regenerated at the
+    /// query's horizon), *before* the base view's own filter/projection, which the
+    /// evaluator re-applies. `None` when no bucketed collection carries the name.
+    fn temporal_by_name(&self, name: &str, query: &TemporalQuery) -> Option<Vec<Row>> {
+        let source = self.regenerated_source(query);
+        let rows = self.named_extant(name, &source)?;
+        Some(rows.iter().filter(|row| selects(row, query)).cloned().collect())
     }
 
     /// Resolve a keyring public selector over the ring's version view (§17.2).

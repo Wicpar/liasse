@@ -1,0 +1,98 @@
+{
+  format: 1
+  name: future-filtered-row-selected-at-its-active-instant
+  suite: scenario
+  spec: ["#views", "§7.1", "#buckets", "§14.1", "§14.2"]
+  tags: ["temporal", "authz", "boundary", "regression"]
+  note: '''A filtered temporal read must apply its predicate to the collection`s
+    EXTANT (§14.2), not merely to the rows active at the clock — so a row that is
+    DORMANT at the clock but active at the queried instant t and that satisfies the
+    predicate MUST appear in `.coll[pred].$at(t)`, while a dormant row the predicate
+    excludes must NOT. This pins the over-narrowing dual of the filter-bypass fix:
+    re-applying the base`s predicate must range over the recovered extant (which
+    includes inactive/future rows), never only the empty current-active set.
+
+    §7.1: `.sessions[:s | s.label == "keep"]` ranges over sessions and keeps the
+    rows satisfying the predicate. §14.1: `.$at(t)` selects the rows active at t —
+    including rows active only in the FUTURE relative to the clock. The composition
+    is the sessions rows that satisfy the predicate AND are active at t; a
+    future-active `keep` row is one of them.
+
+    Setup: one lifecycle bucket `sessions` with two rows, both on the FUTURE interval
+    [2026-06-01, 2026-09-01). At the 2026-01-01 clock both are DORMANT (no session is
+    active at the clock, so the materialized current set is empty). The read instant
+    2026-07-01 lies inside both intervals. Row `sk` has label "keep"; row `sx` has
+    label "leak".
+
+    Step 1 (control, bare temporal at the future instant): `.sessions.$at(t){ label }`
+    returns BOTH rows, proving both are extant and active at t even though dormant at
+    the clock (so a `keep` row appearing in step 2 is genuine temporal activity, not
+    a clock-time artifact).
+
+    Step 2 (target, filtered temporal at the future instant): `.sessions[:s | s.label
+    == "keep"].$at(t){ label }` MUST return exactly [{label: "keep"}] — the dormant
+    future row that satisfies the predicate and is active at t. A fix that applied the
+    predicate only to the clock-active set would return [] (the current set is empty);
+    a fix that dropped the predicate would return both rows. Only re-applying the
+    predicate to the extant active at t yields the single correct row.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.futurefilt@1.0.0"
+    $model: {
+      // A single lifecycle bucket, dormant at the clock (its rows start in the
+      // future), read at an instant inside its future active interval.
+      sessions: {
+        $key: "id"
+        $bucket: { $from: ".starts", $until: ".ends" }
+        id: "text"
+        label: "text"
+        starts: "timestamp"
+        ends: "timestamp"
+      }
+      $public: {
+        // Control: a bare temporal read at the future instant returns every row
+        // active then, proving both rows are extant and active despite dormancy.
+        read_bare: {
+          $params: { t: "timestamp" }
+          $view: ".sessions.$at(@t) { label }"
+        }
+        // Target: the filtered temporal read must apply the predicate to the extant
+        // active at t, keeping the future `keep` row and excluding `leak`.
+        read_filtered: {
+          $params: { t: "timestamp" }
+          $view: '''.sessions[:s | s.label == "keep"].$at(@t) { label }'''
+        }
+      }
+    }
+    $data: {
+      // Both rows: interval [2026-06-01T00:00:00Z, 2026-09-01T00:00:00Z), entirely in
+      // the future relative to the 2026-01-01 clock, so the bucket is dormant then.
+      sessions: {
+        sk: { label: "keep", starts: "1780272000000000", ends: "1788220800000000" }
+        sx: { label: "leak", starts: "1780272000000000", ends: "1788220800000000" }
+      }
+    }
+  }
+
+  steps: [
+    // Control: bare temporal at 2026-07-01T00:00:00Z sees both future-active rows.
+    { watch: "public.read_bare", args: { t: "1782864000000000" }, id: "w1"
+      expect_init: {
+        value: { $unordered: [
+          { label: "keep" }
+          { label: "leak" }
+        ] }
+      } }
+
+    // Target: the filtered temporal read keeps only the predicate-selected row that
+    // is active at t, proving the predicate is applied to the extant (§14.2) and a
+    // future-active matching row is eligible (§14.1) — never [] and never both rows.
+    { watch: "public.read_filtered", args: { t: "1782864000000000" }, id: "w2"
+      expect_init: {
+        value: [
+          { label: "keep" }
+        ]
+      } }
+  ]
+}

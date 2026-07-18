@@ -1,0 +1,132 @@
+{
+  format: 1
+  name: filtered-base-bypasses-predicate-in-temporal-read
+  suite: scenario
+  spec: ["#views", "§7.1", "#buckets", "§14.1", "§14.2"]
+  tags: ["temporal", "authz", "boundary", "regression"]
+  note: '''A temporal read whose base is a FILTERED bucketed collection DROPS the
+    filter predicate: `.coll[:s | pred].$at(t)` returns EVERY extant row of `coll`
+    active at t, including rows the predicate EXCLUDES. This over-exposes data the
+    filter was meant to hide — the regression surfaced by the eb380ec fix.
+
+    eb380ec ("Recover a temporal base`s collection name through single-source
+    bases") made `bind_name_of` (crates/liasse-expr/src/eval/views.rs:395) recurse
+    through `Select`/`Project`, so a FILTERED base `.sessions[:s | pred]` now yields
+    `base_name = Some("sessions")`. `eval_temporal`
+    (crates/liasse-expr/src/eval/temporal.rs:30-33) evaluates the base view into the
+    correctly FILTERED rows, then calls `env.temporal(&rows, Some("sessions"), q)`.
+    But `RuntimeEnv::working_set` (crates/liasse-runtime/src/env.rs:196-217), when
+    `base_name` is `Some`, RETURNS `&extant.rows` — the collection`s FULL extant —
+    and DISCARDS the `base` argument entirely. The filtered rows the evaluator
+    computed are thrown away; only the temporal activity rule (`selects`,
+    env.rs:317-324) is applied to the full extant. The predicate never runs against
+    the working set, so any row the filter excluded but that is active at t leaks.
+
+    eb380ec`s own regression case (filtered-base-shadows-empty-active-stored-
+    temporal-read) used the ALWAYS-TRUE filter `s.starts < s.ends`, so it could not
+    tell "filter applied" from "filter bypassed" — both keep every row. This case
+    uses a MEANINGFUL filter that excludes a row, isolating the bypass.
+
+    §7.1: a view ranges over the collection it NAMES and a filter narrows WHICH rows
+    (the exact reading eb380ec cites). §14.1: `.$at(t)` selects the rows active at t.
+    The composition `.sessions[:s | s.label == "keep"].$at(t)` is therefore the rows
+    of sessions that satisfy the predicate AND are active at t — never a row the
+    predicate excluded. Returning the excluded row is a §7.1/§14.1 violation and a
+    data-over-exposure, with no recurrence, source generation, dormancy, or
+    collection shadowing involved (a SINGLE collection, so no misattribution is
+    possible — the excluded row can only appear via predicate-bypass).
+
+    Setup: one lifecycle bucket `sessions` with two rows, both on the interval
+    [2025-06-01, 2027-01-01), so both are ACTIVE at the 2026-01-01 clock and both
+    active at the read instant 2026-03-15. Row `sk` has label "keep"; row `sx` has
+    label "leak". The filter `s.label == "keep"` keeps `sk` and excludes `sx`.
+
+    Step 1 (control, bare temporal): `.sessions.$at(t) { label }` returns BOTH rows,
+    proving both are extant and active at t (so `sx` appearing in step 3 is purely
+    the predicate-bypass, not inactivity).
+
+    Step 2 (control, plain filtered, NON-temporal): `.sessions[:s | s.label ==
+    "keep"] { label }` returns ONLY {label: "keep"}, proving the predicate correctly
+    narrows in the ordinary (non-`working_set`) evaluation path.
+
+    Step 3 (bug, filtered temporal): `.sessions[:s | s.label == "keep"].$at(t)
+    { label }` MUST return the predicate-narrowed active rows = [{label: "keep"}]
+    (§7.1 filter narrows + §14.1 active-at-t). The runtime returns
+    [{label: "keep"}, {label: "leak"}] because `working_set` ranges the selector
+    over sessions` FULL extant and never re-applies the predicate.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.filtbypass@1.0.0"
+    $model: {
+      // A single lifecycle bucket: no second collection exists, so a row of a
+      // DIFFERENT collection can never appear — the only way `leak` reaches the
+      // output is a bypass of this collection`s own filter predicate.
+      sessions: {
+        $key: "id"
+        $bucket: { $from: ".starts", $until: ".ends" }
+        id: "text"
+        label: "text"
+        starts: "timestamp"
+        ends: "timestamp"
+      }
+      $public: {
+        // Control: a bare temporal read returns every active row.
+        read_bare: {
+          $params: { t: "timestamp" }
+          $view: ".sessions.$at(@t) { label }"
+        }
+        // Control: a plain filtered read (no temporal selector) narrows correctly
+        // through the ordinary Select path, never touching working_set.
+        read_plain_filtered: {
+          $view: '''.sessions[:s | s.label == "keep"] { label }'''
+        }
+        // Bug: a filtered temporal read must range over sessions rows that satisfy
+        // the predicate AND are active at t. working_set discards the filtered base
+        // and ranges over the full extant, leaking the excluded `leak` row.
+        read_filtered_temporal: {
+          $params: { t: "timestamp" }
+          $view: '''.sessions[:s | s.label == "keep"].$at(@t) { label }'''
+        }
+      }
+    }
+    $data: {
+      // Both rows share the interval [2025-06-01T00:00:00Z, 2027-01-01T00:00:00Z),
+      // so both are active at the 2026-01-01 clock and at the 2026-03-15 read.
+      sessions: {
+        sk: { label: "keep", starts: "1748736000000000", ends: "1798761600000000" }
+        sx: { label: "leak", starts: "1748736000000000", ends: "1798761600000000" }
+      }
+    }
+  }
+
+  steps: [
+    // Control: bare temporal at 2026-03-15T00:00:00Z sees both active rows.
+    { watch: "public.read_bare", args: { t: "1773532800000000" }, id: "w1"
+      expect_init: {
+        value: { $unordered: [
+          { label: "keep" }
+          { label: "leak" }
+        ] }
+      } }
+
+    // Control: the plain filtered view narrows to the kept row, proving the
+    // predicate works in the ordinary evaluation path.
+    { watch: "public.read_plain_filtered", id: "w2"
+      expect_init: {
+        value: [
+          { label: "keep" }
+        ]
+      } }
+
+    // Bug: the filtered temporal read must keep only the predicate-selected active
+    // row. The runtime leaks the excluded `leak` row because working_set ranges the
+    // selector over the full extant and drops the predicate (§7.1/§14.1).
+    { watch: "public.read_filtered_temporal", args: { t: "1773532800000000" }, id: "w3"
+      expect_init: {
+        value: [
+          { label: "keep" }
+        ]
+      } }
+  ]
+}

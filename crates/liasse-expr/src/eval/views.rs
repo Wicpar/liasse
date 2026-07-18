@@ -58,7 +58,7 @@ impl Evaluator<'_> {
         Ok(Cell::Collection(scopes.into_iter().map(|s| s.row).collect()))
     }
 
-    fn select_bind_scopes(
+    pub(super) fn select_bind_scopes(
         &mut self,
         base_scopes: Vec<RowScope>,
         name: &str,
@@ -153,6 +153,18 @@ impl Evaluator<'_> {
         projection: &Projection,
     ) -> Result<Vec<Row>, EvalError> {
         let scopes = self.eval_view(source)?;
+        self.project_scopes(scopes, projection)
+    }
+
+    /// Project a stream of already-evaluated source scopes (§7.1), dispatching to
+    /// the plain or grouped path by whether a `$key` is declared. Shared by
+    /// [`Self::project_view`] and the temporal rebase, which projects a bucketed
+    /// base's recovered extant rather than re-reading the live collection.
+    pub(super) fn project_scopes(
+        &mut self,
+        scopes: Vec<RowScope>,
+        projection: &Projection,
+    ) -> Result<Vec<Row>, EvalError> {
         if projection.key.is_empty() {
             self.project_plain(scopes, projection)
         } else {

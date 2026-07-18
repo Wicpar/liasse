@@ -1,0 +1,125 @@
+{
+  format: 1
+  name: projected-base-bypasses-projection-in-temporal-read
+  suite: scenario
+  spec: ["#views", "§7.1", "#buckets", "§14.1", "§14.2"]
+  tags: ["temporal", "authz", "boundary", "regression"]
+  note: '''A temporal read whose base is a PROJECTED bucketed collection DROPS the
+    projection: `.coll{ field }.$at(t)` returns EVERY extant row of `coll` active at
+    t in its FULL, unprojected shape — every declared field, including ones the
+    projection was meant to hide. This is the projection twin of the filter-bypass
+    (filtered-base-bypasses-predicate-in-temporal-read): both share the same root in
+    `RuntimeEnv::working_set` discarding the evaluated base and ranging the selector
+    over the collection`s full extant.
+
+    eb380ec made `bind_name_of` (crates/liasse-expr/src/eval/views.rs) recurse
+    through `Project`, so a PROJECTED base `.records{ label }` yields
+    `base_name = Some("records")`. `eval_temporal` evaluates the base into the
+    correctly PROJECTED rows (only `label`), then the environment`s working_set,
+    seeing `base_name = Some`, returns the collection`s FULL extant rows and applies
+    only the temporal activity rule — the projection never runs against the working
+    set, so the hidden `secret` field leaks in every returned row.
+
+    §7.1: a view ranges over the collection it NAMES and a projection RESHAPES its
+    rows to the chosen outputs. §14.1: `.$at(t)` selects the rows active at t. The
+    composition `.records{ label }.$at(t)` is therefore the records rows active at t,
+    each RESHAPED to just `{ label }` — never the full record. Returning the hidden
+    `secret` is a §7.1/§14.1 violation and a data-over-exposure.
+
+    Setup: one lifecycle bucket `records` with two rows, both on the interval
+    [2025-06-01, 2027-01-01), so both are ACTIVE at the 2026-01-01 clock and at the
+    2026-03-15 read. Each row carries a `label` (the projected, exposed field) and a
+    `secret` (the field the projection drops).
+
+    Step 1 (control, bare temporal, full shape): `.records.$at(t){ label, secret }`
+    shows BOTH fields of BOTH rows, proving the rows are extant, active at t, and
+    that `secret` is present in the underlying extant.
+
+    Step 2 (control, plain projection, NON-temporal): `.records{ label }` returns
+    rows with ONLY `label`, proving the projection reshapes correctly in the
+    ordinary (non-working_set) evaluation path.
+
+    Step 3 (bug, projected temporal): `.records{ label }.$at(t)` MUST return the
+    active rows reshaped to `{ label }` only. The runtime returns the full extant
+    rows (including `secret`) because working_set ranges the selector over records`
+    FULL extant and never re-applies the projection.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.projbypass@1.0.0"
+    $model: {
+      // A single lifecycle bucket carrying a projected (exposed) field and a
+      // hidden field; the projection `{ label }` must drop `secret`.
+      records: {
+        $key: "id"
+        $bucket: { $from: ".starts", $until: ".ends" }
+        id: "text"
+        label: "text"
+        secret: "text"
+        starts: "timestamp"
+        ends: "timestamp"
+      }
+      $public: {
+        // Control: a bare temporal read in full shape shows both fields, so the
+        // hidden field is present in the extant and only the projection hides it.
+        read_full: {
+          $params: { t: "timestamp" }
+          $view: ".records.$at(@t) { label, secret }"
+        }
+        // Control: a plain projection (no temporal selector) reshapes to `label`
+        // only through the ordinary Project path, never touching working_set.
+        read_plain_projected: {
+          $view: ".records { label }"
+        }
+        // Bug: a projected temporal read must reshape the active rows to `{ label }`.
+        // working_set discards the projected base and returns the full extant,
+        // leaking the hidden `secret` field.
+        read_projected_temporal: {
+          $params: { t: "timestamp" }
+          $view: ".records { label }.$at(@t)"
+        }
+      }
+    }
+    $data: {
+      // Both rows share the interval [2025-06-01T00:00:00Z, 2027-01-01T00:00:00Z),
+      // so both are active at the 2026-01-01 clock and at the 2026-03-15 read.
+      records: {
+        r1: { label: "alpha", secret: "hush-1", starts: "1748736000000000", ends: "1798761600000000" }
+        r2: { label: "beta", secret: "hush-2", starts: "1748736000000000", ends: "1798761600000000" }
+      }
+    }
+  }
+
+  steps: [
+    // Control: bare temporal at 2026-03-15T00:00:00Z shows both fields of both rows,
+    // proving `secret` is present in the extant that the projection must drop.
+    { watch: "public.read_full", args: { t: "1773532800000000" }, id: "w1"
+      expect_init: {
+        value: { $unordered: [
+          { label: "alpha", secret: "hush-1" }
+          { label: "beta", secret: "hush-2" }
+        ] }
+      } }
+
+    // Control: the plain projection reshapes to `label` only, proving the projection
+    // works in the ordinary evaluation path (exact object match: no `secret`).
+    { watch: "public.read_plain_projected", id: "w2"
+      expect_init: {
+        value: { $unordered: [
+          { label: "alpha" }
+          { label: "beta" }
+        ] }
+      } }
+
+    // Bug: the projected temporal read must reshape each active row to `{ label }`,
+    // hiding `secret`. The runtime leaks `secret` because working_set ranges the
+    // selector over the full extant and drops the projection (§7.1/§14.1).
+    { watch: "public.read_projected_temporal", args: { t: "1773532800000000" }, id: "w3"
+      expect_init: {
+        value: { $unordered: [
+          { label: "alpha" }
+          { label: "beta" }
+        ] }
+      } }
+  ]
+}

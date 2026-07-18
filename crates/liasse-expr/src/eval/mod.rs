@@ -307,7 +307,7 @@ impl Evaluator<'_> {
         }
     }
 
-    fn select_by_keys(
+    pub(crate) fn select_by_keys(
         &mut self,
         rows: &[Row],
         keys: &[TypedExpr],
