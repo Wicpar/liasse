@@ -132,15 +132,14 @@ impl SessionAuthenticator {
     }
 
     /// Resolve `$actor` to exactly one existing row (§11.3). The actor's identity
-    /// is the resolved row's own typed key (§5.6) — not the lookup value, which
-    /// may be a ref (a session's `account`) — so a downstream admission that
-    /// re-materializes `$actor` by key finds the account row.
+    /// is the resolved row's own typed key (§5.6, §5.4) — its single `key_field`
+    /// value, or the positional `Value::Composite` tuple for a composite-keyed
+    /// account (not the lookup value, which may be a scalar ref: a session's
+    /// `account`) — so a downstream admission that re-materializes `$actor` by key
+    /// finds the whole account row.
     fn actor(&self, reader: &dyn StateReader, account: &Value) -> Result<Actor, Denial> {
         match self.accounts.resolve(reader, account) {
-            Ok(RowLookup::Found(row)) => {
-                let key = row.field(self.accounts.key_field()).cloned().unwrap_or_else(|| account.clone());
-                Ok(Actor::new(key))
-            }
+            Ok(RowLookup::Found(row)) => Ok(Actor::new(self.accounts.matched_key(&row, account))),
             Ok(RowLookup::Missing) => {
                 Err(Denial::new(DenialReason::ActorUnresolved, "no account matches the proof"))
             }

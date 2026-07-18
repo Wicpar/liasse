@@ -5,6 +5,8 @@
 //! These types are the resolved result, carried for the request's lifetime and
 //! re-derived from committed state at every admission.
 
+use liasse_expr::RowId;
+use liasse_ident::KeyText;
 use liasse_runtime::{RefKey, Timestamp, Value, ViewResult, ViewRow};
 
 use crate::reader::StateReader;
@@ -12,7 +14,9 @@ use crate::reader::StateReader;
 /// A value's *application key* (§5.6): a ref's application value is its target's
 /// typed key, so a scalar-keyed ref dereferences to that key; every other value
 /// is its own key. This lets a `$session.account` ref (`Value::Ref`) match the
-/// accounts collection's scalar key when resolving `$actor` (§11.3).
+/// accounts collection's scalar key when resolving `$actor` (§11.3). A composite
+/// ref keeps its whole value here — [`composite_identity`] is the multi-component
+/// counterpart, normalizing it to the positional tuple its target row carries.
 pub(crate) fn application_key(value: &Value) -> &Value {
     match value {
         Value::Ref(reference) => match reference.key() {
@@ -21,6 +25,41 @@ pub(crate) fn application_key(value: &Value) -> &Value {
         },
         _ => value,
     }
+}
+
+/// The positional composite key identity `value` names, when it is a
+/// multi-component key (§5.4): a bare [`Value::Composite`] passes through, and a
+/// composite `ref`'s target key ([`RefKey::Composite`]) yields the equal-valued
+/// tuple (§5.6, §A.9). A single-component value — any scalar, or a scalar ref —
+/// is `None`, so the caller resolves it through single-field-key matching exactly
+/// as before. This is the surface counterpart of the runtime's `key_identity`
+/// (`crates/liasse-runtime/src/materialize.rs`): both name a composite row by the
+/// positional `Value::Composite` tuple in `$key` order.
+fn composite_identity(value: &Value) -> Option<Value> {
+    match value {
+        Value::Composite(_) => Some(value.clone()),
+        Value::Ref(reference) => match reference.key() {
+            RefKey::Composite(components) => Some(Value::Composite(components.clone())),
+            RefKey::Scalar(_) => None,
+        },
+        _ => None,
+    }
+}
+
+/// The canonical row identity (Annex D.1/D.2) a view row over `key`'s collection
+/// carries: `key`'s components flattened to canonical key text in `$key` order,
+/// wrapped as the same [`RowId`] the runtime's `row_id_text`
+/// (`crates/liasse-runtime/src/materialize.rs`) derives for a materialized row.
+/// It reuses [`KeyText::from_key_values`] — the shared primitive both layers build
+/// key text from — rather than re-deriving composite component ordering, so a
+/// composite `$actor`/`$session`/member identity matches the stored row by exactly
+/// the identity the engine re-materializes it under. `None` for a value D.2 gives
+/// no key text (never a valid key), which the caller treats as no match — fail
+/// closed (§6.3).
+fn row_identity(key: &Value) -> Option<RowId> {
+    KeyText::from_key_values(std::slice::from_ref(key))
+        .ok()
+        .map(|text| RowId::keyed(text.as_str()))
 }
 
 /// The application row an authenticator selected as `$actor` (§11.3). Identity is
@@ -134,11 +173,18 @@ impl AuthContext {
     }
 }
 
-/// Names one application view and the field within it that holds a row's lookup
-/// key — the surface layer's stand-in for a `/collection[$key]` selection (§11.3)
-/// evaluated through the engine's named-view API. `$session`/`$actor` MUST each
-/// resolve exactly one row; zero or several reject (§11.3), which
-/// [`RowLookup`] makes explicit.
+/// Names one application view and the field within it that holds a row's
+/// single-field lookup key — the surface layer's stand-in for a
+/// `/collection[$key]` selection (§11.3) evaluated through the engine's named-view
+/// API. `$session`/`$actor` MUST each resolve exactly one row; zero or several
+/// reject (§11.3), which [`RowLookup`] makes explicit.
+///
+/// A composite-keyed collection (§5.4) has no single field equal to the whole
+/// `$key`, so a composite lookup is resolved by the row's canonical identity
+/// ([`row_identity`]) rather than `key_field`: the positional `Value::Composite`
+/// tuple names one row exactly. `key_field` still governs the single-field-key
+/// case unchanged (§5.6), including a ref-typed projection that dereferences to a
+/// scalar key.
 #[derive(Debug, Clone)]
 pub struct RowSource {
     view: String,
@@ -194,10 +240,71 @@ impl RowSource {
         Ok(self.match_rows(&result, key))
     }
 
+    /// The application key identity to carry for a `row` this source matched
+    /// against `lookup` (§11.1, §5.4). A composite key is the positional
+    /// [`Value::Composite`] tuple `lookup` names — equal to the matched row's key
+    /// by construction — so a downstream admission re-materializes the stored
+    /// N-component row rather than a truncated one-component address that would
+    /// name no row (fail closed, §6.3). A single-field key is the row's own
+    /// `key_field` (§5.6) — not `lookup`, which may be a ref whose scalar target
+    /// key the row carries directly.
+    pub(crate) fn matched_key(&self, row: &ViewRow, lookup: &Value) -> Value {
+        composite_identity(lookup)
+            .unwrap_or_else(|| row.field(&self.key_field).cloned().unwrap_or_else(|| lookup.clone()))
+    }
+
+    /// Whether any row in `result` carries the key identity `key` — §10.3
+    /// membership ("its exact row identity occurs at least once"; repeated
+    /// occurrences grant no extra authority). A composite key matches by row
+    /// identity (§5.4), a single-field key by its projected `key_field`
+    /// application key (§5.6), the same split [`Self::match_rows`] resolves under.
+    pub(crate) fn contains(&self, result: &ViewResult, key: &Value) -> bool {
+        match composite_identity(key) {
+            Some(identity) => row_identity(&identity)
+                .is_some_and(|target| result.rows().iter().any(|row| row.id() == &target)),
+            None => {
+                let needle = application_key(key);
+                result
+                    .rows()
+                    .iter()
+                    .any(|row| row.field(&self.key_field).map(application_key) == Some(needle))
+            }
+        }
+    }
+
     fn match_rows(&self, result: &ViewResult, key: &Value) -> RowLookup {
-        // §5.6: compare application keys, so a ref-typed lookup value (a session's
-        // `account`, projected as `Value::Ref`) matches the target collection's
-        // scalar key it dereferences to.
+        match composite_identity(key) {
+            // §5.4: a composite lookup names a positional key identity that no
+            // single projected field holds; a view row carries that identity as
+            // its canonical `RowId` (D.1), so match the whole tuple by row identity.
+            Some(identity) => self.match_by_identity(result, &identity),
+            // §5.6: single-field key — compare application keys, so a ref-typed
+            // lookup value (a session's `account`, projected as `Value::Ref`)
+            // matches the target collection's scalar key it dereferences to.
+            None => self.match_by_field(result, key),
+        }
+    }
+
+    fn match_by_identity(&self, result: &ViewResult, identity: &Value) -> RowLookup {
+        let Some(target) = row_identity(identity) else {
+            return RowLookup::Missing;
+        };
+        let mut found: Option<&ViewRow> = None;
+        for row in result.rows() {
+            if row.id() == &target {
+                if found.is_some() {
+                    return RowLookup::Ambiguous;
+                }
+                found = Some(row);
+            }
+        }
+        match found {
+            Some(row) => RowLookup::Found(row.clone()),
+            None => RowLookup::Missing,
+        }
+    }
+
+    fn match_by_field(&self, result: &ViewResult, key: &Value) -> RowLookup {
         let needle = application_key(key);
         let mut found: Option<&ViewRow> = None;
         for row in result.rows() {

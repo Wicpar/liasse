@@ -11,7 +11,7 @@
 
 use liasse_runtime::{EngineError, Value};
 
-use crate::authn::{application_key, RowSource};
+use crate::authn::RowSource;
 use crate::reader::StateReader;
 
 /// A scoped-role definition: the authenticators it accepts and the view that
@@ -74,14 +74,12 @@ impl Role {
             // A membership view that is not declared grants the role to no one.
             return Ok(false);
         };
-        // §5.6/§10.3: a `$members` projection may be a ref column (the spec's own
-        // §10.3 example projects `.account`, a `$ref`); a ref's application value is
-        // its target's typed key, so compare row field and actor by application key
-        // — the same rule `$session.account` -> `$actor` resolution uses.
-        let actor_key = application_key(actor);
-        Ok(result
-            .rows()
-            .iter()
-            .any(|row| row.field(self.members.key_field()).map(application_key) == Some(actor_key)))
+        // §5.6/§5.4/§10.3: membership compares the actor's exact row identity
+        // against the projected `$members` view. A single-field key compares by
+        // application key, so a ref column (the spec's own §10.3 example projects
+        // `.account`, a `$ref`) matches its target's typed key; a composite-keyed
+        // actor (§5.4) matches by its positional-tuple row identity — the same
+        // split `$actor`/`$session` resolution uses (`RowSource::contains`).
+        Ok(self.members.contains(&result, actor))
     }
 }
