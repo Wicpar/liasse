@@ -29,7 +29,12 @@
 //!   an insert at a *tombstoned* address REVIVE that node in place, keeping its id so
 //!   any descendants it retained are re-parented under the live row again — matching
 //!   the reference store, which allocates a fresh incarnation on re-insert. (A valid
-//!   op stream never inserts over a *live* row; admission staging rejects that.)
+//!   op stream never inserts over a *live* row; admission staging rejects that.) If a
+//!   nested insert's ancestor chain was NEVER created, the missing ancestors are
+//!   AUTO-CREATED as tombstones so the semantics-free store admits the row exactly as
+//!   the reference does (its only precondition is occupancy, never ancestor
+//!   existence, §5.4) — the ancestors stay absent as rows, so reads still match
+//!   `MemoryStore` live and after a reopen ([`NodeWriter::resolve_parent`]).
 //! - **Update** rewrites the resolved node's value/incarnation in place.
 //! - **Delete** TOMBSTONES the resolved node (`value = NULL, incarnation = NULL`) and
 //!   leaves its descendants untouched, so a nested row whose ancestor was dropped
@@ -157,7 +162,7 @@ impl<'a> NodeWriter<'a> {
         incarnation: &RowIncarnation,
         value: &Value,
     ) -> Result<i64, StoreError> {
-        let parent = self.resolve_parent(address)?;
+        let parent = self.resolve_parent(txn, address)?;
         let step = last_step(address)?;
         let row = txn
             .query_one(
@@ -212,12 +217,101 @@ impl<'a> NodeWriter<'a> {
     }
 
     /// The parent node id of `address`: the root sentinel for a top-level row, else
-    /// the id of the row one level up (which must already be a node).
-    fn resolve_parent(&self, address: &RowAddress) -> Result<i64, StoreError> {
+    /// the node one level up — AUTO-CREATED as a structural-only tombstone if it (or
+    /// any ancestor above it) was never inserted.
+    ///
+    /// The store contract is semantics-free: `Transition::insert`'s only precondition
+    /// is occupancy (Conflict on the row's own address), never ancestor existence, so
+    /// the reference `MemoryStore` — a flat `RowAddress`→row map — admits a nested row
+    /// like `/orgs/1/teams/10` whether or not `/orgs/1` ever existed (§5.4 gives a
+    /// nested row its own identity plus ancestor identity; a "logical orphan" is
+    /// exactly an addressable descendant of an absent ancestor). The node tree resolves
+    /// a row's parent by surrogate id, so to admit the same op it MATERIALIZES the
+    /// missing ancestor chain as tombstones (value/incarnation NULL) rather than
+    /// erroring. The ancestors stay ABSENT AS ROWS — a tombstone is a structural
+    /// position, never emitted into `current` — so `row(/orgs/1)`/`scan(/orgs)` stay
+    /// identical to `MemoryStore`, live and after a reopen; only `scan(/orgs/1/teams)`
+    /// sees the placed row. A later explicit `insert(/orgs/1)` REVIVES the tombstone
+    /// through [`Self::place`]'s existing `ON CONFLICT` path.
+    fn resolve_parent(
+        &mut self,
+        txn: &mut Transaction<'_>,
+        address: &RowAddress,
+    ) -> Result<i64, StoreError> {
         match parent_address(address) {
             None => Ok(ROOT_SENTINEL_ID),
-            Some(parent) => self.resolve_id(&parent),
+            Some(parent) => self.resolve_or_create(txn, &parent),
         }
+    }
+
+    /// Resolve `address`'s node id — staged, then committed — or, when it has no node,
+    /// AUTO-CREATE it (and recursively any missing ancestor above it, down from the
+    /// deepest existing ancestor or the root sentinel) as a structural-only tombstone.
+    /// A live ancestor is always indexed (an insert adds it to `by_id`, a delete
+    /// tombstones it in place keeping the entry), so this only ever reaches a free
+    /// address or an existing tombstone — never a live row it could clobber.
+    fn resolve_or_create(
+        &mut self,
+        txn: &mut Transaction<'_>,
+        address: &RowAddress,
+    ) -> Result<i64, StoreError> {
+        if let Some(id) =
+            self.staged.get(address).or_else(|| self.committed.get(address)).copied()
+        {
+            return Ok(id);
+        }
+        let parent = match parent_address(address) {
+            None => ROOT_SENTINEL_ID,
+            Some(grandparent) => self.resolve_or_create(txn, &grandparent)?,
+        };
+        self.create_tombstone(txn, parent, address)
+    }
+
+    /// Insert a structural-only tombstone node (value/incarnation NULL — the existing
+    /// tombstone representation, honoring the `CHECK ((value NULL) = (incarnation
+    /// NULL))` invariant) for `address` under `parent`, or return the id of the node
+    /// already there. The `ON CONFLICT DO UPDATE` is a no-op that only forces
+    /// `RETURNING id` on an existing node — it never touches value/incarnation, so an
+    /// already-present tombstone (or the impossible live row) is left intact rather
+    /// than clobbered.
+    ///
+    /// The id is recorded in `staged` (so the rest of THIS transaction resolves the
+    /// ancestor) but deliberately NOT in `new_ids`: a tombstone establishes no live
+    /// address, and the projection advances `by_id` from `new_ids` one entry per real
+    /// `Insert`/`Rekey` in op order. Pushing here would desync that positional replay.
+    /// The auto-created ancestor therefore lives in the durable tree (a reopen loads it
+    /// into `by_id`; descendants stay addressable; a later insert revives it) and is
+    /// re-derived idempotently through this same path if a later nested insert needs it
+    /// again before an explicit insert makes it live.
+    fn create_tombstone(
+        &mut self,
+        txn: &mut Transaction<'_>,
+        parent: i64,
+        address: &RowAddress,
+    ) -> Result<i64, StoreError> {
+        let step = last_step(address)?;
+        let row = txn
+            .query_one(
+                &format!(
+                    "INSERT INTO {}.nodes \
+                     (parent_id, step_name, key_enc, key_wire, incarnation, value) \
+                     VALUES ($1, $2, $3, $4, NULL, NULL) \
+                     ON CONFLICT (parent_id, step_name, key_enc) \
+                     DO UPDATE SET step_name = EXCLUDED.step_name \
+                     RETURNING id",
+                    self.schema
+                ),
+                &[
+                    &parent,
+                    &step.name().as_str(),
+                    &key_enc::encode_key_value(step.key()),
+                    &jsonb_text::to_jsonb(&encode_key_wire(step.key())),
+                ],
+            )
+            .map_err(backend)?;
+        let id = cell::<i64>(&row, "nodes", "id")?;
+        self.staged.insert(address.clone(), id);
+        Ok(id)
     }
 }
 
