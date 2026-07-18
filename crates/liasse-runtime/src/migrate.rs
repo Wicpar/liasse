@@ -280,6 +280,41 @@ fn build_migrated<G: crate::generator::Generators>(
         }
     }
 
+    // §20.1/§8.2 compatible same-identity copy of the root singleton reserved row.
+    // The singleton is one reserved row of the package root's writable scalar/ref/
+    // set/static-struct members (§8.2); a member both models declare unchanged is a
+    // compatible same-identity member exactly like a keyed-collection field, so it
+    // MUST be carried into migrated live state. Iterating the TARGET's singleton-
+    // eligible members (the same `member_type` gate the seed/materialize paths use)
+    // carries each old value forward and drops a member the target removed — the
+    // singleton analogue of the collection compatible copy in `map_row`. Staging it
+    // BEFORE the program means an explicit `$migrations` write of a singleton member
+    // overwrites the carried value by read-your-writes (`interp::write_singleton_field`
+    // stages onto the same reserved address), so a deliberate migration of the
+    // singleton still wins while every member the program leaves alone keeps its
+    // §20.1 compatible copy.
+    let singleton_address = crate::singleton::address();
+    if let Some(old_singleton) = old_working.get(&singleton_address) {
+        let mut migrated_singleton = FieldMap::new();
+        for member in &target.model.root().members {
+            if crate::singleton::member_type(&target.model, &member.node).is_some()
+                && let Some(value) = old_singleton.get(member.name.as_str())
+            {
+                migrated_singleton.insert(member.name.as_str().to_owned(), value.clone());
+            }
+        }
+        if !migrated_singleton.is_empty() {
+            prospective.insert(singleton_address, migrated_singleton);
+        }
+    }
+    // §8.2/§5.1: an added singleton member takes its insertion default (a new root
+    // field with a default), and every carried or defaulted member is normalized —
+    // the singleton analogue of `apply_defaults`/`normalize_all` on a migrated
+    // collection row, reusing the same seed-path machinery. Both are no-ops when the
+    // target declares no singleton state.
+    crate::seed::apply_singleton_defaults(&target.compiled, &ctx, &mut prospective)?;
+    crate::seed::apply_singleton_normalizes(&target.compiled, &ctx, &mut prospective)?;
+
     // §20.1 order (3): the selected package-level `$migrations` program, in array
     // order, over the prospective target with `$old` bound. Only the program keyed
     // to the exact active source version runs (§20.1); a byte-identical replay of a
@@ -493,7 +528,15 @@ fn rekey_coerced(
     // stages only top-level rows (nested collections are a documented §20.1 seam),
     // so a moved row is always a top-level reference target.
     let mut relocations: BTreeMap<RowAddress, RowAddress> = BTreeMap::new();
+    let singleton_address = crate::singleton::address();
     for address in &addresses {
+        // §8.2: the singleton reserved row has no key and a fixed reserved address,
+        // so it never rekeys. It resolves to the keyless `root_singleton` pseudo-
+        // collection, which `key_address` (a keyed top-collection lookup) cannot
+        // address — skip it here, exactly as the coercion/rekey passes leave it alone.
+        if address == &singleton_address {
+            continue;
+        }
         let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
         let Some(collection) = compiled.collection_at(&decl) else { continue };
         let Some(fields) = prospective.get(address) else { continue };
