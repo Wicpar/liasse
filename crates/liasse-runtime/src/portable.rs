@@ -17,9 +17,15 @@
 //!
 //! CORE scope mirrors the rest of the engine: top-level keyed collections with
 //! scalar/ref/set fields, plus the §8.2 package-root singleton reserved row (its
-//! own scalar/ref/set/static-struct members). Nested collections — whether
-//! top-level or under a singleton static struct — are a documented seam here as
-//! everywhere.
+//! own scalar/ref/set/static-struct members). Nested collections (§5.4) are a
+//! documented seam this build does not carry through a capture — but the seam is
+//! **fail-closed**, not fail-open: [`StateSection::capture`] refuses (a
+//! [`CaptureError::NestedRows`]) when an instance actually holds nested rows,
+//! rather than emitting a capture that silently drops them. So a migration
+//! rejects and an export errors instead of committing or exporting with the
+//! nested data gone (§20.1 "the compatible value is copied", §22.1
+//! committed-state integrity). Faithful nested-collection carry-through is a
+//! tracked feature, not a bug.
 
 use std::collections::BTreeMap;
 
@@ -47,14 +53,64 @@ pub(crate) struct StateSection {
     singleton: Option<FieldMap>,
 }
 
+/// Why a portable state capture could not be produced.
+///
+/// A capture that would silently omit committed rows is refused rather than
+/// returned incomplete. The CORE portable path carries top-level keyed
+/// collections and the §8.2 singleton, so an instance holding **nested** keyed-
+/// collection rows (§5.4) cannot be captured faithfully in this build. Returning
+/// [`Self::NestedRows`] instead of a lossy capture keeps every caller fail-closed
+/// — a migration rejects and an export errors — rather than committing or
+/// emitting an artifact that has dropped live data (§20.1/§22.1).
+pub(crate) enum CaptureError {
+    /// The store faulted while scanning committed rows.
+    Store(StoreError),
+    /// The instance holds committed rows in a nested keyed collection (§5.4) this
+    /// build does not carry through a capture; the message names the first such
+    /// row's address.
+    NestedRows(String),
+}
+
+impl From<CaptureError> for EngineError {
+    /// An export or merge surfaces a capture refusal as an [`EngineError`]: a
+    /// store fault stays a store error, a nested-row refusal becomes the
+    /// fail-closed [`EngineError::Unsupported`] (§19.5/§20.1/§22.1).
+    fn from(error: CaptureError) -> Self {
+        match error {
+            CaptureError::Store(error) => Self::Store(error),
+            CaptureError::NestedRows(detail) => Self::Unsupported(detail),
+        }
+    }
+}
+
 impl StateSection {
     /// Capture the committed rows of every top-level collection and the §8.2
     /// singleton reserved row from `store`.
+    ///
+    /// Refuses ([`CaptureError::NestedRows`]) when the instance holds committed
+    /// rows in a nested keyed collection (§5.4) the CORE portable path does not
+    /// carry, so a migration or export fails closed rather than silently dropping
+    /// that live data (§20.1/§22.1). See the module docs.
     pub(crate) fn capture<S: InstanceStore>(
         schema: Schema<'_>,
         store: &S,
-    ) -> Result<Self, StoreError> {
-        let prospective = Prospective::gather(store, schema)?;
+    ) -> Result<Self, CaptureError> {
+        let prospective = Prospective::gather(store, schema).map_err(CaptureError::Store)?;
+        // Fail-closed on the nested-collection seam. `Prospective::gather` descends
+        // into nested keyed collections (§5.4), so a nested row is present in the
+        // working copy even though the loop below selects only top-level collections
+        // and the §8.2 singleton. A nested row is addressed below the top level
+        // (`depth() > 1`; every top-level row and the singleton row are depth 1), so
+        // its presence is exactly the condition under which emitting this capture
+        // would drop committed data — refuse instead of losing it silently.
+        if let Some(nested) = prospective.working().keys().find(|address| address.depth() > 1) {
+            return Err(CaptureError::NestedRows(format!(
+                "instance holds committed rows in a nested keyed collection at `{}`; migration and \
+                 export do not carry nested keyed collections (§5.4) through in this build, so the \
+                 operation is refused to avoid silent data loss (§20.1/§22.1)",
+                nested.render()
+            )));
+        }
         let mut collections = Vec::new();
         for member in &schema.model().root().members {
             if !matches!(&member.node, Node::Collection(_)) {

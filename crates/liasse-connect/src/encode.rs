@@ -154,6 +154,7 @@ fn rejection_code(reason: RejectionReason) -> Code {
         RejectionReason::Malformed => "malformed",
         RejectionReason::Host => "host",
         RejectionReason::Compatibility => "compatibility",
+        RejectionReason::Unsupported => "unsupported",
     };
     Code::new(text)
 }

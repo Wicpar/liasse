@@ -28,6 +28,14 @@ pub enum EngineError {
     /// An engine invariant was violated at run time — a bug or corrupt durable
     /// state, never reachable from a well-formed request.
     Internal(String),
+    /// A well-formed request the current build cannot serve without silent data
+    /// loss, so it is refused rather than completed partially (fail-closed). The
+    /// standing case is an export (§19.5) of an instance holding committed rows in
+    /// a nested keyed collection (§5.4) the portable state capture does not carry
+    /// through: emitting the artifact anyway would drop that live data (§20.1 "the
+    /// compatible value is copied", §22.1 committed-state integrity). Carrying
+    /// nested collections faithfully is a tracked feature, not a bug.
+    Unsupported(String),
 }
 
 impl From<StoreError> for EngineError {
@@ -44,6 +52,7 @@ impl core::fmt::Display for EngineError {
             Self::Store(error) => write!(f, "store error: {error}"),
             Self::Seed(rejection) => write!(f, "seed rejected: {}", rejection.message()),
             Self::Internal(detail) => write!(f, "engine invariant violated: {detail}"),
+            Self::Unsupported(detail) => write!(f, "operation refused to avoid data loss: {detail}"),
         }
     }
 }
@@ -90,6 +99,16 @@ pub enum RejectionReason {
     /// required parameter, or a narrowed accepted input domain. `load` and update
     /// reject the narrowing release before activation (E.1, E.9).
     Compatibility,
+    /// A migration would need a §20 state carry the current build does not
+    /// implement, so it is refused rather than committed with silent data loss
+    /// (fail-closed). The standing case is an instance holding committed rows in a
+    /// nested keyed collection (§5.4): the CORE portable capture carries top-level
+    /// collections and the §8.2 singleton only, so a migration cannot copy those
+    /// nested rows forward. Refusing keeps §20.1 ("the compatible value is copied")
+    /// and §22.1 (committed-state integrity) rather than dropping live rows and
+    /// reporting `committed`. Faithful nested-collection carry-through is a tracked
+    /// feature.
+    Unsupported,
 }
 
 /// An admission refusal: the class, a human message, and the state path it

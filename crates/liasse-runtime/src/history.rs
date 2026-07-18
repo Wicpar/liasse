@@ -225,7 +225,10 @@ impl<S: InstanceStore> Engine<S> {
     /// (§19.5, §19.7): the active definition, the selected state, and a minimal
     /// history index naming the selected `(lineage, point)`.
     pub fn export(&self) -> Result<Vec<u8>, EngineError> {
-        let state = StateSection::capture(self.schema(), self.store()).map_err(EngineError::Store)?;
+        // §19.5/§20.1/§22.1 fail-closed: refuse to export an instance holding nested
+        // keyed-collection rows (§5.4) this build cannot carry, rather than emit an
+        // artifact with that live data dropped — an [`EngineError::Unsupported`].
+        let state = StateSection::capture(self.schema(), self.store()).map_err(EngineError::from)?;
         let definition = self
             .definition_source()
             .ok_or_else(|| EngineError::Internal("instance has no active definition".to_owned()))?;
@@ -316,8 +319,11 @@ impl<S: InstanceStore> Engine<S> {
         let incoming = decode_sections(&Artifact::open(incoming)?)?.1;
         let schema = self.schema();
         let base = base.working(schema).map_err(ImportError::Engine)?;
+        // §19.9/§22.1 fail-closed: the local side of a merge is captured through the
+        // same portable path, so refuse when it holds nested keyed-collection rows
+        // (§5.4) this build cannot carry rather than merge a lossy local snapshot.
         let local = StateSection::capture(schema, self.store())
-            .map_err(|e| ImportError::Engine(EngineError::Store(e)))?
+            .map_err(|error| ImportError::Engine(EngineError::from(error)))?
             .working(schema)
             .map_err(ImportError::Engine)?;
         let incoming = incoming.working(schema).map_err(ImportError::Engine)?;

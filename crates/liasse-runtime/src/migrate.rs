@@ -40,7 +40,7 @@ use crate::eval::EvalCtx;
 use crate::host::{HostBinding, HostDispatch, HostSignatures};
 use crate::interp::{rewrite_inbound_refs_across, Interp};
 use crate::materialize::{self, FieldMap, Temporal};
-use crate::portable::StateSection;
+use crate::portable::{CaptureError, StateSection};
 use crate::rules;
 use crate::schema::Schema;
 use crate::scope::RuntimeScope;
@@ -102,8 +102,16 @@ impl<S: InstanceStore> Engine<S> {
                 format!("update narrows the boundary contract: {reason}"),
             )));
         }
-        let old_state =
-            StateSection::capture(self.schema(), self.store()).map_err(|e| UpdateError::Engine(EngineError::Store(e)))?;
+        // §20.1/§22.1 fail-closed: a nested keyed collection (§5.4) holding committed
+        // rows cannot be carried through this build's capture, so refuse the whole
+        // migration rather than commit with those rows silently dropped. Every other
+        // capture failure is a store fault.
+        let old_state = StateSection::capture(self.schema(), self.store()).map_err(|error| match error {
+            CaptureError::Store(error) => UpdateError::Engine(EngineError::Store(error)),
+            CaptureError::NestedRows(message) => {
+                UpdateError::Rejected(Rejection::new(RejectionReason::Unsupported, message))
+            }
+        })?;
         // §20.2: a downgrade loads the older package and applies an explicit direct
         // migration or the available exact inverses the *active* package declared
         // (`$from`/`$back`). Build that combined plan and reject the downgrade when a
