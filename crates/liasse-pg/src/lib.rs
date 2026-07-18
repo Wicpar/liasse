@@ -59,6 +59,8 @@ mod transition;
 mod value_codec;
 
 #[cfg(test)]
+mod composite_key_enc_redteam;
+#[cfg(test)]
 mod key_enc_boundary_test;
 #[cfg(test)]
 mod key_enc_proptest;
