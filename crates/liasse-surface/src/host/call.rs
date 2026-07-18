@@ -78,6 +78,36 @@ impl<S: InstanceStore> SurfaceHost<S> {
         Ok(outcome)
     }
 
+    /// Decide the authorization disposition of `call` WITHOUT executing it, so a
+    /// boundary can settle the denied/allowed outcome from name resolution and
+    /// membership *before* it applies any closed-shape argument check (§10.4,
+    /// §12.1, SPEC-ISSUES item 8).
+    ///
+    /// Runs exactly the [`resolve_call`](Self::resolve_call) pipeline `call` runs —
+    /// resolve the target, verify the selection, confirm membership — but
+    /// read-only: no admission, no commit, no state change. The arguments are never
+    /// read (resolution and membership do not depend on them), so the disposition
+    /// is independent of the argument payload. Reports the refusal a caller
+    /// observes, or that the caller has established authority:
+    ///
+    /// * `Ok(())` — the caller is a confirmed member of (or holds public access to)
+    ///   the resolved target; a closed-shape argument reveal (`malformed`, the
+    ///   declared argument set/types) is now safe to surface to it (item 6).
+    /// * `Err(Denied)` — a non-member, an unresolvable name, or an unverified
+    ///   selection; a non-member and a nonexistent name are indistinguishable
+    ///   (item 8), whatever the argument payload.
+    /// * `Err(Rejected)` — a public address carrying an authenticator selection it
+    ///   must not carry (§10.2/§11.4); a public surface is enumerable by design, so
+    ///   this discloses nothing a `manifest` does not.
+    ///
+    /// A boundary that gates its argument decode on this closes the enumeration
+    /// oracle where a declared-arg-shaped probe to an existing ungranted call would
+    /// `Denied` while the same probe to a nonexistent one `Rejected`, revealing
+    /// existence by outcome class.
+    pub fn authorize_call(&self, id: &str, call: &SurfaceCall) -> Result<(), SurfaceOutcome> {
+        self.resolve_call(id, call).map(|_| ())
+    }
+
     /// Re-observe a retained outcome for an equivalent retry (§12.3 at-most-once).
     /// The transition is not re-executed, but the §12.3 completion guarantee still
     /// binds the *replaying* connection: receiving `committed` must prove its own

@@ -10,6 +10,8 @@
 //! outgoing frontier that can revoke authority, so a lost-authority subscription on a
 //! peer is closed here too — but its rows are not advanced (§12.3).
 
+use std::collections::BTreeMap;
+
 use liasse_store::InstanceStore;
 use liasse_surface::{
     Authority, CommitSeq, OperationKey, SurfaceAddress, SurfaceCall, SurfaceOutcome, SurfaceWatch,
@@ -114,6 +116,35 @@ impl<S: InstanceStore> ConnectCore<S> {
             Ok(name) => name,
             Err(error) => return Ok(Reply::Outcome(encode::decode_error(&error))),
         };
+        let selection = match auth {
+            Some(auth) => match decode::decode_selection(&self.schema, auth) {
+                Ok(selection) => Some(selection),
+                Err(_) => return Ok(Reply::Outcome(encode::unverified())),
+            },
+            None => None,
+        };
+
+        // §10.4/§12.1 (SPEC-ISSUES item 8): settle the denied/allowed disposition
+        // from name resolution and membership BEFORE the closed-shape argument
+        // decode, so a non-member's refusal is a uniform `denied` independent of the
+        // argument payload. The authorization probe carries no arguments —
+        // resolution and membership never read them — so an existing ungranted call
+        // and a nonexistent one deny identically whatever the probe's shape, and the
+        // decode's `malformed`/arg-type reveal (item 6) is withheld from a caller
+        // that has not established authority over the target.
+        let mut probe = SurfaceCall::new(addr.clone(), BTreeMap::new());
+        if let Some(name) = &context_name {
+            probe = probe.with_context(name.clone());
+        }
+        if let Some(selection) = &selection {
+            probe = probe.with_auth(selection.clone());
+        }
+        if let Err(refusal) = self.host.authorize_call(token.as_str(), &probe) {
+            return self.outcome_reply(token, &refusal);
+        }
+
+        // Authorized: the closed-shape decode may now reveal a malformed argument or
+        // an unknown member to this authorized caller (SPEC-ISSUES item 6).
         let decoded = match decode::decode_args(self.schema.call_args(address), Some(args)) {
             Ok(args) => args,
             Err(error) => return Ok(Reply::Outcome(encode::decode_error(&error))),
@@ -132,11 +163,8 @@ impl<S: InstanceStore> ConnectCore<S> {
         if let Some(name) = &context_name {
             call = call.with_context(name.clone());
         }
-        if let Some(auth) = auth {
-            match decode::decode_selection(&self.schema, auth) {
-                Ok(selection) => call = call.with_auth(selection),
-                Err(_) => return Ok(Reply::Outcome(encode::unverified())),
-            }
+        if let Some(selection) = selection {
+            call = call.with_auth(selection);
         }
 
         let outcome = self.host.call(token.as_str(), &call)?;
@@ -154,12 +182,22 @@ impl<S: InstanceStore> ConnectCore<S> {
         if let Some(commit) = outcome.commit() {
             self.reconcile_after_commit(token, commit);
         }
+        self.outcome_reply(token, &outcome)
+    }
 
+    /// Encode a settled (or refused) surface outcome onto the wire for `token`,
+    /// minting any frontier/commit position through the connection's key material.
+    /// Shared by the authorization-refusal short-circuit and the executed-call path
+    /// so both render an outcome identically.
+    fn outcome_reply(
+        &self,
+        token: &ConnectionToken,
+        outcome: &SurfaceOutcome,
+    ) -> Result<Reply, ConnectError> {
         let minter = self.minter.as_ref();
         let state = self.connections.get(token).ok_or(ConnectError::NoConnection)?;
-        let wire = encode::outcome_of(&outcome, |seq: CommitSeq| {
-            state.keys().frontier(minter, seq.get())
-        });
+        let wire =
+            encode::outcome_of(outcome, |seq: CommitSeq| state.keys().frontier(minter, seq.get()));
         Ok(Reply::Outcome(wire))
     }
 
