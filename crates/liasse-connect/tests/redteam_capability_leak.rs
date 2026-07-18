@@ -1,37 +1,40 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
-//! RED TEAM — S5 attack battery item 3 (resume/cookie transport security) and
-//! invariant #5 (capability confinement). REGRESSION GUARD for the fixed CRITICAL.
+//! RED TEAM — S5 attack battery item 3 (stream transport security) and invariant #5
+//! (capability confinement). REGRESSION GUARD for the fixed CRITICAL.
 //!
 //! WAS (CRITICAL): the connection was a single nonce that was simultaneously the
 //! bearer credential AND the plaintext body of every frontier/occurrence token
 //! (`Nonce::connection_token` returned the nonce; `Nonce::frontier`/`occurrence`
-//! embedded it). Because a frontier token legitimately rides the SSE `id:` and the
-//! `?last-event-id=` resume URL — through browser history, access logs, and the
-//! `Referer` header — an attacker who saw ONE such URL split the nonce out and
-//! presented it as `Liasse-Connection`, stealing the victim's authorized stream and
-//! POSTing as them. The HttpOnly cookie defence was illusory.
+//! embedded it). Because a frontier token legitimately rides the SSE `id:` — through
+//! browser history, access logs, and the `Referer` header — an attacker who saw ONE
+//! split the nonce out and presented it as `Liasse-Connection`, stealing the victim's
+//! authorized stream and POSTing as them.
 //!
 //! NOW (FIXED): a connection carries TWO independent values (crates/liasse-connect/
-//! src/token.rs `ConnKeys`): a SECRET credential `C` (the registry key, the cookie /
+//! src/token.rs `ConnKeys`): a SECRET credential `C` (the registry key and the
 //! `Liasse-Connection` value) and a non-secret PUBLIC id `P`. Only `P` is embedded in
-//! ft/occ; `C` never appears in any token. So a leaked frontier/occurrence token — or
-//! a resume URL that embeds one — reveals only `P`, and `P` opens nothing: reaching a
-//! connection at all requires presenting `C` at the registry, and `P` is not `C`.
+//! ft/occ; `C` never appears in any token. So a leaked frontier/occurrence token
+//! reveals only `P`, and `P` opens nothing: reaching a connection at all requires
+//! presenting `C` at the registry, and `P` is not `C`.
+//!
+//! The downstream stream is now bound by an anonymous in-band ephemeral session (no
+//! cookie, no resume URL), so the SSE `id:` frontier token is the only token that still
+//! rides a channel an attacker can observe — which is exactly what these tests probe.
 //!
 //! Security property GUARDED: a frontier/occurrence token is not a credential and,
 //! alone, yields no authority over the connection (§12.2; AGENTS.md untrusted-frontend
 //! / opaque-identity). These tests assert the token never embeds `C` and that whatever
-//! an attacker can extract from it grants nothing.
+//! an attacker can extract from it grants nothing — including binding a victim's socket.
 
 mod support;
 
 use std::net::TcpListener;
 
-use liasse_wire::serde_json::{Value as Json, json};
-use liasse_wire::{ConnectionToken, Downstream, SseEvent, Upstream};
+use liasse_wire::serde_json::{json, Value as Json};
+use liasse_wire::{ConnectionToken, Downstream, Upstream};
 
 use liasse_connect::ConnectError;
-use support::{app, call, drain, hello, http_request, view};
+use support::{app, call, drain, hello, http_request, view, SseSocket};
 
 /// The value an attacker can pull out of a leaked ft/occ token body by splitting on
 /// the token's separators — the per-connection PUBLIC id `P`. The point of the guard
@@ -137,74 +140,63 @@ fn an_occurrence_token_does_not_reveal_the_connection_capability() {
 }
 
 #[test]
-fn a_leaked_resume_url_cannot_steal_the_stream_over_a_socket() {
+fn a_leaked_frontier_token_cannot_steal_the_stream_over_a_socket() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
     let server = liasse_connect::bind::serve(listener, app).expect("serve");
     let addr = server.local_addr();
 
-    // Victim opens a connection (HttpOnly cookie), subscribes, and mutates over the
-    // cookie exactly as the secure browser client does.
+    // Victim opens a connection, binds a subscription to its anonymous stream-session,
+    // and mutates — exactly as the secure browser client does.
     let (_, _, body) = http_request(addr, "POST", "/", &[], r#"{"type":"hello"}"#);
     let connection = connection_of(&body);
-    let cookie = format!("liasse_connection={connection}");
-    let cookie_only: &[(&str, &str)] = &[("Cookie", cookie.as_str())];
-    http_request(addr, "POST", "/", cookie_only, r#"{"type":"view","sub":"w1","address":"public.tasks"}"#);
-    http_request(addr, "POST", "/", cookie_only, r#"{"type":"call","address":"public.tasks.add","args":{"title":"private"}}"#);
+    let mut socket = SseSocket::open(addr);
+    let stream = socket.session().expect("the anonymous stream announces a session");
+    let headers: &[(&str, &str)] =
+        &[("Liasse-Connection", connection.as_str()), ("Liasse-Stream", stream.as_str())];
+    http_request(addr, "POST", "/", headers, r#"{"type":"view","sub":"w1","address":"public.tasks"}"#);
+    http_request(addr, "POST", "/", headers, r#"{"type":"call","address":"public.tasks.add","args":{"title":"private"}}"#);
 
-    // Victim's browser auto-reconnects the SSE stream; the frontier cursor appears in
-    // the resume URL, which is logged / kept in history. That is all the attacker sees.
-    let (_, _, sse) = http_request(addr, "GET", "/", cookie_only, "");
-    let leaked_ft = SseEvent::parse_stream(&sse)
+    // The SSE `id:` frontier token is the one token that still rides an observable
+    // channel (history/logs/Referer of the stream URL, or a proxy). Take one as leaked.
+    socket.pump();
+    let leaked_ft = socket
+        .wire_events()
         .iter()
-        .find_map(|e| e.id.clone())
-        .expect("the stream stamps a frontier id");
-    let leaked_resume_url = format!("/?last-event-id={leaked_ft}");
+        .find_map(|event| event.id.clone())
+        .expect("a downstream frame stamps a frontier id");
 
-    // The binding refuses a resume URL that carries no connection: the frontier cursor
-    // alone opens nothing (the front-door mitigation).
-    let (status, _, _) = http_request(addr, "GET", &leaked_resume_url, &[], "");
-    assert_eq!(status, 400, "a bare resume URL with no connection is refused at the front door");
-
-    // And the mitigation is now real: the frontier token in that URL does NOT contain
-    // the connection credential, so the attacker cannot reconstruct it.
+    // The frontier token does NOT contain the connection credential — the C/P split
+    // holds on the real wire, so no splitting scheme reconstructs `C`.
     assert!(
         !leaked_ft.contains(&connection),
-        "the leaked resume URL must not carry the connection credential: {leaked_ft}",
+        "the leaked frontier token must not carry the connection credential: {leaked_ft}",
     );
     let extracted = embedded_id_of(&leaked_ft);
-    assert_ne!(extracted.as_str(), connection, "the leaked resume URL yields only the public id");
+    assert_ne!(extracted.as_str(), connection, "the leaked frontier token yields only the public id");
 
-    // Presenting the extracted value as the connection opens NOTHING: the GET returns
-    // no authorized rows, only an unknown-connection reset.
-    let stolen_header: &[(&str, &str)] = &[("Liasse-Connection", extracted.as_str())];
-    let (_status, _headers, sse) = http_request(addr, "GET", "/", stolen_header, "");
-    let kinds = kinds(&SseEvent::parse_stream(&sse));
-    assert!(!kinds.contains(&"init"), "the forged connection receives no authorized rows: {kinds:?}");
-    assert!(kinds.contains(&"reset"), "an unknown connection is only told to re-establish: {kinds:?}");
-
-    // And it cannot write as the victim.
-    let (status, _, body) = http_request(addr, "POST", "/", stolen_header, r#"{"type":"call","address":"public.tasks.add","args":{"title":"forged"}}"#);
-    assert_ne!(status, 200, "the forged connection cannot POST: {status}");
+    // Presenting the extracted value as the connection opens NOTHING — it is not a
+    // registered credential, so a POST as it is an unknown connection.
+    let stolen: &[(&str, &str)] = &[("Liasse-Connection", extracted.as_str())];
+    let (status, _, body) =
+        http_request(addr, "POST", "/", stolen, r#"{"type":"call","address":"public.tasks.add","args":{"title":"forged"}}"#);
+    assert_eq!(status, 404, "the forged connection cannot POST: {status}");
     assert!(!body.contains("committed"), "the attacker cannot mutate the victim's data: {body}");
+
+    // And it cannot bind the victim's still-open stream-session either: binding requires
+    // a registered `C`, and the extracted public id is not one.
+    let stolen_bind: &[(&str, &str)] =
+        &[("Liasse-Connection", extracted.as_str()), ("Liasse-Stream", stream.as_str())];
+    let (status, _, _) =
+        http_request(addr, "POST", "/", stolen_bind, r#"{"type":"view","sub":"steal","address":"public.tasks"}"#);
+    assert_eq!(status, 404, "the extracted value cannot bind the victim's socket");
+
+    // The victim's stream is untouched: it still holds only its own authorized row.
+    socket.pump();
+    let applied = socket.replay();
+    assert_eq!(applied.titles("w1"), ["private"], "the victim's stream is unaffected by the theft attempts");
 }
 
 fn connection_of(body: &str) -> String {
     let hello: Json = liasse_wire::serde_json::from_str(body).expect("hello body");
     hello.get("connection").and_then(Json::as_str).expect("connection token").to_owned()
-}
-
-fn kinds(events: &[SseEvent]) -> Vec<&'static str> {
-    events
-        .iter()
-        .filter_map(|e| liasse_wire::decode::<Downstream>(&e.data).ok())
-        .map(|frame| match frame {
-            Downstream::Init { .. } => "init",
-            Downstream::Scalar { .. } => "scalar",
-            Downstream::Patch { .. } => "patch",
-            Downstream::Close { .. } => "close",
-            Downstream::Frontier => "frontier",
-            Downstream::Reset { .. } => "reset",
-            Downstream::Fault { .. } => "fault",
-        })
-        .collect()
 }

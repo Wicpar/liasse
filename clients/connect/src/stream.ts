@@ -1,54 +1,43 @@
-//! The downstream SSE lifecycle: one EventSource per logical connection, carrying the
+//! The downstream SSE lifecycle: one anonymous EventSource per connection, carrying the
 //! init/scalar/patch/close/frontier/reset/fault frames of every subscription — with
 //! auto-reconnect and bad-network resilience.
 //!
-//! The SSE channel carries no auth token of its own. Auth lives on the POSTs (§12:
-//! `hello` authenticates, `view`/`unsubscribe` open and close subscriptions). The
-//! stream is bound to its connection by an AMBIENT credential — the HttpOnly cookie the
-//! `hello` response sets — which the browser attaches automatically under
-//! `withCredentials`. The default transport therefore places NO capability in the SSE
-//! URL, and a native `EventSource` (which cannot set headers) still drives the stream.
+//! Ephemeral, unstealable sessions. The stream is opened ANONYMOUSLY — no token in the
+//! URL, no cookie relied on. On connect the server mints a fresh, single-socket
+//! stream-session and announces its id on the stream's first event (a `liasse-session`
+//! event, kept separate from the `message` events that carry §12.2 wire frames). The
+//! shell reports that id to the session, which then binds its subscriptions to it with
+//! AUTHENTICATED POSTs. So there is no presentable credential that grants access to a
+//! stream: opening the URL only yields a new empty session, and data flows only after
+//! an authorized bind — nothing in a URL, cookie, or log can steal an existing stream.
 //!
-//! Anti-theft (this is the point of the cookie): a bearer token in the SSE URL would
-//! leak through browser history, server access logs, and the `Referer` header — and
-//! anyone who saw it could OPEN the same URL and STEAL the victim's stream, reading
-//! their already-authorized frames. So the connection capability never goes in the URL.
-//! Only a non-secret resume marker (the frontier token, useless without the credential)
-//! may ride the URL, and only to resume a manual rebuild. A cross-origin deployment
-//! that cannot use cookies must exchange the connection for a short-lived, single-use
-//! STREAM TICKET in a custom factory — never place the connection capability itself in a
-//! URL.
-//!
-//! Resilience: the SSE `id:` is the §12.2 frontier token, so resume is `Last-Event-ID`.
-//! A native `EventSource` reconnects on a transient drop and replays it automatically
-//! (readyState stays `CONNECTING`); the shell waits rather than open a second stream.
-//! If the source gives up (readyState `CLOSED`), or an injected transport does not
-//! self-reconnect, the shell rebuilds it with exponential backoff, carrying the last
-//! observed frontier so a fresh source still resumes (§12.2). If the server cannot
-//! replay, it sends `reset` and the session re-subscribes — the stream self-heals and
-//! nothing throws on a bad network.
+//! Resilience: a native `EventSource` reconnects on a transient drop (readyState stays
+//! `CONNECTING`); the shell waits rather than open a second stream. If the source gives
+//! up (`CLOSED`), or an injected transport does not self-reconnect, the shell rebuilds
+//! it with exponential backoff. Every (re)connect is a NEW ephemeral session announced
+//! on the new socket's first event; the session re-binds its subscriptions to it (§12.2
+//! `init` re-establishes the rows). Nothing throws on a bad network.
 
 import type {
   ConnectionState,
-  ConnectionToken,
   EventSourceFactory,
   EventSourceLike,
+  Schedule,
   StreamRequest,
+  StreamSession,
 } from "./types.js";
-import { READY_CLOSED } from "./types.js";
+import { READY_CLOSED, STREAM_SESSION_EVENT, asStreamSession } from "./types.js";
 
 /// A callback fed one raw downstream frame: its JSON `data` and its frontier `id`.
 export type FrameSink = (data: string, frontier: string) => void;
 
-/// What a caller observes on the stream: each frame, and each connection-state change.
+/// What a caller observes on the stream: each frame, each announced stream-session (once
+/// per (re)connect), and each connection-state change.
 export interface StreamHooks {
   readonly onFrame: FrameSink;
+  readonly onSession: (session: StreamSession) => void;
   readonly onState?: (state: ConnectionState) => void;
 }
-
-/// Schedule a delayed rebuild; returns a canceller. Injectable so a test drives the
-/// backoff deterministically without real timers.
-export type Schedule = (run: () => void, delayMs: number) => () => void;
 
 const defaultSchedule: Schedule = (run, delayMs) => {
   const handle = setTimeout(run, delayMs);
@@ -64,31 +53,23 @@ function backoffDelay(attempt: number): number {
   return exponential + Math.random() * base;
 }
 
-/// Owns the single EventSource for a connection, routes its frames to a sink, and keeps
-/// it alive across drops.
+/// Owns the single anonymous EventSource for a connection, routes its frames and its
+/// session announcement to the session, and keeps it alive across drops.
 export class Stream {
   private readonly factory: EventSourceFactory;
   private readonly url: string;
-  private readonly connection: ConnectionToken;
   private readonly schedule: Schedule;
 
   private source: EventSourceLike | undefined;
   private hooks: StreamHooks | undefined;
-  private lastEventId = "";
   private state: ConnectionState = "connecting";
   private attempt = 0;
   private cancelReconnect: (() => void) | undefined;
   private stopped = false;
 
-  constructor(
-    factory: EventSourceFactory,
-    url: string,
-    connection: ConnectionToken,
-    schedule: Schedule = defaultSchedule,
-  ) {
+  constructor(factory: EventSourceFactory, url: string, schedule: Schedule = defaultSchedule) {
     this.factory = factory;
     this.url = url;
-    this.connection = connection;
     this.schedule = schedule;
   }
 
@@ -121,11 +102,7 @@ export class Stream {
       return;
     }
     this.setState(this.attempt === 0 ? "connecting" : "reconnecting");
-    const request: StreamRequest = {
-      url: this.url,
-      connection: this.connection,
-      ...(this.lastEventId === "" ? {} : { lastEventId: this.lastEventId }),
-    };
+    const request: StreamRequest = { url: this.url };
     const source = this.factory(request);
     this.source = source;
 
@@ -134,10 +111,17 @@ export class Stream {
         return; // A frame from a stale source we already replaced.
       }
       this.markProgress();
-      if (event.lastEventId !== "") {
-        this.lastEventId = event.lastEventId;
-      }
       this.hooks?.onFrame(event.data, event.lastEventId);
+    });
+    source.addEventListener(STREAM_SESSION_EVENT, (event) => {
+      if (source !== this.source) {
+        return;
+      }
+      this.markProgress();
+      const session = parseSession(event.data);
+      if (session !== undefined) {
+        this.hooks?.onSession(session);
+      }
     });
     source.addEventListener("open", () => {
       if (source === this.source) {
@@ -151,8 +135,8 @@ export class Stream {
     });
   }
 
-  /// A frame or an `open` proves the stream is live: clear any pending rebuild and
-  /// reset the backoff so the next drop starts from the base delay again.
+  /// A frame, a session announcement, or an `open` proves the stream is live: clear any
+  /// pending rebuild and reset the backoff so the next drop starts from the base delay.
   private markProgress(): void {
     this.attempt = 0;
     this.cancelReconnect?.();
@@ -197,25 +181,40 @@ export class Stream {
   }
 }
 
-/// The default factory: adapt a native `EventSource`, bound to its connection by the
-/// HttpOnly cookie the browser sends under `withCredentials`. The connection capability
-/// is deliberately NOT in the URL (see the anti-theft note above); only a non-secret
-/// resume marker is. Only invoked where a native `EventSource` exists (a browser, or
-/// node with the global); a test or a non-browser host injects a transport instead, so
-/// this is never on the test path.
-export const defaultEventSourceFactory: EventSourceFactory = ({ url, lastEventId }) => {
+/// Parse a `liasse-session` announcement (`{ "stream": "<id>" }`). Total: malformed data
+/// yields `undefined` rather than throwing, and the stream simply awaits the next one.
+function parseSession(data: string): StreamSession | undefined {
+  try {
+    const parsed = JSON.parse(data) as unknown;
+    if (typeof parsed === "object" && parsed !== null) {
+      const stream = (parsed as { stream?: unknown }).stream;
+      if (typeof stream === "string" && stream.length > 0) {
+        return asStreamSession(stream);
+      }
+    }
+  } catch {
+    // fall through to undefined
+  }
+  return undefined;
+}
+
+/// The default factory: adapt a native `EventSource`, opened ANONYMOUSLY. There is no
+/// capability in the URL and no cookie is relied on — the stream's identity comes from
+/// the server's `liasse-session` announcement, and its frames only from authenticated
+/// bind POSTs. Only invoked where a native `EventSource` exists (a browser, or node with
+/// the global); a test or a non-browser host injects a transport instead.
+export const defaultEventSourceFactory: EventSourceFactory = ({ url }) => {
   const ctor = (globalThis as { EventSource?: NativeEventSourceCtor }).EventSource;
   if (ctor === undefined) {
     throw new Error("no native EventSource is available; pass an EventSourceFactory via connect(..., { eventSource })");
   }
-  const native = new ctor(resumeUrl(url, lastEventId), { withCredentials: true });
-  return adaptNative(native);
+  return adaptNative(new ctor(url));
 };
 
 /// A minimal view of the native `EventSource`, so this module needs no DOM lib: the
 /// shell only reads `readyState`, adds listeners, and closes.
 interface NativeEventSourceCtor {
-  new (url: string, init?: { withCredentials?: boolean }): NativeEventSource;
+  new (url: string): NativeEventSource;
 }
 
 interface NativeEventSource {
@@ -224,8 +223,8 @@ interface NativeEventSource {
   close(): void;
 }
 
-/// Adapt a native `EventSource` (whose `message` events carry `data`/`lastEventId`) to
-/// the shell's `EventSourceLike`.
+/// Adapt a native `EventSource` (whose `message`/`liasse-session` events carry
+/// `data`/`lastEventId`) to the shell's `EventSourceLike`.
 function adaptNative(native: NativeEventSource): EventSourceLike {
   return {
     get readyState(): number {
@@ -238,16 +237,4 @@ function adaptNative(native: NativeEventSource): EventSourceLike {
       native.close();
     },
   } as EventSourceLike;
-}
-
-/// Build the SSE URL. The connection is bound by the ambient HttpOnly cookie, so it is
-/// NEVER put here — only a `lastEventId` (present on a manual rebuild) rides the URL, and
-/// only because a fresh native `EventSource` cannot replay it from the platform's own
-/// memory. The frontier token is not a credential: it cannot open a stream on its own.
-function resumeUrl(url: string, lastEventId: string | undefined): string {
-  if (lastEventId === undefined || lastEventId === "") {
-    return url;
-  }
-  const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}last-event-id=${encodeURIComponent(lastEventId)}`;
 }

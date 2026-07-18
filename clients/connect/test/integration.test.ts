@@ -11,7 +11,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { connect, FaultError } from "../src/index.js";
+import { connect, FaultError, READY_CLOSED } from "../src/index.js";
 import type { ConnectError, Session, ViewState } from "../src/index.js";
 import {
   closeFrame,
@@ -48,7 +48,7 @@ test("connect opens a connection and captures the connection capability", async 
   assert.equal(hello.headers["liasse-connection"], undefined);
 });
 
-test("subscribe posts a view with the connection header and opens one stream", async () => {
+test("subscribe binds a view to the ephemeral stream-session over an authenticated POST", async () => {
   const { server, session } = await openSession();
   const sub = session.subscribe("public.tasks");
   await sub.ready;
@@ -58,15 +58,16 @@ test("subscribe posts a view with the connection header and opens one stream", a
   assert.equal(view.body["type"], "view");
   assert.equal(view.body["sub"], sub.sub);
   assert.equal(view.body["address"], "public.tasks");
+  // The view POST is authenticated (connection capability) AND carries the ephemeral
+  // stream-session the server announced on the stream's first event — binding this
+  // subscription's frames to that exact socket.
   assert.equal(view.headers["liasse-connection"], "conn-1");
+  assert.equal(view.headers["liasse-stream"], server.lastStream);
 
-  // The SSE stream carries no auth token of its own: auth rode the authenticated view
-  // POST above, and the stream binds by the connection's ambient (HttpOnly cookie)
-  // credential. The connection capability is handed to the factory only so a custom
-  // cookieless transport could mint a stream ticket — the default never URL-leaks it
-  // (see stream.test.ts).
+  // The stream itself was opened ANONYMOUSLY: its request carries only the URL — no
+  // token, no capability that anyone could present to steal it.
   assert.equal(server.streams.length, 1);
-  assert.equal(server.stream.request.connection, "conn-1");
+  assert.deepEqual(Object.keys(server.stream.request), ["url"]);
 });
 
 test("an init then a patch fold through the wasm replica into the store", async () => {
@@ -223,4 +224,48 @@ test("unsubscribe posts the unsubscribe frame with the connection header", async
   assert.equal(request.body["type"], "unsubscribe");
   assert.equal(request.body["sub"], sub.sub);
   assert.equal(request.headers["liasse-connection"], "conn-1");
+});
+
+test("a dropped stream reconnects, gets a fresh session, and re-binds subscriptions", async () => {
+  const server = new MockServer();
+  const reconnects: (() => void)[] = [];
+  const session = await connect("http://liasse.test", {}, {
+    core,
+    fetch: server.fetch,
+    eventSource: server.eventSource,
+    // Capture the reconnect job so the test fires it without a real timer.
+    schedule: (run) => {
+      reconnects.push(run);
+      return () => {};
+    },
+  });
+
+  const sub = session.subscribe("public.tasks");
+  await sub.ready;
+  server.stream.push(initFrame(sub.sub, [{ id: "a", value: { title: "one" } }]), "f0");
+  assert.deepEqual(sub.rows.map((row) => row.id), ["a"]);
+
+  const firstStream = server.lastStream;
+  assert.equal(server.requests.at(-1)?.headers["liasse-stream"], firstStream, "bound to the first socket");
+  const viewsBefore = server.viewCount(sub.sub);
+
+  // The socket gives up. The shell schedules a reconnect (captured, not timed).
+  server.stream.emitError(READY_CLOSED);
+  assert.equal(session.connectionState, "reconnecting");
+  assert.equal(reconnects.length, 1);
+
+  // Fire it → a NEW socket, a NEW ephemeral session announced on it, and the shell
+  // re-binds the live subscription to that session over a fresh authenticated POST.
+  reconnects[0]?.();
+  await tick();
+  await sub.ready;
+
+  const secondStream = server.lastStream;
+  assert.notEqual(secondStream, firstStream, "each (re)connect is a distinct ephemeral session");
+  assert.equal(server.viewCount(sub.sub), viewsBefore + 1, "the subscription was re-bound");
+  assert.equal(server.requests.at(-1)?.headers["liasse-stream"], secondStream, "bound to the new socket");
+
+  // A fresh init on the new socket re-establishes (replaces) the rows.
+  server.stream.push(initFrame(sub.sub, [{ id: "z", value: { title: "again" } }]), "g0");
+  assert.deepEqual(sub.rows.map((row) => row.id), ["z"]);
 });

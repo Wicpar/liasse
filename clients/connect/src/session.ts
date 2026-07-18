@@ -1,12 +1,15 @@
 //! `connect(baseUrl, hello)` and the `Session` it returns — the ergonomics layer over
 //! the wasm core and the two transports.
 //!
-//! The session owns exactly one connection: one `WireClient` replica, one SSE stream,
-//! and the set of live subscriptions. It holds NO authority — every capability
+//! The session owns exactly one connection: one `WireClient` replica, one anonymous SSE
+//! stream, and the set of live subscriptions. It holds NO authority — every capability
 //! (connection token, operation id) is opaque data it attaches to a request and echoes
-//! back. It is a "dumb" client: on a §12.2 `reset` it reopens its subscriptions from
-//! scratch; on a `close` it surfaces the reason; on a `fault` it delivers a handled
-//! error. No frame ever throws out of the stream callback.
+//! back. The stream is anonymous: the server announces a fresh ephemeral stream-session
+//! id on the stream's first event, and the session binds each subscription to it with an
+//! authenticated `view` POST — so nothing presentable can steal a stream. It is a "dumb"
+//! client: on a new stream-session (every (re)connect) it re-binds its subscriptions; on
+//! a §12.2 `reset` it re-establishes them; on a `close` it surfaces the reason; on a
+//! `fault` it delivers a handled error. No frame ever throws out of the stream callback.
 
 import {
   parseApplied,
@@ -33,6 +36,8 @@ import type {
   Hello,
   Json,
   Outcome,
+  Schedule,
+  StreamSession,
   SubId,
   SubscribeOptions,
   WireClientCore,
@@ -52,18 +57,22 @@ export class Session {
   private readonly client: WireClientCore;
   private readonly http: HttpTransport;
   private readonly streamFactory: EventSourceFactory;
+  private readonly schedule: Schedule | undefined;
   private readonly baseUrl: string;
   private readonly connection: ConnectionToken;
   private readonly subs = new Map<SubId, Subscription>();
   private readonly errorListeners = new Set<SessionErrorListener>();
   private readonly stateListeners = new Set<ConnectionStateListener>();
+  private readonly sessionWaiters = new Set<(session: StreamSession) => void>();
   private streamState: ConnectionState = "connecting";
+  private streamSession: StreamSession | undefined;
   private stream: Stream | undefined;
 
   constructor(
     core: WireCore,
     http: HttpTransport,
     streamFactory: EventSourceFactory,
+    schedule: Schedule | undefined,
     baseUrl: string,
     connection: ConnectionToken,
   ) {
@@ -71,6 +80,7 @@ export class Session {
     this.client = new core.WireClient();
     this.http = http;
     this.streamFactory = streamFactory;
+    this.schedule = schedule;
     this.baseUrl = baseUrl;
     this.connection = connection;
   }
@@ -95,7 +105,7 @@ export class Session {
     const subscription = new Subscription(sub, intent, this.client, () => this.endSubscription(sub));
     this.subs.set(sub, subscription);
     this.ensureStream();
-    subscription.ready = this.openView(subscription);
+    subscription.ready = this.bindView(subscription);
     return subscription;
   }
 
@@ -168,11 +178,38 @@ export class Session {
     if (this.stream !== undefined) {
       return;
     }
-    this.stream = new Stream(this.streamFactory, this.baseUrl, this.connection);
+    this.stream = new Stream(this.streamFactory, this.baseUrl, this.schedule);
     this.stream.open({
       onFrame: (data, frontier) => this.handleFrame(data, frontier),
+      onSession: (session) => this.onSession(session),
       onState: (state) => this.emitState(state),
     });
+  }
+
+  /// A fresh ephemeral stream-session was announced on the stream's first event. Record
+  /// it (so bind POSTs carry it) and, if this is a RECONNECT (a session already existed),
+  /// re-bind every live subscription to the new socket — the §12.2 `init` frames that
+  /// follow re-establish their rows.
+  private onSession(session: StreamSession): void {
+    const reconnected = this.streamSession !== undefined;
+    this.streamSession = session;
+    this.http.setStream(session);
+    for (const resolve of this.sessionWaiters) {
+      resolve(session);
+    }
+    this.sessionWaiters.clear();
+    if (reconnected) {
+      this.bindAllLive();
+    }
+  }
+
+  /// Resolve once the stream has announced its session; a subscribe issued before the
+  /// stream connected waits here rather than binding to nothing.
+  private requireStreamSession(): Promise<StreamSession> {
+    if (this.streamSession !== undefined) {
+      return Promise.resolve(this.streamSession);
+    }
+    return new Promise((resolve) => this.sessionWaiters.add(resolve));
   }
 
   private emitState(state: ConnectionState): void {
@@ -210,7 +247,7 @@ export class Session {
         }
         return;
       case "reset":
-        this.resubscribeAll();
+        this.bindAllLive();
         return;
       case "fault":
         this.emitError(new FaultError(applied.fault.code, applied.fault.message));
@@ -218,24 +255,31 @@ export class Session {
     }
   }
 
-  /// The replica was already cleared by applying the `reset`; reopen every live
-  /// subscription from scratch so the server re-establishes it and resends `init`.
-  private resubscribeAll(): void {
+  /// Re-bind every live subscription to the current stream (used on a §12.2 `reset`, and
+  /// on a reconnect's new stream-session). The `init` frames that follow re-establish the
+  /// rows; a subscription the server already closed is left terminated.
+  private bindAllLive(): void {
     for (const subscription of this.subs.values()) {
-      subscription.ready = this.openView(subscription);
+      if (!subscription.closed) {
+        subscription.ready = this.bindView(subscription);
+      }
     }
   }
 
-  /// POST a `view` for a subscription. Resolves when it opened; on failure delivers a
+  /// POST a `view` binding a subscription to the current stream-session (§12.2). Waits
+  /// for the stream-session first, resolves when the view opened; on failure delivers a
   /// handled error to the subscription and rejects (the rejection is always observed).
-  private openView(subscription: Subscription): Promise<void> {
-    const { address, params, window, auth, context } = subscription.intent;
-    const body = this.core.encodeView(subscription.sub, address, params, window, auth, context);
-    const opened = this.http.post(body).then((reply) => {
-      parseOpened(reply);
-    });
+  private bindView(subscription: Subscription): Promise<void> {
+    const opened = this.postView(subscription);
     opened.catch((thrown) => subscription.deliverError(toConnectError(thrown, "view failed")));
     return opened;
+  }
+
+  private async postView(subscription: Subscription): Promise<void> {
+    await this.requireStreamSession();
+    const { address, params, window, auth, context } = subscription.intent;
+    const body = this.core.encodeView(subscription.sub, address, params, window, auth, context);
+    parseOpened(await this.http.post(body));
   }
 
   private async endSubscription(sub: SubId): Promise<void> {
@@ -274,7 +318,7 @@ export async function connect(baseUrl: string, hello: Hello = {}, options: Conne
   const connection = parseHelloConnection(reply);
   http.setConnection(connection);
 
-  return new Session(core, http, streamFactory, baseUrl, connection);
+  return new Session(core, http, streamFactory, options.schedule, baseUrl, connection);
 }
 
 /// The default POST transport: the platform `fetch`. Node 18+ and every browser

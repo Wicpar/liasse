@@ -1,15 +1,16 @@
-//! Test harness: a mock server that plays the transport contract of the reference
-//! `std_http` binding, and a controllable EventSource so a test can push exact §12.2
-//! downstream frames at the REAL wasm core through the shell.
+//! Test harness: a mock server that plays the ephemeral-stream-session transport model,
+//! and a controllable EventSource so a test can push exact §12.2 downstream frames at
+//! the REAL wasm core through the shell.
 //!
-//! The mock reconstructs no wire semantics — it answers `hello`/`view`/`call`/… with
-//! the canned reply shapes the server writes, records the headers the shell attached,
-//! and lets a test emit downstream frames whose applied result is deduced from §12.2
-//! by hand (never from the shell's own output).
+//! The mock reconstructs no wire semantics — it announces a fresh stream-session on each
+//! stream connect (the first `liasse-session` event), answers `hello`/`view`/`call`/…
+//! with the canned reply shapes the server writes, records the headers the shell
+//! attached (including `liasse-stream` binding a subscription to the socket), and lets a
+//! test emit downstream frames whose applied result is deduced from §12.2 by hand.
 
 import { createRequire } from "node:module";
 
-import { READY_CLOSED, READY_CONNECTING, READY_OPEN } from "../src/index.js";
+import { READY_CLOSED, READY_CONNECTING, READY_OPEN, STREAM_SESSION_EVENT } from "../src/index.js";
 import type { EventSourceFactory, EventSourceLike, FetchLike, StreamEvent, StreamRequest, WireCore } from "../src/index.js";
 
 /// Load the REAL wasm client core (the `--target nodejs` build) so tests drive the
@@ -39,6 +40,7 @@ export class MockEventSource implements EventSourceLike {
   readyState = READY_CONNECTING;
   closed = false;
   private readonly messageHandlers: ((event: StreamEvent) => void)[] = [];
+  private readonly sessionHandlers: ((event: StreamEvent) => void)[] = [];
   private readonly openHandlers: (() => void)[] = [];
   private readonly errorHandlers: ((event: unknown) => void)[] = [];
 
@@ -47,11 +49,14 @@ export class MockEventSource implements EventSourceLike {
   }
 
   addEventListener(type: "message", handler: (event: StreamEvent) => void): void;
+  addEventListener(type: "liasse-session", handler: (event: StreamEvent) => void): void;
   addEventListener(type: "error", handler: (event: unknown) => void): void;
   addEventListener(type: "open", handler: () => void): void;
   addEventListener(type: string, handler: (event: never) => void): void {
     if (type === "message") {
       this.messageHandlers.push(handler as unknown as (event: StreamEvent) => void);
+    } else if (type === STREAM_SESSION_EVENT) {
+      this.sessionHandlers.push(handler as unknown as (event: StreamEvent) => void);
     } else if (type === "open") {
       this.openHandlers.push(handler as unknown as () => void);
     } else if (type === "error") {
@@ -62,6 +67,15 @@ export class MockEventSource implements EventSourceLike {
   close(): void {
     this.closed = true;
     this.readyState = READY_CLOSED;
+  }
+
+  /// Announce the ephemeral stream-session (the stream's first `liasse-session` event).
+  emitSession(stream: string): void {
+    this.readyState = READY_OPEN;
+    const data = JSON.stringify({ stream });
+    for (const handler of this.sessionHandlers) {
+      handler({ data, lastEventId: "" });
+    }
   }
 
   /// Emit one dispatched SSE event (a downstream frame `data` at frontier `id`).
@@ -100,6 +114,9 @@ export class MockServer {
 
   readonly requests: Recorded[] = [];
   readonly streams: MockEventSource[] = [];
+  /// The stream-session ids announced so far, in connect order.
+  readonly announced: string[] = [];
+  autoAnnounce = true;
   private readonly viewCounts = new Map<string, number>();
 
   /// The `FetchLike` the shell POSTs to.
@@ -110,12 +127,28 @@ export class MockServer {
     return { ok: reply.ok, status: reply.status, text: async () => reply.text };
   };
 
-  /// The `EventSourceFactory` the shell opens the stream with.
+  /// The `EventSourceFactory` the shell opens the stream with. Each connect mints a
+  /// fresh ephemeral stream-session and announces it on the socket's first event (on a
+  /// microtask, after the shell has attached its listeners).
   readonly eventSource: EventSourceFactory = (request) => {
     const source = new MockEventSource(request);
     this.streams.push(source);
+    if (this.autoAnnounce) {
+      const stream = `strm-${this.streams.length}`;
+      this.announced.push(stream);
+      queueMicrotask(() => source.emitSession(stream));
+    }
     return source;
   };
+
+  /// The most recently announced stream-session id.
+  get lastStream(): string {
+    const last = this.announced.at(-1);
+    if (last === undefined) {
+      throw new Error("no stream-session announced");
+    }
+    return last;
+  }
 
   /// The single open stream (fails loudly if none is open yet).
   get stream(): MockEventSource {

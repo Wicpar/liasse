@@ -13,64 +13,60 @@ It holds **no authority**. Every capability (connection token, frontier token,
 operation id, occurrence id) is opaque data the client carries and echoes back; all
 authorization, projection, and token minting stay server-side.
 
-## Transport
+## Transport — ephemeral, unstealable SSE sessions
 
-The **SSE channel carries no auth token of its own**. Authority is established and
-re-checked on the POSTs (`hello` authenticates the connection; `view` opens/re-verifies
-a subscription; `unsubscribe` closes it). The stream is bound to its connection by an
-**ambient credential**, not a token it presents.
+There is **no presentable credential that grants access to a stream**. The stream is
+opened **anonymously**; the server mints a fresh, single-socket **stream-session** and
+announces its id on the stream's first event; the client then attaches its subscriptions
+to that session with **authenticated POSTs**. Opening the URL only yields a new, empty
+session — you cannot attach to someone else's — and a URL token, a cookie, or a log
+line reveals nothing that lets a stream be stolen.
 
-- **Downstream** is one Server-Sent-Events stream per connection (`EventSource`), bound
-  to its connection by an **HttpOnly cookie** the `hello` response sets and the browser
-  sends automatically under `withCredentials`. A plain browser `EventSource` works with
-  no headers, and the SSE URL carries **no capability at all**. The SSE `id:` is the
-  §12.2 frontier token. Never WebSockets.
-- **Upstream** is `fetch` POSTs (with `credentials: "include"`, so the connection cookie
-  is stored and resent) carrying the tagged request body the wasm core produced, with
-  the `Liasse-Connection` capability header and, on a `call`, the `Liasse-Operation-Id`
-  header (§12.3). POSTs can set headers, so the capability travels there — not in a URL.
+- **Downstream** is one Server-Sent-Events stream per connection (`EventSource`), opened
+  `new EventSource(url)` — no token in the URL, no cookie relied on. Its first event is a
+  `liasse-session` event carrying `{ "stream": "<id>" }` (kept distinct from the
+  `message` events that carry §12.2 wire frames, so the wasm core only ever sees frames).
+  The SSE `id:` is the §12.2 frontier token. Never WebSockets.
+- **Upstream** is `fetch` POSTs carrying the tagged request body the wasm core produced,
+  with the `Liasse-Connection` capability header (auth), the `Liasse-Stream` header (the
+  ephemeral stream-session, binding this request's downstream frames to the socket), and,
+  on a `call`, the `Liasse-Operation-Id` header (§12.3). Auth and binding both ride
+  request headers — never a URL, so nothing leaks to history, logs, or `Referer`.
 
-### Do not let a stream be stolen
-
-A bearer capability in the SSE **URL** would leak through browser history, server access
-logs, and the `Referer` header — and anyone who saw it could open the same URL and
-**steal** the victim's stream, reading their already-authorized frames. So the shell
-**never puts the connection capability in the URL**. The stream is bound by the HttpOnly
-cookie instead (set it `Secure` and `SameSite` server-side to resist theft and CSRF).
-Only a non-secret resume marker (the frontier token, which cannot open a stream on its
-own) may ride the URL, and only to resume a manual rebuild. This is covered by a test:
-`the default transport binds by credential and never puts the connection in the URL`.
-
-For a **cross-origin, cookieless** deployment, do not fall back to a URL token. Supply a
-custom `EventSourceFactory` via `connect(..., { eventSource })` that exchanges the
-connection for a **short-lived, single-use stream ticket** and opens the stream with
-that (a leaked ticket is worthless after it is consumed or expires).
+Why this resists theft: the stream-session id lives only in the first event of a live
+socket (ephemeral, never re-transmitted). Stealing it is useless — attaching a
+subscription requires an authenticated POST, and the server binds each stream-session to
+the connection that first used it, so you can neither attach your subscriptions to a
+victim's socket nor read a victim's socket with your connection. Covered by the tests
+`the default transport opens the stream anonymously — no token or credential` and
+`subscribe binds a view to the ephemeral stream-session over an authenticated POST`.
 
 ### Auto-reconnect & bad networks
 
-- A native `EventSource` reconnects on a transient drop and replays `Last-Event-ID`
-  automatically (readyState stays `CONNECTING`); the shell waits for it rather than
-  open a second stream — resume is **free**.
+- A native `EventSource` reconnects on a transient drop (readyState stays `CONNECTING`);
+  the shell waits for it rather than open a second stream.
 - If the source gives up (readyState `CLOSED`), or an injected transport does not
   self-reconnect, the shell **rebuilds it with exponential backoff** (base 1s, cap 30s,
-  jittered), carrying the last observed frontier so a fresh source still resumes (§12.2).
-  A frame or `open` resets the backoff.
-- If the server cannot replay the retained range it sends `reset`; the shell then
-  **re-subscribes every live view from scratch** (§12.2). The stream self-heals and
-  nothing throws on a bad network.
+  jittered; customizable via `connect(..., { schedule })`). A frame, session, or `open`
+  resets the backoff.
+- Every (re)connect is a **new ephemeral stream-session** announced on the new socket;
+  the shell **re-binds every live subscription** to it with fresh authenticated POSTs,
+  and the §12.2 `init` frames that follow re-establish the rows. A server `reset` frame
+  likewise re-establishes all subscriptions. The stream self-heals; nothing throws on a
+  bad network.
 - Observe it: `session.connectionState` and `session.onConnectionState(cb)` report
   `connecting | open | reconnecting | closed`, so an app can show a "reconnecting…"
   indicator.
 
-> **Reference-server note.** The secure browser model above needs the server to (1) set
-> an HttpOnly, Secure, SameSite **connection cookie** on the `hello` response and (2)
-> bind the SSE GET to that cookie. The current S2 reference binding
-> (`crates/liasse-connect/src/bind/std_http.rs`) instead reads `liasse-connection` from a
-> request **header** on the GET — which a native browser `EventSource` cannot send and
-> which the cookie replaces. So a browser deployment needs that server binding updated to
-> the cookie flow (or a custom stream-ticket `EventSourceFactory` injected). The shell
-> keeps the transport injectable for exactly that reason; the node integration test
-> models the intended cookie-bound server (its mock stream needs no URL token).
+> **Reference-server note.** This model needs the server to (1) announce a fresh
+> stream-session on the anonymous SSE stream's first event and (2) accept the
+> `Liasse-Stream` header on `view` (and coherence-bearing) POSTs, binding each
+> stream-session to the connection that presents it. The current S2 reference binding
+> (`crates/liasse-connect/src/bind/std_http.rs`) instead identifies the SSE stream by a
+> `liasse-connection` request header on the GET — which a native browser `EventSource`
+> cannot send, and which this model deliberately removes. So a browser deployment needs
+> that server binding updated to the announce-and-bind flow. The shell keeps the
+> transport injectable; the node integration test models the intended server.
 
 ## Build
 

@@ -11,8 +11,8 @@ export { Subscription } from "./subscription.js";
 export type { ViewIntent, StateListener, ErrorListener } from "./subscription.js";
 export { loadCore } from "./wasm.js";
 export { defaultEventSourceFactory } from "./stream.js";
-export type { FrameSink, StreamHooks, Schedule } from "./stream.js";
-export { READY_CONNECTING, READY_OPEN, READY_CLOSED } from "./types.js";
+export type { FrameSink, StreamHooks } from "./stream.js";
+export { READY_CONNECTING, READY_OPEN, READY_CLOSED, STREAM_SESSION_EVENT } from "./types.js";
 
 export { ConnectError, TransportError, FaultError, ProtocolError, toConnectError } from "./errors.js";
 export type { ConnectErrorKind } from "./errors.js";
@@ -21,6 +21,7 @@ export {
   asConnectionToken,
   asFrontierToken,
   asOperationId,
+  asStreamSession,
   asSubId,
 } from "./types.js";
 export type {
@@ -31,7 +32,6 @@ export type {
   ConnectionState,
   ConnectOptions,
   ConnectionToken,
-  Credentials,
   EventSourceFactory,
   EventSourceLike,
   Fault,
@@ -45,8 +45,10 @@ export type {
   OperationId,
   Outcome,
   ResetReason,
+  Schedule,
   StreamEvent,
   StreamRequest,
+  StreamSession,
   SubId,
   SubscribeOptions,
   ViewState,

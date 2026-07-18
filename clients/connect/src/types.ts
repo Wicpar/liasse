@@ -31,6 +31,10 @@ export type FrontierToken = Branded<"FrontierToken">;
 export type SubId = Branded<"SubId">;
 /// A per-client §12.3 operation capability (idempotency key).
 export type OperationId = Branded<"OperationId">;
+/// An ephemeral per-socket stream-session id the server mints and announces on the
+/// stream's first event. It is NOT a bearer credential — it cannot open or attach to a
+/// stream on its own; it only correlates authenticated bind POSTs to this exact socket.
+export type StreamSession = Branded<"StreamSession">;
 
 /// Tag an opaque server- or client-minted string as a connection capability.
 export const asConnectionToken = (value: string): ConnectionToken => value as ConnectionToken;
@@ -40,6 +44,8 @@ export const asSubId = (value: string): SubId => value as SubId;
 export const asOperationId = (value: string): OperationId => value as OperationId;
 /// Tag a server-minted string as a frontier token.
 export const asFrontierToken = (value: string): FrontierToken => value as FrontierToken;
+/// Tag a server-minted string as an ephemeral stream-session id.
+export const asStreamSession = (value: string): StreamSession => value as StreamSession;
 
 /// One view row on the wire (§12.2): its opaque occurrence token and exposed value.
 export interface WireRow {
@@ -173,18 +179,12 @@ export interface FetchResponse {
   text(): Promise<string>;
 }
 
-/// How the shell asks a `fetch`-shaped POST to handle credentials. `include` sends and
-/// stores the connection cookie (needed for the cookie the SSE stream is bound to,
-/// including cross-origin), mirroring the browser `RequestCredentials`.
-export type Credentials = "include" | "same-origin" | "omit";
-
 /// A `fetch`-shaped POST function. `globalThis.fetch` satisfies it; a test injects a
-/// mock. The shell only ever POSTs (GET is the EventSource stream). It requests
-/// `credentials: "include"` so the `hello` response's connection cookie is stored and
-/// resent — the same cookie the SSE stream authenticates with.
+/// mock. The shell only ever POSTs (GET is the EventSource stream). Auth rides the
+/// request headers (the connection capability), so no ambient credential is required.
 export type FetchLike = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: string; credentials?: Credentials },
+  init: { method: string; headers: Record<string, string>; body?: string },
 ) => Promise<FetchResponse>;
 
 /// One dispatched SSE event as the shell consumes it: the frame JSON and the frontier
@@ -199,41 +199,43 @@ export const READY_CONNECTING = 0;
 export const READY_OPEN = 1;
 export const READY_CLOSED = 2;
 
+/// The SSE event type that carries the stream-session announcement (the stream's first
+/// event), kept distinct from the default `message` events that carry §12.2 wire frames
+/// so the wasm core only ever sees frames.
+export const STREAM_SESSION_EVENT = "liasse-session";
+
 /// The EventSource surface the shell drives — a structural subset of the browser API
-/// plus `close` and `readyState`, so a native `EventSource` or a polyfill both satisfy
-/// it. `readyState` lets the shell tell a self-reconnecting drop (`CONNECTING`) from a
-/// source that gave up (`CLOSED`) and must be rebuilt (see `Stream`).
+/// plus `close`, `readyState`, and the `liasse-session` announcement event, so a native
+/// `EventSource` or a polyfill both satisfy it. `readyState` lets the shell tell a
+/// self-reconnecting drop (`CONNECTING`) from a source that gave up (`CLOSED`) and must
+/// be rebuilt (see `Stream`).
 export interface EventSourceLike {
   readonly readyState: number;
   addEventListener(type: "message", handler: (event: StreamEvent) => void): void;
+  addEventListener(type: "liasse-session", handler: (event: StreamEvent) => void): void;
   addEventListener(type: "error", handler: (event: unknown) => void): void;
   addEventListener(type: "open", handler: () => void): void;
   close(): void;
 }
 
-/// What the shell asks a transport to open the downstream SSE stream with. The channel
-/// carries NO auth token of its own — subscribe/unsubscribe are authenticated POSTs
-/// (§12) and the stream is bound to its connection by the ambient HttpOnly cookie the
-/// browser sends under `withCredentials`.
-///
-/// `connection` is the opaque connection capability, provided ONLY for a custom
-/// transport that must mint a short-lived single-use stream ticket for a cookieless
-/// (cross-origin) deployment. It MUST NOT be placed in the URL: a URL-borne bearer
-/// token leaks (history, logs, `Referer`) and lets anyone who sees it steal the stream.
-/// The default transport ignores it and relies on the cookie.
-///
-/// `lastEventId` is present only on a manual rebuild, where a fresh source cannot replay
-/// the frontier from the platform's own memory; it is a non-secret resume marker (it
-/// cannot open a stream on its own), so it may ride the URL to resume (§12.2).
+/// What the shell asks a transport to open the downstream SSE stream with — just the
+/// endpoint. The stream is opened ANONYMOUSLY: it carries no capability in the URL, no
+/// token, and no cookie is relied on. Opening it yields only a fresh, empty ephemeral
+/// stream-session (announced on the first event); data flows only once an authenticated
+/// POST binds a subscription to that session. There is therefore no presentable
+/// credential to steal that would grant access to an existing stream.
 export interface StreamRequest {
   readonly url: string;
-  readonly connection: ConnectionToken;
-  readonly lastEventId?: string;
 }
 
 /// Opens the downstream SSE stream. The default adapts a native `EventSource`; a
 /// deployment can inject any transport that reconnects on drop or reports `CLOSED`.
 export type EventSourceFactory = (request: StreamRequest) => EventSourceLike;
+
+/// Schedule a delayed stream reconnect; returns a canceller. Injectable via
+/// `ConnectOptions.schedule` to customize the reconnect backoff (or drive it
+/// deterministically in a test). The default uses `setTimeout`.
+export type Schedule = (run: () => void, delayMs: number) => () => void;
 
 /// The observable state of the downstream connection. `reconnecting` covers both a
 /// transport self-reconnecting after a drop and the shell's own backoff rebuild.
@@ -266,4 +268,6 @@ export interface ConnectOptions {
   readonly core?: WireCore;
   readonly fetch?: FetchLike;
   readonly eventSource?: EventSourceFactory;
+  /// Customize the stream's reconnect backoff schedule (default `setTimeout`).
+  readonly schedule?: Schedule;
 }

@@ -17,6 +17,8 @@ use liasse_wire::{Downstream, Ft, Occ, Sub, WireRow};
 
 use crate::token::{ConnKeys, TokenMinter};
 
+use super::stream::StreamSession;
+
 /// The whole server state of one logical connection.
 pub struct ConnState {
     /// The connection's [`ConnKeys`]: its secret credential (also the registry key
@@ -39,6 +41,10 @@ pub struct ConnState {
     /// Each bound authentication context's authenticator name (§11.8), so a role
     /// call's §12.3 scope key can be reconstructed for a status query.
     contexts: BTreeMap<String, String>,
+    /// The anonymous SSE socket currently bound to deliver this connection's frames
+    /// (§12.2), or `None` before any socket has bound. A reconnect binds a NEW socket
+    /// here, superseding the old one so delivery always targets the live stream.
+    session: Option<StreamSession>,
 }
 
 impl ConnState {
@@ -54,6 +60,7 @@ impl ConnState {
             outbound: Outbound::new(capacity),
             operations: BTreeMap::new(),
             contexts: BTreeMap::new(),
+            session: None,
         }
     }
 
@@ -61,6 +68,24 @@ impl ConnState {
     #[must_use]
     pub fn keys(&self) -> &ConnKeys {
         &self.keys
+    }
+
+    /// The anonymous SSE socket currently bound to deliver this connection's frames.
+    #[must_use]
+    pub fn session(&self) -> Option<&StreamSession> {
+        self.session.as_ref()
+    }
+
+    /// Bind (or rebind, on a reconnect) the socket that delivers this connection's
+    /// frames, superseding any previous one.
+    pub fn set_session(&mut self, session: StreamSession) {
+        self.session = Some(session);
+    }
+
+    /// Detach the delivery socket (it died); no delivery targets this connection until a
+    /// fresh socket binds.
+    pub fn clear_session(&mut self) {
+        self.session = None;
     }
 
     /// The bounded outbound ring.

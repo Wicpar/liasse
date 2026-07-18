@@ -1,25 +1,25 @@
 //! The SSE stream's resilience and anti-theft, unit-tested with a fake source and a
-//! captured scheduler (no real timers or network). Proves the shell: binds the default
-//! stream by credential, never leaking the connection capability into the URL (a URL
-//! bearer token is stealable); folds frames; waits out a self-reconnecting drop without
-//! opening a second stream; rebuilds a source that gave up, with growing backoff that
-//! RESUMES from the last frontier and RESETS after recovery; and never reconnects once
-//! closed. Expected behaviour is deduced from the SSE/§12.2 model, not from the shell's
-//! own output.
+//! captured scheduler (no real timers or network). Proves the shell: opens the stream
+//! ANONYMOUSLY (no token, no credential in the URL — nothing to steal), reports the
+//! server-announced ephemeral session, folds frames; waits out a self-reconnecting drop
+//! without opening a second stream; rebuilds a source that gave up, with backoff that
+//! grows on consecutive failures and RESETS after recovery, announcing a fresh session
+//! each time; and never reconnects once closed. Expected behaviour is deduced from the
+//! SSE/§12.2 model, not from the shell's own output.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { Stream, defaultEventSourceFactory } from "../src/stream.js";
-import type { Schedule } from "../src/stream.js";
-import { asConnectionToken, READY_CLOSED, READY_CONNECTING } from "../src/index.js";
-import type { ConnectionState, EventSourceLike, StreamEvent, StreamRequest } from "../src/index.js";
+import { READY_CLOSED, READY_CONNECTING, STREAM_SESSION_EVENT } from "../src/index.js";
+import type { ConnectionState, EventSourceLike, Schedule, StreamEvent, StreamRequest } from "../src/index.js";
 
 /// A fully controllable EventSource: the test drives its readyState and events.
 class FakeSource implements EventSourceLike {
   readonly request: StreamRequest;
   readyState = READY_CONNECTING;
   private readonly message: ((event: StreamEvent) => void)[] = [];
+  private readonly session: ((event: StreamEvent) => void)[] = [];
   private readonly opened: (() => void)[] = [];
   private readonly errored: (() => void)[] = [];
 
@@ -28,10 +28,12 @@ class FakeSource implements EventSourceLike {
   }
 
   addEventListener(type: "message", handler: (event: StreamEvent) => void): void;
+  addEventListener(type: "liasse-session", handler: (event: StreamEvent) => void): void;
   addEventListener(type: "error", handler: (event: unknown) => void): void;
   addEventListener(type: "open", handler: () => void): void;
   addEventListener(type: string, handler: (event: never) => void): void {
     if (type === "message") this.message.push(handler as unknown as (event: StreamEvent) => void);
+    else if (type === STREAM_SESSION_EVENT) this.session.push(handler as unknown as (event: StreamEvent) => void);
     else if (type === "open") this.opened.push(handler as unknown as () => void);
     else if (type === "error") this.errored.push(handler as unknown as () => void);
   }
@@ -43,6 +45,12 @@ class FakeSource implements EventSourceLike {
   frame(data: string, id: string): void {
     this.readyState = 1;
     for (const handler of this.message) handler({ data, lastEventId: id });
+  }
+
+  announce(stream: string): void {
+    this.readyState = 1;
+    const data = JSON.stringify({ stream });
+    for (const handler of this.session) handler({ data, lastEventId: "" });
   }
 
   open(): void {
@@ -86,11 +94,13 @@ function harness(): {
   stream: Stream;
   sources: FakeSource[];
   frames: [string, string][];
+  sessions: string[];
   states: ConnectionState[];
   scheduler: ReturnType<typeof captureScheduler>;
 } {
   const sources: FakeSource[] = [];
   const frames: [string, string][] = [];
+  const sessions: string[] = [];
   const states: ConnectionState[] = [];
   const scheduler = captureScheduler();
   const stream = new Stream(
@@ -100,34 +110,40 @@ function harness(): {
       return source;
     },
     "http://liasse.test",
-    asConnectionToken("conn-1"),
     scheduler.schedule,
   );
-  stream.open({ onFrame: (data, id) => frames.push([data, id]), onState: (state) => states.push(state) });
-  return { stream, sources, frames, states, scheduler };
+  stream.open({
+    onFrame: (data, id) => frames.push([data, id]),
+    onSession: (session) => sessions.push(session),
+    onState: (state) => states.push(state),
+  });
+  return { stream, sources, frames, sessions, states, scheduler };
 }
 
-test("the stream hands the factory the connection handle and folds frames", () => {
-  const { sources, frames } = harness();
+test("the stream opens anonymously, reports the announced session, and folds frames", () => {
+  const { sources, frames, sessions } = harness();
 
   assert.equal(sources.length, 1);
   const first = sources[0];
   assert.ok(first);
-  // The handle is available to a custom (stream-ticket) factory; the default binds by
-  // cookie and never URL-leaks it — see the dedicated anti-theft test below.
-  assert.equal(first.request.connection, "conn-1");
-  assert.equal(first.request.lastEventId, undefined, "no resume marker on the first connect");
+  // Anonymous open: the request carries only the URL — no token, nothing to steal.
+  assert.deepEqual(Object.keys(first.request), ["url"]);
 
   first.open();
+  first.announce("strm-1");
+  assert.deepEqual(sessions, ["strm-1"], "the server-announced session is reported");
+
+  // A wire frame arrives on the default `message` channel, distinct from the session.
   first.frame('{"type":"frontier"}', "f1");
   assert.deepEqual(frames.at(-1), ['{"type":"frontier"}', "f1"]);
 });
 
-test("a source that gave up is rebuilt with backoff, resuming from the last frontier", () => {
-  const { stream, sources, scheduler } = harness();
+test("a source that gave up is rebuilt with backoff and announces a fresh session", () => {
+  const { stream, sources, sessions, scheduler } = harness();
   const first = sources[0];
   assert.ok(first);
   first.open();
+  first.announce("strm-1");
   first.frame('{"type":"frontier"}', "f1");
 
   // The source reports CLOSED — it will not recover on its own → schedule a rebuild.
@@ -140,7 +156,12 @@ test("a source that gave up is rebuilt with backoff, resuming from the last fron
   assert.equal(sources.length, 2, "a fresh source was built");
   const second = sources[1];
   assert.ok(second);
-  assert.equal(second.request.lastEventId, "f1", "the rebuild resumes from Last-Event-ID (§12.2)");
+  assert.deepEqual(Object.keys(second.request), ["url"], "the rebuilt source is still anonymous");
+
+  // Every (re)connect is a NEW ephemeral session; the shell reports the new id so the
+  // session can re-bind its subscriptions to it.
+  second.announce("strm-2");
+  assert.deepEqual(sessions, ["strm-1", "strm-2"]);
 });
 
 test("consecutive failures grow the backoff and a recovery resets it", () => {
@@ -204,12 +225,12 @@ test("close cancels any pending reconnect and never reopens", () => {
   assert.equal(sources.length, 1);
 });
 
-test("the default transport binds by credential and never puts the connection in the URL", () => {
-  const seen: { url: string; withCredentials: boolean | undefined }[] = [];
+test("the default transport opens the stream anonymously — no token or credential", () => {
+  const seen: { url: string; init: unknown }[] = [];
   class FakeNative {
     readyState = READY_CONNECTING;
-    constructor(url: string, init?: { withCredentials?: boolean }) {
-      seen.push({ url, withCredentials: init?.withCredentials });
+    constructor(url: string, init?: unknown) {
+      seen.push({ url, init });
     }
     addEventListener(): void {}
     close(): void {}
@@ -219,32 +240,19 @@ test("the default transport binds by credential and never puts the connection in
   const saved = holder.EventSource;
   holder.EventSource = FakeNative;
   try {
-    defaultEventSourceFactory({
-      url: "https://app.example/liasse",
-      connection: asConnectionToken("secret-connection-token"),
-      lastEventId: "f5",
-    });
-    defaultEventSourceFactory({
-      url: "https://app.example/liasse",
-      connection: asConnectionToken("secret-connection-token"),
-    });
+    defaultEventSourceFactory({ url: "https://app.example/liasse" });
   } finally {
     holder.EventSource = saved;
   }
 
-  assert.equal(seen.length, 2);
-  const withResume = seen[0];
-  const fresh = seen[1];
-  assert.ok(withResume && fresh);
-
-  // The connection capability must NEVER appear in the SSE URL: a URL-borne bearer
-  // token leaks (history, logs, Referer) and lets anyone open — i.e. steal — the stream.
-  for (const opened of seen) {
-    assert.equal(opened.withCredentials, true, "the stream is bound by credential (cookie), not a URL token");
-    assert.ok(!opened.url.includes("secret-connection-token"), `URL leaks the connection: ${opened.url}`);
-    assert.ok(!opened.url.includes("liasse-connection"), `URL carries a connection param: ${opened.url}`);
-  }
-  // Only the non-secret resume marker rides the URL, and only on a rebuild.
-  assert.ok(withResume.url.includes("last-event-id=f5"), withResume.url);
-  assert.equal(fresh.url, "https://app.example/liasse", "a fresh connect adds no query at all");
+  assert.equal(seen.length, 1);
+  const opened = seen[0];
+  assert.ok(opened);
+  // Anonymous open: the exact base URL — no query, no token, nothing presentable that
+  // anyone could use to open (steal) this stream. The stream's identity comes from the
+  // server's announcement, and its data only from authenticated bind POSTs.
+  assert.equal(opened.url, "https://app.example/liasse");
+  assert.ok(!opened.url.includes("?"), `the anonymous stream URL carries no query: ${opened.url}`);
+  // And no credential init (no `withCredentials`) — `new EventSource(url)`, one argument.
+  assert.equal(opened.init, undefined);
 });

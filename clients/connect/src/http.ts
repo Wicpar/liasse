@@ -1,13 +1,14 @@
 //! The upstream request layer: fetch POSTs with the capability headers attached.
 //!
 //! Every request body is produced by the wasm core (the canonical wire codec); this
-//! layer only chooses the URL, attaches the `Liasse-Connection` capability and, on a
-//! `call`, the `Liasse-Operation-Id` header (§12.3), and parses the reply. A non-2xx
+//! layer only chooses the URL, attaches the `Liasse-Connection` capability (auth), the
+//! `Liasse-Stream` ephemeral stream-session (to bind/route downstream frames), and, on a
+//! `call`, the `Liasse-Operation-Id` header (§12.3), then parses the reply. A non-2xx
 //! response carries a downstream `fault` body, which becomes a typed error — never an
 //! unhandled rejection the caller cannot inspect.
 
 import { FaultError, TransportError } from "./errors.js";
-import type { ConnectionToken, FaultCode, FetchLike, OperationId } from "./types.js";
+import type { ConnectionToken, FaultCode, FetchLike, OperationId, StreamSession } from "./types.js";
 
 /// Extra per-request metadata carried as headers (not in the body).
 interface PostMeta {
@@ -19,6 +20,7 @@ export class HttpTransport {
   private readonly baseUrl: string;
   private readonly fetch: FetchLike;
   private connection: ConnectionToken | undefined;
+  private stream: StreamSession | undefined;
 
   constructor(baseUrl: string, fetch: FetchLike) {
     this.baseUrl = baseUrl;
@@ -28,6 +30,13 @@ export class HttpTransport {
   /// Record the connection capability minted by `hello`; attached to later requests.
   setConnection(connection: ConnectionToken): void {
     this.connection = connection;
+  }
+
+  /// Record the current ephemeral stream-session (announced on the stream's first
+  /// event); attached to later requests so the server binds/routes their downstream
+  /// frames onto this socket. Updated on every (re)connect.
+  setStream(stream: StreamSession): void {
+    this.stream = stream;
   }
 
   /// The connection capability, once opened.
@@ -42,15 +51,16 @@ export class HttpTransport {
     if (this.connection !== undefined) {
       headers["liasse-connection"] = this.connection;
     }
+    if (this.stream !== undefined) {
+      headers["liasse-stream"] = this.stream;
+    }
     if (meta.operationId !== undefined) {
       headers["liasse-operation-id"] = meta.operationId;
     }
 
     let response;
     try {
-      // `credentials: "include"` stores/sends the connection cookie the `hello` response
-      // sets — the same HttpOnly cookie the SSE stream is bound to (works cross-origin).
-      response = await this.fetch(this.baseUrl, { method: "POST", headers, body, credentials: "include" });
+      response = await this.fetch(this.baseUrl, { method: "POST", headers, body });
     } catch (cause) {
       throw new TransportError(`request failed: ${errorText(cause)}`);
     }

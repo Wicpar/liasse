@@ -9,8 +9,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::time::Duration;
 
 use liasse_connect::{ConnectCore, Reply, Schema};
 use liasse_ident::InstanceId;
@@ -276,6 +277,86 @@ pub fn http_request(
         }
     }
     (status, response_headers, body.to_owned())
+}
+
+/// The SSE `event:` type that carries the ephemeral stream-session announcement.
+pub const STREAM_SESSION_EVENT: &str = "liasse-session";
+
+/// A live anonymous SSE socket for the ephemeral-stream tests: it opens a GET with no
+/// connection and no session, keeps it OPEN, and lets a test read whatever has streamed
+/// so far — the `liasse-session` announcement first, then the §12.2 wire frames the
+/// server pushes onto it once a `view` POST has bound it. Reads are bounded by a short
+/// idle timeout so a test never blocks on the open stream.
+pub struct SseSocket {
+    stream: TcpStream,
+    raw: Vec<u8>,
+}
+
+impl SseSocket {
+    /// Open an anonymous SSE GET (no `Liasse-Connection`, no `Liasse-Stream`, no URL
+    /// token) and read the first burst — the stream-session announcement.
+    #[must_use]
+    pub fn open(addr: SocketAddr) -> Self {
+        let mut stream = TcpStream::connect(addr).expect("connect sse");
+        let request = "GET / HTTP/1.1\r\nHost: localhost\r\nAccept: text/event-stream\r\n\r\n";
+        stream.write_all(request.as_bytes()).expect("write sse get");
+        stream.set_read_timeout(Some(Duration::from_millis(400))).expect("read timeout");
+        let mut socket = Self { stream, raw: Vec::new() };
+        socket.pump();
+        socket
+    }
+
+    /// Read whatever bytes have arrived until the stream goes briefly idle. Call it after
+    /// each POST to collect the frames the server pushed onto this socket.
+    pub fn pump(&mut self) {
+        let mut chunk = [0u8; 4096];
+        loop {
+            match self.stream.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => self.raw.extend_from_slice(&chunk[..n]),
+                Err(error) if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => break,
+                Err(_) => break,
+            }
+        }
+    }
+
+    /// The SSE body streamed so far (everything after the response head).
+    fn body(&self) -> String {
+        let text = String::from_utf8_lossy(&self.raw);
+        text.split_once("\r\n\r\n").map(|(_, body)| body.to_owned()).unwrap_or_default()
+    }
+
+    /// The ephemeral stream-session id the server announced on the first event, if it has
+    /// arrived (the `liasse-session` event's `stream` field).
+    #[must_use]
+    pub fn session(&self) -> Option<String> {
+        SseEvent::parse_stream(&self.body())
+            .into_iter()
+            .find(|event| event.event.as_deref() == Some(STREAM_SESSION_EVENT))
+            .and_then(|event| {
+                let data: Json = liasse_wire::serde_json::from_str(&event.data).ok()?;
+                data.get("stream").and_then(Json::as_str).map(str::to_owned)
+            })
+    }
+
+    /// The §12.2 wire frames streamed so far — the default `message` events, i.e. every
+    /// event that is NOT the `liasse-session` announcement.
+    #[must_use]
+    pub fn wire_events(&self) -> Vec<SseEvent> {
+        SseEvent::parse_stream(&self.body())
+            .into_iter()
+            .filter(|event| event.event.as_deref() != Some(STREAM_SESSION_EVENT))
+            .collect()
+    }
+
+    /// A fresh client replica folded from the whole cumulative wire stream — the state a
+    /// client that watched this socket from the start would hold now.
+    #[must_use]
+    pub fn replay(&self) -> Client {
+        let mut client = Client::new();
+        client.feed(&self.wire_events());
+        client
+    }
 }
 
 /// A text value.

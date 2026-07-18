@@ -11,13 +11,17 @@
 //!   hostile input, strictly against the model's declared types — into typed surface
 //!   requests; outbound results are projected to [`liasse_wire::Downstream`] frames
 //!   and the request [`liasse_wire::Outcome`].
-//! - **Opaque identity.** A row's internal `RowId`, a `CommitSeq`, and a session are
-//!   never on the wire; each is a per-connection capability token minted here (an
+//! - **Opaque identity.** A row's internal `RowId` and a `CommitSeq` are never on the
+//!   wire; each is a per-connection capability token minted here (an
 //!   [`Occ`](liasse_wire::Occ), an [`Ft`](liasse_wire::Ft), a connection token), and a
 //!   forged one is a fault, never a panic or a leak.
-//! - **The §12.2 stream.** One logical connection is the §12.3 coherence unit: a
-//!   bounded SSE stream of `init`/`patch`/`close`/`frontier` frames (the SSE `id:` is
-//!   the frontier token, giving `Last-Event-ID` resume) plus HTTP requests.
+//! - **The §12.2 stream.** One logical connection is the §12.3 coherence unit: ONE
+//!   anonymous SSE stream multiplexes the `init`/`patch`/`close`/`frontier` frames of
+//!   all its subscriptions (the SSE `id:` is the frontier token, giving `Last-Event-ID`
+//!   resume) plus HTTP requests. The stream is opened anonymously and bound to its
+//!   connection by an in-band ephemeral [`StreamSession`] (see [`core::StreamSession`],
+//!   [`ConnectCore::bind_stream`]) — never a URL token or a cookie — so it cannot be
+//!   stolen.
 //!
 //! # Trust boundary
 //! The core is [`ConnectCore`]: a single-owner, `&mut self`, no-interior-mutability
@@ -43,7 +47,7 @@ pub mod token;
 #[cfg(feature = "std-http")]
 pub mod bind;
 
-pub use crate::core::{ConnectCore, Reply};
+pub use crate::core::{ConnectCore, Reply, StreamSession};
 pub use decode::DecodeError;
 pub use error::ConnectError;
 pub use mount::{Schema, SchemaBuilder};

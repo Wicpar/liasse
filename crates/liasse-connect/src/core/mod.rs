@@ -11,14 +11,17 @@ mod command;
 mod frames;
 mod live;
 mod registry;
+mod stream;
 mod sweep;
 
 pub use command::Reply;
+pub use stream::StreamSession;
 
 use std::collections::BTreeMap;
 
 use liasse_store::InstanceStore;
 use liasse_surface::{Authenticate, CommitSeq, SurfaceHost};
+use liasse_wire::serde_json::json;
 use liasse_wire::{
     CloseReason, ConnectionToken, Downstream, Ft, ResetReason, SseEvent, Upstream,
 };
@@ -29,6 +32,7 @@ use crate::mount::Schema;
 use crate::token::{ConnKeys, TokenMinter, UnsignedMinter};
 
 use registry::{ConnState, Emitted};
+use stream::{StreamBind, Streams, STREAM_SESSION_EVENT};
 
 /// The default per-connection outbound bound: frames buffered before backpressure
 /// drops the SSE stream and reconstructs it on reconnect (D3).
@@ -41,6 +45,8 @@ pub struct ConnectCore<S> {
     schema: Schema,
     minter: Box<dyn TokenMinter>,
     connections: BTreeMap<ConnectionToken, ConnState>,
+    /// The live anonymous SSE sockets and their §12.2 stream-session bindings.
+    streams: Streams,
     capacity: usize,
 }
 
@@ -54,7 +60,14 @@ impl<S: InstanceStore> ConnectCore<S> {
     /// Mount with a specific [`TokenMinter`] (the D4 seam: HMAC, signed, …).
     #[must_use]
     pub fn with_minter(host: SurfaceHost<S>, schema: Schema, minter: Box<dyn TokenMinter>) -> Self {
-        Self { host, schema, minter, connections: BTreeMap::new(), capacity: DEFAULT_CAPACITY }
+        Self {
+            host,
+            schema,
+            minter,
+            connections: BTreeMap::new(),
+            streams: Streams::default(),
+            capacity: DEFAULT_CAPACITY,
+        }
     }
 
     /// Set the per-connection outbound bound (defaults to [`DEFAULT_CAPACITY`]).
@@ -77,6 +90,84 @@ impl<S: InstanceStore> ConnectCore<S> {
     pub fn frontier_position(&self, conn: &ConnectionToken, ft: &Ft) -> Option<u64> {
         let state = self.connections.get(conn)?;
         state.keys().open_frontier(self.minter.as_ref(), ft.as_str())
+    }
+
+    /// Open a fresh anonymous SSE socket (§12.2): mint a high-entropy ephemeral
+    /// [`StreamSession`], register it UNBOUND, and return it. Its first event announces
+    /// it ([`stream_announcement`](Self::stream_announcement)); NO frames flow until an
+    /// authenticated `view` binds it ([`bind_stream`](Self::bind_stream)). Opening the
+    /// anonymous URL therefore only ever yields a fresh empty session — nothing to steal.
+    pub fn open_stream(&mut self) -> StreamSession {
+        self.streams.open(self.minter.nonce())
+    }
+
+    /// The `liasse-session` announcement for a freshly opened socket: a DISTINCT SSE
+    /// event type carrying `{"stream":"<id>"}`, kept apart from the default `message`
+    /// events that carry §12.2 wire frames so the frozen wasm core only ever sees frames.
+    #[must_use]
+    pub fn stream_announcement(&self, session: &StreamSession) -> SseEvent {
+        let data = json!({ "stream": session.as_str() }).to_string();
+        SseEvent::data(data).with_event(STREAM_SESSION_EVENT)
+    }
+
+    /// Bind an anonymous socket to a connection on first authenticated use (§12.2). `conn`
+    /// is authenticated by its credential `C` (verified against the registry here); the
+    /// session is then bound to `C`, and thereafter only `C` may attach subscriptions to
+    /// that socket. A different `C` presenting the same session id, or a session id that
+    /// names no live socket, is [`ConnectError::BadToken`]. A missing/closed connection is
+    /// [`ConnectError::NoConnection`]. Total on hostile input — never a panic, never a leak.
+    pub fn bind_stream(
+        &mut self,
+        conn: &ConnectionToken,
+        session: &StreamSession,
+    ) -> Result<(), ConnectError> {
+        if !self.connections.contains_key(conn) {
+            return Err(ConnectError::NoConnection);
+        }
+        match self.streams.bind(session, conn) {
+            StreamBind::Bound => {
+                if let Some(state) = self.connections.get_mut(conn) {
+                    state.set_session(session.clone());
+                }
+                Ok(())
+            }
+            StreamBind::Unknown | StreamBind::Stolen => Err(ConnectError::BadToken),
+        }
+    }
+
+    /// Forget a dead socket (its writer ended): drop its binding and, if it was the
+    /// current delivery socket for its connection, clear that so no delivery targets it.
+    pub fn close_stream(&mut self, session: &StreamSession) {
+        if let Some(conn) = self.streams.bound(session).cloned()
+            && let Some(state) = self.connections.get_mut(&conn)
+            && state.session() == Some(session)
+        {
+            state.clear_session();
+        }
+        self.streams.close(session);
+    }
+
+    /// Drain every bound connection's pending SSE frames, tagged with the socket they
+    /// must be written to. ONE socket multiplexes ALL of its connection's subscriptions
+    /// (demuxed by `sub`); an UNBOUND socket receives nothing — data flows only after an
+    /// authenticated bind (the anti-theft invariant). A backpressure overflow (D3)
+    /// surfaces as a `reset` + fresh init on the socket. Called by a live binding after a
+    /// request may have enqueued frames (including a peer's §12.3 authority-loss close).
+    pub fn take_stream_deliveries(&mut self) -> Vec<(StreamSession, Vec<SseEvent>)> {
+        let bound: Vec<(ConnectionToken, StreamSession)> = self
+            .connections
+            .iter()
+            .filter_map(|(conn, state)| state.session().cloned().map(|s| (conn.clone(), s)))
+            .collect();
+        let mut deliveries = Vec::new();
+        for (conn, session) in bound {
+            if let Ok(events) = self.poll(&conn)
+                && !events.is_empty()
+            {
+                deliveries.push((session, events));
+            }
+        }
+        deliveries
     }
 
     /// Dispatch one decoded inbound frame (§12.1). `operation` is the §12.3 capability
@@ -309,30 +400,20 @@ impl<S: InstanceStore> ConnectCore<S> {
     }
 }
 
-/// The SSE event carrying one downstream frame: its frontier token as the `id:`, its
-/// tag as the `event:`, and the JSON frame as `data:`.
+/// The SSE event carrying one downstream frame: its frontier token as the `id:` and the
+/// JSON frame as `data:`. A wire frame is a DEFAULT `message` event (no `event:` type),
+/// so a native `EventSource`'s single `message` listener receives every §12.2 frame; the
+/// frame's own tag lives in the JSON `data`, and the only non-`message` event on the
+/// stream is the `liasse-session` announcement.
 fn sse_event(emitted: &Emitted) -> SseEvent {
     let data = liasse_wire::encode(&emitted.frame).unwrap_or_default();
-    SseEvent::data(data).with_id(emitted.id.as_str()).with_event(frame_tag(&emitted.frame))
+    SseEvent::data(data).with_id(emitted.id.as_str())
 }
 
-/// A connection-level `reset` event: it addresses the whole stream, so it carries no
-/// per-subscription id.
+/// A connection-level `reset` event (a `message`-typed wire frame): it addresses the
+/// whole stream, so it carries no per-subscription id.
 fn reset_event(reason: ResetReason) -> SseEvent {
     let frame = Downstream::Reset { reason };
     let data = liasse_wire::encode(&frame).unwrap_or_default();
-    SseEvent::data(data).with_event("reset")
-}
-
-/// The SSE `event:` tag naming a downstream frame's kind.
-fn frame_tag(frame: &Downstream) -> &'static str {
-    match frame {
-        Downstream::Init { .. } => "init",
-        Downstream::Scalar { .. } => "scalar",
-        Downstream::Patch { .. } => "patch",
-        Downstream::Close { .. } => "close",
-        Downstream::Frontier => "frontier",
-        Downstream::Reset { .. } => "reset",
-        Downstream::Fault { .. } => "fault",
-    }
+    SseEvent::data(data)
 }
