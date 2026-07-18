@@ -272,15 +272,24 @@ impl<'a> Builder<'a> {
     /// vocabulary an expanded field's `$type` accepts. A `{ $ref: ... }` element
     /// is handled by the caller before this point.
     fn shape_or_type(&mut self, reporter: &mut Reporter, value: &DocValue) -> Type {
-        self.scalar_shape(reporter, value).unwrap_or_else(|| {
+        let Some(element) = self.scalar_shape(reporter, value) else {
             reporter.reject_hint(
                 value.span,
                 code::TYPE,
                 "a `$set` element must be a type, an inline `{ $enum: [...] }`, or a `{ $ref: ... }`",
                 "e.g. `\"tags\": { \"$set\": \"text\" }`",
             );
-            Type::Json
-        })
+            return Type::Json;
+        };
+        // §5.5 / A.1: a set element type is never `optional<T>`. The string
+        // `set<optional<T>>` is rejected in `map_type`; this catches the inline
+        // `{ $set: "optional<T>" }` element, whose optional is a top-level
+        // `optional` that `map_type` cannot see as a set member.
+        if matches!(element, Type::Optional(_)) {
+            reporter.reject(value.span, code::TYPE, crate::types::set_optional_reason());
+            return Type::Json;
+        }
+        element
     }
 
     fn view_node(&mut self, _reporter: &mut Reporter, view: &DocMember) -> Node {

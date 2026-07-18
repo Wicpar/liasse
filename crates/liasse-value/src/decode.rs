@@ -352,10 +352,15 @@ impl Type {
         let mut members = BTreeSet::new();
         for item in items {
             // A.1 / SPEC-ISSUES item 29: `none` is not a valid set member. A set
-            // element type is never `optional<T>` (a set carries present members
-            // only), so decoding each element against `inner` never yields `none`;
-            // absence is a non-member, expressed by the member simply not appearing.
-            members.insert(inner.decode_as(item, mode)?);
+            // element type is never `optional<T>` (rejected at model build), so an
+            // authored element never decodes to `none`. A stray `none` off the wire
+            // / an import is dropped defensively here — absence is a non-member,
+            // expressed by the member simply not appearing.
+            let member = inner.decode_as(item, mode)?;
+            if matches!(member, Value::None) {
+                continue;
+            }
+            members.insert(member);
         }
         Ok(Value::Set(members))
     }
@@ -382,9 +387,15 @@ impl Type {
                 });
             };
             // A.1 / SPEC-ISSUES item 29: a map never stores a `none` value; absence
-            // is the key not being present. Neither the key nor the value type is
-            // `optional<T>`, so neither position decodes to `none`.
-            map.insert(key.decode_as(k, mode)?, value.decode_as(v, mode)?);
+            // is the key not being present. A map value type is never `optional<V>`
+            // (rejected at model build), so an authored value never decodes to
+            // `none`. A stray `none` off the wire / an import drops the entry
+            // defensively here — the key is simply absent.
+            let decoded = value.decode_as(v, mode)?;
+            if matches!(decoded, Value::None) {
+                continue;
+            }
+            map.insert(key.decode_as(k, mode)?, decoded);
         }
         Ok(Value::Map(map))
     }

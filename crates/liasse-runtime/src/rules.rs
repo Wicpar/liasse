@@ -54,12 +54,16 @@ pub(crate) fn apply_defaults(
 }
 
 /// The value of a declared field that was neither supplied nor defaulted (§5.1,
-/// §5.5): an omitted `$set` starts empty, every other omitted field reads
-/// `none`. A distinct empty set (not `none`) is what makes an omitted child set
-/// project as `[]` and a later `+`/`-` union against the existing membership.
+/// §5.5): an omitted `$set` starts empty, an omitted non-optional `map` starts
+/// empty (the set-analogous default; SPEC-ISSUES item 37), and every other
+/// omitted field reads `none`. A distinct empty set/map (not `none`) is what
+/// makes an omitted collection project as `[]` — an empty collection is the
+/// declared shape holding (§22.1) — and lets a later `+`/`-` (a `map` entry
+/// write) act against the existing membership rather than against `none`.
 fn absent_value(ty: &liasse_value::Type) -> Value {
     match ty {
         liasse_value::Type::Set(_) => Value::Set(std::collections::BTreeSet::new()),
+        liasse_value::Type::Map(..) => Value::Map(std::collections::BTreeMap::new()),
         _ => Value::None,
     }
 }

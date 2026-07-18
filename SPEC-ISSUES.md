@@ -305,3 +305,19 @@ implementation bug, which gets fixed against the spec instead).
     only the `ConflictCoordinate` rendering leaks the internal name. §19.9/§D.3
     do not pin the coordinate form for a singleton member. Surfaced by
     merge/rollback red-teaming.
+
+37. **Omitted non-optional `map` field default.** §5.5 pins an omitted child
+    set or keyed collection to **empty**, but was silent on a `map<K, V>`
+    value-typed field, which defaulted to `Value::None` — projecting as absence
+    and sitting uneasily with §22.1 (the declared shape must hold in every
+    committed state) and inconsistent with the set default (empty). Pinned the
+    set-analogous way: an omitted non-optional `map` field defaults to the
+    **empty map**, never `none`. Co-surfaced with the §5.5/A.1 static rejection
+    of an `optional<T>` set-element / map-value shape (so a `none` can neither be
+    declared as a member/value type nor arise as an omitted-field default).
+    **RESOLVED (pending SPEC.md merge):** §5.5 amended (empty-map default;
+    `optional` set-element / map-value shape is a static error) and A.1 (set
+    element / map value MUST NOT be `optional`). Impl-tested (`rules.rs`
+    `absent_value`, model rejection, decode drop) rather than corpus-cased: the
+    default is an internal runtime choice and the rejected shapes are static
+    build errors better exercised by the model harness than a wire corpus file.

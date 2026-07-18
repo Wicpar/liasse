@@ -486,9 +486,11 @@ Set of refs:
 }
 ```
 
-The value of `$set` is the shape of every member. A member shape is a present value type — `none` is absence, not a value, so it is never a set member, and the member shape of a set is never `optional<T>`. Adding `none` to a set is a no-op that leaves the set unchanged, mirroring set membership below. Initial membership comes from data or mutations. Sets have canonical read order from the element type's total order. Membership is mathematical: repeated input values collapse to one member, adding an existing member leaves the set unchanged, and removing an absent member leaves it unchanged.
+The value of `$set` is the shape of every member. A member shape is a present value type — `none` is absence, not a value, so it is never a set member, and the member shape of a set is never `optional<T>`: a set element type spelled `optional<T>` is a **static error** (Annex A.1), rejected at model build, not a silently accepted shape. (A set *of* a struct that merely carries an optional member is fine; only a direct `optional` element is the error.) Adding `none` to a set is a no-op that leaves the set unchanged, mirroring set membership below. Initial membership comes from data or mutations. Sets have canonical read order from the element type's total order. Membership is mathematical: repeated input values collapse to one member, adding an existing member leaves the set unchanged, and removing an absent member leaves it unchanged.
 
-When a containing row or struct is created, an omitted child set or keyed collection starts empty. A supplied set initializer is a set value. A supplied child-collection initializer is a typed keyed row view. The complete nested result is validated atomically with the containing insertion. `$data` uses the keyed map form defined in [Seed and import data](#loading).
+A map value type is subject to the same rule: a map never stores a `none` value (absence is the key not being present), so a map value type is never `optional<V>` — `map<K, optional<V>>` is a **static error** (Annex A.1), likewise rejected at model build.
+
+When a containing row or struct is created, an omitted child set or keyed collection starts empty; an omitted non-optional `map<K, V>` field likewise starts as the **empty map**, never `none` — the set-analogous default, so the field's declared shape holds in every committed state. A supplied set initializer is a set value. A supplied child-collection initializer is a typed keyed row view. The complete nested result is validated atomically with the containing insertion. `$data` uses the keyed map form defined in [Seed and import data](#loading).
 
 Use a keyed collection when a relation carries payload:
 
@@ -4396,8 +4398,8 @@ This annex is normative.
 JSON `null` is a value of `json`. `none` is absence in the Liasse type system, not a value: it cannot be a member of a set, a map value, or a distinct thing carried by a wire marker. `none` is therefore represented by *position*, never by a sentinel:
 
 - **optional object member** (struct field, singleton member, seeded row field): `none` is the member **omitted** from the wire object; a present member is a present value.
-- **set element**: `none` is **not a member**. `none` is never a valid set element, and adding `none` to a set is a no-op that yields the same set.
-- **map value**: `none` is the **key absent**. A map never stores a `none` value; absence is the key not being present.
+- **set element**: `none` is **not a member**. `none` is never a valid set element, and adding `none` to a set is a no-op that yields the same set. A set element type MUST NOT be `optional<T>` — the shape is a static error at model build, so no set ever holds a `none` member (§5.5).
+- **map value**: `none` is the **key absent**. A map never stores a `none` value; absence is the key not being present. A map value type MUST NOT be `optional<V>` — the shape is a static error at model build, so no map ever stores a `none` value (§5.5). An omitted non-optional `map` field defaults to the empty map (§5.5), not `none`.
 - **fixed-arity positional composite element** (a positional slot that cannot be omitted): `none` is JSON **`null`** in that position. `null` is unambiguous there because it is not the canonical wire form of any scalar type. For a positional `optional<json>` slot specifically, a positional `null` is `none`; a *present* JSON `null` cannot be written positionally and MUST be object- or array-wrapped.
 - **storage**: `none` is the backend's native NULL.
 

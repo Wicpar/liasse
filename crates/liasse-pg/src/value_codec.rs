@@ -182,7 +182,12 @@ pub fn decode(wire: &J) -> Result<Value, StoreError> {
         "ref" => decode_ref(payload).map(Value::Ref),
         "st" => decode_struct(payload),
         "comp" => decode_seq(payload).map(Value::Composite),
-        "set" => decode_seq(payload).map(|v| Value::Set(v.into_iter().collect())),
+        // A.1 / SPEC-ISSUES item 29: `none` is never a set member (a composite,
+        // in contrast, MAY carry a positional `none`, so the drop is set-only and
+        // not in `decode_seq`). After the model rejects an `optional` element type
+        // no stored set holds a `none`; the filter guards a legacy/corrupt row.
+        "set" => decode_seq(payload)
+            .map(|v| Value::Set(v.into_iter().filter(|m| !matches!(m, Value::None)).collect())),
         "map" => decode_map(payload),
         "none" => Ok(Value::None),
         other => Err(corrupt(format!("unknown value tag `{other}`"))),
@@ -324,7 +329,14 @@ fn decode_map(payload: &J) -> Result<Value, StoreError> {
         let pair = as_array(entry)?;
         let key = pair.first().ok_or_else(|| corrupt("map entry key"))?;
         let val = pair.get(1).ok_or_else(|| corrupt("map entry value"))?;
-        entries.insert(decode(key)?, decode(val)?);
+        // A.1: a map never stores a `none` value — the key is simply absent.
+        // Mirrors `liasse-value::decode_map`; the model rejects an `optional`
+        // value type, so this guards a legacy/corrupt row (memory/PG agree).
+        let decoded = decode(val)?;
+        if matches!(decoded, Value::None) {
+            continue;
+        }
+        entries.insert(decode(key)?, decoded);
     }
     Ok(Value::Map(entries))
 }

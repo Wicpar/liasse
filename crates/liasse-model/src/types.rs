@@ -101,12 +101,29 @@ fn map_type(node: &SpannedType, named: &NamedTypes) -> Result<Type, String> {
             Ok(Type::Optional(Box::new(inner)))
         }
         TypeExprKind::Optional(inner) => Ok(Type::Optional(Box::new(map_type(inner, named)?))),
-        TypeExprKind::Set(inner) => Ok(Type::Set(Box::new(map_type(inner, named)?))),
+        TypeExprKind::Set(inner) => {
+            let inner = map_type(inner, named)?;
+            // §5.5 / A.1: `none` is absence, not a value, so it is never a set
+            // member — a missing member is how absence is expressed. A set
+            // element type is therefore never `optional<T>`. (A set OF a struct
+            // that merely carries an optional member is fine; only a direct
+            // `optional` element is rejected.)
+            if matches!(inner, Type::Optional(_)) {
+                return Err(set_optional_reason());
+            }
+            Ok(Type::Set(Box::new(inner)))
+        }
         TypeExprKind::View(inner) => Ok(Type::View(Box::new(map_type(inner, named)?))),
-        TypeExprKind::Map(key, value) => Ok(Type::Map(
-            Box::new(map_type(key, named)?),
-            Box::new(map_type(value, named)?),
-        )),
+        TypeExprKind::Map(key, value) => {
+            let key = map_type(key, named)?;
+            let value = map_type(value, named)?;
+            // A.1: a map never stores a `none` value — absence is the key not
+            // being present — so a map value type is never `optional<V>`.
+            if matches!(value, Type::Optional(_)) {
+                return Err(map_value_optional_reason());
+            }
+            Ok(Type::Map(Box::new(key), Box::new(value)))
+        }
         TypeExprKind::Ref { .. } => Err(ref_reason()),
         TypeExprKind::KeyPath(path) => Err(format!(
             "the `{path}` key-path type form (A.2) is resolved against the model tree in a later pass; declare the field's own type here"
@@ -160,4 +177,15 @@ fn map_struct(fields: &[TypeField], named: &NamedTypes) -> Result<Type, String> 
 
 fn ref_reason() -> String {
     "declare a reference with the object form `{ \"$ref\": target }` (§5.6) rather than the `ref<...>` string form".to_owned()
+}
+
+/// A set element type spelled `optional<T>` (§5.5 / A.1). Shared with the inline
+/// `{ $set: "optional<T>" }` element form (build/shapes.rs).
+pub(crate) fn set_optional_reason() -> String {
+    "a set element type is never `optional<T>`: `none` is absence, not a set member (§5.5, A.1) — declare the element as `T`, and a missing member expresses absence".to_owned()
+}
+
+/// A map value type spelled `optional<V>` (A.1).
+fn map_value_optional_reason() -> String {
+    "a map value type is never `optional<V>`: a map never stores a `none` value; absence is the key being absent (A.1) — declare the value as `V`".to_owned()
 }
