@@ -54,7 +54,7 @@ pub use env::{
 };
 pub use error::EvalError;
 pub use host::{HostEffect, HostOp, HostPosition};
-pub use order::SortOrder;
+pub use order::{SortOrder, ViewOrders};
 pub use scope::Scope;
 pub use ty::{ExprType, RowType};
 pub use typed::TypedExpr;

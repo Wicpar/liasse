@@ -1068,7 +1068,7 @@ impl<S: InstanceStore> Engine<S> {
         // §7.3/§12.2: carry the view's total `$sort` order alongside the rows so a
         // bounded window partitions at its gap coordinate through the same order the
         // evaluator sorted by.
-        Ok(Some(ViewResult::from_cell(&cell, expr.result_order())))
+        Ok(Some(ViewResult::from_cell(&cell, self.compiled.view_order_of(expr))))
     }
 
     /// The parameter cells a surface `$view` read runs against (§10.1): each
@@ -1121,8 +1121,10 @@ impl<S: InstanceStore> Engine<S> {
     /// readable `$view` (an absent or mutation-only interface).
     pub fn interface_read(&self, interface: &str) -> Result<Option<ViewResult>, EngineError> {
         let Some(cell) = self.interface_cell(interface)? else { return Ok(None) };
-        let order =
-            self.compiled.exposed_view(interface).map_or_else(SortOrder::unordered, |expr| expr.result_order());
+        let order = self
+            .compiled
+            .exposed_view(interface)
+            .map_or_else(SortOrder::unordered, |expr| self.compiled.view_order_of(expr));
         Ok(Some(ViewResult::from_cell(&cell, order)))
     }
 

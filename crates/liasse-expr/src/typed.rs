@@ -69,24 +69,78 @@ impl TypedExpr {
         matches!(self.kind, TypedKind::Literal(Value::None))
     }
 
-    /// The total order this view's result rows are delivered in (§7.3): the
-    /// per-key directions of the outermost projection that fixed their order.
+    /// The total order this view's result rows are delivered in (§7.3, §7.4): the
+    /// per-key directions the outermost node fixes, resolving a reference to another
+    /// view through `views`.
     ///
-    /// The final `$sort` tuple each row carries is set by the outermost
-    /// projection — it rebuilds fresh rows and either re-sorts (writing that
-    /// projection's keys) or preserves source order (leaving the tuple empty), so
-    /// the directions of the outermost projection describe exactly the order the
-    /// rows are in. A view that is not a directly sorted projection (a combinator,
-    /// a bare collection, a scalar) exposes no single `$sort` direction and is
-    /// [`SortOrder::unordered`], so its rows fall back to occurrence-identity order
-    /// (§8/Annex B.5). A bounded window partitions rows at its frozen gap
-    /// coordinate through this order (§12.2), matching the evaluator exactly.
+    /// A directly sorted projection fixes the order via its own `$sort` keys: it
+    /// rebuilds fresh rows and either re-sorts (writing those keys) or preserves
+    /// source order (leaving the tuple empty), so its own directions describe the
+    /// delivered order exactly. Every other row-shaped node inherits its order from
+    /// what it delivers, per §7.4:
+    ///
+    /// - a combinator (`a | b`, `a & b`, `a - b`) delivers in its **left** operand's
+    ///   order — difference/intersection is a subset of the left, and union appends
+    ///   new right identities after the whole left run — so it adopts `lhs`'s order;
+    /// - a conditional (`cond ? a : b`) or fallback (`a ?? b`) delivers exactly one
+    ///   branch's rows, so it takes the order the branches share (or the non-empty
+    ///   sibling's, when one branch is the empty view), else occurrence identity;
+    /// - a reference to a top-level named view (`.desc`) reads that view's rows off
+    ///   the same-named cell folded onto the root row (§7.1), so it adopts the
+    ///   referenced view's order, recovered through `views`;
+    /// - a `[:name | condition]` filter or a `[key]` selection only narrows rows,
+    ///   so it preserves its base view's order.
+    ///
+    /// Anything else (a bare data collection, a `::` traversal, a scalar) exposes no
+    /// single `$sort` direction and is [`SortOrder::unordered`], so its rows fall
+    /// back to occurrence-identity order (§8/Annex B.5). A bounded window partitions
+    /// rows at its frozen gap coordinate through this order (§12.2), so returning the
+    /// true delivered order here is what keeps that partition monotone — a
+    /// combinator over a descending left view must report descending, not unordered,
+    /// or the window's `partition_point` runs over a non-monotone slice and collapses.
     #[must_use]
-    pub fn result_order(&self) -> crate::SortOrder {
+    pub fn result_order(&self, views: &dyn crate::ViewOrders) -> crate::SortOrder {
         match &self.kind {
             TypedKind::Project { projection, .. } => crate::SortOrder::from_keys(&projection.sort),
+            // §7.4: all three combinators pin the delivered order to the left operand.
+            TypedKind::Combine { lhs, .. } => lhs.result_order(views),
+            // §7.4: a conditional/fallback delivers one branch's rows.
+            TypedKind::Ternary { then, otherwise, .. } => Self::branch_order(then, otherwise, views),
+            TypedKind::Fallback { primary, other } => Self::branch_order(primary, other, views),
+            // §7.1: `.desc` reads a top-level view's cell off the root row, so its
+            // order is that view's. A field on any other receiver, or naming a bare
+            // data collection, has no such order (occurrence identity).
+            TypedKind::Field { base, name } if base.is_root_receiver() => {
+                views.view_order(name).unwrap_or_default()
+            }
+            // §6.4/§7.3: a filter/selection narrows rows but keeps their order.
+            TypedKind::Select { base, .. } => base.result_order(views),
             _ => crate::SortOrder::unordered(),
         }
+    }
+
+    /// The order two combinator/conditional branches jointly deliver (§7.4): the
+    /// order they share, or the non-empty sibling's order when one branch is the
+    /// empty view (`[]` contributes no rows to order), else occurrence identity —
+    /// the rows come entirely from one branch, so a shared order is the delivered
+    /// order and a disagreement leaves no single declared order.
+    fn branch_order(a: &TypedExpr, b: &TypedExpr, views: &dyn crate::ViewOrders) -> crate::SortOrder {
+        match (&a.kind, &b.kind) {
+            (TypedKind::EmptyView, _) => b.result_order(views),
+            (_, TypedKind::EmptyView) => a.result_order(views),
+            _ => {
+                let left = a.result_order(views);
+                let right = b.result_order(views);
+                if left == right { left } else { crate::SortOrder::unordered() }
+            }
+        }
+    }
+
+    /// Whether this node is the root receiver (`.` or `/`) a top-level view
+    /// reference is read off (§7.1). A named `$view` is folded onto the root row, so
+    /// only `.name`/`/name` — never a nested `row.name` — resolves to a view's order.
+    fn is_root_receiver(&self) -> bool {
+        matches!(self.kind, TypedKind::Current | TypedKind::Root)
     }
 }
 

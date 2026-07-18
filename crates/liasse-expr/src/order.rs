@@ -86,3 +86,22 @@ impl SortOrder {
         self.compare(a_keys, a_id, b_keys, b_id) == Ordering::Less
     }
 }
+
+/// A source of top-level views' declared result orders (§7.3), so an expression
+/// that references another view by name can adopt that view's order when computing
+/// its own [`result_order`](crate::TypedExpr::result_order).
+///
+/// A named `$view` is folded onto the root row as a same-named cell (§7.1), so a
+/// reference like `.desc` is a plain field access whose typed node carries no
+/// `$sort` of its own — the order lives in the *referenced* view's definition. The
+/// runtime owns the view registry, so it supplies this resolver; the pure
+/// expression layer only asks by name and never reaches into the registry itself.
+/// This is what lets a §7.4 combinator (`.desc - .never`) recover its left
+/// operand's order and keep a windowed frozen-gap resume monotone (§12.2).
+pub trait ViewOrders {
+    /// The declared result order of the top-level view named `name`, or `None`
+    /// when no view of that name is declared — a field naming a bare data
+    /// collection carries no `$sort`, so it stays occurrence-identity ordered
+    /// (§8/Annex B.5).
+    fn view_order(&self, name: &str) -> Option<SortOrder>;
+}

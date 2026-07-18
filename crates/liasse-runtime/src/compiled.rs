@@ -9,7 +9,7 @@
 //! result is an owned [`Compiled`] the engine holds beside the model and store.
 
 use liasse_diag::{SourceId, SourceMap};
-use liasse_expr::{check_statement, ExprType, HostPosition, RowType, Scope, TypedExpr};
+use liasse_expr::{check_statement, ExprType, HostPosition, RowType, Scope, SortOrder, TypedExpr, ViewOrders};
 use liasse_model::{Collection, Model, Node, Shape};
 use liasse_syntax::{parse_expression, Stmt};
 use liasse_value::Type;
@@ -179,6 +179,25 @@ pub(crate) struct CompiledMutation {
 pub(crate) struct CompiledView {
     pub(crate) name: String,
     pub(crate) expr: TypedExpr,
+}
+
+/// Resolves a referenced view's order against the compiled registry (§7.1/§7.4)
+/// for [`Compiled::view_order_of`]. `fuel` bounds the reference chain: each hop
+/// into a referenced view spends one unit, so a chain longer than the view count —
+/// necessarily a cycle — runs out and resolves to occurrence identity (`None`)
+/// rather than recursing forever. No interior mutability: each deeper resolution
+/// carries its own decremented `fuel`.
+struct ViewOrderResolver<'c> {
+    compiled: &'c Compiled,
+    fuel: usize,
+}
+
+impl ViewOrders for ViewOrderResolver<'_> {
+    fn view_order(&self, name: &str) -> Option<SortOrder> {
+        let view = self.compiled.view(name)?;
+        let fuel = self.fuel.checked_sub(1)?;
+        Some(view.expr.result_order(&ViewOrderResolver { compiled: self.compiled, fuel }))
+    }
 }
 
 /// A compiled exposed module interface `$view` (§13.8): the interface handle name
@@ -409,6 +428,20 @@ impl Compiled {
     /// The compiled view named `name`, if any.
     pub(crate) fn view(&self, name: &str) -> Option<&CompiledView> {
         self.views.iter().find(|v| v.name == name)
+    }
+
+    /// The total order `expr` delivers its rows in (§7.3/§7.4), resolving every
+    /// reference to a top-level named view through this registry — a `$view` is
+    /// folded onto the root row as a same-named cell (§7.1), so a bare reference's
+    /// typed node carries no `$sort` of its own and its order lives in the
+    /// *referenced* view's definition. A bounded window partitions its frozen gap
+    /// coordinate through exactly this order (§12.2), so a §7.4 combinator over a
+    /// sorted left view must report that left order here for the partition to stay
+    /// monotone. The reference chain is bounded by the view count: a chain longer
+    /// than that repeats a view, which is a cycle that never materializes (§7.1
+    /// fixed point), so it is cut back to occurrence identity.
+    pub(crate) fn view_order_of(&self, expr: &TypedExpr) -> SortOrder {
+        expr.result_order(&ViewOrderResolver { compiled: self, fuel: self.views.len() })
     }
 
     /// The compiled `$expose` interface `$view` for interface `name`, if one is
