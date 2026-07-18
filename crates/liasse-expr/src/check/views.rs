@@ -247,7 +247,7 @@ impl Checker<'_> {
                 TypedKind::Now,
             )),
             "uuid" => Some(TypedExpr::new(expr.span, ExprType::scalar(Type::Uuid), TypedKind::Uuid)),
-            "size" => self.check_builtin(expr, BuiltinFn::Size, args, ExprType::scalar(Type::Int)),
+            "size" => self.check_size(expr, args),
             "has" => self.check_builtin(expr, BuiltinFn::Has, args, ExprType::scalar(Type::Bool)),
             "assert" => {
                 self.check_builtin(expr, BuiltinFn::Assert, args, ExprType::scalar(Type::Bool))
@@ -346,6 +346,33 @@ impl Checker<'_> {
                 function: function.to_owned(),
                 args: typed,
             },
+        ))
+    }
+
+    /// Type-check `size` (§7). `size` counts the elements of a `text`, a `set`, a
+    /// `map`, or a view; only the view form ranges over collection rows.
+    ///
+    /// §14.5: counting every row of an unbounded recurring bucket enumerates a
+    /// possibly-infinite series — the exact whole-series read the `count` twin
+    /// performs and `check_aggregate` rejects — so a `size` over such a view must be
+    /// gated the same way: the bucket has to be read through a bounded temporal
+    /// selector (`.$at`/`.$between`) first. Every other `size` (text/set/map, or a
+    /// bounded view) is unaffected and flows through the shared builtin path.
+    fn check_size(&mut self, expr: &Expr, args: &[Arg]) -> Option<TypedExpr> {
+        let [Arg::Positional(sole)] = args else {
+            return self.check_builtin(expr, BuiltinFn::Size, args, ExprType::scalar(Type::Int));
+        };
+        let checked = self.check(sole)?;
+        if checked.ty().as_view().is_some_and(|row| row.is_unbounded()) {
+            return self.error(
+                sole,
+                "`size` over an unbounded recurring bucket enumerates the whole series; read it through a bounded temporal selector `.$at`/`.$between` first (§14.5)",
+            );
+        }
+        Some(TypedExpr::new(
+            expr.span,
+            ExprType::scalar(Type::Int),
+            TypedKind::Builtin { func: BuiltinFn::Size, args: vec![checked] },
         ))
     }
 
