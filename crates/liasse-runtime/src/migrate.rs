@@ -38,7 +38,7 @@ use crate::engine::{compile_definition, Compilation, Engine};
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::eval::EvalCtx;
 use crate::host::{HostBinding, HostDispatch, HostSignatures};
-use crate::interp::Interp;
+use crate::interp::{rewrite_inbound_refs_across, Interp};
 use crate::materialize::{self, FieldMap, Temporal};
 use crate::portable::StateSection;
 use crate::rules;
@@ -297,6 +297,13 @@ fn build_migrated<G: crate::generator::Generators>(
     for address in &addresses {
         coerce_and_require(&target.compiled, &mut prospective, address)?;
     }
+    // §5.9/§5.4/§22.1/B.5: coercion may have re-derived a KEY enum leaf to the
+    // target's current declaration-order ordinal, so a row's canonical address no
+    // longer matches the one fixed from its source-ordinal key. Re-key every moved
+    // row (and rewrite inbound references to it) before the final admission check,
+    // so committed state is in canonical key order and stays addressable by its own
+    // current key.
+    let addresses = rekey_coerced(schema, &target.compiled, &mut prospective, addresses)?;
     rules::finalize(&target.compiled, &ctx, &prospective, &addresses)?;
     Ok(addresses
         .into_iter()
@@ -454,6 +461,78 @@ fn coerce_and_require(
 /// struct (§5.1). An optional field may stay `none`; a set defaults to empty.
 fn is_required(ty: &Type) -> bool {
     !matches!(ty, Type::Optional(_) | Type::Set(_))
+}
+
+/// Re-address every migrated row whose COERCED key differs from the address
+/// `build_migrated` fixed from its source-ordinal key, and return the reconciled
+/// address list (§5.4/§5.9/§22.1/B.5).
+///
+/// The §20.1 coercion pass re-derives each migrated enum leaf to the target's
+/// current declaration-order ordinal (§5.9); when that leaf is a KEY component —
+/// a scalar enum key, a composite key carrying one, or a struct key whose member
+/// is one — the row's canonical key changes, so it belongs at a different address.
+/// Each such row is moved to the address its coerced key determines (a
+/// migration-internal rekey), so committed state is in canonical key order (B.5)
+/// and every row stays addressable by its own current key (§5.4/§8.5/§22.1). This
+/// reuses the ordinary rekey's inbound-reference rewrite ([`rewrite_inbound_refs_across`]),
+/// so a reference that keyed on a moved row follows it to the new key (§5.4) —
+/// the compatible copy of a `Value::Ref` inbound reference, which the coercion
+/// pass leaves at the source ordinal, would otherwise dangle.
+///
+/// A label reorder is a bijection, so re-derived keys never collide among the
+/// reordered rows; a coerced key that lands on a DIFFERENT surviving row (a
+/// program-produced overlap, never a pure reorder) is a genuine §20.1 uniqueness
+/// violation and rejects rather than silently overwriting.
+fn rekey_coerced(
+    schema: Schema<'_>,
+    compiled: &Compiled,
+    prospective: &mut Prospective,
+    addresses: Vec<RowAddress>,
+) -> Result<Vec<RowAddress>, Rejection> {
+    // The intended moves: a row whose coerced key addresses it elsewhere. Migration
+    // stages only top-level rows (nested collections are a documented §20.1 seam),
+    // so a moved row is always a top-level reference target.
+    let mut relocations: BTreeMap<RowAddress, RowAddress> = BTreeMap::new();
+    for address in &addresses {
+        let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
+        let Some(collection) = compiled.collection_at(&decl) else { continue };
+        let Some(fields) = prospective.get(address) else { continue };
+        let coerced_address = key_address(schema, collection, fields)?;
+        if &coerced_address != address {
+            relocations.insert(address.clone(), coerced_address);
+        }
+    }
+    if relocations.is_empty() {
+        return Ok(addresses);
+    }
+    // Detach every moving row first, so a new address another move vacates does not
+    // read as a collision; then re-place each, rejecting a collision with a
+    // surviving row or an already-re-placed move, and rewrite inbound references.
+    let mut detached: Vec<(RowAddress, RowAddress, FieldMap)> = Vec::with_capacity(relocations.len());
+    for (old, new) in &relocations {
+        let Some(fields) = prospective.get(old).cloned() else { continue };
+        prospective.remove(old);
+        detached.push((old.clone(), new.clone(), fields));
+    }
+    for (old, new, fields) in &detached {
+        if prospective.contains(new) {
+            return Err(Rejection::new(
+                RejectionReason::DuplicateKey,
+                "migration rekeyed a row onto a key already held by another row",
+            )
+            .at(new.render()));
+        }
+        prospective.insert(new.clone(), fields.clone());
+        if let (Some(name), Some(old_step), Some(new_step)) =
+            (new.steps().last().map(|s| s.name().as_str().to_owned()), old.steps().last(), new.steps().last())
+        {
+            rewrite_inbound_refs_across(compiled, prospective, &name, old_step.key(), new_step.key());
+        }
+    }
+    Ok(addresses
+        .into_iter()
+        .map(|address| relocations.get(&address).cloned().unwrap_or(address))
+        .collect())
 }
 
 /// Build the downgrade migration plan (§20.2): the older target's own declared

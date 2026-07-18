@@ -78,6 +78,50 @@ pub(crate) fn coerce_fields(
     Ok(())
 }
 
+/// Coerce an application-visible key operand's enum leaves to positioned enum
+/// values against the collection's declared key-field types (§5.9/§5.4/§8.5).
+///
+/// A delete or keyed selector supplies an enum key component as its bare `text`
+/// label — a call argument is untyped text (`del(status: "archived")`), and the
+/// object/list operand is evaluated structurally, so no per-field coercion (the
+/// one an add's field write applies) ever reaches it. The stored row keys on the
+/// positioned [`Value::Enum`], and `Value::Text("archived") != Value::Enum(..)`,
+/// so an un-coerced operand addresses NO row and the delete silently no-ops even
+/// against a live row — the row becomes unaddressable by its own key. Coercing the
+/// operand here makes the lookup key identical to the stored key.
+///
+/// A single-field key coerces its lone scalar; a composite key coerces each
+/// component in `$key` order (a struct-key member reaches its enum leaf through
+/// [`coerce_value`]'s descent). A component whose label the current enum does not
+/// declare is left unchanged — it can match no live row, so the operation no-ops
+/// exactly as removing an absent row does (§8.5), rather than rejecting.
+pub(crate) fn coerce_key_operand(collection: &CompiledCollection, key: Value, where_path: &str) -> Value {
+    match collection.key.as_slice() {
+        [name] => coerce_key_component(collection, name, key, where_path),
+        names => match key {
+            Value::Composite(components) if components.len() == names.len() => Value::Composite(
+                names
+                    .iter()
+                    .zip(components)
+                    .map(|(name, component)| coerce_key_component(collection, name, component, where_path))
+                    .collect(),
+            ),
+            other => other,
+        },
+    }
+}
+
+/// Coerce one key component against the declared type of key field `name` — a
+/// top-level field or a static-struct key member — leaving it unchanged when the
+/// type carries no enum or the label is not currently declared (a no-op lookup).
+fn coerce_key_component(collection: &CompiledCollection, name: &str, value: Value, where_path: &str) -> Value {
+    let ty = collection.field(name).map(|field| field.ty.clone()).or_else(|| collection.struct_type(name));
+    match ty {
+        Some(ty) if contains_enum(&ty) => coerce_value(&ty, &value, name, where_path).unwrap_or(value),
+        _ => value,
+    }
+}
+
 /// Coerce a value against a field type by re-validating every enum leaf it
 /// carries against that enum's *current* declared label set (§5.9), returning the
 /// value unchanged when the type has no enum leaf. A supplied `text`/`enum` leaf

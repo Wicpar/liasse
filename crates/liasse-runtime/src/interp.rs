@@ -509,8 +509,17 @@ impl<'a> Interp<'a> {
     /// component rejection guards a malformed object operand (fallible, propagated).
     fn delete_key_values(&self, keys: &Expr, decl: &[String], source: SourceId) -> Result<Vec<Value>, Rejection> {
         let current = self.current()?;
-        let key_fields = self.collection_at(decl)?.key.clone();
-        let normalize = |value: Value| materialize::normalize_key_operand(&key_fields, value);
+        let collection = self.collection_at(decl)?;
+        let key_fields = collection.key.clone();
+        let name = decl.last().cloned().unwrap_or_default();
+        // §5.9/§5.4/§8.5: normalize the operand to the positional key identity, then
+        // coerce an enum key component from its authoring `text` label to the
+        // positioned `Value::Enum` the row is keyed under (as `exec_delete` does),
+        // so a `return del { … }` addresses and captures the live row.
+        let normalize = |value: Value| {
+            materialize::normalize_key_operand(&key_fields, value)
+                .map(|key| rules::coerce_key_operand(collection, key, &name))
+        };
         Ok(match self.scalar_value(keys, source, &current)? {
             Value::Set(members) => members.into_iter().map(normalize).collect::<Result<_, _>>()?,
             scalar => vec![normalize(scalar)?],
@@ -652,69 +661,13 @@ impl<'a> Interp<'a> {
 
     /// Rewrite every inbound reference into top-level collection `target` whose
     /// key matches `old`, to point at `new` (§5.4), marking each rewritten row
-    /// touched so the final rule pass re-validates it.
-    ///
-    /// Matching is by *application identity* (`refid::ref_identity`), not raw
-    /// carrier equality: a composite ref exposes its `$key`-order tuple as a
-    /// [`Value::Composite`], the same value the target row's identity produces, so
-    /// the two compare equal. The rewritten value keeps its stored carrier — a
-    /// `Ref` becomes the collection's uniform ref shape at the new key
-    /// (`refid::ref_of`: a scalar-keyed ref for a single-field key, a positional
-    /// composite-keyed ref for a composite key), a bare stored key (§6.3 ref/key
-    /// equality) becomes the bare new identity.
+    /// touched so the final rule pass re-validates it. The rewrite itself is the
+    /// shared [`rewrite_inbound_refs_across`] — the same one a migration-internal
+    /// rekey reuses (`migrate::build_migrated`), so an ordinary rekey and a
+    /// migration rekey rewrite inbound references identically.
     fn rewrite_inbound_refs(&mut self, target: &str, old: &KeyValue, new: &KeyValue) {
-        let Some(names) = self.compiled.collection(target).map(|c| c.key.clone()) else { return };
-        let old_id = identity_of(&names, &old.components().cloned().collect::<Vec<_>>());
-        let new_components: Vec<Value> = new.components().cloned().collect();
-        let new_id = identity_of(&names, &new_components);
-        let new_ref = crate::refid::ref_of(&names, &new_components);
-        let candidates: Vec<RowAddress> = self.prospective.working().keys().cloned().collect();
-        for address in candidates {
-            let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
-            let Some(collection) = self.compiled.collection_at(&decl) else { continue };
-            let Some(existing) = self.prospective.get(&address) else { continue };
-            let mut fields = existing.clone();
-            let mut changed = false;
-            for field in &collection.fields {
-                // A scalar `$ref` field: rewrite its single value to the new key.
-                if let Some(info) = &field.reference
-                    && info.target == target
-                    && let Some(rewritten) =
-                        rewrite_ref_value(fields.get(&field.name), &names, &old_id, &new_id, &new_ref)
-                {
-                    fields.insert(field.name.clone(), rewritten);
-                    changed = true;
-                }
-                // §5.5/§5.4: a `$set` of `$ref` holds many inbound references —
-                // rewrite every member that targeted the rekeyed row, preserving the
-                // rest of the membership.
-                if let Some(info) = &field.element_reference
-                    && info.target == target
-                    && let Some(Value::Set(members)) = fields.get(&field.name)
-                {
-                    let mut rebuilt = BTreeSet::new();
-                    let mut member_changed = false;
-                    for member in members {
-                        match rewrite_ref_value(Some(member), &names, &old_id, &new_id, &new_ref) {
-                            Some(rewritten) => {
-                                rebuilt.insert(rewritten);
-                                member_changed = true;
-                            }
-                            None => {
-                                rebuilt.insert(member.clone());
-                            }
-                        }
-                    }
-                    if member_changed {
-                        fields.insert(field.name.clone(), Value::Set(rebuilt));
-                        changed = true;
-                    }
-                }
-            }
-            if changed {
-                self.prospective.replace(&address, fields);
-                self.mark(address);
-            }
+        for address in rewrite_inbound_refs_across(self.compiled, self.prospective, target, old, new) {
+            self.mark(address);
         }
     }
 
@@ -1381,6 +1334,13 @@ impl<'a> Interp<'a> {
             Value::Set(members) => members.into_iter().map(normalize).collect::<Result<_, _>>()?,
             scalar => vec![normalize(scalar)?],
         };
+        // §5.9/§5.4/§8.5: coerce an enum key component from its authoring `text`
+        // label to the positioned `Value::Enum` the row is keyed under, so the
+        // delete addresses the live row rather than no-opping on a `text`↔`enum`
+        // mismatch. A non-enum key passes through unchanged.
+        let collection = self.collection_at(&loc.decl)?;
+        let targets: Vec<Value> =
+            targets.into_iter().map(|key| rules::coerce_key_operand(collection, key, &name)).collect();
         // §5.4/§21.1: the cascade planner operates over the top-level graph; a
         // nested collection's row (a meter spend/pool, §15) has no inbound refs in
         // CORE scope, so it is removed directly with its descendant subtree.
@@ -1873,6 +1833,83 @@ fn struct_row_cell(struct_meta: &CompiledStruct, fields: &FieldMap) -> Cell {
 fn is_prefix(prefix: &RowAddress, address: &RowAddress) -> bool {
     let mut steps = address.steps();
     prefix.steps().all(|step| steps.next() == Some(step))
+}
+
+/// Rewrite every inbound reference into top-level collection `target` whose key
+/// matches `old`, to point at `new` (§5.4), returning the addresses of the rows
+/// it rewrote so a caller can re-validate them — an ordinary rekey marks each
+/// touched, a migration lets the final §20.1 pass cover them.
+///
+/// Matching is by *application identity* (`refid::ref_identity`), not raw carrier
+/// equality: a composite ref exposes its `$key`-order tuple as a
+/// [`Value::Composite`], the same value the target row's identity produces, so the
+/// two compare equal. The rewritten value keeps its stored carrier — a `Ref`
+/// becomes the collection's uniform ref shape at the new key (`refid::ref_of`: a
+/// scalar-keyed ref for a single-field key, a positional composite-keyed ref for a
+/// composite key), a bare stored key (§6.3 ref/key equality) becomes the bare new
+/// identity.
+pub(crate) fn rewrite_inbound_refs_across(
+    compiled: &Compiled,
+    prospective: &mut Prospective,
+    target: &str,
+    old: &KeyValue,
+    new: &KeyValue,
+) -> Vec<RowAddress> {
+    let Some(names) = compiled.collection(target).map(|c| c.key.clone()) else { return Vec::new() };
+    let old_id = identity_of(&names, &old.components().cloned().collect::<Vec<_>>());
+    let new_components: Vec<Value> = new.components().cloned().collect();
+    let new_id = identity_of(&names, &new_components);
+    let new_ref = crate::refid::ref_of(&names, &new_components);
+    let candidates: Vec<RowAddress> = prospective.working().keys().cloned().collect();
+    let mut rewritten = Vec::new();
+    for address in candidates {
+        let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
+        let Some(collection) = compiled.collection_at(&decl) else { continue };
+        let Some(existing) = prospective.get(&address) else { continue };
+        let mut fields = existing.clone();
+        let mut changed = false;
+        for field in &collection.fields {
+            // A scalar `$ref` field: rewrite its single value to the new key.
+            if let Some(info) = &field.reference
+                && info.target == target
+                && let Some(rewrite) =
+                    rewrite_ref_value(fields.get(&field.name), &names, &old_id, &new_id, &new_ref)
+            {
+                fields.insert(field.name.clone(), rewrite);
+                changed = true;
+            }
+            // §5.5/§5.4: a `$set` of `$ref` holds many inbound references — rewrite
+            // every member that targeted the rekeyed row, preserving the rest of the
+            // membership.
+            if let Some(info) = &field.element_reference
+                && info.target == target
+                && let Some(Value::Set(members)) = fields.get(&field.name)
+            {
+                let mut rebuilt = BTreeSet::new();
+                let mut member_changed = false;
+                for member in members {
+                    match rewrite_ref_value(Some(member), &names, &old_id, &new_id, &new_ref) {
+                        Some(rewrite) => {
+                            rebuilt.insert(rewrite);
+                            member_changed = true;
+                        }
+                        None => {
+                            rebuilt.insert(member.clone());
+                        }
+                    }
+                }
+                if member_changed {
+                    fields.insert(field.name.clone(), Value::Set(rebuilt));
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            prospective.replace(&address, fields);
+            rewritten.push(address);
+        }
+    }
+    rewritten
 }
 
 /// If `value` is an inbound reference to the row whose application identity is
