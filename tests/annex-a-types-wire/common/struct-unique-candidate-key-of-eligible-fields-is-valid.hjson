@@ -1,0 +1,39 @@
+{
+  format: 1
+  name: struct-unique-candidate-key-of-eligible-fields-is-valid
+  suite: static
+  spec: ["§A.8", "§5.7"]
+  tags: ["key", "struct", "unique"]
+  note: '''Annex A.8 (SPEC.md line 4475): "Candidate-key components use the same eligible base
+types, although the candidate-key fields themselves MAY be optional." The "same eligible
+base types" are the ones A.8 lists two lines above for a `$key` field — the scalars AND
+"structs composed solely of key-eligible required fields". So a struct of all-eligible
+required fields is a valid `$unique` candidate-key component exactly as it is a valid `$key`
+component (pinned by the sibling `struct-key-of-eligible-fields-is-valid`). Here the primary
+`$key` is an ordinary scalar `id`; the only thing under test is the `$unique: ["coord"]`
+candidate over a struct of two required key-eligible fields (`int` + `int`), which A.8
+MANDATES the collection accept. The sibling `json-type-in-struct-key-excluded` covers the
+exclusion side for primary keys; this case pins the ACCEPT side A.8 grants for candidate
+keys.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.structunique.ok@1.0.0"
+    $model: {
+      places: {
+        $key: "id"
+        $unique: ["coord"]
+        id: "uuid = uuid()"
+        name: "text"
+        coord: {
+          lat: "int"
+          lon: "int"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: ok
+  }
+}

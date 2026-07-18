@@ -258,6 +258,22 @@ impl<'a> Builder<'a> {
                 return DeclName::parse(name)
                     .map_err(|_| format!("`{name}` is not a valid field name"));
             }
+            // A.8 (SPEC.md:4471-4475): candidate-key components "use the same
+            // eligible base types" as `$key` fields — which include "structs
+            // composed solely of key-eligible required fields". Judge a struct
+            // candidate exactly as the primary-`$key` path does
+            // (`key_field_type`): `struct_key_type` recurses into member
+            // eligibility, accepting an all-eligible-required struct and
+            // rejecting one that launders an ineligible member (json, optional,
+            // …) with a diagnostic naming that member — rather than the blanket
+            // "must be a scalar or ref field" refusal that masked the exclusion.
+            // This covers both a standalone struct candidate and a struct
+            // component of a composite candidate, since both route through here.
+            Node::Struct(shape) => {
+                return Self::struct_key_type(shape).and_then(|_key_type| {
+                    DeclName::parse(name).map_err(|_| format!("`{name}` is not a valid field name"))
+                });
+            }
             _ => return Err(format!("candidate-key field `{name}` must be a scalar or ref field")),
         };
         let base = match ty {
