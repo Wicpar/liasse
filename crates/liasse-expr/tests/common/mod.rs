@@ -155,7 +155,14 @@ impl Environment for FixedEnv {
     /// A test temporal index (§14.1): each base row's `[from, until)` interval is
     /// read from its `from`/`until` timestamp cells (absent = unbounded), exactly
     /// the half-open activity rule of SPEC §14.1–§14.2.
-    fn temporal(&self, base: &[Row], query: &TemporalQuery) -> Result<Vec<Row>, EvalError> {
+    fn temporal(
+        &self,
+        base: &[Row],
+        _base_name: Option<&str>,
+        query: &TemporalQuery,
+    ) -> Result<Vec<Row>, EvalError> {
+        // This fixture drives every base row through the interval rule directly,
+        // so it never needs the addressed collection name (§7.1); it is ignored.
         let kept = base
             .iter()
             .filter(|row| {

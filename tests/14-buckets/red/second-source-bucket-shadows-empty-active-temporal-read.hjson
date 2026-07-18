@@ -1,0 +1,121 @@
+{
+  format: 1
+  name: second-source-bucket-shadows-empty-active-temporal-read
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.4", "§14.5", "#views", "§7.1"]
+  tags: ["temporal", "recurrence", "identity", "boundary", "window"]
+  note: '''A bounded temporal read of a source-backed recurring bucket whose active-at-now
+    set is EMPTY is silently mis-attributed to a DIFFERENT bucketed collection when more
+    than one is present. This is distinct from the closed over-generation facet
+    (unbounded-reject-later-boundary-drops-earlier-interval) and from SPEC-ISSUES #13:
+    no rejected/over-generated boundary is involved, the series is an ordinary weekly
+    P7D one, and the read never reaches an ambiguous boundary.
+
+    The runtime resolves a temporal selector over a bare bucketed base by re-deriving
+    the collection`s FULL extant set: it searches every bucketed collection`s extant
+    (stored buckets first, then the regenerated source-backed ones) for the one whose
+    rows ACTIVE AT NOW equal the base`s identity set, and ranges the selector over that
+    extant (crates/liasse-runtime/src/env.rs `working_set`, fed by `temporal_index_at`
+    + `SourceBucketHorizon::extant_to`). The heuristic recovers WHICH collection the
+    base names by identity-set equality — but an EMPTY base (a bucket with no row active
+    at the clock) has the empty identity set, which equals the empty active set of ANY
+    other empty-active bucketed collection. `working_set` returns the FIRST such extant,
+    so a bucket declared earlier shadows the one actually read.
+
+    Repro: two independent source-backed weekly buckets, both with a subscription that
+    STARTS IN THE FUTURE, so both are empty-active at the virtual clock 2026-01-01.
+    `periods_a` (declared first) starts 2026-09-01; `periods_b` (declared second) starts
+    2026-03-01. Reading `.periods_b.$at(2026-03-04)` must return periods_b`s interval 0
+    = [2026-03-01, 2026-03-08) (§14.1: the periods_b row active at that instant; §7.1:
+    the view ranges over periods_b, the collection it names). The single-bucket form of
+    exactly this read is the passing control `calendar-monthly-clamp-preserves-anchor`
+    (a future `.$at` on an empty-active-at-now source bucket). Here, because `.periods_b`
+    is empty at the clock, `working_set` iterates `periods_a` first, whose regenerated
+    extant at the read horizon (2026-03-04) is empty — its far-future first boundary sits
+    past the horizon — and whose empty active-at-now set matches the empty base. It
+    returns periods_a`s empty extant, so the selector ranges over nothing and periods_b`s
+    active interval 0 is dropped: the view returns [] instead of {interval 0}. A §14.1 /
+    §7.1 violation — a `.$at` on periods_b answers from periods_a — that has nothing to
+    do with any rejected or over-generated boundary.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.shadowempty@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subs_a: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      subs_b: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      // Declared FIRST: an empty-active-at-now source bucket whose regenerated extant
+      // at the read horizon is also empty (its first boundary is far past the horizon).
+      periods_a: {
+        $bucket: {
+          $source: ".subs_a"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      // Declared SECOND: the bucket actually read. Its interval 0 is active at the read
+      // instant but it is empty-active at the clock, so its base identity set is empty.
+      periods_b: {
+        $bucket: {
+          $source: ".subs_b"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $public: {
+        read_b: {
+          $params: { t: "timestamp" }
+          $view: ".periods_b.$at(@t) { index: $index, from: $from, until: $until }"
+        }
+      }
+    }
+    $data: {
+      plans: {
+        weekly: { credits: "30", period: "P7D" }
+      }
+      subs_a: {
+        // starts 2026-09-01T00:00:00Z — far future, past the read horizon
+        sa: { plan: "weekly", starts_at: "1788220800000000" }
+      }
+      subs_b: {
+        // starts 2026-03-01T00:00:00Z — future, so empty-active at the 2026-01-01 clock
+        sb: { plan: "weekly", starts_at: "1772323200000000" }
+      }
+    }
+  }
+
+  steps: [
+    // Read periods_b at 2026-03-04T00:00:00Z: inside periods_b interval 0
+    // = [2026-03-01, 2026-03-08). §14.1 selects exactly that period; §7.1 ranges the
+    // view over periods_b. Expected {interval 0}; the runtime returns [] because
+    // periods_a (empty-active, declared first) shadows the empty base in working_set.
+    { watch: "public.read_b", args: { t: "1772582400000000" }, id: "w1"
+      expect_init: {
+        value: [
+          { index: "0", from: "1772323200000000", until: "1772928000000000" }
+        ]
+      } }
+  ]
+}

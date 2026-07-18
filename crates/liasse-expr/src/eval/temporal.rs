@@ -20,9 +20,17 @@ impl Evaluator<'_> {
         base: &TypedExpr,
         query: &TypedTemporal,
     ) -> Result<Cell, EvalError> {
+        // §7.1: a bare bucketed collection base (`.periods`) NAMES the collection
+        // the selector addresses, so carry that name to the environment — it
+        // resolves the read against that specific collection's extant even when
+        // the base is empty (dormant at the clock), where the empty identity set
+        // could not distinguish it from any other empty-active bucket. A
+        // filtered/projected base has no single collection identity and carries
+        // none, so the environment ranges over the base as given.
+        let base_name = super::views::bind_name_of(base);
         let rows: Vec<Row> = self.eval_view(base)?.into_iter().map(|scope| scope.row).collect();
         let query = self.reduce_query(query)?;
-        Ok(Cell::Collection(self.env.temporal(&rows, &query)?))
+        Ok(Cell::Collection(self.env.temporal(&rows, base_name.as_deref(), &query)?))
     }
 
     /// Reduce a typed temporal selector to a value query, evaluating its instant

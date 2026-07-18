@@ -50,6 +50,26 @@ impl BlobPlacements {
     }
 }
 
+/// One bucketed collection's full extant row set (§14.2) tagged with the name of
+/// the collection it belongs to.
+///
+/// A temporal selector addresses a collection by NAME (§7.1): `.periods.$at(t)`
+/// ranges over `periods`. [`RuntimeEnv::working_set`] resolves a bare base against
+/// the extant tagged with the collection the selector names, so a dormant (empty)
+/// base still ranges over its own collection instead of colliding — by the shared
+/// empty identity set — with an earlier empty-active bucket.
+#[derive(Clone)]
+pub(crate) struct NamedExtant {
+    /// The declared collection name the extant belongs to (the `$key`-carrying
+    /// bucketed collection member name; a source-backed bucket carries its
+    /// collection name too).
+    pub(crate) name: String,
+    /// The collection's full extant rows (§14.2), each carrying its `$from`/`$until`
+    /// interval cells; inactive rows are retained so `.$all` and a back-dated
+    /// `.$at` observe rows that have already left their active interval.
+    pub(crate) rows: Vec<Row>,
+}
+
 /// A read-only, deterministic evaluation context.
 pub(crate) struct RuntimeEnv<'a> {
     root: Row,
@@ -64,14 +84,14 @@ pub(crate) struct RuntimeEnv<'a> {
     now: Timestamp,
     seed: u64,
     /// The full extant rows of each STORED bucketed collection (§14.2), each
-    /// carrying its `$from`/`$until` interval cells. A temporal selector reads over
-    /// the full set so `.$all` and a back-dated `.$at` observe rows that have
-    /// already left their active interval. Source-backed buckets are NOT held here:
-    /// their extant set is regenerated on demand from [`Self::source_horizon`] at a
-    /// horizon the selector's own bound drives (§14.5), because an unbounded
-    /// recurring series past the clock is not materialized until a bounded selector
-    /// asks for it.
-    temporal: Vec<Vec<Row>>,
+    /// tagged with its collection name ([`NamedExtant`]) and carrying its
+    /// `$from`/`$until` interval cells. A temporal selector reads over the full set
+    /// so `.$all` and a back-dated `.$at` observe rows that have already left their
+    /// active interval. Source-backed buckets are NOT held here: their extant set
+    /// is regenerated on demand from [`Self::source_horizon`] at a horizon the
+    /// selector's own bound drives (§14.5), because an unbounded recurring series
+    /// past the clock is not materialized until a bounded selector asks for it.
+    temporal: Vec<NamedExtant>,
     /// The regenerable extant set of every source-backed bucket (§14.4–§14.6).
     /// `None` when the package declares none. A temporal selector regenerates it up
     /// to a horizon its bound supplies (§14.5); a bare/`.$all` read never reaches it
@@ -108,7 +128,7 @@ impl<'a> RuntimeEnv<'a> {
         structurals: BTreeMap<String, Cell>,
         now: Timestamp,
         seed: u64,
-        temporal: Vec<Vec<Row>>,
+        temporal: Vec<NamedExtant>,
         source_horizon: Option<SourceBucketHorizon<'a>>,
         keyrings: Vec<KeyringSnapshot>,
         placements: BlobPlacements,
@@ -154,24 +174,43 @@ impl<'a> RuntimeEnv<'a> {
         }
     }
 
-    /// The working set a temporal selector ranges over (§14.1). When `base` is
-    /// exactly a bare bucketed collection — its identity set equals that
-    /// collection's rows active at [`Self::now`] — the query re-derives activity
-    /// from that collection's *full* extant set, so `.$all` and a back-dated
-    /// `.$at` see inactive rows (§14.2). Otherwise (a filtered or projected base)
-    /// the query ranges over `base` as given, using each row's carried interval.
+    /// The working set a temporal selector ranges over (§14.1). When `base` is a
+    /// bare bucketed collection it re-derives activity from that collection's
+    /// *full* extant set, so `.$all` and a back-dated `.$at` see inactive rows
+    /// (§14.2); otherwise (a filtered or projected base) the query ranges over
+    /// `base` as given, using each row's carried interval.
+    ///
+    /// `base_name` is the collection the selector ADDRESSES (§7.1) — `Some` for a
+    /// bare bucketed base, `None` for a filtered/projected one. When present, the
+    /// full extant is recovered by that name: an empty (dormant) base's identity
+    /// set is shared by every empty-active bucket, so it is not a distinguishing
+    /// key, whereas the addressed name is. When absent, the collection is
+    /// recovered by identity-set equality (a filtered base whose active rows equal
+    /// a collection's still re-derives that collection's inactive rows), and a
+    /// base matching none ranges over itself.
     ///
     /// `source` is the freshly regenerated source-bucket extant set for this
-    /// query's horizon (§14.5); it is searched after the stored buckets so a
-    /// source-backed collection resolves against periods generated to cover the
-    /// selector's bound.
-    fn working_set<'w>(&'w self, base: &'w [Row], source: &'w [Vec<Row>]) -> &'w [Row] {
+    /// query's horizon (§14.5); it is searched after the stored buckets. Stored
+    /// and source-backed buckets never share a collection name, so the two chains
+    /// hold disjoint names and a name lookup is unambiguous.
+    fn working_set<'w>(
+        &'w self,
+        base: &'w [Row],
+        base_name: Option<&str>,
+        source: &'w [NamedExtant],
+    ) -> &'w [Row] {
+        if let Some(name) = base_name
+            && let Some(extant) =
+                self.temporal.iter().chain(source.iter()).find(|extant| extant.name == name)
+        {
+            return &extant.rows;
+        }
         let base_ids: BTreeSet<&RowId> = base.iter().map(Row::id).collect();
         for extant in self.temporal.iter().chain(source.iter()) {
             let active: BTreeSet<&RowId> =
-                extant.iter().filter(|row| active_at(row, self.now)).map(Row::id).collect();
+                extant.rows.iter().filter(|row| active_at(row, self.now)).map(Row::id).collect();
             if active == base_ids {
-                return extant;
+                return &extant.rows;
             }
         }
         base
@@ -209,8 +248,14 @@ impl Environment for RuntimeEnv<'_> {
 
     /// Resolve a temporal selector over a bucketed base view (§14.1). Each row's
     /// `[from, until)` comes from its `$from`/`$until` interval cells; a row is
-    /// selected by the half-open activity rule for the query.
-    fn temporal(&self, base: &[Row], query: &TemporalQuery) -> Result<Vec<Row>, EvalError> {
+    /// selected by the half-open activity rule for the query. `base_name` names
+    /// the collection the selector addresses (§7.1) for a bare bucketed base.
+    fn temporal(
+        &self,
+        base: &[Row],
+        base_name: Option<&str>,
+        query: &TemporalQuery,
+    ) -> Result<Vec<Row>, EvalError> {
         // §14.5: regenerate the source-backed buckets' extant set up to the horizon
         // this selector's own bound drives, so a read past the clock still generates
         // the covering periods. Empty when the package has no source-backed bucket,
@@ -220,7 +265,7 @@ impl Environment for RuntimeEnv<'_> {
             None => Vec::new(),
         };
         Ok(self
-            .working_set(base, &source)
+            .working_set(base, base_name, &source)
             .iter()
             .filter(|row| selects(row, query))
             .cloned()

@@ -17,7 +17,7 @@ use liasse_model::Node;
 
 use crate::bucket;
 use crate::compiled::{Compiled, CompiledCollection, CompiledComputed};
-use crate::env::RuntimeEnv;
+use crate::env::{NamedExtant, RuntimeEnv};
 use crate::error::Rejection;
 use crate::materialize::{self, FieldMap, Interval, Temporal};
 use crate::schema::Schema;
@@ -106,7 +106,7 @@ impl<'a> EvalCtx<'a> {
     fn fold_env(
         &self,
         base: Row,
-        temporal: Vec<Vec<Row>>,
+        temporal: Vec<NamedExtant>,
         source_horizon: Option<crate::source_bucket::SourceBucketHorizon<'a>>,
     ) -> RuntimeEnv<'a> {
         RuntimeEnv::new(
@@ -396,7 +396,7 @@ impl<'a> EvalCtx<'a> {
     /// The full extant rows of every bucketed collection (§14.2), the working set
     /// [`RuntimeEnv`] substitutes when a temporal selector reads a bare bucketed
     /// collection, so `.$all` and a back-dated `.$at` observe inactive rows.
-    fn temporal_index(&self, prospective: &Prospective) -> Vec<Vec<Row>> {
+    fn temporal_index(&self, prospective: &Prospective) -> Vec<NamedExtant> {
         self.temporal_index_at(prospective, self.now)
     }
 
@@ -499,7 +499,7 @@ impl<'a> EvalCtx<'a> {
     /// from a [`SourceBucketHorizon`] at a horizon the temporal selector's own bound
     /// drives (§14.5), so a future `.$at`/`.$between` still generates the periods
     /// covering it rather than stopping at `now`.
-    fn temporal_index_at(&self, prospective: &Prospective, now: Timestamp) -> Vec<Vec<Row>> {
+    fn temporal_index_at(&self, prospective: &Prospective, now: Timestamp) -> Vec<NamedExtant> {
         let keep = |name: &str, fields: &FieldMap| self.active_at(name, fields, now);
         let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
         let temporal = Temporal { keep: &keep, interval: &interval };
@@ -508,7 +508,12 @@ impl<'a> EvalCtx<'a> {
             if let Node::Collection(collection) = &member.node {
                 let name = member.name.as_str();
                 if self.compiled.bucket(name).is_some() {
-                    index.push(materialize::extant_bucketed_rows(collection, name, prospective.working(), &temporal));
+                    // §7.1: tag the extant with its collection name so a temporal
+                    // selector addressing this bucket resolves against it by name.
+                    index.push(NamedExtant {
+                        name: name.to_owned(),
+                        rows: materialize::extant_bucketed_rows(collection, name, prospective.working(), &temporal),
+                    });
                 }
             }
         }

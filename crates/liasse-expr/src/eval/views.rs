@@ -365,8 +365,11 @@ impl Evaluator<'_> {
 }
 
 /// The binding name a `::` base contributes: a field's name, or a nested
-/// traversal's innermost member.
-fn bind_name_of(expr: &TypedExpr) -> Option<String> {
+/// traversal's innermost member. Also the collection identity a bare bucketed
+/// temporal base addresses (§7.1), read by [`Evaluator::eval_temporal`].
+///
+/// [`Evaluator::eval_temporal`]: crate::eval::Evaluator::eval_temporal
+pub(super) fn bind_name_of(expr: &TypedExpr) -> Option<String> {
     match expr.kind() {
         TypedKind::Field { name, .. } => Some(name.clone()),
         TypedKind::Traverse { member, .. } => Some(member.clone()),

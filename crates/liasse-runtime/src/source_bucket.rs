@@ -26,7 +26,7 @@ use liasse_expr::{Cell, ExprType, Row, RowId, RowType, TypedExpr};
 use liasse_value::{recurring_intervals, Integer, Period, Struct, Text, Timestamp, Value};
 
 use crate::compiled::compile_expr;
-use crate::env::RuntimeEnv;
+use crate::env::{NamedExtant, RuntimeEnv};
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::keyring_view::KeyringSnapshot;
 use crate::schema::Schema;
@@ -465,7 +465,7 @@ impl<'a> SourceBucketHorizon<'a> {
     /// activity over. `horizon` is driven by the selector's own bound (§14.5), so a
     /// read past the clock still generates the periods that cover it, while a
     /// bounded finite series is generated in full regardless of `horizon`.
-    pub(crate) fn extant_to(&self, horizon: Timestamp) -> Vec<Vec<Row>> {
+    pub(crate) fn extant_to(&self, horizon: Timestamp) -> Vec<NamedExtant> {
         let inputs = BucketInputs {
             base_root: &self.base_root,
             params: &self.params,
@@ -474,7 +474,15 @@ impl<'a> SourceBucketHorizon<'a> {
             seed: self.seed,
             keyrings: &self.keyrings,
         };
-        self.buckets.iter().map(|bucket| bucket.materialize(&inputs, horizon, false)).collect()
+        // §7.1: tag each source-backed bucket's regenerated extant with its
+        // collection name so a temporal selector addressing it resolves by name.
+        self.buckets
+            .iter()
+            .map(|bucket| NamedExtant {
+                name: bucket.name.clone(),
+                rows: bucket.materialize(&inputs, horizon, false),
+            })
+            .collect()
     }
 }
 

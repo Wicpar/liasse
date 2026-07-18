@@ -346,17 +346,32 @@ pub trait Environment {
     fn uuid(&self, site: CallSite) -> Uuid;
 
     /// Resolve a temporal selector (§14.1) over a bucketed base view. `base` is
-    /// the evaluated base collection's rows; the environment returns the rows
-    /// `query` selects, deriving each row's `[from, until)` interval from the
-    /// temporal index it owns (a bucketed collection's `$from`/`$until`).
+    /// the evaluated base collection's rows; `base_name` names the collection the
+    /// selector *addresses* (§7.1) when the base is a bare bucketed collection
+    /// (`.periods` names `periods`), and is `None` when the base is a
+    /// filtered/projected view with no single collection identity. The
+    /// environment returns the rows `query` selects, deriving each row's
+    /// `[from, until)` interval from the temporal index it owns (a bucketed
+    /// collection's `$from`/`$until`).
+    ///
+    /// `base_name` is what lets the environment recover *which* bucketed
+    /// collection a bare base ranges over even when that collection has no row
+    /// active at the clock: an empty base's identity set is shared by every
+    /// dormant bucket and so cannot distinguish them, whereas the addressed name
+    /// can (§7.1).
     ///
     /// Keeping the index in the environment is what preserves purity: the
     /// evaluator hands over the base rows and the reduced instants and never
     /// computes activity itself. The default has no temporal index and rejects,
     /// so only a bucket-aware environment (the runtime) answers a temporal
     /// selector; ordinary expressions never reach this method.
-    fn temporal(&self, base: &[Row], query: &TemporalQuery) -> Result<Vec<Row>, EvalError> {
-        let _ = (base, query);
+    fn temporal(
+        &self,
+        base: &[Row],
+        base_name: Option<&str>,
+        query: &TemporalQuery,
+    ) -> Result<Vec<Row>, EvalError> {
+        let _ = (base, base_name, query);
         Err(EvalError::NoTemporalIndex)
     }
 
