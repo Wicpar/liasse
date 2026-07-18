@@ -1,0 +1,111 @@
+{
+  format: 1
+  name: projected-source-bucket-rejected-before-temporal-selector
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.4", "§14.5", "#views", "§7.1"]
+  tags: ["temporal", "recurrence", "boundary", "regression"]
+  note: '''A bounded temporal read of a source-backed unbounded recurring bucket whose
+    base carries a PROJECTION is wrongly REJECTED at load: `.periods_b { proj }.$at(t)`
+    fails static validation, even though the `.$at` bounds the read exactly as §14.5
+    requires. The equivalent selector-first form `.periods_b.$at(t) { proj }`, the
+    filter-first form `.periods_b[:p | pred].$at(t)`, and the projection-first form over
+    a STORED bucket (projected-base-bypasses-projection-in-temporal-read) all load and
+    evaluate. Only a projection placed BEFORE the selector over an UNBOUNDED source
+    bucket is refused — an over-strict §14.5 check, not a real enumeration.
+
+    Root cause: the §14.5 unbounded-enumeration guard fires EAGERLY when the checker
+    types the `Project` node (crates/liasse-expr/src/check/project.rs:46-52 — "this view
+    enumerates an unbounded recurring bucket; read it through a bounded temporal selector
+    before projecting"), before it knows the `Project` is itself the base of an enclosing
+    `.$at`/`.$between` that bounds it. The temporal check only clears the unbounded flag
+    for what sits AFTER the selector (crates/liasse-expr/src/check/temporal.rs:45-46,
+    `row.unbounded(false)`), so a filter-before-selector is accepted (the selector wraps
+    the `Select`) but a projection-before-selector is not (the selector wraps the
+    `Project`, yet the `Project` was already rejected on its own).
+
+    This is inconsistent with the evaluator, which fully supports a projected temporal
+    base: `Evaluator::rebase_scopes` (crates/liasse-expr/src/eval/temporal.rs:64-95) has
+    a dedicated `TypedKind::Project` arm that re-applies the base projection to the
+    collection`s bounded extant. temporal_by_name regenerates the source ONLY up to the
+    query horizon (crates/liasse-runtime/src/env.rs:298-302 via `regenerated_source`),
+    so evaluation bounds FIRST and projects the FINITE active set — it never enumerates
+    the infinite series. The rejection makes that evaluator path unreachable for source
+    buckets.
+
+    §14.5 pins the rule as "an expression REQUIRING ENUMERATION of an infinite series";
+    `.periods_b { proj }.$at(t)` requires no enumeration (the `.$at` bounds it), so §14.5
+    does not license rejecting it. §7.1: a projected bucketed base still NAMES the one
+    collection the selector addresses (the exact reading eb380ec/70e1666 rely on), so the
+    read is periods_b`s active-at-t rows, reshaped. §14.1: `.$at(t)` selects the period
+    active at t. The result is therefore periods_b interval 0 reshaped to `{ index, from }`.
+
+    Expected value is externally grounded by the sibling passing case
+    second-source-bucket-shadows-empty-active-temporal-read, whose selector-first form
+    `.periods_b.$at(t) { index: $index, from: $from, until: $until }` returns exactly
+    periods_b interval 0 = { index 0, from 2026-03-01, until 2026-03-08 } at this same
+    read instant. The projection-first form MUST return the same rows (§7.1 projection
+    reshapes the named bucket; the two forms are semantically equal), but the package
+    currently fails to load, so the watch never runs.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.projsrc@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subs_b: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      // An UNBOUNDED source-backed recurring bucket (weekly P7D, no series end):
+      // §14.5 requires a bounded temporal selector to read it, which `.$at` supplies.
+      periods_b: {
+        $bucket: {
+          $source: ".subs_b"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $public: {
+        // BUG: a projection placed BEFORE the bounding `.$at`. The read IS bounded
+        // (§14.5), so this must load and return periods_b interval 0 reshaped to
+        // { index, from }. The checker rejects it eagerly on the Project node.
+        read_projected_first: {
+          $params: { t: "timestamp" }
+          $view: ".periods_b { index: $index, from: $from }.$at(@t)"
+        }
+      }
+    }
+    $data: {
+      plans: {
+        weekly: { credits: "30", period: "P7D" }
+      }
+      subs_b: {
+        // starts 2026-03-01T00:00:00Z; interval 0 = [2026-03-01, 2026-03-08).
+        sb: { plan: "weekly", starts_at: "1772323200000000" }
+      }
+    }
+  }
+
+  steps: [
+    // Read at 2026-03-04T00:00:00Z, inside interval 0. §7.1 (projection reshapes the
+    // named bucket) + §14.1 (active-at-t) require periods_b interval 0 reshaped to
+    // { index, from }. The runtime rejects the package at load (§14.5 over-rejection),
+    // so the watch never delivers this authorized result.
+    { watch: "public.read_projected_first", args: { t: "1772582400000000" }, id: "w1"
+      expect_init: {
+        value: [
+          { index: "0", from: "1772323200000000" }
+        ]
+      } }
+  ]
+}

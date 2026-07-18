@@ -43,15 +43,22 @@ impl Checker<'_> {
                 return self.error(expr, format!("cannot project a {}", other.describe()));
             }
         };
-        // §14.5: projecting an unbounded recurring bucket whole enumerates a
-        // possibly-infinite series; it must be read through a bounded temporal
-        // selector (`.$at`/`.$between`) first.
-        if source_row.is_unbounded() {
-            return self.error(
-                expr,
-                "this view enumerates an unbounded recurring bucket; read it through a bounded temporal selector `.$at`/`.$between` before projecting (§14.5)",
-            );
-        }
+        // §14.5: a projection over an unbounded recurring bucket does NOT reject
+        // here. Like a `Select` (filter, `check_select`), a projection is
+        // transparent to unbounded-ness — it reshapes WHICH fields each row carries
+        // without forcing enumeration on its own — so the flag PROPAGATES onto the
+        // projected result row (set on `projected` below) exactly as `check_select`
+        // copies it through. An enclosing bounded temporal selector then clears it
+        // (`check_temporal_call`, `unbounded(false)`), which is what lets
+        // `.bucket { proj }.$at(t)` load — matching the filter-first
+        // `.bucket[:x|p].$at(t)`, the stored-bucket parity, and the evaluator's
+        // `rebase_scopes` `Project` arm (§7.1: a projected bucketed base still names
+        // the collection the selector addresses; §14.1: `.$at` bounds the read).
+        //
+        // The §14.5 enumeration guard is deferred to where enumeration is GENUINELY
+        // forced and no bounding selector cleared the flag: the terminal expression
+        // result (`check_expression`), an aggregate over the whole series
+        // (`check_aggregate`), and `.$all` (`check_temporal_all`).
 
         let mut key_fields: Vec<String> = Vec::new();
         let mut raw_outputs: Vec<RawOutput> = Vec::new();
@@ -187,7 +194,10 @@ impl Checker<'_> {
         self.pop_frame();
 
         let key = self.projected_key(&key_fields, &field_types, &source_row);
-        let projected = RowType::new(field_types, key);
+        // §14.5: carry the source's unbounded-recurring marker onto the reshaped
+        // row so it propagates up like a `Select` does — a bounding temporal
+        // selector clears it, a terminal read is rejected downstream.
+        let projected = RowType::new(field_types, key).unbounded(source_row.is_unbounded());
         let result_ty = if is_view {
             ExprType::View(projected)
         } else {

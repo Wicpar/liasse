@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: aggregate-over-unbounded-recurring-requires-bounded-selector
+  suite: static
+  spec: ["#buckets", "§14.5", "#views", "§7.5"]
+  tags: ["static"]
+  note: '''An unbounded recurring collection MUST be read through a bounded temporal
+    selector such as .$at or .$between; the checker rejects an expression requiring
+    enumeration of an infinite series (§14.5). A projection/filter is transparent to
+    the unbounded marker (it propagates the flag so a `.bucket { proj }.$at(t)` read
+    loads), but an AGGREGATE reduces the whole series to a scalar/set: its result
+    cannot carry the marker onward, so `count(.credit_periods)` genuinely enumerates
+    the infinite series and MUST reject at load. This is the terminal-enumeration
+    peer of unbounded-recurring-requires-bounded-selector (a bare projection): the
+    guard fires exactly where enumeration is forced and no bounding selector cleared
+    the flag. The bounded form `count(.credit_periods.$at(@t))` (selector first) is
+    the accepted read.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.aggcount@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      // count() reduces the whole (possibly-infinite) series to a scalar — a full
+      // enumeration with no bounding temporal selector to gate it (§14.5).
+      period_count: { $view: "count(.credit_periods)" }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§14.5"]
+    detail: "an aggregate enumerates an unbounded recurring bucket collection without a bounded temporal selector"
+  }
+}

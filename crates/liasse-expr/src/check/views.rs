@@ -383,8 +383,18 @@ impl Checker<'_> {
         };
         if func == AggFunc::Count {
             let source = self.check(arg)?;
-            if source.ty().as_view().is_none() {
+            let Some(row) = source.ty().as_view() else {
                 return self.error(arg, "`count` takes a view");
+            };
+            // §14.5: `count` over an unbounded recurring bucket enumerates the whole
+            // (possibly-infinite) series, and its scalar result cannot carry the
+            // unbounded marker onward (unlike a projection/filter, which propagates
+            // it) — so the source must be gated by a bounded temporal selector.
+            if row.is_unbounded() {
+                return self.error(
+                    arg,
+                    "this aggregate enumerates an unbounded recurring bucket; read it through a bounded temporal selector `.$at`/`.$between` before aggregating (§14.5)",
+                );
             }
             return Some(TypedExpr::new(
                 expr.span,
@@ -406,6 +416,15 @@ impl Checker<'_> {
             Some(row) => row,
             None => return self.error(base, "this aggregate takes a `view.field`"),
         };
+        // §14.5: aggregating over an unbounded recurring bucket enumerates the whole
+        // series; the scalar/set result cannot carry the unbounded marker onward, so
+        // a bounded temporal selector must gate the source first.
+        if row.is_unbounded() {
+            return self.error(
+                base,
+                "this aggregate enumerates an unbounded recurring bucket; read it through a bounded temporal selector `.$at`/`.$between` before aggregating (§14.5)",
+            );
+        }
         let element = match row.field(&member).and_then(ExprType::as_scalar) {
             Some(ty) => ty.clone(),
             None => return self.error(arg, format!("no scalar field `{member}` to aggregate")),

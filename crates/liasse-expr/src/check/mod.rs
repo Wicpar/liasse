@@ -53,7 +53,26 @@ pub fn check_expression(
 ) -> Result<TypedExpr, Diagnostics> {
     let mut checker = Checker::new(scope, source);
     match checker.check(expr) {
-        Some(typed) if !checker.diags.has_errors() => Ok(typed),
+        Some(typed) if !checker.diags.has_errors() => {
+            // §14.5: this is the TERMINAL enumeration guard. A projection/filter is
+            // transparent to the unbounded-recurring marker (it propagates the flag
+            // rather than rejecting eagerly, `check_block`/`check_select`), and a
+            // bounded temporal selector clears it (`check_temporal_call`). If the
+            // whole expression STILL denotes an unbounded recurring view here, no
+            // bounding selector ever gated it, so reading it whole enumerates a
+            // possibly-infinite series — the read §14.5 forbids. (A one-row `Row`
+            // result names finite rows, not a whole-series read, so only a `View`
+            // is rejected; an aggregate that consumes such a view into a scalar is
+            // guarded at `check_aggregate`.)
+            if matches!(typed.ty(), ExprType::View(row) if row.is_unbounded()) {
+                checker.report(
+                    expr,
+                    "this view enumerates an unbounded recurring bucket; read it through a bounded temporal selector `.$at`/`.$between` (§14.5)",
+                );
+                return Err(checker.diags);
+            }
+            Ok(typed)
+        }
         _ => Err(checker.diags),
     }
 }
