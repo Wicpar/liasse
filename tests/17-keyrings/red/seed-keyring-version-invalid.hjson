@@ -12,7 +12,6 @@
   note: "$data mirrors writable state only; session_keys is keyring-managed."
 
   hosts: {
-    namespaces: { cose: "liasse.cose@1" }
     key_providers: {
       "test-kp": {
         algorithms: ["Ed25519"]
@@ -27,7 +26,8 @@
   package: {
     $liasse: 1
     $app: "t.keyrings@1.0.0"
-    $requires: { cose: "liasse.cose@1" }
+    // No `$requires`: this package signs nothing, and §16.2 rejects a declared-
+    // but-unused requirement, so the isolated §9.1 seed rule is what rejects it.
     $model: {
       session_keys: {
         $keyring: {

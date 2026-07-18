@@ -32,7 +32,7 @@ This specification defines four conformance classes:
 - A **package** conforms when it satisfies the syntax, typing, identity, dependency, and static validation rules of its declared `$liasse` version.
 - A **runtime** conforms when it loads conforming packages and preserves every normative state, execution, history, authorization, and client-coherence rule in this document.
 - A **client binding** conforms when its calls, watches, retries, authentication selection, and completion behavior preserve the protocol semantics defined here.
-- A **host component** conforms to the typed contract it registers, such as a namespace, key provider, or blob connector.
+- A **host component** conforms to the typed contract it registers, such as a namespace, key provider, or blob connector. A runtime MUST enforce this at the trust boundary rather than assume it: it validates every host-component result against the pinned descriptor at the call boundary, on the decoded value's actual type; a detected nonconformance is a host-side failure that commits no state and is never coerced, widened, stripped, or propagated into state or a view.
 
 A runtime claiming support for Liasse v0.5 MUST implement the complete normative language defined by this document. Host components remain explicit dependencies: a package requiring an unavailable or incompatible component fails validation before activation.
 
@@ -2772,6 +2772,8 @@ semantic interface hash
 
 The package install record pins the resolved descriptor. Missing, incompatible, or ambiguous requirements reject loading before the package becomes active.
 
+Requirement resolution is by contract. A requirement's value `name@major` resolves against the descriptors the context has registered by matching contract id and compatible major (Annex E.8); the local key does not participate in resolution, and the §16.4 registration name is a host-side convenience rather than a lookup key. Two distinct registered descriptors satisfying one requirement (a differing version or interface hash) are ambiguous and reject loading. A requirement's local key MUST be distinct from every core namespace name (§16.1) and from every top-level model declaration name; a colliding key rejects loading, so every bare identifier in an expression names exactly one thing. Every declared requirement MUST be used — invoked by at least one expression call site, or supplying a named value type the model references; an unused requirement rejects loading.
+
 This is an explicit host dependency rather than an open language extension: every used function has a known type, effect class, and pinned contract.
 
 ### 16.3 Effect classes
@@ -2788,7 +2790,9 @@ generated   may use randomness, clocks, or provider operations; one successful
 
 Pure functions MAY run during views, checks, and replay. Verifiers run during external request admission. Generated functions run in mutation/write-time positions. A generated result affecting state, identity, funding, authorization, or another durable admission fact is recorded. "One successful result is fixed for the admitted operation" scopes a single generated call — its result is fixed once produced and reused verbatim on replay (§8.12) — not a field default evaluated once per row: a `uuid()` default across several rows is several evaluations, each with its own fresh result (§5.1).
 
-A host namespace return that does not satisfy its declared result type — including a struct return carrying an undeclared member (§5.8) — is a §2.1 nonconformance: the runtime rejects the call and commits no effect, exactly as for any off-contract return. The runtime does not coerce, widen, or strip an off-contract return.
+A host namespace return that does not satisfy its declared result type — including a struct return carrying an undeclared member (§5.8) — is a §2.1 nonconformance: the runtime rejects the call and commits no effect, exactly as for any off-contract return. The runtime does not coerce, widen, or strip an off-contract return. The result type is checked against the returned value's actual decoded type, not its wire spelling, so a value whose canonical wire form would round-trip through the declared type (a numeric `text` returned where `int`, `uuid`, `date`, `decimal`, or `bytes` is declared) is still caught.
+
+A `pure` function that returns divergent values for equal arguments is likewise a §2.1 nonconformance; a **detected** divergence is a host-side failure that commits no effect. Because the runtime MAY recompute rather than record a pure result (during a view, a check, or replay), it carries no obligation to reproduce a pre-replay value it was permitted not to record: truthful purity is the precondition §22.1 relies on, and when it is false the spec offers no post-replay value guarantee — a recomputed observation is whatever the recompute yields, and a divergence the runtime does observe rejects rather than commits an inconsistent replay.
 
 Arbitrary untracked external side effects are outside expression evaluation. Integrations represent them through explicit provider workflows and committed observations.
 
@@ -2806,6 +2810,8 @@ let context = LiasseContext::builder()
 ```
 
 A namespace receives typed Liasse values and explicitly granted provider handles. It MAY define additional named value types when their canonical codec and semantics are part of the pinned descriptor. It does not receive unrestricted access to application state.
+
+A namespace-defined value type may anchor application identity (a collection `$key`, an additional `$unique`) only when its descriptor declares it key-eligible (§16.2 "key eligibility for namespace types when provided") — exactly as a non-key-eligible built-in scalar is refused as a key, so row addressing rests on defined equality. This generation defines no `$model` field spelling that names a namespace-defined value type; a field whose declared type references such a type is not an accepted spelling and rejects loading. A later generation that introduces the spelling gates its use as identity on the descriptor's key-eligibility flag.
 
 ---
 
@@ -3869,6 +3875,8 @@ network and storage quotas
 ```
 
 Budget exhaustion produces operational backpressure or a rejected request according to the declared API contract. It never permits a partial state transition.
+
+Every admitted request MUST reach a terminal outcome — committed, unchanged, rejected, or denied — in bounded time. A runtime MUST bound each in-flight external-component call (namespace, key provider, blob connector) made during admission; a call that does not return within that bound is treated as a component failure under §17.9 and rejects the enclosing request, committing no effect, regardless of whether a numeric budget is declared. Exhaustion of an in-flight budget (query or mutation time, transition memory, or a non-returning component) surfaces as a rejected request, never as backpressure. Operational backpressure applies only to admission-gate budgets — worker/provider concurrency, live-subscription count, throughput and storage quotas — evaluated before a request is admitted, and only where the declared API contract selects it; when the contract is silent, exhaustion rejects. A budget or liveness rejection carries a stable resource-exhaustion diagnostic code (§23.8), distinct from an ordinary provider failure.
 
 Resource placement is an implementation concern. A runtime MAY map modules or workloads to isolated processes, containers, or cluster nodes while preserving one logical application state and serial admission order.
 

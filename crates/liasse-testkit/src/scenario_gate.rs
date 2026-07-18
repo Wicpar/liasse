@@ -105,7 +105,7 @@ pub const SKIP: &[(&str, &str)] = &[
     // change), acknowledged here against the now-pinned §18.3 outcome.
     ("18-blobs/connector-resolution-timing", "eager store-row connector validation (§18.3) needs the connector registry threaded into runtime admission, which the engine does not hold"),
     // --- `budget_set` step ---
-    ("23-host-contract/budget-backpressure-or-reject-choice-unspecified", "`budget_set` step not driven this phase"),
+    ("23-host-contract/budget-exhaustion-rejects-not-backpressure", "`budget_set` step not driven this phase"),
     ("23-host-contract/budget-exhaustion-never-partial-transition", "`budget_set` step not driven this phase"),
     // (§4 `build_artifact`/`repack_artifact`/`load_artifact` now drive the real
     // `liasse-artifact` archive layer — adapter/artifacts.rs — so every

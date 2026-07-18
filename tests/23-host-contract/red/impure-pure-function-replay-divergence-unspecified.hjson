@@ -8,15 +8,22 @@
   // attack: a component declares effect `pure` but in fact returns a different
   // value on each evaluation for identical inputs (op `drifting`, §23 NOTES).
   // A view over it is computed once live and again after a restart-driven
-  // recompute; the two MAY diverge. SPEC.md assumes the component's declared
-  // effect class is truthful and does not pin the behavior when it is not, so
-  // the value observed after replay is unspecified.
+  // recompute; the two MAY diverge. §16.3 (SPEC-ISSUES #15) pins this asymmetry:
+  // "a `pure` function that returns divergent values for equal arguments is a
+  // §2.1 nonconformance; a DETECTED divergence is a host failure and commits no
+  // effect. Because the runtime MAY recompute rather than record a pure result,
+  // it carries no obligation to reproduce a pre-replay value it was permitted not
+  // to record — a lying-pure function has no post-replay value guarantee." So the
+  // post-restart recomputed value is whatever the recompute yields: still
+  // UNSPECIFIED, because the runtime recomputes across an independent
+  // watch/restart and does not observe the two results together, so no divergence
+  // is detected to reject.
   format: 1
   name: impure-pure-function-replay-divergence-unspecified
   suite: scenario
   spec: ["#host-namespaces", "§16.3", "#rust-host", "§23.3", "#runtime", "§22.1"]
   tags: ["namespace", "effect-class", "replay", "nonconforming-host"]
-  note: "The component declares effect `pure` (§16.3) but returns a different value on each evaluation for the same input. §16.3 lets a pure result be recomputed rather than recorded, and §23.3/§22.1 let the runtime recompute a view on replay. The spec does not pin what happens when the declared purity is false, so the post-restart recomputed view value is unspecified (it may or may not equal the pre-restart value)."
+  note: "The component declares effect `pure` (§16.3) but returns a different value on each evaluation for the same input. §16.3 (SPEC-ISSUES #15) now pins that a DETECTED pure-divergence is a host failure that rejects, but also that the runtime carries no obligation to reproduce a pre-replay value it was permitted not to record — a lying-pure function has no post-replay value guarantee. Here the pre- and post-restart views are computed by independent recomputations the runtime never compares, so no divergence is detected and the post-restart value stays unspecified (it may or may not equal the pre-restart value)."
 
   package: {
     $liasse: 1

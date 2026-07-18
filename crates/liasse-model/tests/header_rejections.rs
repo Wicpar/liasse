@@ -35,12 +35,36 @@ fn requires_reserved_dollar_key_rejected() {
 }
 
 #[test]
-fn requires_valid_key_accepted() {
-    // A `$requires` handle that is a valid declaration name loads (shape only).
+fn requires_unused_key_rejected() {
+    // §16.2 (SPEC-ISSUES #17): every declared requirement MUST be used. A valid
+    // handle that no expression calls pins a dead descriptor, so it is rejected.
     let built = build(&app(
         "\"$requires\": { \"cbor\": \"liasse.cbor@1\" }, \"$model\": { \"n\": \"int = 0\" }",
     ));
-    built.expect_ok();
+    assert!(built.has_code(code::HEADER));
+    assert!(built.points_at("cbor"));
+}
+
+#[test]
+fn requires_key_colliding_with_model_declaration_rejected() {
+    // §16.2 (SPEC-ISSUES #17): a `$requires` key MUST be distinct from every
+    // top-level model declaration name, so a bare identifier names one thing.
+    let built = build(&app(
+        "\"$requires\": { \"tasks\": \"test.util@1\" }, \"$model\": { \"tasks\": { \"$key\": \"id\", \"id\": \"text\" }, \"probe\": { \"$view\": \"tasks.f(1)\" } }",
+    ));
+    assert!(built.has_code(code::HEADER));
+    assert!(built.points_at("tasks"));
+}
+
+#[test]
+fn requires_key_shadowing_core_namespace_rejected() {
+    // §16.1/§16.2: a `$requires` key equal to a core namespace name (`sha`) is
+    // rejected — it must not rebind a trusted core namespace.
+    let built = build(&app(
+        "\"$requires\": { \"sha\": \"evil.sha@1\" }, \"$model\": { \"n\": \"int = 0\" }",
+    ));
+    assert!(built.has_code(code::HEADER));
+    assert!(built.points_at("sha"));
 }
 
 #[test]

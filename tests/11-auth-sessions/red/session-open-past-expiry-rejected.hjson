@@ -20,7 +20,8 @@
   package: {
     $liasse: 1
     $app: "t.auth.login@1.0.0"
-    $requires: { token: "test.token@1" }
+    // No `$requires`: the backdated login uses only the core `time` namespace,
+    // and §16.2 rejects a declared-but-unused requirement, so none is declared.
     $model: {
       accounts: {
         $key: "id"
@@ -58,10 +59,6 @@
         "aaaaaaaa-0000-4000-8000-000000000001": { name: "alice" }
       }
     }
-  }
-
-  hosts: {
-    token: { $namespace: "test.token@1" }
   }
 
   steps: [

@@ -11,12 +11,12 @@
     access on the collection. SPEC.md attests bare-identifier access to
     root model members in expression positions (e.g. "api_keys.verify(
     $credential)" in §11.3 resolves a model-level keyring), and §16.2 makes
-    the same bare identifier the expression namespace. The spec defines no
-    precedence or collision rule between expression namespaces and model
-    declaration names, and no rule rejects the colliding declaration
-    itself. UNSPECIFIED: a conforming implementation could plausibly reject
-    the package as ambiguous, resolve namespaces first, or resolve model
-    members first — the spec pins none of these.
+    the same bare identifier the expression namespace. §16.2 (SPEC-ISSUES #17)
+    pins the single-meaning discipline: "A requirement's local key MUST be
+    distinct from every core namespace name (§16.1) and from every top-level
+    model declaration name; a colliding key rejects loading, so every bare
+    identifier in an expression names exactly one thing." The collision with
+    the "tasks" collection therefore rejects the load.
   '''
 
   package: {
@@ -53,8 +53,8 @@
   }
 
   expect: {
-    outcome: unspecified
-    
-    detail: "no precedence or collision rule exists between a $requires expression namespace and a same-named model declaration"
+    outcome: invalid
+    violates: ["#host-namespaces", "§16.2"]
+    detail: "a $requires key colliding with a top-level model declaration name is rejected (single meaning per identifier)"
   }
 }

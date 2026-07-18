@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: namespace-resolution-name-vs-contract
+  suite: scenario
+  spec: ["#loading", "#host-namespaces", "§16.2"]
+  tags: ["hosts"]
+  note: '''
+    §16.2 (SPEC-ISSUES #17) pins requirement resolution BY CONTRACT: "A
+    requirement's value `name@major` resolves against the descriptors the
+    context has registered by matching contract id and compatible major
+    (Annex E.8); the local key does not participate in resolution." Here the
+    local $requires alias is `enc` while the registered descriptor's contract
+    id is `liasse.cbor@1.0.0`. A match-by-key reading would fail (nothing is
+    registered under the name `enc`); resolution by contract succeeds, and the
+    package calls it as `enc.*`. The simulated pure `transform` doubles its
+    integer argument (op `double`, §16 NOTES), so `enc.transform(7) == 14` is
+    deduced from this file, not from an implementation.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.nsbycontract@1.0.0"
+    $requires: {
+      // alias deliberately differs from the contract's own short name, so a
+      // by-name resolver would miss the descriptor a by-contract resolver finds
+      enc: "liasse.cbor@1"
+    }
+    $model: {
+      n: "int = 0"
+      doubled: { $view: "enc.transform(.n)" }
+      $public: {
+        stats: { $view: ".doubled" }
+      }
+    }
+    $data: { n: 7 }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "liasse.cbor"
+        version: "1.0.0"
+        interface_hash: "ih-cbor-1"
+        functions: {
+          transform: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  steps: [
+    { watch: "public.stats", id: "w1", expect_init: { value: "14" } }
+  ]
+}

@@ -444,10 +444,11 @@ fn keyring_selectors_materialize_bootstrapped_version() {
     use liasse_ident::InstanceId;
     use liasse_store::MemoryStore;
 
+    // No `$requires`: this ring is never signed against (only its selector views
+    // are read), so §16.2 (SPEC-ISSUES #17) forbids declaring an unused `cose`.
     let def = r#"{
       "$liasse": 1,
       "$app": "t.keyrings@1.0.0",
-      "$requires": { "cose": "liasse.cose@1" },
       "$model": {
         "session_keys": { "$keyring": { "$provider": "test-kp", "$algorithm": "Ed25519", "$rotate": "P30D", "$retain": "P45D" } },
         "ring_current": { "$view": "/session_keys.$current" },

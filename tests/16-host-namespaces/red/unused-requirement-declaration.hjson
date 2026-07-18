@@ -5,17 +5,14 @@
   spec: ["#host-namespaces"]
   tags: ["pedantic"]
   note: '''
-    Pedantic corner: the package declares a requirement it never calls.
-    §16.2 says "A package declares only the non-core namespaces it USES" —
-    read strictly, an unused requirement violates the sentence and would be
-    invalid; read as descriptive guidance, the requirement still resolves
-    (the host supplies it) and the package loads with a pinned but unused
-    descriptor. The rejection list in §16.2 covers only missing,
-    incompatible, or ambiguous requirements — over-declaration appears in
-    no rejection rule. UNSPECIFIED: the spec does not pin whether an
-    unused, resolvable requirement is accepted or rejected. This matters
-    for red review: an unused requirement widens the attack surface pinned
-    into the install record without any expression ever exercising it.
+    The package declares a requirement it never calls. §16.2 (SPEC-ISSUES
+    #17) makes "A package declares only the non-core namespaces it USES"
+    normative: "Every declared requirement MUST be used — invoked by at
+    least one expression call site, or supplying a named value type the
+    model references; an unused requirement rejects loading." An unused
+    requirement pins a dead descriptor into the install record and widens
+    the §E.8 compatibility/attack surface without any expression exercising
+    it, so the load is rejected.
   '''
 
   package: {
@@ -46,8 +43,8 @@
   }
 
   expect: {
-    outcome: unspecified
-    
-    detail: "whether a declared, resolvable, but unused namespace requirement loads or is rejected is not pinned by §16.2"
+    outcome: invalid
+    violates: ["#host-namespaces", "§16.2"]
+    detail: "a declared but unused namespace requirement rejects loading (§16.2 declares only what it uses)"
   }
 }

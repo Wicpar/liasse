@@ -1,0 +1,63 @@
+{
+  // §23.6 makes resource budgets a host option ("The host MAY allocate budgets").
+  // §17.9 pins provider FAILURE ("A provider failure before admission rejects the
+  // affected operation"), but a provider that HANGS neither succeeds nor fails.
+  // §23.6 (SPEC-ISSUES #16) closes the gap: "Every admitted request MUST reach a
+  // terminal outcome ... in bounded time. A runtime MUST bound each in-flight
+  // external-component call ...; a call that does not return within that bound is
+  // treated as a component failure under §17.9 and rejects the enclosing request,
+  // committing no effect, regardless of whether a numeric budget is declared." So
+  // with NO mutation-time budget in force, the hanging `sign` still resolves the
+  // enclosing mutation to a terminal rejection and mints no `tokens` row.
+  format: 1
+  name: no-time-budget-hanging-provider-rejects
+  suite: scenario
+  spec: ["#rust-host", "§23.6", "#keyrings", "§17.9"]
+  tags: ["provider", "hang", "budget"]
+  note: "A registered key provider's sign operation hangs and no mutation-time budget is installed. §23.6 (SPEC-ISSUES #16) pins admission totality: a runtime MUST bound each in-flight external-component call even with no numeric budget, and a call that does not return is a §17.9 component failure that rejects the enclosing request with no partial transition. The mutation therefore rejects (terminal), not hangs."
+
+  package: {
+    $liasse: 1
+    $app: "t.nobudgethang@1.0.0"
+    $requires: { cose: "liasse.cose@1" }
+    $model: {
+      tokens: { $key: "id", id: "uuid = uuid()", note: "text" }
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $algorithm: "Ed25519"
+          $rotate: "P30D"
+          $retain: "P45D"
+        }
+      }
+      $mut: {
+        issue: [
+          "t = .tokens + { note: @note }"
+          "sig = cose.sign(/session_keys, { id: t.id })"
+          "return t { id, note }"
+        ]
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // No budget_set here: the mandated liveness bound (§23.6) resolves the hang.
+    { provider_set: { provider: "test-kp", hang: ["sign"] } }
+    { operator: { call: "issue", args: { note: "hang" } },
+      expect: { outcome: rejected, violates: ["#rust-host", "§23.6"] } }
+  ]
+}

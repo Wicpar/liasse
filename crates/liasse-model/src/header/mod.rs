@@ -20,7 +20,7 @@ use crate::doc::DocValueExt;
 use crate::names::PackageId;
 use crate::report::{code, Reporter};
 
-use resources::{check_requires, check_resources};
+use resources::{check_requirement_use, check_requires, check_resources};
 use semantics::check_semantics;
 
 /// The supported `$liasse` language generation (this specification, §4.1).
@@ -115,6 +115,10 @@ impl Header {
         if let Some(requires) = root.member("$requires") {
             check_requires(reporter, &requires.value);
         }
+        // §16.2 single-meaning discipline: a `$requires` alias must not collide
+        // with a core namespace or a top-level model declaration, and every
+        // declared requirement must be used. Spans `$requires` and `$model`.
+        check_requirement_use(reporter, root);
         if let Some(resources) = root.member("$resources") {
             check_resources(reporter, &resources.value);
         }

@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: namespace-type-field-spelling-rejected
+  suite: static
+  spec: ["#host-namespaces", "§16.4"]
+  tags: ["types", "identity"]
+  note: '''
+    Attack probe on identity: use a namespace-defined value type as a row
+    $key when its descriptor grants NO key eligibility. §16.2 supplies
+    "equality, ordering, and key eligibility for namespace types when
+    provided", and §16.4 (SPEC-ISSUES #15) pins that a namespace-defined
+    value type may anchor application identity ($key, $unique) only when its
+    descriptor declares it key-eligible. But this generation defines no
+    $model field spelling that names a namespace-defined value type, so the
+    reference `{ "$type": "util.opaque" }` is not an accepted field type and
+    is rejected at load — the identity misuse never becomes reachable. The
+    descriptor here declares opaque key_eligible:false, which the future
+    key-eligibility gate would refuse; today the field spelling itself is
+    what rejects.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.nstypekey@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      items: {
+        $key: "tag"
+        // a namespace-defined value type is not an accepted $model field
+        // spelling in this generation (SPEC-ISSUES #15, option ii)
+        tag: { $type: "util.opaque" }
+        label: "text = ''"
+      }
+      $public: {
+        items: { $view: ".items { label }" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-types"
+        types: {
+          // canonical codec provided, key eligibility NOT provided
+          opaque: { codec: "bytes", key_eligible: false }
+        }
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "§16.4"]
+    detail: "a namespace-defined value type is not an accepted $model field type spelling; it is rejected at load"
+  }
+}

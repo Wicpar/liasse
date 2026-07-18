@@ -1,0 +1,65 @@
+{
+  // §23.6: "Budget exhaustion produces operational backpressure OR a rejected
+  // request according to the declared API contract. It never permits a partial
+  // state transition." The no-partial invariant is pinned and asserted by the
+  // common case budget-exhaustion-never-partial-transition. This case isolates the
+  // OTHER half: which of the two outcome classes a client observes. §23.6
+  // (SPEC-ISSUES #16) pins it by where the budget binds: "Exhaustion of an
+  // in-flight budget (query or mutation time, transition memory, or a
+  // non-returning component) surfaces as a rejected request, never as
+  // backpressure. Operational backpressure applies only to admission-gate budgets
+  // ...; when the contract is silent, exhaustion rejects." The mutation-time budget
+  // is an in-flight budget, so its exhaustion by the hung signer rejects.
+  format: 1
+  name: budget-exhaustion-rejects-not-backpressure
+  suite: scenario
+  spec: ["#rust-host", "§23.6"]
+  tags: ["budget", "backpressure"]
+  note: "§23.6 (SPEC-ISSUES #16) pins the exhaustion outcome class by where the budget binds: an in-flight mutation-time budget exhausted mid-transition surfaces as a terminal rejected request, never backpressure, and a silent API contract defaults to reject. The hung signer exhausts the finite mutation-time budget, so the operator call rejects. The no-partial-transition invariant is covered by common/budget-exhaustion-never-partial-transition."
+
+  package: {
+    $liasse: 1
+    $app: "t.budgetchoice@1.0.0"
+    $requires: { cose: "liasse.cose@1" }
+    $model: {
+      tokens: { $key: "id", id: "uuid = uuid()", note: "text" }
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $algorithm: "Ed25519"
+          $rotate: "P30D"
+          $retain: "P45D"
+        }
+      }
+      $mut: {
+        issue: [
+          "t = .tokens + { note: @note }"
+          "sig = cose.sign(/session_keys, { id: t.id })"
+          "return t { id, note }"
+        ]
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { budget_set: { mutation_time: "PT1S" } }
+    { provider_set: { provider: "test-kp", hang: ["sign"] } }
+    // In-flight budget exhausted mid-transition: a terminal rejection, not backpressure.
+    { operator: { call: "issue", args: { note: "throttle-or-reject" } },
+      expect: { outcome: rejected, violates: ["#rust-host", "§23.6"] } }
+  ]
+}

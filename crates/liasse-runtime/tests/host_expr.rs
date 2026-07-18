@@ -204,7 +204,9 @@ fn generated_host_call_in_a_pure_view_rejects_at_load() {
 /// §16.2: a host call naming a namespace with no `$requires` declaration fails to
 /// type-check where the checker resolves it — an insert member calling `cbor.encode`
 /// with no requirement rejects the mutation (availability in the registry does not
-/// substitute for the explicit package requirement).
+/// substitute for the explicit package requirement). The declared `util` requirement
+/// is exercised (`util.double`) so §16.2's used-requirement rule is satisfied and the
+/// package loads; only the undeclared `cbor` call is under test.
 #[test]
 fn undeclared_namespace_call_in_an_insert_member_rejects() {
     let def = r#"{
@@ -215,7 +217,7 @@ fn undeclared_namespace_call_in_an_insert_member_rejects() {
         "items": { "$key": "id", "id": "text", "n": "int = 0" },
         "$mut": {
           "add({ id: text, x: int })": [
-            "row = .items + { id: @id, n: cbor.encode(@x) }",
+            "row = .items + { id: @id, n: cbor.encode(util.double(@x)) }",
             "return row { id, n }"
           ]
         }

@@ -106,23 +106,24 @@ fn missing_requires_namespace_fails_load() {
     }
 }
 
-/// The default [`Engine::load`] manages no host components, so an unresolved
-/// `$requires` is deferred rather than failing the load (§16.2 is enforced only
-/// under `load_with_hosts`): the package activates so the testkit's later
-/// hosts-block driving can wire the namespace.
+/// §16.2 (SPEC-ISSUES #17): the used-requirement rule is a *static* model rule,
+/// so it holds even under the default [`Engine::load`], which manages no host
+/// components. `cbor` is declared but no expression uses it, so the build rejects
+/// before host resolution is ever consulted — the deferral of an *unresolved*
+/// requirement never applies to an *unused* one.
 #[test]
-fn default_load_defers_unresolved_requirement() {
+fn default_load_rejects_unused_requirement() {
     let def = r#"{
       "$liasse": 1,
-      "$app": "t.defer@1.0.0",
+      "$app": "t.unused@1.0.0",
       "$requires": { "cbor": "liasse.cbor@1" },
       "$model": { "rows": { "$key": "id", "id": "text" } }
     }"#;
     let store = MemoryStore::new(InstanceId::new("i1"));
     let mut g = generator();
     assert!(
-        Engine::load(store, def, &mut g).is_ok(),
-        "the default load defers an unresolved requirement rather than failing",
+        matches!(Engine::load(store, def, &mut g), Err(EngineError::Invalid(_))),
+        "an unused requirement is a static §16.2 rejection even with no host management",
     );
 }
 

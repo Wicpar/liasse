@@ -1,0 +1,62 @@
+{
+  // §2.1: "A host component conforms to the typed contract it registers." §16.2:
+  // the load-time descriptor pins "function names and typed signatures"; §16.4: a
+  // namespace "receives typed Liasse values". Loading validates the call site
+  // against the DESCRIPTOR, so a package calling `u.f(int) -> int` type-checks and
+  // activates. The attack: at evaluation time the registered component returns a
+  // `text` instead of the `int` its descriptor promised. §16.3 (SPEC-ISSUES #15)
+  // pins the runtime's handling: "A host namespace return that does not satisfy
+  // its declared result type ... is a §2.1 nonconformance: the runtime rejects the
+  // call and commits no effect ... The runtime does not coerce, widen, or strip an
+  // off-contract return." Validation is on the DECODED value's actual type, so a
+  // `text "42"` returned where `int` is declared is caught even though its wire
+  // spelling round-trips. The mutation therefore rejects and no `results` row is
+  // written.
+  format: 1
+  name: namespace-returns-off-contract-type-rejected
+  suite: scenario
+  spec: ["#conformance", "§2.1", "#host-namespaces", "§16.2", "§16.3", "§16.4"]
+  tags: ["namespace", "off-contract", "nonconforming-host"]
+  note: "The descriptor pins signature (int) -> int and the package type-checks against it, but the registered component returns a text at evaluation time. §16.3 (SPEC-ISSUES #15) pins fail-closed enforcement at the host trust boundary: an off-contract return is a §2.1 nonconformance the runtime rejects, committing no effect and never coercing the value. The mutation-time call rejects."
+
+  package: {
+    $liasse: 1
+    $app: "t.offtype@1.0.0"
+    $requires: { u: "test.util@1" }
+    $model: {
+      results: { $key: "id", id: "text", v: "int" }
+      $mut: {
+        // @n : int and u.f : (int) -> int per the descriptor, so this type-checks.
+        compute: [
+          "r = .results + { id: @id, v: u.f(@n) }"
+          "return r { id, v }"
+        ]
+      }
+      $public: {
+        api: { $mut: { compute: ".compute" } }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.0.0"
+        interface_hash: "ih-util-offtype"
+        functions: {
+          // Descriptor promises (int) -> int; op `off_type` returns text (§23 NOTES).
+          f: { signature: "(int) -> int", effect: "pure", op: "off_type" }
+        }
+      }
+    ]
+  }
+
+  steps: [
+    { connect: "c1" }
+    // The component returns text "42" where int is declared: a host refusal that
+    // rejects the mutation and commits no row.
+    { call: "public.api.compute", args: { id: "r1", n: 21 }, on: "c1",
+      expect: { outcome: rejected, violates: ["#host-namespaces", "§16.3"] } }
+  ]
+}

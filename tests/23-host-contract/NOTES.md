@@ -58,10 +58,15 @@ already established by sibling chapters, verbatim, and cites them:
 | `off_type`        | pure   | the registered descriptor pins signature `(int) -> int`, but the component **returns a `text`** — a value that violates the contract it registered (§2.1). Models a nonconforming host component. |
 | `drifting`        | pure   | declared effect `pure` (§16.3: "same logical inputs produce the same output"), but the component **returns a different value on each evaluation** for identical inputs — a component that lies about its effect class. |
 
-Both model a component that violates the typed contract of §2.1/§16.3. The
-spec assumes registered components conform; it does not pin runtime handling of
-a component that does not. Cases using these ops are therefore
-`outcome: unspecified`.
+Both model a component that violates the typed contract of §2.1/§16.3. §2.1
+and §16.3 (SPEC-ISSUES #15) pin fail-closed enforcement at the host trust
+boundary: an off-contract return is a nonconformance the runtime rejects,
+committing no effect (`off_type` → the mutation rejects). A detected `pure`
+divergence likewise rejects — but because the runtime MAY recompute rather than
+record a pure result, it carries no obligation to reproduce a pre-replay value,
+so a `drifting` value observed through independent recomputations the runtime
+never compares stays `outcome: unspecified` (no divergence is detected to
+reject).
 
 ## Extension steps
 
@@ -99,14 +104,17 @@ by this chapter. The harness treats a provider operation configured to `hang`
 (see `provider_set` below) under **any finite** `mutation_time` budget as
 deterministically exhausting that budget for the enclosing mutation: a
 never-returning operation necessarily exceeds any finite mutation-time budget.
-Per §23.6, exhaustion yields backpressure **or** a rejected request per the
-declared API contract and **never permits a partial state transition**. The
-CLASS of surfaced outcome (backpressure vs rejection) is not pinned by SPEC.md
-for a package that declares no such policy, so no case asserts `rejected`
-outright: `common/budget-exhaustion-never-partial-transition` marks the
-exhausted operator step `outcome: unspecified` and asserts only the no-partial
-MUST (a trailing empty watch), and `red/budget-backpressure-or-reject-choice-
-unspecified` documents the class gap directly.
+Per §23.6 (SPEC-ISSUES #16), exhaustion of an in-flight budget (query/mutation
+time, transition memory, a non-returning component) surfaces as a terminal
+`rejected` request, never backpressure, and a silent API contract defaults to
+reject; it **never permits a partial state transition**. So both
+`common/budget-exhaustion-never-partial-transition` and
+`red/budget-exhaustion-rejects-not-backpressure` assert the exhausted operator
+step `outcome: rejected` plus the no-partial MUST (a trailing empty watch).
+(These two cases carry a `budget_set` the current memory driver does not yet
+wire, so they are acknowledged debt on the scenario ledger rather than passing
+runs — the asserted `rejected` is the pinned spec outcome, surfaced once the
+step is driven.)
 
 ### `provider_set` (reused from §17, one addition)
 
@@ -121,9 +129,14 @@ additions:
 
 `hang: [...]` — the listed provider operations **never return** (they neither
 succeed nor fail). Models a misbehaving/unresponsive registered host component.
-With a finite `mutation_time` budget in force the enclosing mutation is
-resolved by budget exhaustion (§23.6); with no budget in force the outcome is
-not pinned by the spec (see `red/no-time-budget-hanging-provider-unspecified`).
+§23.6 (SPEC-ISSUES #16) mandates a liveness bound on every in-flight
+external-component call — with or without a `mutation_time` budget — so the
+enclosing mutation reaches a terminal `rejected` outcome and never hangs (see
+`red/no-time-budget-hanging-provider-rejects`). The `hang` double stands in for
+a real hang by raising the typed budget-exhausting `WouldNotReturn` failure
+synchronously (a genuine non-returning call cannot be represented as a value or
+tested without wall-clock timeouts), so the runtime's actual wall-clock liveness
+bound is not exercised by the corpus — the observable terminal rejection is.
 
 `invalid_public_key: [...]` — the listed operations (`generate`, `bind`)
 **return** a structurally invalid / wrong-type public key + metadata rather than
@@ -174,7 +187,7 @@ assert a firm `ok` fetch).
   where the spec pins no value, `{ outcome: unspecified }` with an explanatory
   `note`/`detail` and no `violates` (per `tests/FORMAT.md`; used by
   `red/impure-pure-function-replay-divergence-unspecified`, whose post-replay
-  recomputed value is not pinned).
+  recomputed value the runtime is permitted not to reproduce, §16.3).
 - `connect` / `authenticate` with `{ role, auth, credential }`, and role-surface
   addresses `"<role>.<surface>[.<mut>]"` — per `tests/11-auth-sessions/NOTES.md`.
 - `expect.completion: committed | unchanged` — per
@@ -188,20 +201,16 @@ assert a firm `ok` fetch).
   *reads* `$actor` observes under a host operator transition (parallels
   `tests/22-runtime-semantics/red/public-request-references-actor-unspecified`),
   nor whether the host provenance / empty actor field is application-readable.
-- `red/namespace-returns-off-contract-type-unspecified` — §2.1/§16.2 assume a
-  registered component conforms to its typed contract; runtime handling of a
-  component that returns an off-contract value at evaluation time is not pinned.
-- `red/impure-pure-function-replay-divergence-unspecified` — §16.3 says pure
-  functions may be recomputed during replay; the spec does not pin what happens
-  when a component declared `pure` in fact returns different values, so replay
-  divergence is unspecified.
-- `red/no-time-budget-hanging-provider-unspecified` — §23.6 makes budgets a host
-  MAY; with no mutation-time budget in force, the spec does not mandate any
-  timeout, so a hanging registered component's outcome is unspecified.
-- `red/budget-backpressure-or-reject-choice-unspecified` — §23.6 admits *either*
-  operational backpressure *or* a rejected request "according to the declared
-  API contract"; when the package's API contract does not itself pin the choice,
-  which of the two occurs is unspecified.
+- `red/impure-pure-function-replay-divergence-unspecified` — §16.3 (SPEC-ISSUES
+  #15) rejects a *detected* pure-divergence, but the runtime MAY recompute a pure
+  result rather than record it and carries no obligation to reproduce a
+  pre-replay value; the case's pre- and post-restart views are independent
+  recomputations the runtime never compares, so no divergence is detected and the
+  post-restart value stays unspecified. (The now-pinned cases
+  `red/namespace-returns-off-contract-type-rejected` (#15 → rejected),
+  `red/no-time-budget-hanging-provider-rejects` (#16 → rejected), and
+  `red/budget-exhaustion-rejects-not-backpressure` (#16 → rejected) are no longer
+  unspecified.)
 - `red/connector-tampered-read-refetched-from-verified-holder` — §18.9 forbids
   delivering tampered bytes as a successful fetch (the normative negative
   guarantee), but §18.8 makes recovery from another verified holder a client MAY,
@@ -222,7 +231,7 @@ assert a firm `ok` fetch).
   mismatch-rejected` and the state-model type chapters. No operator type-rule
   case is added here to avoid encoding an under-determined outcome token; the
   wrong-type component contract is instead exercised at the component boundary
-  by `red/namespace-returns-off-contract-type-unspecified` and
+  by `red/namespace-returns-off-contract-type-rejected` and
   `red/rotation-provider-invalid-public-key-keeps-current-active`.
 - §23.8 "External argument values and credentials remain call-local": not
   externally observable — the diagnostic/audit record shape is not pinned by
