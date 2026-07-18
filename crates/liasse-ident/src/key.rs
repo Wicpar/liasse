@@ -89,6 +89,7 @@ impl KeyComponent {
             Value::Enum(_) => "enum",
             Value::Ref(_) => "ref",
             Value::Struct(_) => "struct",
+            Value::Composite(_) => "composite key",
             Value::Set(_) => "set",
             Value::Map(_) => "map",
             Value::None => "none",
@@ -178,6 +179,15 @@ impl KeyText {
                     Ok(())
                 }
             },
+            // D.2: a composite key flattens to its components in `$key` order (the
+            // sequence order), joined by `:` — distinct from a struct's
+            // field-name order.
+            Value::Composite(components) => {
+                for component in components {
+                    Self::flatten(component, out)?;
+                }
+                Ok(())
+            }
             scalar => {
                 out.push(KeyComponent::from_scalar(scalar)?);
                 Ok(())

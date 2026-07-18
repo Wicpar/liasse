@@ -17,9 +17,9 @@
 //! *prefix-free*: no unit is a proper byte-prefix of another, so concatenation
 //! reproduces lexicographic-with-shorter-first component order — matching the
 //! derived `Ord` on `KeyValue`/`RowAddress`. The leading rank byte
-//! ([`Value`]'s cross-type rank; `bool`=0 … `map`=16, `none`=0xFF) decides
-//! cross-type order at byte 0, and `none`'s `0xFF` sorts it after every present
-//! value (B.2).
+//! ([`Value`]'s cross-type rank; `bool`=0 … `map`=16, `composite`=17, `none`=0xFF)
+//! decides cross-type order at byte 0, and `none`'s `0xFF` sorts it after every
+//! present value (B.2).
 //!
 //! # Prefix-free primitives
 //!
@@ -27,8 +27,8 @@
 //!   `0x00 0xFF`, then a `0x00 0x00` terminator. `0x00 0x00` never occurs inside
 //!   a body, so it is an unambiguous, prefix-free end marker; byte order is
 //!   preserved and the empty value is the minimum.
-//! - **Sequence framing** (`struct`/`set`/`map`/`ref`-composite/`json`
-//!   array+object): `0x01` before each item, a final `0x00` stop. A shorter
+//! - **Sequence framing** (`struct`/`set`/`map`/`composite`-key/`ref`-composite/
+//!   `json` array+object): `0x01` before each item, a final `0x00` stop. A shorter
 //!   sequence hits `0x00` where a longer one has `0x01`, sorting it first.
 //! - **Numbers** live in [`crate::key_enc_num`] (sign-magnitude int / exponent,
 //!   offset-binary fixed-width instants).
@@ -158,6 +158,16 @@ fn put(value: &Value, out: &mut Vec<u8>) {
                 out.push(SEQ_ITEM);
                 put(key, out);
                 put(val, out);
+            }
+            out.push(SEQ_STOP);
+        }
+        // A composite key: its components framed in `$key` order, so `bytea`
+        // comparison reproduces the B.4 positional order.
+        Value::Composite(components) => {
+            out.push(0x11);
+            for component in components {
+                out.push(SEQ_ITEM);
+                put(component, out);
             }
             out.push(SEQ_STOP);
         }

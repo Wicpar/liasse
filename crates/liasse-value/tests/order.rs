@@ -207,6 +207,29 @@ fn composite_ref_second_component_uses_int_order() {
 }
 
 #[test]
+fn composite_key_orders_positionally_in_key_order_not_field_name_order() {
+    // B.4 composite key: lexicographic components in $key order — distinct from a
+    // struct's field-name order. With $key:[region, code], eu:z vs us:a orders
+    // eu:z < us:a by $key order (region: eu < us), the OPPOSITE of the field-name
+    // order a struct {code, region} would use (code: a < z => us:a first). The
+    // positional Value::Composite carrier realizes the composite-key rule.
+    let composite = |region: &str, code: &str| Value::Composite(vec![text(region), text(code)]);
+    assert_ascending(vec![composite("eu", "z"), composite("us", "a")]);
+
+    // The very same components as a name-sorted struct compare in the OPPOSITE
+    // order (by `code` first), proving the two B.4 rows are distinct rules — a
+    // composite key is not ordered like a struct of the same fields.
+    let as_struct = |region: &str, code: &str| {
+        Value::Struct(Struct::new([
+            (Text::new("region"), text(region)),
+            (Text::new("code"), text(code)),
+        ]))
+    };
+    assert!(as_struct("us", "a") < as_struct("eu", "z"));
+    assert!(composite("eu", "z") < composite("us", "a"));
+}
+
+#[test]
 fn period_fixed_sorts_before_calendar() -> Result<(), ValueError> {
     use liasse_value::{CalendarPeriodBuilder, Period};
     let fixed_small = Value::Period(Box::new(Period::Fixed(Duration::parse("P1D")?)));

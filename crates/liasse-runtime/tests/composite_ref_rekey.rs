@@ -3,18 +3,18 @@
 //!
 //! An atomic rekey of a referenced row must rewrite every inbound reference to
 //! the new key in the same transition, so no dangling or stale reference
-//! survives. A ref to a composite-keyed target is carried as its target's
-//! name-sorted key struct (`Ref::scalar(Struct)`), so the rewrite must match and
-//! reissue it by application identity, not positional components. After rekeying
-//! the target, the inbound composite ref must resolve to the NEW key and read the
-//! target row. Expectations are re-derived from §5.4 (inbound-ref rewrite) and
-//! §7.6 (a ref is a target key), not the implementation.
+//! survives. A ref to a composite-keyed target is carried positionally as its
+//! target's `$key`-order key tuple (`Ref::composite`), and the rewrite matches
+//! and reissues it by application identity (the positional `Value::Composite`).
+//! After rekeying the target, the inbound composite ref must resolve to the NEW
+//! key and read the target row. Expectations are re-derived from §5.4 (inbound-ref
+//! rewrite) and §7.6 (a ref is a target key), not the implementation.
 
 mod support;
 
 use liasse_runtime::{CallOutcome, CallRequest, Engine, Value};
 use liasse_store::MemoryStore;
-use liasse_value::{Ref, Struct, Text};
+use liasse_value::{Ref, Text};
 use support::{generator, load};
 
 const M: &str = r#"{
@@ -36,13 +36,10 @@ fn text(v: &str) -> Value {
     Value::Text(Text::new(v))
 }
 
-/// The composite ref value `[region, code]` as decode builds it: `Ref::scalar` of
-/// the name-sorted key struct `{ code, region }`.
+/// The composite ref value `[region, code]` as decode builds it: `Ref::composite`
+/// of the positional `$key`-order component tuple `[region, code]`.
 fn loc(region: &str, code: &str) -> Value {
-    Value::Ref(Ref::scalar(Value::Struct(Struct::new([
-        (Text::new("code"), text(code)),
-        (Text::new("region"), text(region)),
-    ]))))
+    Value::Ref(Ref::composite(vec![text(region), text(code)]))
 }
 
 fn commit(outcome: CallOutcome) {

@@ -10,6 +10,31 @@ use crate::ty::ExprType;
 use crate::typed::{AggFunc, BuiltinFn, TypedExpr, TypedKind, TypedSelector};
 
 impl Checker<'_> {
+    /// Normalize a composite key operand to `$key` order (A.9). When `expected`
+    /// is a composite key type and `operand` is the authoring object (a
+    /// struct-typed operand), wrap it so it evaluates to the positional
+    /// [`Value::Composite`](liasse_value::Value::Composite) a composite row's key
+    /// carries; an operand that is already a composite key, a ref, or any other
+    /// shape is left for its own comparison path.
+    pub(crate) fn coerce_composite_key(
+        operand: TypedExpr,
+        expected: Option<&ExprType>,
+    ) -> TypedExpr {
+        let Some(Type::Composite(components)) = expected.and_then(ExprType::as_scalar) else {
+            return operand;
+        };
+        if !matches!(operand.ty().as_scalar(), Some(Type::Struct(_))) {
+            return operand;
+        }
+        let order: Vec<String> = components.iter().map(|(name, _)| name.clone()).collect();
+        let span = operand.span();
+        TypedExpr::new(
+            span,
+            ExprType::scalar(Type::Composite(components.clone())),
+            TypedKind::Composite { order, source: Box::new(operand) },
+        )
+    }
+
     pub(crate) fn check_select(
         &mut self,
         expr: &Expr,
@@ -28,6 +53,7 @@ impl Checker<'_> {
         };
         match selector {
             Selector::Keys(keys) => {
+                let key_type = row.key().cloned();
                 let mut typed = Vec::with_capacity(keys.len());
                 let mut single_scalar = keys.len() == 1;
                 for key in keys {
@@ -35,7 +61,9 @@ impl Checker<'_> {
                     if matches!(checked.ty().as_scalar(), Some(Type::Set(_))) {
                         single_scalar = false;
                     }
-                    typed.push(checked);
+                    // A.9: an object key selector on a composite-keyed collection
+                    // is authoring syntax for the `$key`-order tuple — normalize it.
+                    typed.push(Self::coerce_composite_key(checked, key_type.as_ref()));
                 }
                 // §6.3: a lone scalar/composite key is a one-or-zero row context
                 // (usable where exactly one row is required); anything else is a

@@ -238,7 +238,7 @@ impl<'a> Builder<'a> {
         if value.member("$ref").is_some()
             && let Node::Reference(reference) = self.ref_node(reporter, value)
         {
-            return Type::Ref(liasse_value::RefTarget::Scalar(Box::new(reference.key_type)));
+            return Type::Ref(liasse_value::RefTarget::for_key(&reference.key_type));
         }
         // §5.5: "the value of `$set` is the shape of every member" — any scalar
         // member shape is admissible, including an inline enum type. An `{ $enum:

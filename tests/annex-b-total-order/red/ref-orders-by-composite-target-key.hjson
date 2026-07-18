@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: ref-orders-by-composite-target-key
+  suite: scenario
+  spec: ["#annex-b", "§B.1", "§B.4", "§A.9"]
+  tags: ["ordering", "ref", "composite"]
+  note: '''
+    §B.4 composite key: "lexicographic components in $key order" — DISTINCT from a
+    struct's field-name order. §B.1 ref<T>: ascending is target-key order (A.9: a
+    composite ref's key is the component array in $key order). So sorting items by
+    their composite `loc` ref must order them by the referenced region's key
+    COMPONENTS in $key order (region, then code).
+
+    The regions are seeded so the two orders disagree: with $key: [region, code],
+    eu:z vs us:a orders as eu:z < us:a by $key order (region: eu < us), but as
+    us:a < eu:z by field-name order (code: a < z). Attack: hope a composite ref/key
+    sorts by field-name order (the retired name-sorted-struct carrier), by the
+    referencing item's own key, or by the D.2 colon-joined text. The items are
+    seeded so their own key order (i1, i2) also disagrees with the target-key
+    order, isolating the rule: $sort:[loc] MUST yield the eu:z target (i2) before
+    the us:a target (i1), and each `loc` is the $key-order component array A.9 pins.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.compref@1.0.0"
+    $model: {
+      regions: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+        label: "text"
+      }
+      items: {
+        $key: "id"
+        id: "text"
+        loc: { $ref: "/regions" }
+      }
+      $public: {
+        by_loc: { $view: ".items { id, loc, $sort: [loc] }" }
+      }
+    }
+    $data: {
+      regions: {
+        // seed member name is the D.2 colon-joined composite key text, $key order
+        "eu:z": { region: "eu", code: "z", label: "EU-Z" }
+        "us:a": { region: "us", code: "a", label: "US-A" }
+      }
+      items: {
+        // item key order (i1, i2) deliberately disagrees with target-key order
+        i1: { loc: { region: "us", code: "a" } }
+        i2: { loc: { region: "eu", code: "z" } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_loc", id: "w1",
+      // §B.4/§A.9: ordered by the target composite key in $key order (region first):
+      // eu:z (i2) before us:a (i1); each `loc` is the $key-order component array.
+      expect_init: { value: [
+        { id: "i2", loc: ["eu", "z"] }
+        { id: "i1", loc: ["us", "a"] }
+      ] } }
+  ]
+}

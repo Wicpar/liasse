@@ -66,6 +66,9 @@ pub(crate) fn canonical_key(value: &Value) -> Value {
         Value::Struct(s) => Value::Struct(Struct::new(
             s.fields().map(|(name, field)| (name.clone(), canonical_key(field))),
         )),
+        Value::Composite(components) => {
+            Value::Composite(components.iter().map(canonical_key).collect())
+        }
         Value::Set(members) => Value::Set(members.iter().map(canonical_key).collect()),
         Value::Map(entries) => Value::Map(
             entries.iter().map(|(k, v)| (canonical_key(k), canonical_key(v))).collect(),
@@ -142,6 +145,9 @@ pub fn encode(value: &Value) -> J {
         ),
         Value::Ref(r) => tag("ref", encode_ref(r)),
         Value::Struct(s) => tag("st", encode_struct(s)),
+        Value::Composite(components) => {
+            tag("comp", J::Array(components.iter().map(encode).collect()))
+        }
         Value::Set(members) => tag("set", J::Array(members.iter().map(encode).collect())),
         Value::Map(entries) => tag(
             "map",
@@ -175,6 +181,7 @@ pub fn decode(wire: &J) -> Result<Value, StoreError> {
         "enum" => decode_enum(payload),
         "ref" => decode_ref(payload).map(Value::Ref),
         "st" => decode_struct(payload),
+        "comp" => decode_seq(payload).map(Value::Composite),
         "set" => decode_seq(payload).map(|v| Value::Set(v.into_iter().collect())),
         "map" => decode_map(payload),
         "none" => Ok(Value::None),

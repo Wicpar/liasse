@@ -203,8 +203,10 @@ fn value_strategy() -> impl Strategy<Value = Value> {
             prop::collection::btree_set(inner.clone(), 0..4).prop_map(Value::Set),
             prop::collection::btree_map(inner.clone(), inner.clone(), 0..4).prop_map(Value::Map),
             inner.clone().prop_map(|value| Value::Ref(Ref::scalar(value))),
-            prop::collection::vec(inner, 1..4)
+            prop::collection::vec(inner.clone(), 1..4)
                 .prop_map(|components| Value::Ref(Ref::composite(components))),
+            // composite key: positional component tuple in `$key` order.
+            prop::collection::vec(inner, 2..4).prop_map(Value::Composite),
         ]
     })
 }

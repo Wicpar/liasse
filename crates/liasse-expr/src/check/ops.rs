@@ -170,6 +170,10 @@ impl Checker<'_> {
         // row, §15.3). Coerce the row side to its key value so the comparison is
         // between the ref and the row's scalar key.
         let (left, right) = coerce_ref_row_key(left, right);
+        // A.9/§6.3: an object literal compared against a composite-keyed ref is
+        // authoring syntax for the `$key`-order tuple — normalize it so the two
+        // compare as equal-valued composite keys.
+        let (left, right) = Self::coerce_composite_ref_key(left, right);
         let (lt, rt) = match (left.ty().as_scalar(), right.ty().as_scalar()) {
             (Some(lt), Some(rt)) => (lt, rt),
             _ => return self.error(expr, "only scalar values are comparable"),
@@ -201,6 +205,27 @@ impl Checker<'_> {
                 rhs: Box::new(right),
             },
         ))
+    }
+
+    /// Normalize an object literal compared against a composite-keyed ref to the
+    /// ref target's `$key`-order tuple (A.9), so the comparison is between two
+    /// equal-valued composite keys rather than a struct against a ref.
+    fn coerce_composite_ref_key(left: TypedExpr, right: TypedExpr) -> (TypedExpr, TypedExpr) {
+        fn composite_key_of(expr: &TypedExpr) -> Option<ExprType> {
+            match expr.ty().as_scalar() {
+                Some(Type::Ref(RefTarget::Composite(components))) => {
+                    Some(ExprType::scalar(Type::Composite(components.clone())))
+                }
+                _ => None,
+            }
+        }
+        if let Some(key) = composite_key_of(&left) {
+            return (left, Self::coerce_composite_key(right, Some(&key)));
+        }
+        if let Some(key) = composite_key_of(&right) {
+            return (Self::coerce_composite_key(left, Some(&key)), right);
+        }
+        (left, right)
     }
 
     fn check_logic(
@@ -420,10 +445,18 @@ fn ref_key_matches(target: &RefTarget, key: &Type) -> bool {
     match target {
         RefTarget::Scalar(inner) => inner.as_ref() == key,
         RefTarget::Composite(components) => match key {
+            // The composite key value type, compared positionally in `$key` order.
+            Type::Composite(supplied) => {
+                supplied.len() == components.len()
+                    && supplied.iter().zip(components).all(|((_, a), (_, b))| a == b)
+            }
+            // A.9: a named object selector is authoring syntax for the same tuple —
+            // its fields (name-keyed) match the composite key components by name.
             Type::Struct(struct_ty) => {
-                let declared: Vec<&Type> = struct_ty.fields().map(|(_, ty)| ty).collect();
-                declared.len() == components.len()
-                    && declared.into_iter().zip(components).all(|(a, b)| a == b)
+                struct_ty.fields().count() == components.len()
+                    && components.iter().all(|(name, ty)| {
+                        struct_ty.field(name).is_some_and(|supplied| supplied == ty)
+                    })
             }
             _ => false,
         },

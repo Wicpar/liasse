@@ -99,6 +99,13 @@ pub enum Value {
     Enum(EnumValue),
     Ref(Ref),
     Struct(Struct),
+    /// A composite key value (A.9, B.4): its component values in `$key` order.
+    /// Ordering is positional over that sequence — the B.4 "composite key" rule,
+    /// which is distinct from a struct's field-name order — and the wire form is
+    /// the `$key`-order array of component wire values. This is the sole carrier
+    /// of a composite row's application-visible key identity (§5.4); a composite
+    /// `ref`'s target key is the equal-valued positional [`RefKey::Composite`].
+    Composite(Vec<Value>),
     Set(BTreeSet<Value>),
     Map(BTreeMap<Value, Value>),
     /// The Liasse `none` — absence of an `optional<T>` value (A.1). Distinct
@@ -134,6 +141,7 @@ impl Value {
             Self::Struct(_) => 14,
             Self::Set(_) => 15,
             Self::Map(_) => 16,
+            Self::Composite(_) => 17,
             Self::None => u8::MAX,
         }
     }
@@ -158,6 +166,11 @@ impl Value {
             Self::Enum(e) => J::String(e.label().to_owned()),
             Self::Ref(r) => r.to_wire(),
             Self::Struct(s) => Self::struct_to_wire(s),
+            // A.9/D.2: a composite key's canonical structured wire value is the
+            // array of its component wire values in `$key` order.
+            Self::Composite(components) => {
+                J::Array(components.iter().map(Value::to_wire).collect())
+            }
             Self::Set(members) => J::Array(members.iter().map(Value::to_wire).collect()),
             Self::Map(entries) => J::Array(
                 entries
@@ -307,6 +320,9 @@ impl Ord for Value {
             (Self::Enum(a), Self::Enum(b)) => a.cmp(b),
             (Self::Ref(a), Self::Ref(b)) => a.cmp(b),
             (Self::Struct(a), Self::Struct(b)) => a.cmp(b),
+            // B.4 composite key: lexicographic components in `$key` order (the
+            // sequence order), distinct from a struct's field-name order.
+            (Self::Composite(a), Self::Composite(b)) => a.cmp(b),
             (Self::Set(a), Self::Set(b)) => a.cmp(b),
             (Self::Map(a), Self::Map(b)) => a.cmp(b),
             (Self::None, Self::None) => Ordering::Equal,

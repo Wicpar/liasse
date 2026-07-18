@@ -44,7 +44,7 @@ pub(crate) fn member_type(model: &Model, node: &Node) -> Option<Type> {
         Node::Scalar(_) | Node::Collection(_) | Node::View(_) => None,
         Node::Set(set) => Some(Type::Set(Box::new(set.element.clone()))),
         Node::Reference(reference) => {
-            Some(Type::Ref(RefTarget::Scalar(Box::new(reference.key_type.clone()))))
+            Some(Type::Ref(RefTarget::for_key(&reference.key_type)))
         }
         Node::Struct(shape) => Some(Type::Struct(struct_type(model, shape))),
         Node::Named(name) => model.types().get(name).and_then(|node| member_type(model, node)),

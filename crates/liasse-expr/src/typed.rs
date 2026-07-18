@@ -195,6 +195,16 @@ pub(crate) enum TypedKind {
     List(Vec<TypedExpr>),
     /// A struct/object literal — named outputs (also a composite-key operand).
     Struct(Vec<(String, TypedExpr)>),
+    /// A composite key operand normalized to `$key` order (A.9): the authoring
+    /// object `{ name: … }` (or any struct-typed operand) reordered to the
+    /// declared `$key` component order, so it evaluates to the positional
+    /// [`Value::Composite`](liasse_value::Value::Composite) a composite row's key
+    /// carries. `order` is the `$key` field names; `source` evaluates to the
+    /// struct whose fields are pulled in that order.
+    Composite {
+        order: Vec<String>,
+        source: Box<TypedExpr>,
+    },
     /// A resolved built-in function call.
     Builtin {
         func: BuiltinFn,

@@ -2,6 +2,7 @@
 //! through the Annex B order, short-circuit logic, membership, and the
 //! conditional/fallback forms (§6.1, A.6, Annex B).
 
+use std::borrow::Cow;
 use std::cmp::Ordering;
 
 use liasse_value::bigdecimal::{BigDecimal, RoundingMode, Zero};
@@ -119,7 +120,7 @@ impl Evaluator<'_> {
             // comparison rather than a never-equal `ref`-vs-key mismatch.
             Cell::Collection(rows) => {
                 let key = super::ref_key_value(&value);
-                rows.iter().any(|row| row.key() == key)
+                rows.iter().any(|row| row.key() == key.as_ref())
             }
             _ => return Err(EvalError::ShapeMismatch { expected: "a set or view" }),
         };
@@ -247,12 +248,13 @@ fn is_zero_int(value: &BigInt) -> bool {
 /// §6.1 even though the cross-type value rank would separate them).
 fn compare(left: &Value, right: &Value) -> Ordering {
     // §6.3: a ref compared with a key of its declared target compares the
-    // current typed key. When exactly one side is a scalar-keyed ref, compare
-    // its underlying key against the explicitly supplied key. Two refs keep
-    // their own key-ordering comparison (`Ref` `Ord` already compares keys).
-    match (ref_scalar_key(left), ref_scalar_key(right)) {
-        (Some(key), None) => return compare(key, right),
-        (None, Some(key)) => return compare(left, key),
+    // current typed key. When exactly one side is a ref, unwrap it to its target
+    // key identity (a scalar, or the positional composite tuple) and compare
+    // against the explicitly supplied key. Two refs keep their own key-ordering
+    // comparison (`Ref` `Ord` already compares keys).
+    match (ref_target_key(left), ref_target_key(right)) {
+        (Some(key), None) => return compare(key.as_ref(), right),
+        (None, Some(key)) => return compare(left, key.as_ref()),
         _ => {}
     }
     match (left, right) {
@@ -266,14 +268,16 @@ fn compare(left: &Value, right: &Value) -> Ordering {
     }
 }
 
-/// The underlying scalar key of a scalar-keyed ref (§6.3, A.9): the value a ref
-/// exposes when compared against an explicitly supplied key. A composite-keyed
-/// ref is left intact — its comparison is handled by `Value`'s own ordering.
-fn ref_scalar_key(value: &Value) -> Option<&Value> {
+/// The target-key identity a ref exposes when compared against an explicitly
+/// supplied key (§6.3, A.9): a scalar-keyed ref its inner scalar, a
+/// composite-keyed ref the positional [`Value::Composite`] tuple of its
+/// components — the same value a composite key selector normalizes to. `None`
+/// for a non-ref value.
+fn ref_target_key(value: &Value) -> Option<Cow<'_, Value>> {
     match value {
         Value::Ref(reference) => match reference.key() {
-            RefKey::Scalar(inner) => Some(inner),
-            RefKey::Composite(_) => None,
+            RefKey::Scalar(inner) => Some(Cow::Borrowed(inner)),
+            RefKey::Composite(components) => Some(Cow::Owned(Value::Composite(components.clone()))),
         },
         _ => None,
     }

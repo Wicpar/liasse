@@ -634,18 +634,20 @@ impl<'a> Interp<'a> {
     /// key matches `old`, to point at `new` (§5.4), marking each rewritten row
     /// touched so the final rule pass re-validates it.
     ///
-    /// Matching is by *application identity* (`refid::identity_of`), not positional
-    /// components: a composite ref is carried as `Ref::scalar(name-sorted struct)`,
-    /// so a component-by-component test never recognizes it. The rewritten value
-    /// keeps its stored carrier — a `Ref` becomes `Ref::scalar(new identity)` (a
-    /// scalar for a single-field key, the name-sorted struct for a composite key,
-    /// the same shape a ref to this target decodes to), a bare stored key (§6.3
-    /// ref/key equality) becomes the bare new identity.
+    /// Matching is by *application identity* (`refid::ref_identity`), not raw
+    /// carrier equality: a composite ref exposes its `$key`-order tuple as a
+    /// [`Value::Composite`], the same value the target row's identity produces, so
+    /// the two compare equal. The rewritten value keeps its stored carrier — a
+    /// `Ref` becomes the collection's uniform ref shape at the new key
+    /// (`refid::ref_of`: a scalar-keyed ref for a single-field key, a positional
+    /// composite-keyed ref for a composite key), a bare stored key (§6.3 ref/key
+    /// equality) becomes the bare new identity.
     fn rewrite_inbound_refs(&mut self, target: &str, old: &KeyValue, new: &KeyValue) {
         let Some(names) = self.compiled.collection(target).map(|c| c.key.clone()) else { return };
         let old_id = identity_of(&names, &old.components().cloned().collect::<Vec<_>>());
-        let new_id = identity_of(&names, &new.components().cloned().collect::<Vec<_>>());
-        let new_ref = Ref::scalar(new_id.clone());
+        let new_components: Vec<Value> = new.components().cloned().collect();
+        let new_id = identity_of(&names, &new_components);
+        let new_ref = crate::refid::ref_of(&names, &new_components);
         let candidates: Vec<RowAddress> = self.prospective.working().keys().cloned().collect();
         for address in candidates {
             let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();

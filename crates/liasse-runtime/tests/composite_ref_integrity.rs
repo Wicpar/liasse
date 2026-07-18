@@ -1,19 +1,19 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 //! §5.6/§7.6/§22.1 reference integrity for a ref to a COMPOSITE-keyed target.
 //!
-//! A ref to a collection with a composite `$key` is carried as its target's
-//! name-sorted key struct (a ref to a composite target is typed
-//! `RefTarget::Scalar(Struct)`; decode builds `Ref::scalar(Struct)`). Admission
-//! must resolve it against the target's materialized composite key
-//! (`materialize::key_identity`, also a name-sorted struct): a ref to a live
-//! composite row commits, a ref to an absent composite row is `DanglingRef`.
+//! A ref to a collection with a composite `$key` is carried positionally as its
+//! target's `$key`-order key tuple (a ref to a composite target is typed
+//! `RefTarget::Composite`; decode builds `Ref::composite`). Admission must
+//! resolve it against the target's materialized composite key
+//! (`materialize::key_identity`, the positional `Value::Composite`): a ref to a
+//! live composite row commits, a ref to an absent composite row is `DanglingRef`.
 //! Expectations are re-derived from §7.6 ("a ref value is a target key") and
 //! §5.6 reference validity — not the implementation.
 
 mod support;
 
 use liasse_runtime::{CallOutcome, CallRequest, RejectionReason, Value};
-use liasse_value::{Ref, Struct, Text};
+use liasse_value::{Ref, Text};
 use support::{generator, load};
 
 const M: &str = r#"{
@@ -33,13 +33,10 @@ fn text(v: &str) -> Value {
     Value::Text(Text::new(v))
 }
 
-/// A composite ref to `[region, code]` as decode builds it: `Ref::scalar` of the
-/// name-sorted key struct `{ code, region }`.
+/// A composite ref to `[region, code]` as decode builds it: `Ref::composite` of
+/// the positional `$key`-order component tuple `[region, code]`.
 fn loc(region: &str, code: &str) -> Value {
-    Value::Ref(Ref::scalar(Value::Struct(Struct::new([
-        (Text::new("code"), text(code)),
-        (Text::new("region"), text(region)),
-    ]))))
+    Value::Ref(Ref::composite(vec![text(region), text(code)]))
 }
 
 fn with_region() -> liasse_runtime::Engine<liasse_store::MemoryStore> {

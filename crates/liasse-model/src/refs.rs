@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use liasse_value::{StructType, Type};
+use liasse_value::Type;
 
 use crate::report::{code, Reporter};
 use crate::state::{Collection, Node, Reference, Shape};
@@ -61,7 +61,7 @@ impl Index {
         }
         match components.as_slice() {
             [(_, ty)] => ty.clone(),
-            _ => Type::Struct(StructType::new(components)),
+            _ => Type::Composite(components),
         }
     }
 }

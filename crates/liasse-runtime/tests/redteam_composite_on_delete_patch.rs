@@ -15,7 +15,7 @@
 mod support;
 
 use liasse_runtime::{CallOutcome, CallRequest, RejectionReason, Value};
-use liasse_value::{Ref, Struct, Text};
+use liasse_value::{Ref, Text};
 use support::{generator, load};
 
 const M: &str = r#"{
@@ -42,13 +42,10 @@ fn text(v: &str) -> Value {
     Value::Text(Text::new(v))
 }
 
-/// A composite ref to `[region, code]` as decode builds it: `Ref::scalar` of the
-/// name-sorted key struct `{ code, region }`.
+/// A composite ref to `[region, code]` as decode builds it: `Ref::composite` of
+/// the positional `$key`-order component tuple `[region, code]`.
 fn loc(region: &str, code: &str) -> Value {
-    Value::Ref(Ref::scalar(Value::Struct(Struct::new([
-        (Text::new("code"), text(code)),
-        (Text::new("region"), text(region)),
-    ]))))
+    Value::Ref(Ref::composite(vec![text(region), text(code)]))
 }
 
 fn commit(outcome: CallOutcome) {

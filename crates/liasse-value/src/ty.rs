@@ -13,8 +13,11 @@ use crate::temporal::Precision;
 pub enum RefTarget {
     /// A scalar key: a single wire value.
     Scalar(Box<Type>),
-    /// A composite key: an array of component wire values in `$key` order.
-    Composite(Vec<Type>),
+    /// A composite key: component `(name, type)` pairs in `$key` order. The wire
+    /// value is the array of component wire values in that order; a named object
+    /// selector `{ name: … }` is accepted as authoring syntax for the same tuple
+    /// and normalized to `$key` order on decode (A.9).
+    Composite(Vec<(String, Type)>),
 }
 
 /// A static struct type: named fields (A.3). A field declared optional carries
@@ -68,6 +71,25 @@ pub enum Type {
     View(Box<Type>),
     Ref(RefTarget),
     Struct(StructType),
+    /// A composite key type (A.9, §5.4): component `(name, type)` pairs in `$key`
+    /// order. Distinct from [`Type::Struct`], which is field-name-ordered: a
+    /// composite key preserves its declared `$key` order so its value (a
+    /// [`Value::Composite`](crate::Value::Composite)) orders and normalizes
+    /// positionally. It is the type of a collection's composite primary key.
+    Composite(Vec<(String, Type)>),
+}
+
+impl RefTarget {
+    /// The ref target for a collection's key type (A.9): a composite key type
+    /// becomes a composite target (its components positional, in `$key` order);
+    /// any scalar key becomes a scalar target.
+    #[must_use]
+    pub fn for_key(key_type: &Type) -> Self {
+        match key_type {
+            Type::Composite(components) => Self::Composite(components.clone()),
+            other => Self::Scalar(Box::new(other.clone())),
+        }
+    }
 }
 
 impl Type {
@@ -75,6 +97,16 @@ impl Type {
     #[must_use]
     pub fn timestamp() -> Self {
         Self::Timestamp(Precision::DEFAULT)
+    }
+
+    /// The `(name, type)` components of a composite key type in `$key` order, or
+    /// `None` when this is not a composite key.
+    #[must_use]
+    pub fn composite_components(&self) -> Option<&[(String, Type)]> {
+        match self {
+            Self::Composite(components) => Some(components),
+            _ => None,
+        }
     }
 
     /// The type name used in diagnostics.
@@ -100,6 +132,7 @@ impl Type {
             Self::View(_) => "view",
             Self::Ref(_) => "ref",
             Self::Struct(_) => "struct",
+            Self::Composite(_) => "composite key",
         }
     }
 
@@ -127,6 +160,7 @@ impl Type {
             | Self::Duration
             | Self::Enum(_) => true,
             Self::Struct(fields) => fields.fields().all(|(_, ty)| ty.is_key_eligible()),
+            Self::Composite(components) => components.iter().all(|(_, ty)| ty.is_key_eligible()),
             Self::Ref(_)
             | Self::Period
             | Self::Json

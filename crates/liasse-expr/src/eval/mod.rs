@@ -18,6 +18,7 @@ mod ops;
 mod temporal;
 mod views;
 
+use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use liasse_value::{RefKey, Text, Value};
@@ -201,6 +202,7 @@ impl Evaluator<'_> {
             TypedKind::EmptyView => Ok(Cell::Collection(Vec::new())),
             TypedKind::List(items) => self.eval_list(items),
             TypedKind::Struct(fields) => self.eval_struct(fields),
+            TypedKind::Composite { order, source } => self.eval_composite(order, source),
             TypedKind::Builtin { func, args } => self.eval_builtin(*func, args),
             TypedKind::HostCall { namespace, function, args } => {
                 self.eval_host_call(namespace, function, args)
@@ -323,12 +325,16 @@ impl Evaluator<'_> {
                 Value::Set(members) => {
                     for member in &members {
                         let wanted_key = ref_key_value(member);
-                        selected.extend(rows.iter().filter(|row| row.key() == wanted_key).cloned());
+                        selected.extend(
+                            rows.iter().filter(|row| row.key() == wanted_key.as_ref()).cloned(),
+                        );
                     }
                 }
                 scalar => {
                     let wanted_key = ref_key_value(&scalar);
-                    selected.extend(rows.iter().filter(|row| row.key() == wanted_key).cloned());
+                    selected.extend(
+                        rows.iter().filter(|row| row.key() == wanted_key.as_ref()).cloned(),
+                    );
                 }
             }
         }
@@ -370,6 +376,28 @@ impl Evaluator<'_> {
         Ok(Cell::Scalar(Value::Set(members)))
     }
 
+    /// Normalize a composite key operand to `$key` order (A.9): evaluate `source`
+    /// to a struct and pull each declared component (in `order`) into the
+    /// positional [`Value::Composite`] tuple a composite row's key carries. An
+    /// operand that already evaluated to a composite (e.g. another row's `.$key`)
+    /// passes through.
+    fn eval_composite(
+        &mut self,
+        order: &[String],
+        source: &TypedExpr,
+    ) -> Result<Cell, EvalError> {
+        let value = self.eval_scalar(source)?;
+        let components = match value {
+            Value::Struct(fields) => order
+                .iter()
+                .map(|name| fields.get(name).cloned().unwrap_or(Value::None))
+                .collect(),
+            Value::Composite(components) => components,
+            other => return Ok(Cell::Scalar(other)),
+        };
+        Ok(Cell::Scalar(Value::Composite(components)))
+    }
+
     fn eval_struct(&mut self, fields: &[(String, TypedExpr)]) -> Result<Cell, EvalError> {
         let mut entries = Vec::with_capacity(fields.len());
         for (name, expr) in fields {
@@ -383,16 +411,17 @@ impl Evaluator<'_> {
 }
 
 /// The comparable key value a selector operand denotes (§5.6, §6.3). A ref's
-/// application-visible value is its target's current typed key, so a
-/// scalar-keyed ref compares as that inner scalar against a row's `key()`.
-/// Any non-ref value (or a composite ref, whose components carry no field
-/// names to rebuild the row's named-key struct) compares as itself.
-fn ref_key_value(value: &Value) -> &Value {
+/// application-visible value is its target's current typed key: a scalar-keyed
+/// ref compares as that inner scalar, and a composite-keyed ref as the positional
+/// [`Value::Composite`] tuple of its components — the same value a composite
+/// row's `key()` carries, so `.owner in .regions` / `.regions[.owner]` match by
+/// value. Any non-ref value compares as itself.
+fn ref_key_value(value: &Value) -> Cow<'_, Value> {
     match value {
         Value::Ref(reference) => match reference.key() {
-            RefKey::Scalar(inner) => inner,
-            RefKey::Composite(_) => value,
+            RefKey::Scalar(inner) => Cow::Borrowed(inner),
+            RefKey::Composite(components) => Cow::Owned(Value::Composite(components.clone())),
         },
-        other => other,
+        other => Cow::Borrowed(other),
     }
 }

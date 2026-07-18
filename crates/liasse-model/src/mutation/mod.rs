@@ -460,7 +460,9 @@ impl MutPhase<'_, '_> {
         params: &mut Params,
     ) {
         use liasse_syntax::BlockMemberKind;
-        let Some(Type::Struct(struct_ty)) = key_ty.as_scalar() else { return };
+        let Some(components) = key_ty.as_scalar().and_then(Type::composite_components) else {
+            return;
+        };
         for member in members {
             let (comp, value) = match &member.kind {
                 BlockMemberKind::Named { name, value: Some(value) } => (&name.text, value),
@@ -468,7 +470,7 @@ impl MutPhase<'_, '_> {
                 _ => continue,
             };
             if let ExprKind::Param(param) = &value.kind
-                && let Some(ty) = struct_ty.field(comp)
+                && let Some((_, ty)) = components.iter().find(|(name, _)| name == comp)
             {
                 record(params, &param.text, ExprType::scalar(ty.clone()));
             }

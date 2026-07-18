@@ -102,6 +102,21 @@ impl TypeConformance for Type {
                 Ok(())
             }
 
+            (Type::Composite(components), Value::Composite(values)) => {
+                if components.len() != values.len() {
+                    return Err(TypeMismatch::RefArity {
+                        expected: components.len(),
+                        found: values.len(),
+                    });
+                }
+                for ((_, component_type), value) in components.iter().zip(values) {
+                    component_type
+                        .conforms(value)
+                        .map_err(|reason| TypeMismatch::nested("composite key component", reason))?;
+                }
+                Ok(())
+            }
+
             (declared, actual) => Err(TypeMismatch::Variant {
                 expected: declared.name(),
                 found: actual.variant_name(),
@@ -128,7 +143,7 @@ impl RefTargetConformance for liasse_value::RefTarget {
                         found: values.len(),
                     });
                 }
-                for (component_type, component) in types.iter().zip(values) {
+                for ((_, component_type), component) in types.iter().zip(values) {
                     component_type
                         .conforms(component)
                         .map_err(|reason| TypeMismatch::nested("ref key component", reason))?;
@@ -172,6 +187,7 @@ impl VariantName for Value {
             Value::Enum(_) => "enum",
             Value::Ref(_) => "ref",
             Value::Struct(_) => "struct",
+            Value::Composite(_) => "composite key",
             Value::Set(_) => "set",
             Value::Map(_) => "map",
             Value::None => "none",

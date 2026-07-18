@@ -159,13 +159,16 @@ fn address_of(prospective: &Prospective, key_names: &[String], row: &RowRef) -> 
     })
 }
 
-/// The scalar target key a reference field value points at, if it is a live
-/// single-key ref. Composite-key refs are a documented CORE seam here.
+/// The target-key application identity a reference field value points at (§21.1),
+/// if it is a live ref: a scalar-keyed ref exposes its bare key, a composite-keyed
+/// ref its positional [`Value::Composite`] tuple — the same identity the target
+/// row's `materialize::key_identity` produces, so the `$on_delete` edge finds its
+/// target node in the graph by value equality.
 fn ref_key(value: Option<&Value>) -> Option<Value> {
     match value {
         Some(Value::Ref(reference)) => match reference.key() {
             RefKey::Scalar(key) => Some((**key).clone()),
-            RefKey::Composite(_) => None,
+            RefKey::Composite(components) => Some(Value::Composite(components.clone())),
         },
         _ => None,
     }

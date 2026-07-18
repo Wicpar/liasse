@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: set-ref-composite-projects-in-key-order
+  suite: scenario
+  spec: ["§6.3", "§B.4", "§A.9"]
+  tags: ["ordering", "ref", "composite", "set"]
+  note: '''
+    §6.3: "a set contributes keys in the target collection's canonical order",
+    which for a composite-keyed target is B.4 composite-key order — lexicographic
+    components in $key order (region, then code), NOT the struct field-name order.
+    A `$set` of `$ref` to a composite-keyed collection therefore projects its
+    members ordered by the referenced key components in $key order, each member as
+    the A.9 $key-order component array.
+
+    The picks are seeded in the reverse of target-key order and with regions whose
+    field-name order (code) disagrees with $key order (region): eu:z vs us:a orders
+    eu:z < us:a by $key order (region), but us:a < eu:z by field-name order (code).
+    Attack: hope the set orders by seed/insertion order, by field-name order (the
+    retired name-sorted-struct carrier), or by the D.2 colon-joined text. The set
+    MUST project [["eu","z"], ["us","a"]] — eu:z before us:a — regardless.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.setcompref@1.0.0"
+    $model: {
+      regions: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+        label: "text"
+      }
+      teams: {
+        $key: "id"
+        id: "text"
+        picks: { $set: { $ref: "/regions" } }
+      }
+      $public: {
+        by_team: { $view: ".teams { id, picks }" }
+      }
+    }
+    $data: {
+      regions: {
+        "eu:z": { region: "eu", code: "z", label: "EU-Z" }
+        "us:a": { region: "us", code: "a", label: "US-A" }
+      }
+      teams: {
+        // seeded in reverse of target-key order; A.9 object authoring syntax
+        t1: { picks: [ { region: "us", code: "a" }, { region: "eu", code: "z" } ] }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_team", id: "w1",
+      // §6.3/§B.4: the set members project in composite $key order (region first):
+      // eu:z before us:a, each as the A.9 $key-order component array.
+      expect_init: { value: [
+        { id: "t1", picks: [ ["eu", "z"], ["us", "a"] ] }
+      ] } }
+  ]
+}

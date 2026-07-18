@@ -82,16 +82,13 @@ pub(crate) fn row_key(collection: &Collection, fields: &FieldMap) -> Option<KeyV
 }
 
 /// The application-visible key value of a row (§5.4): the lone component for a
-/// single-field key, or a struct of the named components for a composite key,
-/// matching how a selector compares `row.key()`.
+/// single-field key, or the positional [`Value::Composite`] tuple in `$key` order
+/// for a composite key, matching how a selector compares `row.key()`.
 pub(crate) fn key_identity(collection: &Collection, key: &KeyValue) -> Value {
-    let fields: Vec<&str> = collection.key.iter().map(|f| f.as_str()).collect();
     let mut components = key.components();
-    match fields.as_slice() {
+    match collection.key.as_slice() {
         [_] => components.next().cloned().unwrap_or(Value::None),
-        _ => Value::Struct(Struct::new(
-            fields.iter().zip(components).map(|(name, value)| (Text::new((*name).to_owned()), value.clone())),
-        )),
+        _ => Value::Composite(components.cloned().collect()),
     }
 }
 

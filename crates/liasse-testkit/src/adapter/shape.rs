@@ -21,7 +21,7 @@ use liasse_diag::SourceMap;
 use liasse_expr::{check_statement, ExprType, RowType, Scope};
 use liasse_model::{Collection, Model, Node, Shape};
 use liasse_syntax::{parse_expression, Expr, ExprKind, StmtKind};
-use liasse_value::{RefTarget, StructType, Type};
+use liasse_value::{RefTarget, Type};
 
 /// The set of top-level view names whose result is singular (a single row or a
 /// scalar), rendered as a JSON object rather than an array.
@@ -192,7 +192,7 @@ impl Schema<'_> {
             Node::Set(set) => ExprType::scalar(Type::Set(Box::new(set.element.clone()))),
             Node::View(view) => ExprType::View(view.row.clone()),
             Node::Reference(reference) => {
-                ExprType::scalar(Type::Ref(RefTarget::Scalar(Box::new(reference.key_type.clone()))))
+                ExprType::scalar(Type::Ref(RefTarget::for_key(&reference.key_type)))
             }
             Node::Named(name) => match self.model.types().get(name) {
                 Some(target) => self.node_at(target, depth + 1),
@@ -202,7 +202,7 @@ impl Schema<'_> {
     }
 
     /// The identity type of a collection's primary key (§5.4, A.9): the single
-    /// key field's scalar type, or a struct over a composite key.
+    /// key field's scalar type, or the composite key type over a composite key.
     fn key_type(&self, collection: &Collection, depth: u32) -> ExprType {
         let mut components: Vec<(String, Type)> = Vec::new();
         for field in &collection.key {
@@ -216,7 +216,7 @@ impl Schema<'_> {
         }
         match components.as_slice() {
             [(_, ty)] => ExprType::scalar(ty.clone()),
-            _ => ExprType::scalar(Type::Struct(StructType::new(components))),
+            _ => ExprType::scalar(Type::Composite(components)),
         }
     }
 }

@@ -10,7 +10,7 @@
 
 use liasse_expr::{ExprType, RowType};
 use liasse_model::{Collection, Model, Node, Shape};
-use liasse_value::{RefTarget, StructType, Type};
+use liasse_value::{RefTarget, Type};
 
 /// Depth beyond which recursive `$types` expansion yields an opaque `json`,
 /// matching the model resolver's cap (a documented CORE simplification).
@@ -56,6 +56,15 @@ impl<'m> Schema<'m> {
     /// The top-level collection declared under `name`, if any.
     pub(crate) fn top_collection(&self, name: &str) -> Option<&'m Collection> {
         Self::collection_member(self.model.root(), name)
+    }
+
+    /// The identity key type of top-level collection `name` (§5.4, A.9): a scalar
+    /// type for a single-field key, a [`Type::Composite`] for a composite key.
+    /// Used to resolve a `$set` of `$ref` element to its target's key type, which
+    /// the model leaves unresolved (a documented seam).
+    pub(crate) fn collection_key_type(&self, name: &str) -> Option<Type> {
+        let collection = self.top_collection(name)?;
+        self.key_type(collection, 0).as_scalar().cloned()
     }
 
     /// The model collection at a declaration-name path, descending nested
@@ -126,7 +135,7 @@ impl<'m> Schema<'m> {
             Node::Set(set) => ExprType::scalar(Type::Set(Box::new(set.element.clone()))),
             Node::View(view) => ExprType::View(view.row.clone()),
             Node::Reference(reference) => {
-                ExprType::scalar(Type::Ref(RefTarget::Scalar(Box::new(reference.key_type.clone()))))
+                ExprType::scalar(Type::Ref(RefTarget::for_key(&reference.key_type)))
             }
             Node::Named(name) => match self.model.types().get(name) {
                 Some(target) => self.node_at(target, depth + 1),
@@ -149,7 +158,7 @@ impl<'m> Schema<'m> {
         }
         match components.as_slice() {
             [(_, ty)] => ExprType::scalar(ty.clone()),
-            _ => ExprType::scalar(Type::Struct(StructType::new(components))),
+            _ => ExprType::scalar(Type::Composite(components)),
         }
     }
 }

@@ -44,6 +44,9 @@ impl Type {
             Type::Map(key, value) => Self::decode_map(key, value, wire),
             Type::Ref(target) => Self::decode_ref(target, wire),
             Type::Struct(fields) => Self::decode_struct(fields, wire),
+            Type::Composite(components) => {
+                Ok(Value::Composite(Self::decode_composite(components, wire)?))
+            }
             Type::View(_) => Err(ValueError::TypeMismatch {
                 ty: "view",
                 expected: JsonShape::Null,
@@ -244,19 +247,53 @@ impl Type {
         match target {
             RefTarget::Scalar(inner) => Ok(Value::Ref(Ref::scalar(inner.decode(wire)?))),
             RefTarget::Composite(components) => {
-                let array = Type::Ref(target.clone()).expect_array(wire)?;
+                Ok(Value::Ref(Ref::composite(Self::decode_composite(components, wire)?)))
+            }
+        }
+    }
+
+    /// Decode a composite key's component values in `$key` order (A.9). The wire
+    /// value is either the canonical `$key`-order array of component wire values,
+    /// or the authoring object `{ name: … }` naming each component (normalized to
+    /// `$key` order here — object member order carries no meaning). Either form
+    /// yields the components in the declared `$key` order.
+    fn decode_composite(
+        components: &[(String, Type)],
+        wire: &J,
+    ) -> Result<Vec<Value>, ValueError> {
+        match wire {
+            J::Array(array) => {
                 if array.len() != components.len() {
                     return Err(ValueError::CompositeArity {
                         expected: components.len(),
                         found: array.len(),
                     });
                 }
-                let mut decoded = Vec::with_capacity(components.len());
-                for (component_type, component_wire) in components.iter().zip(array) {
-                    decoded.push(component_type.decode(component_wire)?);
-                }
-                Ok(Value::Ref(Ref::composite(decoded)))
+                components
+                    .iter()
+                    .zip(array)
+                    .map(|((_, ty), item)| ty.decode(item))
+                    .collect()
             }
+            J::Object(object) => {
+                for member in object.keys() {
+                    if !components.iter().any(|(name, _)| name == member) {
+                        return Err(ValueError::UnexpectedMember(member.clone()));
+                    }
+                }
+                components
+                    .iter()
+                    .map(|(name, ty)| match object.get(name) {
+                        Some(item) => ty.decode(item),
+                        None => Err(ValueError::MissingMember(name.clone())),
+                    })
+                    .collect()
+            }
+            other => Err(ValueError::TypeMismatch {
+                ty: "composite key",
+                expected: JsonShape::Array,
+                found: JsonShape::of(other),
+            }),
         }
     }
 

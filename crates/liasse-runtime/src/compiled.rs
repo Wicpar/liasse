@@ -772,7 +772,7 @@ fn compile_field(
             let on_delete = compile_on_delete(sources, schema, root_ty, row_ty, &target, reference)?;
             CompiledField {
                 name,
-                ty: Type::Ref(liasse_value::RefTarget::Scalar(Box::new(reference.key_type.clone()))),
+                ty: Type::Ref(liasse_value::RefTarget::for_key(&reference.key_type)),
                 reference: Some(RefInfo { target, optional: reference.optional, on_delete }),
                 element_reference: None,
                 default: None,
@@ -785,13 +785,25 @@ fn compile_field(
         // the field's definition document; every member then resolves through the
         // same integrity check and atomic-rekey rewrite as a scalar ref.
         Node::Set(set) => {
-            let element_reference = matches!(set.element, Type::Ref(_))
+            let target = matches!(set.element, Type::Ref(_))
                 .then(|| set_ref_target(member_doc))
-                .flatten()
+                .flatten();
+            // §5.6: the model leaves a `$set` of `$ref` element target unresolved
+            // (a documented seam). Recover the target's key type here so a member
+            // supplied as wire decodes to the correct scalar or positional
+            // composite ref (`Ref::composite`), matching a direct `$ref` field.
+            let element = match &target {
+                Some(name) => schema.collection_key_type(name).map_or_else(
+                    || set.element.clone(),
+                    |key| Type::Ref(liasse_value::RefTarget::for_key(&key)),
+                ),
+                None => set.element.clone(),
+            };
+            let element_reference = target
                 .map(|target| RefInfo { target, optional: false, on_delete: OnDelete::Undecided });
             CompiledField {
                 name,
-                ty: Type::Set(Box::new(set.element.clone())),
+                ty: Type::Set(Box::new(element)),
                 reference: None,
                 element_reference,
                 default: None,

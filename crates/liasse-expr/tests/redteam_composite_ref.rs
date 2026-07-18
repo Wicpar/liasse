@@ -2,15 +2,16 @@
 //! Red-team probe: composite-keyed ref dereference / membership / equality
 //! (§6.3, §7.6, A.9).
 //!
-//! A ref to a collection with a composite `$key` is typed `RefTarget::Scalar` of
-//! the target's key *struct* (`liasse-model` `refs::key_type`), so a composite
-//! ref value is carried as `Ref::scalar(Value::Struct)` — the same name-sorted
-//! struct a target row materializes for its key (`materialize::key_identity`).
-//! Because the two share one representation, dereference, `in`, and `==` compare
-//! the ref's application key against the target row's key struct directly. These
-//! tests pin that the composite ref resolves to its target; expectations are
-//! derived from §7.6 ("a ref value is a target key") and §6.3 (a ref and a key of
-//! the same declared target compare the current typed key), not the impl.
+//! A ref to a collection with a composite `$key` is typed `RefTarget::Composite`
+//! of the target's `$key`-order component types (`liasse-model` `refs::key_type`),
+//! so a composite ref value is carried as `Ref::composite` — the positional
+//! `$key`-order tuple. A composite target row materializes its key as the equal
+//! positional `Value::Composite` (`materialize::key_identity`). Because the two
+//! share one positional representation, dereference, `in`, and `==` compare the
+//! ref's application key against the target row's key tuple directly. These tests
+//! pin that the composite ref resolves to its target; expectations are derived
+//! from §7.6 ("a ref value is a target key") and §6.3 (a ref and a key of the
+//! same declared target compare the current typed key), not the impl.
 
 mod common;
 
@@ -19,31 +20,28 @@ use common::{
     FixedScope,
 };
 use liasse_expr::{Cell, ExprType};
-use liasse_value::{Ref, RefTarget, Struct, StructType, Text, Type, Value};
+use liasse_value::{Ref, RefTarget, Type, Value};
 
 /// The composite key `[region, code] = [eu, x]` as its application-visible
-/// value: a name-sorted struct `{ code: x, region: eu }`.
+/// value: the positional `$key`-order tuple `Value::Composite([eu, x])`.
 fn key_struct() -> Value {
-    Value::Struct(Struct::new([
-        (Text::new("code"), vtext("x")),
-        (Text::new("region"), vtext("eu")),
-    ]))
+    Value::Composite(vec![vtext("eu"), vtext("x")])
 }
 
 /// Root with `regions` (composite key `[region, code]`) and an `owner` ref field
 /// carrying the composite key `owner`. `owner` is supplied by the caller so the
 /// same fixture covers both faithful carriers of a composite ref value.
 fn setup(owner: Value) -> (FixedScope, FixedEnv, Cell) {
-    let key_ty = Type::Struct(StructType::new([
-        ("code".to_owned(), Type::Text),
+    let key_ty = Type::Composite(vec![
         ("region".to_owned(), Type::Text),
-    ]));
+        ("code".to_owned(), Type::Text),
+    ]);
     let region_ty = row_type(
         vec![("region", scalar(Type::Text)), ("code", scalar(Type::Text)), ("label", scalar(Type::Text))],
         Some(scalar(key_ty.clone())),
     );
-    // A ref to a composite-keyed target is typed RefTarget::Scalar(key struct).
-    let owner_ty = scalar(Type::Ref(RefTarget::Scalar(Box::new(key_ty))));
+    // A ref to a composite-keyed target is typed RefTarget::Composite (positional).
+    let owner_ty = scalar(Type::Ref(RefTarget::for_key(&key_ty)));
     let root_ty = row_type(vec![("regions", view(region_ty)), ("owner", owner_ty)], None);
     let scope = FixedScope::new(ExprType::Row(root_ty));
 
@@ -58,9 +56,9 @@ fn setup(owner: Value) -> (FixedScope, FixedEnv, Cell) {
 }
 
 /// The two faithful carriers of a composite ref value: wrapped in `Ref`, or
-/// stored as its bare key struct (§6.3 ref/key equality permits either).
+/// stored as its bare positional key tuple (§6.3 ref/key equality permits either).
 fn scalar_ref() -> Value {
-    Value::Ref(Ref::scalar(key_struct()))
+    Value::Ref(Ref::composite(vec![vtext("eu"), vtext("x")]))
 }
 fn bare_key() -> Value {
     key_struct()

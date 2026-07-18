@@ -399,18 +399,14 @@ fn bound(rows: Vec<Row>, projection: &Projection) -> Vec<Row> {
     rows
 }
 
-/// The identity value of a synthetic key: the scalar itself, or a struct of the
-/// components in `$key` order (§7.2).
+/// The identity value of a synthetic key (§7.2): the scalar itself, or the
+/// positional [`Value::Composite`] tuple of the components in `$key` order — the
+/// same carrier a collection's composite key identity uses, so B.4 orders it
+/// positionally.
 fn synthetic_key_value(components: &[Value]) -> Value {
     match components {
         [single] => single.clone(),
-        many => {
-            let fields = many
-                .iter()
-                .enumerate()
-                .map(|(index, value)| (liasse_value::Text::new(index.to_string()), value.clone()));
-            Value::Struct(liasse_value::Struct::new(fields))
-        }
+        many => Value::Composite(many.to_vec()),
     }
 }
 

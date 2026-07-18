@@ -33,7 +33,10 @@ fn ref_is_not_key_eligible_even_with_an_eligible_target() {
     let scalar_ref = Type::Ref(RefTarget::Scalar(Box::new(Type::Uuid)));
     assert!(!scalar_ref.is_key_eligible());
 
-    let composite_ref = Type::Ref(RefTarget::Composite(vec![Type::Text, Type::Int]));
+    let composite_ref = Type::Ref(RefTarget::Composite(vec![
+        ("region".to_owned(), Type::Text),
+        ("code".to_owned(), Type::Int),
+    ]));
     assert!(!composite_ref.is_key_eligible());
 }
 

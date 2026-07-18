@@ -66,9 +66,9 @@ impl<'a> Resolver<'a> {
             }
             Node::Set(set) => ExprType::scalar(Type::Set(Box::new(set.element.clone()))),
             Node::View(view) => ExprType::View(view.row.clone()),
-            Node::Reference(reference) => ExprType::scalar(Type::Ref(RefTarget::Scalar(
-                Box::new(reference.key_type.clone()),
-            ))),
+            Node::Reference(reference) => {
+                ExprType::scalar(Type::Ref(RefTarget::for_key(&reference.key_type)))
+            }
             Node::Named(name) => match self.types.get(name) {
                 Some(target) => self.node_at(target, depth + 1),
                 None => ExprType::scalar(Type::Json),
@@ -113,7 +113,8 @@ impl<'a> Resolver<'a> {
     }
 
     /// The identity type of a collection's primary key (§5.4, A.9): the field
-    /// type for a single key, or a struct of the key fields for a composite key.
+    /// type for a single key, or the composite key type (`(name, type)` in `$key`
+    /// order) for a composite key.
     fn key_type(&self, collection: &Collection, depth: u32) -> ExprType {
         let mut components: Vec<(String, Type)> = Vec::new();
         for field in &collection.key {
@@ -127,10 +128,7 @@ impl<'a> Resolver<'a> {
         }
         match components.as_slice() {
             [(_, ty)] => ExprType::scalar(ty.clone()),
-            _ => {
-                let struct_ty = liasse_value::StructType::new(components);
-                ExprType::scalar(Type::Struct(struct_ty))
-            }
+            _ => ExprType::scalar(Type::Composite(components)),
         }
     }
 }
