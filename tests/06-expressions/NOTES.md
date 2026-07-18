@@ -55,6 +55,7 @@ None. Every case in this chapter uses only the step vocabulary defined in
    once for the admitted insertion/request" read literally makes two `uuid()`
    key defaults in one request collide; Annex A.5 disambiguates `now()` but
    nothing disambiguates `uuid()`.
-6. `red/surface-view-parameter-inference-unspecified` — parameter inference
-   is defined for mutations (§8.3); whether a surface `$view` may use `@name`
-   without a `$params` declaration is not pinned.
+
+(SPEC-ISSUES #10, surface `$view` parameter declaration, is now pinned — see
+`red/surface-view-parameter-inference-invalid` and §10.1 — so it is no longer
+an `unspecified` gap.)

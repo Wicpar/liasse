@@ -322,6 +322,10 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- fail:noview ---
     ("10-interfaces-roles/except-prunes-entire-branch", "no view value produced (unsupported view/watch path)"),
     ("10-interfaces-roles/recursive-coverage-nests-included-descendants", "no view value produced (unsupported view/watch path)"),
+    // §10.5 hereditary-$where pin (SPEC-ISSUES #11(b)): recursive coverage is
+    // validated statically but not materialized at runtime, so the covered view
+    // produces no value — same seam as the two recursive cases above.
+    ("10-interfaces-roles/where-excluded-branch-hereditary", "no view value produced (unsupported view/watch path); §10.5 recursive coverage validated but not materialized at runtime"),
     ("14-buckets/short-form-from-defaults-to-created", "no view value produced (unsupported view/watch path)"),
     // --- fail:outcome ---
     ("05-state-model/nested-initializer-failure-rejects-parent-insert", "outcome divergence: expected `ok` observed `rejected`"),
@@ -329,7 +333,11 @@ pub const SKIP: &[(&str, &str)] = &[
     ("10-interfaces-roles/deleted-scope-row-revokes-role", "outcome divergence: expected `ok` observed `denied`"),
     ("10-interfaces-roles/fixed-call-argument-not-overridable", "outcome divergence: expected `ok` observed `denied`"),
     ("10-interfaces-roles/membership-reevaluated-each-admission", "outcome divergence: expected `ok` observed `rejected`"),
-    ("10-interfaces-roles/recursive-descendant-mutation-addressing-unspecified", "outcome divergence: expected `ok` observed `denied`"),
+    // §10.5 descendant key-path addressing pin (SPEC-ISSUES #11(a)): the case's
+    // step-2 scoped-role rename already observes `denied` (scoped-role addressing
+    // is unwired this phase, same seam as `scoped-role-addressed-by-row-and-name`);
+    // step-3 descendant re-walk addressing is likewise unlanded.
+    ("10-interfaces-roles/recursive-descendant-mutation-addressing", "outcome divergence: expected `ok` observed `denied` — scoped-role (and §10.5 descendant key-path) addressing unwired this phase"),
     ("10-interfaces-roles/row-mutation-receiver-exactly-one", "outcome divergence: expected `rejected` observed `denied`"),
     ("10-interfaces-roles/scoped-role-addressed-by-row-and-name", "outcome divergence: expected `ok` observed `denied`"),
     ("11-auth-sessions/login-operation-id-replay-at-most-once", "outcome divergence: expected `ok` observed `rejected`"),

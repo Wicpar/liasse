@@ -1313,6 +1313,10 @@ A surface MAY expose a parameterized view, named mutations, or both:
 
 Within a surface, `$params` maps input names to field declarations and defaults, `$view` defines its read result, and `$mut` maps external call names to mutation behavior. These members may coexist.
 
+A surface MUST declare at least one of `$view` or `$mut`. A surface exposing neither — an empty surface, or one carrying only `$params` and/or `$recursive` — is not callable or watchable, and is rejected at load.
+
+A surface `$view` (and a `$recursive` `$where`/`$except` predicate) parameter is not inferred: every `@name` such an expression reads MUST be declared in the surface's `$params`, and an `@name` with no matching `$params` entry is a static error at load. §8.3 parameter inference applies to mutation bodies only, where each `@name` use is an assignment or key selector with a target field to anchor its type; a surface's read positions have no such anchor, and the surface's input shape is its public wire contract, so it is stated explicitly in `$params` rather than derived from an interior expression.
+
 The wire carries the surface name, mutation name, and typed values. It carries no executable expression.
 
 A surface `$mut` is always a map:
@@ -1447,9 +1451,11 @@ At each level:
 2. `$bind` names one candidate;
 3. `$where` includes candidates satisfying its predicate;
 4. `$except` removes candidates satisfying its predicate and prunes that branch;
-5. the same surface projection and mutations apply to included children.
+5. the same surface projection and mutations apply to included children; recursion descends only into included candidates (one satisfying `$where` and not satisfying `$except`). A candidate excluded by `$where`, or pruned by `$except`, contributes no output slot, and none of its descendants are surfaced or reparented. `$where` is an allow-list (default include) and `$except` a deny-list (default none) that overrides it; both are hereditary.
 
-The output appears under `$field` as a nested keyed view. The checker verifies descendant shape, acyclicity, identity, and predicate types.
+The output appears under `$field` as a nested keyed view — a keyed tree in which every node's ancestors are all included. The checker verifies descendant shape, acyclicity, identity, and predicate types.
+
+An external request addresses a covered descendant receiver by the role handle — its containing row identity and role name (§10.3) — together with the descendant's key path from that row down through `$field`/`$through`. Admission re-evaluates the recursive relation along the whole path; a path with any step that is not a strict, `$where`-included, non-`$except` descendant is denied. The role-holding row is the empty path, addressed by the role handle alone.
 
 Membership, recursive edges, filters, and exceptions are re-evaluated at admission. A role change therefore affects subsequent requests immediately in serial order.
 

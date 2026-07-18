@@ -6,9 +6,9 @@
   // current row; $bind names one candidate; $where includes candidates
   // satisfying its predicate; ... The output appears under $field as a
   // nested keyed view."
-  // The $where-excluded child ("b") is a leaf, so this case stays clear of
-  // the unspecified where-excluded-branch traversal question (see
-  // red/where-excluded-branch-unspecified).
+  // The $where-excluded child ("b") is a leaf here; the hereditary-$where rule
+  // for a non-leaf excluded branch (its descendants are not surfaced) is pinned
+  // separately in red/where-excluded-branch-hereditary (SPEC-ISSUES #11(b)).
   spec: ["#interfaces", "§10.5", "§10.3"]
   tags: ["recursive"]
 

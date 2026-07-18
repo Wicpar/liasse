@@ -162,6 +162,10 @@ impl SurfacePhase<'_, '_> {
         };
         let params = self.surface_params(value);
         let mut calls = Vec::new();
+        // §10.1: a surface exposes callable/watchable access only through `$view`
+        // or `$mut`; a surface carrying neither (an empty `{}`, or one holding only
+        // `$params` and/or `$recursive`) is rejected below.
+        let mut exposes = false;
         for member in members {
             match member.name.text.as_str() {
                 "$params" => {}
@@ -169,8 +173,14 @@ impl SurfacePhase<'_, '_> {
                 // publicly or through a role, so the generated-call gate runs in
                 // both cases; only the public path is additionally fully typed (a
                 // role `$view`'s `$actor` typing stays a documented seam).
-                "$view" => self.check_view(&member.value, &params, public),
-                "$mut" => self.surface_muts(&member.value, public, &mut calls),
+                "$view" => {
+                    exposes = true;
+                    self.check_view(&member.value, &params, public);
+                }
+                "$mut" => {
+                    exposes = true;
+                    self.surface_muts(&member.value, public, &mut calls);
+                }
                 // §10.5: a scoped surface MAY propagate through a checked
                 // descendant relation. Its shape and predicate types are
                 // validated here; the runtime performs the actual traversal.
@@ -186,6 +196,23 @@ impl SurfacePhase<'_, '_> {
                     format!("`{other}` is not a surface member; call names live under `$mut`"),
                 ),
             }
+        }
+        // §10.1: a surface MUST declare at least one of `$view` or `$mut`. A
+        // surface exposing neither — an empty surface, or one carrying only
+        // `$params` and/or `$recursive` — is not callable or watchable, so it is a
+        // static load error rather than a silently accepted no-op.
+        if !exposes {
+            self.reporter.reject_hint(
+                value.span,
+                code::SURFACE,
+                format!(
+                    "surface `{}` exposes nothing; a surface MUST declare `$view` or `$mut` (§10.1)",
+                    name.as_str()
+                ),
+                "add a `$view` read result or a `$mut` map of calls; a `$params`-only, \
+                 `$recursive`-only, or empty surface is not callable or watchable",
+            );
+            return None;
         }
         Some(Surface { name, public, calls })
     }
@@ -465,6 +492,15 @@ impl SurfacePhase<'_, '_> {
         };
         self.reject_generated(&parsed, sub);
         if !public {
+            // §10.1: a role `$view` is not fully typed here (its `$actor` row type
+            // is resolved by a later pass — the documented seam), but a surface
+            // `$view` parameter is *not* inferred: §8.3 inference applies to
+            // mutation bodies only, where each `@name` use has a write-side field
+            // to anchor its type. Every `@name` a role `$view` reads MUST be
+            // declared in the surface's `$params`; reject an undeclared one here so
+            // the role path agrees with the public path (which reaches the same
+            // rejection through full typing).
+            self.reject_undeclared_view_params(&parsed, sub, params);
             return;
         }
         let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
@@ -479,6 +515,38 @@ impl SurfacePhase<'_, '_> {
         // results, so only the expression's well-formedness is enforced here.
         if let Err(diags) = liasse_expr::check_statement(&scope, sub, &parsed) {
             self.reporter.emit_all(diags);
+        }
+    }
+
+    /// §10.1: reject every `@name` a role `$view` reads that is not declared in the
+    /// surface's `$params`. A surface-view parameter is not inferred (§8.3
+    /// inference is mutation-only), so an undeclared `@name` is a static load
+    /// error. This runs only on the role path, whose full typing is skipped for the
+    /// `$actor` seam; the public path reaches the identical rejection through
+    /// `liasse_expr`'s `unknown parameter` check. Spans index the view sub-source
+    /// `sub`.
+    fn reject_undeclared_view_params(
+        &mut self,
+        parsed: &SpannedExpression,
+        sub: liasse_diag::SourceId,
+        params: &[(String, ExprType)],
+    ) {
+        let mut refs = Vec::new();
+        for expr in stmt_exprs(&parsed.statement) {
+            param_refs(expr, &mut refs);
+        }
+        for (name, span) in refs {
+            if !params.iter().any(|(declared, _)| declared == name) {
+                self.reject_at(
+                    sub,
+                    span,
+                    format!("surface `$view` reads `@{name}`, which is not declared in `$params` (§10.1)"),
+                    format!(
+                        "a surface view parameter is not inferred (§8.3 is mutation-only); declare \
+                         it, e.g. `\"$params\": {{ \"{name}\": \"<type>\" }}`"
+                    ),
+                );
+            }
         }
     }
 
@@ -706,6 +774,21 @@ impl SurfacePhase<'_, '_> {
             ExprKind::Select { base, .. } => self.resolve_path(base),
             _ => None,
         }
+    }
+}
+
+/// Collect every `@name` parameter reference in `expr`, paired with its span, so a
+/// surface `$view` can reject any not declared in `$params` (§10.1). Unlike the
+/// mutation-side `collect_param_refs`, this descends into call arguments too: a
+/// surface-view parameter is not inferred from a callee signature (§8.3 is
+/// mutation-only), so *every* `@name` use — a comparison, a projection, or a call
+/// argument — must name a declared parameter.
+fn param_refs<'e>(expr: &'e Expr, out: &mut Vec<(&'e str, liasse_diag::ByteSpan)>) {
+    if let ExprKind::Param(id) = &expr.kind {
+        out.push((&id.text, id.span));
+    }
+    for child in crate::walk::child_exprs(expr) {
+        param_refs(child, out);
     }
 }
 

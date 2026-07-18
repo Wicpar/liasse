@@ -44,7 +44,7 @@ steps are used:
 | `scope` | `call`, `watch` | canonical key text of the containing row for a **scoped role** target (§10.3: "An external request addresses a scoped role by its containing row identity and role name"). Absent for root-level roles and public surfaces. |
 | `args` | `watch` | typed values for the surface `$params` (§10.1, §12.1 `view` operation). Omitted members take their declared defaults. |
 | `expect` | `watch`, `authenticate` | outcome assertion for operations expected to fail before a subscription/init exists (same outcome vocabulary as `call` `expect`). |
-| `descendant` | `call` | **hypothetical** — used only by `common/recursive-descendant-mutation-addressing-unspecified` to record that the spec does not define how a mutation call addresses a recursively covered descendant (§10.5). Harnesses should treat the case as `unspecified`, not implement the member. |
+| `descendant` | `call` | the §10.5 **descendant key path** from the `scope` role-holding row down through `$field`/`$through` to a recursively covered receiver (SPEC-ISSUES #11(a), now pinned). A single string is a one-segment path (e.g. `"a"` = subcompany `a` under `scope: "root"`); the role-holding row itself is the absent/empty path. Admission re-walks the recursive relation along the path and binds the addressed descendant as the mutation `.` receiver. Used by `common/recursive-descendant-mutation-addressing`. Descendant addressing is not yet materialized in the runtime (scoped-role addressing is unwired this phase), so that case is acknowledged debt in the scenario ledger. |
 
 ## Outcome-mapping convention: unresolvable / ungranted names → `denied`
 
@@ -75,6 +75,13 @@ cases do not pin the representation of an *empty* child view on leaf nodes
 (`[]` vs. absent), which §10.5 does not specify. Array-level membership —
 which children appear at each level — is still matched exactly, since that
 is the normative content of `$where`/`$except`.
+
+`red/where-excluded-branch-hereditary` (SPEC-ISSUES #11(b)) asserts the
+normative membership fact directly: with `$where` hereditary, a non-leaf
+`$where`-excluded branch surfaces none of its descendants, so root's
+included-children level is empty (`subcompanies: []`). The empty level is
+matched exactly (it is the normative content — no promotion, no reparenting);
+`"...": true` on the root object still leaves any other root members loose.
 
 ## Unicode payloads
 

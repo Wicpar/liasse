@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: role-view-undeclared-parameter-invalid
+  suite: static
+  spec: ["#interfaces", "§10.1", "§8.3"]
+  tags: ["typing", "authz"]
+  note: '''
+    SPEC-ISSUES #10, pinned — the ROLE-granted surface path. A surface `$view`
+    parameter is not inferred (§8.3 inference is mutation-only); every `@name`
+    it reads MUST be declared in the surface's `$params` (§10.1). A role `$view`
+    is not fully typed at load (its `$actor` row type is a later pass), so this
+    is the path where an undeclared `@name` could previously slip through. Here
+    the role surface `by_state` reads `@done` with no `$params`, so it is a
+    static load error exactly as the byte-identical public case
+    (`06/surface-view-parameter-inference-invalid`) is — both paths agree.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.roleviewparam@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        enabled: "bool = true"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts[:a | a.enabled]"
+          by_state: {
+            // no $params declaration; the role view reads @done
+            $view: ".tasks[:t | t.done == @done] { id }"
+          }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces", "§10.1"]
+    detail: "role surface `$view` reads `@done` with no `$params` declaration; a surface view parameter is not inferred (§8.3 is mutation-only), so it is a static load error (§10.1)"
+  }
+}

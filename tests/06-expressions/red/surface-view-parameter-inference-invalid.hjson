@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: surface-view-parameter-inference-invalid
+  suite: static
+  spec: ["#interfaces", "§10.1", "§8.3", "#expressions", "§6.2"]
+  tags: ["typing"]
+  note: '''
+    SPEC-ISSUES #10, pinned. §6.2 says `@name` denotes a mutation or view
+    parameter. §8.3 defines type inference for mutation parameters only (each
+    `@name` use is an assignment or key selector with a target field to anchor
+    its type). A surface `$view` parameter is NOT inferred: §10.1 makes the
+    surface's `$params` its explicit public wire contract, so a surface `$view`
+    that reads `@done` with no matching `$params` entry is a static load error,
+    not an inferred required input. This is the PUBLIC-surface path (fully typed
+    at load); the byte-identical role-surface path is in
+    `10/role-view-undeclared-parameter-invalid`.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.viewparams@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+      }
+      $public: {
+        by_state: {
+          // no $params declaration; the view reads @done
+          $view: ".tasks[:t | t.done == @done] { id }"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces", "§10.1"]
+    detail: "surface `$view` reads `@done` with no `$params` declaration; a surface view parameter is not inferred (§8.3 is mutation-only), so it is a static load error (§10.1)"
+  }
+}

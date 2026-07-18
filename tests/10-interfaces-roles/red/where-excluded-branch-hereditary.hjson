@@ -1,21 +1,21 @@
 {
   format: 1
-  name: where-excluded-branch-unspecified
+  name: where-excluded-branch-hereditary
   suite: scenario
   spec: ["#interfaces", "§10.5"]
   tags: ["recursive"]
   note: '''
-    §10.5 distinguishes $where ("includes candidates satisfying its
-    predicate") from $except ("removes candidates satisfying its predicate
-    and prunes that branch"). Only $except is specified to prune. That
-    wording implies a $where-excluded candidate's descendants might still be
-    traversed — otherwise $where and $except would be behaviorally identical
-    for exclusion — yet the output format gives an excluded child no slot:
-    results nest strictly under $field of INCLUDED children, so a traversed
-    grandchild ("b1" below, active under the where-excluded closed "b") has
-    no defined place to appear. Whether b1 is silently dropped (de-facto
-    pruning), attached elsewhere, or the construct is rejected is not
-    specified. This case seeds exactly that shape and records the gap.
+    SPEC-ISSUES #11(b), pinned. §10.5 now makes $where hereditary exactly like
+    $except: recursion descends only into INCLUDED candidates (satisfying
+    $where and not $except), and a $where-excluded (or $except-pruned) node
+    contributes no output slot AND none of its descendants are surfaced or
+    reparented. So over root -> b (plan == closed, $where-excluded) -> b1
+    (active, would satisfy $where): b is excluded and, because $where is
+    hereditary, its descendant b1 is NOT surfaced anywhere — no promotion, no
+    reparenting. Root's coverage view therefore has no included children.
+    ($where allow-list / $except deny-list, deny overrides; both hereditary.)
+    The nested keyed view under $field is rendered as the row array the sibling
+    recursive cases use, so an empty level is the empty array.
   '''
 
   package: {
@@ -72,7 +72,8 @@
               name: "Closed Branch"
               plan: "closed"
               subcompanies: {
-                // Satisfies $where but sits under a $where-excluded child.
+                // Satisfies $where but sits under a $where-excluded child, so
+                // hereditary $where keeps it out of the surfaced tree entirely.
                 b1: { name: "Active under closed" }
               }
             }
@@ -84,7 +85,15 @@
 
   steps: [
     { connect: "c1", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+    // b is $where-excluded and b1 is under it, so hereditary $where surfaces
+    // neither: root's coverage view has an empty included-children level.
     { watch: "admin.company", scope: "root", id: "w1",
-      expect_init: { outcome: unspecified } }
+      expect_init: { value: {
+        id: "root"
+        name: "Root"
+        plan: "active"
+        subcompanies: []
+        "...": true
+      } } }
   ]
 }

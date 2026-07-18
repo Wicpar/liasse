@@ -67,10 +67,32 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
    provenance not application-readable); both cases pinned → `rejected`.
 10. **Surface `$view` parameter inference.** Inference is defined for
     mutations only (§8.3). `06/surface-view-parameter-inference`.
+    **RESOLVED (pending SPEC.md merge):** §10.1 amended — a surface `$view`
+    (and a `$recursive` `$where`/`$except` predicate) parameter is *not*
+    inferred; every `@name` it reads MUST be declared in `$params`, an
+    undeclared one is a static load error (§8.3 inference is mutation-only).
+    The public `$view` path already rejected via full typing; the fix extends
+    the undeclared-parameter rejection to the role `$view` path (which skips
+    full typing for the `$actor` seam). Corpus `06/…-invalid` (public) and new
+    `10/role-view-undeclared-parameter-invalid` (role) flip to `invalid`.
 11. **Interface addressing edges.** Recursive-descendant mutation addressing;
     `$where`/`$except` excluded-branch representation; empty surface
     declaration. `10/recursive-descendant-mutation-addressing`,
     `10/where-excluded-branch`, `10/empty-surface-declaration`.
+    **RESOLVED (pending SPEC.md merge):** §10.5/§10.1 amended, all three pinned
+    single-canonical / fail-closed. (a) A covered descendant receiver is
+    addressed by a descendant KEY PATH extending the role scope; admission
+    re-walks the relation and denies any uncovered step (the role-holding row
+    is the empty path). (b) `$where` is hereditary exactly like `$except`:
+    recursion descends only into included candidates, and a `$where`-excluded
+    or `$except`-pruned node's descendants are neither surfaced nor reparented
+    (`$where` allow-list, `$except` deny-list, deny overrides). (c) A surface
+    exposing neither `$view` nor `$mut` (empty, or `$params`/`$recursive`-only)
+    is rejected at load. Runtime: (c) landed in `liasse-model` (empty-surface
+    reject); (a) descendant addressing and (b) recursive materialization stay
+    runtime debt (scoped-role addressing and recursive-coverage view are
+    validated but not yet materialized), so the two scenario corpus cases are
+    pinned to their spec outcomes and acknowledged in the scenario ledger.
 
 ## Views
 

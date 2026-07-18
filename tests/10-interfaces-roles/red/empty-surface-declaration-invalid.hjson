@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: empty-surface-declaration-invalid
+  suite: static
+  spec: ["#interfaces", "§10.1"]
+  tags: ["boundary"]
+  note: '''
+    SPEC-ISSUES #11(c), pinned. A surface declaring neither $view nor $mut
+    (here the empty object `void: {}`) exposes nothing callable or watchable.
+    Annex C.10 marks the members optional, but §10.1 now requires a surface to
+    declare at least one of $view or $mut; an empty surface, or one carrying
+    only $params and/or $recursive, is a static load error rather than a
+    silently accepted no-op (fail-closed, single canonical form).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.empty_surface@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        title: "text"
+      }
+      $public: {
+        void: {}
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces", "§10.1"]
+    detail: "surface `void` declares neither `$view` nor `$mut`; an empty surface exposes nothing callable or watchable and is rejected at load (§10.1)"
+  }
+}
