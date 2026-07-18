@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: uuid-uppercase-input-canonicalization
+  suite: scenario
+  spec: ["#annex-a", "§A.1", "#annex-d", "§D.2"]
+  tags: ["uuid", "identity", "unicode"]
+  note: '''Attack surface, now pinned (SPEC-ISSUES item 2, resolved). An attacker supplies
+the same UUID once lowercase and once UPPERCASE, hoping to either (a) mint a second
+identity for the same UUID, or (b) alias onto the victim row. Annex A.1 fixes the
+canonical *wire* value of a uuid as the 'lowercase hyphenated JSON string' and adds the
+resolved input rule: a machine wire/request scalar MUST already be canonical, and a
+non-canonical spelling is REJECTED as malformed at admission — never normalized, never
+accepted as a distinct value. Annex D.2 fixes the canonical *key text* as the same
+lowercase form, so a uuid has exactly one identity. Under either reading of the engine's
+boundary the second insert is rejected: the non-canonical uppercase literal is refused
+at the wire boundary as malformed, or (equivalently, since it cannot become a *distinct*
+identity) it collapses onto the one canonical key and collides with the first row. The
+second `add` therefore does not create a second row — it is rejected at admission.
+
+The human-authoring layer stays lenient and canonicalizes at compile (item 2 scope); this
+case exercises the machine wire/request boundary, where canonicality is mandatory.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.uuidcase@1.0.0"
+    $model: {
+      keys: {
+        $key: "id"
+        id: "uuid"
+        marker: "text"
+      }
+      $public: {
+        keys: {
+          $mut: {
+            add: ".keys + { id: @id, marker: @marker }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.keys.add",
+      args: { id: "0191c1a0-0000-7000-8000-000000000000", marker: "lower" },
+      expect: { outcome: ok } }
+    // same UUID, uppercased hex digits: non-canonical wire input is rejected at
+    // admission (item 2) and never mints a distinct identity (A.1/D.2)
+    { call: "public.keys.add",
+      args: { id: "0191C1A0-0000-7000-8000-000000000000", marker: "upper" },
+      expect: { outcome: rejected, violates: ["#annex-a", "§A.1", "#annex-d", "§D.2"] } }
+  ]
+}

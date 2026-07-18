@@ -1,7 +1,10 @@
 //! `period` — fixed or calendar recurrence step (A.4). Ordering per B.1.
 
+use core::cmp::Ordering;
+
 use crate::duration::Duration;
 use crate::error::ValueError;
+use crate::value::cmp_optional_none_last;
 
 /// Destination-date-missing policy. Declaration order (A.4/B.1): `clamp < reject`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -164,9 +167,12 @@ impl CalendarPeriodBuilder {
 /// A calendar recurrence step (A.4).
 ///
 /// Field order here is deliberately the B.1 comparison order —
-/// `(years, months, weeks, days, time, zone, overflow, ambiguous, missing)` —
-/// so a derived lexicographic `Ord` is exactly the specified order.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// `(years, months, weeks, days, time, zone, overflow, ambiguous, missing)`.
+/// Every member but `zone` uses its natural order, so `Ord` is written by hand:
+/// the optional `zone` orders **`none` last** (B.4 / SPEC-ISSUES item 30) — a
+/// period naming a zone sorts before an otherwise-equal one that omits it —
+/// which is the opposite of `Option`'s derived `None`-first order.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct CalendarPeriod {
     years: i64,
     months: i64,
@@ -177,6 +183,27 @@ pub struct CalendarPeriod {
     overflow: Overflow,
     ambiguous: Ambiguous,
     missing: Missing,
+}
+
+impl Ord for CalendarPeriod {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.years
+            .cmp(&other.years)
+            .then_with(|| self.months.cmp(&other.months))
+            .then_with(|| self.weeks.cmp(&other.weeks))
+            .then_with(|| self.days.cmp(&other.days))
+            .then_with(|| self.time.cmp(&other.time))
+            .then_with(|| cmp_optional_none_last(&self.zone, &other.zone))
+            .then_with(|| self.overflow.cmp(&other.overflow))
+            .then_with(|| self.ambiguous.cmp(&other.ambiguous))
+            .then_with(|| self.missing.cmp(&other.missing))
+    }
+}
+
+impl PartialOrd for CalendarPeriod {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl CalendarPeriod {

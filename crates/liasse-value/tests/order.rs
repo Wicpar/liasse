@@ -243,3 +243,42 @@ fn period_fixed_sorts_before_calendar() -> Result<(), ValueError> {
     assert_ascending(vec![fixed_small, fixed_large, calendar]);
     Ok(())
 }
+
+#[test]
+fn blob_descriptor_absent_name_sorts_after_present_name() -> Result<(), ValueError> {
+    // B.4 / SPEC-ISSUES item 30: descriptors equal on `$sha512`, `$bytes`,
+    // `$media` order by the optional `$name` with `none` LAST — a named
+    // descriptor sorts before an otherwise-equal unnamed one.
+    use liasse_value::{BlobDescriptor, MediaType, Sha512};
+    let hex = "ab".repeat(64);
+    let named = Value::Blob(Box::new(BlobDescriptor::new(
+        Sha512::parse(&hex)?,
+        1,
+        MediaType::new("application/pdf"),
+        Some("a.pdf".to_owned()),
+    )));
+    let unnamed = Value::Blob(Box::new(BlobDescriptor::new(
+        Sha512::parse(&hex)?,
+        1,
+        MediaType::new("application/pdf"),
+        None,
+    )));
+    assert_ascending(vec![named, unnamed]);
+    Ok(())
+}
+
+#[test]
+fn calendar_period_absent_zone_sorts_after_present_zone() -> Result<(), ValueError> {
+    // B.4 / SPEC-ISSUES item 30: calendar periods equal on the leading magnitude
+    // and time members order by the optional `zone` with `none` LAST.
+    use liasse_value::{CalendarPeriodBuilder, Period};
+    let zoned = Value::Period(Box::new(Period::Calendar(
+        CalendarPeriodBuilder { months: 1, zone: Some("Europe/Paris".to_owned()), ..CalendarPeriodBuilder::default() }
+            .build()?,
+    )));
+    let zoneless = Value::Period(Box::new(Period::Calendar(
+        CalendarPeriodBuilder { months: 1, zone: None, ..CalendarPeriodBuilder::default() }.build()?,
+    )));
+    assert_ascending(vec![zoned, zoneless]);
+    Ok(())
+}

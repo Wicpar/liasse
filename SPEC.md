@@ -480,7 +480,7 @@ Set of refs:
 }
 ```
 
-The value of `$set` is the shape of every member. Initial membership comes from data or mutations. Sets have canonical read order from the element type's total order. Membership is mathematical: repeated input values collapse to one member, adding an existing member leaves the set unchanged, and removing an absent member leaves it unchanged.
+The value of `$set` is the shape of every member. A member shape is a present value type — `none` is absence, not a value, so it is never a set member, and the member shape of a set is never `optional<T>`. Adding `none` to a set is a no-op that leaves the set unchanged, mirroring set membership below. Initial membership comes from data or mutations. Sets have canonical read order from the element type's total order. Membership is mathematical: repeated input values collapse to one member, adding an existing member leaves the set unchanged, and removing an absent member leaves it unchanged.
 
 When a containing row or struct is created, an omitted child set or keyed collection starts empty. A supplied set initializer is a set value. A supplied child-collection initializer is a typed keyed row view. The complete nested result is validated atomically with the containing insertion. `$data` uses the keyed map form defined in [Seed and import data](#loading).
 
@@ -4347,9 +4347,19 @@ This annex is normative.
 | `json` | canonical JSON value | JSON null/bool/number/string/array/object |
 | `blob` | binary-content descriptor | descriptor object defined in [Blobs](#blobs) |
 | `enum` | one declared label | JSON string |
-| `none` | absent `optional<T>` value | omitted optional field or `{ "$none": true }` in generic value slots |
+| `none` | absence of an `optional<T>` value | represented by position — see below; no wire sentinel |
 
-JSON `null` is a value of `json`. `none` is absence in the Liasse type system.
+JSON `null` is a value of `json`. `none` is absence in the Liasse type system, not a value: it cannot be a member of a set, a map value, or a distinct thing carried by a wire marker. `none` is therefore represented by *position*, never by a sentinel:
+
+- **optional object member** (struct field, singleton member, seeded row field): `none` is the member **omitted** from the wire object; a present member is a present value.
+- **set element**: `none` is **not a member**. `none` is never a valid set element, and adding `none` to a set is a no-op that yields the same set.
+- **map value**: `none` is the **key absent**. A map never stores a `none` value; absence is the key not being present.
+- **fixed-arity positional composite element** (a positional slot that cannot be omitted): `none` is JSON **`null`** in that position. `null` is unambiguous there because it is not the canonical wire form of any scalar type. For a positional `optional<json>` slot specifically, a positional `null` is `none`; a *present* JSON `null` cannot be written positionally and MUST be object- or array-wrapped.
+- **storage**: `none` is the backend's native NULL.
+
+There is no `{ "$none": true }` sentinel; it is not produced and carries no `none` meaning on input — a `json` object whose literal shape is `{ "$none": true }` is an ordinary present value that round-trips as itself.
+
+**Canonical input is mandatory at the machine wire/request boundary.** A scalar value crossing the machine wire/request boundary (a request argument, a `view`/`call` parameter, any value an untrusted peer supplies) MUST already be in its canonical Annex-A / D.2 form. A non-canonical spelling — an uppercase `uuid`, a leading-zero, `+`-signed, or `-0` `int`, a non-canonical `base64` padding or variant, a non-canonical `duration` or `timestamp` spelling — is **rejected as malformed at admission**; it is never normalized and never accepted as a distinct value. This keeps one wire spelling per value, so a non-canonical spelling can neither mint a second identity nor alias an existing one. The human-authoring layer (Annex C package definitions and authored `$data`) is exempt: it stays lenient and is canonicalized at compile.
 
 `text` is a sequence of Unicode scalar values (U+0000..U+10FFFF, excluding surrogate code points), preserved exactly. No scalar value is excluded; in particular U+0000 (NUL) is a legal `text` scalar. A backend whose native string or document storage cannot represent a given scalar value MUST apply a reversible, backend-internal encoding that preserves the value losslessly and does not alter any observable result — value equality, Annex B order, row keys, or opaque identity tokens. Per §23.3 that encoding is implementation-owned and MUST NOT appear at any logical surface.
 
@@ -4613,6 +4623,8 @@ DESC   none, object ... null
 | set | sort members by element order, then compare the resulting member sequences |
 | map | sort entries by key order, then compare key/value pairs |
 | blob descriptor | `$sha512`, `$bytes`, `$media`, then optional `$name` |
+
+Within this structural order an **absent optional member sorts last** among values equal on every preceding member — a present value precedes an absent one, consistent with B.2's present-before-`none`. So of two blob descriptors equal on `$sha512`, `$bytes`, and `$media`, the one carrying a `$name` sorts before the one that omits it; likewise a calendar period naming a `zone` (B.1) sorts before an otherwise-equal one that omits it, and a struct or composite value whose optional member is `none` sorts after one whose corresponding member is present.
 
 Blob content identity uses `$sha512`; descriptor ordering and equality include the complete descriptor.
 

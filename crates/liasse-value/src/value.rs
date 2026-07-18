@@ -13,6 +13,21 @@ use crate::period::Period;
 use crate::scalars::{Bytes, Text, Uuid};
 use crate::temporal::{Date, Timestamp};
 
+/// Compare two optional structural members with **`none` last** (SPEC-ISSUES
+/// item 30 / B.4): present members compare by their inner value, and an absent
+/// (`None`) member sorts *after* any present one, consistent with B.2's
+/// present-before-`none`. This is the opposite of `Option`'s derived order
+/// (`None` first), so descriptor members (a blob `$name`, a calendar period
+/// `zone`) that omit an optional field sort last within B.4 structural order.
+pub(crate) fn cmp_optional_none_last<T: Ord>(a: &Option<T>, b: &Option<T>) -> Ordering {
+    match (a, b) {
+        (Some(x), Some(y)) => x.cmp(y),
+        (Some(_), None) => Ordering::Less,
+        (None, Some(_)) => Ordering::Greater,
+        (None, None) => Ordering::Equal,
+    }
+}
+
 /// A ref's typed key value (A.9): a single scalar key, or a tuple of component
 /// values in `$key` order. Never the D.2 colon-joined text.
 #[derive(Debug, Clone)]
@@ -108,8 +123,15 @@ pub enum Value {
     Composite(Vec<Value>),
     Set(BTreeSet<Value>),
     Map(BTreeMap<Value, Value>),
-    /// The Liasse `none` — absence of an `optional<T>` value (A.1). Distinct
-    /// from JSON `null` (which is `Value::Json(Json::Null)`).
+    /// The Liasse `none` — the *absence* of an `optional<T>` value (A.1). It is
+    /// not a value that can be a member of a set, a map value, or a positional
+    /// key component; it is represented by not being there (an omitted struct
+    /// member, a non-member of a set, an absent map key) and has no wire sentinel.
+    /// The one position that cannot be omitted — a fixed-arity positional
+    /// composite optional slot — carries it as JSON `null`. Distinct from JSON
+    /// `null` the value (which is `Value::Json(Json::Null)`); the two only share a
+    /// wire byte-form in that single positional slot, disambiguated by type.
+    /// Ordered last within its type (B.2/B.4) via [`Value::rank`].
     None,
 }
 
@@ -178,7 +200,14 @@ impl Value {
                     .map(|(k, v)| J::Array(vec![k.to_wire(), v.to_wire()]))
                     .collect(),
             ),
-            Self::None => Self::wrap("$none", J::Bool(true)),
+            // A.1 / SPEC-ISSUES item 29: `none` is absence, with no wire sentinel.
+            // Where absence is expressed by position (an omitted struct member, a
+            // non-member of a set, an absent map key) `none` never reaches this arm.
+            // The sole position that cannot be omitted is a fixed-arity positional
+            // composite optional slot, whose `none` is JSON `null`; `null` is
+            // unambiguous there because it is not a canonical wire form for any
+            // scalar type. The `{ "$none": true }` sentinel is removed entirely.
+            Self::None => J::Null,
         }
     }
 

@@ -1,8 +1,11 @@
 //! `blob` — binary-content descriptor (A.1, Blobs §, B.4).
 
+use core::cmp::Ordering;
+
 use data_encoding::{HEXLOWER, HEXLOWER_PERMISSIVE};
 
 use crate::error::ValueError;
+use crate::value::cmp_optional_none_last;
 
 /// A 64-byte SHA-512 content hash. Canonical text is 128 lowercase hex chars.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -53,13 +56,33 @@ impl MediaType {
 ///
 /// Two descriptors MAY name the same content (`sha512`) yet differ in media or
 /// name; equality and ordering (B.4) therefore span the whole descriptor, in
-/// the order `sha512`, `bytes`, `media`, then optional `name`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// the order `sha512`, `bytes`, `media`, then optional `name`. The optional
+/// `name` orders **`none` last** (B.4 / SPEC-ISSUES item 30): among descriptors
+/// equal on the first three members, one carrying a `$name` sorts before one
+/// that omits it — the opposite of `Option`'s derived `None`-first order, so
+/// `Ord` is written by hand rather than derived.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct BlobDescriptor {
     sha512: Sha512,
     bytes: u64,
     media: MediaType,
     name: Option<String>,
+}
+
+impl Ord for BlobDescriptor {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.sha512
+            .cmp(&other.sha512)
+            .then_with(|| self.bytes.cmp(&other.bytes))
+            .then_with(|| self.media.cmp(&other.media))
+            .then_with(|| cmp_optional_none_last(&self.name, &other.name))
+    }
+}
+
+impl PartialOrd for BlobDescriptor {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 impl BlobDescriptor {

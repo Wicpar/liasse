@@ -102,8 +102,10 @@ fn composite_wire_round_trips_through_key_order_array() {
 
 #[test]
 fn composite_wire_round_trips_with_none_and_nested_and_scale() {
-    // none component (via optional), a nested composite-of-composite, and a
-    // scale-bearing decimal all survive the canonical wire round-trip.
+    // A positional `none` component (via optional), a nested composite-of-composite,
+    // and a scale-bearing decimal all survive the canonical wire round-trip.
+    // SPEC-ISSUES item 29: a position cannot be omitted, so the optional slot's
+    // `none` is JSON `null` (not the removed `{ "$none": true }` sentinel).
     let ty = composite_type(vec![
         ("a", Type::Optional(Box::new(Type::Text))),
         ("b", composite_type(vec![("x", Type::Int)])),
@@ -115,6 +117,11 @@ fn composite_wire_round_trips_with_none_and_nested_and_scale() {
         Value::Decimal(Decimal::parse("1.50").unwrap()),
     ]);
     let wire = value.to_wire();
+    assert_eq!(
+        wire,
+        serde_json::json!([null, ["7"], "1.50"]),
+        "the optional none slot is JSON null in position, not a sentinel object"
+    );
     let back = ty.decode(&wire).unwrap();
     assert_eq!(back, value, "composite wire round-trips (none/nested/decimal)");
 }

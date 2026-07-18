@@ -15,12 +15,13 @@ use crate::error::ValueError;
 pub struct Integer(BigInt);
 
 impl Integer {
-    /// Parse the canonical base-10 text of an integer.
-    ///
-    /// Input acceptance beyond the canonical form is unpinned (SPEC-ISSUES
-    /// item 2); we take the least-surprising decoder stance: accept any
-    /// standard signed base-10 spelling and normalize to the canonical form on
-    /// output. Non-integer spellings (decimal point, exponent) are rejected.
+    /// Parse the base-10 text of an integer leniently, normalizing to the
+    /// canonical form (A.1). This is the **authoring** parse
+    /// ([`Type::decode`](crate::Type::decode)): any standard signed base-10
+    /// spelling (leading zeros, a `+` sign, `-0`) is accepted and canonicalized.
+    /// The **wire** boundary ([`Type::decode_wire`](crate::Type::decode_wire))
+    /// rejects a non-canonical spelling instead (SPEC-ISSUES item 2). Non-integer
+    /// spellings (decimal point, exponent) are rejected in either mode.
     pub fn parse(text: &str) -> Result<Self, ValueError> {
         BigInt::from_str(text)
             .map(Integer)

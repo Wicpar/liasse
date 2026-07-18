@@ -87,6 +87,17 @@ pub enum ValueError {
     #[error("`bytes` payload is not canonical base64: {0}")]
     MalformedBase64(String),
 
+    #[error(
+        "`{ty}` wire value `{found}` is not in canonical form (expected `{canonical}`); \
+         a machine wire/request value MUST be canonical (Annex A.1 / D.2) and is never \
+         normalized at admission"
+    )]
+    NonCanonicalScalar {
+        ty: &'static str,
+        found: String,
+        canonical: String,
+    },
+
     #[error("`blob` `$sha512` is not 64 lowercase-hex bytes: {0}")]
     MalformedSha512(String),
 

@@ -17,13 +17,23 @@
 //! input into the richer type. Past that boundary a [`Value`] is proof the
 //! data conforms; nothing downstream re-checks it.
 //!
+//! # Two decode boundaries
+//!
+//! Annex A.1 / D.2 pin one canonical wire spelling per scalar. [`Type::decode`]
+//! is the lenient **human-authoring boundary** (Annex C `$data`/`$default`) and
+//! internal round-trip codec: a non-canonical scalar is accepted and
+//! canonicalized. [`Type::decode_wire`] is the strict **machine wire/request
+//! boundary**: a non-canonical scalar is rejected as malformed (SPEC-ISSUES
+//! item 2). The scalar constructors ([`Integer::parse`], [`Uuid::parse`],
+//! [`Sha512::parse`], …) implement the lenient/normalizing parse that authoring
+//! relies on; [`Type::decode_wire`] layers the canonicality gate on top.
+//!
 //! # Documented spec-gap choices
 //!
-//! Where Annex A leaves observable behavior unpinned, this crate makes the
+//! Where Annex A still leaves observable behavior unpinned, this crate makes the
 //! least-surprising choice and cites the SPEC-ISSUES item at the definition:
-//! decimal trailing-zero spelling (item 1, [`Decimal::to_canonical_text`]),
-//! non-canonical input acceptance (item 2, [`Integer::parse`] / [`Uuid::parse`]),
-//! and uppercase-hex SHA-512 (item 20, [`Sha512::parse`]).
+//! decimal trailing-zero spelling (item 1, [`Decimal::to_canonical_text`]) and
+//! uppercase-hex SHA-512 (item 20, [`Sha512::parse`]).
 
 mod blob;
 mod decimal;

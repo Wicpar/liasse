@@ -72,12 +72,11 @@ impl Bytes {
 pub struct Uuid(uuid::Uuid);
 
 impl Uuid {
-    /// Parse a UUID.
-    ///
-    /// The canonical output form is lowercase hyphenated (A.1); the input rule
-    /// is unpinned (SPEC-ISSUES item 2). We take the least-surprising decoder
-    /// stance — accept any case and normalize to lowercase — so a value read
-    /// back always renders canonically.
+    /// Parse a UUID leniently, normalizing to the canonical lowercase-hyphenated
+    /// form (A.1). This is the **authoring** parse ([`Type::decode`](crate::Type::decode)):
+    /// any case is accepted and canonicalized. The **wire** boundary
+    /// ([`Type::decode_wire`](crate::Type::decode_wire)) rejects a non-canonical
+    /// (e.g. uppercase) spelling instead of normalizing it (SPEC-ISSUES item 2).
     pub fn parse(text: &str) -> Result<Self, ValueError> {
         uuid::Uuid::parse_str(text)
             .map(Uuid)
