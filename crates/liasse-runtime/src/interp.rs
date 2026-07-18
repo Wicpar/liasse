@@ -474,7 +474,7 @@ impl<'a> Interp<'a> {
         if let ExprKind::Binary { op: BinaryOp::Sub, lhs, rhs } = &value.kind
             && let Some(loc) = self.collection_ref(lhs, source)?
         {
-            let keys = self.delete_key_values(rhs, source)?;
+            let keys = self.delete_key_values(rhs, &loc.decl, source)?;
             return self.bind_deleted(name, loc.decl, keys);
         }
         if let ExprKind::Unary { op: UnaryOp::Neg, operand } = &value.kind
@@ -495,11 +495,25 @@ impl<'a> Interp<'a> {
 
     /// The key values a `.coll - keys` delete targets, in order: a lone scalar,
     /// or every member of a set operand (§8.4 selector order).
-    fn delete_key_values(&self, keys: &Expr, source: SourceId) -> Result<Vec<Value>, Rejection> {
+    ///
+    /// §8.5/§6.3/A.9: a composite-key operand is an authoring object
+    /// (`{ region, code }`) that `scalar_value` yields as a bare `Value::Struct`;
+    /// normalize each to the row's positional `Value::Composite` key — the same
+    /// identity the `[{..}]` selector form and `==` reconcile to — before it flows to
+    /// `bind_deleted`/`delete_rows`, EXACTLY as the sibling `exec_delete` statement
+    /// path does. Without this the un-normalized `Value::Struct` reaches
+    /// `key_value_of` (which only decomposes a `Value::Composite`) and the §21.1
+    /// cascade planner (keyed by `key_identity`), so the capture comes back empty and
+    /// the removal silently no-ops. A single-field key passes through unchanged
+    /// (`normalize_key_operand` is a no-op for a lone `$key`); the same missing/extra
+    /// component rejection guards a malformed object operand (fallible, propagated).
+    fn delete_key_values(&self, keys: &Expr, decl: &[String], source: SourceId) -> Result<Vec<Value>, Rejection> {
         let current = self.current()?;
+        let key_fields = self.collection_at(decl)?.key.clone();
+        let normalize = |value: Value| materialize::normalize_key_operand(&key_fields, value);
         Ok(match self.scalar_value(keys, source, &current)? {
-            Value::Set(members) => members.into_iter().collect(),
-            scalar => vec![scalar],
+            Value::Set(members) => members.into_iter().map(normalize).collect::<Result<_, _>>()?,
+            scalar => vec![normalize(scalar)?],
         })
     }
 
