@@ -10,29 +10,43 @@ use crate::ty::ExprType;
 use crate::typed::{AggFunc, BuiltinFn, TypedExpr, TypedKind, TypedSelector};
 
 impl Checker<'_> {
-    /// Normalize a composite key operand to `$key` order (A.9). When `expected`
-    /// is a composite key type and `operand` is the authoring object (a
-    /// struct-typed operand), wrap it so it evaluates to the positional
+    /// Validate and normalize a composite key operand to `$key` order (§6.3, A.9).
+    ///
+    /// This is the single validate-and-normalize point for an authoring object
+    /// operand naming a composite key (`{ region, code }`) in every position it can
+    /// appear — a `collection[{..}]` selector, `==`, and `in`. When `expected` is a
+    /// composite key type and `operand` is the authoring object (a struct-typed
+    /// operand), the object MUST be a *key of that target's type*: it names every
+    /// `$key` component, each with the declared component type, and carries no extra
+    /// field (A.9). A conforming object is wrapped so it evaluates to the positional
     /// [`Value::Composite`](liasse_value::Value::Composite) a composite row's key
-    /// carries; an operand that is already a composite key, a ref, or any other
-    /// shape is left for its own comparison path.
+    /// carries; a non-conforming one is rejected at load with the same E-EXPR type
+    /// error the scalar path emits (§6 intro: static types are checked at load).
+    ///
+    /// An operand that is already a composite key, a ref, or any other non-struct
+    /// shape is left untouched for its own comparison path.
     pub(crate) fn coerce_composite_key(
+        &mut self,
         operand: TypedExpr,
         expected: Option<&ExprType>,
-    ) -> TypedExpr {
+    ) -> Option<TypedExpr> {
         let Some(Type::Composite(components)) = expected.and_then(ExprType::as_scalar) else {
-            return operand;
+            return Some(operand);
         };
-        if !matches!(operand.ty().as_scalar(), Some(Type::Struct(_))) {
-            return operand;
+        let Some(Type::Struct(struct_ty)) = operand.ty().as_scalar() else {
+            return Some(operand);
+        };
+        if let Err(reason) = composite_key_conforms(struct_ty, components) {
+            self.report_span(operand.span(), reason);
+            return None;
         }
         let order: Vec<String> = components.iter().map(|(name, _)| name.clone()).collect();
         let span = operand.span();
-        TypedExpr::new(
+        Some(TypedExpr::new(
             span,
             ExprType::scalar(Type::Composite(components.clone())),
             TypedKind::Composite { order, source: Box::new(operand) },
-        )
+        ))
     }
 
     pub(crate) fn check_select(
@@ -62,8 +76,9 @@ impl Checker<'_> {
                         single_scalar = false;
                     }
                     // A.9: an object key selector on a composite-keyed collection
-                    // is authoring syntax for the `$key`-order tuple — normalize it.
-                    typed.push(Self::coerce_composite_key(checked, key_type.as_ref()));
+                    // is authoring syntax for the `$key`-order tuple — validate it
+                    // against the target key and normalize it.
+                    typed.push(self.coerce_composite_key(checked, key_type.as_ref())?);
                 }
                 // §6.3: a lone scalar/composite key is a one-or-zero row context
                 // (usable where exactly one row is required); anything else is a
@@ -471,6 +486,50 @@ impl Checker<'_> {
             TypedKind::Struct(fields),
         ))
     }
+}
+
+/// Whether an authoring object operand (`struct_ty`) is a key of a composite-keyed
+/// target whose `$key` components are `components` (§6.3, A.9): it names every
+/// component with the declared component type and carries no extra field. `Err`
+/// carries the load-time diagnostic explaining the first mismatch.
+fn composite_key_conforms(
+    struct_ty: &StructType,
+    components: &[(String, Type)],
+) -> Result<(), String> {
+    for (name, ty) in components {
+        match struct_ty.field(name) {
+            Some(supplied) if supplied == ty => {}
+            Some(supplied) => {
+                return Err(format!(
+                    "composite key component `{name}` is `{}`, but the target key declares `{}` \
+                     (§6.3, A.9)",
+                    supplied.name(),
+                    ty.name(),
+                ));
+            }
+            None => {
+                return Err(format!(
+                    "composite key is missing component `{name}`; an object operand must name \
+                     every `$key` component (§6.3, A.9)"
+                ));
+            }
+        }
+    }
+    // Every component matched; a differing field count means the object carries an
+    // extra, non-component field — not a key of the target's type (A.9 arity).
+    if struct_ty.fields().count() != components.len() {
+        let extra: Vec<&str> = struct_ty
+            .fields()
+            .map(|(name, _)| name.as_str())
+            .filter(|name| !components.iter().any(|(comp, _)| comp == name))
+            .collect();
+        return Err(format!(
+            "object operand carries field(s) `{}` that are not `$key` components of the target \
+             (§6.3, A.9)",
+            extra.join("`, `"),
+        ));
+    }
+    Ok(())
 }
 
 /// The core `string` utility (§16.1) a `namespace.function` names, if any.

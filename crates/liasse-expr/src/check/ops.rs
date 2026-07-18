@@ -171,9 +171,10 @@ impl Checker<'_> {
         // between the ref and the row's scalar key.
         let (left, right) = coerce_ref_row_key(left, right);
         // A.9/§6.3: an object literal compared against a composite-keyed ref is
-        // authoring syntax for the `$key`-order tuple — normalize it so the two
-        // compare as equal-valued composite keys.
-        let (left, right) = Self::coerce_composite_ref_key(left, right);
+        // authoring syntax for the `$key`-order tuple — validate and normalize it
+        // so the two compare as equal-valued composite keys (a mismatched or
+        // wrong-arity object is a load-time type error, like the scalar path).
+        let (left, right) = self.coerce_composite_ref_key(left, right)?;
         let (lt, rt) = match (left.ty().as_scalar(), right.ty().as_scalar()) {
             (Some(lt), Some(rt)) => (lt, rt),
             _ => return self.error(expr, "only scalar values are comparable"),
@@ -207,10 +208,16 @@ impl Checker<'_> {
         ))
     }
 
-    /// Normalize an object literal compared against a composite-keyed ref to the
-    /// ref target's `$key`-order tuple (A.9), so the comparison is between two
-    /// equal-valued composite keys rather than a struct against a ref.
-    fn coerce_composite_ref_key(left: TypedExpr, right: TypedExpr) -> (TypedExpr, TypedExpr) {
+    /// Validate and normalize an object literal compared against a composite-keyed
+    /// ref to the ref target's `$key`-order tuple (§6.3, A.9), so the comparison is
+    /// between two equal-valued composite keys rather than a struct against a ref.
+    /// A mismatched-type or wrong-arity object is rejected at load (`None`), exactly
+    /// as the scalar `==` type check rejects a mismatched scalar key.
+    fn coerce_composite_ref_key(
+        &mut self,
+        left: TypedExpr,
+        right: TypedExpr,
+    ) -> Option<(TypedExpr, TypedExpr)> {
         fn composite_key_of(expr: &TypedExpr) -> Option<ExprType> {
             match expr.ty().as_scalar() {
                 Some(Type::Ref(RefTarget::Composite(components))) => {
@@ -220,12 +227,14 @@ impl Checker<'_> {
             }
         }
         if let Some(key) = composite_key_of(&left) {
-            return (left, Self::coerce_composite_key(right, Some(&key)));
+            let right = self.coerce_composite_key(right, Some(&key))?;
+            return Some((left, right));
         }
         if let Some(key) = composite_key_of(&right) {
-            return (Self::coerce_composite_key(left, Some(&key)), right);
+            let left = self.coerce_composite_key(left, Some(&key))?;
+            return Some((left, right));
         }
-        (left, right)
+        Some((left, right))
     }
 
     fn check_logic(
@@ -256,6 +265,16 @@ impl Checker<'_> {
     fn check_in(&mut self, expr: &Expr, lhs: &Expr, rhs: &Expr) -> Option<TypedExpr> {
         let needle = self.check(lhs)?;
         let haystack = self.check(rhs)?;
+        // §6.3/A.9: membership in a composite-keyed view takes an authoring object
+        // naming each key component — validate and normalize it to the row's
+        // `$key`-order tuple so it matches the row keys, exactly as `==` and the
+        // `[{..}]` selector do (a mismatched/incomplete key is rejected at load).
+        let needle = if let ExprType::View(row) = haystack.ty() {
+            let key_type = row.key().cloned();
+            self.coerce_composite_key(needle, key_type.as_ref())?
+        } else {
+            needle
+        };
         let ok = match haystack.ty() {
             ExprType::Scalar(Type::Set(elem)) => Some(elem.as_ref()) == needle.ty().as_scalar(),
             ExprType::View(_) => true,

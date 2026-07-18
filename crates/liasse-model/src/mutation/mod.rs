@@ -299,13 +299,21 @@ impl MutPhase<'_, '_> {
                 {
                     self.infer_object(members, &ExprType::Row(row), params);
                 }
-                // `collection - @p` delete — @p is the removed row's key, so it
-                // inherits the collection's key type (§8.5).
+                // `collection - key` delete — the operand is the removed row's key,
+                // so a bare `@p` inherits the collection's key type (§8.5). A
+                // composite key is addressed by an object operand `{ comp: @p, ... }`
+                // (§6.3, A.9), mirroring the `[{..}]` selector: each `@p` inherits
+                // its named component's type from the composite key struct.
                 if *op == BinaryOp::Sub
-                    && let ExprKind::Param(id) = &rhs.kind
                     && let Some(key_ty) = self.select_key_type(lhs, receiver, binds)
                 {
-                    record(params, &id.text, key_ty);
+                    match &rhs.kind {
+                        ExprKind::Param(id) => record(params, &id.text, key_ty),
+                        ExprKind::Object(members) => {
+                            self.infer_composite_key(members, &key_ty, params);
+                        }
+                        _ => {}
+                    }
                 }
                 // A scalar comparison or arithmetic relates its two operands to
                 // one type, so a bare `@p` operand inherits the sibling's scalar

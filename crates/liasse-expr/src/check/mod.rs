@@ -18,7 +18,7 @@ mod walk;
 
 use std::collections::BTreeMap;
 
-use liasse_diag::{Diagnostic, Diagnostics, SourceId, Span};
+use liasse_diag::{ByteSpan, Diagnostic, Diagnostics, SourceId, Span};
 use liasse_syntax::{Expr, ExprKind, SpannedExpression, Stmt, StmtKind};
 use liasse_value::{Decimal, Integer, Text, Type, Value};
 
@@ -84,10 +84,6 @@ impl<'a> Checker<'a> {
         }
     }
 
-    pub(crate) fn span(&self, expr: &Expr) -> Span {
-        Span::new(self.source, expr.span)
-    }
-
     /// Record a type error and yield `None`, so the caller aborts this subtree.
     pub(crate) fn error(&mut self, expr: &Expr, message: impl Into<String>) -> Option<TypedExpr> {
         self.report(expr, message);
@@ -97,11 +93,18 @@ impl<'a> Checker<'a> {
     /// Record a type error without a typed result, for callers whose `None`
     /// carries a different type.
     pub(crate) fn report(&mut self, expr: &Expr, message: impl Into<String>) {
-        let span = self.span(expr);
+        self.report_span(expr.span, message);
+    }
+
+    /// Record a type error at an explicit byte span — used where the offending
+    /// operand is an already-typed sub-expression (carrying its own
+    /// [`TypedExpr::span`](crate::typed::TypedExpr::span)) rather than a raw AST
+    /// node.
+    pub(crate) fn report_span(&mut self, span: ByteSpan, message: impl Into<String>) {
         self.diags.push(
             Diagnostic::error(message.into())
                 .code("E-EXPR")
-                .primary(span, "in this expression")
+                .primary(Span::new(self.source, span), "in this expression")
                 .build(),
         );
     }

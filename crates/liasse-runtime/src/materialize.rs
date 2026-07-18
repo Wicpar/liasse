@@ -92,6 +92,31 @@ pub(crate) fn key_identity(collection: &Collection, key: &KeyValue) -> Value {
     }
 }
 
+/// Normalize an authoring key operand to the application-visible key identity a
+/// row carries (§6.3, A.9), given the collection's ordered `$key` field names.
+///
+/// A single-field key keeps its lone scalar identity. A composite key supplied as
+/// an authoring object (`{ region, code }` — a [`Value::Struct`]) becomes the
+/// positional [`Value::Composite`] tuple in `$key` order, the identical value
+/// [`key_identity`] derives for a stored composite row, so a `collection - keys`
+/// delete operand matches the row's key exactly as the `[{..}]` selector form
+/// does. A value that already carries the positional composite (another row's
+/// `$key`) or is a plain scalar passes through unchanged.
+pub(crate) fn normalize_key_operand(key_fields: &[String], value: Value) -> Value {
+    match key_fields {
+        [_] => value,
+        _ => match value {
+            Value::Struct(fields) => Value::Composite(
+                key_fields
+                    .iter()
+                    .map(|name| fields.get(name).cloned().unwrap_or(Value::None))
+                    .collect(),
+            ),
+            other => other,
+        },
+    }
+}
+
 /// The address of a row in a top-level collection.
 pub(crate) fn top_address(name: &str, key: KeyValue) -> RowAddress {
     RowAddress::root(AddressStep::new(NameSegment::new(name), key))

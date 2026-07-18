@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: composite-ref-equality-mismatched-component-type-invalid
+  suite: static
+  spec: ["#expressions", "§6.3", "§A.9"]
+  tags: ["composite", "ref", "boundary"]
+  note: '''Attack: hide a type error inside a composite-ref equality so a $check
+that the author believes constrains state silently becomes a no-op (always false).
+§6 intro: an expression's "static type ... is checked when the package is loaded".
+§6.3: "Equality between a row or ref and a key of the same declared target compares
+the current typed key" — the supplied operand must be a KEY OF THAT TARGET'S TYPE.
+A.9: a named object selector is authoring syntax for the "same typed tuple" in $key
+order, carrying the target key's component types. Here `/regions` has key
+[region: text, code: text]; the literal supplies `code: 5` (a json number -> int),
+which is NOT a key of that target. The scalar analogue `.name == 5` (text vs int) is
+a load-time type error, so this composite-ref analogue MUST be rejected at load too.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.cmpref@1.0.0"
+    $model: {
+      regions: {
+        $key: ["region", "code"]
+        region: "text"
+        code: "text"
+        label: "text"
+      }
+      items: {
+        $key: "id"
+        id: "text"
+        loc: { $ref: "/regions" }
+        // `code: 5` is `int`, but the target key component `code` is `text`.
+        $check: ".loc == { region: 'x', code: 5 }"
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#expressions"]
+    detail: "composite-ref equality supplies `code: 5` (int) where the target key component `code` is `text`; a type mismatch checked at load (§6.3, A.9)"
+  }
+}

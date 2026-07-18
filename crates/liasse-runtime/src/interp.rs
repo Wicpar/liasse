@@ -1308,9 +1308,17 @@ impl<'a> Interp<'a> {
         };
         let name = loc.decl.last().cloned().unwrap_or_default();
         let current = self.current()?;
+        // §8.5/§6.3/A.9: a composite-key delete operand is an authoring object
+        // (`{ region, code }`) that evaluates to a bare `Value::Struct`; normalize
+        // it to the row's positional `Value::Composite` key — the same identity the
+        // `[{..}]` selector form and `==` reconcile to — before addressing rows, or
+        // the cascade planner (keyed by `key_identity`) matches nothing and the
+        // delete silently no-ops.
+        let key_fields = self.collection_at(&loc.decl)?.key.clone();
+        let normalize = |value: Value| materialize::normalize_key_operand(&key_fields, value);
         let targets: Vec<Value> = match self.scalar_value(keys, source, &current)? {
-            Value::Set(members) => members.into_iter().collect(),
-            scalar => vec![scalar],
+            Value::Set(members) => members.into_iter().map(normalize).collect(),
+            scalar => vec![normalize(scalar)],
         };
         // §5.4/§21.1: the cascade planner operates over the top-level graph; a
         // nested collection's row (a meter spend/pool, §15) has no inbound refs in

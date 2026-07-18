@@ -135,17 +135,6 @@ const SKIP: &[(&str, &str)] = &[
         "07-views/combinator-mismatched-identity-domain-invalid",
         "view-combinator identity-domain agreement (§7); needs expr-layer view domains",
     ),
-    // The composite-key selector arity rule (an object selector MUST name every
-    // `$key` component, §6.3) lives in the expr-layer selector checker, which
-    // does not yet enforce it. The case previously *appeared* to pass only
-    // because `.vat_rates[{ country }] { rate }` typed as a single row and the
-    // since-fixed over-strict "a `$view` must be a row stream" check rejected
-    // it for the wrong reason (a single-row projection is a valid view per
-    // §7.1/§12.2).
-    (
-        "06-expressions/composite-selector-missing-component-invalid",
-        "composite-key selector arity (§6.3); expr-layer selector seam",
-    ),
     // --- §10/§11 role/actor typing ---
     (
         "10-interfaces-roles/members-actor-type-mismatch-invalid",
