@@ -8,9 +8,9 @@
 different scale ("1.5" vs "1.50"). §B.1: for decimal, 'numerically equal canonical
 values compare equal'; §D.2 gives each decimal one canonical key text. So both
 spellings denote the same key value and the second insert must collide (§5.4). An
-implementation keying on the raw input string would accept both. The label projection
-avoids asserting the canonical trailing-zero spelling itself, which Annex A does not
-pin explicitly.'''
+implementation keying on the raw input string would accept both. SPEC-ISSUES #1 now
+pins the canonical decimal wire/key text as minimal scale, so the surviving key of
+the first insert ("1.50") renders as "1.5" — the projection asserts that spelling.'''
 
   package: {
     $liasse: 1
@@ -23,7 +23,7 @@ pin explicitly.'''
       }
       $public: {
         prices: {
-          $view: ".prices { label }"
+          $view: ".prices { amount, label }"
           $mut: {
             add: ".prices + { amount: @amount, label: @label }"
           }
@@ -38,7 +38,9 @@ pin explicitly.'''
     // numerically equal -> same key -> collision
     { call: "public.prices.add", args: { amount: "1.5", label: "second" },
       expect: { outcome: rejected, violates: ["§5.4", "§B.1"] } }
+    // the one surviving row keeps the first insert; its amount renders in
+    // minimal-scale canonical form ("1.50" -> "1.5"), SPEC-ISSUES #1.
     { watch: "public.prices", id: "w1",
-      expect_init: { value: [ { label: "first" } ] } }
+      expect_init: { value: [ { amount: "1.5", label: "first" } ] } }
   ]
 }

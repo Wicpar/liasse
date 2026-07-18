@@ -189,7 +189,14 @@ impl KeyText {
                 Ok(())
             }
             scalar => {
-                out.push(KeyComponent::from_scalar(scalar)?);
+                let component = KeyComponent::from_scalar(scalar)?;
+                // A.8/D.2 (SPEC-ISSUES item 31): a key component that flattens to
+                // empty canonical text — an empty `text`, an empty `bytes` — makes
+                // a display path non-injective, so it is not a valid key component.
+                if component.as_str().is_empty() {
+                    return Err(IdentError::EmptyKeyComponent);
+                }
+                out.push(component);
                 Ok(())
             }
         }

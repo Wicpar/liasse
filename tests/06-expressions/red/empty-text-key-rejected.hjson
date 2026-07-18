@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: empty-text-key-rejected
+  suite: scenario
+  spec: ["#expressions", "§6.3", "#annex-a", "§A.8", "#annex-d", "§D.2"]
+  tags: ["boundary", "identity"]
+  note: '''Attack: the degenerate identity value. Annex A.1 makes the empty string a
+text value and A.8 makes text key-eligible, but SPEC-ISSUES #31 (resolved) prohibits
+an empty key component: a value flattening to an empty canonical component is
+inadmissible because it makes the row's display path (§D.3) non-injective (/rows//
+vs /rows). A runtime insert of an empty-text key is therefore rejected at admission,
+while an ordinary non-empty key remains addressable by a selector (§6.3).'''
+
+  package: {
+    $liasse: 1
+    $app: "t.ex.emptykey@1.0.0"
+    $model: {
+      rows: {
+        $key: "id"
+        id: "text"
+        v: "int"
+      }
+      $mut: {
+        read: "return .rows[@id] { v }"
+      }
+      $public: {
+        all: { $view: ".rows { id, v }" }
+        rows: {
+          $mut: {
+            read: ".read"
+            add: ".rows + { id: @id, v: @v }"
+          }
+        }
+      }
+    }
+    $data: {
+      rows: {
+        "x": { v: "2" }
+      }
+    }
+  }
+
+  steps: [
+    // An empty-text key is inadmissible (empty canonical component).
+    { call: "public.rows.add", args: { id: "", v: "1" },
+      expect: { outcome: rejected, violates: ["#annex-a", "§A.8", "#annex-d", "§D.2"] } }
+    // A non-empty key is addressable by an ordinary selector.
+    { call: "public.rows.read", args: { id: "x" },
+      expect: { outcome: ok, value: [ { v: "2" } ] } }
+    // Only the seeded non-empty row exists; the empty-key insert created nothing.
+    { watch: "public.all", id: "w1",
+      expect_init: { value: [ { id: "x", v: "2" } ] } }
+  ]
+}

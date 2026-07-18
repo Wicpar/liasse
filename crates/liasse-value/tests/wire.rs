@@ -75,8 +75,9 @@ fn canonical_scalars_pass_the_wire_boundary_unchanged() -> Result<(), ValueError
 }
 
 #[test]
-fn decimal_product_has_no_exponent_and_preserves_scale() -> Result<(), ValueError> {
-    // A.6: 0.0001 * 0.0001 is exact; A.1: plain notation, no exponent.
+fn decimal_product_has_no_exponent() -> Result<(), ValueError> {
+    // A.6: 0.0001 * 0.0001 is exact; A.1: plain notation, no exponent. All eight
+    // fractional digits are significant, so minimal scale keeps them.
     let a = Decimal::parse("0.0001")?;
     let product = Decimal::from_big_decimal(a.as_big_decimal() * a.as_big_decimal());
     assert_eq!(product.to_canonical_text(), "0.00000001");
@@ -92,10 +93,28 @@ fn decimal_large_magnitude_stays_plain() -> Result<(), ValueError> {
 }
 
 #[test]
-fn decimal_preserves_trailing_zero_scale() -> Result<(), ValueError> {
-    // SPEC-ISSUES item 1 choice: preserve the operation scale verbatim.
-    assert_eq!(Decimal::parse("1.00")?.to_canonical_text(), "1.00");
-    assert_eq!(Decimal::parse("-0")?.to_canonical_text(), "0");
+fn decimal_canonical_text_is_minimal_scale() -> Result<(), ValueError> {
+    // SPEC-ISSUES item 1 (resolved): A.1's canonical form is minimal scale — one
+    // spelling per mathematical value. Every trailing fractional zero is stripped
+    // and the point dropped when no fractional digit remains; integer-part zeros
+    // (magnitude, not scale) survive; `-0` is `0`.
+    for (input, canonical) in [
+        ("1.00", "1"),
+        ("1.50", "1.5"),
+        ("2.5000000000000000", "2.5"),
+        ("0.500", "0.5"),
+        ("10.0", "10"),
+        ("100", "100"),
+        ("0.00", "0"),
+        ("-0", "0"),
+        ("-1.230", "-1.23"),
+    ] {
+        assert_eq!(
+            Decimal::parse(input)?.to_canonical_text(),
+            canonical,
+            "canonical text of `{input}`"
+        );
+    }
     Ok(())
 }
 
@@ -325,6 +344,30 @@ fn int_rejects_wrong_json_shape() {
         Type::Int.decode(&serde_json::json!(true)),
         Err(ValueError::TypeMismatch { ty: "int", .. })
     ));
+}
+
+#[test]
+fn json_number_scale_is_bounded_like_decimal() -> Result<(), serde_json::Error> {
+    // SPEC-ISSUES item 28 / A.7: a number inside a `json` value is bounded by the
+    // same scale limit as an A.6 `decimal`. An extreme exponent is rejected at the
+    // decode boundary with the same diagnostic class as an over-scale decimal, so
+    // A.7 canonicalization can never materialize a multi-gigabyte digit string.
+    // (`arbitrary_precision` keeps the exact exponent, so it reaches the bound.)
+    for source in [
+        "1E-2000000000",                    // billions of fractional digits
+        "1E+2000000000",                    // billions of trailing zeros
+        r#"{"a":[1,{"b":1E-2000000000}]}"#, // applies recursively through arrays/objects
+    ] {
+        let wire = serde_json::from_str::<serde_json::Value>(source)?;
+        assert!(
+            matches!(Type::Json.decode(&wire), Err(ValueError::DecimalScaleOutOfRange { .. })),
+            "over-scale json number `{source}` must be rejected at decode"
+        );
+    }
+    // A number within the bound (a large but ordinary scale) still decodes.
+    let ok = serde_json::from_str::<serde_json::Value>("0.00000001")?;
+    assert!(Type::Json.decode(&ok).is_ok());
+    Ok(())
 }
 
 #[test]

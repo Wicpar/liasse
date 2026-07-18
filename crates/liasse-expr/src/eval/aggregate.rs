@@ -77,8 +77,8 @@ fn sum(values: Vec<Value>, result_ty: &ExprType) -> Value {
 }
 
 /// §7.5: `avg` converts every input exactly to decimal and divides under the
-/// package decimal semantics (normalized per SPEC-ISSUES item 1); empty input
-/// yields `none`.
+/// package decimal semantics; the quotient renders in minimal-scale canonical
+/// form (A.1/SPEC-ISSUES item 1); empty input yields `none`.
 fn average(values: Vec<Value>) -> Result<Value, EvalError> {
     if values.is_empty() {
         return Ok(Value::None);

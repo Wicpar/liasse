@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: empty-key-component-text-and-bytes-rejected
+  suite: scenario
+  spec: ["#state-model", "§5.4", "#annex-a", "§A.8", "#annex-d", "§D.2"]
+  tags: ["boundary", "identity"]
+  note: '''SPEC-ISSUES #31 (resolved): a key value that flattens to ANY empty canonical
+component is inadmissible — both an empty text (canonical key text "") and an empty
+bytes (canonical padded base64 ""). Either makes the row's display path (§D.3)
+non-injective / non-round-trippable, so commit admission rejects it in the same
+failure class as an unpopulated required key field (§22.1). This case pins both
+key base types at once: an empty-text key and an empty-bytes key are each rejected,
+while their non-empty counterparts are admitted.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.st.emptykeycomp@1.0.0"
+    $model: {
+      texts: {
+        $key: "id"
+        id: "text"
+        label: "text"
+      }
+      bins: {
+        $key: "id"
+        id: "bytes"
+        label: "text"
+      }
+      $public: {
+        texts: {
+          $view: ".texts { id, label }"
+          $mut: { add: ".texts + { id: @id, label: @label }" }
+        }
+        bins: {
+          $view: ".bins { id, label }"
+          $mut: { add: ".bins + { id: @id, label: @label }" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // Empty text key -> empty canonical component -> rejected.
+    { call: "public.texts.add", args: { id: "", label: "empty-text" },
+      expect: { outcome: rejected, violates: ["#annex-a", "§A.8", "#annex-d", "§D.2"] } }
+    // Empty bytes key (base64 "") -> empty canonical component -> rejected.
+    { call: "public.bins.add", args: { id: { "$bytes": "" }, label: "empty-bytes" },
+      expect: { outcome: rejected, violates: ["#annex-a", "§A.8", "#annex-d", "§D.2"] } }
+    // Non-empty counterparts are admitted, proving only the empty component is refused.
+    { call: "public.texts.add", args: { id: "t", label: "present-text" },
+      expect: { outcome: ok } }
+    { call: "public.bins.add", args: { id: { "$bytes": "AQ==" }, label: "present-bytes" },
+      expect: { outcome: ok } }
+    { watch: "public.texts", id: "wt",
+      expect_init: { value: [ { id: "t", label: "present-text" } ] } }
+    { watch: "public.bins", id: "wb",
+      expect_init: { value: [ { id: { "$bytes": "AQ==" }, label: "present-bytes" } ] } }
+  ]
+}

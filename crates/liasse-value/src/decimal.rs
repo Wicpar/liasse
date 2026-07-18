@@ -10,11 +10,12 @@ use crate::error::ValueError;
 
 /// An exact decimal.
 ///
-/// The value keeps its *scale* (fractional digit count) because A.1 pins a
-/// plain wire spelling; but B.1 orders decimals by mathematical value, so
-/// `1.0` and `1.00` are equal *values* that nonetheless render to distinct
-/// wire strings. [`Ord`]/[`Eq`] here are therefore scale-insensitive
-/// (numeric), while [`Decimal::to_canonical_text`] preserves scale.
+/// The stored value may carry any scale (fractional digit count), but A.1 pins
+/// one canonical wire spelling per mathematical value: the **minimal-scale**
+/// plain form (SPEC-ISSUES item 1). `1.0`, `1.00`, and `1` are one value that
+/// renders to one string, `1`. [`Ord`]/[`Eq`] are scale-insensitive (numeric)
+/// and [`Decimal::to_canonical_text`] is likewise value-determined, so equal
+/// decimals are indistinguishable on the wire as well as in order.
 #[derive(Debug, Clone)]
 pub struct Decimal(BigDecimal);
 
@@ -35,11 +36,12 @@ impl Decimal {
 
     /// Parse an exact decimal.
     ///
-    /// The canonical output form is pinned by A.1 (plain, no exponent, one
-    /// sign); the exact trailing-zero spelling is *not* pinned (SPEC-ISSUES
-    /// item 1). We take the least-surprising "preserve the operation scale"
-    /// reading: the parsed scale is retained and rendered verbatim, and
-    /// exponent input is accepted then normalized to plain notation (item 2).
+    /// The canonical output form is pinned by A.1: plain, no exponent, one sign,
+    /// and **minimal scale** — every trailing fractional zero stripped, so one
+    /// spelling per mathematical value (SPEC-ISSUES item 1). The parsed scale is
+    /// retained in the stored value (arithmetic reads it), but it is not part of
+    /// identity and never survives [`to_canonical_text`](Self::to_canonical_text);
+    /// exponent input is accepted then rendered in plain minimal-scale form.
     ///
     /// The scale magnitude is bounded ([`MAX_SCALE_MAGNITUDE`](Self::MAX_SCALE_MAGNITUDE)):
     /// an adversarial wire value with an extreme exponent is rejected here, at
@@ -70,15 +72,19 @@ impl Decimal {
         &self.0
     }
 
-    /// The canonical plain-notation string (A.1): no exponent, one leading `-`
-    /// for negatives, no negative zero. The stored scale is preserved
-    /// (SPEC-ISSUES item 1, "preserve operation scale" reading).
+    /// The canonical plain-notation string (A.1): no exponent, **minimal scale**
+    /// (every trailing fractional zero stripped, the point dropped when no
+    /// fractional digit remains), one leading `-` for negatives, no negative
+    /// zero. Normalizing first (`BigDecimal::normalized`, the same path json
+    /// numbers use) makes the result a total function of the mathematical value,
+    /// so numerically equal decimals share one spelling (SPEC-ISSUES item 1).
+    /// Integer-part trailing zeros are magnitude, not scale, and survive.
     #[must_use]
     pub fn to_canonical_text(&self) -> String {
-        let (mantissa, scale) = self.0.as_bigint_and_exponent();
+        let (mantissa, scale) = self.0.normalized().as_bigint_and_exponent();
         if mantissa.sign() == bigdecimal::num_bigint::Sign::NoSign {
-            // Canonical zero keeps its scale ("0", "0.00", ...) but never `-0`.
-            return Self::assemble(false, "0", scale);
+            // Zero of any input scale is `0`; `-0` is never produced.
+            return "0".to_owned();
         }
         let negative = mantissa.sign() == bigdecimal::num_bigint::Sign::Minus;
         let digits = mantissa.magnitude().to_string();

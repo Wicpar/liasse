@@ -90,16 +90,17 @@ fn composite_order_is_not_struct_field_name_order() {
 }
 
 /// B.1 "numerically equal canonical values compare equal" holds inside a
-/// component: a decimal-scale variant (1.0 vs 1.00) is one key value even though
-/// its wire text differs (incarnation vs identity).
+/// component: a decimal-scale variant (1.0 vs 1.00) is one key value. Under
+/// SPEC-ISSUES item 1 the canonical wire is minimal scale — a total function of
+/// the value — so the two variants also produce the *same* wire text.
 #[test]
 fn composite_decimal_scale_variant_component_is_one_key() -> Result<(), ValueError> {
     let a = Value::Composite(vec![Value::Decimal(Decimal::parse("1.0")?), int(5)]);
     let b = Value::Composite(vec![Value::Decimal(Decimal::parse("1.00")?), int(5)]);
     assert_eq!(a, b, "scale-variant decimals are one composite key (B.1)");
-    // Yet the canonical wire preserves each incarnation's scale.
-    assert_eq!(a.to_wire(), json!(["1.0", "5"]));
-    assert_eq!(b.to_wire(), json!(["1.00", "5"]));
+    // One canonical spelling per value: both minimal-scale to "1" (A.1).
+    assert_eq!(a.to_wire(), json!(["1", "5"]));
+    assert_eq!(b.to_wire(), json!(["1", "5"]));
     Ok(())
 }
 

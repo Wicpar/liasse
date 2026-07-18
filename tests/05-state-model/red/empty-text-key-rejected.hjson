@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: empty-text-key-rejected
+  suite: scenario
+  spec: ["#state-model", "§5.4", "#annex-a", "§A.8", "#annex-d", "§D.2"]
+  tags: ["boundary", "identity"]
+  note: '''Boundary abuse: the empty string as a row key. text is a 'Unicode scalar
+sequence, preserved exactly' (§A.1) and the empty sequence is a text value, and text
+is key-eligible (§A.8). But SPEC-ISSUES #31 (resolved) now prohibits an empty key
+component: a key value that flattens to an empty canonical component (an empty text,
+or an empty bytes) is inadmissible, because an empty component makes the row's display
+path (§D.3) non-injective / non-round-trippable (/codes// vs /codes). Commit admission
+rejects the empty-text key in the same failure class as an unpopulated required key
+field (§22.1), so the row is never created and the collection stays empty.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.st.emptykey@1.0.0"
+    $model: {
+      codes: {
+        $key: "id"
+        id: "text"
+        label: "text"
+      }
+      $public: {
+        codes: {
+          $view: ".codes { id, label }"
+          $mut: {
+            add: ".codes + { id: @id, label: @label }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // An empty-text key flattens to an empty canonical component -> inadmissible.
+    { call: "public.codes.add", args: { id: "", label: "empty" },
+      expect: { outcome: rejected, violates: ["#annex-a", "§A.8", "#annex-d", "§D.2"] } }
+    // A non-empty key is admitted normally, proving only the empty component is refused.
+    { call: "public.codes.add", args: { id: "x", label: "present" },
+      expect: { outcome: ok } }
+    // The rejected empty-key insert left no row; only the non-empty key survives.
+    { watch: "public.codes", id: "w1",
+      expect_init: { value: [ { id: "x", label: "present" } ] } }
+  ]
+}

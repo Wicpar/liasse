@@ -341,12 +341,43 @@ pub(crate) fn finalize(
         let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
         let Some(name) = decl.last().cloned() else { continue };
         let Some(collection) = compiled.collection_at(&decl) else { continue };
+        check_key_components(address)?;
         check_fields(collection, fields, address, ctx, prospective)?;
         check_row(collection, fields, address, ctx, prospective)?;
         check_refs(compiled, prospective, collection, fields, address)?;
         check_uniqueness(prospective, collection, fields, address)?;
         if let Some(bucket) = compiled.bucket(&name) {
             crate::bucket::check_interval(bucket, collection, fields, ctx.now, &address.render())?;
+        }
+    }
+    Ok(())
+}
+
+/// Reject a row whose key flattens to an empty canonical component — an empty
+/// `text` or `bytes` (A.8/D.2, SPEC-ISSUES item 31). An empty component makes a
+/// display path (D.3) non-injective / non-round-trippable, so it is inadmissible
+/// in the same failure class as an unpopulated required key field (§22.1). Every
+/// step is checked so no ancestor key segment is empty either; the
+/// `liasse_ident` key builder is the single point that classifies emptiness.
+fn check_key_components(address: &RowAddress) -> Result<(), Rejection> {
+    for step in address.steps() {
+        // §8.2/§23.3: the reserved `$root` singleton row carries a synthetic
+        // empty-text key — an implementation-owned address, never an application
+        // display-path segment (D.3) — so it is exempt from the non-empty rule.
+        if step.name().as_str() == crate::singleton::ROOT_NAME {
+            continue;
+        }
+        let components: Vec<Value> = step.key().components().cloned().collect();
+        if matches!(
+            liasse_ident::KeyText::from_key_values(&components),
+            Err(liasse_ident::IdentError::EmptyKeyComponent)
+        ) {
+            return Err(Rejection::new(
+                RejectionReason::Malformed,
+                "a key component is the empty canonical value (empty text or bytes); an empty key \
+                 component is not admissible (A.8/D.2)",
+            )
+            .at(address.render()));
         }
     }
     Ok(())

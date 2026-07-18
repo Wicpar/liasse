@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: decimal-canonical-trailing-zero-spelling
+  suite: scenario
+  spec: ["§A.1", "§A.6", "§B.1"]
+  tags: ["decimal", "wire"]
+  note: '''Pinned (SPEC-ISSUES #1, resolved). Annex A.1 now defines the decimal
+canonical wire form as MINIMAL SCALE: every trailing fractional zero stripped,
+the decimal point dropped when no fractional digit remains, one leading `-` for
+negatives, `0` for zero. The subtraction 1.50 - 0.50 is exactly 1 (A.6 keeps the
+value exact; the operation may carry scale 2 internally), so its canonical wire
+string is "1" — not "1.0", "1.00", or any scale-padded variant. Annex B.1 already
+makes numerically equal decimals compare equal; minimal scale makes the wire
+string a total function of that value, so equal decimals are indistinguishable on
+the wire too.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.dectz@1.0.0"
+    $model: {
+      a: "decimal"
+      b: "decimal"
+      $mut: {
+        diff: "return .a - .b"
+      }
+      $public: {
+        calc: {
+          $mut: {
+            diff: ".diff"
+          }
+        }
+      }
+    }
+    $data: {
+      a: "1.50"
+      b: "0.50"
+    }
+  }
+
+  steps: [
+    // exact value is 1; minimal-scale canonical wire strips the fractional zeros.
+    { call: "public.calc.diff", args: {},
+      expect: { outcome: ok, value: "1" } }
+  ]
+}

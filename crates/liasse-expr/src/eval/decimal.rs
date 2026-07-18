@@ -1,11 +1,12 @@
-//! Package decimal-division semantics (A.6). Division selects a result scale
-//! that exposes at least sixteen *significant* fractional digits of the
-//! quotient — never fewer than either operand's display scale — following
-//! PostgreSQL `numeric`. "Significant" counts from the quotient's first nonzero
-//! fractional digit, so a quotient with leading fractional zeros (e.g.
-//! `1/700000 = 0.00000142857…`) gets extra scale rather than losing precision.
-//! The value is then rounded half-away-from-zero and its trailing-zero spelling
-//! normalized (the spelling itself is unpinned — SPEC-ISSUES item 1).
+//! Package decimal-division semantics (A.6). Division computes the quotient to
+//! an internal rounding precision of at least sixteen *significant* fractional
+//! digits, following PostgreSQL `numeric`. "Significant" counts from the
+//! quotient's first nonzero fractional digit, so a quotient with leading
+//! fractional zeros (e.g. `1/700000 = 0.00000142857…`) gets extra precision
+//! rather than losing it. The value is rounded half-away-from-zero and then
+//! normalized to its minimal-scale canonical spelling (A.1/SPEC-ISSUES item 1),
+//! which subsumes any operand-display-scale floor — a terminating quotient such
+//! as `10 / 4` is `2.5`, never zero-padded.
 
 use liasse_value::bigdecimal::{BigDecimal, RoundingMode, Zero};
 
@@ -22,16 +23,18 @@ pub(crate) fn divide(a: &BigDecimal, b: &BigDecimal) -> Result<BigDecimal, EvalE
         return Err(EvalError::DivisionByZero);
     }
     let raw = a / b;
-    let scale = division_scale(&raw, a, b)?;
+    let scale = division_scale(&raw)?;
     Ok(raw.with_scale_round(scale, RoundingMode::HalfUp).normalized())
 }
 
-/// The A.6 result scale for a quotient: enough fractional places to expose
-/// sixteen significant fractional digits of `raw`, but never fewer than either
-/// operand's display scale. `raw` is the exact (high-precision) quotient, read
-/// only to locate its leading fractional zeros.
-fn division_scale(raw: &BigDecimal, a: &BigDecimal, b: &BigDecimal) -> Result<i64, EvalError> {
-    let significant = if raw.is_zero() {
+/// The A.6 internal rounding precision for a quotient: enough fractional places
+/// to expose sixteen significant fractional digits of `raw`. The operand display
+/// scale imposes no floor — minimal-scale rendering (A.1/SPEC-ISSUES item 1)
+/// subsumes it, since the result is normalized after rounding. `raw` is the
+/// exact (high-precision) quotient, read only to locate its leading fractional
+/// zeros.
+fn division_scale(raw: &BigDecimal) -> Result<i64, EvalError> {
+    let scale = if raw.is_zero() {
         SIGNIFICANT_FRACTIONAL_DIGITS
     } else {
         // e = floor(log10(|raw|)) is the place of the most significant digit
@@ -42,9 +45,6 @@ fn division_scale(raw: &BigDecimal, a: &BigDecimal, b: &BigDecimal) -> Result<i6
         let e = decimal_exponent(raw);
         SIGNIFICANT_FRACTIONAL_DIGITS.max(SIGNIFICANT_FRACTIONAL_DIGITS - 1 - e)
     };
-    let scale = significant
-        .max(a.fractional_digit_count())
-        .max(b.fractional_digit_count());
     if scale > i64::from(u16::MAX) {
         return Err(EvalError::DecimalScale);
     }

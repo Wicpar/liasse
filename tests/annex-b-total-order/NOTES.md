@@ -27,9 +27,10 @@ the struct note below).
   Annex A, matching the rest of the corpus:
   - `int` — plain Hjson numbers in `$data` values and expected values (canonical
     base-10 per A.1); negatives written directly (`-10`).
-  - `decimal` — strings (`"1.00"`), because Annex A does not pin the canonical
-    trailing-zero spelling for assertion. The decimal case therefore projects
-    only `id` and never asserts a decimal's rendered spelling — only row order.
+  - `decimal` — strings (`"1.00"`). Annex A.1 pins the canonical spelling as
+    minimal scale (SPEC-ISSUES #1); the decimal order case still projects only
+    `id` because it asserts row ORDER (scale-insensitive per B.1), independent of
+    any rendered spelling.
   - `bytes` — `{ "$bytes": "<base64>" }` (A.1); each byte value's base64 is
     spelled out in the case note.
   - `uuid` — lowercase hyphenated strings (A.1).

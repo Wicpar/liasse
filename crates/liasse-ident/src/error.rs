@@ -18,6 +18,13 @@ pub enum IdentError {
     #[error("a key must have at least one component")]
     EmptyKey,
 
+    /// A key value flattened to an empty canonical component — an empty `text`,
+    /// or an empty `bytes` (base64 `""`). An empty component makes a display
+    /// path non-injective / non-round-trippable, so it is inadmissible
+    /// (A.8/D.2/D.3, SPEC-ISSUES item 31).
+    #[error("a key component is the empty canonical value; an empty key component is not admissible (A.8/D.2)")]
+    EmptyKeyComponent,
+
     /// A percent escape was not one of the canonical D.2/D.3 sequences
     /// (`%25`, `%2F`, or — in a key segment — `%3A`).
     #[error("malformed percent escape in `{text}` (canonical escapes are %25, %2F, %3A)")]

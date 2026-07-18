@@ -7,12 +7,16 @@
 //! case attacks both:
 //!
 //! 1. **`Value::Eq` is Annex-B `Ord`, which is scale/precision-INSENSITIVE.** A
-//!    `decimal` value that lost its trailing-zero scale, or a `timestamp` that
-//!    lost its declared precision, on the pg round-trip would still compare EQUAL
-//!    to the reference — the divergence is invisible to an `Ord` parity check. So
-//!    every row here is additionally compared on its **canonical JSON text**
-//!    (`Value::to_canonical_json_string`, A.7), the byte-exact serialization that
-//!    *does* distinguish `1`, `1.0`, `1.00`. The reference is the externally-known
+//!    `timestamp` that lost its declared precision on the pg round-trip would
+//!    still compare EQUAL to the reference — the divergence is invisible to an
+//!    `Ord` parity check. So every row here is additionally compared on its
+//!    **canonical JSON text** (`Value::to_canonical_json_string`, A.7), the
+//!    byte-exact serialization that distinguishes precision-variant timestamps
+//!    (`1000`ms vs `1`s) and structure. Since SPEC-ISSUES #1 a `decimal`'s
+//!    canonical text is minimal scale, so `1`, `1.0`, and `1.00` share one
+//!    spelling (`1`); the text axis then verifies both backends canonicalize a
+//!    scale-variant decimal to that same spelling, catching a backend that would
+//!    emit a non-minimal decimal string. The reference is the externally-known
 //!    input, never the store's own answer.
 //! 2. **Untested variants and raw-number-in-`jsonb` paths.** `value_wire` never
 //!    stores a `Value::Blob` (the B.4 four-tuple descriptor), a `Value::Date`, or
@@ -143,7 +147,8 @@ fn battery() -> Vec<(i64, Value)> {
         (10, composite_keyed_map()),
         // --- set: cross-type members + a scale-bearing decimal ---
         (11, Value::Set([dec("1.500"), int(2), text("s"), Value::Bool(true)].into_iter().collect())),
-        // --- mixed-scale decimals: Ord-EQUAL, canonical-text DISTINCT ---
+        // --- mixed-scale decimals: Ord-EQUAL, and (SPEC-ISSUES #1) canonical-text
+        // EQUAL too — every scale variant renders minimal-scale "1"/"0" ---
         (12, dec("1.00")),
         (13, dec("1.0")),
         (14, dec("1")),
@@ -261,8 +266,9 @@ fn assert_matches_oracle<S: InstanceStore>(store: &S, label: &str) {
                     want,
                     "{label}: Ord-value mismatch at key {key}"
                 );
-                // Sharper canonical-text axis: distinguishes 1 / 1.0 / 1.00 and
-                // precision-variant timestamps that Ord equality collapses.
+                // Sharper canonical-text axis: distinguishes precision-variant
+                // timestamps and structure that Ord equality collapses, and
+                // confirms scale-variant decimals canonicalize to one spelling (#1).
                 assert_eq!(
                     update(row.value()),
                     update(want),

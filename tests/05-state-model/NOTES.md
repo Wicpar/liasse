@@ -21,8 +21,10 @@ One **expectation-shape extension** is used:
   are authored as plain Hjson numbers/booleans; they denote the typed Liasse
   values whose canonical wire forms are defined in Annex A (`int` travels as
   a canonical base-10 JSON string). `decimal` values are authored as strings
-  (`"1.50"`), matching their Annex A wire form, because Annex A does not pin
-  the canonical trailing-zero spelling and cases must not assert it.
+  (`"1.50"`), matching their Annex A wire form. Annex A.1 pins the canonical
+  spelling as minimal scale (SPEC-ISSUES #1), so a rendered decimal is asserted
+  in that form (`"1.50"` and `"1.5"` both render `"1.5"`; a whole number renders
+  without a point).
 - **Unicode.** Case files are UTF-8 and embed literal non-ASCII scalars where
   the rule under test is scalar-exact identity
   (`red/unicode-confusable-keys-are-distinct.hjson`,

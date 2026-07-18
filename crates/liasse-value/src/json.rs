@@ -44,11 +44,14 @@ impl Json {
             serde_json::Value::Null => Ok(Self::Null),
             serde_json::Value::Bool(b) => Ok(Self::Bool(*b)),
             serde_json::Value::Number(n) => {
-                let text = n.to_string();
-                let decimal = text
-                    .parse::<BigDecimal>()
-                    .map_err(|_| ValueError::MalformedDecimal(text.clone()))?;
-                Ok(Self::Number(decimal))
+                // A.7 / SPEC-ISSUES item 28: a json number's scale magnitude is
+                // bounded exactly as an A.6 `decimal`'s. Routing through
+                // `Decimal::parse` rejects an extreme exponent here, at the wire
+                // boundary, with the same diagnostic class as an out-of-range
+                // decimal — so no ill-scaled number reaches A.7 canonicalization
+                // and forces an unbounded digit-string allocation.
+                let decimal = Decimal::parse(&n.to_string())?;
+                Ok(Self::Number(decimal.as_big_decimal().clone()))
             }
             serde_json::Value::String(s) => Ok(Self::String(s.clone())),
             serde_json::Value::Array(items) => items
@@ -75,7 +78,9 @@ impl Json {
             Self::Null => serde_json::Value::Null,
             Self::Bool(b) => serde_json::Value::Bool(*b),
             Self::Number(n) => {
-                let text = Decimal::from_big_decimal(n.normalized()).to_canonical_text();
+                // A.7: minimal-scale plain spelling (`to_canonical_text` already
+                // normalizes, SPEC-ISSUES item 1), re-read as a JSON number.
+                let text = Decimal::from_big_decimal(n.clone()).to_canonical_text();
                 text.parse::<serde_json::Value>()
                     .unwrap_or(serde_json::Value::String(text))
             }

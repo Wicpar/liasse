@@ -1,0 +1,42 @@
+{
+  format: 1
+  name: decimal-division-canonical-scale
+  suite: scenario
+  spec: ["#expressions", "§A.6", "§A.1", "§7.5"]
+  tags: ["boundary", "decimal"]
+  note: '''Pinned (SPEC-ISSUES #1, resolved). Annex A.6 division computes a
+non-terminating quotient to an internal rounding precision of at least sixteen
+significant fractional digits, but the EMITTED value is Annex A.1's minimal-scale
+canonical form: every trailing fractional zero stripped, one spelling per
+mathematical value. For 10 / 4 the exact value is 2.5, so the wire text is "2.5"
+— never the scale-padded "2.5000000000000000" a preserve-scale reading would
+allow. The same rule pins every avg() result (§7.5). An attacker cannot mint a
+distinct spelling of the same value.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.decscale@1.0.0"
+    $model: {
+      a: "decimal"
+      b: "decimal"
+      $mut: {
+        read: "return .a / .b"
+      }
+      $public: {
+        math: {
+          $mut: { read: ".read" }
+        }
+      }
+    }
+    $data: {
+      a: "10"
+      b: "4"
+    }
+  }
+
+  steps: [
+    // 10 / 4 = 2.5 exactly; minimal-scale canonical wire is "2.5".
+    { call: "public.math.read", args: {},
+      expect: { outcome: ok, value: "2.5" } }
+  ]
+}

@@ -118,10 +118,12 @@ fn marks_collection(r: i64, c: i64, n: i64) -> CollectionPath {
     CollectionPath::nested(cell(r, c, n).steps().cloned(), NameSegment::new("marks"))
 }
 
-/// A struct ROW VALUE carrying a scale-bearing `decimal` (`1.50`, scale 2) and an
-/// omitted optional (`none`) field alongside a nested struct — the A.7
-/// canonical-text axis must preserve the `1.50` scale through the pg `jsonb`
-/// round-trip and reopen, which Annex-B `Ord` equality (scale-insensitive) hides.
+/// A struct ROW VALUE carrying a `decimal` (input `1.50`, scale 2) and an omitted
+/// optional (`none`) field alongside a nested struct. Since SPEC-ISSUES #1 the
+/// decimal's canonical text is minimal scale (`1.5`), so the A.7 canonical-text
+/// axis must render it identically — `1.5` — through the pg `jsonb` round-trip and
+/// reopen; the axis still guards the `none`/nested-struct shape that Annex-B `Ord`
+/// equality hides.
 fn struct_value() -> Value {
     Value::Struct(Struct::new([
         (Text::new("ratio"), Value::Decimal(Decimal::parse("1.50").expect("decimal"))),

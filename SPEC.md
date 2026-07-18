@@ -4337,7 +4337,7 @@ This annex is normative.
 | `text` | Unicode scalar sequence | JSON string, preserved exactly |
 | `bool` | Boolean | `true` or `false` |
 | `int` | Arbitrary-precision integer | JSON string with canonical base-10 digits |
-| `decimal` | Exact decimal | JSON string, no exponent, canonical sign and trailing-zero form |
+| `decimal` | Exact decimal | JSON string, no exponent, minimal-scale canonical form (defined below) |
 | `bytes` | Small binary value | `{ "$bytes": "<canonical base64>" }` |
 | `uuid` | 128-bit UUID | lowercase hyphenated JSON string |
 | `date` | Gregorian calendar date | `YYYY-MM-DD` JSON string |
@@ -4362,6 +4362,8 @@ There is no `{ "$none": true }` sentinel; it is not produced and carries no `non
 **Canonical input is mandatory at the machine wire/request boundary.** A scalar value crossing the machine wire/request boundary (a request argument, a `view`/`call` parameter, any value an untrusted peer supplies) MUST already be in its canonical Annex-A / D.2 form. A non-canonical spelling — an uppercase `uuid`, a leading-zero, `+`-signed, or `-0` `int`, a non-canonical `base64` padding or variant, a non-canonical `duration` or `timestamp` spelling — is **rejected as malformed at admission**; it is never normalized and never accepted as a distinct value. This keeps one wire spelling per value, so a non-canonical spelling can neither mint a second identity nor alias an existing one. The human-authoring layer (Annex C package definitions and authored `$data`) is exempt: it stays lenient and is canonicalized at compile.
 
 `text` is a sequence of Unicode scalar values (U+0000..U+10FFFF, excluding surrogate code points), preserved exactly. No scalar value is excluded; in particular U+0000 (NUL) is a legal `text` scalar. A backend whose native string or document storage cannot represent a given scalar value MUST apply a reversible, backend-internal encoding that preserves the value losslessly and does not alter any observable result — value equality, Annex B order, row keys, or opaque identity tokens. Per §23.3 that encoding is implementation-owned and MUST NOT appear at any logical surface.
+
+A `decimal`'s canonical wire value is its **minimal-scale plain form**: no exponent; every trailing fractional zero removed, and the decimal point omitted when no fractional digit remains; a single leading `-` for a negative value; zero is `0` and negative zero is never produced. The canonical string is therefore a total function of the decimal's mathematical value, so numerically equal decimals (A.6, B.1) share exactly one canonical spelling — scale is not part of a decimal's identity. (Trailing zeros in the *integer* part are magnitude, not scale, and are preserved: `100` stays `100`; a quotient such as `10 / 4` is `2.5`, and `1.50 − 0.50` is `1`.)
 
 ### A.2 Type expressions
 
@@ -4478,8 +4480,8 @@ The remainder operator `%` is part of the arithmetic surface for `int` and `deci
 
 The default decimal division and rounding semantics follow PostgreSQL `numeric`:
 
-- division selects a result scale that provides at least sixteen significant fractional digits when available and never less than either operand's display scale;
-- the result scale is bounded by the implementation limits defined for the Liasse language version;
+- a non-terminating quotient is computed to an internal rounding precision of at least sixteen significant fractional digits; the emitted value is the exact result rendered in A.1's minimal-scale canonical form, so a terminating quotient such as `10 / 4` is `2.5` (its significant digits are never zero-padded, and numerically equal results share one spelling). The operand display scale does not floor the emitted spelling — minimal-scale rendering subsumes it;
+- that internal rounding precision is bounded by the implementation limits defined for the Liasse language version — the same scale bound A.7 applies to a `json` number;
 - rounding at a selected decimal scale resolves a halfway value away from zero.
 
 A package MAY select another standard division scale or rounding mode through `$semantics`. Supported explicit rounding values are:
@@ -4501,7 +4503,8 @@ Canonical JSON:
 
 - preserves JSON `null`;
 - sorts object keys by the Liasse text order;
-- emits numbers in the canonical JSON-number spelling;
+- emits numbers in the canonical JSON-number spelling (plain, no exponent, minimal scale — the same spelling as an A.1 `decimal`);
+- bounds a number's scale magnitude (its base-ten exponent — its fractional-digit or trailing-zero count) by the same implementation scale limit as an A.6 `decimal`. A `json` value containing a number whose scale magnitude exceeds that limit is rejected at the decoding boundary with the same diagnostic class as an out-of-range `decimal`; a conforming implementation MUST NOT accept it or attempt to canonicalize it;
 - preserves array order;
 - contains no `none` value.
 
@@ -4517,6 +4520,8 @@ and structs composed solely of key-eligible required fields
 ```
 
 Optional values, JSON, blobs, sets, maps, and views are excluded from row keys. Composite collection keys combine several eligible fields. Candidate-key components use the same eligible base types, although the candidate-key fields themselves MAY be optional; rows containing `none` in any candidate-key component do not participate in that constraint.
+
+Every scalar key component MUST have non-empty canonical key text (D.2). A key value that flattens to an empty component — including an empty `text` value or an empty `bytes` value (whose base64 is the empty string) — is not admissible: commit admission rejects it in the same failure class as an unpopulated required key field (§22.1). Consequently every key segment of a display path (D.3) is non-empty, so display paths stay injective and round-trippable, and a display-path parser MUST reject a path containing an empty segment.
 
 ### A.9 Refs
 
@@ -4540,7 +4545,7 @@ Every sortable Liasse value has a deterministic ascending total order. Descendin
 |---|---|
 | `bool` | `false`, then `true` |
 | `int` | mathematical integer order |
-| `decimal` | mathematical decimal order; numerically equal canonical values compare equal |
+| `decimal` | mathematical decimal order; numerically equal canonical values compare equal — one minimal-scale canonical spelling per value (A.1) |
 | `text` | lexicographic Unicode scalar-value order |
 | `bytes` | lexicographic unsigned-byte order |
 | `uuid` | unsigned lexicographic order of its 16 bytes |
@@ -5049,7 +5054,7 @@ struct      its components in canonical field-name order
 
 Within a scalar key component, each original `%`, `/`, and `:` is encoded respectively as `%25`, `%2F`, and `%3A`; the percent signs introduced by these escape sequences are not encoded again. This encoding is applied before components are joined. Composite components are joined by `:` in `$key` order, while canonical structured wire values use an array in the same order. The key type makes decoding unambiguous.
 
-This encoding is used for seed object member names, display paths, and canonical textual exports. Expressions use typed key values rather than encoded strings.
+This encoding is used for seed object member names, display paths, and canonical textual exports. Expressions use typed key values rather than encoded strings. A `decimal` key component uses the minimal-scale canonical decimal text (A.1), so numerically equal decimal keys share one key text and one identity. Every scalar key component's canonical text is non-empty: a key value flattening to an empty component (an empty `text` or `bytes`) is inadmissible (A.8), so no display path (D.3) has an empty segment.
 
 ### D.3 Paths
 

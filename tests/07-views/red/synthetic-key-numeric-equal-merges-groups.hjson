@@ -4,7 +4,7 @@
   suite: scenario
   spec: ["#views", "§7.2", "§B.1", "§B.4"]
   tags: ["identity", "boundary"]
-  note: "Attack: two differently-written but numerically-equal decimal grouping keys ('1.0' and '1.00') expecting two separate groups. §7.2: 'Rows sharing the synthetic key form one group.' §B.1: 'numerically equal canonical values compare equal' for decimal. So 1.0 and 1.00 are the SAME group; their debits sum together (1 + 2 = 3), leaving two groups total. The canonical wire form of the merged decimal key is not pinned (Annex A.1 leaves the representative among equal inputs unspecified), so 'bucket' is matched with $any; the merge itself — two groups, first total 3 — is the asserted rule."
+  note: "Attack: two differently-written but numerically-equal decimal grouping keys ('1.5' and '1.50') expecting two separate groups. §7.2: 'Rows sharing the synthetic key form one group.' §B.1: 'numerically equal canonical values compare equal' for decimal. So 1.5 and 1.50 are the SAME group; their debits sum together (1 + 2 = 3), leaving two groups total. SPEC-ISSUES #1 pins the canonical decimal wire form as minimal scale, so the merged group key renders as '1.5' — the projection asserts that spelling; the merge itself — two groups, first total 3 — is the asserted rule."
 
   package: {
     $liasse: 1
@@ -22,18 +22,19 @@
     }
     $data: {
       lines: {
-        l1: { bucket: "1.0", debit: "1" }
-        l2: { bucket: "1.00", debit: "2" }
+        l1: { bucket: "1.5", debit: "1" }
+        l2: { bucket: "1.50", debit: "2" }
         l3: { bucket: "2", debit: "5" }
       }
     }
   }
 
   steps: [
+    // 1.5 and 1.50 merge (B.1); the merged key renders minimal-scale "1.5" (#1).
     { watch: "public.totals", id: "w1",
       expect_init: { value: [
-        { bucket: "$any", total: "3" }
-        { bucket: "$any", total: "5" }
+        { bucket: "1.5", total: "3" }
+        { bucket: "2", total: "5" }
       ] } }
   ]
 }
