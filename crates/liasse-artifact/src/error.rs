@@ -135,6 +135,25 @@ pub enum ArtifactError {
         found: i64,
     },
 
+    /// `entries` omits a required direct archive leaf it must cover (§19.5:
+    /// `mimetype`, `liasse.json`, `state/current.cbor.zst`, `history/index.json`).
+    /// Its uncompressed media type is then recorded nowhere, which D.5 requires for
+    /// every required non-manifest entry.
+    #[error("manifest `entries` is missing required entry `{path}` (§19.5)")]
+    EntriesMissingRequired {
+        /// The required archive path absent from `entries`.
+        path: String,
+    },
+
+    /// `entries` lists a member §19.5 forbids: `manifest.json` (which cannot
+    /// checksum itself) or a nested child artifact under `modules/` (inventoried by
+    /// `included_modules`, not `entries`).
+    #[error("manifest `entries` must not list `{path}` (§19.5)")]
+    EntriesForbiddenMember {
+        /// The offending archive path listed in `entries`.
+        path: String,
+    },
+
     /// The manifest's declared definition identity disagrees with the D.4
     /// identity recomputed from `liasse.json` (opt-in check; see
     /// [`crate::Artifact::verify_definition_identity`]).

@@ -47,17 +47,32 @@ pub enum ChooseSide {
     Local,
 }
 
-/// One conflicted logical coordinate in a reconciliation plan (§19.9): the
-/// collection, the row key, and the conflicted field (absent for a whole-row
-/// delete-vs-modify or competing-insert conflict).
+/// One conflicted coordinate in a reconciliation plan (§19.9), addressed by its
+/// own §D.3 display path so a host correction resolves it unambiguously even when
+/// a key contains the path separator.
 ///
-/// It renders its own D.3 display path (§D.3) so a host correction addresses it
-/// unambiguously even when the key contains the path separator.
+/// A conflict lives in a keyed collection (`/collection/key[/field]`) or on a §8.2
+/// root-singleton member (the member's name-only application address `/flag`). The
+/// singleton case carries no collection wrapper or key and never the internal
+/// reserved `$root` name (§D.1: a root member has no ancestor collection key).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConflictCoordinate {
-    collection: String,
-    key: Value,
-    field: Option<String>,
+pub enum ConflictCoordinate {
+    /// A keyed-collection conflict: the collection, the row key, and the conflicted
+    /// field (absent for a whole-row delete-vs-modify or competing insert).
+    Row {
+        /// The top-level collection the conflicted row belongs to.
+        collection: String,
+        /// The conflicted row's application-visible key (§5.4).
+        key: Value,
+        /// The conflicted field, or `None` for a whole-row conflict.
+        field: Option<String>,
+    },
+    /// A §8.2 root-singleton conflict, addressed at the member's name-only §D.3
+    /// application address (`/flag`); `None` names the whole singleton row.
+    RootSingleton {
+        /// The conflicted root member, or `None` for a whole-singleton-row conflict.
+        member: Option<String>,
+    },
 }
 
 impl ConflictCoordinate {
@@ -65,35 +80,62 @@ impl ConflictCoordinate {
     /// conflict).
     #[must_use]
     pub fn field(collection: impl Into<String>, key: Value, field: impl Into<String>) -> Self {
-        Self { collection: collection.into(), key, field: Some(field.into()) }
+        Self::Row { collection: collection.into(), key, field: Some(field.into()) }
     }
 
     /// A whole-row conflict on the `collection` row keyed `key` (§19.9
     /// delete-vs-modify / competing insert).
     #[must_use]
     pub fn row(collection: impl Into<String>, key: Value) -> Self {
-        Self { collection: collection.into(), key, field: None }
+        Self::Row { collection: collection.into(), key, field: None }
     }
 
-    /// The canonical D.3 display path of this coordinate: the collection name, the
-    /// key rendered as a canonical key-text segment (each scalar component escaped
-    /// before any composite `:` join, §D.2), and the field name when present. The
-    /// key escaping is what makes `/notes/a%2Fb/body` address the `a/b` row rather
-    /// than a nested path (§D.3).
+    /// A §8.2 root-singleton conflict at `member` (or the whole singleton row when
+    /// `member` is `None`), addressed by its name-only §D.3 root path.
+    #[must_use]
+    pub fn root_singleton(member: Option<String>) -> Self {
+        Self::RootSingleton { member }
+    }
+
+    /// The canonical D.3 display path of this coordinate. A collection conflict is
+    /// `/collection/key[/field]`, the key rendered as a canonical key-text segment
+    /// (each scalar component escaped before any composite `:` join, §D.2), so
+    /// `/notes/a%2Fb/body` addresses the `a/b` row rather than a nested path (§D.3).
+    /// A §8.2 root-singleton conflict is the member's name-only path (`/flag`), and
+    /// the bare model root (`/`) for a whole-singleton-row conflict.
     ///
     /// # Errors
-    /// [`IdentError`] when the key holds a value D.2 gives no key text (a `json`,
-    /// `blob`, `set`, `map`, or `none`).
+    /// [`IdentError`] when a collection key holds a value D.2 gives no key text (a
+    /// `json`, `blob`, `set`, `map`, or `none`). A root-singleton path never fails.
     pub fn display_path(&self) -> Result<String, IdentError> {
-        let key_text = KeyText::from_key_values(std::slice::from_ref(&self.key))?;
-        let mut segments = vec![
-            PathSegment::Name(NameSegment::new(self.collection.clone())),
-            PathSegment::Key(key_text),
-        ];
-        if let Some(field) = &self.field {
-            segments.push(PathSegment::Name(NameSegment::new(field.clone())));
-        }
+        let segments = match self {
+            Self::Row { collection, key, field } => {
+                let key_text = KeyText::from_key_values(std::slice::from_ref(key))?;
+                let mut segments = vec![
+                    PathSegment::Name(NameSegment::new(collection.clone())),
+                    PathSegment::Key(key_text),
+                ];
+                if let Some(field) = field {
+                    segments.push(PathSegment::Name(NameSegment::new(field.clone())));
+                }
+                segments
+            }
+            Self::RootSingleton { member } => member
+                .iter()
+                .map(|member| PathSegment::Name(NameSegment::new(member.clone())))
+                .collect(),
+        };
         Ok(CanonicalPath::new(segments).to_display_string())
+    }
+
+    /// A short human label for a diagnostic (never a host-facing coordinate): the
+    /// collection for a keyed conflict, or a neutral root-singleton descriptor that
+    /// never names the internal reserved storage row.
+    fn diagnostic_label(&self) -> String {
+        match self {
+            Self::Row { collection, .. } => collection.clone(),
+            Self::RootSingleton { .. } => "root singleton".to_owned(),
+        }
     }
 }
 
@@ -208,7 +250,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
         let mut matched = BTreeSet::new();
         for conflict in conflicts {
             let path = conflict.display_path().map_err(|source| CorrectionError::Coordinate {
-                collection: conflict.collection.clone(),
+                collection: conflict.diagnostic_label(),
                 source,
             })?;
             let Some(side) = choose.get(&path) else {

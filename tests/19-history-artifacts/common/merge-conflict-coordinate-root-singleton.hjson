@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: merge-conflict-coordinate-root-singleton
+  suite: scenario
+  // §19.9 (SPEC-ISSUES #36): a three-way merge conflict on a §8.2 root-singleton
+  // member is reported at that member's §D.3 application address relative to the
+  // model root — a name-only path (`/flag`), with no collection or key wrapper and
+  // no internal reserved storage name. The host correction resolves it by that
+  // exact address, proving the conflict is addressable through the documented
+  // mechanism (not stranded behind an internal `$root`/empty-key coordinate).
+  spec: ["§19.9", "§8.2", "§D.3"]
+
+  package: {
+    $liasse: 1
+    $app: "t.singmerge@1.0.0"
+    $model: {
+      // `flag` is writable root-singleton state (§8.2): one value per instance,
+      // in no collection and with no key.
+      flag: "text"
+      $mut: {
+        set_flag: [
+          ".flag = @v"
+          "return . { flag }"
+        ]
+      }
+      $public: {
+        settings: {
+          $view: ". { flag }"
+          $mut: { set_flag: ".set_flag" }
+        }
+      }
+    }
+    $data: { flag: "base" }
+  }
+
+  steps: [
+    // Shared base: flag = base.
+    { export: { as: "a0" }, expect: { outcome: ok } }
+    // Incoming side moves the singleton to `incoming`.
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a0" }, expect: { outcome: ok } }
+      { call: "public.settings.set_flag", args: { v: "incoming" },
+        expect: { outcome: ok, value: { flag: "incoming" } } }
+      { export: { as: "a2" }, expect: { outcome: ok } }
+    ] }
+    // Local side moves the same singleton to `local`: incompatible values.
+    { call: "public.settings.set_flag", args: { v: "local" },
+      expect: { outcome: ok, value: { flag: "local" } } }
+    // The conflict coordinate is the member's name-only application address,
+    // serialized as `{ member: "flag" }` — never `{ collection: "$root", key: "" }`.
+    { reconcile: { from: "a2", policy: ["merge"], bind_plan: "r1" },
+      expect: { outcome: ok, value: {
+        relation: "merge", applied: false,
+        conflicts: [ { coordinate: { member: "flag" } } ] } } }
+    // §D.3: the host correction addresses the singleton conflict by `/flag`.
+    { apply_correction: { plan: "r1", choose: { "/flag": "incoming" } },
+      expect: { outcome: ok, value: { applied: true, "...": true } } }
+    { watch: "public.settings", id: "w1",
+      expect_init: { value: { flag: "incoming" } } }
+  ]
+}

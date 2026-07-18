@@ -186,3 +186,63 @@ fn missing_manifest_is_rejected() -> Fallible {
     }
     Ok(())
 }
+
+/// Repack the sample leaf artifact with a mutated manifest (§19.5 admission tests).
+fn repack_with_manifest(manifest: &liasse_artifact::Manifest) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+    let canonical = manifest.to_canonical_bytes();
+    let mut entries = common::entries_of(&common::leaf_bytes()?)?;
+    for entry in &mut entries {
+        if entry.0 == "manifest.json" {
+            entry.1 = canonical.clone();
+        }
+    }
+    Ok(common::repack(entries)?)
+}
+
+#[test]
+fn entries_missing_required_leaf_is_rejected() -> Fallible {
+    // §19.5 (SPEC-ISSUES #33): `entries` MUST cover the required leaf
+    // `state/current.cbor.zst`. Dropping its row — while keeping the file and the
+    // `state` role member — leaves its media type recorded nowhere (D.5) and is
+    // rejected at admission, not silently under-verified.
+    let mut manifest = common::leaf_builder().manifest();
+    assert!(manifest.entries.remove(STATE_PATH).is_some(), "sample builder records the state leaf");
+    let bytes = repack_with_manifest(&manifest)?;
+    match Artifact::open(&bytes) {
+        Err(ArtifactError::EntriesMissingRequired { path }) => assert_eq!(path, STATE_PATH),
+        other => return Err(format!("expected entries-missing-required, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn entries_listing_module_artifact_is_rejected() -> Fallible {
+    // §19.5 (SPEC-ISSUES #33): a nested child artifact under `modules/` is
+    // inventoried by `included_modules`, never listed in `entries`. Its checksum
+    // already covers the child's exact bytes; a duplicate `entries` row is the
+    // maximal (double-inventory) reading the pin rejects.
+    let mut manifest = common::leaf_builder().manifest();
+    manifest.entries.insert(
+        "modules/child-1.liasse".to_owned(),
+        liasse_artifact::EntryChecksum {
+            media: "application/vnd.liasse+zip".to_owned(),
+            sha256: Digest::of_bytes(b"child-bytes"),
+        },
+    );
+    let bytes = repack_with_manifest(&manifest)?;
+    match Artifact::open(&bytes) {
+        Err(ArtifactError::EntriesForbiddenMember { path }) => {
+            assert_eq!(path, "modules/child-1.liasse");
+        }
+        other => return Err(format!("expected entries-forbidden-member, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn genuine_artifact_still_opens_under_entries_membership() -> Fallible {
+    // The canonical set (four structural leaves, no manifest.json, no modules/*)
+    // remains accepted (§19.5 #33 accept side).
+    Artifact::open(&common::leaf_bytes()?)?;
+    Ok(())
+}

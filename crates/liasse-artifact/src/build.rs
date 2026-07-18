@@ -16,9 +16,11 @@
 //!
 //! **Media types** are not pinned by the spec (§19.5 records a media type per
 //! entry but fixes no vocabulary); the constants below are the builder's stable
-//! choice. `entries` covers every required direct archive entry except
-//! `manifest.json` and the nested module artifacts, which have their dedicated
-//! `included_modules` inventory (the non-redundant reading of §19.5).
+//! choice. `entries` covers every required direct archive *leaf* — the four
+//! structural leaves plus any resource/history/blob section — and excludes both
+//! `manifest.json` (self-checksum) and the nested module artifacts, which the
+//! dedicated `included_modules` inventory covers (§19.5, the exhaustive membership
+//! rule pinned by SPEC-ISSUES #33).
 
 use std::collections::BTreeMap;
 

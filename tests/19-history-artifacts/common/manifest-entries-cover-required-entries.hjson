@@ -2,10 +2,13 @@
   format: 1
   name: manifest-entries-cover-required-entries
   suite: scenario
-  // §19.5: manifest `entries` covers every required direct archive entry
-  // other than manifest.json; the member name is the exact archive path.
-  // Annex D.5: manifest.json records a SHA-256 checksum and uncompressed
-  // media type for every required non-manifest entry.
+  // §19.5 (SPEC-ISSUES #33): manifest `entries` covers every required direct
+  // archive LEAF entry — the four structural leaves below plus any present
+  // resource/history/blob section — other than manifest.json (self-checksum) and
+  // the nested child artifacts under modules/ (inventoried by included_modules).
+  // The member name is the exact archive path. Annex D.5: manifest.json records a
+  // SHA-256 checksum and uncompressed media type for every required non-manifest
+  // entry, so the media type of liasse.json/state/history lives in an entries row.
   spec: ["§19.5", "Annex D.5"]
 
   package: {

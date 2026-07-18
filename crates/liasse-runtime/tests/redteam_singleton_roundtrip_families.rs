@@ -24,7 +24,7 @@
 
 mod support;
 
-use liasse_runtime::{CallOutcome, CallRequest, Engine, ImportRelation, Value};
+use liasse_runtime::{CallOutcome, CallRequest, ConflictCoordinate, Engine, ImportRelation, Value};
 use liasse_store::MemoryStore;
 use liasse_value::Text;
 use support::{generator, store};
@@ -153,11 +153,10 @@ fn rollback_restores_earlier_singleton_value() {
 /// cleanly and combine; when BOTH sides change the same singleton field it is a
 /// conflict.
 ///
-/// OBSERVATION (candidate SPEC-ISSUE, not asserted as a hard failure): the merged
-/// singleton lands at the reserved `$root` address, and a singleton field conflict
-/// is reported with `collection: "$root", key: ""` — the internal reserved name,
-/// not a §D.3 application address like `.flag`. This is a cosmetic coordinate leak,
-/// distinct from the (correct) merge semantics this test pins.
+/// §19.9/§D.3 (SPEC-ISSUES #36): the singleton field conflict is reported at the
+/// member's name-only application address — `ConflictCoordinate::RootSingleton {
+/// member: Some("flag") }`, rendering `/flag` — never the internal reserved
+/// `$root` name or its placeholder empty key (which is not a well-formed D.3 path).
 const MG_APP: &str = r#"{
   "$liasse": 1, "$app": "t.mg@1.0.0",
   "$model": {
@@ -204,6 +203,13 @@ fn singleton_merge_combines_and_conflicts_correctly() {
     assert!(
         !conflicted.is_clean(),
         "§19.9: both sides changing the same singleton field is a conflict, not a silent pick",
+    );
+    // §19.9/§D.3 (#36): the conflict coordinate is the member's name-only root
+    // address, never the internal `$root`/empty-key storage row.
+    assert_eq!(
+        conflicted.conflicts.iter().map(|c| &c.coordinate).collect::<Vec<_>>(),
+        vec![&ConflictCoordinate::RootSingleton { member: Some("flag".to_owned()) }],
+        "§D.3: a singleton member conflict reports `/flag`, not the reserved `$root` name",
     );
 }
 

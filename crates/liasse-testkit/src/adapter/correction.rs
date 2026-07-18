@@ -121,20 +121,29 @@ impl<S: InstanceStore> Runtime<S> {
         // is recovered by value from the per-side states (its top-level collection
         // name and single-component key), so no schema-owned key derivation is
         // needed in the adapter.
+        let sides = [&local, &incoming_state, &base_state];
         let mut rows: BTreeMap<RowAddress, RowResolution> = BTreeMap::new();
         for conflict in &outcome.conflicts {
             let coordinate = &conflict.coordinate;
-            let address = find_row(
-                &[&local, &incoming_state, &base_state],
-                coordinate.collection(),
-                coordinate.key(),
-            )
-            .ok_or_else(|| {
-                AdapterError::Host(format!(
-                    "correction conflict in `{}` addresses no known row",
-                    coordinate.collection()
-                ))
-            })?;
+            let (address, field) = match coordinate {
+                ConflictCoordinate::Row { collection, key, field } => {
+                    let address = find_row(&sides, collection, key).ok_or_else(|| {
+                        AdapterError::Host(format!(
+                            "correction conflict in `{collection}` addresses no known row"
+                        ))
+                    })?;
+                    (address, field.as_deref())
+                }
+                ConflictCoordinate::RootSingleton { member } => {
+                    let address = find_singleton_row(&sides).ok_or_else(|| {
+                        AdapterError::Host(
+                            "correction conflict on the root singleton addresses no known row"
+                                .to_owned(),
+                        )
+                    })?;
+                    (address, member.as_deref())
+                }
+            };
             let path = surface_coordinate(coordinate)?
                 .display_path()
                 .map_err(|error| AdapterError::Host(error.to_string()))?;
@@ -142,7 +151,7 @@ impl<S: InstanceStore> Runtime<S> {
                 AdapterError::Host(format!("correction leaves `{path}` unresolved"))
             })?;
             let entry = rows.entry(address).or_default();
-            match coordinate.field() {
+            match field {
                 Some(field) => {
                     entry.fields.insert(field.to_owned(), side);
                 }
@@ -217,9 +226,12 @@ fn surface_coordinates(conflicts: &[MergeConflict]) -> Result<Vec<SurfaceConflic
 
 /// The surface [`SurfaceConflict`] for one runtime conflict coordinate.
 fn surface_coordinate(coordinate: &ConflictCoordinate) -> Result<SurfaceConflict, AdapterError> {
-    Ok(match coordinate.field() {
-        Some(field) => SurfaceConflict::field(coordinate.collection(), coordinate.key().clone(), field),
-        None => SurfaceConflict::row(coordinate.collection(), coordinate.key().clone()),
+    Ok(match coordinate {
+        ConflictCoordinate::Row { collection, key, field } => match field {
+            Some(field) => SurfaceConflict::field(collection.clone(), key.clone(), field.clone()),
+            None => SurfaceConflict::row(collection.clone(), key.clone()),
+        },
+        ConflictCoordinate::RootSingleton { member } => SurfaceConflict::root_singleton(member.clone()),
     })
 }
 
@@ -250,6 +262,25 @@ fn find_row(states: &[&RowState], collection: &str, key: &Value) -> Option<RowAd
             let mut components = step.key().components();
             if let (Some(first), None) = (components.next(), components.next())
                 && first == key
+            {
+                return Some(address.clone());
+            }
+        }
+    }
+    None
+}
+
+/// The §8.2 singleton reserved row's address, recovered by value from the per-side
+/// states. The reserved row is the sole row with an empty-text key component — a
+/// real collection key is never empty (§D.2/§A.8) — so the reserved storage name
+/// need not be hardcoded to find it.
+fn find_singleton_row(states: &[&RowState]) -> Option<RowAddress> {
+    for state in states {
+        for address in state.keys() {
+            let Some(step) = address.steps().last() else { continue };
+            let mut components = step.key().components();
+            if let (Some(first), None) = (components.next(), components.next())
+                && matches!(first, Value::Text(text) if text.as_str().is_empty())
             {
                 return Some(address.clone());
             }

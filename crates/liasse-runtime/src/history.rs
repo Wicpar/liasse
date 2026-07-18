@@ -90,58 +90,67 @@ pub enum ConflictKind {
     CompetingInsert,
 }
 
-/// The logical coordinate a §19.9 merge conflict concerns: the top-level
-/// collection, the conflicted row's key value, and — for a field-level conflict —
-/// the field name (absent for a whole-row delete-vs-modify or competing insert).
+/// The §D.3 application address a §19.9 merge conflict is reported at, so a host
+/// correction can resolve it by its canonical display path (§19.9).
 ///
-/// This is structured rather than a rendered string so a host correction can
-/// address it by its canonical D.3 display path (§D.3): the collection name, the
-/// key rendered as an escaped key-text segment, and the field. A rendered
-/// `RowAddress` diagnostic string cannot be reversed to that escaped path (a key
-/// containing `/` is ambiguous), which is exactly the attack §D.3 escaping
-/// defends; carrying `(collection, key, field)` lets the surface recover the
-/// escaped coordinate from a real [`MergeOutcome`].
+/// This is structured rather than a rendered string so the surface can recover the
+/// escaped D.3 path from a real [`MergeOutcome`]: a rendered `RowAddress`
+/// diagnostic string cannot be reversed to it (a key containing `/` is ambiguous),
+/// which is exactly the attack §D.3 escaping defends.
+///
+/// A conflict lives either in a keyed collection or on a §8.2 root-singleton
+/// member. The singleton case never leaks the internal reserved storage name
+/// (`$root`) or its placeholder empty key: §D.1 gives a root member no ancestor
+/// collection key, so its address is a bare declaration name (`/flag`), and an
+/// empty key segment is not even a well-formed D.3 path (§D.3).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConflictCoordinate {
-    collection: String,
-    key: Value,
-    field: Option<String>,
-}
-
-impl ConflictCoordinate {
-    /// The top-level collection the conflicted row belongs to.
-    #[must_use]
-    pub fn collection(&self) -> &str {
-        &self.collection
-    }
-
-    /// The conflicted row's application-visible key value (§5.4): the lone
-    /// component for a single-field key, a struct of the named components for a
-    /// composite key.
-    #[must_use]
-    pub fn key(&self) -> &Value {
-        &self.key
-    }
-
-    /// The conflicted field name, or `None` for a whole-row conflict
-    /// (delete-vs-modify, competing insert).
-    #[must_use]
-    pub fn field(&self) -> Option<&str> {
-        self.field.as_deref()
-    }
+pub enum ConflictCoordinate {
+    /// A conflict in a keyed collection, addressed by `/collection/key[/field]`
+    /// (§D.3): the top-level collection name, the row's application-visible key
+    /// (§5.4), and the field for a field-level conflict (absent for a whole-row
+    /// delete-vs-modify or competing insert).
+    Row {
+        /// The top-level collection the conflicted row belongs to.
+        collection: String,
+        /// The conflicted row's application-visible key value (§5.4): the lone
+        /// component for a single-field key, a struct of the named components for
+        /// a composite key.
+        key: Value,
+        /// The conflicted field, or `None` for a whole-row conflict.
+        field: Option<String>,
+    },
+    /// A conflict on §8.2 root-singleton state, addressed by the member's name-only
+    /// §D.3 application address relative to the model root (`/flag`). `member` is
+    /// `None` only for a whole-singleton-row conflict (a base-less competing insert
+    /// of the reserved row), addressed at the bare model root (`/`); the internal
+    /// `$root` name and its empty key never appear.
+    RootSingleton {
+        /// The conflicted root member, or `None` for a whole-singleton-row conflict.
+        member: Option<String>,
+    },
 }
 
 impl serde::Serialize for ConflictCoordinate {
-    /// Serialize as a diagnostic object `{ collection, key, field? }` with the key
-    /// as its canonical wire value (Annex A). This is the form the §19.9
-    /// reconciliation-plan diagnostic carries; the key stays a structured wire
-    /// value so a consumer can rebuild the D.3 display path from it.
+    /// Serialize as the §19.9 reconciliation-plan diagnostic. A [`Self::Row`] is
+    /// `{ collection, key, field? }` with the key as its canonical wire value
+    /// (Annex A) so a consumer can rebuild the D.3 display path from it; a
+    /// [`Self::RootSingleton`] is `{ member }` — the §8.2 root member's name-only
+    /// application address, carrying no collection wrapper, key, or reserved name.
     fn serialize<Sr: serde::Serializer>(&self, serializer: Sr) -> Result<Sr::Ok, Sr::Error> {
         let mut object = serde_json::Map::new();
-        object.insert("collection".to_owned(), J::String(self.collection.clone()));
-        object.insert("key".to_owned(), self.key.to_wire());
-        if let Some(field) = &self.field {
-            object.insert("field".to_owned(), J::String(field.clone()));
+        match self {
+            Self::Row { collection, key, field } => {
+                object.insert("collection".to_owned(), J::String(collection.clone()));
+                object.insert("key".to_owned(), key.to_wire());
+                if let Some(field) = field {
+                    object.insert("field".to_owned(), J::String(field.clone()));
+                }
+            }
+            Self::RootSingleton { member } => {
+                if let Some(member) = member {
+                    object.insert("member".to_owned(), J::String(member.clone()));
+                }
+            }
         }
         J::Object(object).serialize(serializer)
     }
@@ -338,26 +347,34 @@ struct ThreeWayMerge<'a> {
 }
 
 impl ThreeWayMerge<'_> {
-    /// The structured D.3-addressable coordinate of a conflicted `address`
-    /// (§D.3): the top-level collection name and the row's application-visible key
-    /// (§5.4), with the field for a field-level conflict. The key resolves through
-    /// the schema so a single-field key is its scalar and a composite key its
-    /// component struct — the form the surface renders as an escaped key-text
-    /// segment.
+    /// The D.3-addressable coordinate of a conflicted `address` (§D.3). A keyed
+    /// collection row resolves to `/collection/key[/field]`: the top-level
+    /// collection name and the row's application-visible key (§5.4), with the field
+    /// for a field-level conflict. The key resolves through the schema so a
+    /// single-field key is its scalar and a composite key its component struct — the
+    /// form the surface renders as an escaped key-text segment.
+    ///
+    /// The §8.2 singleton reserved row is internal storage, not a collection: a
+    /// conflict on one of its members is reported at that member's name-only
+    /// application address (`/flag`), never the reserved `$root` name or its
+    /// placeholder empty key — which §D.3 forbids as an empty path segment and §D.1
+    /// gives no ancestor key.
     fn coordinate(&self, address: &RowAddress, field: Option<String>) -> ConflictCoordinate {
         // A merged row is a top-level collection row, so its final step names the
         // collection and carries the key (nested-collection merge is a seam). A
         // `RowAddress` is non-empty by construction, so the step is always present.
-        let mut collection = String::new();
-        let mut key = Value::None;
-        if let Some(step) = last_step(address) {
-            collection = step.name().as_str().to_owned();
-            key = match self.schema.top_collection(&collection) {
-                Some(model) => materialize::key_identity(model, step.key()),
-                None => step.key().components().next().cloned().unwrap_or(Value::None),
-            };
+        let Some(step) = last_step(address) else {
+            return ConflictCoordinate::Row { collection: String::new(), key: Value::None, field };
+        };
+        let collection = step.name().as_str();
+        if collection == crate::singleton::ROOT_NAME {
+            return ConflictCoordinate::RootSingleton { member: field };
         }
-        ConflictCoordinate { collection, key, field }
+        let key = match self.schema.top_collection(collection) {
+            Some(model) => materialize::key_identity(model, step.key()),
+            None => step.key().components().next().cloned().unwrap_or(Value::None),
+        };
+        ConflictCoordinate::Row { collection: collection.to_owned(), key, field }
     }
 
     /// Resolve the merge coordinate by coordinate (§19.9): accept a change made on

@@ -34,7 +34,13 @@ use liasse_ident::{DefinitionId, Digest};
 
 use crate::archive::Archive;
 use crate::error::{ArtifactError, MIMETYPE};
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, HISTORY_INDEX_PATH, LIASSE_JSON_PATH, STATE_PATH};
+
+/// The direct archive leaf entries §19.5 requires `entries` to cover (in addition
+/// to any present resource, history-segment/archive/definition, and blob leaves).
+/// `manifest.json` is excluded — it cannot checksum itself — and nested child
+/// artifacts under `modules/` are inventoried by `included_modules`, not `entries`.
+const REQUIRED_ENTRIES: &[&str] = &["mimetype", LIASSE_JSON_PATH, STATE_PATH, HISTORY_INDEX_PATH];
 
 /// The maximum recursive module-nesting depth [`Artifact::open`] verifies
 /// before rejecting, so an adversarially deep artifact cannot overflow the
@@ -69,6 +75,7 @@ impl Artifact {
             .data();
         let manifest = Manifest::parse(manifest_bytes)?;
 
+        verify_entries_membership(&manifest)?;
         verify_entry_checksums(&archive, &manifest)?;
         verify_named_entry(&archive, &manifest.state.path, &manifest.state.sha256)?;
         verify_named_entry(&archive, &manifest.history.path, &manifest.history.sha256)?;
@@ -171,6 +178,29 @@ fn verify_mimetype(archive: &Archive) -> Result<(), ArtifactError> {
             found: content.into_owned(),
         })
     }
+}
+
+/// Enforce the §19.5 `entries` membership rule (SPEC-ISSUES #33): `entries` covers
+/// every required direct archive *leaf* — the four structural leaves here, plus any
+/// present resource/history/blob section — and MUST NOT list `manifest.json`
+/// (self-checksum) or a nested child artifact under `modules/` (which
+/// `included_modules` inventories). The equality of a leaf's `entries` checksum and
+/// any role-member checksum (`state`, `history`) is enforced transitively: each is
+/// verified against the identical file bytes, so a divergence fails verification.
+fn verify_entries_membership(manifest: &Manifest) -> Result<(), ArtifactError> {
+    for required in REQUIRED_ENTRIES {
+        if !manifest.entries.contains_key(*required) {
+            return Err(ArtifactError::EntriesMissingRequired {
+                path: (*required).to_owned(),
+            });
+        }
+    }
+    for path in manifest.entries.keys() {
+        if path == "manifest.json" || path.starts_with("modules/") {
+            return Err(ArtifactError::EntriesForbiddenMember { path: path.clone() });
+        }
+    }
+    Ok(())
 }
 
 fn verify_entry_checksums(archive: &Archive, manifest: &Manifest) -> Result<(), ArtifactError> {

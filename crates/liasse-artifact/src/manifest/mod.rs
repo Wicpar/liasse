@@ -90,7 +90,12 @@ pub struct Manifest {
     pub modules: BTreeMap<String, MountRef>,
     /// Every direct child artifact required, by child incarnation.
     pub included_modules: BTreeMap<InstanceId, IncludedModule>,
-    /// Every required direct archive entry other than `manifest.json`, by path.
+    /// Every required direct archive *leaf* entry, by path (§19.5, SPEC-ISSUES
+    /// #33): the four structural leaves (`mimetype`, `liasse.json`,
+    /// `state/current.cbor.zst`, `history/index.json`) plus any present resource,
+    /// history-segment/archive/definition, and blob leaf. It never lists
+    /// `manifest.json` (self-checksum) or a nested child artifact under `modules/`
+    /// (inventoried by `included_modules`).
     pub entries: BTreeMap<String, EntryChecksum>,
 }
 

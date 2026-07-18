@@ -3373,7 +3373,7 @@ Its required structure is:
 }
 ```
 
-`modules` describes the selected direct mounts. `included_modules` inventories every direct child artifact required by the exported state or retained parent history. `entries` covers every required direct archive entry other than `manifest.json`; its member name is the exact archive path. Additional members are invalid for format version `1`.
+`modules` describes the selected direct mounts. `included_modules` inventories every direct child artifact required by the exported state or retained parent history. `entries` covers every required direct archive *leaf* entry — `mimetype`, `liasse.json`, `state/current.cbor.zst`, and `history/index.json`, together with every present `resources/`, `history/segments/`, `history/archives/`, `history/definitions/`, and `blobs/` section — other than `manifest.json` itself, which cannot checksum itself, and the nested child-module artifacts under `modules/`, which `included_modules` inventories. Its member name is the exact archive path. Where a covered entry's checksum also appears in a role member (`state`, `history`), the two MUST be equal. Additional members are invalid for format version `1`.
 
 ### 19.6 Portable history records
 
@@ -3459,6 +3459,8 @@ An import policy selects which automatic movements may activate, including fast-
 Automatic merge uses the latest shared history point as its base and compares the base, local, and incoming logical states after bringing them to the selected compatible definition.
 
 The merge accepts an unambiguous combined result, including a change made on one side, equal results reached on both sides, and compatible changes to separate logical coordinates. It reports conflicts for incompatible field values, deletion against modification, competing rekeys or identities, competing module mounts, incompatible definition or boundary changes, and any combined result that fails ordinary Liasse validation.
+
+Each reported conflict names its coordinate as a §D.3 application address relative to the model root, so a host correction resolves it by that address: a keyed-collection conflict at the conflicted row's display path, and a §8.2 root-singleton member conflict at that member's declaration-name address (`.flag`, equivalently `/flag`), with no collection or key wrapper. Internal reserved storage names never appear in a reported coordinate.
 
 A failed merge returns a reconciliation plan containing the base, local, incoming, proposed result, conflicts, and affected module boundaries. A host correction function may select or provide valid values and resolve direct child-mount choices within each affected boundary. Liasse then validates the complete prospective composition under the ordinary type, ref, deletion, uniqueness, check, authorization, bucket, meter, blob, migration, and interface rules.
 
@@ -5093,6 +5095,8 @@ A display path alternates declaration-name segments and canonical local key-text
 ```
 
 Every declaration-name path segment encodes each original `%` and `/` as `%25` and `%2F`. Key segments use the scalar-component encoding above before composite joining. Escape prefixes introduced by either process are not encoded again. Display paths identify logical rows within one loaded package tree. Refs store typed keys plus their declared target, not path strings.
+
+A §8.2 root-singleton member is addressed by a name-only path — a bare declaration-name segment with no key segment (`/flag`), since D.1 gives a root member no ancestor collection key. Any internal reserved storage row used to hold singleton state is not part of the address space; its name and its placeholder key never appear in a display path (an empty key segment is not a well-formed display path).
 
 A declaration MAY carry an optional stable `$id` when migration or tooling MUST preserve declaration identity across a rename or move. The common case uses the declaration's logical package path.
 

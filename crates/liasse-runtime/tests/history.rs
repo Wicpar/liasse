@@ -7,7 +7,9 @@ mod support;
 
 use liasse_artifact::Artifact;
 use liasse_ident::{HistoryPoint, InstanceId};
-use liasse_runtime::{CallRequest, ConflictKind, Engine, ImportError, ImportRelation, Value};
+use liasse_runtime::{
+    CallRequest, ConflictCoordinate, ConflictKind, Engine, ImportError, ImportRelation, Value,
+};
 use liasse_store::MemoryStore;
 use liasse_value::Text;
 use support::{generator, load, SEEDED, TASKS};
@@ -195,9 +197,12 @@ fn merge_reports_delete_vs_modify_conflict() {
     // §D.3 / SEAM 3: the conflict carries a structured coordinate (collection, key,
     // field), not a rendered diagnostic string, so a host correction can recover
     // the escaped D.3 display path. The whole-row conflict names `notes` row `n2`.
-    assert_eq!(conflict.coordinate.collection(), "notes");
-    assert_eq!(conflict.coordinate.key(), &text("n2"));
-    assert_eq!(conflict.coordinate.field(), None, "a delete-vs-modify is a whole-row conflict");
+    let ConflictCoordinate::Row { collection, key, field } = &conflict.coordinate else {
+        panic!("a keyed-collection conflict is a Row coordinate: {:?}", conflict.coordinate);
+    };
+    assert_eq!(collection, "notes");
+    assert_eq!(key, &text("n2"));
+    assert_eq!(*field, None, "a delete-vs-modify is a whole-row conflict");
 }
 
 #[test]
@@ -222,9 +227,12 @@ fn incompatible_field_conflict_names_its_field_coordinate() {
         .iter()
         .find(|c| c.kind == ConflictKind::IncompatibleValue)
         .unwrap_or_else(|| panic!("incompatible value is reported: {:?}", outcome.conflicts));
-    assert_eq!(conflict.coordinate.collection(), "notes");
-    assert_eq!(conflict.coordinate.key(), &text("n1"));
-    assert_eq!(conflict.coordinate.field(), Some("body"));
+    let ConflictCoordinate::Row { collection, key, field } = &conflict.coordinate else {
+        panic!("a keyed-collection conflict is a Row coordinate: {:?}", conflict.coordinate);
+    };
+    assert_eq!(collection, "notes");
+    assert_eq!(key, &text("n1"));
+    assert_eq!(field.as_deref(), Some("body"));
 }
 
 #[test]
