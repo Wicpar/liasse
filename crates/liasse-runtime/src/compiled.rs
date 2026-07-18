@@ -12,7 +12,7 @@ use liasse_diag::{SourceId, SourceMap};
 use liasse_expr::{check_statement, ExprType, HostPosition, RowType, Scope, SortOrder, TypedExpr, ViewOrders};
 use liasse_model::{Collection, Model, Node, Shape};
 use liasse_syntax::{parse_expression, Stmt};
-use liasse_value::Type;
+use liasse_value::{StructType, Type};
 
 use crate::doc;
 use crate::error::EngineError;
@@ -137,6 +137,21 @@ impl CompiledCollection {
     /// The field descriptor named `name`, if declared.
     pub(crate) fn field(&self, name: &str) -> Option<&CompiledField> {
         self.fields.iter().find(|f| f.name == name)
+    }
+
+    /// The `Type::Struct` a static struct member named `name` declares (§5.3),
+    /// reconstructed from its compiled fields in field-name text order — the same
+    /// field-name-ordered struct `Type` the model's key builder produces for a
+    /// struct-typed `$key` (A.8, `Shape::key_struct_type`). A struct member
+    /// compiles into [`Self::structs`], not [`Self::fields`], so [`Self::field`]
+    /// never resolves a struct-typed `$key` component; this recovers its real type
+    /// for the Annex E exposed-row-identity comparison (A.9/E.5). `None` when no
+    /// struct member of that name is declared.
+    pub(crate) fn struct_type(&self, name: &str) -> Option<Type> {
+        let structure = self.structs.iter().find(|s| s.name == name)?;
+        Some(Type::Struct(StructType::new(
+            structure.fields.iter().map(|field| (field.name.clone(), field.ty.clone())),
+        )))
     }
 
     /// The nested child collection named `name`, if declared under this row.

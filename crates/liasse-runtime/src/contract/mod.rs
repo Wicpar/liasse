@@ -459,17 +459,25 @@ fn local_type(value: &Expr, scope: &RuntimeScope, source: SourceId) -> Option<Ex
 
 /// The exposed row identity of a surface view (A.9/E.5): the top-level
 /// collection's `$key` components in `$key` order, each `(name, type)`. The key is
-/// a typed tuple (A.9), so each component carries its declared field type; a
-/// component that names no writable field falls back to `json`, matching the
-/// schema's own key-typing (§5.4). `None` when the source is not a plain top-level
-/// collection.
+/// a typed tuple (A.9), so each component carries its declared field type. A scalar
+/// key component resolves through the collection's writable `field`; a struct-typed
+/// key component (A.8: "structs composed solely of key-eligible required fields")
+/// compiles into the collection's `structs`, not its `fields`, so it resolves
+/// through `struct_type` to the same field-name-ordered `Type::Struct` the schema's
+/// key builder produces (§5.4). Only a component that names neither — a genuinely
+/// unresolvable stale declaration — falls back to `json`. `None` when the source is
+/// not a plain top-level collection.
 fn exposed_identity(collection: &str, compiled: &Compiled) -> Option<Vec<(String, Type)>> {
     let collection = compiled.collection(collection)?;
     let identity = collection
         .key
         .iter()
         .map(|name| {
-            let ty = collection.field(name).map_or(Type::Json, |field| field.ty.clone());
+            let ty = collection
+                .field(name)
+                .map(|field| field.ty.clone())
+                .or_else(|| collection.struct_type(name))
+                .unwrap_or(Type::Json);
             (name.clone(), ty)
         })
         .collect();
