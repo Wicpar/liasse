@@ -173,11 +173,18 @@ export interface FetchResponse {
   text(): Promise<string>;
 }
 
+/// How the shell asks a `fetch`-shaped POST to handle credentials. `include` sends and
+/// stores the connection cookie (needed for the cookie the SSE stream is bound to,
+/// including cross-origin), mirroring the browser `RequestCredentials`.
+export type Credentials = "include" | "same-origin" | "omit";
+
 /// A `fetch`-shaped POST function. `globalThis.fetch` satisfies it; a test injects a
-/// mock. The shell only ever POSTs (GET is the EventSource stream).
+/// mock. The shell only ever POSTs (GET is the EventSource stream). It requests
+/// `credentials: "include"` so the `hello` response's connection cookie is stored and
+/// resent — the same cookie the SSE stream authenticates with.
 export type FetchLike = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: string },
+  init: { method: string; headers: Record<string, string>; body?: string; credentials?: Credentials },
 ) => Promise<FetchResponse>;
 
 /// One dispatched SSE event as the shell consumes it: the frame JSON and the frontier
@@ -205,12 +212,19 @@ export interface EventSourceLike {
 }
 
 /// What the shell asks a transport to open the downstream SSE stream with. The channel
-/// carries NO auth of its own — subscribe/unsubscribe are authenticated POSTs (§12);
-/// `connection` is only the opaque handle that links this stream to its connection, so
-/// the default transport places it in the URL (the one channel a native `EventSource`
-/// has) and the SSE request needs no header. `lastEventId` is present only on a manual
-/// rebuild, where a fresh source cannot replay the frontier from the platform's own
-/// memory and the transport must convey it to resume (§12.2).
+/// carries NO auth token of its own — subscribe/unsubscribe are authenticated POSTs
+/// (§12) and the stream is bound to its connection by the ambient HttpOnly cookie the
+/// browser sends under `withCredentials`.
+///
+/// `connection` is the opaque connection capability, provided ONLY for a custom
+/// transport that must mint a short-lived single-use stream ticket for a cookieless
+/// (cross-origin) deployment. It MUST NOT be placed in the URL: a URL-borne bearer
+/// token leaks (history, logs, `Referer`) and lets anyone who sees it steal the stream.
+/// The default transport ignores it and relies on the cookie.
+///
+/// `lastEventId` is present only on a manual rebuild, where a fresh source cannot replay
+/// the frontier from the platform's own memory; it is a non-secret resume marker (it
+/// cannot open a stream on its own), so it may ride the URL to resume (§12.2).
 export interface StreamRequest {
   readonly url: string;
   readonly connection: ConnectionToken;

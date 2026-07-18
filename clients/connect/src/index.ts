@@ -31,6 +31,7 @@ export type {
   ConnectionState,
   ConnectOptions,
   ConnectionToken,
+  Credentials,
   EventSourceFactory,
   EventSourceLike,
   Fault,

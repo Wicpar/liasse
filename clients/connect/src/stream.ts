@@ -2,11 +2,22 @@
 //! init/scalar/patch/close/frontier/reset/fault frames of every subscription — with
 //! auto-reconnect and bad-network resilience.
 //!
-//! The SSE channel is transport-anonymous. Auth lives entirely on the POSTs (§12:
-//! `hello` authenticates, `view`/`unsubscribe` open and close subscriptions); the
-//! stream only needs the opaque connection HANDLE to be linked to its subscriptions,
-//! so the default transport puts it in the URL and no request header is involved. That
-//! is what lets a native `EventSource` — which cannot set headers — drive the stream.
+//! The SSE channel carries no auth token of its own. Auth lives on the POSTs (§12:
+//! `hello` authenticates, `view`/`unsubscribe` open and close subscriptions). The
+//! stream is bound to its connection by an AMBIENT credential — the HttpOnly cookie the
+//! `hello` response sets — which the browser attaches automatically under
+//! `withCredentials`. The default transport therefore places NO capability in the SSE
+//! URL, and a native `EventSource` (which cannot set headers) still drives the stream.
+//!
+//! Anti-theft (this is the point of the cookie): a bearer token in the SSE URL would
+//! leak through browser history, server access logs, and the `Referer` header — and
+//! anyone who saw it could OPEN the same URL and STEAL the victim's stream, reading
+//! their already-authorized frames. So the connection capability never goes in the URL.
+//! Only a non-secret resume marker (the frontier token, useless without the credential)
+//! may ride the URL, and only to resume a manual rebuild. A cross-origin deployment
+//! that cannot use cookies must exchange the connection for a short-lived, single-use
+//! STREAM TICKET in a custom factory — never place the connection capability itself in a
+//! URL.
 //!
 //! Resilience: the SSE `id:` is the §12.2 frontier token, so resume is `Last-Event-ID`.
 //! A native `EventSource` reconnects on a transient drop and replays it automatically
@@ -186,15 +197,18 @@ export class Stream {
   }
 }
 
-/// The default factory: adapt a native `EventSource`. Only invoked where one exists (a
-/// browser, or node with the global); a test or a non-browser host injects a transport
-/// instead, so this is never on the test path.
-export const defaultEventSourceFactory: EventSourceFactory = ({ url, connection, lastEventId }) => {
+/// The default factory: adapt a native `EventSource`, bound to its connection by the
+/// HttpOnly cookie the browser sends under `withCredentials`. The connection capability
+/// is deliberately NOT in the URL (see the anti-theft note above); only a non-secret
+/// resume marker is. Only invoked where a native `EventSource` exists (a browser, or
+/// node with the global); a test or a non-browser host injects a transport instead, so
+/// this is never on the test path.
+export const defaultEventSourceFactory: EventSourceFactory = ({ url, lastEventId }) => {
   const ctor = (globalThis as { EventSource?: NativeEventSourceCtor }).EventSource;
   if (ctor === undefined) {
     throw new Error("no native EventSource is available; pass an EventSourceFactory via connect(..., { eventSource })");
   }
-  const native = new ctor(streamUrl(url, connection, lastEventId), { withCredentials: true });
+  const native = new ctor(resumeUrl(url, lastEventId), { withCredentials: true });
   return adaptNative(native);
 };
 
@@ -226,14 +240,14 @@ function adaptNative(native: NativeEventSource): EventSourceLike {
   } as EventSourceLike;
 }
 
-/// Build the anonymous SSE URL: the connection handle links the stream, and a
-/// `lastEventId` (present only on a manual rebuild) resumes it. Both ride the URL
-/// because a fresh native `EventSource` has no other channel for them.
-function streamUrl(url: string, connection: ConnectionToken, lastEventId: string | undefined): string {
-  const params = new URLSearchParams({ "liasse-connection": connection });
-  if (lastEventId !== undefined && lastEventId !== "") {
-    params.set("last-event-id", lastEventId);
+/// Build the SSE URL. The connection is bound by the ambient HttpOnly cookie, so it is
+/// NEVER put here — only a `lastEventId` (present on a manual rebuild) rides the URL, and
+/// only because a fresh native `EventSource` cannot replay it from the platform's own
+/// memory. The frontier token is not a credential: it cannot open a stream on its own.
+function resumeUrl(url: string, lastEventId: string | undefined): string {
+  if (lastEventId === undefined || lastEventId === "") {
+    return url;
   }
   const separator = url.includes("?") ? "&" : "?";
-  return `${url}${separator}${params.toString()}`;
+  return `${url}${separator}last-event-id=${encodeURIComponent(lastEventId)}`;
 }

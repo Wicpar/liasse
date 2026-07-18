@@ -60,8 +60,11 @@ test("subscribe posts a view with the connection header and opens one stream", a
   assert.equal(view.body["address"], "public.tasks");
   assert.equal(view.headers["liasse-connection"], "conn-1");
 
-  // The SSE stream is opened with the connection HANDLE (no auth header) — the channel
-  // is anonymous; auth rode the authenticated view POST above.
+  // The SSE stream carries no auth token of its own: auth rode the authenticated view
+  // POST above, and the stream binds by the connection's ambient (HttpOnly cookie)
+  // credential. The connection capability is handed to the factory only so a custom
+  // cookieless transport could mint a stream ticket — the default never URL-leaks it
+  // (see stream.test.ts).
   assert.equal(server.streams.length, 1);
   assert.equal(server.stream.request.connection, "conn-1");
 });

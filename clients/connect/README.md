@@ -15,18 +15,36 @@ authorization, projection, and token minting stay server-side.
 
 ## Transport
 
-The **SSE channel is anonymous**. It carries no authorization of its own: authority is
-established and re-checked on the POSTs (`hello` authenticates the connection; `view`
-opens/re-verifies a subscription; `unsubscribe` closes it). The connection token is
-just an opaque **stream handle** that links the SSE stream to its connection.
+The **SSE channel carries no auth token of its own**. Authority is established and
+re-checked on the POSTs (`hello` authenticates the connection; `view` opens/re-verifies
+a subscription; `unsubscribe` closes it). The stream is bound to its connection by an
+**ambient credential**, not a token it presents.
 
-- **Downstream** is one Server-Sent-Events stream per connection (`EventSource`). The
-  connection handle rides the **URL** (a native `EventSource` has no other channel and
-  needs none — the stream carries no secret), so a plain browser `EventSource` works
-  with no headers. The SSE `id:` is the §12.2 frontier token. Never WebSockets.
-- **Upstream** is `fetch` POSTs carrying the tagged request body the wasm core produced,
-  with the `Liasse-Connection` handle header and, on a `call`, the `Liasse-Operation-Id`
-  header (§12.3). POSTs can set headers, so the capability travels there.
+- **Downstream** is one Server-Sent-Events stream per connection (`EventSource`), bound
+  to its connection by an **HttpOnly cookie** the `hello` response sets and the browser
+  sends automatically under `withCredentials`. A plain browser `EventSource` works with
+  no headers, and the SSE URL carries **no capability at all**. The SSE `id:` is the
+  §12.2 frontier token. Never WebSockets.
+- **Upstream** is `fetch` POSTs (with `credentials: "include"`, so the connection cookie
+  is stored and resent) carrying the tagged request body the wasm core produced, with
+  the `Liasse-Connection` capability header and, on a `call`, the `Liasse-Operation-Id`
+  header (§12.3). POSTs can set headers, so the capability travels there — not in a URL.
+
+### Do not let a stream be stolen
+
+A bearer capability in the SSE **URL** would leak through browser history, server access
+logs, and the `Referer` header — and anyone who saw it could open the same URL and
+**steal** the victim's stream, reading their already-authorized frames. So the shell
+**never puts the connection capability in the URL**. The stream is bound by the HttpOnly
+cookie instead (set it `Secure` and `SameSite` server-side to resist theft and CSRF).
+Only a non-secret resume marker (the frontier token, which cannot open a stream on its
+own) may ride the URL, and only to resume a manual rebuild. This is covered by a test:
+`the default transport binds by credential and never puts the connection in the URL`.
+
+For a **cross-origin, cookieless** deployment, do not fall back to a URL token. Supply a
+custom `EventSourceFactory` via `connect(..., { eventSource })` that exchanges the
+connection for a **short-lived, single-use stream ticket** and opens the stream with
+that (a leaked ticket is worthless after it is consumed or expires).
 
 ### Auto-reconnect & bad networks
 
@@ -44,14 +62,15 @@ just an opaque **stream handle** that links the SSE stream to its connection.
   `connecting | open | reconnecting | closed`, so an app can show a "reconnecting…"
   indicator.
 
-> **Reference-server note.** The intended browser model above reads the connection
-> handle (and `last-event-id` on a manual rebuild) from the **SSE URL**. The current S2
-> reference binding (`crates/liasse-connect/src/bind/std_http.rs`) instead reads
-> `liasse-connection` / `last-event-id` from request **headers** on the GET and ignores
-> the URL. So against that specific server today, either update it to also read the URL
-> handle, or inject a header-capable `EventSourceFactory` via
-> `connect(..., { eventSource })`. This shell keeps the transport injectable for exactly
-> that reason; the node integration test models the intended URL-handle server.
+> **Reference-server note.** The secure browser model above needs the server to (1) set
+> an HttpOnly, Secure, SameSite **connection cookie** on the `hello` response and (2)
+> bind the SSE GET to that cookie. The current S2 reference binding
+> (`crates/liasse-connect/src/bind/std_http.rs`) instead reads `liasse-connection` from a
+> request **header** on the GET — which a native browser `EventSource` cannot send and
+> which the cookie replaces. So a browser deployment needs that server binding updated to
+> the cookie flow (or a custom stream-ticket `EventSourceFactory` injected). The shell
+> keeps the transport injectable for exactly that reason; the node integration test
+> models the intended cookie-bound server (its mock stream needs no URL token).
 
 ## Build
 

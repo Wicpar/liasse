@@ -1,15 +1,16 @@
-//! The SSE stream's resilience, unit-tested with a fake source and a captured
-//! scheduler (no real timers or network). Proves the shell: opens the anonymous
-//! channel with the connection HANDLE; folds frames; waits out a self-reconnecting
-//! drop without opening a second stream; rebuilds a source that gave up, with growing
-//! backoff that RESUMES from the last frontier and RESETS after recovery; and never
-//! reconnects once closed. Expected behaviour is deduced from the SSE/§12.2 model, not
-//! from the shell's own output.
+//! The SSE stream's resilience and anti-theft, unit-tested with a fake source and a
+//! captured scheduler (no real timers or network). Proves the shell: binds the default
+//! stream by credential, never leaking the connection capability into the URL (a URL
+//! bearer token is stealable); folds frames; waits out a self-reconnecting drop without
+//! opening a second stream; rebuilds a source that gave up, with growing backoff that
+//! RESUMES from the last frontier and RESETS after recovery; and never reconnects once
+//! closed. Expected behaviour is deduced from the SSE/§12.2 model, not from the shell's
+//! own output.
 
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { Stream } from "../src/stream.js";
+import { Stream, defaultEventSourceFactory } from "../src/stream.js";
 import type { Schedule } from "../src/stream.js";
 import { asConnectionToken, READY_CLOSED, READY_CONNECTING } from "../src/index.js";
 import type { ConnectionState, EventSourceLike, StreamEvent, StreamRequest } from "../src/index.js";
@@ -106,14 +107,16 @@ function harness(): {
   return { stream, sources, frames, states, scheduler };
 }
 
-test("the stream opens the anonymous channel with the connection handle and folds frames", () => {
+test("the stream hands the factory the connection handle and folds frames", () => {
   const { sources, frames } = harness();
 
   assert.equal(sources.length, 1);
   const first = sources[0];
   assert.ok(first);
+  // The handle is available to a custom (stream-ticket) factory; the default binds by
+  // cookie and never URL-leaks it — see the dedicated anti-theft test below.
   assert.equal(first.request.connection, "conn-1");
-  assert.equal(first.request.lastEventId, undefined, "no resume token on the first connect");
+  assert.equal(first.request.lastEventId, undefined, "no resume marker on the first connect");
 
   first.open();
   first.frame('{"type":"frontier"}', "f1");
@@ -199,4 +202,49 @@ test("close cancels any pending reconnect and never reopens", () => {
   first.drop(READY_CLOSED);
   assert.equal(scheduler.pending(), false);
   assert.equal(sources.length, 1);
+});
+
+test("the default transport binds by credential and never puts the connection in the URL", () => {
+  const seen: { url: string; withCredentials: boolean | undefined }[] = [];
+  class FakeNative {
+    readyState = READY_CONNECTING;
+    constructor(url: string, init?: { withCredentials?: boolean }) {
+      seen.push({ url, withCredentials: init?.withCredentials });
+    }
+    addEventListener(): void {}
+    close(): void {}
+  }
+
+  const holder = globalThis as { EventSource?: unknown };
+  const saved = holder.EventSource;
+  holder.EventSource = FakeNative;
+  try {
+    defaultEventSourceFactory({
+      url: "https://app.example/liasse",
+      connection: asConnectionToken("secret-connection-token"),
+      lastEventId: "f5",
+    });
+    defaultEventSourceFactory({
+      url: "https://app.example/liasse",
+      connection: asConnectionToken("secret-connection-token"),
+    });
+  } finally {
+    holder.EventSource = saved;
+  }
+
+  assert.equal(seen.length, 2);
+  const withResume = seen[0];
+  const fresh = seen[1];
+  assert.ok(withResume && fresh);
+
+  // The connection capability must NEVER appear in the SSE URL: a URL-borne bearer
+  // token leaks (history, logs, Referer) and lets anyone open — i.e. steal — the stream.
+  for (const opened of seen) {
+    assert.equal(opened.withCredentials, true, "the stream is bound by credential (cookie), not a URL token");
+    assert.ok(!opened.url.includes("secret-connection-token"), `URL leaks the connection: ${opened.url}`);
+    assert.ok(!opened.url.includes("liasse-connection"), `URL carries a connection param: ${opened.url}`);
+  }
+  // Only the non-secret resume marker rides the URL, and only on a rebuild.
+  assert.ok(withResume.url.includes("last-event-id=f5"), withResume.url);
+  assert.equal(fresh.url, "https://app.example/liasse", "a fresh connect adds no query at all");
 });

@@ -48,7 +48,9 @@ export class HttpTransport {
 
     let response;
     try {
-      response = await this.fetch(this.baseUrl, { method: "POST", headers, body });
+      // `credentials: "include"` stores/sends the connection cookie the `hello` response
+      // sets — the same HttpOnly cookie the SSE stream is bound to (works cross-origin).
+      response = await this.fetch(this.baseUrl, { method: "POST", headers, body, credentials: "include" });
     } catch (cause) {
       throw new TransportError(`request failed: ${errorText(cause)}`);
     }
