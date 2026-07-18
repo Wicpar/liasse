@@ -324,7 +324,9 @@ fn scalar_assignable(value: &Type, target: &Type) -> bool {
 
 /// The name of the first generated (impure) function call reachable from `expr`,
 /// if any (§8.12: `now()` and `uuid()` are the generated language functions).
-fn generated_call(expr: &Expr) -> Option<&'static str> {
+/// Shared with the surface phase, which enforces the same §8.8 pure-position
+/// gate on a surface `$view`/`$recursive` relation.
+pub(crate) fn generated_call(expr: &Expr) -> Option<&'static str> {
     if let ExprKind::Call { callee, .. } = &expr.kind
         && let ExprKind::Name(id) = &callee.kind
     {
@@ -342,7 +344,7 @@ fn generated_call(expr: &Expr) -> Option<&'static str> {
     None
 }
 
-fn statement_expr(parsed: &SpannedExpression) -> &Expr {
+pub(crate) fn statement_expr(parsed: &SpannedExpression) -> &Expr {
     use liasse_syntax::StmtKind;
     match &parsed.statement().kind {
         StmtKind::Bare(expr) | StmtKind::Return(expr) | StmtKind::Clear(expr) => expr,

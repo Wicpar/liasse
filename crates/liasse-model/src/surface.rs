@@ -19,7 +19,7 @@
 
 use liasse_diag::SourceMap;
 use liasse_expr::ExprType;
-use liasse_syntax::{parse_expression, Expr, ExprKind, Stmt, StmtKind};
+use liasse_syntax::{parse_expression, Expr, ExprKind, SpannedExpression, Stmt, StmtKind};
 use liasse_value::Type;
 
 use crate::build::RawSurface;
@@ -341,6 +341,7 @@ impl SurfacePhase<'_, '_> {
                 return None;
             }
         };
+        self.reject_generated(&parsed, sub);
         // §10.5: `$through` "yields strict descendants of the current row" and the
         // checker "verifies ... acyclicity". A strict-descendant relation is rooted
         // at `.` (the covered row) and descends into a contained collection; a
@@ -399,6 +400,7 @@ impl SurfacePhase<'_, '_> {
                 return;
             }
         };
+        self.reject_generated(&parsed, sub);
         match liasse_expr::check_statement(&scope, sub, &parsed) {
             Ok(typed) if typed.ty().as_scalar() == Some(&Type::Bool) => {}
             Ok(typed) => self.reporter.reject_hint(
@@ -411,6 +413,30 @@ impl SurfacePhase<'_, '_> {
                 "compare or test a value to produce a boolean",
             ),
             Err(diags) => self.reporter.emit_all(diags),
+        }
+    }
+
+    /// §8.8/§16.3: a surface `$view` and every `$recursive` relation/predicate is
+    /// a pure read position — a materialized, incrementally maintained view (§7.1,
+    /// §10.1) — so a generated function (`now()`/`uuid()`) is unreproducible there.
+    /// Reject it with the same `M-EXPR` effect-class error the model-root pure
+    /// positions emit, reusing [`crate::check::generated_call`]. The span indexes
+    /// the expression sub-source `sub`.
+    fn reject_generated(&mut self, parsed: &SpannedExpression, sub: liasse_diag::SourceId) {
+        if let Some(func) = crate::check::generated_call(crate::check::statement_expr(parsed)) {
+            self.reporter.emit(
+                liasse_diag::Diagnostic::error(format!(
+                    "the generated function `{func}()` may not appear in a pure read position — a \
+                     surface `$view` or `$recursive` relation (§8.8)"
+                ))
+                .code(code::EXPR)
+                .primary(liasse_diag::Span::new(sub, parsed.statement().span), "here")
+                .help(
+                    "generated functions like `now()`/`uuid()` are allowed only in `$default` and \
+                     mutation bodies",
+                )
+                .build(),
+            );
         }
     }
 
@@ -435,6 +461,7 @@ impl SurfacePhase<'_, '_> {
                 return;
             }
         };
+        self.reject_generated(&parsed, sub);
         // §7.1/§10.1/§12.2: a surface `$view` result may be a row stream, a
         // single row (a root or struct projection like `. { exact_sum }`), or a
         // scalar (an aggregate/computed value); §12.2 delivers a single-row or
