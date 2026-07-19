@@ -12,6 +12,10 @@ license.workspace = true
 # results, key material, and the `Type::decode` conformance check that the
 # checked-invocation guard uses to catch off-contract returns.
 liasse-value = { path = "../liasse-value" }
+# The vetted Ed25519 backend the §17.8 cose codec verifies a token signature
+# with (the accepted public version's key material), and the scriptable
+# `SimKeyProvider` double signs real, verifiable signatures with.
+ed25519-dalek = { workspace = true }
 # SHA-512 content hashing to verify connector reads against a blob's declared
 # digest (§18.9). Same vetted RustCrypto family the store already uses.
 sha2 = "0.10"

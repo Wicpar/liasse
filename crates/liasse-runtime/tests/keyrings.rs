@@ -385,9 +385,10 @@ fn bind_algorithm_mismatch_rejected() {
     assert!(ring.current().is_none(), "no version was activated");
 }
 
-/// §17.2: version metadata carries only public material. The double's public
-/// key is the `pk-...` public form; the signing operation's `sig-...` output is
-/// transport-only and never appears in version metadata.
+/// §17.2: version metadata carries only public material. The stored key is the
+/// 32-byte Ed25519 verifying key (the public half); the signing operation's
+/// 64-byte detached signature is transport-only and never appears in version
+/// metadata, so the private operation stays behind the provider boundary.
 #[test]
 fn public_metadata_carries_only_public_material() {
     let mut ring = Keyring::load("ring", full_provider(), auto_policy()).expect("loads");
@@ -396,11 +397,17 @@ fn public_metadata_carries_only_public_material() {
         Value::Bytes(bytes) => bytes.as_slice().to_vec(),
         other => panic!("public key is not bytes: {other:?}"),
     };
-    assert!(
-        public_bytes.starts_with(b"pk-"),
-        "version metadata exposes the public key form, not private/signature bytes",
+    assert_eq!(
+        public_bytes.len(),
+        32,
+        "version metadata exposes the 32-byte Ed25519 verifying key, not private/signature bytes",
     );
     let token = ring.sign(b"claims", at(NOW)).expect("sign");
+    assert_ne!(
+        token.signature(),
+        public_bytes.as_slice(),
+        "the signing operation's output is not the version's public metadata",
+    );
     assert_eq!(
         ring.verify(&token, at(NOW)),
         Ok(token.version()),

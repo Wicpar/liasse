@@ -29,13 +29,14 @@ use std::collections::BTreeMap;
 use liasse_expr::{EvalError, ExprType, HostEffect, HostOp, HostOrigin};
 use liasse_host::sim::SimKeyProvider;
 use liasse_host::{
-    cose_descriptor, ConformanceGuard, ContractRef, CoseClaims, CoseToken, EffectClass, GuardError,
-    HostNamespace, InvocationFailure, NamespaceDescriptor, Registry, ResolutionError,
+    cose_descriptor, verify_cose_signature, ConformanceGuard, ContractRef, CoseClaims, CoseToken,
+    EffectClass, GuardError, HostNamespace, InvocationFailure, NamespaceDescriptor, Registry,
+    ResolutionError, SignatureError,
 };
 use liasse_value::{Timestamp, Value};
 
 use crate::error::{EngineError, Rejection, RejectionReason};
-use crate::keyring::Keyring;
+use crate::keyring::{Keyring, VersionId};
 
 /// The resolved `$requires` namespaces' function signatures for the expression
 /// checker (§16.2), keyed by local namespace then function. The built-in cose
@@ -383,8 +384,9 @@ impl<'a> HostDispatch<'a> {
 
     /// Sign `claims` through keyring `ring`'s active version (§17.7/§17.8),
     /// returning the token value. A provider outage rejects (§17.9) and mints no
-    /// token. The signature is bound to the claims by the deterministic key
-    /// double (§17.7 note), so a later tampered claim set no longer matches.
+    /// token. The token carries the provider's GENUINE signature over the claims'
+    /// canonical bytes (never the plaintext claims), so it verifies only under the
+    /// active version's public key and cannot be reconstructed from public metadata.
     pub(crate) fn cose_sign(&self, ring: &str, claims_value: &Value) -> Result<Value, Rejection> {
         let claims = CoseClaims::from_value(claims_value).ok_or_else(|| {
             Rejection::new(RejectionReason::TypeError, "`cose.sign` claims must be an object")
@@ -394,7 +396,7 @@ impl<'a> HostDispatch<'a> {
         let token = keyring
             .sign(&signed, self.now)
             .map_err(|error| Rejection::new(RejectionReason::Host, format!("cose.sign failed: {error}")))?;
-        Ok(CoseToken::new(ring, token.version().get(), claims, signed).to_value())
+        Ok(CoseToken::new(ring, token.version().get(), claims, token.signature().to_vec()).to_value())
     }
 
     fn keyring(&self, ring: &str) -> Result<&Keyring<SimKeyProvider>, Rejection> {
@@ -438,26 +440,51 @@ pub enum CoseVerifyError {
     /// The token names a different keyring than the one verifying it (§17.7).
     #[error("token was signed by a different keyring")]
     WrongRing,
-    /// The token's claims do not match its signed payload — altered after signing.
+    /// The token's signature does not verify over its claims under the accepted
+    /// version's public key — a forged token, or a claim set altered after signing.
     #[error("token claims do not match the signed payload")]
     ClaimsTampered,
     /// The token's version is not currently accepted — retired past `$retain`,
     /// revoked, or destroyed (§17.7).
     #[error("token version is no longer accepted")]
     VersionNotAccepted,
+    /// The accepted version names an algorithm the cose codec cannot verify
+    /// (§17.8): reject loudly rather than fall back to any weaker check.
+    #[error("token signature algorithm is unsupported: {0}")]
+    UnsupportedAlgorithm(String),
+}
+
+impl From<SignatureError> for CoseVerifyError {
+    /// Map a §17.8 codec signature failure to a token rejection. An unsupported
+    /// algorithm stays a loud, distinct failure; a verification failure or a
+    /// malformed accepted key is a claims/signature mismatch (fail-closed).
+    fn from(error: SignatureError) -> Self {
+        match error {
+            SignatureError::UnsupportedAlgorithm(algorithm) => {
+                Self::UnsupportedAlgorithm(algorithm)
+            }
+            SignatureError::Invalid | SignatureError::MalformedPublicKey(_) => Self::ClaimsTampered,
+        }
+    }
 }
 
 /// Verify `token_value` against keyring `ring`'s accepted versions at `now`
-/// (§17.7), returning the verified claims. Acceptance-based, exactly as §17.7
-/// specifies: no provider operation is involved, so an existing token keeps
-/// verifying through a provider outage while a revoked / retired-past-`$retain` /
-/// foreign-ring / tampered token is denied. Used by the surface/testkit auth path.
+/// (§17.7): the token's ring must match, its version must be currently accepted,
+/// and its signature must cryptographically verify over the claims' canonical
+/// bytes under that accepted version's PUBLIC key. Verification consults only
+/// public material — no provider operation is involved — so an existing token
+/// keeps verifying through a provider outage, while a revoked / retired-past-
+/// `$retain` / foreign-ring / forged / tampered token is denied. Returns the
+/// verified claims together with the accepted key-version identity (§17.7: "the
+/// result includes the verified key-version identity") so authentication policy
+/// can reject an accepted-but-disallowed version. Used by the surface/testkit
+/// auth path.
 pub(crate) fn cose_verify(
     keyrings: &[Keyring<SimKeyProvider>],
     ring: &str,
     token_value: &Value,
     now: Timestamp,
-) -> Result<Value, CoseVerifyError> {
+) -> Result<(Value, VersionId), CoseVerifyError> {
     let token = CoseToken::from_value(token_value).ok_or(CoseVerifyError::Malformed)?;
     let keyring = keyrings
         .iter()
@@ -466,12 +493,22 @@ pub(crate) fn cose_verify(
     if token.ring() != ring {
         return Err(CoseVerifyError::WrongRing);
     }
-    if token.claims().signing_bytes() != token.signature() {
-        return Err(CoseVerifyError::ClaimsTampered);
-    }
-    if keyring.accepted(now).iter().any(|version| version.id().get() == token.version()) {
-        Ok(token.claims().as_struct())
-    } else {
-        Err(CoseVerifyError::VersionNotAccepted)
-    }
+    // §17.7: verification uses the accepted PUBLIC versions. A revoked / retired-
+    // past-`$retain` / never-accepted version is absent here, so there is no
+    // public key to verify against — the token is denied before any crypto.
+    let version = keyring
+        .accepted(now)
+        .into_iter()
+        .find(|version| version.id().get() == token.version())
+        .ok_or(CoseVerifyError::VersionNotAccepted)?;
+    // §17.7/§17.8: cryptographically verify the signature under the accepted
+    // version's public key. A signature-blind check would let a token forged from
+    // public metadata (ring + accepted ordinal + plaintext claim bytes) pass.
+    verify_cose_signature(
+        version.algorithm(),
+        version.public_key(),
+        &token.claims().signing_bytes(),
+        token.signature(),
+    )?;
+    Ok((token.claims().as_struct(), version.id()))
 }

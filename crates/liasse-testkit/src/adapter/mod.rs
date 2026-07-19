@@ -709,8 +709,11 @@ fn cose_gated_credential<S: InstanceStore>(
     ring: &str,
     wire: &serde_json::Value,
 ) -> Credential {
+    // §17.7: `cose_verify` returns the verified claims and the accepted key-version
+    // identity; the auth credential carries the claims (the version identity is
+    // where a policy `$check` would reject an accepted-but-disallowed version).
     match cose_token_from_wire(wire).map(|token| engine.cose_verify(ring, &token)) {
-        Some(Ok(claims)) => Credential::new(claims),
+        Some(Ok((claims, _version))) => Credential::new(claims),
         _ => Credential::new(Value::None),
     }
 }

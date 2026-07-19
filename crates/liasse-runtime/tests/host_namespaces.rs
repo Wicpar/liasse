@@ -229,8 +229,11 @@ fn login_mutation_signs_token_and_commits() {
     let token = token_of(&response);
 
     // §17.7: the minted token verifies against the ring's accepted versions and
-    // carries back the signed claims (the `auth` claim binds the authenticator).
-    let claims = engine.cose_verify("session_keys", &token).expect("token verifies");
+    // carries back the signed claims (the `auth` claim binds the authenticator)
+    // together with the verified key-version identity — the active version here.
+    let active = engine.keyring("session_keys").expect("ring").current().expect("active").id();
+    let (claims, version) = engine.cose_verify("session_keys", &token).expect("token verifies");
+    assert_eq!(version, active, "verification reports the signing version identity");
     let Value::Struct(fields) = &claims else { panic!("claims are a struct: {claims:?}") };
     assert_eq!(fields.get("auth"), Some(&Value::Text(Text::new("session"))));
 }

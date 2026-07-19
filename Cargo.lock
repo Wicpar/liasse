@@ -972,6 +972,7 @@ name = "liasse-host"
 version = "0.0.1"
 dependencies = [
  "data-encoding",
+ "ed25519-dalek",
  "liasse-value",
  "sha2 0.10.9",
  "thiserror",

@@ -17,12 +17,18 @@
 
 use std::collections::BTreeMap;
 
+use ed25519_dalek::{Signature, VerifyingKey};
 use liasse_value::{Bytes, Integer, Struct, Text, Type, Value};
 
 use crate::descriptor::{
     EffectClass, FunctionDescriptor, InterfaceHash, NamespaceDescriptor, NamespaceType, OpSignature,
 };
 use crate::version::{ContractName, Version};
+
+/// The `$algorithm` labels the built-in cose codec can cryptographically verify
+/// a token signature under (§17.8). `EdDSA` is the COSE spelling of the same
+/// Ed25519 primitive a keyring may name its algorithm by.
+const ED25519_ALGORITHMS: &[&str] = &["Ed25519", "EdDSA"];
 
 /// The structural member the token carries the signing ring under.
 const RING: &str = "$ring";
@@ -169,6 +175,80 @@ impl CoseToken {
             signature: signature.clone(),
         })
     }
+}
+
+/// Why a cose token's signature failed cryptographic verification (§17.7/§17.8).
+///
+/// Verifying a token means checking the signature over the claims' canonical
+/// [`signing_bytes`](CoseClaims::signing_bytes) against the accepted version's
+/// PUBLIC key material — the §17.8 "cryptographic encoding" the registered
+/// namespace controls. An algorithm the codec cannot verify is a loud failure,
+/// never a silent accept, so a signature-blind path can never re-emerge.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SignatureError {
+    /// The accepted version's algorithm has no verifier wired into the codec:
+    /// reject loudly rather than fall back to any weaker check (§17.8).
+    #[error("cose token names an unsupported signature algorithm `{0}`")]
+    UnsupportedAlgorithm(String),
+    /// The signature did not verify over the claims under the accepted version's
+    /// public key — a forged token, or a claim set altered after signing.
+    #[error("cose token signature does not verify against the accepted public key")]
+    Invalid,
+    /// The accepted version's public material is not a usable key for its
+    /// algorithm (wrong length or off-curve).
+    #[error("accepted public key material is not a valid {0} key")]
+    MalformedPublicKey(String),
+}
+
+/// Cryptographically verify `signature` over `signed` — the claims' canonical
+/// [`signing_bytes`](CoseClaims::signing_bytes) — under an accepted version's
+/// `public_key` material for `algorithm` (§17.7 "verification uses the accepted
+/// public versions"; §17.8 the namespace controls the cryptographic encoding).
+///
+/// Algorithm-dispatched: Ed25519/EdDSA is checked with `ed25519-dalek`. An
+/// algorithm with no wired verifier is a loud [`SignatureError::UnsupportedAlgorithm`]
+/// — the codec never falls back to a signature-blind tautology, so a token can
+/// only verify when it carries a genuine signature by the private key behind an
+/// accepted version.
+///
+/// # Errors
+/// [`SignatureError`] when the algorithm is unsupported, the public material is
+/// not a usable key, or the signature does not verify over `signed`.
+pub fn verify_cose_signature(
+    algorithm: &str,
+    public_key: &Value,
+    signed: &[u8],
+    signature: &[u8],
+) -> Result<(), SignatureError> {
+    if ED25519_ALGORITHMS.contains(&algorithm) {
+        return verify_ed25519(algorithm, public_key, signed, signature);
+    }
+    Err(SignatureError::UnsupportedAlgorithm(algorithm.to_owned()))
+}
+
+/// Verify a raw-Ed25519 detached signature (§17.2 public material is the 32-byte
+/// verifying key; §17.8 a 64-byte detached signature). `verify_strict` rejects
+/// the malleable/small-order edge cases a permissive check would admit.
+fn verify_ed25519(
+    algorithm: &str,
+    public_key: &Value,
+    signed: &[u8],
+    signature: &[u8],
+) -> Result<(), SignatureError> {
+    let Value::Bytes(material) = public_key else {
+        return Err(SignatureError::MalformedPublicKey(algorithm.to_owned()));
+    };
+    let key_bytes: [u8; ed25519_dalek::PUBLIC_KEY_LENGTH] = material
+        .as_slice()
+        .try_into()
+        .map_err(|_| SignatureError::MalformedPublicKey(algorithm.to_owned()))?;
+    let verifying = VerifyingKey::from_bytes(&key_bytes)
+        .map_err(|_| SignatureError::MalformedPublicKey(algorithm.to_owned()))?;
+    let sig_bytes: [u8; ed25519_dalek::SIGNATURE_LENGTH] =
+        signature.try_into().map_err(|_| SignatureError::Invalid)?;
+    verifying
+        .verify_strict(signed, &Signature::from_bytes(&sig_bytes))
+        .map_err(|_| SignatureError::Invalid)
 }
 
 /// The §16.2 load-time descriptor for `liasse.cose@1`: the `token` named type and

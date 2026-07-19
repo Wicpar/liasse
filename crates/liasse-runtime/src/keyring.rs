@@ -263,6 +263,15 @@ impl SessionToken {
     pub fn ring(&self) -> &str {
         &self.ring
     }
+
+    /// The provider's genuine signature over the signed payload (§17.7/§17.8):
+    /// the bytes a cose token carries as `$sig` and a verifier checks against the
+    /// accepted version's public key. This is the real signing output — never the
+    /// plaintext claim bytes — so a token cannot be minted from public metadata.
+    #[must_use]
+    pub fn signature(&self) -> &[u8] {
+        &self.signature
+    }
 }
 
 /// Why a token failed verification (§17.7).

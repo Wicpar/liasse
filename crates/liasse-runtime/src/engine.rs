@@ -722,21 +722,25 @@ impl<S: InstanceStore> Engine<S> {
     }
 
     /// Verify a `cose.sign` token against keyring `ring`'s accepted versions at
-    /// the current instant (§17.7), returning the verified claims. Acceptance-
-    /// based: no provider operation is involved, so an existing token keeps
-    /// verifying through a provider outage while a revoked / retired-past-`$retain`
-    /// / foreign-ring / tampered token is denied. This is the runtime capability
-    /// the surface/testkit auth path (`$verify: "cose.verify(/ring, $credential)"`)
-    /// drives.
+    /// the current instant (§17.7), returning the verified claims together with
+    /// the accepted key-version identity (§17.7: "the result includes the verified
+    /// key-version identity", so a policy `$check` can reject an accepted-but-
+    /// disallowed version). The signature is cryptographically checked against the
+    /// version's public key; no provider operation is involved, so an existing
+    /// token keeps verifying through a provider outage while a revoked /
+    /// retired-past-`$retain` / foreign-ring / forged / tampered token is denied.
+    /// This is the runtime capability the surface/testkit auth path
+    /// (`$verify: "cose.verify(/ring, $credential)"`) drives.
     ///
     /// # Errors
     /// [`CoseVerifyError`](crate::CoseVerifyError) for a malformed token, an unknown ring, a foreign-ring
-    /// token, a tampered claim set, or a no-longer-accepted version.
+    /// token, a tampered/forged signature, a no-longer-accepted version, or an
+    /// unsupported signature algorithm.
     pub fn cose_verify(
         &self,
         ring: &str,
         token: &liasse_value::Value,
-    ) -> Result<liasse_value::Value, crate::host::CoseVerifyError> {
+    ) -> Result<(liasse_value::Value, crate::VersionId), crate::host::CoseVerifyError> {
         crate::host::cose_verify(&self.keyrings, ring, token, self.clock)
     }
 

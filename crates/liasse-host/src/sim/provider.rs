@@ -5,9 +5,17 @@
 //! [`ProviderFailure::WouldNotReturn`] — never an actual loop), and
 //! structurally invalid public keys (`invalid_public_key`, which succeed at the
 //! call but yield material that fails the §17.4 validation step).
+//!
+//! Each key is a REAL, deterministic-seeded Ed25519 keypair (§17.5): `sign`
+//! returns a genuine detached signature and `public_key` the matching verifying
+//! key, so a token minted through the double verifies under the §17.8 cose codec
+//! for the right cryptographic reason — a signature-blind forgery cannot. The
+//! seed is derived from the provider-local handle (not process-random): a
+//! simulator needs a stable, reproducible keypair per handle, not secrecy.
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use ed25519_dalek::{Signer, SigningKey, SECRET_KEY_LENGTH};
 use liasse_value::{Bytes, Value};
 
 use crate::provider::{
@@ -36,8 +44,24 @@ pub enum ProviderOp {
 
 struct SimKey {
     algorithm: String,
+    /// A real Ed25519 signing key so the double's `sign`/`public_key` are a
+    /// genuine keypair whose detached signatures verify under the §17.8 cose
+    /// codec — a legitimately-signed token verifies for the RIGHT reason, and a
+    /// forgery cannot (the double is deterministic-seeded, which is fine for a
+    /// simulator: only the process-local keypair identity matters, not secrecy).
+    signing: SigningKey,
     invalid_public_key: bool,
     disabled: bool,
+}
+
+/// A deterministic Ed25519 signing key for a provider-local handle `id`. The
+/// double needs a stable, unique keypair per handle (never process-random), so a
+/// re-read public key and a later signature always belong to the same key; any
+/// 32-byte seed is a valid Ed25519 secret, and distinct handles seed distinctly.
+fn signing_key_for(id: u64) -> SigningKey {
+    let mut seed = [0u8; SECRET_KEY_LENGTH];
+    seed[..8].copy_from_slice(&id.to_le_bytes());
+    SigningKey::from_bytes(&seed)
 }
 
 /// A scriptable [`KeyProvider`] double.
@@ -139,6 +163,7 @@ impl KeyProvider for SimKeyProvider {
             id,
             SimKey {
                 algorithm: spec.algorithm.clone(),
+                signing: signing_key_for(id),
                 invalid_public_key: self.invalid_public_key.contains(&ProviderOp::Generate),
                 disabled: false,
             },
@@ -163,6 +188,7 @@ impl KeyProvider for SimKeyProvider {
             id,
             SimKey {
                 algorithm,
+                signing: signing_key_for(id),
                 invalid_public_key: self.invalid_public_key.contains(&ProviderOp::Bind),
                 disabled: false,
             },
@@ -178,7 +204,9 @@ impl KeyProvider for SimKeyProvider {
             // rejects the replacement and §17.9 keeps the current version.
             return Ok(PublicKey::new(state.algorithm.clone(), Value::None));
         }
-        let material = format!("pk-{}-{}", state.algorithm, key.get()).into_bytes();
+        // §17.2: the real Ed25519 verifying key (32 bytes) — the public half a
+        // token signature is later checked against, never private/signature bytes.
+        let material = state.signing.verifying_key().to_bytes().to_vec();
         Ok(PublicKey::new(
             state.algorithm.clone(),
             Value::Bytes(Bytes::new(material)),
@@ -196,9 +224,10 @@ impl KeyProvider for SimKeyProvider {
         if state.algorithm != algorithm {
             return Err(ProviderFailure::Algorithm(algorithm.to_owned()));
         }
-        let mut signature = format!("sig-{}-{}-", algorithm, key.get()).into_bytes();
-        signature.extend_from_slice(message);
-        Ok(signature)
+        // §17.7/§17.8: a genuine detached signature by the handle's private key,
+        // so the token verifies under the accepted version's public key — never a
+        // forgeable placeholder derived from public metadata.
+        Ok(state.signing.sign(message).to_bytes().to_vec())
     }
 
     fn disable(&mut self, key: &KeyHandle) -> Result<(), ProviderFailure> {
