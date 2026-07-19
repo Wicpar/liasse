@@ -333,18 +333,33 @@ impl Evaluator<'_> {
     }
 
     fn group_key(&mut self, scope: &RowScope, projection: &Projection) -> Result<Vec<Value>, EvalError> {
+        self.push(Cell::Row(Box::new(scope.row.clone())));
+        // §7.1/§7.2/§6.4: a synthetic `$key` output MAY read a source-chain row
+        // binding a `::` traversal or `[:name]` filter introduced (`companies.name`,
+        // `it.cat`), so the same binding context `project_row`/`eval_keys` replicate
+        // must be in scope while the key output evaluates — otherwise a well-formed
+        // grouped view faults with an unbound binding at read.
+        for (name, cell) in &scope.binds {
+            self.bind(name.clone(), cell.clone());
+        }
         let mut key = Vec::with_capacity(projection.key.len());
         for name in &projection.key {
-            let output = projection.outputs.iter().find(|o| &o.name == name);
-            let Some(output) = output else { continue };
-            self.push(Cell::Row(Box::new(scope.row.clone())));
-            let value = self.eval(&output.expr);
-            self.pop();
-            match value? {
-                Cell::Scalar(value) => key.push(value),
-                _ => return Err(EvalError::ShapeMismatch { expected: "a scalar key value" }),
+            let Some(output) = projection.outputs.iter().find(|o| &o.name == name) else {
+                continue;
+            };
+            match self.eval(&output.expr) {
+                Ok(Cell::Scalar(value)) => key.push(value),
+                Ok(_) => {
+                    self.pop();
+                    return Err(EvalError::ShapeMismatch { expected: "a scalar key value" });
+                }
+                Err(err) => {
+                    self.pop();
+                    return Err(err);
+                }
             }
         }
+        self.pop();
         Ok(key)
     }
 
