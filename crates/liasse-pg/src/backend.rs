@@ -47,6 +47,14 @@ where
         .map_err(|error| StoreError::Corruption { detail: format!("{table}.{column}: {error}") })
 }
 
+/// Map a read-pool checkout failure (§5) into the [`StoreError::Backend`]
+/// category. A dead or exhausted pool is an infrastructure fault — surfaced loud,
+/// never blocked on forever (§5.3) — and is never a structural failure (an
+/// occupied address, an absent row), which travels the transition layer instead.
+pub fn pool(error: r2d2::Error) -> StoreError {
+    StoreError::Backend { detail: format!("read pool checkout failed: {error}") }
+}
+
 /// Report an operational refusal (a schema stamped newer than this build) as a
 /// backend failure with an actionable message.
 pub fn refuse(detail: impl Into<String>) -> StoreError {

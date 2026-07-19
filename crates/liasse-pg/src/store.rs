@@ -1,17 +1,18 @@
 //! [`PgStore`]: one package instance's durable state on PostgreSQL.
 //!
 //! The store owns one writer connection (one writer per instance, so one
-//! connection suffices) and an in-memory [`Projection`] of committed state for
-//! the `&self` read path. Every mutating contract call maps to exactly one SQL
-//! transaction; reads are served from the projection, which the write path keeps
-//! equal to the durable tables.
+//! connection suffices) and an r2d2 [`ReadPool`] of read connections (§5 of
+//! `DESIGN-pure-pg.md`), built by the factory after `reconcile` succeeds. Every
+//! mutating contract call maps to exactly one SQL transaction on the writer.
 //!
-//! It also owns an r2d2 [`ReadPool`] of read connections (§5 of
-//! `DESIGN-pure-pg.md`), built by the factory after `reconcile` succeeds. In
-//! Phase 0 the pool is **unused** — every contract read is still projection-served
-//! — and exists so the later phases can move each `&self` read onto a pooled SQL
-//! statement without another contract change; [`PgStore::pool`] is the seam they
-//! reach it through.
+//! **Phase 1 (§4.4)** serves the leaf reads — `head`, `log_from`,
+//! `point_position`, `get_blob`, `has_blob`, `definition`, `composition` — from
+//! the pool: each checks a connection out of `reads`, runs one single-statement
+//! autocommit SQL query (consistency case 1, nothing to pin — §5.4), decodes the
+//! result with the existing codecs, and returns. The remaining reads
+//! (`row`/`scan`/`snapshot`) are still answered from the in-memory
+//! [`Projection`], which the write path keeps equal to the durable tables until
+//! Phases 2–3 convert them too.
 
 use liasse_ident::{HistoryPoint, InstanceId, RowIncarnation, TransactionId};
 use liasse_store::{
@@ -25,10 +26,12 @@ use r2d2_postgres::PostgresConnectionManager;
 use serde_json::Value as J;
 use sha2::{Digest as _, Sha512 as Sha512Hasher};
 
-use crate::backend::{backend, cell, corrupt};
+use crate::backend::{backend, cell, corrupt, pool};
 use crate::jsonb_text;
 use crate::node_write::NodeWriter;
-use crate::projection::{Projection, encode_composition};
+use crate::projection::{
+    Projection, decode_composition, decode_log_row, encode_composition, seq_from,
+};
 use crate::record_codec::encode_op;
 use crate::schema::Schema;
 use crate::transition::PgTransition;
@@ -57,11 +60,12 @@ pub struct PgStore {
 impl core::fmt::Debug for PgStore {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // `postgres::Client` is not `Debug`; name the instance and schema, which
-        // is what a diagnostic actually wants.
+        // is what a diagnostic actually wants. The head is no longer a projection
+        // field — it lives only in the durable `instance_meta.head` (§6.2), which a
+        // `&self` non-fallible `Debug` cannot query — so it is not shown here.
         f.debug_struct("PgStore")
             .field("instance", &self.instance.as_str())
             .field("schema", &self.schema.name())
-            .field("head", &self.projection.head().get())
             .finish_non_exhaustive()
     }
 }
@@ -131,10 +135,8 @@ impl PgStore {
             return Ok(CommitOutcome::Unchanged);
         }
         let s = self.schema.quoted();
-        let seq = self.projection.head().next();
-        let seq_num = i64::try_from(seq.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
-        let next_incarnation =
-            i64::try_from(self.projection.next_incarnation()).map_err(|_| corrupt("incarnation counter exceeds i64"))?;
+        let next_incarnation = i64::try_from(self.projection.next_incarnation())
+            .map_err(|_| corrupt("incarnation counter exceeds i64"))?;
         // Neither `jsonb` nor a raw `text` column can hold a `U+0000`, which a valid
         // `text` value/key or an unvalidated D.5 token (transaction id) or D.4 source
         // may carry; NUL-safe-encode every string leaf before it reaches a column.
@@ -150,13 +152,12 @@ impl PgStore {
         let locked = txn
             .query_one(&format!("SELECT head FROM {s}.instance_meta WHERE id = 1 FOR UPDATE"), &[])
             .map_err(backend)?;
+        // Pure PG: the locked durable head is the sole truth (§6.2); the next serial
+        // position is its immediate successor. There is no second (projection) head
+        // to cross-check any more, so the old divergence guard is gone.
         let durable_head: i64 = cell(&locked, "instance_meta", "head")?;
-        if durable_head != seq_num - 1 {
-            return Err(corrupt(format!(
-                "projection head {} disagrees with durable head {durable_head}",
-                seq_num - 1
-            )));
-        }
+        let seq = seq_from(durable_head, "instance_meta.head")?.next();
+        let seq_num = i64::try_from(seq.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
         txn.execute(
             &format!("INSERT INTO {s}.commit_log (seq, transaction_id, ops) VALUES ($1, $2, $3)"),
             &[&seq_num, &transaction_id, &ops_wire],
@@ -185,8 +186,8 @@ impl PgStore {
         txn.commit().map_err(backend)?;
 
         let committed = CommittedTransition::new(seq, ops, transaction);
-        self.projection.apply_committed(committed, definition, composition, new_node_ids);
-        Ok(CommitOutcome::Committed(self.projection.head()))
+        self.projection.apply_committed(committed, new_node_ids);
+        Ok(CommitOutcome::Committed(seq))
     }
 }
 
@@ -198,9 +199,15 @@ impl InstanceStore for PgStore {
     }
 
     fn head(&self) -> Result<CommitSeq, StoreError> {
-        // Phase 0: still projection-served (the pool is unused). Phase 1 replaces
-        // this body with a pooled `SELECT head FROM instance_meta` (§4.4).
-        Ok(self.projection.head())
+        // §4.4: one single-statement pooled read of the durable head. The
+        // `instance_meta` table is single-row (`CHECK (id = 1)`), so this is
+        // index-gate-exempt (pinned, `meta_tables_are_single_row`).
+        let s = self.schema.quoted();
+        let mut conn = self.reads.get().map_err(pool)?;
+        let row = conn
+            .query_one(&format!("SELECT head FROM {s}.instance_meta WHERE id = 1"), &[])
+            .map_err(backend)?;
+        seq_from(cell::<i64>(&row, "instance_meta", "head")?, "instance_meta.head")
     }
 
     fn row(&self, address: &RowAddress) -> Result<Option<StoredRow>, StoreError> {
@@ -218,18 +225,36 @@ impl InstanceStore for PgStore {
     }
 
     fn snapshot(&self, frontier: CommitSeq) -> Result<Snapshot, StoreError> {
-        if frontier > self.projection.head() {
+        // The frontier-past-head check reads the durable head first (§4.3); the fold
+        // itself still replays the projection log until Phase 3.
+        let head = self.head()?;
+        if frontier > head {
             return Err(corrupt(format!(
                 "snapshot frontier {} is past head {}",
                 frontier.get(),
-                self.projection.head().get()
+                head.get()
             )));
         }
         self.projection.snapshot(frontier)
     }
 
     fn log_from(&self, from: CommitSeq) -> Result<Vec<CommittedTransition>, StoreError> {
-        Ok(self.projection.log_from(from))
+        // §4.4: pooled range read of the append-only commit log from `from`, in seq
+        // order (index gate 3), each row decoded by the shared `record_codec` path.
+        // The log is immutable, so this single statement needs no pin (§5.4 case 1).
+        let s = self.schema.quoted();
+        let from = i64::try_from(from.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
+        let mut conn = self.reads.get().map_err(pool)?;
+        conn.query(
+            &format!(
+                "SELECT seq, transaction_id, ops FROM {s}.commit_log WHERE seq >= $1 ORDER BY seq"
+            ),
+            &[&from],
+        )
+        .map_err(backend)?
+        .iter()
+        .map(decode_log_row)
+        .collect()
     }
 
     fn begin(&mut self) -> Self::Transition<'_> {
@@ -237,11 +262,13 @@ impl InstanceStore for PgStore {
     }
 
     fn record_point(&mut self, at: CommitSeq, point: HistoryPoint) -> Result<(), StoreError> {
-        if at > self.projection.head() {
+        // The position bound must not outrun the durable head, read from SQL (§4.4).
+        let head = self.head()?;
+        if at > head {
             return Err(corrupt(format!(
                 "history point at {} is past head {}",
                 at.get(),
-                self.projection.head().get()
+                head.get()
             )));
         }
         let at_num = i64::try_from(at.get()).map_err(|_| corrupt("position exceeds i64"))?;
@@ -260,12 +287,27 @@ impl InstanceStore for PgStore {
                 &[&lineage, &point_id, &at_num],
             )
             .map_err(backend)?;
-        self.projection.insert_point(point, at);
+        // The durable `history_points` table is now the sole source — no projection
+        // mirror to maintain (the leaf `point_position` read serves it from SQL).
         Ok(())
     }
 
     fn point_position(&self, point: &HistoryPoint) -> Result<Option<CommitSeq>, StoreError> {
-        Ok(self.projection.point_position(point))
+        // §4.4: pooled PK lookup on `history_points` (index gate 6). NUL-safe-encode
+        // the lineage/point tokens exactly as the write path does, so an equal point
+        // collides on the same `(lineage, point)` key.
+        let s = self.schema.quoted();
+        let lineage = jsonb_text::encode_text(point.lineage().as_str());
+        let point_id = jsonb_text::encode_text(point.point().as_str());
+        let mut conn = self.reads.get().map_err(pool)?;
+        let row = conn
+            .query_opt(
+                &format!("SELECT seq FROM {s}.history_points WHERE lineage = $1 AND point = $2"),
+                &[&lineage, &point_id],
+            )
+            .map_err(backend)?;
+        row.map(|row| seq_from(cell::<i64>(&row, "history_points", "seq")?, "history_points.seq"))
+            .transpose()
     }
 
     fn put_blob(&mut self, bytes: &[u8]) -> Result<Sha512, StoreError> {
@@ -283,25 +325,65 @@ impl InstanceStore for PgStore {
                 &[&digest.to_canonical_text(), &bytes],
             )
             .map_err(backend)?;
-        self.projection.insert_blob(digest, bytes.to_vec());
+        // The durable `blobs` table is now the sole source — no projection cache to
+        // maintain (the leaf `get_blob`/`has_blob` reads serve it from SQL).
         Ok(digest)
     }
 
     fn get_blob(&self, digest: &Sha512) -> Result<Option<Vec<u8>>, StoreError> {
-        Ok(self.projection.blob(digest).cloned())
+        // §4.4: pooled PK lookup on `blobs` (index gate 5).
+        let s = self.schema.quoted();
+        let mut conn = self.reads.get().map_err(pool)?;
+        let row = conn
+            .query_opt(
+                &format!("SELECT bytes FROM {s}.blobs WHERE digest = $1"),
+                &[&digest.to_canonical_text()],
+            )
+            .map_err(backend)?;
+        row.map(|row| cell::<Vec<u8>>(&row, "blobs", "bytes")).transpose()
     }
 
     fn has_blob(&self, digest: &Sha512) -> Result<bool, StoreError> {
-        Ok(self.projection.has_blob(digest))
+        // §4.4: pooled existence probe on the `blobs` PK — new index gate 10
+        // (index-only, no Seq Scan). The `EXISTS` collapses the match to one boolean.
+        let s = self.schema.quoted();
+        let mut conn = self.reads.get().map_err(pool)?;
+        let row = conn
+            .query_one(
+                &format!("SELECT EXISTS(SELECT 1 FROM {s}.blobs WHERE digest = $1) AS present"),
+                &[&digest.to_canonical_text()],
+            )
+            .map_err(backend)?;
+        cell::<bool>(&row, "blobs", "present")
     }
 
     fn definition(&self) -> Result<Option<DefinitionText>, StoreError> {
-        // Owned per the contract: clone the projection's copy (Phase 1 decodes it
-        // per read from `instance_meta` instead).
-        Ok(self.projection.definition().cloned())
+        // §4.4: single-statement pooled read of the durable definition source
+        // (single-row table, index-gate-exempt/pinned), NUL-decoded to an owned
+        // `DefinitionText` — nothing to borrow from a durable table.
+        let s = self.schema.quoted();
+        let mut conn = self.reads.get().map_err(pool)?;
+        let row = conn
+            .query_one(
+                &format!("SELECT definition_source FROM {s}.instance_meta WHERE id = 1"),
+                &[],
+            )
+            .map_err(backend)?;
+        Ok(cell::<Option<String>>(&row, "instance_meta", "definition_source")?
+            .map(|source| DefinitionText::new(jsonb_text::decode_text(&source))))
     }
 
     fn composition(&self) -> Result<Option<Composition>, StoreError> {
-        Ok(self.projection.composition().cloned())
+        // §4.4: single-statement pooled read of the durable composition JSONB
+        // (single-row table, index-gate-exempt/pinned), decoded to an owned
+        // `Composition`.
+        let s = self.schema.quoted();
+        let mut conn = self.reads.get().map_err(pool)?;
+        let row = conn
+            .query_one(&format!("SELECT composition FROM {s}.instance_meta WHERE id = 1"), &[])
+            .map_err(backend)?;
+        cell::<Option<J>>(&row, "instance_meta", "composition")?
+            .map(|wire| decode_composition(&jsonb_text::from_jsonb(&wire)))
+            .transpose()
     }
 }

@@ -285,6 +285,18 @@ fn every_query_pattern_is_index_served() {
         &[&lineage, &point],
     );
     assert_index_only(&plan, "history-point lookup");
+
+    // (10) `has_blob` existence probe — SELECT EXISTS(SELECT 1 FROM blobs WHERE
+    // digest = $1), the leaf `has_blob` read (§4.4). The `EXISTS` collapses the
+    // match to a single boolean, and the inner probe rides the `blobs` primary key:
+    // an index-only lookup, never a Seq Scan of the populated table.
+    let digest = format!("{:0>128}", POP / 3);
+    let plan = explain(
+        &mut client,
+        &format!("SELECT EXISTS(SELECT 1 FROM {s}.blobs WHERE digest = $1) AS present"),
+        &[&digest],
+    );
+    assert_index_only(&plan, "has_blob EXISTS probe by digest");
 }
 
 /// The set of derived indexes is enumerable and each one is actually
