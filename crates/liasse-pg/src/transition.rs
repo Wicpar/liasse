@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 
 use liasse_ident::{RowIncarnation, TransactionId};
 use liasse_store::{
-    CollectionPath, CommitOutcome, CommittedRowOp, Composition, DefinitionText, RowAddress,
-    StoreError, StoredRow, Transition,
+    CollectionPath, CommitOutcome, CommittedRowOp, Composition, DefinitionText, InstanceStore,
+    RowAddress, StoreError, StoredRow, Transition,
 };
 use liasse_value::Value;
 
@@ -42,26 +42,32 @@ impl<'s> PgTransition<'s> {
         }
     }
 
-    /// The effective row at `address` under committed-plus-staged state.
-    fn resolve(&self, address: &RowAddress) -> Option<StoredRow> {
+    /// The effective row at `address` under committed-plus-staged state: a staged
+    /// entry shadows the committed base; otherwise the committed base is read live
+    /// from SQL via [`PgStore::row`] (the pooled §4.1 point lookup). Staging writes
+    /// nothing to PostgreSQL until commit, so that base-read observes exactly the
+    /// committed pre-transition state — identical to what the deleted `current` map
+    /// held (Phase 3, §4.3).
+    fn resolve(&self, address: &RowAddress) -> Result<Option<StoredRow>, StoreError> {
         match self.overlay.get(address) {
-            Some(staged) => staged.clone(),
-            None => self.store.resolve_current(address).cloned(),
+            Some(staged) => Ok(staged.clone()),
+            None => self.store.row(address),
         }
     }
 }
 
 impl Transition for PgTransition<'_> {
     fn row(&self, address: &RowAddress) -> Result<Option<StoredRow>, StoreError> {
-        Ok(self.resolve(address))
+        self.resolve(address)
     }
 
     fn scan(&self, collection: &CollectionPath) -> Result<Vec<(RowAddress, StoredRow)>, StoreError> {
-        let mut rows: BTreeMap<RowAddress, StoredRow> = self
-            .store
-            .resolve_collection(collection)
-            .into_iter()
-            .collect();
+        // The committed base is the pooled §4.2 ordered scan; the staged overlay then
+        // shadows it (a staged put appears/overrides, a staged delete hides a base
+        // row) — nothing is written to PostgreSQL until commit, so the base is the
+        // committed pre-transition state.
+        let mut rows: BTreeMap<RowAddress, StoredRow> =
+            self.store.scan(collection)?.into_iter().collect();
         for (address, staged) in &self.overlay {
             if !collection.contains(address) {
                 continue;
@@ -79,7 +85,7 @@ impl Transition for PgTransition<'_> {
     }
 
     fn insert(&mut self, address: RowAddress, value: Value) -> Result<RowIncarnation, StoreError> {
-        if self.resolve(&address).is_some() {
+        if self.resolve(&address)?.is_some() {
             return Err(StoreError::Conflict { address: address.render(), context: "insert" });
         }
         let incarnation = self.store.alloc_incarnation()?;
@@ -90,7 +96,7 @@ impl Transition for PgTransition<'_> {
     }
 
     fn update(&mut self, address: &RowAddress, value: Value) -> Result<(), StoreError> {
-        let incarnation = match self.resolve(address) {
+        let incarnation = match self.resolve(address)? {
             Some(row) => row.incarnation().clone(),
             None => return Err(StoreError::NotFound { address: address.render(), context: "update" }),
         };
@@ -101,7 +107,7 @@ impl Transition for PgTransition<'_> {
     }
 
     fn delete(&mut self, address: &RowAddress) -> Result<(), StoreError> {
-        let incarnation = match self.resolve(address) {
+        let incarnation = match self.resolve(address)? {
             Some(row) => row.incarnation().clone(),
             None => return Err(StoreError::NotFound { address: address.render(), context: "delete" }),
         };
@@ -111,13 +117,13 @@ impl Transition for PgTransition<'_> {
     }
 
     fn rekey(&mut self, from: &RowAddress, to: RowAddress, value: Value) -> Result<(), StoreError> {
-        let incarnation = match self.resolve(from) {
+        let incarnation = match self.resolve(from)? {
             Some(row) => row.incarnation().clone(),
             None => {
                 return Err(StoreError::NotFound { address: from.render(), context: "rekey source" });
             }
         };
-        if self.resolve(&to).is_some() {
+        if self.resolve(&to)?.is_some() {
             return Err(StoreError::Conflict { address: to.render(), context: "rekey target" });
         }
         self.overlay.insert(from.clone(), None);

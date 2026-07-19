@@ -7,12 +7,18 @@
 //!
 //! **Phase 1 (§4.4)** serves the leaf reads — `head`, `log_from`,
 //! `point_position`, `get_blob`, `has_blob`, `definition`, `composition` — from
-//! the pool, and **Phase 2 (§4.1/§4.2)** adds the `row`/`scan` node reads
-//! ([`crate::read`]): each checks a connection out of `reads`, runs one
-//! single-statement autocommit SQL query (consistency case 1, nothing to pin —
-//! §5.4), decodes it with the existing codecs, and returns. Only `snapshot` (folded
-//! from the [`Projection`]'s durable log) and the staging read base (the
-//! projection's `current` map) still consult memory — both retired in Phase 3.
+//! the pool; **Phase 2 (§4.1/§4.2)** adds the `row`/`scan` node reads
+//! ([`crate::read`]); and **Phase 3 (§4.3)** serves `snapshot` from a pooled
+//! `commit_log` read folded by the shared [`Snapshot::replay`]. Each read checks a
+//! connection out of `reads`, runs one single-statement autocommit SQL query
+//! (consistency case 1, nothing to pin — §5.4; `snapshot`'s frontier log prefix is
+//! immutable, case 2), decodes it with the existing codecs, and returns.
+//!
+//! The store holds **no in-memory read model of durable state** — the projection is
+//! gone (Phase 3, the "no in-memory projection" mandate). The staging read base a
+//! [`PgTransition`] overlays is the committed state read live from SQL via
+//! `row`/`scan`: during staging nothing is written to PostgreSQL, so that pooled
+//! base-read sees exactly the committed pre-transition state.
 
 use liasse_ident::{HistoryPoint, InstanceId, RowIncarnation, TransactionId};
 use liasse_store::{
@@ -29,11 +35,10 @@ use sha2::{Digest as _, Sha512 as Sha512Hasher};
 use crate::backend::{backend, cell, corrupt, pool};
 use crate::jsonb_text;
 use crate::node_write::NodeWriter;
-use crate::projection::{
-    Projection, decode_composition, decode_log_row, encode_composition, seq_from,
-};
 use crate::read;
-use crate::record_codec::encode_op;
+use crate::record_codec::{
+    decode_composition, decode_log_row, encode_composition, encode_op, seq_from,
+};
 use crate::schema::Schema;
 use crate::transition::PgTransition;
 
@@ -47,15 +52,24 @@ use crate::transition::PgTransition;
 pub type ReadPool = Pool<PostgresConnectionManager<NoTls>>;
 
 /// A PostgreSQL-backed store for one package instance.
+///
+/// The four fields are exactly the pure-PG target (`DESIGN-pure-pg.md` §2): the one
+/// `writer` connection, the `reads` pool, the `schema`, and the `instance` identity.
+/// **No field holds durable or read-model state** — no row map, no log copy, no blob
+/// cache, no point map, no cached head/definition/composition, and no incarnation
+/// cursor (durable since Phase 2, §6.3). Every contract read is a SQL query; the
+/// projection this struct once carried was deleted in Phase 3.
 pub struct PgStore {
-    client: Client,
+    /// The single writer connection (one writer per instance, §5.2): the admission
+    /// transaction, `alloc_incarnation`, `put_blob`, `record_point`, and open-time
+    /// reconcile all run on it.
+    writer: Client,
+    /// The `&self` read pool (§5), built post-`reconcile` by the factory. Every
+    /// contract read checks a connection out of it and serves one indexed SQL
+    /// statement — `snapshot` additionally folds the returned log (§4.1–§4.4).
+    reads: ReadPool,
     schema: Schema,
     instance: InstanceId,
-    projection: Projection,
-    /// The `&self` read pool (§5), built post-`reconcile` by the factory. Every
-    /// contract read except `snapshot` checks a connection out of it and serves one
-    /// indexed SQL statement (§4.1/§4.2/§4.4).
-    reads: ReadPool,
 }
 
 impl core::fmt::Debug for PgStore {
@@ -72,37 +86,19 @@ impl core::fmt::Debug for PgStore {
 }
 
 impl PgStore {
-    /// Adopt an opened writer connection whose `schema` is created and current,
-    /// loading the read model from its durable tables. `reads` is the read pool
-    /// the factory built against the same DSN *after* `reconcile` succeeded, so
-    /// every pooled connection observes the reconciled schema (§5.3).
+    /// Adopt an opened `writer` connection whose `schema` is created and current.
+    /// Nothing is loaded into memory: there is no projection to rebuild (Phase 3), so
+    /// a fresh or reopened store answers every read straight from the durable tables.
+    /// `reads` is the read pool the factory built against the same DSN *after*
+    /// `reconcile` succeeded, so every pooled connection observes the reconciled
+    /// schema (§5.3).
     pub(crate) fn open(
-        mut client: Client,
+        writer: Client,
         schema: Schema,
         instance: InstanceId,
         reads: ReadPool,
     ) -> Result<Self, StoreError> {
-        let projection = Projection::load(&mut client, &schema)?;
-        Ok(Self { client, schema, instance, projection, reads })
-    }
-
-    /// The live current row at `address` — the base a staged read overlays.
-    pub(crate) fn resolve_current(&self, address: &RowAddress) -> Option<&StoredRow> {
-        self.projection.current().get(address)
-    }
-
-    /// The committed direct rows of `collection` — the base a staged scan
-    /// overlays.
-    pub(crate) fn resolve_collection(
-        &self,
-        collection: &CollectionPath,
-    ) -> Vec<(RowAddress, StoredRow)> {
-        self.projection
-            .current()
-            .iter()
-            .filter(|(address, _)| collection.contains(address))
-            .map(|(address, row)| (address.clone(), row.clone()))
-            .collect()
+        Ok(Self { writer, reads, schema, instance })
     }
 
     /// Allocate the next opaque incarnation token (D.1) during staging — durable
@@ -117,7 +113,7 @@ impl PgStore {
     pub(crate) fn alloc_incarnation(&mut self) -> Result<RowIncarnation, StoreError> {
         let s = self.schema.quoted();
         let row = self
-            .client
+            .writer
             .query_one(
                 &format!(
                     "UPDATE {s}.instance_meta SET next_incarnation = next_incarnation + 1 \
@@ -158,7 +154,7 @@ impl PgStore {
         let composition_wire =
             composition.as_ref().map(|c| jsonb_text::to_jsonb(&encode_composition(c)));
 
-        let mut txn = self.client.transaction().map_err(backend)?;
+        let mut txn = self.writer.transaction().map_err(backend)?;
         // Take the per-instance write lock and read the authoritative head.
         let locked = txn
             .query_one(&format!("SELECT head FROM {s}.instance_meta WHERE id = 1 FOR UPDATE"), &[])
@@ -199,8 +195,9 @@ impl PgStore {
         .map_err(backend)?;
         txn.commit().map_err(backend)?;
 
-        let committed = CommittedTransition::new(seq, ops, transaction);
-        self.projection.apply_committed(committed);
+        // Pure PG: the durable tables the transaction just wrote *are* the committed
+        // state. There is no projection to advance — a later read folds the log or
+        // hits `nodes` directly (Phase 3).
         Ok(CommitOutcome::Committed(seq))
     }
 }
@@ -243,8 +240,13 @@ impl InstanceStore for PgStore {
     }
 
     fn snapshot(&self, frontier: CommitSeq) -> Result<Snapshot, StoreError> {
-        // The frontier-past-head check reads the durable head first (§4.3); the fold
-        // itself still replays the projection log until Phase 3.
+        // §4.3: the frontier-past-head check reads the durable head first, then the
+        // snapshot folds the append-only `commit_log` prefix `≤ frontier`, index-
+        // ordered by the PK (index gate 4), decoded by the shared `record_codec` path
+        // and replayed by the same `Snapshot::replay` MemoryStore uses — so parity is
+        // by construction. The log `≤ frontier` is immutable, so this needs no SQL
+        // transaction for coherence (§5.4 case 2): interleaved commits append *past*
+        // the frontier and are invisible to the `WHERE seq <= $1` filter.
         let head = self.head()?;
         if frontier > head {
             return Err(corrupt(format!(
@@ -253,7 +255,23 @@ impl InstanceStore for PgStore {
                 head.get()
             )));
         }
-        self.projection.snapshot(frontier)
+        let s = self.schema.quoted();
+        let frontier_num =
+            i64::try_from(frontier.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
+        let mut conn = self.reads.get().map_err(pool)?;
+        let log = conn
+            .query(
+                &format!(
+                    "SELECT seq, transaction_id, ops FROM {s}.commit_log \
+                     WHERE seq <= $1 ORDER BY seq"
+                ),
+                &[&frontier_num],
+            )
+            .map_err(backend)?
+            .iter()
+            .map(decode_log_row)
+            .collect::<Result<Vec<_>, _>>()?;
+        Snapshot::replay(&log, frontier)
     }
 
     fn log_from(&self, from: CommitSeq) -> Result<Vec<CommittedTransition>, StoreError> {
@@ -295,7 +313,7 @@ impl InstanceStore for PgStore {
         // bijection, so equal points still collide on the `(lineage, point)` key.
         let lineage = jsonb_text::encode_text(point.lineage().as_str());
         let point_id = jsonb_text::encode_text(point.point().as_str());
-        self.client
+        self.writer
             .execute(
                 &format!(
                     "INSERT INTO {}.history_points (lineage, point, seq) VALUES ($1, $2, $3) \
@@ -334,7 +352,7 @@ impl InstanceStore for PgStore {
         let hex = data_encoding::HEXLOWER.encode(&hasher.finalize());
         let digest = Sha512::parse(&hex)
             .map_err(|error| corrupt(format!("computed SHA-512 did not round-trip: {error}")))?;
-        self.client
+        self.writer
             .execute(
                 &format!(
                     "INSERT INTO {}.blobs (digest, bytes) VALUES ($1, $2) ON CONFLICT DO NOTHING",

@@ -21,7 +21,7 @@
 //! at their addresses. The earlier design cascade-deleted the whole subtree here,
 //! which dropped those orphans — an [observable divergence from the reference store
 //! across a reopen](../../tests/redteam_cascade_delete_orphan_reopen.rs), since the
-//! in-memory projection (removing only the addressed row) and the reopened tree then
+//! reference store (removing only the addressed row) and the reopened tree then
 //! disagreed. Tombstoning removes that divergence.
 //!
 //! Every op is applied **by the surrogate node id**, resolved from the

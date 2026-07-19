@@ -12,14 +12,16 @@
 //!   dropped, so migrations never pollute the database. It refuses to open a schema
 //!   stamped newer than the embedded, versioned DDL knows.
 //! - [`PgStore`] holds one writer connection (one writer per instance) plus an
-//!   r2d2 read pool. Under the pure-PG re-architecture (`DESIGN-pure-pg.md`) the
-//!   contract's `&self` reads are served by one indexed SQL statement each on a
-//!   pooled connection ([`read`], [`store`]): the leaf reads (Phase 1) and now the
-//!   `row`/`scan` node reads (Phase 2, §4.1/§4.2). A shrinking in-memory
-//!   [`projection`] still backs `snapshot` (its replayable `log`) and the staging
-//!   read base (its `current` map), both retired in Phase 3. A process restart
-//!   rebuilds that projection — and answers every SQL read — from the durable
-//!   tables (`PgStoreFactory::reopen`), which is what makes durability observable.
+//!   r2d2 read pool, and **no in-memory read model of durable state**. Under the
+//!   pure-PG re-architecture (`DESIGN-pure-pg.md`) every contract `&self` read is
+//!   served by one indexed SQL statement (or, for `snapshot`, one log read plus a
+//!   Rust fold) on a pooled connection ([`read`], [`store`]): the leaf reads
+//!   (Phase 1), the `row`/`scan` node reads (Phase 2, §4.1/§4.2), and now
+//!   `snapshot`'s §4.3 log fold. The in-memory projection was deleted in Phase 3,
+//!   satisfying the "no in-memory projection" mandate: a process restart is a
+//!   no-op — a reopened [`PgStore`] answers reads straight from the durable tables
+//!   with nothing to rebuild (`PgStoreFactory::reopen`), which is what makes
+//!   durability observable.
 //! - Every mutating contract call maps to exactly one SQL transaction. The serial
 //!   position comes from a per-instance counter row locked `FOR UPDATE`, so it is
 //!   gapless and monotone — a plain PostgreSQL `SEQUENCE` gaps on rollback and is
@@ -52,7 +54,6 @@ mod key_enc;
 mod key_enc_num;
 mod node_load;
 mod node_write;
-mod projection;
 mod read;
 mod reconcile;
 mod record_codec;

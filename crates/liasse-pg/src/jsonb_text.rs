@@ -32,11 +32,11 @@
 //! stored text, distinct to distinct).
 //!
 //! **Scan order is unaffected.** The store never orders rows by the stored `jsonb`
-//! text: [`crate::projection::Projection`] holds a `BTreeMap` keyed by the decoded
-//! [`RowAddress`], whose [`Ord`] is Annex B (Unicode scalar order) over the typed
-//! [`liasse_value::Value`] key. This encoding round-trips those key values exactly,
-//! so the decoded addresses — and therefore the scan order — are identical to the
-//! in-memory reference's.
+//! text: a scan is ordered by the `key_enc` BYTEA column, whose memcmp order over a
+//! fixed `(parent_id, step_name)` *is* Annex B order (§4.2), and each result key is
+//! rebuilt by decoding `key_wire` back to the typed [`liasse_value::Value`]. This
+//! encoding round-trips those key values exactly, so the decoded addresses — and
+//! therefore the scan order — are identical to the in-memory reference's.
 //!
 //! [`RowAddress`]: liasse_store::RowAddress
 

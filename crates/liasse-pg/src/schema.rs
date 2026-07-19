@@ -205,9 +205,10 @@ impl Schema {
     /// backend itself does — keyed by a surrogate id: each node is one address level
     /// under its parent node, rooted at the self-referential sentinel `id = 0`
     /// (`factory::ensure` seeds it), so `parent_id` is `NOT NULL` everywhere. It is
-    /// the sole durable row representation; reads are served from an in-memory
-    /// projection rebuilt from it on open. The self-FK is `DEFERRABLE INITIALLY
-    /// DEFERRED` so a parent-first insert within one transaction is tolerated.
+    /// the sole durable row representation; reads are served directly from it by
+    /// indexed SQL statements (`DESIGN-pure-pg.md` §4), with no in-memory projection.
+    /// The self-FK is `DEFERRABLE INITIALLY DEFERRED` so a parent-first insert within
+    /// one transaction is tolerated.
     ///
     /// A node is a structural *position*; a *row* is a node carrying a value.
     /// `value`/`incarnation` are therefore NULLABLE: a live row has both non-NULL,
