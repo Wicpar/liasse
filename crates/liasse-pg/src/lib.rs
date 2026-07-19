@@ -11,13 +11,15 @@
 //!   orphan indexes/tables a superseded model or an older backend left behind are
 //!   dropped, so migrations never pollute the database. It refuses to open a schema
 //!   stamped newer than the embedded, versioned DDL knows.
-//! - [`PgStore`] holds one connection (one writer per instance) plus an in-memory
-//!   [`projection`] of committed state. The contract's reads are `&self` while
-//!   the synchronous PostgreSQL client is `&mut`; rather than reach for interior
-//!   mutability, the store answers reads from the projection and keeps it equal
-//!   to the durable tables. A process restart rebuilds an identical projection
-//!   from those tables (`PgStoreFactory::reopen`), which is what makes the
-//!   durability guarantee observable.
+//! - [`PgStore`] holds one writer connection (one writer per instance) plus an
+//!   r2d2 read pool. Under the pure-PG re-architecture (`DESIGN-pure-pg.md`) the
+//!   contract's `&self` reads are served by one indexed SQL statement each on a
+//!   pooled connection ([`read`], [`store`]): the leaf reads (Phase 1) and now the
+//!   `row`/`scan` node reads (Phase 2, §4.1/§4.2). A shrinking in-memory
+//!   [`projection`] still backs `snapshot` (its replayable `log`) and the staging
+//!   read base (its `current` map), both retired in Phase 3. A process restart
+//!   rebuilds that projection — and answers every SQL read — from the durable
+//!   tables (`PgStoreFactory::reopen`), which is what makes durability observable.
 //! - Every mutating contract call maps to exactly one SQL transaction. The serial
 //!   position comes from a per-instance counter row locked `FOR UPDATE`, so it is
 //!   gapless and monotone — a plain PostgreSQL `SEQUENCE` gaps on rollback and is
@@ -51,6 +53,7 @@ mod key_enc_num;
 mod node_load;
 mod node_write;
 mod projection;
+mod read;
 mod reconcile;
 mod record_codec;
 mod schema;

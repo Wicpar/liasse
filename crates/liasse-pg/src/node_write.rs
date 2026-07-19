@@ -1,9 +1,14 @@
 //! Node-adjacency write path: apply every committed row op to the `nodes`
 //! adjacency tree by surrogate id.
 //!
-//! The `nodes` tree is the sole durable representation of committed rows: reads are
-//! served from an in-memory projection rebuilt from it ([`crate::node_load`]), and
-//! this module is the only writer.
+//! The `nodes` tree is the sole durable representation of committed rows, and this
+//! module is the only writer. Every op is applied by the node's surrogate id,
+//! resolved **in the admission transaction itself** by the same chained point
+//! lookup the read path uses ([`crate::read::resolve_id`], §6.1) — so a node this
+//! transaction inserted earlier is visible to a later op's resolution — and
+//! memoized in a per-transaction map ([`NodeWriter::staged`]). There is no
+//! committed `by_id` projection to consult: durable node identity lives only in the
+//! `nodes` table (`DESIGN-pure-pg.md` §6.1).
 //!
 //! # A node is a position; a row is a node with a value
 //!
@@ -19,10 +24,11 @@
 //! in-memory projection (removing only the addressed row) and the reopened tree then
 //! disagreed. Tombstoning removes that divergence.
 //!
-//! Every op is applied **by the surrogate node id**, resolved in O(1) from a
-//! per-transaction map ([`NodeWriter::staged`]) layered over the committed
-//! [`by_id`](crate::projection) side map (the structural node index — EVERY node,
-//! live or tombstoned — so a nested op resolves its parent even under a tombstone):
+//! Every op is applied **by the surrogate node id**, resolved from the
+//! per-transaction memo ([`NodeWriter::staged`]) first, then by an in-transaction
+//! SQL point lookup over `(parent_id, step_name, key_enc)` that finds the node
+//! whether it is a live row or a tombstone (so a nested op resolves its parent even
+//! under a tombstoned ancestor, §5.4):
 //!
 //! - **Insert** creates a node under its parent (the root sentinel `0` at depth 1,
 //!   else the parent row's node) and returns its id. `ON CONFLICT DO UPDATE` makes
@@ -63,6 +69,7 @@ use serde_json::Value as J;
 use crate::backend::{backend, cell, corrupt};
 use crate::jsonb_text;
 use crate::key_enc;
+use crate::read;
 use crate::value_codec;
 
 /// The self-referential root sentinel: the `parent_id` of every depth-1 node and
@@ -70,35 +77,22 @@ use crate::value_codec;
 const ROOT_SENTINEL_ID: i64 = 0;
 
 /// Applies a commit's row ops to the `nodes` table by surrogate id, resolving each
-/// address to its node id from the committed `by_id` map plus the ids this
-/// transaction has itself just created or moved.
+/// address to its node id by an in-transaction SQL point lookup (§6.1) memoized in
+/// `staged` — the ids this transaction has itself just created, moved, or resolved.
 pub(crate) struct NodeWriter<'a> {
     /// The quoted schema name, e.g. `"liasse_…"`.
     schema: &'a str,
-    /// The committed address→id map — the durable node identities before this txn.
-    committed: &'a BTreeMap<RowAddress, i64>,
-    /// Addresses inserted or rekeyed-into during THIS transaction, and their ids;
-    /// consulted before `committed` so a nested child sees its just-inserted parent.
+    /// Per-transaction id memo: addresses inserted, rekeyed-into, or resolved during
+    /// THIS transaction, and their surrogate ids. Consulted before the SQL point
+    /// lookup so a nested child sees its just-inserted parent without a re-query.
     staged: BTreeMap<RowAddress, i64>,
-    /// The surrogate id each op *establishes at a live address*, in op order: one per
-    /// `Insert` (the created-or-revived node) and one per `Rekey` (its target node).
-    /// Handed to the projection so it can advance `by_id` after the commit succeeds;
-    /// the projection consumes one for each `Insert` and each `Rekey` in the same
-    /// order. `Update`/`Delete` establish no new live address and contribute none.
-    new_ids: Vec<i64>,
 }
 
 impl<'a> NodeWriter<'a> {
-    /// Open a writer over the committed identities for one admission transaction.
-    pub(crate) fn new(schema: &'a str, committed: &'a BTreeMap<RowAddress, i64>) -> Self {
-        Self { schema, committed, staged: BTreeMap::new(), new_ids: Vec::new() }
-    }
-
-    /// The ids each op established at a live address, one per `Insert` and one per
-    /// `Rekey` in op order — the projection replays the same op order to advance
-    /// `by_id`.
-    pub(crate) fn into_new_ids(self) -> Vec<i64> {
-        self.new_ids
+    /// Open a writer for one admission transaction. Node identity is resolved from
+    /// the `nodes` table in that same transaction — there is no committed side map.
+    pub(crate) fn new(schema: &'a str) -> Self {
+        Self { schema, staged: BTreeMap::new() }
     }
 
     /// Mirror one committed op into the node tree.
@@ -112,7 +106,7 @@ impl<'a> NodeWriter<'a> {
                 self.place(txn, address, incarnation, value)?;
             }
             CommittedRowOp::Update { address, incarnation, value } => {
-                let id = self.resolve_id(address)?;
+                let id = self.resolve_id(txn, address)?;
                 txn.execute(
                     &format!(
                         "UPDATE {}.nodes SET value = $1, incarnation = $2 WHERE id = $3",
@@ -127,7 +121,7 @@ impl<'a> NodeWriter<'a> {
                 .map_err(backend)?;
             }
             CommittedRowOp::Delete { address, .. } => {
-                let id = self.resolve_id(address)?;
+                let id = self.resolve_id(txn, address)?;
                 self.tombstone(txn, id)?;
                 self.staged.remove(address);
             }
@@ -139,7 +133,7 @@ impl<'a> NodeWriter<'a> {
                 // leaves those descendants where they are. The op carries the
                 // source's preserved incarnation, so the target reads back the same
                 // incarnation the reference store keeps across a rekey.
-                let from_id = self.resolve_id(from)?;
+                let from_id = self.resolve_id(txn, from)?;
                 self.place(txn, to, incarnation, value)?;
                 self.tombstone(txn, from_id)?;
                 self.staged.remove(from);
@@ -187,7 +181,6 @@ impl<'a> NodeWriter<'a> {
             .map_err(backend)?;
         let id = cell::<i64>(&row, "nodes", "id")?;
         self.staged.insert(address.clone(), id);
-        self.new_ids.push(id);
         Ok(id)
     }
 
@@ -206,14 +199,25 @@ impl<'a> NodeWriter<'a> {
         Ok(())
     }
 
-    /// The node id of `address`: staged (this txn) first, then committed. A missing
-    /// id means an op referenced a row with no node — a durable inconsistency.
-    fn resolve_id(&self, address: &RowAddress) -> Result<i64, StoreError> {
-        self.staged
-            .get(address)
-            .or_else(|| self.committed.get(address))
-            .copied()
-            .ok_or_else(|| corrupt(format!("no node for row address {}", address.render())))
+    /// The node id of `address`: the per-transaction memo first, then an
+    /// in-transaction SQL point lookup (§6.1) — memoized on hit. The lookup finds a
+    /// node whether live or tombstoned, exactly as the former `by_id` map did. A miss
+    /// means an op referenced a row with no node — a durable inconsistency.
+    fn resolve_id(
+        &mut self,
+        txn: &mut Transaction<'_>,
+        address: &RowAddress,
+    ) -> Result<i64, StoreError> {
+        if let Some(id) = self.staged.get(address).copied() {
+            return Ok(id);
+        }
+        match read::resolve_id(txn, self.schema, address)? {
+            Some(id) => {
+                self.staged.insert(address.clone(), id);
+                Ok(id)
+            }
+            None => Err(corrupt(format!("no node for row address {}", address.render()))),
+        }
     }
 
     /// The parent node id of `address`: the root sentinel for a top-level row, else
@@ -244,20 +248,22 @@ impl<'a> NodeWriter<'a> {
         }
     }
 
-    /// Resolve `address`'s node id — staged, then committed — or, when it has no node,
-    /// AUTO-CREATE it (and recursively any missing ancestor above it, down from the
-    /// deepest existing ancestor or the root sentinel) as a structural-only tombstone.
-    /// A live ancestor is always indexed (an insert adds it to `by_id`, a delete
-    /// tombstones it in place keeping the entry), so this only ever reaches a free
-    /// address or an existing tombstone — never a live row it could clobber.
+    /// Resolve `address`'s node id — the memo, then an in-transaction SQL point
+    /// lookup — or, when it has no node, AUTO-CREATE it (and recursively any missing
+    /// ancestor above it, down from the deepest existing ancestor or the root
+    /// sentinel) as a structural-only tombstone. The lookup finds any existing node,
+    /// live row or tombstone, so this only ever reaches a free address or an existing
+    /// tombstone — never a live row it could clobber.
     fn resolve_or_create(
         &mut self,
         txn: &mut Transaction<'_>,
         address: &RowAddress,
     ) -> Result<i64, StoreError> {
-        if let Some(id) =
-            self.staged.get(address).or_else(|| self.committed.get(address)).copied()
-        {
+        if let Some(id) = self.staged.get(address).copied() {
+            return Ok(id);
+        }
+        if let Some(id) = read::resolve_id(txn, self.schema, address)? {
+            self.staged.insert(address.clone(), id);
             return Ok(id);
         }
         let parent = match parent_address(address) {
@@ -276,13 +282,11 @@ impl<'a> NodeWriter<'a> {
     /// than clobbered.
     ///
     /// The id is recorded in `staged` (so the rest of THIS transaction resolves the
-    /// ancestor) but deliberately NOT in `new_ids`: a tombstone establishes no live
-    /// address, and the projection advances `by_id` from `new_ids` one entry per real
-    /// `Insert`/`Rekey` in op order. Pushing here would desync that positional replay.
-    /// The auto-created ancestor therefore lives in the durable tree (a reopen loads it
-    /// into `by_id`; descendants stay addressable; a later insert revives it) and is
-    /// re-derived idempotently through this same path if a later nested insert needs it
-    /// again before an explicit insert makes it live.
+    /// ancestor without re-querying). The auto-created ancestor lives in the durable
+    /// tree (descendants stay addressable; a later insert revives it through
+    /// [`Self::place`]'s `ON CONFLICT` path) and is re-derived idempotently through
+    /// this same lookup-or-create path if a later nested insert needs it again before
+    /// an explicit insert makes it live.
     fn create_tombstone(
         &mut self,
         txn: &mut Transaction<'_>,

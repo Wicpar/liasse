@@ -82,7 +82,7 @@ impl Transition for PgTransition<'_> {
         if self.resolve(&address).is_some() {
             return Err(StoreError::Conflict { address: address.render(), context: "insert" });
         }
-        let incarnation = self.store.alloc_incarnation();
+        let incarnation = self.store.alloc_incarnation()?;
         self.overlay
             .insert(address.clone(), Some(StoredRow::new(incarnation.clone(), value.clone())));
         self.ops.push(CommittedRowOp::Insert { address, incarnation: incarnation.clone(), value });

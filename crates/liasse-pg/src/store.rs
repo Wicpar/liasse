@@ -7,12 +7,12 @@
 //!
 //! **Phase 1 (§4.4)** serves the leaf reads — `head`, `log_from`,
 //! `point_position`, `get_blob`, `has_blob`, `definition`, `composition` — from
-//! the pool: each checks a connection out of `reads`, runs one single-statement
-//! autocommit SQL query (consistency case 1, nothing to pin — §5.4), decodes the
-//! result with the existing codecs, and returns. The remaining reads
-//! (`row`/`scan`/`snapshot`) are still answered from the in-memory
-//! [`Projection`], which the write path keeps equal to the durable tables until
-//! Phases 2–3 convert them too.
+//! the pool, and **Phase 2 (§4.1/§4.2)** adds the `row`/`scan` node reads
+//! ([`crate::read`]): each checks a connection out of `reads`, runs one
+//! single-statement autocommit SQL query (consistency case 1, nothing to pin —
+//! §5.4), decodes it with the existing codecs, and returns. Only `snapshot` (folded
+//! from the [`Projection`]'s durable log) and the staging read base (the
+//! projection's `current` map) still consult memory — both retired in Phase 3.
 
 use liasse_ident::{HistoryPoint, InstanceId, RowIncarnation, TransactionId};
 use liasse_store::{
@@ -32,6 +32,7 @@ use crate::node_write::NodeWriter;
 use crate::projection::{
     Projection, decode_composition, decode_log_row, encode_composition, seq_from,
 };
+use crate::read;
 use crate::record_codec::encode_op;
 use crate::schema::Schema;
 use crate::transition::PgTransition;
@@ -51,9 +52,9 @@ pub struct PgStore {
     schema: Schema,
     instance: InstanceId,
     projection: Projection,
-    /// The `&self` read pool (§5), built post-`reconcile` by the factory. UNUSED
-    /// in Phase 0: no contract read consults it yet — every read is still served
-    /// from `projection` — and Phase 1 is the first reader ([`PgStore::pool`]).
+    /// The `&self` read pool (§5), built post-`reconcile` by the factory. Every
+    /// contract read except `snapshot` checks a connection out of it and serves one
+    /// indexed SQL statement (§4.1/§4.2/§4.4).
     reads: ReadPool,
 }
 
@@ -85,16 +86,6 @@ impl PgStore {
         Ok(Self { client, schema, instance, projection, reads })
     }
 
-    /// The `&self` read-connection pool (§5). Doc-hidden and stable in shape only
-    /// for the internal read path: Phase 1 checks a connection out of it to serve
-    /// leaf reads from SQL. It exists now (and is exercised here) so the field is
-    /// live before its first real reader lands — no `#[allow(dead_code)]` needed.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn pool(&self) -> &ReadPool {
-        &self.reads
-    }
-
     /// The live current row at `address` — the base a staged read overlays.
     pub(crate) fn resolve_current(&self, address: &RowAddress) -> Option<&StoredRow> {
         self.projection.current().get(address)
@@ -114,9 +105,31 @@ impl PgStore {
             .collect()
     }
 
-    /// Allocate the next opaque incarnation token (D.1) during staging.
-    pub(crate) fn alloc_incarnation(&mut self) -> RowIncarnation {
-        self.projection.alloc_incarnation()
+    /// Allocate the next opaque incarnation token (D.1) during staging — durable
+    /// burn-on-allocate (§6.3). One AUTOCOMMIT statement on the writer advances the
+    /// persisted `instance_meta.next_incarnation` and returns the pre-increment
+    /// value; the token is `row-{that}`. Staging holds no open SQL transaction (the
+    /// overlay is pure in-memory), so this commits by itself, immediately. The
+    /// counter therefore advances whether or not the staging later commits — matching
+    /// [`liasse_store::MemoryStore`]'s abort-visible, no-reuse allocation in-process,
+    /// and (strictly more faithful than the old commit-time persist) never reusing a
+    /// burned token across a reopen.
+    pub(crate) fn alloc_incarnation(&mut self) -> Result<RowIncarnation, StoreError> {
+        let s = self.schema.quoted();
+        let row = self
+            .client
+            .query_one(
+                &format!(
+                    "UPDATE {s}.instance_meta SET next_incarnation = next_incarnation + 1 \
+                     WHERE id = 1 RETURNING next_incarnation - 1 AS allocated"
+                ),
+                &[],
+            )
+            .map_err(backend)?;
+        let allocated = cell::<i64>(&row, "instance_meta", "allocated")?;
+        let token = u64::try_from(allocated)
+            .map_err(|_| corrupt(format!("incarnation counter is negative ({allocated})")))?;
+        Ok(RowIncarnation::new(format!("row-{token}")))
     }
 
     /// Atomically admit a staged transition in one SQL transaction. Empty
@@ -135,8 +148,6 @@ impl PgStore {
             return Ok(CommitOutcome::Unchanged);
         }
         let s = self.schema.quoted();
-        let next_incarnation = i64::try_from(self.projection.next_incarnation())
-            .map_err(|_| corrupt("incarnation counter exceeds i64"))?;
         // Neither `jsonb` nor a raw `text` column can hold a `U+0000`, which a valid
         // `text` value/key or an unvalidated D.5 token (transaction id) or D.4 source
         // may carry; NUL-safe-encode every string leaf before it reaches a column.
@@ -164,29 +175,32 @@ impl PgStore {
         )
         .map_err(backend)?;
         // Every op lands in the `nodes` adjacency tree — the sole durable row
-        // representation — in this one admission transaction. The freshly inserted
-        // node ids are collected so the projection can advance its `by_id` map once
-        // the commit succeeds.
-        let mut node_writer = NodeWriter::new(&s, self.projection.by_id());
+        // representation — in this one admission transaction. `NodeWriter` resolves
+        // each address to its surrogate id by an in-transaction SQL point lookup
+        // (§6.1), so nodes inserted earlier in this same admission are visible; there
+        // is no `by_id` projection to advance afterward.
+        let mut node_writer = NodeWriter::new(&s);
         for op in &ops {
             node_writer.apply(&mut txn, op)?;
         }
-        let new_node_ids = node_writer.into_new_ids();
+        // The commit no longer writes `next_incarnation`: the counter is advanced at
+        // allocation time, durably (§6.3). Only the head and any definition/
+        // composition are stamped here.
         txn.execute(
             &format!(
                 "UPDATE {s}.instance_meta SET \
-                 head = $1, next_incarnation = $2, \
-                 definition_source = COALESCE($3, definition_source), \
-                 definition_id = COALESCE($4, definition_id), \
-                 composition = COALESCE($5, composition) WHERE id = 1"
+                 head = $1, \
+                 definition_source = COALESCE($2, definition_source), \
+                 definition_id = COALESCE($3, definition_id), \
+                 composition = COALESCE($4, composition) WHERE id = 1"
             ),
-            &[&seq_num, &next_incarnation, &definition_source, &definition_id, &composition_wire],
+            &[&seq_num, &definition_source, &definition_id, &composition_wire],
         )
         .map_err(backend)?;
         txn.commit().map_err(backend)?;
 
         let committed = CommittedTransition::new(seq, ops, transaction);
-        self.projection.apply_committed(committed, new_node_ids);
+        self.projection.apply_committed(committed);
         Ok(CommitOutcome::Committed(seq))
     }
 }
@@ -211,17 +225,21 @@ impl InstanceStore for PgStore {
     }
 
     fn row(&self, address: &RowAddress) -> Result<Option<StoredRow>, StoreError> {
-        Ok(self.projection.current().get(address).cloned())
+        // §4.1: one pooled chained-InitPlan point lookup (index gate 7). Intermediate
+        // hops walk through tombstoned ancestors; only the outermost level filters
+        // `value IS NOT NULL` (a tombstone is not a row).
+        let s = self.schema.quoted();
+        let mut conn = self.reads.get().map_err(pool)?;
+        read::row(&mut *conn, &s, address)
     }
 
     fn scan(&self, collection: &CollectionPath) -> Result<Vec<(RowAddress, StoredRow)>, StoreError> {
-        Ok(self
-            .projection
-            .current()
-            .iter()
-            .filter(|(address, _)| collection.contains(address))
-            .map(|(address, row)| (address.clone(), row.clone()))
-            .collect())
+        // §4.2: one pooled statement — the k−1 ancestor hops via the same chained
+        // InitPlan, then the ordered child range over the final level, index-ordered
+        // by `key_enc` with no `Sort` (index gate 8, scalar-subquery form).
+        let s = self.schema.quoted();
+        let mut conn = self.reads.get().map_err(pool)?;
+        read::scan(&mut *conn, &s, collection)
     }
 
     fn snapshot(&self, frontier: CommitSeq) -> Result<Snapshot, StoreError> {

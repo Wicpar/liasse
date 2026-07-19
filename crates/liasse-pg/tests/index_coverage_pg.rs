@@ -23,14 +23,15 @@
 //!
 //! # Relationship to the runtime read path
 //!
-//! `PgStore` answers the contract's `&self` reads from an in-memory projection
-//! rebuilt from the `nodes` tree on open (the contract's reads are `&self` while the
-//! synchronous driver is `&mut`, and interior mutability is forbidden). So these
-//! gates are a property of the durable *schema*: they guarantee every query pattern
-//! the backend runs against PostgreSQL — the write path's keyed node mutations, the
-//! load, and any future SQL-served read path — has an index to ride, so it can never
-//! silently become a full scan. The node point lookup covers the query the write path
-//! issues by `(parent_id, step_name, key_enc)`; the ordered node scan covers a
+//! Under the pure-PG re-architecture (`DESIGN-pure-pg.md`), `PgStore` answers the
+//! contract's `&self` reads with one indexed SQL statement each on a pooled
+//! connection: the leaf reads (Phase 1) and the `row`/`scan` node reads (Phase 2,
+//! §4.1/§4.2, [`liasse_pg`]'s `read` path). These gates are the READ gate for that
+//! path AND a property of the durable *schema*: every query pattern the backend runs
+//! against PostgreSQL — the write path's keyed node mutations and the chained-InitPlan
+//! reads — has an index to ride, so it can never silently become a full scan. The node
+//! point lookup covers `(parent_id, step_name, key_enc)`; the chained InitPlan (gates
+//! 7/8) resolves a nested address level by level; the ordered node scan covers a
 //! collection read in Annex B key order (`key_enc` is `BYTEA`, compared by unsigned
 //! `memcmp`, so the index supplies the order with no `COLLATE` and no `Sort`).
 //!
@@ -176,9 +177,28 @@ fn populate(client: &mut Client, schema: &Schema) -> i64 {
         )
         .expect("insert container node")
         .get("id");
+    // A depth-3 chain `/orgs/1/teams/1/members/*` under the container, so the chained
+    // InitPlan resolution (gates 7/8) has real intermediate hops to plan. `teams/1`
+    // is captured so its `members` collection can be populated as a selective slice.
+    let team: i64 = client
+        .query_one(
+            &format!(
+                "INSERT INTO {s}.nodes \
+                 (parent_id, step_name, key_enc, key_wire, incarnation, value) \
+                 VALUES ({parent}, 'teams', $1, '{{}}'::jsonb, 'row-t', '{{}}'::jsonb) RETURNING id"
+            ),
+            &[&key_enc(1)],
+        )
+        .expect("insert depth-2 team node")
+        .get("id");
     client
         .batch_execute(&format!(
             "INSERT INTO {s}.nodes \
+               (parent_id, step_name, key_enc, key_wire, incarnation, value) \
+               SELECT {team}, 'members', int8send(g::int8), '{{}}'::jsonb, 'row-m' || g, \
+                      jsonb_build_object('s', g::text) \
+               FROM generate_series(0, {collection_last}) AS g;\n\
+             INSERT INTO {s}.nodes \
                (parent_id, step_name, key_enc, key_wire, incarnation, value) \
                SELECT {parent}, 'items', int8send(g::int8), '{{}}'::jsonb, 'row-' || g, \
                       jsonb_build_object('s', g::text) \
@@ -248,6 +268,48 @@ fn every_query_pattern_is_index_served() {
         &[&parent, &items],
     );
     assert_index_ordered(&plan, "node collection scan in key order");
+
+    // The chained scalar-subquery (InitPlan) that resolves the parent of a depth-3
+    // address `/orgs/1/teams/1/…` from the root sentinel, hopping
+    // `(parent_id, step_name, key_enc)` per level with NO `value IS NOT NULL` filter
+    // on the intermediate hops (§4.1: a resolve walks through a tombstoned ancestor).
+    // This is the exact form `read.rs` generates.
+    let teams = "teams";
+    let members = "members";
+    let chain = format!(
+        "(SELECT id FROM {s}.nodes WHERE parent_id = \
+           (SELECT id FROM {s}.nodes WHERE parent_id = 0 AND step_name = $1 AND key_enc = $2) \
+           AND step_name = $3 AND key_enc = $4)"
+    );
+
+    // (7) depth-3 `row` chained-InitPlan point lookup — the outermost level adds
+    // `value IS NOT NULL`; every hop is an `Index Scan using node_key_lookup`
+    // (InitPlan), so the whole walk is index-served with no Seq Scan at any depth.
+    let member = key_enc(COLLECTION / 2);
+    let plan = explain(
+        &mut client,
+        &format!(
+            "SELECT incarnation, value FROM {s}.nodes \
+             WHERE parent_id = {chain} AND step_name = $5 AND key_enc = $6 AND value IS NOT NULL"
+        ),
+        &[&"orgs", &key_enc(1), &teams, &key_enc(1), &members, &member],
+    );
+    assert_index_only(&plan, "depth-3 row chained-InitPlan point lookup");
+
+    // (8) depth-3 `scan` in the §4.2 SCALAR-SUBQUERY form — the same chain resolves
+    // the parent, then the ordered child range over the final level rides
+    // `node_key_lookup` in `key_enc` (BYTEA memcmp = Annex B) order: NO `Sort` node,
+    // no Seq Scan. This pins the scalar-subquery formulation against a flat-JOIN
+    // regression (a join makes the planner insert a `Sort`).
+    let plan = explain(
+        &mut client,
+        &format!(
+            "SELECT key_wire, incarnation, value FROM {s}.nodes \
+             WHERE parent_id = {chain} AND step_name = $5 AND value IS NOT NULL ORDER BY key_enc"
+        ),
+        &[&"orgs", &key_enc(1), &teams, &key_enc(1), &members],
+    );
+    assert_index_ordered(&plan, "depth-3 scan §4.2 chained-InitPlan, index-ordered no Sort");
 
     // (3) Commit-log read from a seq (log_from / replay) — WHERE seq >= $1 ORDER BY
     // seq, served in order by the `commit_log` primary key.
