@@ -165,3 +165,65 @@ fn value_ord_bytes(tagged: &serde_json::Value) -> Option<Vec<u8>> {
     }
     None
 }
+
+// ---- candidate-subtree reads (the v5 mechanism) ---------------------------
+//
+// The real design (option (a), §7.6): the compiler extracts the program's
+// candidate-subtree read-set, the query prefetches the candidate's LIVE
+// subtree through an index-served recursive lateral, and the aggregated rows
+// arrive as one more IMMUTABLE argument — the evaluator never touches tables.
+// The guard makes every recursive descent bail loudly past a depth bound, so
+// corrupt/cyclic data is an error, never a hang or a silent truncation.
+
+/// Depth guard for every recursive descent (coverage CTE, `scan_subtree`, the
+/// subtree-prefetch lateral): `true` while `depth <= max`, a raised error past
+/// it. Stand-in for `liasse.guard_depth`, which errors with a reserved
+/// SQLSTATE the store maps to a corruption `StoreError`.
+#[pg_extern(immutable, parallel_safe, strict)]
+fn liasse_demo_guard(depth: i32, max: i32) -> bool {
+    if depth > max {
+        pgrx::error!(
+            "liasse: recursive descent exceeded depth {max}: data cycle or corrupt over-deep tree"
+        );
+    }
+    true
+}
+
+#[derive(serde::Deserialize)]
+struct SubtreePred {
+    open_at_least: i64,
+}
+
+/// Stand-in for a face whose program reads THROUGH the candidate's own nested
+/// collections (e.g. an aggregate over `child.subcompanies…`): admit iff the
+/// candidate itself is open AND its prefetched subtree holds at least N open
+/// rows. `subtree` is the lateral-aggregated jsonb array of
+/// `[step_name, key_wire, value]` triples (live rows, Annex-B order) — the
+/// deep-candidate argument; the function stays a pure IMMUTABLE function of
+/// its arguments.
+#[pg_extern(immutable, parallel_safe, strict)]
+fn liasse_eval_demo_subtree(pred: &[u8], row: pgrx::JsonB, subtree: pgrx::JsonB) -> bool {
+    let pred: SubtreePred = match serde_json::from_slice(pred) {
+        Ok(pred) => pred,
+        Err(error) => pgrx::error!("liasse_eval_demo_subtree: malformed predicate: {error}"),
+    };
+    let open = |value: &serde_json::Value| {
+        tagged_field(value, "status")
+            .and_then(|tagged| tagged.get("s").and_then(|s| s.as_str().map(str::to_owned)))
+            .map(|status| status != "closed")
+            .unwrap_or(true) // none != text is TRUE, as in liasse_eval_demo
+    };
+    if !open(&row.0) {
+        return false;
+    }
+    let open_rows = subtree
+        .0
+        .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter(|triple| triple.get(2).map(&open).unwrap_or(false))
+                .count() as i64
+        })
+        .unwrap_or(0);
+    open_rows >= pred.open_at_least
+}
