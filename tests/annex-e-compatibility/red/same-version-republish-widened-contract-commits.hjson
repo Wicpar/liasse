@@ -1,0 +1,59 @@
+{
+  format: 1
+  name: same-version-republish-widened-contract-commits
+  suite: scenario
+  spec: ["#annex-e", "§E.1", "#loading", "§9.3"]
+  tags: [version, replay, aliasing]
+  note: '''
+    Republish a DIFFERENT definition under the SAME $app version (SPEC-ISSUES
+    item 22 pinned). The active 1.0.0 exposes {id, name}; the candidate is
+    also tagged 1.0.0 but WIDENS the boundary by adding the optional output
+    `region`. Annex E.1: a same-version load is admitted under the chosen
+    §9.2 action with an empty migration route — under the default
+    `fast-forward` a same-version, different-definition package is a §9.3
+    definition-only update subject to the same non-narrowing gate as any
+    forward release. This candidate widens (E.5-compatible), so the load
+    commits. (The narrowing twin is
+    `same-version-republish-narrowing-rejected`.)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.compat.reissue@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        region: "text?"
+      }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
+      }
+    }
+    $data: { companies: { acme: { name: "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          // same version string, widened boundary, different definition identity
+          $liasse: 1
+          $app: "t.compat.reissue@1.0.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
+              region: "text?"
+            }
+            $public: {
+              companies: { $view: ".companies { id, name, region }" }
+            }
+          }
+          $data: { companies: { acme: { name: "Acme" } } }
+        }
+      }
+      expect: { outcome: ok } }
+  ]
+}

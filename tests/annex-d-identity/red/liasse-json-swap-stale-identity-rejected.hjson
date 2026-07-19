@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: liasse-json-swap-stale-identity-rejected
+  suite: scenario
+  spec: ["§D.4", "§D.5", "§19.8"]
+  tags: ["integrity", "tampering"]
+  note: '''Attack: replace `liasse.json` inside an exported artifact with a DIFFERENT
+but still structurally valid definition (loosen a `$check` bound), recompute every
+manifest BYTE checksum so the swapped bytes are self-consistent, and leave
+`manifest.definition.identity` at its OLD value.
+
+§D.5 (SPEC-ISSUES item 21 pinned): verification establishes byte integrity AND
+internal self-consistency. It MUST recompute the §D.4 definition identity from the
+stored `liasse.json` bytes and reject the artifact when the result differs from
+`manifest.definition.identity` — a stale or lying claimed identity over otherwise
+checksum-consistent bytes fails verification. Every byte checksum here matches
+(`fix_checksums` repaired them), but `definition.identity` still hashes the OLD
+definition, so the artifact is internally inconsistent and restore rejects it.
+(A byte edit WITHOUT fixing checksums is the simpler decided case: it fails the
+`liasse.json` entry checksum — see liasse-json-byte-tamper-fails-entry-checksum.)'''
+
+  package: {
+    $liasse: 1
+    $app: "t.defswap@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: { $type: "text", $check: ["size(.) <= 100", "too long"] }
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "hi" },
+      expect: { outcome: ok, value: { id: "n1", body: "hi" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    // swap liasse.json for a different valid definition, then recompute every byte
+    // checksum so only manifest.definition.identity is left stale.
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      { edit_json: { path: "liasse.json",
+                     pointer: "/$model/notes/body/$check/0", value: "size(.) <= 100000" } }
+      { fix_checksums: true }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: invalid,
+                  violates: ["§D.4", "§D.5"],
+                  detail: "verification recomputes the §D.4 identity from the stored liasse.json and rejects the stale manifest.definition.identity" } }
+    ] }
+  ]
+}

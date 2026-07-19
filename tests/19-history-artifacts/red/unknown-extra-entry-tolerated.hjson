@@ -1,20 +1,20 @@
 {
   format: 1
-  name: unknown-extra-entry-unspecified
+  name: unknown-extra-entry-tolerated
   suite: scenario
   tags: [tampering]
   // A benign-looking extra archive entry that is NOT referenced by the
   // manifest at all.
-  note: '''Annex D.5 verification is defined over REFERENCED entries ("every
-referenced entry exists exactly once and every checksum matches"), so an
-unreferenced extra entry does not fail checksum verification. §19.5 closes
-the manifest's member set ("Additional members are invalid") but says
-nothing about unreferenced archive entries; the structure listing does not
-state whether it is exhaustive for entry names. Whether a conforming
-importer must reject, ignore, or strip an unreferenced entry is therefore
-unspecified. The gap matters: an unreferenced entry is an unauthenticated
-smuggling channel that survives inside an otherwise verified artifact.'''
-  spec: ["§19.5", "Annex D.5"]
+  note: '''§19.5/Annex D.5 (SPEC-ISSUES item 21 pinned): the closed member set
+applies to the manifest, not the archive — an archive entry no manifest
+member references is TOLERATED for forward compatibility. It fails nothing,
+carries no verified status, and is ignored by every §19 semantic, so the
+restore succeeds. The trust consequence is deliberate and pinned in §19.11:
+verification establishes integrity only, an unreferenced entry is outside
+the verified content, and guarding provenance is the host application's
+trust decision (a signature, when present, covers the whole byte stream
+including such entries, Annex D.9).'''
+  spec: ["#history", "§19.5", "§19.11", "Annex D.5"]
 
   package: {
     $liasse: 1
@@ -50,7 +50,7 @@ smuggling channel that survives inside an otherwise verified artifact.'''
     ] } }
     { in_sandbox: "s1", steps: [
       { restore: { from: "a1x" },
-        expect: { outcome: unspecified } }
+        expect: { outcome: ok } }
     ] }
   ]
 }

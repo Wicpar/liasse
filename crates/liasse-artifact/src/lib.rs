@@ -26,13 +26,17 @@
 //!
 //! # Documented spec-gap choices
 //!
-//! Where the spec leaves behavior unpinned this crate does not silently pick a
-//! side: a stale `definition.identity` and unknown extra entries (SPEC-ISSUES
-//! item 21) are not rejected by [`Artifact::open`] — the former is offered as
-//! the opt-in [`Artifact::verify_definition_identity`]. Same-version republish
-//! and shape-compatible downgrade (item 22) are surfaced as distinct
-//! [`ContractRule`] variants rather than pre-decided. Version prerelease/build
-//! metadata (item 26) is rejected by the strict three-component [`Version`].
+//! Item 21 is pinned (SPEC.md §19.11/Annex D.5): verification establishes byte
+//! integrity plus internal self-consistency and nothing else, so
+//! [`Artifact::open`] mandatorily rejects a stale `definition.identity` while
+//! **tolerating** unknown extra archive entries (forward compatibility). The
+//! Annex D.9 physical package digest and detached-signature verification are an
+//! honest follow-on hole: not built yet, and nothing here decides trust — that
+//! stays the host application's call. Same-version republish and downgrade are
+//! pinned by §20/Annex E.1 (item 22): the [`ContractRule`] variants carry which
+//! rule governs, and the runtime applies the non-narrowing gate to same-version
+//! republishes too. Version prerelease/build metadata (item 26) is rejected by
+//! the strict three-component [`Version`].
 
 mod archive;
 mod artifact;

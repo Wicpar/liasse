@@ -1,25 +1,23 @@
 {
   format: 1
-  name: point-id-aliasing-unrelated-history-unspecified
+  name: point-id-aliasing-classified-by-identifier
   suite: scenario
   tags: [tampering, aliasing, identity]
   // Attack: take an artifact of a completely UNRELATED application instance
   // and rewrite its instance incarnation, lineage id, and head point id to
   // collide with the local application's identifiers, repairing checksums.
   // The forged artifact now claims to BE the local history's head.
-  note: '''§19.8 classifies an import by comparing "each matching instance
-incarnation with local retained history" and §19.6/Annex D.5 say history
-ancestry and point identity are "represented explicitly" — plain
-identifiers, no cryptographic binding. The spec never defines how point,
-lineage, or incarnation identifiers are allocated, whether they must be
-collision-resistant, or what a runtime must do when an incoming artifact
-presents a locally known identifier over foreign content (here: relation
-would classify as "same point" while the content differs). Acceptance,
-rejection, or content comparison are all defensible readings, so the
-outcome is unspecified. Together with
-forged-state-consistent-checksums-unspecified this documents that history
-identity is forgeable by construction.'''
-  spec: ["§19.8", "§19.6", "Annex D.5"]
+  note: '''§19.8/§19.11 (SPEC-ISSUES item 21 pinned): import classification
+compares identifiers exactly as retained and no classification step
+re-derives or cross-checks an identifier from the content it labels. The
+rewritten artifact is internally self-consistent, so verification passes
+(integrity only), and the aliased head classifies as "same point" — already
+synchronized, no movement applies. Detecting that the CONTENT under a known
+identifier is foreign is explicitly outside verification: cross-host
+authenticity is the host application's trust decision, informed by the
+Annex D.9 signature layer when present (whole-byte-stream signing means this
+rewritten artifact would carry no valid signature).'''
+  spec: ["#history", "§19.8", "§19.11", "Annex D.5"]
 
   package: {
     $liasse: 1
@@ -80,6 +78,6 @@ identity is forgeable by construction.'''
       { fix_checksums: true }
     ] } }
     { import: { from: "axx", policy: ["fast_forward", "rollback", "merge"] },
-      expect: { outcome: unspecified } }
+      expect: { outcome: ok, value: { relation: "same_point", "...": true } } }
   ]
 }

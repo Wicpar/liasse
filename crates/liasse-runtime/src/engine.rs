@@ -98,7 +98,11 @@ pub(crate) fn compile_definition(
         &model_doc,
         src,
     )?;
-    let data = doc::member(document.root(), "$data").cloned();
+    // §4.1: `$data` is an alias of `$seed` (both-declared is rejected by the
+    // model layer, so first-present is the single seed source here).
+    let data = doc::member(document.root(), "$data")
+        .or_else(|| doc::member(document.root(), "$seed"))
+        .cloned();
     let requires = read_requires(document.root());
     Ok(Compilation { sources, model, compiled, data, requires })
 }

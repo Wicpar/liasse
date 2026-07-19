@@ -1,24 +1,25 @@
 {
   format: 1
-  name: forged-state-consistent-checksums-unspecified
+  name: forged-state-consistent-checksums-accepted
   suite: scenario
   tags: [tampering, integrity]
   // Attack: edit one field value INSIDE the canonical state CBOR (leaving
   // the embedded selection untouched) and recompute every manifest
   // checksum. The artifact is now fully self-consistent: structure valid,
   // every checksum matches, selection coherent.
-  note: '''§19.6 and Annex D.5 make checksums verify represented artifact
-CONTENT only, and state explicitly that "History points and ancestry use
-explicit identifiers ... Checksums protect represented artifact bytes."
-Nothing in §19 binds a point identifier cryptographically to the state it
-claims to represent, and no rule requires a restoring host to detect that
-the state bytes disagree with what the exporting host committed at that
-point. Whether a conforming implementation accepts this forged artifact
-(restoring silently wrong state under a genuine point id) or rejects it via
-some out-of-spec mechanism is unspecified. This is a real trust gap for
-artifacts exchanged between hosts: integrity is covered, authenticity is
-not.'''
-  spec: ["§19.6", "Annex D.5", "§19.8"]
+  note: '''§19.11/Annex D.5 (SPEC-ISSUES item 21 pinned): verification
+establishes byte integrity and internal self-consistency ONLY, never
+cross-host authenticity. This artifact is internally self-consistent —
+every checksum matches the re-checksummed forged bytes and the claimed
+identities agree with the archive's own bytes — so verification passes and
+the restore succeeds, restoring the forged value under a genuine point id.
+That is the pinned trust model: forged-but-self-consistent content is not
+detectable from the bytes alone and is not the verification layer's
+concern; deciding whether to trust an artifact of uncertain provenance is
+the host application's responsibility, informed by the Annex D.9 detached
+signatures when present (whole-byte-stream signing means this re-checksummed
+artifact would carry no valid signature).'''
+  spec: ["#history", "§19.11", "Annex D.5", "§19.8"]
 
   package: {
     $liasse: 1
@@ -56,7 +57,7 @@ not.'''
     ] } }
     { in_sandbox: "s1", steps: [
       { restore: { from: "a1x" },
-        expect: { outcome: unspecified } }
+        expect: { outcome: ok } }
     ] }
   ]
 }

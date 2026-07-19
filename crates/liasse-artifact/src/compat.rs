@@ -25,8 +25,9 @@ use crate::version::PackageIdentity;
 /// How a candidate version relates to the active one on the same line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateRelation {
-    /// Identical `name@version`. A same-version republish that widens its
-    /// contract is unspecified (SPEC-ISSUES item 22).
+    /// Identical `name@version`. A same-version republish is a §9.3
+    /// definition-only update under the chosen §9.2 action, gated by the same
+    /// non-narrowing check as a forward release (Annex E.1, item 22 pinned).
     SameVersion,
     /// Same major and minor, higher patch (E.1 patch release).
     Patch,
@@ -57,13 +58,15 @@ pub enum ContractRule {
     /// retained history (§20.3) and requires a migration when owned state must be
     /// transformed (§20.1).
     MayBreak,
-    /// A downgrade: valid only when an explicit direct migration or available
-    /// exact inverses represent the current live values in the older shape;
-    /// otherwise rejected (§20.2). The shape-compatible-no-transform case is
-    /// unspecified (SPEC-ISSUES item 22).
+    /// A downgrade: the down-direction walk of the §20.1 route. The §20.1
+    /// compatible copy applies as on an upgrade, so a downgrade that loses no
+    /// live value commits with no explicit transform; it is rejected only when
+    /// a populated live value cannot be represented and no declared or deduced
+    /// inverse preserves it (§20.2, item 22 pinned).
     RequiresDowngradeTransform,
-    /// A same-version republish: the contract is expected identical. Whether a
-    /// republish MAY widen the contract is unspecified (SPEC-ISSUES item 22).
+    /// A same-version republish: a §9.3 definition-only update under the chosen
+    /// §9.2 action, subject to the same non-narrowing gate as a forward release
+    /// (Annex E.1, item 22 pinned).
     SameLine,
     /// A different compatibility line: no substitutability promise exists; an
     /// unrelated import/install policy decides (§19.8).
@@ -114,5 +117,14 @@ impl CompatibilityDecision {
     #[must_use]
     pub fn is_line_forward(&self) -> bool {
         matches!(self.rule, ContractRule::MustPreserveOrWiden)
+    }
+
+    /// Whether the E.3 mechanical non-narrowing gate applies: every same-line
+    /// forward move, plus a same-version republish — Annex E.1 admits the latter
+    /// as a definition-only update only when it does not narrow (item 22
+    /// pinned), so a narrowing release cannot sneak in under a reused version.
+    #[must_use]
+    pub fn requires_non_narrowing(&self) -> bool {
+        matches!(self.rule, ContractRule::MustPreserveOrWiden | ContractRule::SameLine)
     }
 }

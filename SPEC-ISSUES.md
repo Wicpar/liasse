@@ -163,6 +163,39 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
     `19/point-id-aliasing`, `19/forged-state-consistent-checksums`,
     `annex-d/liasse-json-swap-with-fixed-checksums-stale-identity`,
     `19/unknown-extra-entry`, `19/manifest-included-range`.
+    **RESOLVED (pending SPEC.md merge):** trust model pinned (§19.11, §19.8,
+    §19.9, Annex D.5/D.9). Verification establishes INTEGRITY only — byte
+    intactness plus internal self-consistency — never authenticity or
+    authorization; trusting a verified artifact is the host application's
+    decision. Concretely: (a) D.5 verification MUST recompute the §D.4
+    definition identity and reject a stale `manifest.definition.identity`
+    (impl: mandatory in `Artifact::open`; corpus
+    `annex-d/liasse-json-swap-stale-identity-rejected` pinned → `invalid`;
+    the state-section embedded-digest cross-check lands with the state-section
+    shape seam); (b) unknown unreferenced archive entries are TOLERATED
+    (forward compat; `19/unknown-extra-entry-tolerated` pinned → `ok`);
+    (c) forged-but-self-consistent state and aliased point ids pass
+    verification and classify by identifier — the app's trust call
+    (`19/forged-state-consistent-checksums-accepted` pinned → `ok`, still
+    ledger-acknowledged: `edit_cbor` undrivable;
+    `19/point-id-aliasing-classified-by-identifier` pinned → `same_point`);
+    (d) §19.9 equal results compare logical state only — equal inserts merge
+    cleanly, collapsing to the local incarnation
+    (`19/merge-equal-inserts-collapse-to-one-incarnation` pinned); (e) the
+    §19.7-vs-§19.5 contradiction is resolved by a defined format-1 `coverage`
+    manifest member (`19/manifest-included-range-stated-in-coverage` pinned,
+    ledger-acknowledged: exporter does not emit `coverage` yet). Opt-in
+    detached SIGNATURES pinned (§19.11/D.9): `{alg, key_id, signature}`
+    entries, baseline Ed25519, in a signature block between the last entry
+    and the central directory (APK-v2-style), signing the NEW physical
+    package digest — SHA-256 over the whole ZIP64 byte stream minus only the
+    signature block — distinct from the logical §D.4 identity; verified
+    against caller-supplied trust anchors, reporting the verified-signer set,
+    no trust store, no load/deny decision; unsigned stays valid.
+    **Implementation holes (explicit):** signature block read/write, physical
+    digest, and signature verification are unbuilt; `coverage` is neither
+    emitted nor parsed; the state-section `definition` digest member does not
+    exist yet.
 22. **Update/downgrade edges.** Target package's own `$data` seed on a
     root-app update (§13.13's three-way merge is module-only); version-sequence
     composition is a MAY; same-version republish that widens the contract;
@@ -170,6 +203,44 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
     `20/target-seed-data-on-update`, `20/sequence-composition-not-mandated`,
     `annex-e/same-version-republish-widened-contract`,
     `annex-e/downgrade-shape-compatible-no-transform`.
+    **RESOLVED (pending SPEC.md merge):** evolution model pinned (§4.1, §9.1,
+    §9.2, §13.13, §20.1–§20.3, Annex E.1, Annex C.1). (a) `$data` splits into
+    `$seed` (apply-if-absent: inserted at genesis; on update applied only
+    where the address is absent — user data is never overwritten; `$data` is
+    an alias) and `$bundle` (package-authoritative: three-way merged on every
+    update — today's §13.13 merge, now root and module alike);
+    `20/target-seed-data-on-update-retained` pinned → post-update value stays
+    `"old"`, and `13/update-seed-three-way-merge` reworked to
+    `13/update-bundle-three-way-merge`. (b) `$migrations` are ordered
+    BIDIRECTIONAL deltas keyed by exact source version chaining to the
+    package version; a delta defaults to the structural diff (config only for
+    data intent); `$down` is deduced — structurally invertible ops directly,
+    data-losing ops via a selective STASH of exactly the lost values (down-
+    then-up is the identity), and `$one_way`/explicit-`$down` only for a
+    non-invertible non-stashed transform; a down-route across `$one_way` is
+    rejected loudly. (c) Composition is the declared chain — pinned, not a
+    MAY; the runtime never synthesizes intermediates; no connected path ⇒
+    in-place update refused (`20/sequence-composition-off-lineage-rejected`
+    pinned → `rejected`); compatible = shared app identity + connected delta
+    lineage (§20.3/E.1). (d) `load` takes an ACTION — create / restore /
+    merge / fast-forward / rebase / revert / reintegrate (bare update form =
+    `fast-forward`); a same-version republish is whatever the action
+    specifies — under fast-forward a §9.3 definition-only update gated
+    non-narrowing (`annex-e/same-version-republish-widened-contract-commits`
+    pinned → `committed`; new
+    `annex-e/same-version-republish-narrowing-rejected` pinned → `rejected`,
+    gate implemented). (e) A downgrade walks `$down` with the compatible copy
+    applying as on an upgrade; lossless downgrade commits without transforms
+    (`annex-e/downgrade-shape-compatible-no-transform-commits` pinned →
+    `committed`).
+    **Implementation holes (explicit):** `$bundle` is rejected loudly by the
+    model layer (accept + genesis insert + update merge unbuilt; the pure
+    §13.13 `SeedMerge` rule exists unwired); `$down` deltas, delta-object
+    grammar (`$up`/`$down`/`$one_way`), the stash, multi-step chain walking,
+    and the full load-action set beyond the current create/update/import
+    surface are unbuilt; `$seed`-on-update apply-if-absent currently holds
+    because update ignores seed data entirely (correct observable outcome,
+    absent-address insertion unbuilt).
 23. **Seed-time semantics.** Seeded-default sibling visibility vs prospective
     state; re-evaluation of a stored field seeded from a cross-instance
     expression; reload with divergent seed data.

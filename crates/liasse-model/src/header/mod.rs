@@ -64,6 +64,7 @@ fn allowed_members(kind: Kind) -> &'static [&'static str] {
             "$types",
             "$model",
             "$data",
+            "$seed",
             "$history",
             "$migrations",
         ],
@@ -77,6 +78,7 @@ fn allowed_members(kind: Kind) -> &'static [&'static str] {
             "$config",
             "$model",
             "$data",
+            "$seed",
             "$history",
             "$use",
             "$deps",
@@ -145,12 +147,26 @@ impl Header {
                 "add a `$model` describing the application state",
             );
         }
+        // §4.1: `$data` is an alias of `$seed`; declaring both is rejected so a
+        // package has exactly one apply-if-absent seed source.
+        let data = match (root.member("$data"), root.member("$seed")) {
+            (Some(_), Some(seed)) => {
+                reporter.reject_hint(
+                    seed.span,
+                    code::HEADER,
+                    "`$data` is an alias of `$seed`; a package declares at most one of the two (§4.1)",
+                    "keep the values under a single `$seed` member",
+                );
+                None
+            }
+            (data, seed) => data.or(seed).map(|m| &m.value),
+        };
 
         Some(Parsed {
             header: Header { kind, identity },
             model: root.member("$model").map(|m| &m.value),
             types: root.member("$types").map(|m| &m.value),
-            data: root.member("$data").map(|m| &m.value),
+            data,
         })
     }
 }
@@ -243,6 +259,18 @@ fn read_identity(reporter: &mut Reporter, members: &[DocMember], kind: Kind) -> 
 fn classify_member(reporter: &mut Reporter, member: &DocMember, allowed: &[&str]) {
     let name = member.name.text.as_str();
     if allowed.contains(&name) {
+        return;
+    }
+    // §4.1 `$bundle` (package-authoritative, three-way-merged data) is specified
+    // but not yet built here; reject it loudly rather than accept and silently
+    // drop it — an honest follow-on hole, not a grammar violation.
+    if name == "$bundle" {
+        reporter.reject_hint(
+            member.span,
+            code::UNKNOWN_MEMBER,
+            "`$bundle` (§4.1 package-authoritative data) is not supported by this implementation yet",
+            "use `$seed` for apply-if-absent starting data until bundle support lands",
+        );
         return;
     }
     if name.starts_with('$') {

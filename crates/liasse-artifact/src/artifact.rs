@@ -15,15 +15,17 @@
 //! state, parsing `history/index.json`, and the §19 merge/reconcile semantics
 //! belong to the runtime above.
 //!
+//! Internal self-consistency is mandatory (SPEC.md Annex D.5, item 21 pinned):
+//! `open` recomputes the D.4 definition identity from the stored `liasse.json`
+//! and rejects a stale or lying `manifest.definition.identity`. Unknown extra
+//! archive entries not referenced by the manifest are **tolerated** for forward
+//! compatibility (Annex D.5); they carry no verified status. The Annex D.5
+//! state-section embedded `definition`-digest cross-check is an honest hole:
+//! the implemented state section does not yet carry that member (its shape is a
+//! documented seam), so the check lands with it.
+//!
 //! ## Deliberately not enforced by `open`
 //!
-//! - **`definition.identity` vs the recomputed D.4 identity.** A genuine
-//!   artifact has them equal, but whether a *stale* `definition.identity` over
-//!   otherwise checksum-consistent bytes must be rejected is unspecified
-//!   (SPEC-ISSUES item 21). `open` does not pick a side; the runtime may call
-//!   [`Artifact::verify_definition_identity`].
-//! - **Unknown extra archive entries** not referenced by the manifest are also
-//!   unspecified (SPEC-ISSUES item 21) and are not rejected here.
 //! - **Cross-section boundary coherence** (manifest `selected` vs the selection
 //!   inside `history/index.json`) requires parsing the history index, which is
 //!   the runtime's concern; it is not checked here.
@@ -82,7 +84,12 @@ impl Artifact {
         require_entry(&archive, &manifest.definition.path)?;
         verify_modules(&archive, &manifest, depth)?;
 
-        Ok(Self { archive, manifest })
+        let artifact = Self { archive, manifest };
+        // Annex D.5 internal self-consistency: the recorded definition identity
+        // must equal the D.4 identity recomputed from the stored bytes; a stale
+        // claimed identity over checksum-consistent bytes fails verification.
+        artifact.verify_definition_identity()?;
+        Ok(artifact)
     }
 
     /// The typed manifest.
@@ -145,9 +152,9 @@ impl Artifact {
     }
 
     /// Check the manifest's declared `definition.identity` against the D.4
-    /// identity recomputed from `liasse.json`. Opt-in: `open` does not run this
-    /// (SPEC-ISSUES item 21). The runtime calls it when it chooses to reject a
-    /// stale declared identity.
+    /// identity recomputed from `liasse.json`. [`Artifact::open`] runs this as
+    /// the mandatory Annex D.5 internal self-consistency step (item 21 pinned);
+    /// it stays public for callers verifying a manifest they patched.
     pub fn verify_definition_identity(&self) -> Result<(), ArtifactError> {
         let computed = self.definition_id();
         if computed == self.manifest.definition.identity {

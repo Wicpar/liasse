@@ -92,9 +92,10 @@ impl<S: InstanceStore> Engine<S> {
             compile_definition(target, &crate::host::HostSignatures::default()).map_err(UpdateError::Engine)?;
         let decision = compatibility(self.model(), &compilation.model)?;
         // §13.14/§20.3/Annex E: a same-major forward move (minor or patch) MUST
-        // preserve or widen every exposed boundary contract. Reject a narrowing
+        // preserve or widen every exposed boundary contract, and Annex E.1 holds
+        // a same-version republish to the identical gate. Reject a narrowing
         // release before activation (E.9) so the current package stays active.
-        if decision.is_line_forward()
+        if decision.requires_non_narrowing()
             && let Some(reason) = self.boundary_narrowing(target, &compilation)
         {
             return Err(UpdateError::Rejected(Rejection::new(

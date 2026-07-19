@@ -1,17 +1,19 @@
 {
   format: 1
-  name: update-seed-three-way-merge
+  name: update-bundle-three-way-merge
   suite: scenario
-  spec: ["#modules", "§13.13"]
+  spec: ["#modules", "§13.13", "#package-structure", "§4.1"]
   note: '''
-    §13.13: on update, changed seed data uses a three-way merge among old
-    package seed, new package seed, and current instance state. Expected
+    §13.13 (SPEC-ISSUES item 22 pinned): package-authoritative data lives in
+    `$bundle`, and on update changed bundle data uses a three-way merge among
+    old package bundle, new package bundle, and current instance state
+    (apply-if-absent `$seed`/`$data` never touches existing values). Expected
     after updating 1.0.0 -> 1.1.0:
-      - std: current value still equals the old seed, so the new seed
+      - std: current value still equals the old bundle, so the new bundle
         replaces it ("Standard v2");
-      - old: locally modified ("Mine"), so removal from the new seed does
+      - old: locally modified ("Mine"), so removal from the new bundle does
         not delete it and the current value is retained;
-      - fresh: newly present in the new seed, inserted.
+      - fresh: newly present in the new bundle, inserted.
   '''
 
   packages: {
@@ -66,7 +68,7 @@
           ]
         }
       }
-      $data: {
+      $bundle: {
         templates: {
           std: { label: "Standard" }
           old: { label: "Old" }
@@ -92,7 +94,7 @@
           ]
         }
       }
-      $data: {
+      $bundle: {
         templates: {
           std: { label: "Standard v2" }
           fresh: { label: "Fresh" }

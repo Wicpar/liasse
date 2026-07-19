@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: same-version-republish-narrowing-rejected
+  suite: scenario
+  spec: ["#annex-e", "§E.1", "§E.5", "#loading", "§9.4"]
+  tags: [version, replay, aliasing]
+  note: '''
+    Narrowing twin of `same-version-republish-widened-contract-commits`
+    (SPEC-ISSUES item 22 pinned). Annex E.1 admits a same-version republish as
+    a §9.3 definition-only update under the SAME non-narrowing gate as any
+    forward release in the major — a reused version is not a hole a narrowing
+    release can sneak through. The active 1.0.0 exposes {id, name, region};
+    the candidate is also tagged 1.0.0 but REMOVES the output member `region`
+    from the public view (an E.5 breaking change). The load is rejected and
+    the active definition stays in force (§9.4, Annex E.9).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.compat.renarrow@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        region: "text?"
+      }
+      $public: {
+        companies: { $view: ".companies { id, name, region }" }
+      }
+    }
+    $data: { companies: { acme: { name: "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          // same version string, narrowed boundary: `region` removed from the
+          // exposed output shape
+          $liasse: 1
+          $app: "t.compat.renarrow@1.0.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
+              region: "text?"
+            }
+            $public: {
+              companies: { $view: ".companies { id, name }" }
+            }
+          }
+          $data: { companies: { acme: { name: "Acme" } } }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#annex-e", "§E.1", "§E.5"]
+        detail: "a same-version republish is gated by the same non-narrowing check as a forward release; removing the exposed output member `region` narrows the boundary contract"
+      } }
+  ]
+}

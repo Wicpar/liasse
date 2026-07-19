@@ -131,7 +131,7 @@ fn top_level_declaration_names(root: &DocValue) -> BTreeSet<String> {
 fn collect_namespace_heads(root: &DocValue) -> BTreeSet<String> {
     /// Header/seed members that carry no host-callable expression.
     const SKIP: &[&str] =
-        &["$liasse", "$app", "$module", "$semantics", "$requires", "$resources", "$data"];
+        &["$liasse", "$app", "$module", "$semantics", "$requires", "$resources", "$data", "$seed"];
     let mut heads = BTreeSet::new();
     let mut sources = SourceMap::new();
     if let Some(members) = root.as_object() {

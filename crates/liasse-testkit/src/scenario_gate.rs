@@ -125,6 +125,7 @@ pub const SKIP: &[(&str, &str)] = &[
     // adapter driving gaps. ---
     // §19.7 state-section-vs-selected-point coherence is not verified at restore, so
     // a spliced or mismatched selection is accepted rather than rejected.
+    ("19-history-artifacts/manifest-included-range-stated-in-coverage", "§19.5 the `coverage` member (included range + restorability) is not yet emitted by the exporter or carried by the manifest struct"),
     ("19-history-artifacts/manifest-index-selection-mismatch-invalid", "§19.7 state/index selection coherence is not verified at restore, so a mismatched selection is accepted"),
     ("19-history-artifacts/spliced-state-selection-mismatch-invalid", "§19.7 state-vs-selected-point coherence is not verified at restore (the copy_entry_from splice is accepted)"),
     // §19.9 the runtime merge does not re-validate the combined composition under
@@ -132,7 +133,7 @@ pub const SKIP: &[(&str, &str)] = &[
     // reported clean instead of conflicting.
     ("19-history-artifacts/merge-combined-uniqueness-violation-conflict", "§19.9 the runtime merge does not re-validate the combined composition under uniqueness, so the invalid union is reported clean (applied true)"),
     // Tamper ops needing machinery beyond archive byte/JSON surgery.
-    ("19-history-artifacts/forged-state-consistent-checksums-unspecified", "the `edit_cbor` tamper needs schema-owned resolution of a keyed-collection logical pointer into the state section, beyond byte surgery"),
+    ("19-history-artifacts/forged-state-consistent-checksums-accepted", "the `edit_cbor` tamper needs schema-owned resolution of a keyed-collection logical pointer into the state section, beyond byte surgery"),
     ("19-history-artifacts/history-index-overlapping-ranges-invalid", "the runtime emits an empty history-index `ranges` object (CORE), so `duplicate_json_member` has nothing to duplicate and §19.6 range verification is unlanded"),
     // §13 non-absolute module space / child-artifact embedding (same seam as the
     // child-* cases below).
@@ -216,7 +217,7 @@ pub const SKIP: &[(&str, &str)] = &[
     ("13-modules/minor-update-narrowing-rejected", "§13.14 the narrowing recheck (exposed-compatibility-surface preservation) is not enforced by the §20 update the runtime host runs"),
     ("13-modules/update-narrowing-view-field-rejected", "§13.14 the narrowing recheck (dropping an exposed view field) is not enforced by the §20 update the runtime host runs"),
     ("13-modules/update-result-report", "§13.15 the update-report shape ($instance/$from/$to/$migrated/$seeded/$exposed/$imports/$commit) is not assembled by the runtime host, which returns a §20 migration report"),
-    ("13-modules/update-seed-three-way-merge", "the child `set_label` mutation defeats §8.3 parameter inference in a standalone child compile (M-MUT), so install fails before the §13.13 seed merge and `.modules::` aggregation can run"),
+    ("13-modules/update-bundle-three-way-merge", "§4.1 `$bundle` is not accepted by the model layer yet (explicit unimplemented rejection) and the §13.13 bundle three-way merge is unwired, so install fails before the merge can run"),
     // --- §13 module lifecycle used by other chapters (same seams) ---
     ("19-history-artifacts/child-export-matches-embedded-artifact", "§19 child-module `.liasse` artifact export/embedding is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
     ("19-history-artifacts/child-module-artifact-embedded-and-extractable", "§19 child-module `.liasse` artifact export/embedding is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),

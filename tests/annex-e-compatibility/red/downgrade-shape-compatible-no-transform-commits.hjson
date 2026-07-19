@@ -1,0 +1,57 @@
+{
+  format: 1
+  name: downgrade-shape-compatible-no-transform-commits
+  suite: scenario
+  spec: ["#evolution", "§20.1", "§20.2", "#annex-e"]
+  tags: [version, replay]
+  note: '''
+    Companion to `downgrade-drops-populated-field-rejected`, probing the other
+    side of the §20.2 clause (SPEC-ISSUES item 22 pinned). The active 1.1.0
+    carries an OPTIONAL private field `region` (text?) that no row populates;
+    a downgrade to 1.0.0 removes it. §20.2: a downgrade is the down-direction
+    walk of §20.1 route resolution, the compatible same-identity copy applies
+    exactly as on an upgrade, and rejection fires only for a populated live
+    value the older shape cannot represent with no preserving transform. Here
+    nothing is populated (and nothing needs stashing), so this lossless
+    shape-compatible downgrade commits with no explicit transform.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.compat.downok@1.1.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        region: "text?"
+      }
+      $public: {
+        companies: { $view: ".companies { id, name }" }
+      }
+    }
+    // no row populates `region` (it is none for every row)
+    $data: { companies: { acme: { name: "Acme" } } }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.compat.downok@1.0.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              name: "text"
+            }
+            $public: {
+              companies: { $view: ".companies { id, name }" }
+            }
+          }
+          $data: { companies: { acme: { name: "Acme" } } }
+        }
+      }
+      expect: { outcome: ok } }
+  ]
+}

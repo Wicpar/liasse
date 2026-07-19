@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: manifest-included-range-stated-in-coverage
+  suite: scenario
+  note: '''§19.5/§19.7 (SPEC-ISSUES item 21 pinned): the format-1 manifest
+carries a defined `coverage` member — `included` maps each retained lineage
+to the contiguous [base, tip] point range the artifact carries, and
+`fully_restorable` states whether every represented point is restorable from
+the included entries — and §19.7's "the artifact manifest states the
+included range" is satisfied by exactly that member, resolving the earlier
+contradiction with the closed member set.'''
+  spec: ["#history", "§19.5", "§19.7"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    // §19.5: the manifest states the included range and restorability in
+    // its `coverage` member.
+    { inspect_artifact: { artifact: "a1", expect: {
+        outcome: ok
+        manifest: {
+          coverage: { included: "$any", fully_restorable: "$any" }
+          "...": true
+        }
+    } } }
+  ]
+}

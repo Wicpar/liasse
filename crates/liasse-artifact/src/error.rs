@@ -155,7 +155,8 @@ pub enum ArtifactError {
     },
 
     /// The manifest's declared definition identity disagrees with the D.4
-    /// identity recomputed from `liasse.json` (opt-in check; see
+    /// identity recomputed from `liasse.json` — the mandatory Annex D.5
+    /// internal self-consistency check `open` runs (see
     /// [`crate::Artifact::verify_definition_identity`]).
     #[error(
         "definition identity mismatch: manifest declares {declared}, `liasse.json` hashes to {computed}",

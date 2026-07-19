@@ -1,20 +1,18 @@
 {
   format: 1
-  name: merge-equal-inserts-incarnation-unspecified
+  name: merge-equal-inserts-collapse-to-one-incarnation
   suite: scenario
   tags: [identity]
   // Both sides insert a row with the same key AND identical field values.
-  note: '''§19.9 accepts "equal results reached on both sides", comparing
-"logical states". But Annex D.1 gives every inserted row an opaque immutable
-incarnation allocated at insertion, and refs, history coordinates, and
-deletion records durably bind that incarnation. The two inserts here are
-logically identical yet carry two independently allocated incarnations. The
-spec does not say whether "equal results" compares typed field values only
-(merge accepts, and then which incarnation survives — with consequences for
-any later ref or history coordinate?) or identity continuity too (merge
-conflicts as "competing identities"). Both readings are defensible, so the
-merge outcome is unspecified.'''
-  spec: ["§19.9", "Annex D.1"]
+  note: '''§19.9 (SPEC-ISSUES item 21 pinned): "equal results reached on both
+sides" compares LOGICAL state — application address and typed field values
+(§D.3) — and the opaque row incarnation (§D.1) does not participate. The two
+sides independently insert `k` with equal field values, so the merge accepts
+cleanly as one row, the merged lineage retains the local incarnation for
+that address, and the equal-insert merge collapses to one incarnation.
+"Competing identities" is reserved for competing rekeys onto one application
+key, never two fresh inserts of equal logical value.'''
+  spec: ["#history", "§19.9", "Annex D.1"]
 
   package: {
     $liasse: 1
@@ -54,6 +52,11 @@ merge outcome is unspecified.'''
     { call: "public.notes.put", args: { id: "k", body: "same" },
       expect: { outcome: ok, value: { id: "k", body: "same" } } }
     { reconcile: { from: "a2", policy: ["merge"] },
-      expect: { outcome: unspecified } }
+      expect: { outcome: ok, value: { relation: "merge", applied: true, "...": true } } }
+    { watch: "public.notes", id: "w1",
+      expect_init: { value: [
+        { id: "base", body: "anchor" }
+        { id: "k", body: "same" }
+      ] } }
   ]
 }

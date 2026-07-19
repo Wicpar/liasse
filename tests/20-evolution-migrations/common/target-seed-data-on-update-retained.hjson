@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: target-seed-data-on-update-retained
+  suite: scenario
+  spec: ["#package-structure", "§4.1", "#loading", "§9.1", "#modules", "§13.13"]
+  note: '''
+    §4.1/§13.13 (SPEC-ISSUES item 22 pinned): `$data` is an alias of `$seed`,
+    and `$seed` is apply-if-absent on update of ANY package instance, the root
+    application included — once user data is present at an address, no seed
+    change overwrites it. Version 1.0.0 seeds items/a with value "old";
+    version 1.1.0 declares `$data` for items/a with value "new". The row
+    address items/a is occupied after genesis, so the 1.1.0 seed does not
+    apply and the post-update live value remains "old". (Package-authoritative
+    data that should track the release belongs in `$bundle`, which three-way
+    merges instead.)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.seed@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        value: "text"
+      }
+      $public: {
+        items: { $view: ".items { id, value }" }
+      }
+    }
+    $data: {
+      items: { a: { value: "old" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.seed@1.1.0"
+          $model: {
+            items: {
+              $key: "id"
+              id: "text"
+              value: "text"
+            }
+            $public: {
+              items: { $view: ".items { id, value }" }
+            }
+          }
+          $data: {
+            items: { a: { value: "new" } }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.items", id: "w1",
+      expect_init: { value: [ { id: "a", value: "old" } ] } }
+  ]
+}

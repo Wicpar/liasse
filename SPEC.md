@@ -233,13 +233,16 @@ The authoring form of an application definition is:
   "$resources": { ... }   // optional packaged resources
   "$types": { ... }       // optional reusable shapes
   "$model": { ... }
-  "$data": { ... }        // optional genesis data
+  "$seed": { ... }        // optional apply-if-absent data; `$data` is an alias
+  "$bundle": { ... }      // optional package-authoritative data
   "$history": "all"       // optional minimum history policy
-  "$migrations": { ... }  // optional exact-source migrations
+  "$migrations": { ... }  // optional bidirectional version deltas
 }
 ```
 
 A module definition uses `$module` instead of `$app` and MAY also declare `$config`, `$use`, `$deps`, `$expose`, and `$migrations`.
+
+`$model` is the current, complete model of the release: the authoring surface, the validation target, and the sole source of a fresh installation. A package carries initial data in two members with distinct ownership. `$seed` is starting data the application's users own once instantiated: it is inserted at genesis and, on a later update, applied only where the seeded address is then absent — once user data is present at an address, no seed change overwrites or removes it. `$bundle` is package-authoritative content the package itself maintains across releases: it is inserted at genesis and three-way merged on every update (§13.13). `$data` is an alias of `$seed`; a definition declaring both `$data` and `$seed` is rejected, and an address supplied by both `$seed` (or `$data`) and `$bundle` is a static load error. `$migrations` declares the package's version deltas (§20.1).
 
 `$liasse` is required and selects the complete language generation used to validate and instantiate the definition. The value `1` selects the language defined by this specification. A runtime MUST reject an unsupported value before interpreting any other declaration. Semantic versions under `$app` or `$module` version the definition itself and are independent of the `$liasse` language generation.
 
@@ -265,14 +268,14 @@ The **definition identity** comes from canonical `liasse.json`. Its resource des
 
 Loading validates the definition, resources, state, history, interfaces, and dependencies, then instantiates a loaded model. The implementation MAY normalize, compile, index, or discard parsed forms after activation. Runtime forms have no portable identity.
 
-In `$data` and expanded `$default` positions, a string beginning with `=` is an expression. Prefix a leading `'` to store a literal string beginning with `=`.
+In `$seed`, `$bundle` (and the `$data` alias), and expanded `$default` positions, a string beginning with `=` is an expression. Prefix a leading `'` to store a literal string beginning with `=`.
 
 ```hjson
 "enabled": "= #company.plan == 'pro'"
 "formula": "'= total + tax"
 ```
 
-A `$data` or expanded `$default` value of `=` alone — the expression marker with an empty body — is a static (load-time) error; the expression after `=` MUST be non-empty. It is neither the literal text `=` nor an empty result. A literal `=` is written `'=` (the leading `'` escape above).
+A `$seed`, `$bundle`, `$data`, or expanded `$default` value of `=` alone — the expression marker with an empty body — is a static (load-time) error; the expression after `=` MUST be non-empty. It is neither the literal text `=` nor an empty result. A literal `=` is written `'=` (the leading `'` escape above).
 
 Other expression positions, such as `$view`, `$check`, `$normalize`, and mutation bodies, contain bare expressions.
 
@@ -1216,9 +1219,9 @@ Pure computed expressions remain functions of logical inputs and MAY be reevalua
 
 Bootstrapping activates a package together with the initial data required to make it usable. The host `load` operation validates and admits the package, its dependencies, migrations, and seed effects as one atomic transition.
 
-### 9.1 Seed data
+### 9.1 Seed and bundle data
 
-`$data` mirrors writable state. Scalar fields, optional fields, static structs, and JSON use their canonical values. An omitted optional field is `none`; JSON `null` remains a present JSON value.
+`$seed` (alias `$data`) and `$bundle` both mirror writable state and share one wire form. Scalar fields, optional fields, static structs, and JSON use their canonical values. An omitted optional field is `none`; JSON `null` remains a present JSON value.
 
 A keyed collection is a map from canonical encoded key text to row data:
 
@@ -1244,7 +1247,9 @@ Seed rows pass through the same defaults, normalization, checks, key, ref, uniqu
 
 Within this single atomic seed load, every seeded row identity and supplied value is visible to every seed default: a default such as `count(/items) + 1` observes all sibling seeded rows. §5.1's rule that rows of one bulk insertion become selectable only after resolution sequences external reads across separate mutation statements; it does not subdivide the genesis seed load.
 
-A `= expr` in `$data` is the literal-or-expression position of §4.2 and Annex C.4: it is evaluated once, at the insertion that seeds the field, and its scalar result is stored as ordinary writable state. It is not a computed value (§5.2) and is never re-evaluated; a stored field seeded from a cross-instance expression freezes at insertion.
+A `= expr` in `$seed` or `$bundle` is the literal-or-expression position of §4.2 and Annex C.4: it is evaluated once, at the insertion that seeds the field, and its scalar result is stored as ordinary writable state. It is not a computed value (§5.2) and is never re-evaluated; a stored field seeded from a cross-instance expression freezes at insertion.
+
+At genesis, `$seed` and `$bundle` values apply together as the ordinary inserts above. On update of any package instance — the root application and module instances alike — `$seed` applies only where the seeded address is then absent, while `$bundle` reconciles by three-way merge; the update rules are specified in §13.13.
 
 ### 9.2 Host lifecycle operations
 
@@ -1253,10 +1258,29 @@ The Rust host controls package lifecycle without entering through an application
 ```text
 create(artifact)                 create fresh instance identities from the artifact's selected state
 open(store)                      open the active composition recorded by a store
-load(target, artifact)           update an existing package instance from the artifact definition
+load(target, package, action)    apply a compatible package to an existing instance under an explicit action
 import(artifact, policy)         restore or reconcile an artifact with an existing composition
 export(selection)                produce a recursive `.liasse` artifact
 ```
+
+`load` names its reconciliation **action** — how the package's definition and state reconcile with the existing instance:
+
+```text
+create        instantiate fresh instance identities from the package (genesis; §9.3)
+restore       adopt the artifact's exported identities, state, and history as-is
+fast-forward  advance the existing instance in place: walk the declared migration
+              chain from the instance's current version to the package's version
+              (§20.1), or apply an incoming history continuation (§19.8)
+merge         three-way merge of incoming state against local state from their
+              latest shared history point (§19.9)
+rebase        reapply local divergence on top of the incoming state
+revert        return to the incoming earlier point or version; the displaced
+              continuation remains available as an alternate lineage (§19.3)
+reintegrate   reconcile a previously exported or diverged copy of this instance
+              back into the active composition, preserving both source histories
+```
+
+Each action defines the complete observable reconciliation, so no load outcome depends on an unstated default. `create(artifact)` is `load` with the `create` action; the two-argument update form `load(target, package)` performs `fast-forward`; an `import` policy (§19.8) selects which of `restore`, `fast-forward`, `revert`, `merge`, and unrelated replacement may activate. A republish under the instance's current version is not a special case: the chosen action's semantics apply exactly as for any other load (Annex E.1).
 
 `create`, `load`, and activation after `import` perform complete validation:
 
@@ -1865,7 +1889,7 @@ Installing the same package in each space creates two independent instances.
 
 The instance name is a non-empty text value, is unique within its module space, and forms the local component of instance identity. Its complete identity is the containing row identity, module-space declaration path, and instance name. Renaming an instance is a rekey and updates refs and bindings under the ordinary key-mutation rule.
 
-Package `$data` is applied first. Installation `$data` then overlays writable scalar and struct fields, merges keyed child collections by key, and unions sets; every resulting value passes ordinary insertion and load validation. An omitted installation `$config` or `$data` uses package defaults and seed data only.
+Package seed and bundle data (`$seed`/`$data` and `$bundle`, §4.1) are applied first. Installation `$data` then overlays writable scalar and struct fields, merges keyed child collections by key, and unions sets; every resulting value passes ordinary insertion and load validation. An omitted installation `$config` or `$data` uses package defaults and seed data only.
 
 When peer resolution finds several compatible candidates, the install request MUST bind that handle explicitly under `$use`; the binding names one concrete sibling instance and exposed interface. The admitted instance records the exact package and every resolved choice:
 
@@ -2168,19 +2192,21 @@ A module boundary is a deletion boundary. Every installed submodule instance is 
 
 Uninstall applies the same declared ref policies as ordinary deletion. An update applies them only to rows, exports, or instance identities that the update removes. Disabling preserves the instance's private stored state while removing its active boundary occurrences, external surfaces, peer availability, and `$if_module` declarations. Every ref whose declared target occurrence disappears enters ordinary `$on_delete` planning. Uninstall additionally deletes the instance incarnation and owned subtree. Each operation is admitted atomically after the full deletion ripple, bindings, interfaces, and constraints are revalidated.
 
-### 13.13 Seed merge
+### 13.13 Seed and bundle merge
 
-On first installation, `$data` applies as ordinary inserts.
+On first installation, `$seed` (alias `$data`) and `$bundle` apply as ordinary inserts (§9.1).
 
-On update, changed seed data uses a three-way merge among the old package seed, the new package seed, and the current instance state.
+On update of any package instance — the root application and module instances alike — the two members reconcile with current instance state under distinct ownership rules.
 
-For each seeded scalar or struct field, the new seed replaces the value only when the current value still equals the old seed value; otherwise the current value is retained. Keyed child collections merge by key and apply the same rule recursively. A row newly present in the new seed is inserted; a row removed from the new seed is deleted only when its current subtree still equals the old seeded subtree, otherwise it is retained as local data. Sets add members newly present in the new seed and remove old seeded members only when application state still reflects the old seed membership.
+**`$seed` applies where absent.** A seed value applies only where its address holds no current value: a row newly present in the new seed is inserted when no row exists at that key, and a set member newly present is added when absent. An existing row, field, or member is never modified by `$seed`, and a row or member absent from the new seed is never removed by it — once user data is present at an address, later seed changes and removals do not touch it.
 
-Every inserted, changed, or removed value passes ordinary defaults, refs, uniqueness, delete planning, checks, and migrations. The update report lists added, updated, removed, and locally retained paths.
+**`$bundle` is package-authoritative.** Changed bundle data uses a three-way merge among the old package bundle, the new package bundle, and the current instance state. For each bundled scalar or struct field, the new bundle replaces the value only when the current value still equals the old bundle value; otherwise the current value is retained. Keyed child collections merge by key and apply the same rule recursively. A row newly present in the new bundle is inserted; a row removed from the new bundle is deleted only when its current subtree still equals the old bundled subtree, otherwise it is retained as local data. Sets add members newly present in the new bundle and remove old bundled members only when application state still reflects the old bundle membership.
+
+Every inserted, changed, or removed value passes ordinary defaults, refs, uniqueness, delete planning, checks, and migrations. The update report lists added, updated, removed, and locally retained paths (`$seeded`, §13.15).
 
 ### 13.14 Updates and compatibility
 
-Updating one instance affects that instance only. The engine rechecks:
+An update supplies any compatible full package — its head `$model` and declared delta chain — and the runtime walks the chain from the instance's current version to the package's version (§20.1, Annex E.1); it never applies a bare delta. Updating one instance affects that instance only. The engine rechecks:
 
 - the instance's model and migrations;
 - parent and peer usage sites;
@@ -3370,6 +3396,12 @@ Its required structure is:
     "path": "history/index.json"
     "sha256": "..."
   }
+  "coverage": {
+    "included": {
+      "<lineage-id>": { "base": "<point-id>", "tip": "<point-id>" }
+    }
+    "fully_restorable": true
+  }
   "modules": {
     "<mount-name>": {
       "instance": "<child-incarnation>"
@@ -3392,7 +3424,9 @@ Its required structure is:
 }
 ```
 
-`modules` describes the selected direct mounts. `included_modules` inventories every direct child artifact required by the exported state or retained parent history. `entries` covers every required direct archive *leaf* entry — `mimetype`, `liasse.json`, `state/current.cbor.zst`, and `history/index.json`, together with every present `resources/`, `history/segments/`, `history/archives/`, `history/definitions/`, and `blobs/` section — other than `manifest.json` itself, which cannot checksum itself, and the nested child-module artifacts under `modules/`, which `included_modules` inventories. Its member name is the exact archive path. Where a covered entry's checksum also appears in a role member (`state`, `history`), the two MUST be equal. Additional members are invalid for format version `1`.
+`coverage` states the export's included history range and restorability (§19.7): `included` maps each retained lineage to the contiguous `[base, tip]` point range the artifact carries, and `fully_restorable` states whether every represented point is restorable from the included entries. `modules` describes the selected direct mounts. `included_modules` inventories every direct child artifact required by the exported state or retained parent history. `entries` covers every required direct archive *leaf* entry — `mimetype`, `liasse.json`, `state/current.cbor.zst`, and `history/index.json`, together with every present `resources/`, `history/segments/`, `history/archives/`, `history/definitions/`, and `blobs/` section — other than `manifest.json` itself, which cannot checksum itself, and the nested child-module artifacts under `modules/`, which `included_modules` inventories. Its member name is the exact archive path. Where a covered entry's checksum also appears in a role member (`state`, `history`), the two MUST be equal. Additional members are invalid for format version `1`.
+
+The closed member set applies to the manifest, not to the archive: an archive entry no manifest member references is tolerated for forward compatibility — it carries no verified status and is ignored by every §19 semantic (Annex D.5). A signed artifact additionally carries a signature block between the last entry's data and the central directory (Annex D.9); the block is not an archive entry and never appears in `entries`.
 
 ### 19.6 Portable history records
 
@@ -3453,7 +3487,7 @@ Exporting a parent recursively includes:
 
 Exporting one child produces the same artifact found inside the parent export, together with its descendants and external boundary requirements. The child artifact carries its external boundary requirements, while parent and peer private state stay within their owning artifacts.
 
-The host MAY select the active lineage, additional lineages, a recovery range, or complete retained history. The artifact manifest states the included range and whether every represented point is fully restorable.
+The host MAY select the active lineage, additional lineages, a recovery range, or complete retained history. The artifact manifest states the included range and whether every represented point is fully restorable in its `coverage` member (§19.5).
 
 ### 19.8 Import and automatic reconciliation
 
@@ -3469,6 +3503,8 @@ no shared point                    unrelated import policy required
 
 Fast-forward applies the incoming continuation. Rollback restores the selected earlier point and preserves the displaced future as another lineage. Reconciliation proceeds independently within each module boundary, then validates and activates the complete recursive composition atomically.
 
+Classification compares identifiers — instance incarnations, lineage ids, and point ids — exactly as retained. Verification (Annex D.5) has already established the artifact's integrity, and no classification step re-derives or cross-checks an identifier from the content it labels: an artifact whose identifiers were constructed to collide with local history classifies by those identifiers. Cross-host authenticity is outside verification (§19.11); whether to admit an artifact of uncertain provenance is the host application's trust decision, informed by the verified-signer set when signatures are present.
+
 Parent reconciliation controls parent-owned state and direct child mounts. Matching child incarnations reconcile inside their own artifacts. Competing child incarnations selected for the same mount produce a parent-level conflict.
 
 An import policy selects which automatic movements may activate, including fast-forward, rollback, merge, branch creation, and unrelated replacement. Valid imported alternatives MAY remain available without becoming active.
@@ -3478,6 +3514,8 @@ An import policy selects which automatic movements may activate, including fast-
 Automatic merge uses the latest shared history point as its base and compares the base, local, and incoming logical states after bringing them to the selected compatible definition.
 
 The merge accepts an unambiguous combined result, including a change made on one side, equal results reached on both sides, and compatible changes to separate logical coordinates. It reports conflicts for incompatible field values, deletion against modification, competing rekeys or identities, competing module mounts, incompatible definition or boundary changes, and any combined result that fails ordinary Liasse validation.
+
+Equal results reached on both sides are compared as logical state: application address and typed field values (§D.3). The opaque row incarnation (§D.1) does not participate. Two rows inserted independently on each side at the same application key with equal field values merge cleanly as one row, and the merged lineage retains the local incarnation for that address — an equal-insert merge collapses to one incarnation. "Competing identities" means competing rekeys of the same or of differing source incarnations onto one application key, never two fresh inserts of equal logical value.
 
 Each reported conflict names its coordinate as a §D.3 application address relative to the model root, so a host correction resolves it by that address: a keyed-collection conflict at the conflicted row's display path, and a §8.2 root-singleton member conflict at that member's declaration-name address (`.flag`, equivalently `/flag`), with no collection or key wrapper. Internal reserved storage names never appear in a reported coordinate.
 
@@ -3490,6 +3528,20 @@ Activation succeeds atomically and records the accepted correction in a new line
 Restoring an artifact and exporting the same instance boundary, selected points, and retained history reproduces the same definitions, resources, owned logical states, lineages, transaction associations, module-instance closure, and reconciliation transitions. Segment boundaries, compression levels, indexes, ZIP metadata, and internal storage layout may differ.
 
 History movement restores logical Liasse state. External payments, messages, hardware actions, and provider-side effects are reconciled through their committed application records and provider contracts.
+
+### 19.11 Integrity, trust, and signatures
+
+Verification of a `.liasse` artifact (Annex D.5) establishes **integrity** and nothing else: the archive bytes are intact under their recorded checksums, and the archive's own claimed identities agree with its own bytes. Verification establishes neither **authenticity** — that the artifact was produced by any particular party — nor **authorization** — that it should be loaded. An artifact whose bytes are internally self-consistent passes verification regardless of provenance: forged state re-checksummed into consistency and history identifiers rewritten to alias another history are not detectable from the bytes alone, and are not the verification layer's concern. Deciding whether to trust, load, or activate a verified artifact is the host application's responsibility.
+
+A package MAY carry detached **signatures** for exactly that decision. A signature is:
+
+```hjson
+{ "alg": "ed25519", "key_id": "<opaque signer identifier>", "signature": "<base64 signature bytes>" }
+```
+
+One or more signatures travel in the artifact's signature block (Annex D.9), a byte region outside every archive entry. Each signature signs the Annex D.9 **physical package digest** — a digest of the entire archive byte stream excluding only the signature-carrying region — so tampering with any other archive byte, including archive structure and entries no manifest member references, invalidates it. `ed25519` (Ed25519, RFC 8032) is the baseline algorithm every implementation MUST support; other registered algorithm identifiers MAY be accepted.
+
+An implementation verifies signatures against **caller-supplied trust anchors** and reports the set of verified signers (their `key_id` values). It ships no trust store, treats no signer as inherently trusted, and derives no load or deny decision from a signature: an unsigned package remains valid, a signed package whose signers the caller does not recognize remains integrity-valid, and only the host application maps the verified-signer set to a trust decision.
 
 <a id="evolution"></a>
 
@@ -3520,7 +3572,7 @@ Without `$as`, the compatible value is copied. A value is a *compatible copy* on
 }
 ```
 
-For splits, merges, one-to-many changes, or coordinated collection transforms, the target package MAY declare a direct migration program for an exact source package version:
+**Version deltas.** Every release is one version bump, and `$migrations` declares the package's ordered, bidirectional version deltas. Each member is keyed by an exact source package version; in ascending order, each key's delta bridges that version to the next declared key, and the greatest key's delta bridges to the package's own version. The ascending keys followed by the package's own version form the package's **declared migration lineage**. A delta's value is either the `$up` program array alone or an object carrying the delta's direction programs:
 
 ```hjson
 "$migrations": {
@@ -3528,12 +3580,23 @@ For splits, merges, one-to-many changes, or coordinated collection transforms, t
     ".people = $old.users { id, display_name: string.trim(.name) }"
     ".emails = $old.users[:u | has(u.email)] { user: .id, email: .email }"
   ]
+  "2.0.0": {
+    "$up": [ ... ]
+    "$down": [ ... ]      // optional: deduced when omitted (§20.2)
+    "$one_way": true      // optional: declares the delta irreversible (§20.2)
+  }
 }
 ```
 
-`$old` is the complete read-only state under the source package. `.` is the prospective target state after compatible declarations and local `$from` mappings have been copied. The array is one ordered atomic migration program using mutation statements over the target state; it MAY read any `$old` view and MUST use deterministic pure functions. The map key is the exact active source package version. A runtime MAY compose a sequence of package versions only when every adjacent target package supplies a migration from the preceding active version.
+`$old` is the complete read-only state under the delta's source model. `.` is the prospective target state after compatible declarations and local `$from` mappings have been copied. Each `$up` or `$down` array is one ordered atomic migration program using mutation statements over the target state; it MAY read any `$old` view and MUST use deterministic pure functions. Splits, merges, one-to-many changes, and coordinated collection transforms are written as such programs.
 
-Migration order is: compatible same-identity copy, local `$from` mappings in dependency order, then the selected package-level statements in array order. Source values absent from the target remain available in preceding history and exports but are absent from live target state. A migration that needs to preserve them live must copy them explicitly.
+**Implicit deltas.** A delta is authored only for data intent a structural diff cannot infer. Between two versions with no declared `$migrations` key strictly between them, and where both endpoint models are held — the exact active instance's model and the package's `$model` — the single **implicit delta** is the structural diff of the lower-version model against the higher-version model, refined by the target model's local `$from`/`$as` declarations and field defaults. Adding an optional field, removing a field, renaming through `$from`, reordering, and widening therefore need no entry; a new required field takes its `$default` or `$as` fill, and a real conversion, split, or merge takes an explicit program.
+
+**Route resolution.** A runtime resolves an update route from the instance's exact current version to the package's version by walking the declared chain — `$up` deltas in ascending order for an upgrade, declared or deduced `$down` deltas in descending order for a downgrade (§20.2). The available deltas are those declared by the incoming package together with those retained by the active instance's package, plus the implicit delta where defined above. The runtime MUST NOT synthesize an undeclared intermediate version and MUST NOT obtain definitions from outside the supplied package and the active instance: composition of a multi-step route is exactly the declared chain, never an implementation option. When no connected delta path exists between the two versions — the instance's version lies strictly between declared keys with no delta from it, or off the declared lineage entirely — the in-place update is rejected and the active package remains active (§9.4, Annex E.9); the host may instead reconcile through the `merge` or `rebase` action or install fresh (§9.2).
+
+A publisher MAY **squash** a released lineage: collapse the genesis model and early deltas into a new baseline floor. An instance older than the floor no longer has a connected path and is rejected in place exactly as above.
+
+Migration order within one delta is: compatible same-identity copy, local `$from` mappings in dependency order, then the selected delta's program statements in array order. Source values absent from the target remain available in preceding history, exports, and the downgrade stash (§20.2), but are absent from live target state. A migration that needs to preserve them live must copy them explicitly.
 
 The complete prospective target is checked under ordinary keys, refs, uniqueness, checks, buckets, meters, modules, and interfaces before the package update commits. This is the same full admission suite an ordinary transition runs, applied eagerly to the whole migrated state: a migration commits only when the prospective target satisfies every invariant. In particular the meter suite (§15) re-funds every migrated spend against the migrated pools and rejects the migration when eligible capacity is insufficient or a projected pool `$quantity` is negative, and the bucket suite (§14.5, §14.7) rejects a migrated source-backed series that is non-advancing, ill-bounded, or reaches an `overflow: reject` boundary. A migration that would leave any of these invariants violated is rejected as a whole and the prior package remains active (§20.3).
 
@@ -3558,9 +3621,19 @@ $back($as(x)) == x
 
 A failed round trip rejects the complete migration.
 
-A downgrade loads the older package and applies an explicit direct migration or available exact inverses. When the older shape cannot represent the current live values and no declared downgrade transform preserves them, the downgrade is rejected. Prior values remain available in history; history order remains unchanged.
+**Deduced `$down` and the stash.** Every §20.1 delta is bidirectional unless declared `$one_way`. When a delta omits `$down`, the runtime deduces it:
+
+1. **Structurally invertible steps invert directly.** A rename reverses to the opposite rename, an added field reverses to a drop, and an `$as` with a declared `$back` reverses through `$back`. No data is retained to reverse these.
+2. **Data-losing steps stash exactly what they lose.** Applying a delta that removes a field, drops values the target shape cannot hold, or narrows through a lossy explicit `$as` stashes precisely the values it would lose, keyed by package instance, application address (§D.3), and the delta's version boundary. The deduced `$down` reverses the structural step and restores the stashed values, so a downgrade followed by a re-upgrade — and an upgrade followed by a downgrade — is the identity on every stashed coordinate. A value converted by an `$as` transform is not stashed: it was meant to change, and reverses through `$back` or a declared `$down` alone.
+3. **A non-invertible, non-stashed transform must say so.** A delta whose forward step can be neither inverted nor stashed — or whose author opts out of the stash, for size or privacy — MUST declare an explicit `$down` or the `$one_way` marker. A route that would cross a `$one_way` delta in the down direction is rejected with a diagnostic naming that delta; a downgrade never loses data silently.
+
+Stash entries are retained payload: they persist until the lineage is squashed (§20.1) or the values are explicitly erased, they participate in export and §21.2 erasure exactly as retained history payload does, and reversibility therefore carries a per-delta storage cost until squash or explicit drop.
+
+A downgrade is the down-direction walk of §20.1 route resolution. The §20.1 compatible same-identity copy applies on a downgrade exactly as on an upgrade, so a downgrade that loses no live value commits with no explicit transform. A downgrade is rejected only when a populated live value cannot be represented in the older shape and no declared `$down`, deduced inverse, or stash restoration preserves it, or when the route crosses a `$one_way` delta. Prior values remain available in history; history order remains unchanged.
 
 ### 20.3 Compatibility and update checking
+
+A package is **compatible for an in-place update** exactly when it shares the instance's application identity (the `$app`/`$module` name, §4.3) and a connected §20.1 delta path exists between the instance's current version and the package's version. An off-lineage package of the same name — or any package of another name — is never migrated in place; it reconciles through the `merge` or `rebase` action or a fresh install (§9.2, §19.8).
 
 Within one package major, minor and patch releases MUST preserve or widen the compatibility surface. Breaking changes use a new major. The runtime validates the prospective model, migrations, interfaces, namespace contracts, state constraints, and retained history before admitting the update.
 
@@ -3936,7 +4009,7 @@ The principal Rust library operations are:
 ```text
 create(artifact)
 open(store)
-load(target, artifact)
+load(target, package, action)
 query / watch / call / operation_status
 export / import / reconcile
 branch / switch / fast_forward / rollback
@@ -3944,7 +4017,7 @@ modules.list / install / bind / update / enable / disable / uninstall
 erase / reinsert
 ```
 
-`create` establishes genesis from a `.liasse` artifact with fresh instance incarnations. `open` restores the active composition recorded by a store. `load` updates one package instance from an artifact definition. `export` produces the same recursive artifact type. Module `install` creates one module instance inside an existing module space.
+`create` establishes genesis from a `.liasse` artifact with fresh instance incarnations. `open` restores the active composition recorded by a store. `load` applies a compatible package to one existing instance under an explicit §9.2 action, defaulting to `fast-forward`. `export` produces the same recursive artifact type. Module `install` creates one module instance inside an existing module space.
 
 ---
 
@@ -4716,17 +4789,27 @@ This annex is normative as a syntax index; detailed semantics remain in the feat
 ```text
 app-package := {
   $liasse, $app,
-  $semantics?, $requires?, $resources?, $types?, $model, $data?, $history?, $migrations?
+  $semantics?, $requires?, $resources?, $types?, $model, $seed?, $bundle?,
+  $history?, $migrations?
 }
 
 module-package := {
   $liasse, $module,
-  $semantics?, $requires?, $resources?, $types?, $config?, $model, $data?,
+  $semantics?, $requires?, $resources?, $types?, $config?, $model, $seed?, $bundle?,
   $history?, $use?, $deps?, $expose?, $migrations?
 }
 ```
 
-Exactly one of `$app` and `$module` identifies a package. `$liasse` is the required supported language-generation integer.
+Exactly one of `$app` and `$module` identifies a package. `$liasse` is the required supported language-generation integer. `$data` is accepted as an alias of `$seed`; a package declares at most one of the two (§4.1).
+
+```text
+$migrations: {
+  exact-source-version: [ statement, ... ]                       // $up program only
+  exact-source-version: { $up: [ ... ], $down?: [ ... ], $one_way?: true }
+}
+```
+
+Each `$migrations` key is an exact source package version; ascending keys chain toward the package's own version (§20.1).
 
 ```text
 $resources: {
@@ -4795,7 +4878,7 @@ selector filters, projections, mutation statements
 Literal-or-expression positions:
 
 ```text
-$data values and expanded $default
+$seed / $bundle / $data values and expanded $default
 ```
 
 Default expressions, including the `T = default_expression` shorthand, use the full value and view expression surface and may read any logical state visible from their declaration scope.
@@ -5208,6 +5291,10 @@ A logical coordinate identifies the owning stable declaration, row incarnation w
 
 `manifest.json` records a SHA-256 checksum and uncompressed media type for every required non-manifest entry. A nested module artifact is covered by the checksum of its exact `.liasse` bytes. Verification succeeds only when every referenced entry exists exactly once and every checksum matches.
 
+Verification additionally establishes internal self-consistency. It MUST recompute the §D.4 definition identity from the stored `liasse.json` bytes and reject the artifact when the result differs from `manifest.definition.identity`, and MUST reject when the state section's embedded `definition` digest differs from that same identity — a stale or lying claimed identity over otherwise checksum-consistent bytes fails verification. An archive region or entry no manifest member references — including the §D.9 signature block — is tolerated for forward compatibility: it fails nothing, carries no verified status, is ignored by every §19 semantic, and is covered by a signature when one is present (§D.9).
+
+Verification establishes byte integrity and internal self-consistency only, never cross-host authenticity (§19.11).
+
 History points and ancestry use explicit identifiers and lineage metadata. Checksums protect represented artifact bytes. Runtime transaction ordering, state identity, and ancestry follow their dedicated Liasse semantics.
 
 ### D.6 Recorded observations
@@ -5249,6 +5336,31 @@ application instance
 
 The runtime stores a request digest and final status for its configured operation-record lifetime. An equivalent retry in the same scope returns the retained status and never executes the mutation twice. Another digest rejects as an operation-identity conflict. The retained status contains the runtime commit position and client frontier or diagnostics; mutation return values remain ephemeral. No exported history point is required at response time.
 
+### D.9 Physical package digest and signature block
+
+A portable artifact has two digests with distinct jobs. The §D.4 definition identity — together with the manifest's checksums over represented content — is *logical*: stable under repacking by a conforming writer and independent of container metadata, it answers "is this the same package" for identity, deduplication, and reconciliation. The **physical package digest** defined here is a digest of the exact archive byte stream as transferred; it exists solely as the input to detached signatures (§19.11), so that a signature is invalidated by tampering with any archive byte — entry data, ZIP structure, compression metadata, entry ordering, unreferenced entries, or the ZIP64 end-of-central-directory records.
+
+**Signature block.** A signed artifact carries exactly one signature block, inserted between the end of the last local-file entry's data and the start of the central directory (the model established by the APK Signing Block, schemes v2/v3). The block is not an archive entry: no central-directory header references it and it never appears in `manifest.json`. Its layout is:
+
+```text
+u64-le   block_length    length in bytes of everything after this field
+payload                  canonical strict JSON: { "format": 1, "signatures": [ ... ] }
+u64-le   block_length    repeated, equal to the first
+16 bytes                 the ASCII magic "Liasse Sig Blk 1"
+```
+
+Each member of `signatures` is a §19.11 `{ alg, key_id, signature }` object. A verifier locates the block from the end-of-central-directory records: it seeks to the recorded central-directory start and inspects the bytes immediately preceding it for the trailing `block_length` and magic. Absence of the magic means the artifact is unsigned. The block is the single canonical signature carrier: an implementation MUST NOT accept signatures from any other location — an archive comment, bytes trailing the end-of-central-directory record, or an archive entry.
+
+**Physical digest.** The digest algorithm is SHA-256. The digest input is the concatenation of:
+
+1. every archive byte from offset 0 up to the start of the signature block — for an unsigned archive being signed, up to the start of the central directory;
+2. the central directory bytes;
+3. the end-of-central-directory bytes — the ZIP64 end-of-central-directory record and locator when present, then the end-of-central-directory record — with the recorded central-directory start offset interpreted as the offset of the signature block (its value before the block was inserted), so signing and verification digest identical bytes.
+
+Each signature signs the 32 digest bytes. The invariant is exact: a signature covers the whole archive byte stream minus the signature-carrying region, and no other byte of a signed artifact can change without invalidating every signature.
+
+**Deterministic writing.** Whole-stream signing is sound only because a conforming writer is deterministic: `mimetype` first and stored uncompressed (§19.5), every other entry in ascending archive-path byte order, fixed compression parameters per entry class, and zeroed timestamps and container metadata, so building the same logical artifact twice yields identical bytes and one physical digest. Two artifacts carrying the same logical content through different writers remain logically equal (§19.10) while their physical digests differ; a signature always covers the byte stream actually received, never the logical content.
+
 ---
 
 <a id="annex-e"></a>
@@ -5270,6 +5382,10 @@ patch    preserves the same boundary contracts while correcting their implementa
 ```
 
 A registry rejects a minor or patch release whose effective boundary contract narrows relative to an earlier release in the same major. `load` and module update apply the same check before activation.
+
+A load whose package version equals the instance's current version is admitted under the chosen §9.2 action with an empty migration route; a same-version republish is not a distinct case. Under `fast-forward`, a same-version package with a different definition is a §9.3 definition-only update subject to the same non-narrowing check as any forward release in the major: a non-narrowing definition change commits, and a narrowing one is rejected. A registry MAY additionally refuse to publish different definition bytes under an already-published version.
+
+A package is compatible for an in-place update exactly when it shares the instance's application identity and a connected §20.1 delta path exists between the instance's current version and the package's version (§20.3); an off-lineage candidate is rejected for in-place migration before any contract comparison.
 
 Every shorthand and omission expands according to the package's fixed `$liasse` language version. A later package release cannot reinterpret an earlier omission. External authenticated requests always name their authenticator, resolved module bindings remain pinned until an explicit rebind, and inferred parameter and response shapes are compared after inference.
 

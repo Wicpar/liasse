@@ -66,10 +66,11 @@ fn mimetype_mismatch_fails() -> Fallible {
 }
 
 #[test]
-fn stale_definition_identity_opens_but_opt_in_check_rejects() -> Fallible {
-    // SPEC-ISSUES item 21: a swapped liasse.json with fixed checksums but a
-    // stale definition.identity is unspecified — open() must NOT reject it, and
-    // the opt-in check must.
+fn stale_definition_identity_rejected_at_open() -> Fallible {
+    // SPEC.md Annex D.5 (item 21 pinned): verification MUST recompute the D.4
+    // identity from the stored liasse.json and reject a stale
+    // `manifest.definition.identity` even when every byte checksum matches —
+    // internal self-consistency is mandatory, not opt-in.
     let new_definition = br#"{"$app":"t.hist@1.0.1","$liasse":1}"#.to_vec();
     let mut manifest = common::leaf_builder().manifest();
     let stale_identity = manifest.definition.identity;
@@ -91,14 +92,12 @@ fn stale_definition_identity_opens_but_opt_in_check_rejects() -> Fallible {
     }
     let bytes = common::repack(entries)?;
 
-    let artifact = Artifact::open(&bytes)?; // not rejected (item 21)
-    assert_eq!(artifact.manifest().definition.identity, stale_identity);
-    match artifact.verify_definition_identity() {
+    match Artifact::open(&bytes) {
         Err(ArtifactError::DefinitionIdentityMismatch { declared, computed }) => {
             assert_eq!(declared, stale_identity);
             assert_eq!(computed, DefinitionId::of_canonical_bytes(&new_definition));
         }
-        other => return Err(format!("expected identity mismatch, got {other:?}").into()),
+        other => return Err(format!("expected identity mismatch at open, got {other:?}").into()),
     }
     Ok(())
 }

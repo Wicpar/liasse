@@ -1,0 +1,66 @@
+{
+  format: 1
+  name: sequence-composition-off-lineage-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.1 route resolution (SPEC-ISSUES item 22 pinned): composition is the
+    declared delta chain, never an implementation option, and the runtime
+    never synthesizes an undeclared intermediate version or obtains
+    definitions from outside the supplied package and the active instance.
+    The active source is 1.0.0; the target 3.0.0 declares its chain with a
+    single `$migrations` key "2.0.0" (the delta 2.0.0 -> 3.0.0). 1.0.0 lies
+    strictly below that declared key with no delta from it, and the implicit
+    structural-diff delta is unavailable across a declared intermediate whose
+    model is not held — so no connected delta path exists from 1.0.0, the
+    in-place update is rejected, and 1.0.0 remains active (§9.4, Annex E.9).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.compose@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        items: { $view: ".items { id, name }" }
+      }
+    }
+    $data: {
+      items: { i1: { name: "seed" } }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.compose@3.0.0"
+          $model: {
+            items: {
+              $key: "id"
+              id: "text"
+              tag: "text"
+            }
+            $migrations: {
+              // only from the adjacent predecessor 2.0.0, never from 1.0.0
+              "2.0.0": [
+                ".items = $old.items { id, tag: string.trim(.label) }"
+              ]
+            }
+            $public: {
+              items: { $view: ".items { id, tag }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["#evolution", "§20.1"]
+        detail: "no connected delta path from the active 1.0.0 to the target 3.0.0: the declared chain starts at 2.0.0 and the runtime never synthesizes intermediates"
+      } }
+  ]
+}
