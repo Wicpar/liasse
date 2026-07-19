@@ -1,0 +1,25 @@
+[package]
+name = "liasse-blob-fs"
+description = "Filesystem BlobConnector: content-addressed blob storage on local disk (§18)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+# The BlobConnector contract this crate implements, the capability vocabulary it
+# advertises, and BlobIntegrity — the canonical §18.9 SHA-512 verification the
+# connector applies on ingress and before delivering a fetched object.
+liasse-host = { path = "../liasse-host" }
+# The canonical 64-byte SHA-512 content hash a blob descriptor is addressed by
+# (§18.9); never a bare string identity.
+liasse-value = { path = "../liasse-value" }
+# Write-temp-then-atomic-rename staging (§18.7): a uniquely named temp object is
+# persisted with an atomic rename into its content-addressed path, and dropped
+# (swept) if the upload is interrupted — never a half-verified committed object.
+# The mature crate for this; not hand-rolled. Reused as the tests' temp root.
+tempfile = "3"
+
+[lints]
+workspace = true

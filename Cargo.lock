@@ -768,6 +768,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "liasse-blob-fs"
+version = "0.0.1"
+dependencies = [
+ "liasse-host",
+ "liasse-value",
+ "tempfile",
+]
+
+[[package]]
 name = "liasse-connect"
 version = "0.0.1"
 dependencies = [
