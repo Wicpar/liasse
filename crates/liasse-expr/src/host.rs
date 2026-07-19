@@ -91,8 +91,11 @@ pub enum DbReadPosition {
     /// An authenticator `$verify` (§11.3). Native token/keyring verification is
     /// runtime-dispatched, not a host op, so only an app-namespace call is caught.
     Verify,
-    /// An authenticator `$actor`/`$session` selector or auth `$check` (§11.3).
+    /// An authenticator `$actor`/`$session` selector (§11.3).
     ActorSession,
+    /// A role `$members` selection (§10.3): the membership view that decides who
+    /// holds the role. Database-evaluated like any other view.
+    RoleMembers,
     /// A bucket `$from`/`$until`/`$repeat`/`$order` bound (§14).
     BucketBound,
     /// A meter pool/`$quantity`/`$amount`/`$time`/`$eligible` expression (§15).
@@ -120,6 +123,7 @@ impl DbReadPosition {
             Self::Normalize => "a `$normalize`",
             Self::Verify => "an auth `$verify`",
             Self::ActorSession => "an auth `$actor`/`$session`",
+            Self::RoleMembers => "a role `$members` view",
             Self::BucketBound => "a bucket bound",
             Self::MeterSource => "a meter expression",
             Self::Placement => "a blob placement view",

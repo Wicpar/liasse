@@ -537,10 +537,17 @@ fn run_program(
         program.push(CompiledStmt { stmt: parsed.statement, source: src });
     }
     // A root migration program: `.` and `/` are the target root; `$old` is the
-    // read-only source root; the codec namespaces are resolvable (§16.1).
+    // read-only source root; the codec namespaces are resolvable (§16.1). §16.5/§20.1:
+    // a delta program is a MUTATION program — it MAY use registered namespaces of every
+    // effect class — so the scope is a `Mutation` host position, not a database-evaluated
+    // `DbRead` one; a §16.1 core codec transform stays valid and a registered namespace
+    // call is no longer misrejected by the origin rule. (App-namespace *dispatch* in a
+    // migration remains served by the codec binding — the documented §20.1/§20.2 transform
+    // path — so the position, not the resolution set, is what this corrects.)
     let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone())
         .with_structural("old", old_root_ty.clone())
-        .with_host_ops(codec_sigs.clone());
+        .with_host_ops(codec_sigs.clone())
+        .with_host_position(HostPosition::Mutation);
     let mutation = CompiledMutation {
         name: "$migrations".to_owned(),
         path: Vec::new(),

@@ -26,6 +26,13 @@ use crate::scope::Scope;
 use crate::ty::{ExprType, RowType};
 use crate::typed::{TypedExpr, TypedKind};
 
+/// The diagnostic code carried by a §16.3 effect-class / §16.5 namespace-origin
+/// host-position violation, distinct from the generic `E-EXPR` type error. It lets
+/// the load-time authenticator / role-view audit ([`audit_host_position`]) surface
+/// exactly these position-policy diagnostics while discarding the type/name
+/// diagnostics an auth/actor seam defers to admission.
+pub(crate) const HOST_POSITION_CODE: &str = "E-HOST";
+
 /// Type-check one value/view statement (`return e` or a bare expression),
 /// yielding a [`TypedExpr`] or the diagnostics that reject it.
 ///
@@ -74,6 +81,51 @@ pub fn check_expression(
             Ok(typed)
         }
         _ => Err(checker.diags),
+    }
+}
+
+/// Audit an authenticator (§11.3 `$verify`/`$actor`/`$session`/`$check`) or a
+/// role membership/`$view` (§10.3) expression for the §16.3 effect-class and
+/// §16.5 namespace-origin host-position policy ONLY.
+///
+/// These positions are database-evaluated, so an app-registered, verifier, or
+/// generated host call in them is a load-time error. Their *full* typing, though,
+/// is a documented auth/actor seam: an authenticator reads `$proof`/`$credential`
+/// and selects `$actor`/`$session` rows the request supplies, native keyring
+/// verification (§17.7) is dispatched specially rather than as a value host op,
+/// and a lenient load defers an app verifier namespace. So this runs the checker
+/// but returns ONLY the host-position diagnostics it raises, discarding every
+/// name/type diagnostic the seam legitimately owns. `Ok(())` when the expression
+/// calls no app-registered / non-pure host function in this position — even when
+/// it is not otherwise fully typeable at load. The `scope`'s [`host_position`] and
+/// resolved [`namespace_op`]s decide the policy, exactly as full typing would.
+///
+/// [`host_position`]: Scope::host_position
+/// [`namespace_op`]: Scope::namespace_op
+pub fn audit_host_position(
+    scope: &dyn Scope,
+    source: SourceId,
+    statement: &SpannedExpression,
+) -> Result<(), Diagnostics> {
+    let stmt = statement.statement();
+    let expr = match &stmt.kind {
+        StmtKind::Bare(expr) | StmtKind::Return(expr) => expr,
+        // A mutation statement in a read position is a shape error the model
+        // already rejects; this audit concerns value expressions only.
+        StmtKind::Assign { .. } | StmtKind::Clear(_) => return Ok(()),
+    };
+    let mut checker = Checker::new(scope, source);
+    let _ = checker.check(expr);
+    let host_only: Diagnostics = checker
+        .diags
+        .iter()
+        .filter(|diag| diag.code().is_some_and(|code| code.as_str() == HOST_POSITION_CODE))
+        .cloned()
+        .collect();
+    if host_only.has_errors() {
+        Err(host_only)
+    } else {
+        Ok(())
     }
 }
 
@@ -173,6 +225,25 @@ impl<'a> Checker<'a> {
     /// carries a different type.
     pub(crate) fn report(&mut self, expr: &Expr, message: impl Into<String>) {
         self.report_span(expr.span, message);
+    }
+
+    /// Record a §16.3/§16.5 host-position policy violation under the dedicated
+    /// [`HOST_POSITION_CODE`] and yield `None`. The distinct code lets the
+    /// load-time authenticator / role-view audit ([`audit_host_position`]) pick out
+    /// exactly these policy diagnostics from the type/name diagnostics an auth/actor
+    /// seam defers to admission.
+    pub(crate) fn host_position_error(
+        &mut self,
+        expr: &Expr,
+        message: impl Into<String>,
+    ) -> Option<TypedExpr> {
+        self.diags.push(
+            Diagnostic::error(message.into())
+                .code(HOST_POSITION_CODE)
+                .primary(Span::new(self.source, expr.span), "in this expression")
+                .build(),
+        );
+        None
     }
 
     /// Record a type error at an explicit byte span — used where the offending

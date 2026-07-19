@@ -11,7 +11,10 @@
 use std::collections::BTreeSet;
 
 use liasse_diag::{Diagnostic, Diagnostics, SourceId, SourceMap, Span};
-use liasse_expr::{check_statement, ExprType, HostPosition, RowType, Scope, SortOrder, TypedExpr, ViewOrders};
+use liasse_expr::{
+    audit_host_position, check_statement, DbReadPosition, ExprType, HostPosition, RowType, Scope,
+    SortOrder, TypedExpr, ViewOrders,
+};
 use liasse_host::KeyOperation;
 use liasse_model::{Collection, Model, Node, Shape};
 use liasse_syntax::{
@@ -410,6 +413,11 @@ impl Compiled {
         }
         let root_ty = ExprType::Row(root);
         let auth = AuthBindings::derive(schema, model_doc);
+        // §16.5/§11.3: an authenticator's `$verify`/`$actor`/`$session`/`$check` are
+        // database-evaluated positions, so an app-registered (or verifier/generated)
+        // host call in them is a load-time error. Audit them before anything else so
+        // an illegal verifier position is rejected up front.
+        check_authenticator_positions(sources, model_doc, &root_ty, &auth, hosts)?;
         let mut collections = compile_collections(sources, schema, &root_ty, model_doc, hosts)?;
         // §4.4: resolve the effective precision of every stored `timestamp` field
         // — the field-level `$precision` override when declared, else the package
@@ -429,8 +437,8 @@ impl Compiled {
         let keyrings = compile_keyrings(schema, model_doc);
         let views = compile_views(sources, schema, &root_ty, &keyrings, model_doc, hosts)?;
         let exposed_views = compile_exposed_views(sources, &root_ty, model, hosts)?;
-        let surface_views = compile_surface_views(sources, schema, &root_ty, model_doc, &auth, hosts);
-        let buckets = compile_buckets(sources, schema, &root_ty, model_doc)?;
+        let surface_views = compile_surface_views(sources, schema, &root_ty, model_doc, &auth, hosts)?;
+        let buckets = compile_buckets(sources, schema, &root_ty, model_doc, hosts)?;
         let source_buckets = crate::source_bucket::compile(sources, schema, &root_ty, model_doc)?;
         let meters = crate::meter::compile(sources, schema, &root_ty, model_doc)?;
         let module_spaces = compile_module_spaces(model_doc, &[]);
@@ -1087,6 +1095,91 @@ fn resolve_selection(schema: Schema<'_>, selection: Option<&liasse_syntax::DocVa
     matches!(ty, ExprType::Row(_)).then_some((path, ty))
 }
 
+/// §16.5/§11.3: audit each authenticator's database-evaluated expressions —
+/// `$verify`, `$actor`, `$session`, and every auth `$check` — for the host-position
+/// policy at load. These positions admit the language operators, the built-in
+/// namespaces (§16.1), and native keyring verification (§17.7) only; an
+/// app-registered (`$requires`) namespace call, or a verifier/generated one, is a
+/// load-time error — custom credential verification re-models onto the §11.5
+/// auth-mutation pattern.
+///
+/// Their FULL typing stays a documented seam: they read `$proof`/`$credential` and
+/// select `$actor`/`$session` rows the request supplies, native keyring
+/// verification is dispatched specially rather than as a value host op, and a
+/// lenient genesis load defers an app verifier namespace. So only the host-position
+/// violation is enforced here, through the tolerant [`audit_host_position`]: native
+/// `cose.verify`, a deferred verifier namespace, and the built-in namespaces all
+/// stay admissible.
+fn check_authenticator_positions(
+    sources: &mut SourceMap,
+    model_doc: &liasse_syntax::DocValue,
+    root_ty: &ExprType,
+    auth: &AuthBindings,
+    hosts: &HostSignatures,
+) -> Result<(), EngineError> {
+    let Some(authenticators) = doc::member(model_doc, "$auth").and_then(doc::object) else {
+        return Ok(());
+    };
+    for authenticator in authenticators {
+        let def = &authenticator.value;
+        // A `"$parent.<name>"` alias member carries no authenticator expressions.
+        if doc::string(def).is_some() {
+            continue;
+        }
+        for (member, kind) in [
+            ("$verify", DbReadPosition::Verify),
+            ("$actor", DbReadPosition::ActorSession),
+            ("$session", DbReadPosition::ActorSession),
+        ] {
+            if let Some(text) = doc::member(def, member).and_then(doc::string) {
+                audit_auth_expr(sources, root_ty, auth, hosts, kind, text)?;
+            }
+        }
+        // A `$check` is one condition or a sequence of them (§11.3).
+        if let Some(check) = doc::member(def, "$check") {
+            if let Some(text) = doc::string(check) {
+                audit_auth_expr(sources, root_ty, auth, hosts, DbReadPosition::Check, text)?;
+            } else if let Some(items) = doc::array(check) {
+                for item in items.iter().filter_map(doc::string) {
+                    audit_auth_expr(sources, root_ty, auth, hosts, DbReadPosition::Check, item)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Audit one authenticator expression for the §16.3/§16.5 host-position policy.
+/// The scope carries the resolved host signatures and the authenticator's request
+/// structurals (`$credential`/`$proof`/`$actor`/`$session`/`$auth_name`) bound
+/// loosely, so the audit reaches any host call; the tolerant audit then reports
+/// only a genuine app-registered / non-pure call there, never the seam's unbound
+/// reads or deferred/native verifier namespaces.
+fn audit_auth_expr(
+    sources: &mut SourceMap,
+    root_ty: &ExprType,
+    auth: &AuthBindings,
+    hosts: &HostSignatures,
+    kind: DbReadPosition,
+    text: &str,
+) -> Result<(), EngineError> {
+    let mut scope = RuntimeScope::new(root_ty.clone(), root_ty.clone())
+        .with_host_ops(hosts.clone())
+        .with_host_position(HostPosition::DbRead(kind))
+        .with_structural("credential", ExprType::scalar(Type::Json))
+        .with_structural("proof", ExprType::scalar(Type::Json))
+        .with_structural("auth_name", ExprType::scalar(Type::Text));
+    if let Some((_, ty)) = &auth.actor {
+        scope = scope.with_structural("actor", ty.clone());
+    }
+    if let Some((_, ty)) = &auth.session {
+        scope = scope.with_structural("session", ty.clone());
+    }
+    let src = sources.add_label("auth", text.to_owned());
+    let parsed = parse_expression(src, text).map_err(|d| EngineError::Invalid(Box::new(d)))?;
+    audit_host_position(&scope, src, &parsed).map_err(|d| EngineError::Invalid(Box::new(d)))
+}
+
 fn compile_mutations(
     sources: &mut SourceMap,
     schema: Schema<'_>,
@@ -1643,6 +1736,7 @@ fn compile_buckets(
     schema: Schema<'_>,
     root_ty: &ExprType,
     model_doc: &liasse_syntax::DocValue,
+    hosts: &HostSignatures,
 ) -> Result<Vec<CompiledBucket>, EngineError> {
     let mut out = Vec::new();
     // Lifecycle buckets at every level (§14.1–§14.2), top-level and nested. A nested
@@ -1654,7 +1748,7 @@ fn compile_buckets(
     for member in &schema.model().root().members {
         if let Node::Collection(collection) = &member.node {
             let path = vec![member.name.as_str().to_owned()];
-            compile_buckets_at(sources, schema, root_ty, model_doc, &path, collection, &mut out)?;
+            compile_buckets_at(sources, schema, root_ty, model_doc, hosts, &path, collection, &mut out)?;
         }
     }
     Ok(out)
@@ -1662,11 +1756,13 @@ fn compile_buckets(
 
 /// Compile the `$bucket` of the collection at declaration `path`, then recurse
 /// into its nested collections (§5.4), so a bucketed pool at any depth registers.
+#[allow(clippy::too_many_arguments)]
 fn compile_buckets_at(
     sources: &mut SourceMap,
     schema: Schema<'_>,
     root_ty: &ExprType,
     model_doc: &liasse_syntax::DocValue,
+    hosts: &HostSignatures,
     path: &[String],
     collection: &Collection,
     out: &mut Vec<CompiledBucket>,
@@ -1678,7 +1774,13 @@ fn compile_buckets_at(
         let row_ty = schema
             .receiver_row_type(path)
             .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
-        let scope = RuntimeScope::new(row_ty, root_ty.clone());
+        // §14/§16.5: a bucket `$from`/`$until` bound is database-evaluated. Carry the
+        // host signatures and the `BucketBound` sub-position so an app-registered call
+        // there rejects with the §16.5 diagnostic naming the bucket (not a bare
+        // "unknown function"); a built-in namespace still resolves and is admitted.
+        let scope = RuntimeScope::new(row_ty, root_ty.clone())
+            .with_host_ops(hosts.clone())
+            .with_host_position(HostPosition::DbRead(DbReadPosition::BucketBound));
         if let Some(bucket) = compile_bucket(sources, &scope, name, bucket_doc)? {
             out.push(bucket);
         }
@@ -1687,7 +1789,7 @@ fn compile_buckets_at(
         if let Node::Collection(nested) = &member.node {
             let mut child = path.to_vec();
             child.push(member.name.as_str().to_owned());
-            compile_buckets_at(sources, schema, root_ty, model_doc, &child, nested, out)?;
+            compile_buckets_at(sources, schema, root_ty, model_doc, hosts, &child, nested, out)?;
         }
     }
     Ok(())
@@ -1736,9 +1838,12 @@ fn compile_bucket(
 ///
 /// The scope carries the surface `$params` (read as `@name`) and the package's
 /// `$actor`/`$session` structurals (§11.1), so a param-aware or role `$view`
-/// type-checks. A surface whose `$view` does not compile (an unrepresentable
-/// param type, or an expression the runtime cannot yet type) is dropped rather
-/// than failing the whole load, leaving that surface unserved.
+/// type-checks. A surface whose `$view` does not compile for a documented seam
+/// reason (an unrepresentable param type, or an `$actor`-typing the runtime cannot
+/// yet resolve) is dropped rather than failing the whole load. A §16.5/§16.3
+/// host-position violation, though, is NOT a seam — it is a load error the audit
+/// raises loudly (never a silent drop), for the `$view` and for each role
+/// `$members` selection (§10.3), both database-evaluated positions.
 fn compile_surface_views(
     sources: &mut SourceMap,
     schema: Schema<'_>,
@@ -1746,7 +1851,7 @@ fn compile_surface_views(
     model_doc: &liasse_syntax::DocValue,
     auth: &AuthBindings,
     hosts: &HostSignatures,
-) -> Vec<CompiledSurfaceView> {
+) -> Result<Vec<CompiledSurfaceView>, EngineError> {
     let mut out = Vec::new();
     let structurals = auth.structurals();
     if let Some(public) = doc::member(model_doc, "$public").and_then(doc::object) {
@@ -1760,7 +1865,7 @@ fn compile_surface_views(
                 &structurals,
                 hosts,
                 &mut out,
-            );
+            )?;
         }
     }
     // A package-level `$roles` block: its surfaces read `.` as the package root
@@ -1768,6 +1873,7 @@ fn compile_surface_views(
     if let Some(roles) = doc::member(model_doc, "$roles").and_then(doc::object) {
         for role in roles {
             let Some(members) = doc::object(&role.value) else { continue };
+            audit_role_members(sources, root_ty, root_ty, &structurals, hosts, &role.value)?;
             for member in members {
                 // A role's `$`-members (`$members`/`$auth`/`$recursive`) are not
                 // granted surfaces; its plain members are (§10.4).
@@ -1783,7 +1889,7 @@ fn compile_surface_views(
                     &structurals,
                     hosts,
                     &mut out,
-                );
+                )?;
             }
         }
     }
@@ -1802,6 +1908,7 @@ fn compile_surface_views(
         let Some(covered_ty) = schema.receiver_row_type(&path) else { continue };
         for role in roles {
             let Some(members) = doc::object(&role.value) else { continue };
+            audit_role_members(sources, &covered_ty, root_ty, &structurals, hosts, &role.value)?;
             for member in members {
                 if member.name.text.starts_with('$') {
                     continue;
@@ -1815,11 +1922,40 @@ fn compile_surface_views(
                     &structurals,
                     hosts,
                     &mut out,
-                );
+                )?;
             }
         }
     }
-    out
+    Ok(out)
+}
+
+/// §16.5/§10.3: audit a role's `$members` selection — the membership view that
+/// decides who holds the role — for the host-position policy. It is
+/// database-evaluated, so an app-registered (or verifier/generated) host call in it
+/// is a load-time error. `current_ty` is the package root for an unscoped role and
+/// the role-holding collection row for a scoped one. As with an authenticator
+/// position, only the host-policy violation is enforced (via the tolerant
+/// [`audit_host_position`]); other typing stays the model's concern.
+fn audit_role_members(
+    sources: &mut SourceMap,
+    current_ty: &ExprType,
+    root_ty: &ExprType,
+    structurals: &[(String, ExprType)],
+    hosts: &HostSignatures,
+    role: &liasse_syntax::DocValue,
+) -> Result<(), EngineError> {
+    let Some(text) = doc::member(role, "$members").and_then(doc::string) else {
+        return Ok(());
+    };
+    let mut scope = RuntimeScope::new(current_ty.clone(), root_ty.clone())
+        .with_host_ops(hosts.clone())
+        .with_host_position(HostPosition::DbRead(DbReadPosition::RoleMembers));
+    for (name, ty) in structurals {
+        scope = scope.with_structural(name.clone(), ty.clone());
+    }
+    let src = sources.add_label("members", text.to_owned());
+    let parsed = parse_expression(src, text).map_err(|d| EngineError::Invalid(Box::new(d)))?;
+    audit_host_position(&scope, src, &parsed).map_err(|d| EngineError::Invalid(Box::new(d)))
 }
 
 /// Compile one surface declaration's `$view` (§10.1) at dotted `address`, adding
@@ -1841,26 +1977,39 @@ fn compile_one_surface_view(
     structurals: &[(String, ExprType)],
     hosts: &HostSignatures,
     out: &mut Vec<CompiledSurfaceView>,
-) {
-    let Some(members) = doc::object(surface) else { return };
+) -> Result<(), EngineError> {
+    let Some(members) = doc::object(surface) else { return Ok(()) };
     let Some(view_text) = members.iter().find(|m| m.name.text == "$view").and_then(|m| doc::string(&m.value))
     else {
-        return;
+        return Ok(());
     };
     let params = match compile_surface_params(sources, root_ty, surface) {
         Some(params) => params,
-        None => return,
+        None => return Ok(()),
     };
     let current_ty = covered.map_or(root_ty, |(_, row_ty)| row_ty);
-    let mut scope = RuntimeScope::new(current_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
+    let mut scope = RuntimeScope::new(current_ty.clone(), root_ty.clone())
+        .with_host_ops(hosts.clone())
+        .with_host_position(HostPosition::DbRead(DbReadPosition::ViewProjection));
     for param in &params {
         scope = scope.with_param(param.name.clone(), param.ty.clone());
     }
     for (name, ty) in structurals {
         scope = scope.with_structural(name.clone(), ty.clone());
     }
+    // §16.5/§10.1: a surface `$view` is database-evaluated, so an app-registered
+    // (or verifier/generated) host call in it is a load-time error. Audit that
+    // FIRST and fail the load loudly — a role `$view`'s full typing is a documented
+    // `$actor` seam (dropped below when it does not resolve), but a §16.5 violation
+    // is never a seam and must not be swallowed by that drop (AGENTS.md: fail loud).
+    let src = sources.add_label("surface-view", view_text.to_owned());
+    let parsed = parse_expression(src, view_text).map_err(|d| EngineError::Invalid(Box::new(d)))?;
+    audit_host_position(&scope, src, &parsed).map_err(|d| EngineError::Invalid(Box::new(d)))?;
+    // Full typing: a surface whose `$view` does not type for a documented seam
+    // reason (an `$actor` row type the runtime cannot yet resolve) is dropped rather
+    // than failing the whole load, leaving that surface unserved.
     let Ok((expr, _)) = compile_expr(sources, &scope, "surface-view", view_text) else {
-        return;
+        return Ok(());
     };
     let scope_binding = match covered {
         None => None,
@@ -1872,12 +2021,13 @@ fn compile_one_surface_view(
             let recursive =
                 compile_recursive(sources, covered_ty, root_ty, surface, &params, structurals, hosts);
             if declared && recursive.is_none() {
-                return;
+                return Ok(());
             }
             Some(CompiledScope { collection_path: path.to_vec(), recursive })
         }
     };
     out.push(CompiledSurfaceView { address: address.to_owned(), expr, params, scope: scope_binding });
+    Ok(())
 }
 
 /// Compile a scoped-role surface's `$recursive` coverage block (§10.5), or `None`

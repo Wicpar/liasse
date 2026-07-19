@@ -1,23 +1,27 @@
 {
   format: 1
   name: namespace-signature-type-mismatch-rejected
-  suite: static
+  suite: scenario
   spec: ["#host-namespaces", "#expressions", "§16.2", "§16.5"]
   note: '''
     §16.2: the load-time descriptor supplies "function names and typed
     signatures" for each namespace function, and "every used function has a
-    known type ... and pinned contract." §6.5: "Package loading validates
-    every function name, type, determinism class, and namespace contract."
-    The descriptor declares util.double : (int) -> int, but the mutation body
-    calls util.double(@label) where @label is a text parameter. The argument
-    type does not match the pinned signature, so the typed namespace contract
-    is violated and loading is rejected — the mismatch is a static type error,
-    not a runtime failure. (Recast per §16.5: the carrier moved out of a
-    database-evaluated `$view` into the mutation body — its one legal position
-    — so the asserted diagnostic is the signature mismatch, not the §16.5
-    position rule that would otherwise fire in a view. The signature is stated
-    in this case's hosts descriptor, so the expectation is deducible here
-    rather than from an implementation.)
+    known type ... and pinned contract." The descriptor declares
+    util.double : (int) -> int, but the mutation body calls util.double(@label)
+    where @label is a text parameter. The argument type does not match the
+    pinned signature, so the typed namespace contract is violated.
+
+    Firing point (why a scenario, not a static case): a mutation program body
+    is the ONE legal position for an app-registered namespace call (§16.5), and
+    a mutation body is parse-only at load and admitted per call. The typed
+    contract is therefore enforced when the mutation runs — the descriptor's
+    pinned `(int) -> int` signature refuses a text argument at admission — not
+    at load. Driving the call is what makes the mismatch assertable at its real
+    firing point; the signature is stated in this case's hosts descriptor, so
+    the expected rejection is deducible here rather than from an implementation.
+    (The pure load-time counterpart — a signature mismatch validated by the
+    checker before admission — is unit-tested by liasse-expr
+    `host_calls::argument_type_mismatch_is_rejected`.)
   '''
 
   package: {
@@ -59,9 +63,11 @@
     ]
   }
 
-  expect: {
-    outcome: invalid
-    violates: ["#host-namespaces", "#expressions"]
-    detail: "util.double is called with a text argument but its pinned signature is (int) -> int; the typed namespace contract fails validation (§16.2/§6.5) when the mutation program is checked"
-  }
+  steps: [
+    // The mutation admits and runs its body; util.double(@label) is a text
+    // argument against a pinned (int) -> int signature, so the typed namespace
+    // contract fails at admission and the call is rejected — no row is written.
+    { call: "public.items.add", args: { id: "x", label: "hello" }
+      expect: { outcome: rejected, violates: ["#host-namespaces", "#expressions"] } }
+  ]
 }

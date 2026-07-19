@@ -306,7 +306,7 @@ impl Checker<'_> {
         // violation, and its diagnostic is corpus-pinned. Only an otherwise
         // admissible *pure* app call then reaches the §16.5 origin check below.
         if !position.permits_effect(op.effect()) {
-            return self.error(
+            return self.host_position_error(
                 expr,
                 format!(
                     "`{namespace}.{function}` is a {} host function, which cannot run in {} (§16.3)",
@@ -384,7 +384,7 @@ impl Checker<'_> {
                  mutation program may call a `$requires` namespace (§16.5)",
                 position.describe(),
             ))
-            .code("E-EXPR")
+            .code(crate::check::HOST_POSITION_CODE)
             .primary(Span::new(self.source, expr.span), "app-registered namespace call")
             .help(
                 "every position outside a mutation body is database-evaluated and admits only \
