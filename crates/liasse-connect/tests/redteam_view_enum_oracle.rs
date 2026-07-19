@@ -173,7 +173,11 @@ fn a_non_member_cannot_distinguish_a_role_view_by_fetch() {
     // view is refused there — but pre-fix the closed-shape params decode still ran
     // first, so an existing view (valid param decodes, then unauthenticated at the
     // host) and a nonexistent one (unknown param, rejected at the boundary) diverged
-    // by class. The reorder makes both the uniform unauthenticated denial.
+    // by class. The #39 reorder makes both the uniform host denial. The anon-role
+    // fix (§10.4, redteam_enum_oracle_anon_role) then collapses that actor-required
+    // denial to `unresolved`, so an anonymous role read is byte-identical to a
+    // nonexistent role — an `unauthenticated` code would itself have leaked that the
+    // `member` role exists (a nonexistent role denies `unresolved`).
     let mut core = app();
     let conn = hello(&mut core);
 
@@ -188,8 +192,9 @@ fn a_non_member_cannot_distinguish_a_role_view_by_fetch() {
     );
     assert_eq!(
         existing,
-        Observed::Refused { class: "denied", code: "unauthenticated".to_owned() },
-        "a role-view fetch is the uniform unauthenticated denial, not a params rejection"
+        Observed::Refused { class: "denied", code: "unresolved".to_owned() },
+        "an anonymous role-view fetch is the uniform unresolvable-name denial (§10.4): the code must \
+         not reveal the role exists where a nonexistent role denies `unresolved`"
     );
 }
 

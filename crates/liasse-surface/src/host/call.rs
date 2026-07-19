@@ -182,7 +182,11 @@ impl<S: InstanceStore> SurfaceHost<S> {
     /// confirms membership *before* the specific surface/call binding is resolved
     /// (SPEC-ISSUES item 8): a caller who is not a confirmed member never learns
     /// whether the named surface or call exists, so an ungranted surface is
-    /// indistinguishable from a nonexistent one.
+    /// indistinguishable from a nonexistent one. An *unauthenticated* role call — a
+    /// role that exists but no actor is bound — is likewise collapsed to the uniform
+    /// unresolvable-name denial ([`Self::hide_unenumerable_denial`], §10.4), so it
+    /// does not leak that the role exists where a nonexistent role would deny
+    /// `unresolved`.
     fn resolve_call(
         &self,
         id: &str,
@@ -206,7 +210,12 @@ impl<S: InstanceStore> SurfaceHost<S> {
             Authority::Role(role) => {
                 let role_def =
                     self.router.role(role).ok_or_else(|| SurfaceOutcome::Denied(Self::unresolved_name()))?;
-                let selection = self.call_selection(id, call).map_err(SurfaceOutcome::Denied)?;
+                // §10.4: an actor-required denial over this (unenumerable) role is
+                // collapsed to `unresolved`, so an anonymous caller cannot tell an
+                // existing role from a nonexistent one by the wire code.
+                let selection = self.call_selection(id, call).map_err(|denial| {
+                    SurfaceOutcome::Denied(Self::hide_unenumerable_denial(call.address().authority(), denial))
+                })?;
                 let now = self.clock.instant();
                 let reader = EngineReader::new(&self.engine, now);
                 let context =
@@ -224,6 +233,35 @@ impl<S: InstanceStore> SurfaceHost<S> {
     /// name is indistinguishable from an ungranted one (SPEC-ISSUES item 8).
     fn unresolved_name() -> Denial {
         Denial::new(DenialReason::Unresolved, "the address names nothing exposed to this caller")
+    }
+
+    /// Collapse an actor-required denial over a target the caller cannot enumerate
+    /// to the uniform unresolvable-name denial (§10.4).
+    ///
+    /// [`DenialReason::Unauthenticated`] is *not* name-independent: it fires only
+    /// after a role's existence is confirmed — an existing role passes the
+    /// role-existence check and reaches the actor check, while a nonexistent role
+    /// short-circuits to [`DenialReason::Unresolved`]. Emitting `unauthenticated`
+    /// for an [`Authority::Role`] target would therefore let an *unauthenticated*
+    /// caller enumerate the role catalog by wire code — `member.x` (exists) denying
+    /// `unauthenticated` while `ghost.x` (absent) denies `unresolved`. For a role
+    /// (unenumerable) target the denial is remapped to the uniform unresolvable-name
+    /// outcome, identical in class, code, and message to a nonexistent name
+    /// ([`Self::unresolved_name`]).
+    ///
+    /// An [`Authority::Public`] target is enumerable via `manifest`, so an
+    /// actor-required denial over it would disclose nothing and is preserved. (A
+    /// public surface can never in fact require an actor — a `$actor`/`$session`
+    /// read inside a public program is rejected at load, and an indirect one faults
+    /// at admission as a `rejected`, never a `denied`, §10.2 — so the preserved
+    /// branch guards a structural invariant; the remap stays predicated on authority
+    /// so a caller who *may* enumerate the target still reads the precise reason.)
+    fn hide_unenumerable_denial(authority: &Authority, denial: Denial) -> Denial {
+        if matches!(authority, Authority::Role(_)) && denial.reason() == DenialReason::Unauthenticated {
+            Self::unresolved_name()
+        } else {
+            denial
+        }
     }
 
     /// The selection a role call uses: its per-request `auth`, or the connection's
@@ -459,8 +497,10 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 // §12.2 (SPEC-ISSUES item 8): resolve the role, verify the
                 // selection, and confirm membership before the surface view's
                 // existence is revealed, so a non-member cannot enumerate a role's
-                // views. A nonexistent role and a non-member both deny as the
-                // uniform unresolvable-name outcome.
+                // views. A nonexistent role, a non-member, and an unauthenticated
+                // role read all deny as the uniform unresolvable-name outcome (the
+                // actor-required denials below pass through
+                // [`Self::hide_unenumerable_denial`], §10.4).
                 let role_def = self.router.role(role).ok_or_else(Self::unresolved_name)?;
                 // §11.4: a per-request `auth` selection admits the subscription
                 // without a connection-stored context; otherwise fall back to the
@@ -470,17 +510,20 @@ impl<S: InstanceStore> SurfaceHost<S> {
                     Some(selection) => selection,
                     None => {
                         let Some(connection) = self.connections.get(id) else {
-                            return Err(Denial::new(
-                                DenialReason::Unauthenticated,
-                                "the connection is not open",
+                            return Err(Self::hide_unenumerable_denial(
+                                address.authority(),
+                                Denial::new(DenialReason::Unauthenticated, "the connection is not open"),
                             ));
                         };
                         match connection.select_context(context).cloned() {
                             Some(selection) => selection,
                             None => {
-                                return Err(Denial::new(
-                                    DenialReason::Unauthenticated,
-                                    "a role surface requires an authenticated actor",
+                                return Err(Self::hide_unenumerable_denial(
+                                    address.authority(),
+                                    Denial::new(
+                                        DenialReason::Unauthenticated,
+                                        "a role surface requires an authenticated actor",
+                                    ),
                                 ));
                             }
                         }
@@ -522,8 +565,10 @@ impl<S: InstanceStore> SurfaceHost<S> {
     ///   the resolved view; a closed-shape `$params` reveal (`malformed`, the declared
     ///   parameter set/types) is now safe to surface to it (item 6/#10).
     /// * `Err(Denial)` — a non-member, an unresolvable name, an unauthenticated role
-    ///   read, or an unverified selection; a non-member and a nonexistent name are
-    ///   indistinguishable (class and diagnostic code), whatever the params payload.
+    ///   read, or an unverified selection; a non-member, a nonexistent name, and an
+    ///   unauthenticated role read are indistinguishable (class and diagnostic code),
+    ///   whatever the params payload (the actor-required denial collapses to
+    ///   `unresolved`, §10.4).
     ///
     /// A boundary that gates its `$params` decode on this closes the enumeration
     /// oracle where a valid-param-shaped probe to an existing ungranted view would

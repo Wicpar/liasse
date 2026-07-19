@@ -123,9 +123,22 @@ impl SurfaceOutcome {
 /// [`DenialReason::Unresolved`] — identical, class and diagnostic code, to a
 /// name that does not exist. Existence- or membership-revealing reasons are
 /// therefore observable only by a caller who has already established authority
-/// over the target. The auth-context reasons below (unauthenticated, unverified,
-/// …) are name-independent — they fire before surface resolution — so they leak
-/// no catalog either.
+/// over the target.
+///
+/// The auth-context reasons below are *not* name-independent — the earlier claim
+/// that they "fire before surface resolution, so they leak no catalog" was false.
+/// [`DenialReason::Unauthenticated`] fires only once a role's existence is
+/// confirmed (a nonexistent role short-circuits to [`DenialReason::Unresolved`]),
+/// so surfacing it for a role would let an *unauthenticated* caller enumerate the
+/// role catalog by wire code — `member.x` (exists) denying `unauthenticated` while
+/// `ghost.x` (absent) denies `unresolved` (§10.4). `host/call.rs`'s
+/// `hide_unenumerable_denial` therefore collapses an actor-required denial over a
+/// role (unenumerable) target to [`DenialReason::Unresolved`] — identical in class,
+/// code, and message to a nonexistent name — leaving `Unauthenticated` observable
+/// only toward an enumerable (public) target the caller already reads in its
+/// `manifest`. The credential-verification reasons (unverified, check-failed,
+/// session-invalid, …) likewise fire only after role resolution, and only once the
+/// caller has presented a credential to verify.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DenialReason {
     /// The address named no surface/call exposed to the caller — a nonexistent

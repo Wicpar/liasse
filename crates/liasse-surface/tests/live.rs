@@ -126,11 +126,14 @@ fn losing_authority_closes_a_role_subscription() {
 
 #[test]
 fn unauthenticated_role_watch_is_denied() {
+    // §10.4: an unauthenticated watch on an existing role view is denied with the
+    // uniform `unresolved` — identical to a nonexistent role — so the wire code does
+    // not disclose that `member` exists to an anonymous enumerator.
     let mut host = host();
     host.connect("c1");
     match host.watch("c1", &SurfaceWatch::new(address("member.tasks"), "m1")).expect("watch") {
         Subscription::Denied(denial) => {
-            assert_eq!(denial.reason(), liasse_surface::DenialReason::Unauthenticated);
+            assert_eq!(denial.reason(), liasse_surface::DenialReason::Unresolved);
         }
         other => panic!("an unauthenticated role watch must be denied, got {other:?}"),
     }

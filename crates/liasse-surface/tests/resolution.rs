@@ -67,10 +67,13 @@ fn unknown_role_is_unresolved() {
 #[test]
 fn role_surface_requires_authentication() {
     // A role surface addressed with no authenticated actor is denied (§10.2/§11).
+    // §10.4: the denial is the uniform `unresolved`, byte-identical to a
+    // nonexistent role (see `unknown_role_is_unresolved`) — an `unauthenticated`
+    // reason here would leak that `member` exists to an anonymous enumerator.
     let mut host = host();
     host.connect("c1");
     let outcome = host.call("c1", &call("member.tasks.complete", [("id", text("x")), ("title", text("y"))])).expect("call");
-    assert_eq!(denial(&outcome), DenialReason::Unauthenticated);
+    assert_eq!(denial(&outcome), DenialReason::Unresolved);
 }
 
 #[test]
