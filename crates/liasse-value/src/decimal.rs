@@ -54,7 +54,15 @@ impl Decimal {
     pub fn parse(text: &str) -> Result<Self, ValueError> {
         let value =
             BigDecimal::from_str(text).map_err(|_| ValueError::MalformedDecimal(text.to_owned()))?;
-        let magnitude = value.as_bigint_and_exponent().1.unsigned_abs();
+        // Bound the CANONICAL (normalized, minimal-scale) magnitude — the scale
+        // `to_canonical_text` actually materializes — not the raw parsed exponent.
+        // Checking the raw scale made admission spelling-dependent (A.1: scale is
+        // not part of identity): `10E16383` (canonical `1`+16384 zeros) slipped the
+        // guard while `1.0E-16383` (canonical scale 16383) was wrongly rejected.
+        // `normalized()` operates on the mantissa, never the plain-form string, so
+        // it stays allocation-safe (A.7) and the guard matches what the encoder
+        // would produce.
+        let magnitude = value.normalized().as_bigint_and_exponent().1.unsigned_abs();
         if magnitude > Self::MAX_SCALE_MAGNITUDE {
             return Err(ValueError::DecimalScaleOutOfRange {
                 magnitude,
