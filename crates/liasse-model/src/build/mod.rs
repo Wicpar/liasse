@@ -478,6 +478,7 @@ fn placeholder(span: liasse_diag::ByteSpan) -> ScalarField {
         normalize: None,
         checks: Vec::new(),
         unique: false,
+        precision_override: None,
         span,
     }
 }

@@ -6,7 +6,7 @@
 //! Continues the same [`Builder`] impl.
 
 use liasse_syntax::{DocMember, DocValue};
-use liasse_value::{EnumType, Type};
+use liasse_value::{EnumType, Precision, Type};
 
 use crate::doc::DocValueExt;
 use crate::report::{code, Reporter};
@@ -34,6 +34,7 @@ impl<'a> Builder<'a> {
                 normalize: None,
                 checks: Vec::new(),
                 unique: false,
+                precision_override: None,
                 span,
             });
         }
@@ -55,6 +56,7 @@ impl<'a> Builder<'a> {
                 normalize: None,
                 checks: Vec::new(),
                 unique: false,
+                precision_override: None,
                 span,
             }),
             Err(reason) => {
@@ -85,6 +87,7 @@ impl<'a> Builder<'a> {
                 normalize: None,
                 checks: Vec::new(),
                 unique: false,
+                precision_override: None,
                 span: en.value.span,
             }),
             Err(_) => {
@@ -155,6 +158,10 @@ impl<'a> Builder<'a> {
         // optionality and let an optional field be used as a `$key`).
         let mut base_ty = Type::Json;
         let mut optional = false;
+        // §4.4: the field-level `$precision` override, parsed once into its
+        // semantic form and combined after the loop (like `$type`/`$optional`),
+        // so a `$precision` before `$type` is not lost to source order.
+        let mut precision_override: Option<Precision> = None;
         for member in value.as_object().unwrap_or(&[]) {
             match member.name.text.as_str() {
                 "$type" => base_ty = self.base_type(reporter, &member.value),
@@ -172,19 +179,18 @@ impl<'a> Builder<'a> {
                     blob_member.get_or_insert(member.value.span);
                     crate::blob::check_media(reporter, &member.value);
                 }
-                // §4.4: a timestamp precision override is one of a fixed set.
+                // §4.4: parse a timestamp precision override into its semantic
+                // form; an unsupported keyword is outside the closed set `{s, ms,
+                // us, ns}` and rejects.
                 "$precision" => {
-                    let supported = member
-                        .value
-                        .as_string()
-                        .is_some_and(|p| matches!(p, "s" | "ms" | "us" | "ns"));
-                    if !supported {
-                        reporter.reject_hint(
+                    match member.value.as_string().and_then(Precision::parse) {
+                        Some(precision) => precision_override = Some(precision),
+                        None => reporter.reject_hint(
                             member.value.span,
                             code::TYPE,
                             "`$precision` must be one of `s`, `ms`, `us`, `ns` (§4.4)",
                             "use a supported timestamp precision",
-                        );
+                        ),
                     }
                 }
                 // Migration mapping members (§20.1), typed by the migration phase.
@@ -201,6 +207,11 @@ impl<'a> Builder<'a> {
         } else {
             base_ty
         };
+        // §4.4 scopes the override to a `timestamp` field (bare or optional): keep
+        // it only when the field's base type is a timestamp, so it can never
+        // shadow an inapplicable field. The runtime resolves it against the
+        // package precision at compile time.
+        field.precision_override = precision_override.filter(|_| is_timestamp_field(&field.ty));
         if let Some(span) = blob_member {
             crate::blob::require_blob_type(reporter, &field.ty, span);
         }
@@ -252,5 +263,15 @@ impl<'a> Builder<'a> {
             condition: expr_source(item),
             message: None,
         }
+    }
+}
+
+/// Whether a field's declared type is a `timestamp`, unwrapping one `optional`
+/// layer — the scope §4.4 gives a `$precision` override.
+fn is_timestamp_field(ty: &Type) -> bool {
+    match ty {
+        Type::Timestamp(_) => true,
+        Type::Optional(inner) => matches!(inner.as_ref(), Type::Timestamp(_)),
+        _ => false,
     }
 }

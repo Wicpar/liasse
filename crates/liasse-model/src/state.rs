@@ -12,7 +12,7 @@
 //! [`Resolver`](crate::resolve::Resolver) with a recursion guard.
 
 use liasse_diag::ByteSpan;
-use liasse_value::{RefTarget, StructType, Type};
+use liasse_value::{Precision, RefTarget, StructType, Type};
 
 use crate::names::DeclName;
 
@@ -51,6 +51,15 @@ pub struct ScalarField {
     pub checks: Vec<Check>,
     /// Whether `$unique: true` added a single-field candidate key.
     pub unique: bool,
+    /// The field-level timestamp precision override (§4.4), when the field
+    /// declared `$precision`. `None` means the field inherits the package
+    /// precision (`$semantics.timestamp_precision`, defaulting to `us`); `Some`
+    /// pins this field's stored `timestamp` values to the declared precision,
+    /// which the runtime applies at the field-write boundary (§22.5/§A.5)
+    /// regardless of the package precision. Recorded only when the field's base
+    /// type is a `timestamp` (§4.4 scopes the override to a timestamp field), so
+    /// it is `None` on every other field.
+    pub precision_override: Option<Precision>,
     /// The bytes of the member value.
     pub span: ByteSpan,
 }

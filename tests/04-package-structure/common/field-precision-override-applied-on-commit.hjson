@@ -1,0 +1,74 @@
+{
+  // §4.4: "A timestamp field MAY override the package precision." The override
+  // is not merely validated at load — it MUST be APPLIED to the stored value.
+  // This drives the field-write boundary (§22.5/§A.5): a now() instant is
+  // brought to the field's DECLARED precision on commit and read back at it, on
+  // both stores. The override is per-field: a sibling timestamp field with no
+  // $precision keeps the package precision, proving the override is scoped to
+  // the field that declares it rather than forced globally.
+  format: 1
+  name: field-precision-override-applied-on-commit
+  suite: scenario
+  spec: ["#package-structure", "§4.4", "#runtime", "§22.5", "§A.5"]
+  tags: ["time", "boundary"]
+  note: '''
+    §4.4 lets a timestamp field declare a coarser $precision than the package
+    default, and §22.5/§A.5 pin how a written timestamp is converted to a field's
+    declared precision: conversion to a coarser fractional-second precision rounds
+    a halfway value away from zero. The package here keeps the default micro-second
+    precision (timestamp_precision "us"), so the engine clock and now() stay at
+    micro-seconds; the field `at_s` overrides to whole-second precision. The clock
+    is advanced by exactly half a second (PT0.5S) from genesis, so now() =
+    1767225600.500000 s. Rescaling that to the field's declared second precision
+    lands exactly half-way and rounds away from zero to 1767225601 — NOT the raw
+    micro-second count 1767225600500000. The sibling field `at_us`, with no
+    override, records that raw micro-second count, so the two fields prove the
+    override is applied to the declaring field only. Every value is externally
+    deducible from SPEC.md text alone.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.field_precision@1.0.0"
+    // The package precision is the finer micro-second default; the field-level
+    // override must still take effect on top of it (§4.4).
+    $semantics: { timestamp_precision: "us" }
+    $model: {
+      events: {
+        $key: "id"
+        id: "text"
+        // §4.4 field-level override: this timestamp is stored at whole seconds.
+        at_s: { $type: "timestamp", $precision: "s", $default: "= now()" }
+        // No override: inherits the package micro-second precision.
+        at_us: { $type: "timestamp", $default: "= now()" }
+      }
+      $mut: {
+        mark: ".events + { id: @id }"
+      }
+      $public: {
+        events: {
+          $view: ".events { id, at_s, at_us }"
+          $mut: { mark: ".mark" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { advance_time: "PT0.5S" }
+    {
+      // now() = 1767225600.500000 s exactly. On commit, `at_s` is rescaled to its
+      // declared second precision (half rounds away from zero -> 1767225601);
+      // `at_us` keeps the package micro-second count 1767225600500000.
+      call: "public.events.mark"
+      args: { id: "e" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    // The committed row honors each field's declared precision, read back
+    // identically on both stores (§4.4/§22.5/§A.5).
+    { watch: "public.events", id: "w1", on: "c1",
+      expect_init: { value: [ { id: "e", at_s: "1767225601", at_us: "1767225600500000" } ] } }
+  ]
+}

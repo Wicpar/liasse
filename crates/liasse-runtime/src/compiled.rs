@@ -76,6 +76,12 @@ pub(crate) struct CompiledField {
     pub(crate) default: Option<(TypedExpr, SourceId)>,
     pub(crate) normalize: Option<(TypedExpr, SourceId)>,
     pub(crate) checks: Vec<CompiledCheck>,
+    /// The field-level `$precision` override (§4.4), carried from the model. When
+    /// `Some`, [`apply_precision`] pins this field's `timestamp` type to the
+    /// declared precision instead of the package default, so a coarser-precision
+    /// field is honored (not silently forced to the package precision). `None`
+    /// inherits the package `timestamp_precision`.
+    pub(crate) precision_override: Option<liasse_value::Precision>,
 }
 
 /// A compiled read-only computed value of a collection row (§5.2): its name and
@@ -405,10 +411,13 @@ impl Compiled {
         let root_ty = ExprType::Row(root);
         let auth = AuthBindings::derive(schema, model_doc);
         let mut collections = compile_collections(sources, schema, &root_ty, model_doc, hosts)?;
-        // §4.4: apply the declared `timestamp_precision` to every stored `timestamp`
-        // field type, so a seed or mutation decodes a bare wire count at the package
-        // precision (the model keeps the default microsecond precision on field
-        // types). Interval bounds and meter times then compare at the intended scale.
+        // §4.4: resolve the effective precision of every stored `timestamp` field
+        // — the field-level `$precision` override when declared, else the package
+        // `timestamp_precision` — onto the field type, so a seed or mutation
+        // decodes a bare wire count at the intended precision (the model keeps the
+        // default microsecond precision on field types). Interval bounds and meter
+        // times then compare at that scale, and the field-write boundary
+        // (§22.5/§A.5) rescales a written value to it.
         for collection in &mut collections {
             apply_precision(collection, precision);
         }
@@ -604,19 +613,24 @@ fn compile_on_delete(
     }
 }
 
-/// Rewrite every stored `timestamp` field type of `collection` (and its structs
-/// and nested collections) to the declared package precision (§4.4).
-fn apply_precision(collection: &mut CompiledCollection, precision: liasse_value::Precision) {
+/// Resolve every stored `timestamp` field type of `collection` (and its structs
+/// and nested collections) to its effective precision (§4.4): the field-level
+/// `$precision` override when the field declared one, else the `package`
+/// precision. A field without an override inherits the package precision exactly
+/// as before; an override pins the field to its declared precision regardless of
+/// the package default, so a coarser-precision field is no longer silently forced
+/// to the package precision (#37).
+fn apply_precision(collection: &mut CompiledCollection, package: liasse_value::Precision) {
     for field in &mut collection.fields {
-        field.ty = retimestamp(&field.ty, precision);
+        field.ty = retimestamp(&field.ty, field.precision_override.unwrap_or(package));
     }
     for structure in &mut collection.structs {
         for field in &mut structure.fields {
-            field.ty = retimestamp(&field.ty, precision);
+            field.ty = retimestamp(&field.ty, field.precision_override.unwrap_or(package));
         }
     }
     for child in &mut collection.children {
-        apply_precision(child, precision);
+        apply_precision(child, package);
     }
 }
 
@@ -918,6 +932,7 @@ fn compile_field(
                 default,
                 normalize,
                 checks,
+                precision_override: scalar.precision_override,
             }
         }
         Node::Reference(reference) => {
@@ -931,6 +946,7 @@ fn compile_field(
                 default: None,
                 normalize: None,
                 checks: Vec::new(),
+                precision_override: None,
             }
         }
         // §5.5: a `$set` of `$ref` carries per-member references (§5.6). The model
@@ -980,6 +996,7 @@ fn compile_field(
                 default: None,
                 normalize: None,
                 checks: Vec::new(),
+                precision_override: None,
             }
         }
         _ => return Ok(None),
