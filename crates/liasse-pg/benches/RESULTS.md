@@ -78,14 +78,22 @@ Scan`. No accidental seq-scan inflates a comparison.
 **Where the projection loses at scale — the real limitation:**
 
 At 1k every class is near-parity, so the projection is "free" on small data. At
-100k the **selective / structured read classes invert**: range scan **380×**,
-view **6.5×**, filter **5.9×**, join **4.2×**, aggregate **3.2×** slower than
-native PG. The cause is structural: the projection is a single key-ordered
-`BTreeMap` with **no secondary indexes**, so a filter/range/join/aggregate is an
-**O(n) full scan in Rust**, whereas PostgreSQL answers the same query with a
-B-tree range scan, hash join, or parallel scan. The range-scan case is the
-sharpest illustration — PG serves a small key range from its index in 217 µs while
-the projection walks all 100k rows in 83 ms.
+100k the **selective / structured read classes invert**: range scan **~340–380×**,
+view **~6×**, filter **~6×**, join **~4×**, aggregate **~3×** slower than native
+PG. Two distinct causes, with different fixes:
+
+1. **The store contract has no range/seek primitive.** `liasse-store` exposes only
+   `row` (point) and `scan` (whole collection). So a bounded key-range degrades to
+   *scan-the-whole-collection-then-filter* — O(N), ~83 ms — even though the
+   projection is a **key-ordered** `BTreeMap` that could serve a bounded range in
+   O(log N + k) directly (`BTreeMap::range`), and PG serves it from the `key_enc`
+   index in ~250 µs. This is the range-scan blowup, and it is the cheapest to fix:
+   it needs a **range/seek op on the contract + projection**, no PG round trip.
+2. **No secondary indexes for non-key predicates.** A non-key filter, join, or
+   aggregate is an O(N) scan-and-compute in Rust bounded by that same ~83 ms
+   whole-collection clone, whereas PostgreSQL does the set operation in-engine over
+   an index or a parallel scan. Fixing these needs either projection-side secondary
+   indexes or pushing the predicate down to the durable indexed PG tables.
 
 ## Takeaway
 
@@ -95,10 +103,13 @@ the projection walks all 100k rows in 83 ms.
 - It is **not a query engine**: selective filtered/range/join/aggregate reads over
   large collections do not get index acceleration and run several-fold (up to
   orders-of-magnitude) slower than native PostgreSQL at 100k.
-- The natural optimization, if large selective queries become a target, is to push
-  such predicates down to the **durable indexed PG tables** (which the
-  `index_coverage_pg` gate already keeps index-served) instead of scanning the
-  projection — a runtime read-planning change, not a schema change.
+- **Two graduated fixes, cheapest first**, if large selective reads become a target:
+  (1) add a **range/seek primitive** to the store contract so the key-ordered
+  projection serves bounded key-ranges directly — this alone removes the ~340×
+  range-scan case; (2) for non-key predicates, add projection-side secondary
+  indexes or push the predicate down to the **durable indexed PG tables** (which the
+  `index_coverage_pg` gate already keeps index-served). Both are runtime
+  read-planning changes, not schema changes.
 
 ## How to extend
 
