@@ -62,13 +62,13 @@ impl<S: InstanceStore> SurfaceHost<S> {
             CallOutcome::Committed { seq, response } => {
                 self.sweep_all()?;
                 Ok(SurfaceOutcome::Committed {
-                    frontier: self.engine.head(),
+                    frontier: self.engine.head()?,
                     commit: seq,
                     response,
                 })
             }
             CallOutcome::Unchanged { response } => Ok(SurfaceOutcome::Unchanged {
-                frontier: self.engine.head(),
+                frontier: self.engine.head()?,
                 response,
             }),
             CallOutcome::Rejected(rejection) => Ok(SurfaceOutcome::Rejected(rejection)),

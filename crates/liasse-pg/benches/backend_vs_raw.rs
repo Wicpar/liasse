@@ -61,7 +61,7 @@ fn backend_vs_raw(c: &mut Criterion) {
         }
     }
     let blob_digest = store.put_blob(b"benchmark blob payload").expect("put blob");
-    let head = store.head();
+    let head = store.head().expect("head");
 
     // An isolated twin schema for the raw-SQL commit baseline, so hand-issued
     // writes never perturb the store under test.

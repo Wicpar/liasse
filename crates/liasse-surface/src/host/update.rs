@@ -91,7 +91,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
     where
         F: FnOnce(&Engine<S>) -> Result<SurfaceRouter, SurfaceError>,
     {
-        let before = self.engine.head();
+        let before = self.engine.head()?;
         let report = match self.engine.update(target, &mut self.clock) {
             Ok(report) => report,
             Err(UpdateError::Rejected(rejection)) => return Ok(UpdateOutcome::Rejected(rejection)),
@@ -104,7 +104,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
         // the migrated model so resolution — and the completion barrier's authority
         // re-check below — see the target's surfaces, not the superseded ones.
         self.router = rebuild_router(&self.engine)?;
-        if self.engine.head() == before {
+        if self.engine.head()? == before {
             // §20: an accepted no-op produced no commit, so there is no outgoing
             // frontier for §12.2 to act on.
             return Ok(UpdateOutcome::Unchanged(report));

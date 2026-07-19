@@ -46,7 +46,7 @@ fn composite_key_seed_splits_components_and_orders_by_key() {
     }"#;
     let engine = engine("compkey", APP);
     let result = engine
-        .view_with("public.all", engine.head(), &ViewQuery::new())
+        .view_with("public.all", engine.head().unwrap(), &ViewQuery::new())
         .expect("view ok")
         .expect("view declared");
     let rows: Vec<(Option<String>, Option<String>)> = result
@@ -83,7 +83,7 @@ fn struct_seed_sorts_by_field_name_text_order() {
     }"#;
     let engine = engine("structsort", APP);
     let result = engine
-        .view_with("public.by_pt", engine.head(), &ViewQuery::new())
+        .view_with("public.by_pt", engine.head().unwrap(), &ViewQuery::new())
         .expect("view ok")
         .expect("view declared");
     let ids: Vec<Option<String>> = result.rows().iter().map(|row| text_field(row, "id")).collect();

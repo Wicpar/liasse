@@ -243,7 +243,7 @@ impl<S: InstanceStore> ConnectCore<S> {
             return Ok(Reply::Outcome(encode::unresolved()));
         };
         let scratch = format!("{}::fetch", token.as_str());
-        self.host.connect(&scratch);
+        self.host.connect(&scratch)?;
 
         // §10.4/§12.1 (GitHub #39): authorize the params-free target BEFORE the
         // closed-shape `$params` decode, so an existing ungranted role view (here,

@@ -104,7 +104,7 @@ fn scalar_subscription_is_a_live_reachable_path() {
     // count 2. This establishes that the scalar view is a genuine §12.2 live path —
     // the delta primitive below is the missing link, not the subscription itself.
     let mut host = count_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add(&mut host, "a");
 
     let init = match host.watch("c1", &SurfaceWatch::new(address("public.count"), "w1")).expect("watch") {
@@ -123,7 +123,7 @@ fn scalar_view_init_delivers_the_initial_count() {
     // §7.5: with one item, count(.items) == 1. §12.2: a subscription "begins with
     // a complete result" — the client must be able to render that initial value.
     let mut host = count_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add(&mut host, "a");
     let next = total(&host);
     assert_eq!(next.scalar(), Some(&count(1)), "count(.items) with one item is 1 (§7.5)");
@@ -144,7 +144,7 @@ fn scalar_view_patch_conveys_the_changed_count() {
     // "the client result MUST equal the authorized declared view at the new
     // frontier", i.e. the client must reach 2.
     let mut host = count_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add(&mut host, "a");
     let prev = total(&host);
     assert_eq!(prev.scalar(), Some(&count(1)), "count is 1 after the first insert (§7.5)");

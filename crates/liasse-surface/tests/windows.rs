@@ -112,7 +112,7 @@ fn occurrence(host: &SurfaceHost<MemoryStore>, id: &str) -> RowId {
 fn default_first_and_last_select_the_view_edges() {
     // §12.2: no anchor and `$first` both yield the first `n`; `$last` the last `n`.
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert_eq!(open_window(&mut host, "c1", "public.items", "w_default", Window::first(2)), ["a", "b"]);
     assert_eq!(open_window(&mut host, "c1", "public.items", "w_last", Window::last(2)), ["d", "e"]);
 }
@@ -122,7 +122,7 @@ fn last_window_tracks_new_tail_rows_and_first_window_does_not() {
     // A commit at the tail moves a `$last` window and leaves a `$first` window's
     // value unchanged (both stay live and advance through the commit).
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     open_window(&mut host, "c1", "public.items", "w_first", Window::first(2));
     open_window(&mut host, "c1", "public.items", "w_last", Window::last(2));
 
@@ -136,7 +136,7 @@ fn last_window_tracks_new_tail_rows_and_first_window_does_not() {
 fn concrete_anchor_becomes_the_first_row() {
     // §12.2: "A concrete anchor normally becomes the first row."
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let anchor = occurrence(&host, "c");
     assert_eq!(open_window(&mut host, "c1", "public.items", "w1", Window::anchored(2, anchor)), ["c", "d"]);
 }
@@ -147,7 +147,7 @@ fn slide_centers_the_anchor_within_the_view_bounds() {
     // size 3: centered on "c" gives [b, c, d]; on the first row "a" the view start
     // bounds it to [a, b, c].
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let mid = occurrence(&host, "c");
     let start = occurrence(&host, "a");
     assert_eq!(
@@ -166,7 +166,7 @@ fn zero_size_window_is_empty_and_stays_live() {
     // still-live window whose frontier still advances through same-connection
     // commits.
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert!(open_window(&mut host, "c1", "public.items", "w0", Window::first(0)).is_empty());
 
     host.call("c1", &call("public.items.add", [("id", text("f"))])).expect("add").commit().expect("commit");
@@ -179,7 +179,7 @@ fn anchor_with_no_current_occurrence_fails_to_open() {
     // window opens." A key never inserted identifies zero occurrences, so opening
     // fails — not an authorization refusal.
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let watch = SurfaceWatch::new(support::address("public.items"), "w1")
         .with_window(Window::anchored(2, RowId::keyed("zz")));
     match host.watch("c1", &watch).expect("watch") {
@@ -196,7 +196,7 @@ fn anchor_gap_persists_then_reanchors_on_reappearance() {
     // occurrence reappears the window anchors on it again. The `open` view drops a
     // completed row and readmits a reopened one.
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let anchor = occurrence(&host, "b");
     assert_eq!(open_window(&mut host, "c1", "public.open", "w1", Window::anchored(2, anchor)), ["b", "c"]);
 

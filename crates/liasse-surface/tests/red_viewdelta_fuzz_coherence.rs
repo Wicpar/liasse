@@ -140,7 +140,7 @@ fn ok(host: &mut SurfaceHost<MemoryStore>, c: &liasse_surface::SurfaceCall) -> b
 fn fuzz_ordered_patch_stays_coherent_over_many_random_commits() {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let mut host = fuzz_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
 
     let mut live: Vec<String> = Vec::new();
     let mut counter: u64 = 0;

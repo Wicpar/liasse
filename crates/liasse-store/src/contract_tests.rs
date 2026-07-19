@@ -53,21 +53,21 @@ pub fn serial_positions_gapless_and_monotone<F: StoreFactory>(
     factory: &mut F,
 ) -> Result<(), StoreError> {
     let mut store = factory.create(instance())?;
-    assert_eq!(store.head(), CommitSeq::GENESIS);
+    assert_eq!(store.head()?, CommitSeq::GENESIS);
 
     for expected in 1..=3i64 {
         let mut txn = store.begin();
         txn.insert(address("items", expected), payload("v"))?;
         let outcome = txn.commit()?;
-        assert_eq!(outcome, CommitOutcome::Committed(store.head()));
-        assert_eq!(i64::try_from(store.head().get()).ok(), Some(expected));
+        assert_eq!(outcome, CommitOutcome::Committed(store.head()?));
+        assert_eq!(i64::try_from(store.head()?.get()).ok(), Some(expected));
     }
 
     // An empty transition creates no commit and consumes no position.
     let txn = store.begin();
     assert!(txn.is_empty());
     assert_eq!(txn.commit()?, CommitOutcome::Unchanged);
-    assert_eq!(store.head().get(), 3);
+    assert_eq!(store.head()?.get(), 3);
     Ok(())
 }
 
@@ -83,7 +83,7 @@ pub fn commit_is_all_or_nothing<F: StoreFactory>(factory: &mut F) -> Result<(), 
     txn.commit()?;
 
     // One position for the whole staged set, all three rows visible.
-    assert_eq!(store.head().get(), 1);
+    assert_eq!(store.head()?.get(), 1);
     assert_eq!(store.scan(&collection("items"))?.len(), 3);
 
     // A conflicting op inside a transition errors; aborting keeps state intact.
@@ -94,7 +94,7 @@ pub fn commit_is_all_or_nothing<F: StoreFactory>(factory: &mut F) -> Result<(), 
         Err(StoreError::Conflict { .. })
     ));
     txn.abort();
-    assert_eq!(store.head().get(), 1);
+    assert_eq!(store.head()?.get(), 1);
     assert!(store.row(&address("items", 4))?.is_none());
     Ok(())
 }
@@ -112,7 +112,7 @@ pub fn aborted_staging_leaves_no_trace<F: StoreFactory>(
         assert!(txn.row(&address("items", 1))?.is_some());
         txn.abort();
     }
-    assert_eq!(store.head(), CommitSeq::GENESIS);
+    assert_eq!(store.head()?, CommitSeq::GENESIS);
     assert!(store.scan(&collection("items"))?.is_empty());
     assert!(store.log_from(CommitSeq::GENESIS)?.is_empty());
     Ok(())
@@ -133,7 +133,7 @@ pub fn abort_then_commit_keeps_positions_gapless<F: StoreFactory>(
     let mut txn = store.begin();
     txn.insert(address("items", 1), payload("base"))?;
     txn.commit()?;
-    let prev = store.head();
+    let prev = store.head()?;
     assert_eq!(prev.get(), 1);
 
     // Stage an insert and an update over the baseline row, then abort them all.
@@ -142,7 +142,7 @@ pub fn abort_then_commit_keeps_positions_gapless<F: StoreFactory>(
     txn.update(&address("items", 1), payload("aborted-edit"))?;
     txn.abort();
     // The abort neither advanced the head nor consumed a position.
-    assert_eq!(store.head(), prev);
+    assert_eq!(store.head()?, prev);
 
     // A different commit now takes exactly prev + 1 — the aborted transition did
     // not swallow a serial position.
@@ -150,11 +150,11 @@ pub fn abort_then_commit_keeps_positions_gapless<F: StoreFactory>(
     txn.insert(address("items", 3), payload("committed"))?;
     let outcome = txn.commit()?;
     assert_eq!(outcome, CommitOutcome::Committed(prev.next()));
-    assert_eq!(store.head(), prev.next());
+    assert_eq!(store.head()?, prev.next());
 
     // The aborted writes are absent from the new head snapshot: the aborted
     // insert never appears, and the aborted update never perturbed the baseline.
-    let head = store.snapshot(store.head())?;
+    let head = store.snapshot(store.head()?)?;
     assert!(head.row(&address("items", 2)).is_none(), "aborted insert must not surface");
     assert!(head.row(&address("items", 3)).is_some(), "the committed row must be present");
     let base = head
@@ -173,7 +173,7 @@ pub fn snapshot_at_frontier_ignores_later_commits<F: StoreFactory>(
     let mut txn = store.begin();
     txn.insert(address("items", 1), payload("first"))?;
     txn.commit()?;
-    let first = store.head();
+    let first = store.head()?;
 
     let mut txn = store.begin();
     txn.insert(address("items", 2), payload("second"))?;
@@ -183,12 +183,12 @@ pub fn snapshot_at_frontier_ignores_later_commits<F: StoreFactory>(
     assert!(at_first.row(&address("items", 1)).is_some());
     assert!(at_first.row(&address("items", 2)).is_none());
 
-    let at_head = store.snapshot(store.head())?;
+    let at_head = store.snapshot(store.head()?)?;
     assert!(at_head.row(&address("items", 2)).is_some());
 
     // A frontier past the head is a corruption error, never a silent read.
     assert!(matches!(
-        store.snapshot(store.head().next()),
+        store.snapshot(store.head()?.next()),
         Err(StoreError::Corruption { .. })
     ));
     Ok(())
@@ -278,7 +278,7 @@ pub fn replay_from_seq_reproduces<F: StoreFactory>(factory: &mut F) -> Result<()
     let live = store.scan(&collection("items"))?;
     assert_eq!(projected(&live), expected);
 
-    let replayed = Snapshot::replay(&log, store.head())?;
+    let replayed = Snapshot::replay(&log, store.head()?)?;
     assert_eq!(projected(&replayed.scan(&collection("items"))), expected);
 
     // Cold replay reproduces the exact incarnations the live path assigned.
@@ -299,7 +299,7 @@ pub fn blob_round_trips_by_digest<F: StoreFactory>(factory: &mut F) -> Result<()
 
     let bytes = b"the quick brown fox".to_vec();
     let digest = store.put_blob(&bytes)?;
-    assert!(store.has_blob(&digest));
+    assert!(store.has_blob(&digest)?);
     assert_eq!(store.get_blob(&digest)?.as_deref(), Some(bytes.as_slice()));
 
     // Same content, same digest, one stored copy.
@@ -318,8 +318,8 @@ pub fn metadata_persists_through_commit<F: StoreFactory>(
     factory: &mut F,
 ) -> Result<(), StoreError> {
     let mut store = factory.create(instance())?;
-    assert!(store.definition().is_none());
-    assert!(store.composition().is_none());
+    assert!(store.definition()?.is_none());
+    assert!(store.composition()?.is_none());
 
     let definition = DefinitionText::new("{ \"$liasse\": 1 }");
     let composition = Composition::new().with(
@@ -334,11 +334,11 @@ pub fn metadata_persists_through_commit<F: StoreFactory>(
     txn.set_definition(definition.clone());
     txn.set_composition(composition.clone());
     assert!(!txn.is_empty());
-    assert_eq!(txn.commit()?, CommitOutcome::Committed(store.head()));
+    assert_eq!(txn.commit()?, CommitOutcome::Committed(store.head()?));
 
-    assert_eq!(store.head().get(), 1);
-    assert_eq!(store.definition(), Some(&definition));
-    assert_eq!(store.composition(), Some(&composition));
+    assert_eq!(store.head()?.get(), 1);
+    assert_eq!(store.definition()?.as_ref(), Some(&definition));
+    assert_eq!(store.composition()?.as_ref(), Some(&composition));
     Ok(())
 }
 
@@ -352,16 +352,16 @@ pub fn history_points_map_to_positions<F: StoreFactory>(
     let mut txn = store.begin();
     txn.insert(address("items", 1), payload("a"))?;
     txn.commit()?;
-    let position = store.head();
+    let position = store.head()?;
 
     let point = HistoryPoint::new(LineageId::new("main"), PointId::new("p1"));
-    assert!(store.point_position(&point).is_none());
+    assert!(store.point_position(&point)?.is_none());
     store.record_point(position, point.clone())?;
-    assert_eq!(store.point_position(&point), Some(position));
+    assert_eq!(store.point_position(&point)?, Some(position));
 
     let future = HistoryPoint::new(LineageId::new("main"), PointId::new("p2"));
     assert!(matches!(
-        store.record_point(store.head().next(), future),
+        store.record_point(store.head()?.next(), future),
         Err(StoreError::Corruption { .. })
     ));
     Ok(())

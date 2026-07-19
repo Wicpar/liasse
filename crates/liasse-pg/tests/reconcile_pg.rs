@@ -298,7 +298,7 @@ fn removing_a_collection_leaves_no_orphan_rows() {
         txn.commit().expect("commit inserts");
 
         // Mark a history point before migrating.
-        let head = store.head();
+        let head = store.head().unwrap();
         store.record_point(head, point.clone()).expect("record point");
 
         // Migrate to a model without the `drop` collection: remove its rows.
@@ -356,5 +356,5 @@ fn removing_a_collection_leaves_no_orphan_rows() {
         2,
         "the retained log is readable after reopen"
     );
-    assert!(reopened.point_position(&point).is_some(), "history point resolvable after reopen");
+    assert!(reopened.point_position(&point).unwrap().is_some(), "history point resolvable after reopen");
 }

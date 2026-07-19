@@ -21,6 +21,11 @@ liasse-ident = { path = "../liasse-ident" }
 # natural fit — no runtime, no async colouring. `with-serde_json-1` gives JSONB
 # columns a `serde_json::Value` binding, matching liasse-value's wire form.
 postgres = { version = "0.19", features = ["with-serde_json-1"] }
+# The `&self` read-connection pool (§5 of DESIGN-pure-pg.md). `r2d2_postgres`
+# wraps the same synchronous `postgres` client above, so the pool colours nothing
+# async. Built by the factory after `reconcile`; unused until Phase 1 wires reads.
+r2d2 = { workspace = true }
+r2d2_postgres = { workspace = true }
 # The wire form of a stored value/address is a `serde_json::Value` tagged tree
 # (self-describing so the schema-free store can decode it back to a typed value).
 serde_json = { version = "1.0", features = ["arbitrary_precision"] }

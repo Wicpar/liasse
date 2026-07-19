@@ -63,7 +63,7 @@ fn temporal_expiry_removes_a_row_from_the_live_view_without_a_commit() {
     // interval half-open, so the row is inactive at and after `expires_at`. No
     // application commit is involved — only the clock moved.
     let mut host = offers_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     // Active until START + 1h.
     let expires = START + 3_600_000_000;
     host.call("c1", &call("public.offers.add", [("id", text("o1")), ("expires_at", at(expires))]))
@@ -86,7 +86,7 @@ fn temporal_advance_before_expiry_keeps_the_row() {
     // The half-open interval is [start, expires_at): the row is still active at any
     // instant strictly before `expires_at`, so a sub-expiry advance keeps it.
     let mut host = offers_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let expires = START + 3_600_000_000;
     host.call("c1", &call("public.offers.add", [("id", text("o1")), ("expires_at", at(expires))]))
         .expect("add")
@@ -106,7 +106,7 @@ fn session_expiry_at_an_advanced_instant_closes_a_role_subscription() {
     // authority (§12.2) and close it — the same authority-loss path a revoke takes,
     // reached here by the clock rather than a commit.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), liasse_surface::AuthResult::Bound));
     match host.watch("c1", &SurfaceWatch::new(address("member.tasks"), "m1")).expect("watch") {
         Subscription::Init(_) => {}

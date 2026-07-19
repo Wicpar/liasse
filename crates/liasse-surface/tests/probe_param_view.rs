@@ -112,7 +112,7 @@ fn parameterized_view_filters_by_supplied_arg() {
     // the result is the alice-owned row alone. This isolates the resume defect: a
     // fresh parameterized read already honors the argument.
     let mut host = probe_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let watch = SurfaceWatch::new(address("public.owned"), "w1").with_args(owner_arg("alice"));
     assert_eq!(open(&mut host, "c1", &watch), ["t1"], "the alice arg filters to alice's row");
 }
@@ -123,7 +123,7 @@ fn default_param_selects_the_declared_default_owner() {
     // provably different result set (t3, not t1) — so the alice filter carries
     // information that must survive a resume.
     let mut host = probe_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let watch = SurfaceWatch::new(address("public.owned"), "w1");
     assert_eq!(open(&mut host, "c1", &watch), ["t3"], "the default arg filters to anon's row");
 }
@@ -136,13 +136,13 @@ fn resume_of_a_parameterized_subscription_preserves_its_filter() {
     // default 'anon' result set (t3). The client re-supplies the same surface
     // arguments; the retained frontier alone does not encode them.
     let mut host = probe_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let watch = SurfaceWatch::new(address("public.owned"), "w1").with_args(owner_arg("alice"));
     assert_eq!(open(&mut host, "c1", &watch), ["t1"], "the opened stream is alice-filtered");
     let from = host.frontier("c1").expect("connection open");
     host.disconnect("c1");
 
-    host.connect("c2");
+    host.connect("c2").unwrap();
     let resume = SurfaceResume::new(address("public.owned"), "w2", from).with_args(owner_arg("alice"));
     match host.resume("c2", &resume).expect("resume") {
         Subscription::Init(result) => assert_eq!(

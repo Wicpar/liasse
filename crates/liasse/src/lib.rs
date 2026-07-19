@@ -121,7 +121,7 @@
 //!     .expect("the bindings validate against the model");
 //!
 //! let mut host = SurfaceHost::new(engine, router, clock);
-//! host.connect("client");
+//! host.connect("client").expect("the connection opens at the current head");
 //!
 //! // `watch public.tasks` — the open-tasks view is empty at genesis.
 //! let address = |dotted: &str| SurfaceAddress::parse(dotted).expect("a well-formed address");

@@ -43,10 +43,10 @@ fn normalization_is_applied_at_admission() {
 fn duplicate_key_is_rejected() {
     let mut engine = load("bank", BANK);
     assert!(matches!(open(&mut engine, "a1", "one@x.com"), CallOutcome::Committed { .. }));
-    let head = engine.head();
+    let head = engine.head().unwrap();
     let outcome = open(&mut engine, "a1", "two@x.com");
     assert_eq!(reason(&outcome), RejectionReason::DuplicateKey);
-    assert_eq!(engine.head(), head, "a rejected duplicate leaves no commit");
+    assert_eq!(engine.head().unwrap(), head, "a rejected duplicate leaves no commit");
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn assertion_failure_is_rejected() {
 fn multi_statement_program_is_all_or_nothing() {
     let mut engine = load("bank", BANK);
     assert!(matches!(open(&mut engine, "a1", "a@x.com"), CallOutcome::Committed { .. }));
-    let head = engine.head();
+    let head = engine.head().unwrap();
     let mut generator = generator();
     // bump's third statement asserts a cap the first two statements exceed:
     // balance and email writes must leave no trace.
@@ -121,7 +121,7 @@ fn multi_statement_program_is_all_or_nothing() {
         )
         .expect("call");
     assert_eq!(reason(&outcome), RejectionReason::Assertion);
-    assert_eq!(engine.head(), head, "the failed program created no commit");
+    assert_eq!(engine.head().unwrap(), head, "the failed program created no commit");
     let view = engine.view_at_head("all_accounts").expect("view").expect("declared");
     let row = &view.rows()[0];
     assert_eq!(row.field("balance"), Some(&int(0)), "balance untouched");
@@ -132,13 +132,13 @@ fn multi_statement_program_is_all_or_nothing() {
 fn no_change_returns_unchanged_without_a_commit() {
     let mut engine = load("bank", BANK);
     assert!(matches!(open(&mut engine, "a1", "a@x.com"), CallOutcome::Committed { .. }));
-    let head = engine.head();
+    let head = engine.head().unwrap();
     let mut generator = generator();
     let outcome = engine
         .call(&CallRequest::new("deposit").receiver(text("a1")).arg("amount", int(0)), &mut generator)
         .expect("call");
     assert!(matches!(outcome, CallOutcome::Unchanged { .. }), "a zero deposit changes nothing");
-    assert_eq!(engine.head(), head, "unchanged advances no frontier");
+    assert_eq!(engine.head().unwrap(), head, "unchanged advances no frontier");
 }
 
 #[test]

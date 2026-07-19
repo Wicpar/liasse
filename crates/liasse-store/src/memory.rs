@@ -134,8 +134,8 @@ impl InstanceStore for MemoryStore {
         &self.instance
     }
 
-    fn head(&self) -> CommitSeq {
-        self.head
+    fn head(&self) -> Result<CommitSeq, StoreError> {
+        Ok(self.head)
     }
 
     fn row(&self, address: &RowAddress) -> Result<Option<StoredRow>, StoreError> {
@@ -187,8 +187,8 @@ impl InstanceStore for MemoryStore {
         Ok(())
     }
 
-    fn point_position(&self, point: &HistoryPoint) -> Option<CommitSeq> {
-        self.points.get(point).copied()
+    fn point_position(&self, point: &HistoryPoint) -> Result<Option<CommitSeq>, StoreError> {
+        Ok(self.points.get(point).copied())
     }
 
     fn put_blob(&mut self, bytes: &[u8]) -> Result<Sha512, StoreError> {
@@ -206,16 +206,16 @@ impl InstanceStore for MemoryStore {
         Ok(self.blobs.get(digest).cloned())
     }
 
-    fn has_blob(&self, digest: &Sha512) -> bool {
-        self.blobs.contains_key(digest)
+    fn has_blob(&self, digest: &Sha512) -> Result<bool, StoreError> {
+        Ok(self.blobs.contains_key(digest))
     }
 
-    fn definition(&self) -> Option<&DefinitionText> {
-        self.definition.as_ref()
+    fn definition(&self) -> Result<Option<DefinitionText>, StoreError> {
+        Ok(self.definition.clone())
     }
 
-    fn composition(&self) -> Option<&Composition> {
-        self.composition.as_ref()
+    fn composition(&self) -> Result<Option<Composition>, StoreError> {
+        Ok(self.composition.clone())
     }
 }
 

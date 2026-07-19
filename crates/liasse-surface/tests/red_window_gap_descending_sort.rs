@@ -119,7 +119,7 @@ fn occurrence(host: &SurfaceHost<MemoryStore>, id: &str) -> RowId {
 #[test]
 fn absent_anchor_gap_respects_a_descending_sort_direction() {
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
 
     // The `open` view sorts DESCENDING by id: [e, d, c, b, a]. Open a size-2
     // window anchored on "c" — "a concrete anchor normally becomes the first

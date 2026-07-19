@@ -123,7 +123,7 @@ fn ids(rows: &[ViewRow]) -> Vec<String> {
 /// Open a `first(2)` window over the current `index`, returning the watch and its
 /// initial client-visible window (the prior state the next patch applies to).
 fn open_first2(host: &SurfaceHost<MemoryStore>) -> (Watch, Vec<ViewRow>) {
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let mut watch = Watch::windowed("index", WatchAuthz::public(), seq, Window::first(2));
     watch.init(index(host), seq).expect("the first(2) window opens");
     let prior = watch.window_rows().expect("windowed subscription has rows").to_vec();
@@ -134,7 +134,7 @@ fn open_first2(host: &SurfaceHost<MemoryStore>) -> (Watch, Vec<ViewRow>) {
 fn front_insert_keeps_the_window_bounded_and_evicts_the_pushed_row() {
     // Full view [b, c, d]; the client's first(2) window is [b, c].
     let mut host = windelta_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add(&mut host, "b");
     add(&mut host, "c");
     add(&mut host, "d");
@@ -146,7 +146,7 @@ fn front_insert_keeps_the_window_bounded_and_evicts_the_pushed_row() {
     // leave the client's window. This expectation is fixed by `$sort: [id]` and
     // `$size: 2`, not by any delta the runtime produced.
     add(&mut host, "a");
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let delta = watch.advance(index(&host), seq);
     let authorized = watch.window_rows().expect("windowed rows").to_vec();
     assert_eq!(ids(&authorized), ["a", "b"], "the recomputed authorized window is [a, b]");
@@ -168,7 +168,7 @@ fn front_insert_keeps_the_window_bounded_and_evicts_the_pushed_row() {
 fn tail_insert_that_leaves_the_window_unchanged_is_a_frontier_only_patch() {
     // Full view [a, b, c]; the client's first(2) window is [a, b].
     let mut host = windelta_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add(&mut host, "a");
     add(&mut host, "b");
     add(&mut host, "c");
@@ -179,7 +179,7 @@ fn tail_insert_that_leaves_the_window_unchanged_is_a_frontier_only_patch() {
     // first(2) window is STILL [a, b] — the commit does not touch the window. §12.2:
     // an unchanged client result is a frontier-only patch (empty op sequence).
     add(&mut host, "d");
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let delta = watch.advance(index(&host), seq);
     let authorized = watch.window_rows().expect("windowed rows").to_vec();
     assert_eq!(ids(&authorized), ["a", "b"], "the recomputed authorized window is unchanged [a, b]");

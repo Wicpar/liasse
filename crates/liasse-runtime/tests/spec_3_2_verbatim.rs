@@ -66,7 +66,7 @@ fn add_task(engine: &mut liasse_runtime::Engine<liasse_store::MemoryStore>, titl
 #[test]
 fn verbatim_add_task_commits_the_row_and_returns_the_spec_3_3_shape() {
     let mut engine = load("tasks-3-2", TASKS);
-    let head = engine.head();
+    let head = engine.head().unwrap();
 
     // §3.3: `add` with a whitespace-padded title commits a new row (not a
     // success-reported no-op) and advances the frontier.
@@ -75,7 +75,7 @@ fn verbatim_add_task_commits_the_row_and_returns_the_spec_3_3_shape() {
         matches!(outcome, CallOutcome::Committed { .. }),
         "the verbatim local-binding insert must COMMIT, not silently no-op: {outcome:?}"
     );
-    assert_ne!(engine.head(), head, "a committed insert advances the frontier");
+    assert_ne!(engine.head().unwrap(), head, "a committed insert advances the frontier");
 
     // §3.3: the call returns the created row, title normalized by `string.trim`.
     let response = outcome.response().expect("§3.3: `add` returns the created row").to_wire();

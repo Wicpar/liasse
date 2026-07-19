@@ -88,7 +88,7 @@ fn fuzz_host() -> SurfaceHost<MemoryStore> {
     let engine = Engine::load(store("winfuzz"), APP, &mut clock).expect("app loads");
     let router = fuzz_router(engine.model());
     let mut host = SurfaceHost::new(engine, router, clock);
-    host.connect("c1");
+    host.connect("c1").unwrap();
     host
 }
 
@@ -259,7 +259,7 @@ fn windowed_deltas_stay_coherent_over_many_random_commits() {
         Kind::Sliding { size: 4, anchor: "p1".into() },
     ];
 
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let mut watches: Vec<(Kind, Watch, Vec<ViewRow>)> = kinds
         .into_iter()
         .map(|kind| {
@@ -293,7 +293,7 @@ fn windowed_deltas_stay_coherent_over_many_random_commits() {
         }
 
         let full = open_view(&host);
-        let seq = host.engine().head();
+        let seq = host.engine().head().unwrap();
         for (kind, watch, prior) in &mut watches {
             let delta = watch.advance(full.clone(), seq);
             let client = apply_patch(prior, &delta);

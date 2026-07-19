@@ -30,8 +30,9 @@ pub trait InstanceStore {
     fn instance(&self) -> &InstanceId;
 
     /// The current head position: the highest committed serial position, or
-    /// [`CommitSeq::GENESIS`] before any commit.
-    fn head(&self) -> CommitSeq;
+    /// [`CommitSeq::GENESIS`] before any commit. Fallible: a backend that reads
+    /// the head from durable storage (PostgreSQL) can fail transport.
+    fn head(&self) -> Result<CommitSeq, StoreError>;
 
     /// Read one row of current committed state by its canonical address.
     fn row(&self, address: &RowAddress) -> Result<Option<StoredRow>, StoreError>;
@@ -57,8 +58,9 @@ pub trait InstanceStore {
     /// separate durable hook rather than part of a transition.
     fn record_point(&mut self, at: CommitSeq, point: HistoryPoint) -> Result<(), StoreError>;
 
-    /// The serial position a recorded history point names, if any.
-    fn point_position(&self, point: &HistoryPoint) -> Option<CommitSeq>;
+    /// The serial position a recorded history point names, if any. Fallible for
+    /// a backend that resolves the point from durable storage.
+    fn point_position(&self, point: &HistoryPoint) -> Result<Option<CommitSeq>, StoreError>;
 
     /// Store blob bytes content-addressed by their SHA-512 (§18), returning the
     /// computed digest. Idempotent: storing the same bytes twice is one blob.
@@ -68,14 +70,18 @@ pub trait InstanceStore {
     /// Fetch blob bytes by digest, if held.
     fn get_blob(&self, digest: &Sha512) -> Result<Option<Vec<u8>>, StoreError>;
 
-    /// Whether the store holds a blob for `digest`.
-    fn has_blob(&self, digest: &Sha512) -> bool;
+    /// Whether the store holds a blob for `digest`. Fallible for a backend that
+    /// probes durable storage.
+    fn has_blob(&self, digest: &Sha512) -> Result<bool, StoreError>;
 
-    /// The active definition text (D.4), if one has been recorded.
-    fn definition(&self) -> Option<&DefinitionText>;
+    /// The active definition text (D.4), if one has been recorded. Returned
+    /// owned: a pure-PostgreSQL backend holds no borrowable copy of durable
+    /// state, so it decodes and hands back a value per call.
+    fn definition(&self) -> Result<Option<DefinitionText>, StoreError>;
 
     /// The current composition of mounted children (§19.5), if recorded.
-    fn composition(&self) -> Option<&Composition>;
+    /// Returned owned, for the same reason as [`InstanceStore::definition`].
+    fn composition(&self) -> Result<Option<Composition>, StoreError>;
 }
 
 /// A staged state transition: the unit of atomic admission (§22.2).

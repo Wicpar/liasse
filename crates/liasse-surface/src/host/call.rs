@@ -18,7 +18,7 @@ use liasse_store::InstanceStore;
 use crate::address::{Authority, SurfaceAddress};
 use crate::authn::AuthContext;
 use crate::binding::CallBinding;
-use crate::connection::{Connection, DEFAULT_CONTEXT};
+use crate::connection::DEFAULT_CONTEXT;
 use crate::operation::{Dedup, OperationKey, RequestModel};
 use crate::outcome::{Denial, DenialReason, SurfaceOutcome};
 use crate::reader::EngineReader;
@@ -134,10 +134,10 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 Ok(SurfaceOutcome::Committed { frontier, commit: seq, response })
             }
             CallOutcome::Unchanged { response } => {
-                let frontier = self
-                    .connections
-                    .get(id)
-                    .map_or_else(|| self.engine.head(), Connection::frontier);
+                let frontier = match self.connections.get(id) {
+                    Some(connection) => connection.frontier(),
+                    None => self.engine.head()?,
+                };
                 Ok(SurfaceOutcome::Unchanged { frontier, response })
             }
             CallOutcome::Rejected(rejection) => Ok(SurfaceOutcome::Rejected(rejection)),
@@ -257,7 +257,9 @@ impl<S: InstanceStore> SurfaceHost<S> {
         call: &SurfaceCall,
         actor: &Value,
     ) -> Result<Option<ScopedReceiver>, Denial> {
-        let frontier = self.engine.head();
+        // A store fault reading the head fails closed to the uniform
+        // unresolvable-name denial, exactly as a `Denied`/`Err` resolution does.
+        let frontier = self.engine.head().map_err(|_| Self::unresolved_name())?;
         let resolution = self.engine.scoped_receiver(
             &call.address().surface_prefix(),
             frontier,
@@ -428,7 +430,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 Ok(triple) => triple,
                 Err(denial) => return Ok(Subscription::Denied(denial)),
             };
-        let frontier = self.connection_frontier(id);
+        let frontier = self.connection_frontier(id)?;
         let query = view_query(watch.args().clone(), context.as_ref(), watch.scope());
         self.open_subscription(
             id,
@@ -468,7 +470,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
         // original subscription was opened with (§10.1): re-binding them keeps a
         // parameterized subscription on its filtered result instead of collapsing
         // to declared parameter defaults (§8.3).
-        let frontier = self.connection_frontier(id);
+        let frontier = self.connection_frontier(id)?;
         // A resume reconstructs the same stream (§12.2); scoped-role resume carries
         // no scope key this phase, so an unscoped read is rebuilt (empty scope).
         let query = view_query(resume.args().clone(), context.as_ref(), &[]);
@@ -485,8 +487,11 @@ impl<S: InstanceStore> SurfaceHost<S> {
     }
 
     /// The current frontier of connection `id`, or the engine head if it is gone.
-    fn connection_frontier(&self, id: &str) -> liasse_runtime::CommitSeq {
-        self.connections.get(id).map_or_else(|| self.engine.head(), Connection::frontier)
+    fn connection_frontier(&self, id: &str) -> Result<liasse_runtime::CommitSeq, SurfaceError> {
+        match self.connections.get(id) {
+            Some(connection) => Ok(connection.frontier()),
+            None => Ok(self.engine.head()?),
+        }
     }
 
     /// Evaluate the resolved view at `frontier`, open a subscription (bounded by

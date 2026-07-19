@@ -211,7 +211,7 @@ fn apply_workload<S: InstanceStore>(store: &mut S) -> Sha512 {
     txn.commit().unwrap();
 
     // Record a history point at the current head — durable, folded on reopen.
-    let head = store.head();
+    let head = store.head().unwrap();
     store.record_point(head, point()).unwrap();
     digest
 }
@@ -233,7 +233,7 @@ fn ctext(row: &StoredRow) -> String {
 /// collection scan (order included), every frontier snapshot, the whole commit log,
 /// the blob, the definition, the composition, and the recorded history point.
 fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(a: &A, b: &B, digest: &Sha512, label: &str) {
-    assert_eq!(a.head(), b.head(), "{label}: head disagrees");
+    assert_eq!(a.head().unwrap(), b.head().unwrap(), "{label}: head disagrees");
 
     for address in touched() {
         let ra = a.row(&address).expect("row a");
@@ -260,7 +260,7 @@ fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(a: &A, b: &B, digest:
     }
 
     // Snapshot at every frontier from genesis to head folds the durable log.
-    let head = a.head().get();
+    let head = a.head().unwrap().get();
     for f in 0..=head {
         let frontier = CommitSeq::from_stored(f);
         let sa = a.snapshot(frontier).expect("snapshot a");
@@ -286,14 +286,14 @@ fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(a: &A, b: &B, digest:
     }
 
     // Durable metadata.
-    assert_eq!(a.definition(), b.definition(), "{label}: definition disagrees");
-    assert_eq!(a.composition(), b.composition(), "{label}: composition disagrees");
+    assert_eq!(a.definition().unwrap(), b.definition().unwrap(), "{label}: definition disagrees");
+    assert_eq!(a.composition().unwrap(), b.composition().unwrap(), "{label}: composition disagrees");
     assert_eq!(
-        a.point_position(&point()),
-        b.point_position(&point()),
+        a.point_position(&point()).unwrap(),
+        b.point_position(&point()).unwrap(),
         "{label}: history point position disagrees"
     );
-    assert!(a.has_blob(digest) && b.has_blob(digest), "{label}: blob presence disagrees");
+    assert!(a.has_blob(digest).unwrap() && b.has_blob(digest).unwrap(), "{label}: blob presence disagrees");
     assert_eq!(
         a.get_blob(digest).expect("blob a"),
         b.get_blob(digest).expect("blob b"),

@@ -80,7 +80,7 @@ use support::{generator, store};
 /// Read the first row of a projection view.
 fn first_row_fields(engine: &Engine<MemoryStore>, view: &str) -> Option<liasse_runtime::ViewRow> {
     engine
-        .view_with(view, engine.head(), &ViewQuery::new())
+        .view_with(view, engine.head().unwrap(), &ViewQuery::new())
         .expect("view ok")
         .and_then(|v| v.rows().first().cloned())
 }

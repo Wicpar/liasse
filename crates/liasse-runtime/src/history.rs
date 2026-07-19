@@ -230,7 +230,7 @@ impl<S: InstanceStore> Engine<S> {
         // artifact with that live data dropped — an [`EngineError::Unsupported`].
         let state = StateSection::capture(self.schema(), self.store()).map_err(EngineError::from)?;
         let definition = self
-            .definition_source()
+            .definition_source()?
             .ok_or_else(|| EngineError::Internal("instance has no active definition".to_owned()))?;
         // §19.2: the exported point is the engine's stable logical position, not
         // the volatile store commit seat, so a restore reproduces the same

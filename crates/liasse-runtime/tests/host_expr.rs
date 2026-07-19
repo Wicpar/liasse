@@ -149,14 +149,14 @@ fn nonconforming_return_in_an_expression_call_is_caught() {
     }"#;
     let mut engine = load(def).expect("load — the signature is well-typed; the drift is a run-time breach");
     let mut g = generator();
-    let head_before = engine.head();
+    let head_before = engine.head().unwrap();
     let request = CallRequest::new("add").arg("id", Value::Text(Text::new("r1"))).arg("x", int(3));
     let outcome = engine.call(&request, &mut g).expect("no engine fault");
     let CallOutcome::Rejected(rejection) = outcome else {
         panic!("expected the guard to reject a nonconforming return, got {outcome:?}");
     };
     assert_eq!(rejection.reason(), RejectionReason::Host);
-    assert_eq!(engine.head(), head_before, "the rejected insert commits nothing");
+    assert_eq!(engine.head().unwrap(), head_before, "the rejected insert commits nothing");
 }
 
 /// §16.2/§16.3: a *pure* host call in a `$view` (a read position) type-checks

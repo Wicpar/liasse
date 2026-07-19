@@ -77,7 +77,7 @@ fn omitted_optional_parameter_passes_through_and_clears_the_field() {
     // §8.3/§A.1: omitting the optional `@email` argument must not be rejected at
     // the surface; it binds `none` and clears the stored field (§8.5).
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert_eq!(email_of(&host, "p1"), Some(text("a@x")), "seed email is present");
 
     let outcome = host.call("c1", &call("p1", None)).expect("call");
@@ -93,7 +93,7 @@ fn supplied_optional_parameter_sets_the_field() {
     // The contrast case: supplying the argument stores the value, so the omitted
     // path is a genuine state change, not a no-op.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let outcome = host.call("c1", &call("p1", Some("b@y"))).expect("call");
     assert!(matches!(outcome, SurfaceOutcome::Committed { .. }), "supplied argument commits: {outcome:?}");
     assert_eq!(email_of(&host, "p1"), Some(text("b@y")), "the supplied argument was stored");
@@ -105,7 +105,7 @@ fn omitted_required_parameter_is_still_rejected() {
     // enforcement: `@id` is non-optional, so omitting it is rejected downstream
     // rather than silently defaulted.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let args = {
         let mut map = std::collections::BTreeMap::new();
         map.insert("email".to_owned(), text("b@y"));

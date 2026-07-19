@@ -21,7 +21,7 @@ fn task_count(host: &liasse_surface::SurfaceHost<liasse_store::MemoryStore>) -> 
 #[test]
 fn export_then_import_rolls_state_back() {
     let mut host = host();
-    host.connect("$default");
+    host.connect("$default").unwrap();
     add_task(&mut host, "$default", "first");
     let snapshot = host.export().expect("export");
     assert_eq!(host.classify(&snapshot).expect("classify"), ImportRelation::SamePoint);
@@ -42,7 +42,7 @@ fn export_then_import_rolls_state_back() {
 #[test]
 fn import_not_permitted_by_policy_leaves_state() {
     let mut host = host();
-    host.connect("$default");
+    host.connect("$default").unwrap();
     add_task(&mut host, "$default", "first");
     let snapshot = host.export().expect("export");
     add_task(&mut host, "$default", "second");
@@ -59,7 +59,7 @@ fn import_not_permitted_by_policy_leaves_state() {
 #[test]
 fn tampered_artifact_is_refused() {
     let mut host = host();
-    host.connect("$default");
+    host.connect("$default").unwrap();
     add_task(&mut host, "$default", "first");
     let mut bytes = host.export().expect("export");
     // Corrupt an interior byte so the container checksum no longer holds.
@@ -74,7 +74,7 @@ fn tampered_artifact_is_refused() {
 #[test]
 fn reconcile_keeps_local_only_insert() {
     let mut host = host();
-    host.connect("$default");
+    host.connect("$default").unwrap();
     add_task(&mut host, "$default", "first");
     let base = host.export().expect("export base");
     // The base and the incoming are the same boundary (only `first`); local state
@@ -93,7 +93,7 @@ fn reconcile_keeps_local_only_insert() {
 #[test]
 fn operator_bypasses_role_authentication() {
     let mut host = host();
-    host.connect("$default");
+    host.connect("$default").unwrap();
     let id = add_task(&mut host, "$default", "chore");
 
     // A plain client call to the member-role surface, unauthenticated, is denied.

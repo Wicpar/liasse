@@ -172,7 +172,7 @@ const SEED_ESCAPE_SURFACE: &str = r#"{
 fn seed_escape_is_observable_through_a_public_surface_view() {
     use liasse_runtime::ViewQuery;
     let engine = load("escape-surface", SEED_ESCAPE_SURFACE);
-    let head = engine.head();
+    let head = engine.head().unwrap();
     let result = engine
         .view_with("public.doc", head, &ViewQuery::new())
         .expect("surface view")

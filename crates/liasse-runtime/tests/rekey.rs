@@ -70,13 +70,13 @@ fn seed(engine: &mut liasse_runtime::Engine<MemoryStore>) {
 fn rekey_that_violates_a_referencing_row_check_is_rejected() {
     let mut engine = load("rekey-reject", REKEY);
     seed(&mut engine);
-    let head = engine.head();
+    let head = engine.head().unwrap();
 
     let outcome = call(&mut engine, "rekey_team", &[("old", "good"), ("new", "banned")]);
     let rejection = outcome.rejection().expect("a constraint failure rejects the rekey");
     assert_eq!(rejection.reason(), RejectionReason::Check, "the referencing row's check is what fails");
 
-    assert_eq!(engine.head(), head, "the rejected rekey left the frontier intact");
+    assert_eq!(engine.head().unwrap(), head, "the rejected rekey left the frontier intact");
     assert_eq!(member_team(&engine, "m1"), Some(text("good")), "the inbound ref was not rewritten");
 }
 

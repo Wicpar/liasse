@@ -42,11 +42,11 @@ fn add_task(engine: &mut liasse_runtime::Engine<liasse_store::MemoryStore>, titl
 #[test]
 fn local_binding_insert_stages_the_row_and_commits() {
     let mut engine = load("locals", LOCALS);
-    let head = engine.head();
+    let head = engine.head().unwrap();
     let outcome = add_task(&mut engine, "Ship the spec");
     // §8.4: the insert stages a row, so the call commits (not `unchanged`).
     assert!(matches!(outcome, CallOutcome::Committed { .. }), "the insert must commit a new row");
-    assert_ne!(engine.head(), head, "a committed insert advances the frontier");
+    assert_ne!(engine.head().unwrap(), head, "a committed insert advances the frontier");
     let view = engine.view_at_head("all_tasks").expect("view").expect("declared");
     assert_eq!(view.len(), 1, "exactly the one inserted row is committed");
 }

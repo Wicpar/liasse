@@ -231,7 +231,7 @@ fn apply_workload<S: InstanceStore>(store: &mut S) {
     store.put_blob(&[0u8, 1, 2, 0, 255]).expect("put blob with NUL bytes");
 
     // 11. History points at the current head and at an early frontier (§19.3).
-    let head = store.head();
+    let head = store.head().unwrap();
     store
         .record_point(head, HistoryPoint::new(LineageId::new("main"), PointId::new("head")))
         .expect("record head point");
@@ -310,7 +310,7 @@ fn scan_canonical_text<S: InstanceStore>(store: &S, c: &CollectionPath) -> Vec<S
 /// canonical text), every frontier snapshot, the whole commit log, every recorded
 /// history point, every stored blob, and the active definition + composition.
 fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(a: &A, b: &B, label: &str) {
-    assert_eq!(a.head(), b.head(), "{label}: head disagrees");
+    assert_eq!(a.head().unwrap(), b.head().unwrap(), "{label}: head disagrees");
 
     for address in touched() {
         let ra = a.row(&address).expect("row a");
@@ -337,7 +337,7 @@ fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(a: &A, b: &B, label: 
     }
 
     // Snapshot at every frontier from genesis to head folds the durable log.
-    let head = a.head().get();
+    let head = a.head().unwrap().get();
     for f in 0..=head {
         let frontier = CommitSeq::from_stored(f);
         let sa = a.snapshot(frontier).expect("snapshot a");
@@ -360,13 +360,13 @@ fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(a: &A, b: &B, label: 
 
     // History points: seed at frontier 3, and head at the current head.
     for (point, at) in recorded_points() {
-        assert_eq!(a.point_position(&point), Some(at), "{label}: point_position a");
-        assert_eq!(b.point_position(&point), Some(at), "{label}: point_position b");
+        assert_eq!(a.point_position(&point).unwrap(), Some(at), "{label}: point_position a");
+        assert_eq!(b.point_position(&point).unwrap(), Some(at), "{label}: point_position b");
     }
     let head_point = HistoryPoint::new(LineageId::new("main"), PointId::new("head"));
     assert_eq!(
-        a.point_position(&head_point),
-        b.point_position(&head_point),
+        a.point_position(&head_point).unwrap(),
+        b.point_position(&head_point).unwrap(),
         "{label}: head point_position disagrees"
     );
 
@@ -379,15 +379,15 @@ fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(a: &A, b: &B, label: 
             liasse_value::Sha512::parse(&data_encoding::HEXLOWER.encode(&h.finalize()))
                 .expect("digest")
         };
-        assert!(a.has_blob(&digest), "{label}: blob missing from a");
-        assert!(b.has_blob(&digest), "{label}: blob missing from b");
+        assert!(a.has_blob(&digest).unwrap(), "{label}: blob missing from a");
+        assert!(b.has_blob(&digest).unwrap(), "{label}: blob missing from b");
         assert_eq!(a.get_blob(&digest).unwrap(), Some(payload.clone()), "{label}: blob bytes a");
         assert_eq!(b.get_blob(&digest).unwrap(), Some(payload), "{label}: blob bytes b");
     }
 
     // Definition + composition (§19.1/§19.5), with a `U+0000` woven through both.
-    assert_eq!(a.definition(), b.definition(), "{label}: definition disagrees");
-    assert_eq!(a.composition(), b.composition(), "{label}: composition disagrees");
+    assert_eq!(a.definition().unwrap(), b.definition().unwrap(), "{label}: definition disagrees");
+    assert_eq!(a.composition().unwrap(), b.composition().unwrap(), "{label}: composition disagrees");
 }
 
 /// The externally-derived B.4 field-name scan order of `plots`: fields `{r, c}`

@@ -123,7 +123,7 @@ fn reopen_rebuilds_state_from_durable_tables() {
         txn.commit().expect("commit");
         let digest = store.put_blob(b"durable bytes").expect("blob");
 
-        let head = store.head();
+        let head = store.head().unwrap();
         let projected: Vec<(RowAddress, Value)> = store
             .scan(&items)
             .expect("scan")
@@ -135,7 +135,7 @@ fn reopen_rebuilds_state_from_durable_tables() {
     };
 
     let reopened = factory.reopen(instance.clone()).expect("reopen");
-    assert_eq!(reopened.head(), head, "head survives a reopen");
+    assert_eq!(reopened.head().unwrap(), head, "head survives a reopen");
     let after: Vec<(RowAddress, Value)> = reopened
         .scan(&items)
         .expect("scan")
@@ -148,5 +148,5 @@ fn reopen_rebuilds_state_from_durable_tables() {
         Some(b"durable bytes".as_slice()),
         "blob bytes survive a reopen"
     );
-    assert!(reopened.definition().is_some(), "definition survives a reopen");
+    assert!(reopened.definition().unwrap().is_some(), "definition survives a reopen");
 }

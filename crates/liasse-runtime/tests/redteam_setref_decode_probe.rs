@@ -105,14 +105,14 @@ fn composite_object_operand_add_is_planner_visible() {
     // The stored member must be the composite Ref, exactly as the add-by-Ref form.
     assert_eq!(reviewers(&e), vec![composite_ref("acme", "ann")], "object operand decodes to a composite Ref");
 
-    let head = e.head();
+    let head = e.head().unwrap();
     let outcome = call(&mut e, &CallRequest::new("delete_account").arg("org", text("acme")).arg("user", text("ann")));
     assert_eq!(
         outcome.rejection().map(|r| r.reason()),
         Some(RejectionReason::Restricted),
         "the object-operand-added membership must restrict deletion (§21.1); got {outcome:?}"
     );
-    assert_eq!(e.head(), head, "a blocked delete leaves no commit");
+    assert_eq!(e.head().unwrap(), head, "a blocked delete leaves no commit");
 }
 
 /// §5.5/§5.6: removing a present composite membership by a bare OBJECT operand
@@ -183,14 +183,14 @@ fn struct_key_operand_add_is_planner_visible() {
 
     assert_eq!(reviewers(&e), vec![struct_ref("acme", "ann")], "struct key operand decodes to a struct-keyed Ref");
 
-    let head = e.head();
+    let head = e.head().unwrap();
     let outcome = call(&mut e, &CallRequest::new("delete_account").arg("acct", struct_key("acme", "ann")));
     assert_eq!(
         outcome.rejection().map(|r| r.reason()),
         Some(RejectionReason::Restricted),
         "the struct-key-added membership must restrict deletion (§21.1); got {outcome:?}"
     );
-    assert_eq!(e.head(), head, "a blocked delete leaves no commit");
+    assert_eq!(e.head().unwrap(), head, "a blocked delete leaves no commit");
 }
 
 /// §5.5/§5.6: removing a present struct-keyed membership by its bare struct key

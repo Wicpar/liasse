@@ -96,7 +96,7 @@ fn nul_definition_source_agrees_across_backends_and_reopen() {
         txn.set_definition(def());
         txn.commit().expect("mem commit");
     }
-    let expected = mem.definition().cloned();
+    let expected = mem.definition().unwrap();
     assert_eq!(expected.as_ref().map(DefinitionText::source), Some(source), "reference keeps source");
 
     let handle = support::acquire();
@@ -108,10 +108,10 @@ fn nul_definition_source_agrees_across_backends_and_reopen() {
         let mut txn = pg.begin();
         txn.set_definition(def());
         txn.commit().expect("pg commit must accept NUL/backslash definition source");
-        assert_eq!(pg.definition().cloned(), expected, "pg live agrees with the reference");
+        assert_eq!(pg.definition().unwrap(), expected, "pg live agrees with the reference");
     }
     let reopened = pg_factory.reopen(instance).expect("reopen");
-    assert_eq!(reopened.definition().cloned(), expected, "pg rebuilds the source verbatim on reopen");
+    assert_eq!(reopened.definition().unwrap(), expected, "pg rebuilds the source verbatim on reopen");
 }
 
 // --------------------------------------------------------------------------
@@ -132,7 +132,7 @@ fn nul_history_point_agrees_across_backends_and_reopen() {
         }
     };
     mem.record_point(at, point()).expect("mem record");
-    let expected = mem.point_position(&point());
+    let expected = mem.point_position(&point()).unwrap();
     assert_eq!(expected, Some(at), "reference records the NUL-bearing point");
 
     let handle = support::acquire();
@@ -150,10 +150,10 @@ fn nul_history_point_agrees_across_backends_and_reopen() {
             }
         };
         pg.record_point(pat, point()).expect("pg record_point must accept a NUL-bearing point");
-        assert_eq!(pg.point_position(&point()), Some(pat), "pg live agrees with the reference");
+        assert_eq!(pg.point_position(&point()).unwrap(), Some(pat), "pg live agrees with the reference");
     }
     let reopened = pg_factory.reopen(instance).expect("reopen");
-    assert_eq!(reopened.point_position(&point()), expected, "pg rebuilds the point verbatim on reopen");
+    assert_eq!(reopened.point_position(&point()).unwrap(), expected, "pg rebuilds the point verbatim on reopen");
 }
 
 // --------------------------------------------------------------------------

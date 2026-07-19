@@ -106,13 +106,14 @@ impl<S: InstanceStore> Runtime<S> {
     /// executor resolves a step's connection against its own open set, which spans
     /// the whole run; a freshly activated sandbox instance has not opened that
     /// connection yet, so open it lazily at the head frontier on first use.
-    fn ensure_connection(&mut self, connection: &str) {
+    fn ensure_connection(&mut self, connection: &str) -> Result<(), AdapterError> {
         if !self.open_connections.insert(connection.to_owned()) {
-            return;
+            return Ok(());
         }
         if let State::Loaded(loaded) = &mut self.state {
-            loaded.host.connect(connection.to_owned());
+            loaded.host.connect(connection.to_owned()).map_err(host_fault)?;
         }
+        Ok(())
     }
 
     /// Replace this instance's loaded stack, dropping any prior connections — used
@@ -129,13 +130,14 @@ impl<S: InstanceStore> Runtime<S> {
 
     /// Re-open every tracked connection on the current host — a §9.2 lifecycle
     /// load rebuilds the host but does not drop clients.
-    fn reopen_connections(&mut self) {
+    fn reopen_connections(&mut self) -> Result<(), AdapterError> {
         let ids: Vec<String> = self.open_connections.iter().cloned().collect();
         if let State::Loaded(loaded) = &mut self.state {
             for id in ids {
-                loaded.host.connect(id);
+                loaded.host.connect(id).map_err(host_fault)?;
             }
         }
+        Ok(())
     }
 
     /// Open subscription `request` on its connection over the current host,
@@ -143,7 +145,7 @@ impl<S: InstanceStore> Runtime<S> {
     /// return the observed init. Shared by the first `watch` and a rebuild replay.
     fn open_watch(&mut self, request: &WatchRequest) -> Result<Observation, AdapterError> {
         let connection = connection_name(request.on.as_ref());
-        self.ensure_connection(&connection);
+        self.ensure_connection(&connection)?;
         let watch_id = request.id.to_string();
         let (observation, singular) = {
             let loaded = self.loaded()?;
@@ -223,7 +225,7 @@ impl<S: InstanceStore> Runtime<S> {
         let (mut engine, router, clock) = loaded.host.into_parts();
         let result = mutate(&mut engine);
         self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs, blob_hosts });
-        self.reopen_connections();
+        self.reopen_connections()?;
         self.replay_watches();
         Ok(result)
     }
@@ -339,7 +341,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         let connection = request.connection.to_string();
         self.open_connections.insert(connection.clone());
         let loaded = self.loaded()?;
-        loaded.host.connect(connection.clone());
+        loaded.host.connect(connection.clone()).map_err(host_fault)?;
         // §11.4: bind the authenticated context on the connection so later role
         // calls run under it, and reflect the authentication outcome so a
         // `connect { authenticate }` step asserting `ok`/`denied` observes the real
@@ -368,7 +370,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
 
     fn call(&mut self, request: CallRequest) -> Result<Observation, AdapterError> {
         let connection = connection_name(request.on.as_ref());
-        self.ensure_connection(&connection);
+        self.ensure_connection(&connection)?;
         // §11.4: a per-request authenticator selection on the call overrides the
         // connection's stored context for this one request; its authenticator name
         // is part of the §12.3 operation scope, so capture it before the borrow.
@@ -628,7 +630,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
     }
 
     fn manifest(&mut self, connection: &str, context: Option<&str>) -> Result<Observation, AdapterError> {
-        self.ensure_connection(connection);
+        self.ensure_connection(connection)?;
         let loaded = self.loaded()?;
         let surfaces = loaded.host.manifest(connection, context).map_err(host_fault)?;
         let surfaces: Vec<serde_json::Value> =
@@ -643,7 +645,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         watch_id: &str,
         from: CommitSeq,
     ) -> Result<Observation, AdapterError> {
-        self.ensure_connection(connection);
+        self.ensure_connection(connection)?;
         let loaded = self.loaded()?;
         let parsed = SurfaceAddress::parse(address)
             .map_err(|err| AdapterError::Host(format!("malformed resume address `{address}`: {err}")))?;
@@ -659,7 +661,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         payload: &serde_json::Value,
         context: Option<&str>,
     ) -> Result<Observation, AdapterError> {
-        self.ensure_connection(connection);
+        self.ensure_connection(connection)?;
         let loaded = self.loaded()?;
         let Some(mut request) = super::resolve_authenticate(loaded, payload) else {
             // A selection that resolves no wired role leaves the context unbound;
@@ -739,7 +741,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
 
     fn blob_put(&mut self, spec: &super::blobs::BlobPutSpec) -> Result<Observation, AdapterError> {
         use super::blobs::Staged;
-        self.ensure_connection(&spec.connection);
+        self.ensure_connection(&spec.connection)?;
         // §18.7: stage and verify the blob parameter into the (driver-owned) blob
         // host, building the admission call with the verified descriptor bound.
         let staged = match &mut self.state {
@@ -770,7 +772,7 @@ impl<S: InstanceStore> Instance for Runtime<S> {
     }
 
     fn blob_get(&mut self, spec: &super::blobs::BlobGetSpec) -> Result<Observation, AdapterError> {
-        self.ensure_connection(&spec.connection);
+        self.ensure_connection(&spec.connection)?;
         match &mut self.state {
             State::Loaded(loaded) => super::blobs::get(loaded, spec),
             State::Failed(message) => Err(AdapterError::LoadFailed(message.clone())),

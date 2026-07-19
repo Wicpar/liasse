@@ -77,7 +77,7 @@ fn router_refuses_a_binding_onto_an_undeclared_mutation() {
 #[test]
 fn manifest_lists_public_and_granted_role_surfaces() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), liasse_surface::AuthResult::Bound));
     let surfaces = host.manifest("c1", None).expect("manifest");
     assert!(surfaces.contains(&"public.tasks".to_owned()), "public surfaces are listed: {surfaces:?}");
@@ -88,7 +88,7 @@ fn manifest_lists_public_and_granted_role_surfaces() {
 fn manifest_omits_role_surfaces_without_membership() {
     // With no authenticated context, only public surfaces appear.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let surfaces = host.manifest("c1", None).expect("manifest");
     assert!(surfaces.iter().all(|surface| surface.starts_with("public.")), "no role surface without a context: {surfaces:?}");
 }

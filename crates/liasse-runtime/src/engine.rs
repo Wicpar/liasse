@@ -318,9 +318,10 @@ impl<S: InstanceStore> Engine<S> {
         &mut self.cursor
     }
 
-    /// The active definition text (D.4).
-    pub(crate) fn definition_source(&self) -> Option<String> {
-        self.store.definition().map(|d| d.source().to_owned())
+    /// The active definition text (D.4). Fallible: reading it from the store can
+    /// fail transport on a durable backend (§3 of DESIGN-pure-pg.md).
+    pub(crate) fn definition_source(&self) -> Result<Option<String>, EngineError> {
+        Ok(self.store.definition()?.map(|d| d.source().to_owned()))
     }
 
     pub(crate) fn compiled(&self) -> &Compiled {
@@ -401,7 +402,7 @@ impl<S: InstanceStore> Engine<S> {
         txn.set_definition(DefinitionText::new(definition.to_owned()));
         let seq = match txn.commit()? {
             CommitOutcome::Committed(seq) => seq,
-            CommitOutcome::Unchanged => self.store.head(),
+            CommitOutcome::Unchanged => self.store.head()?,
         };
         self.model = model;
         self.compiled = compiled;
@@ -446,7 +447,7 @@ impl<S: InstanceStore> Engine<S> {
         stage(&mut txn, changes)?;
         let seq = match txn.commit()? {
             CommitOutcome::Committed(seq) => seq,
-            CommitOutcome::Unchanged => self.store.head(),
+            CommitOutcome::Unchanged => self.store.head()?,
         };
         // §19.9: record the accepted result as a fresh point on a new lineage
         // branched from the prior head, so a subsequent export names the
@@ -489,7 +490,7 @@ impl<S: InstanceStore> Engine<S> {
                 self.cursor.advance();
                 seq
             }
-            CommitOutcome::Unchanged => self.store.head(),
+            CommitOutcome::Unchanged => self.store.head()?,
         };
         self.model = target.model;
         self.compiled = target.compiled;
@@ -498,10 +499,13 @@ impl<S: InstanceStore> Engine<S> {
         Ok(seq)
     }
 
-    /// The current head serial position.
-    #[must_use]
-    pub fn head(&self) -> CommitSeq {
-        self.store.head()
+    /// The current head serial position. Fallible: a durable backend reads the
+    /// head with a query that can fail transport (§3 of DESIGN-pure-pg.md).
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if the store cannot read its head.
+    pub fn head(&self) -> Result<CommitSeq, EngineError> {
+        Ok(self.store.head()?)
     }
 
     /// The current virtual-clock instant (§14, A.5). Every `now()` an admission
@@ -971,7 +975,7 @@ impl<S: InstanceStore> Engine<S> {
                 self.cursor.advance();
                 seq
             }
-            CommitOutcome::Unchanged => self.store.head(),
+            CommitOutcome::Unchanged => self.store.head()?,
         };
         Ok(CallOutcome::Committed { seq, response })
     }
@@ -1189,7 +1193,7 @@ impl<S: InstanceStore> Engine<S> {
     /// Evaluate a named view against current committed state (the head frontier)
     /// with no parameters or actor identity ([`Engine::view`]).
     pub fn view_at_head(&self, name: &str) -> Result<Option<ViewResult>, EngineError> {
-        self.view(name, self.store.head())
+        self.view(name, self.store.head()?)
     }
 
     /// Evaluate an `$expose`d interface's `$view` against this instance at head
@@ -1233,7 +1237,7 @@ impl<S: InstanceStore> Engine<S> {
         let Some(expr) = self.compiled.exposed_view(interface) else {
             return Ok(None);
         };
-        let snapshot = self.store.snapshot(self.store.head())?;
+        let snapshot = self.store.snapshot(self.store.head()?)?;
         let schema = Schema::new(&self.model);
         let prospective = Prospective::from_snapshot(&snapshot, schema);
         let keyrings = self.keyring_snapshots();

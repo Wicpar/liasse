@@ -30,7 +30,7 @@ fn call_denial(outcome: &SurfaceOutcome) -> DenialReason {
 #[test]
 fn authenticated_member_call_commits() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let id = add_task(&mut host, "c1", "chore");
 
     assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), AuthResult::Bound));
@@ -46,7 +46,7 @@ fn login_issues_immediately_usable_session() {
     // usable at once. Here the login inserts a session; a follow-up request
     // authenticates against it.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let open = host
         .call(
             "c1",
@@ -67,14 +67,14 @@ fn login_issues_immediately_usable_session() {
 #[test]
 fn expired_session_is_denied() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert_eq!(auth_denial(&authenticate_member(&mut host, "c1", "s_expired")), DenialReason::SessionInvalid);
 }
 
 #[test]
 fn unknown_session_is_denied() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert_eq!(auth_denial(&authenticate_member(&mut host, "c1", "s_missing")), DenialReason::SessionInvalid);
 }
 
@@ -83,7 +83,7 @@ fn session_expiry_crosses_at_the_clock() {
     // A live session admits a call; once the virtual clock passes its expiry the
     // very next request is denied (§11.7 expiry via the engine clock).
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let id = add_task(&mut host, "c1", "t");
     assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), AuthResult::Bound));
 
@@ -95,7 +95,7 @@ fn session_expiry_crosses_at_the_clock() {
 #[test]
 fn revoked_session_is_denied_at_next_request() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let id = add_task(&mut host, "c1", "t");
     assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), AuthResult::Bound));
 
@@ -114,7 +114,7 @@ fn disabled_account_fails_role_membership() {
     // (`Unresolved`), indistinguishable from a name that does not exist, so a
     // non-member cannot enumerate the role's surfaces.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let id = add_task(&mut host, "c1", "t");
     assert!(matches!(authenticate_member(&mut host, "c1", "s_bob"), AuthResult::Bound), "bob authenticates");
     let outcome = host.call("c1", &call("member.tasks.complete", [("id", id), ("title", text("x"))])).expect("call");
@@ -126,7 +126,7 @@ fn role_rejects_unaccepted_authenticator() {
     // The member role accepts only `token`; a per-request `api` selection is
     // refused before any credential is resolved (§11.4).
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let id = add_task(&mut host, "c1", "t");
     let request = call("member.tasks.complete", [("id", id), ("title", text("x"))])
         .with_auth(AuthSelection::new("api", Credential::new(text("alice"))));
@@ -138,7 +138,7 @@ fn role_rejects_unaccepted_authenticator() {
 fn forged_credential_fails_verification() {
     // A non-token credential fails `$verify` before any row is resolved (§11.3).
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let request = Authenticate::new("member", AuthSelection::new("token", Credential::new(Value::Bool(true))));
     let result = host.authenticate("c1", &request).expect("authenticate");
     assert_eq!(auth_denial(&result), DenialReason::Unverified);
@@ -148,7 +148,7 @@ fn forged_credential_fails_verification() {
 fn session_continues_across_requests() {
     // One authentication admits repeated requests (§11.8 continued access).
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let first = add_task(&mut host, "c1", "a");
     let second = add_task(&mut host, "c1", "b");
     assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), AuthResult::Bound));
@@ -163,7 +163,7 @@ fn one_connection_multiplexes_two_sessions() {
     // §11.8: a single connection holds several credentials at once, each call
     // selecting its own context.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let id = add_task(&mut host, "c1", "t");
 
     assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), AuthResult::Bound));

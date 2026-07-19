@@ -103,7 +103,7 @@ fn ref_typed_member_holds_the_role() {
     // Membership compares the actor's row identity (§5.6 application key), so the
     // ref member must match the scalar actor key `alice` and the call must commit.
     let mut host = probe_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let auth = host
         .authenticate(
             "c1",
@@ -128,7 +128,7 @@ fn scalar_member_holds_the_role_control() {
     // resolution, and the role wiring are all correct, and isolating the failure
     // above to the ref-vs-scalar membership comparison alone.
     let mut host = probe_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let auth = host
         .authenticate(
             "c1",

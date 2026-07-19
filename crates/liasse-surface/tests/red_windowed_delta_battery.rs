@@ -68,7 +68,7 @@ fn open_host() -> SurfaceHost<MemoryStore> {
     let engine = Engine::load(store("winbattery"), APP, &mut clock).expect("app loads");
     let router = router(engine.model());
     let mut host = SurfaceHost::new(engine, router, clock);
-    host.connect("c1");
+    host.connect("c1").unwrap();
     host
 }
 
@@ -160,7 +160,7 @@ fn step(
     prior: &[ViewRow],
     expected: &[&str],
 ) -> Vec<ViewRow> {
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let delta = watch.advance(open_view(host), seq);
     let client = apply_patch(prior, &delta);
     let tracked = watch.window_rows().expect("windowed rows").to_vec();
@@ -185,7 +185,7 @@ fn open_first(host: &SurfaceHost<MemoryStore>, size: usize) -> (Watch, Vec<ViewR
 }
 
 fn open_with(host: &SurfaceHost<MemoryStore>, window: Window) -> (Watch, Vec<ViewRow>) {
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let mut watch = Watch::windowed("open", WatchAuthz::public(), seq, window);
     watch.init(open_view(host), seq).expect("window opens");
     let prior = watch.window_rows().expect("windowed rows").to_vec();
@@ -235,7 +235,7 @@ fn update_of_the_last_window_row_is_an_in_place_update() {
     assert_eq!(labels(&prior), ["x", "x", "x"]);
 
     relabel(&mut host, "c", "Z");
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let delta = watch.advance(open_view(&host), seq);
     assert!(
         matches!(&delta, ViewDelta::Patch(ops) if ops.len() == 1 && matches!(ops[0], PatchOp::Update { .. })),
@@ -266,7 +266,7 @@ fn boundary_tie_insertion_membership_is_decided_by_the_rowid_tiebreak() {
     // Insert "z" at rank 1: id order b < m < q < z, so "z" sorts AFTER the boundary
     // and does NOT enter — the window is unchanged, a frontier-only (empty) patch.
     add(&mut host, "z", 1);
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let delta = watch.advance(open_view(&host), seq);
     assert_eq!(delta, ViewDelta::Patch(vec![]), "a tie sorting after the boundary is frontier-only, got {delta:?}");
     let client = apply_patch(&prior, &delta);
@@ -302,7 +302,7 @@ fn move_within_the_window_reorders_two_in_window_rows() {
 
     // Move "c" to rank 3 (between a=2 and b=4). Full [a, c, b, d, e]; first(4) = [a, c, b, d].
     setrank(&mut host, "c", 3);
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let delta = watch.advance(open_view(&host), seq);
     assert!(
         matches!(&delta, ViewDelta::Patch(ops) if ops.iter().all(|o| matches!(o, PatchOp::Move { .. }))),
@@ -365,7 +365,7 @@ fn duplicate_advance_does_not_double_apply() {
 
     // A front insert evicts "b": window -> [a0, ...]. Add "aa" at rank 0 (id a < aa).
     add(&mut host, "aa", 0);
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let first = watch.advance(open_view(&host), seq);
     let after_first = apply_patch(&prior, &first);
     assert_eq!(ids(&after_first), ["a", "aa"]);
@@ -437,7 +437,7 @@ fn sliding_absent_anchor_gap_is_first_rows_at_or_after_documented_seam() {
     // reading would instead retain a row before the gap (e.g. [b, d, e]); the runtime
     // does NOT do that. Delta coherence (apply == tracked) holds either way.
     complete(&mut host, "c");
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let delta = watch.advance(open_view(&host), seq);
     let client = apply_patch(&prior, &delta);
     let tracked = watch.window_rows().expect("windowed rows").to_vec();

@@ -26,7 +26,7 @@ fn watch(host: &mut SurfaceHost<MemoryStore>, conn: &str, target: &str, id: &str
 fn equivalent_retry_executes_once() {
     // §12.3: reusing the identifier with an equivalent request is at-most-once.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let first = host
         .call("c1", &call("public.tasks.add", [("title", text("a"))]).with_operation_id("op-1"))
         .expect("call");
@@ -43,7 +43,7 @@ fn equivalent_retry_executes_once() {
 fn divergent_reuse_is_rejected() {
     // §12.3: reusing the identifier with different request metadata rejects.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     host.call("c1", &call("public.tasks.add", [("title", text("a"))]).with_operation_id("op-2")).expect("call");
 
     let reuse = host
@@ -57,7 +57,7 @@ fn divergent_reuse_is_rejected() {
 #[test]
 fn identifier_less_call_is_new_every_time() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     host.call("c1", &call("public.tasks.add", [("title", text("a"))])).expect("call");
     host.call("c1", &call("public.tasks.add", [("title", text("a"))])).expect("call");
     assert_eq!(row_count(&host), 2, "a call with no operation id is a new operation each time");
@@ -68,7 +68,7 @@ fn identifier_scope_is_distinct_per_target() {
     // The same identifier against a *different* surface is an independent scope,
     // so both execute (§12.3, `red/operation-id-scope-distinct-per-target`).
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let one = host
         .call("c1", &call("public.tasks.add", [("title", text("x"))]).with_operation_id("op-3"))
         .expect("call");
@@ -83,7 +83,7 @@ fn identifier_scope_is_distinct_per_target() {
 #[test]
 fn retained_status_reports_the_committed_operation() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let outcome = host
         .call("c1", &call("public.tasks.add", [("title", text("a"))]).with_operation_id("op-4"))
         .expect("call");
@@ -103,8 +103,8 @@ fn replay_settles_the_replaying_connection() {
     // commit. A retry from a lagging connection must therefore sweep it, not just
     // hand back the stored outcome.
     let mut host = host();
-    host.connect("c1");
-    host.connect("c2");
+    host.connect("c1").unwrap();
+    host.connect("c2").unwrap();
     watch(&mut host, "c2", "public.tasks", "w2");
 
     // c1 commits the operation; c2 is not on c1's connection, so it lags.

@@ -22,3 +22,9 @@ indexing_slicing = "deny"
 
 [workspace.dependencies]
 # Shared dependency versions are pinned here as crates gain implementations.
+# The synchronous connection pool serving `liasse-pg`'s `&self` reads (§5 of
+# crates/liasse-pg/DESIGN-pure-pg.md): r2d2 is the mature, battle-tested sync pool
+# manager, and r2d2_postgres 0.18 wraps exactly the workspace's blocking
+# `postgres` 0.19 client — no async runtime, matching the sync `&mut` contract.
+r2d2 = "0.8"
+r2d2_postgres = "0.18"

@@ -38,13 +38,13 @@ fn resume_reconstructs_the_current_authorized_view() {
     // The client retains the init frontier, commits happen after it, the
     // connection drops, and the resumed subscription reconstructs the result.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let from = watch_frontier(&mut host, "c1", "public.tasks", "w1");
     add_task(&mut host, "c1", "a");
     add_task(&mut host, "c1", "b");
     host.disconnect("c1");
 
-    host.connect("c2");
+    host.connect("c2").unwrap();
     let resume = SurfaceResume::new(address("public.tasks"), "w2", from);
     match host.resume("c2", &resume).expect("resume") {
         Subscription::Init(result) => {
@@ -60,12 +60,12 @@ fn resume_after_authority_loss_delivers_no_rows() {
     // re-evaluated at resume. Revoking the session removes authority, so the
     // retained frontier may not be replayed into fresh data.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), liasse_surface::AuthResult::Bound));
     let from = watch_frontier(&mut host, "c1", "member.tasks", "m1");
 
     // A second connection revokes alice's session without sweeping c1.
-    host.connect("c2");
+    host.connect("c2").unwrap();
     host.call("c2", &call("public.session.revoke", [("id", text("s_alice"))])).expect("revoke").commit().unwrap();
 
     // Resuming the member subscription on c1 re-authorizes against the revoked

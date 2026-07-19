@@ -92,11 +92,11 @@ fn restrict_blocks_while_a_referencing_row_survives() {
     let mut engine = load("restrict", &package(false, "restrict"));
     add_project(&mut engine, "p1", "Apollo");
     add_task(&mut engine, "t1", "p1");
-    let head = engine.head();
+    let head = engine.head().unwrap();
 
     let outcome = delete_project(&mut engine, "p1");
     assert_eq!(outcome.rejection().map(|r| r.reason()), Some(RejectionReason::Restricted));
-    assert_eq!(engine.head(), head, "a blocked delete leaves no commit");
+    assert_eq!(engine.head().unwrap(), head, "a blocked delete leaves no commit");
     assert_eq!(task_ids(&engine), vec![text("t1")], "state is intact");
 }
 

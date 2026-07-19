@@ -102,7 +102,7 @@ fn lower_bound_activation_is_inclusive_and_unbounded_above() {
 fn invalid_finite_interval_is_rejected() {
     let mut engine = load("buckets-invalid", BUCKETS);
     let mut generator = generator();
-    let head = engine.head();
+    let head = engine.head().unwrap();
 
     // A well-formed reservation admits.
     let ok = engine
@@ -115,8 +115,8 @@ fn invalid_finite_interval_is_rejected() {
         )
         .expect("call");
     assert!(matches!(ok, CallOutcome::Committed { .. }), "a forward interval admits");
-    assert_ne!(engine.head(), head, "the valid reservation advanced the frontier");
-    let committed_head = engine.head();
+    assert_ne!(engine.head().unwrap(), head, "the valid reservation advanced the frontier");
+    let committed_head = engine.head().unwrap();
 
     // An empty interval (ends_at == starts_at) is rejected: until is not strictly
     // after from.
@@ -145,7 +145,7 @@ fn invalid_finite_interval_is_rejected() {
     assert!(reversed.rejection().is_some(), "a reversed interval is rejected");
 
     // Neither rejection touched committed state.
-    assert_eq!(engine.head(), committed_head, "rejected reservations left the frontier intact");
+    assert_eq!(engine.head().unwrap(), committed_head, "rejected reservations left the frontier intact");
     let view = engine.view_at_head("active_reservations").expect("view").expect("declared");
     assert_eq!(view.len(), 1, "only the one valid reservation exists");
 }

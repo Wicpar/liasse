@@ -177,7 +177,7 @@ fn nonconforming_host_return_is_caught_by_guard() {
     };
     assert_eq!(rejection.reason(), RejectionReason::Host);
     // The state is untouched: no row was inserted.
-    assert!(engine.head().get() >= 1);
+    assert!(engine.head().unwrap().get() >= 1);
     let request2 = CallRequest::new("add").arg("id", Value::Text(Text::new("r2"))).arg("x", int(4));
     assert!(
         matches!(engine.call(&request2, &mut g).expect("no fault"), CallOutcome::Rejected(_)),
@@ -271,7 +271,7 @@ fn sign_failure_rejects_login_without_effect() {
     let store = MemoryStore::new(InstanceId::new("i1"));
     let mut g = generator();
     let mut engine = Engine::load(store, LOGIN, &mut g).expect("load");
-    let head_before = engine.head();
+    let head_before = engine.head().unwrap();
 
     engine.keyring_provider_mut("session_keys").expect("declared ring").set_fail([ProviderOp::Sign]);
 
@@ -282,7 +282,7 @@ fn sign_failure_rejects_login_without_effect() {
     };
     assert_eq!(rejection.reason(), RejectionReason::Host);
     // §22.2: a failed sign commits nothing — the head has not advanced.
-    assert_eq!(engine.head(), head_before, "no partial effect from the failed login");
+    assert_eq!(engine.head().unwrap(), head_before, "no partial effect from the failed login");
 }
 
 /// Extract the `token` member of a `return { token }` response as a value. The

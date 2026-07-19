@@ -1,3 +1,4 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Benchmarks for the two axes the runtime hammers on the reference store: the
 //! staged-commit path (admit a transition and take the next serial position) and
 //! the frontier snapshot scan (fold the log into current state and walk a
@@ -52,7 +53,7 @@ fn staged_commit_throughput(c: &mut Criterion) {
 
 fn snapshot_scan(c: &mut Criterion) {
     let store = populated(5_000);
-    let head = store.head();
+    let head = store.head().expect("head");
     let collection = CollectionPath::top(NameSegment::new("items"));
     c.bench_function("snapshot_scan_5000", |b| {
         b.iter(|| {

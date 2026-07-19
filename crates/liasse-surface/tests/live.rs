@@ -32,7 +32,7 @@ fn titles(host: &SurfaceHost<MemoryStore>, conn: &str, id: &str) -> Vec<String> 
 #[test]
 fn watch_init_is_the_complete_current_result() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add_task(&mut host, "c1", "seed");
     let init = watch(&mut host, "c1", "public.tasks", "w1");
     assert_eq!(init.len(), 1, "init carries the complete current result");
@@ -43,7 +43,7 @@ fn watch_init_is_the_complete_current_result() {
 fn patches_stay_coherent_with_the_declared_view() {
     // §12.2: after each commit the client result equals the sorted declared view.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let empty = watch(&mut host, "c1", "public.tasks", "w1");
     assert!(empty.is_empty());
 
@@ -78,7 +78,7 @@ fn committed_call_advances_same_connection_watch() {
     // §12.3: receiving `committed` proves the same-connection watch already
     // reflects that commit.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let init = watch(&mut host, "c1", "public.tasks", "w1");
     assert!(init.is_empty());
     let outcome = host.call("c1", &call("public.tasks.add", [("title", text("live"))])).expect("call");
@@ -91,8 +91,8 @@ fn frontier_covers_at_least_the_callers_own_commit() {
     // A second connection's committed write becomes visible to the first no later
     // than the first's own next returned commit (§12.3, §3.3/§22.3).
     let mut host = host();
-    host.connect("c1");
-    host.connect("c2");
+    host.connect("c1").unwrap();
+    host.connect("c2").unwrap();
     let w1 = watch(&mut host, "c1", "public.tasks", "w1");
     assert!(w1.is_empty());
 
@@ -111,7 +111,7 @@ fn losing_authority_closes_a_role_subscription() {
     // §12.2: when state removes a subscription's authority the runtime emits
     // `close`. Revoking the session revokes the member watch at the next frontier.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), liasse_surface::AuthResult::Bound));
     let init = watch(&mut host, "c1", "member.tasks", "m1");
     assert!(init.is_empty(), "the member watch opens");
@@ -130,7 +130,7 @@ fn unauthenticated_role_watch_is_denied() {
     // uniform `unresolved` — identical to a nonexistent role — so the wire code does
     // not disclose that `member` exists to an anonymous enumerator.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     match host.watch("c1", &SurfaceWatch::new(address("member.tasks"), "m1")).expect("watch") {
         Subscription::Denied(denial) => {
             assert_eq!(denial.reason(), liasse_surface::DenialReason::Unresolved);
@@ -145,8 +145,8 @@ fn peer_commit_removing_authority_closes_a_cross_connection_subscription() {
     // on another. Revoking alice's session from c2 must close her member
     // subscription on c1, even though c1 issued no request of its own.
     let mut host = host();
-    host.connect("c1");
-    host.connect("c2");
+    host.connect("c1").unwrap();
+    host.connect("c2").unwrap();
     assert!(matches!(authenticate_member(&mut host, "c1", "s_alice"), liasse_surface::AuthResult::Bound));
     let init = watch(&mut host, "c1", "member.tasks", "m1");
     assert!(init.is_empty(), "the member subscription opens");
@@ -168,7 +168,7 @@ fn a_per_request_auth_selection_opens_and_re_authorizes_a_role_subscription() {
     // `authenticate`; §12.2 then re-authorizes from that retained credential, so a
     // later revocation still closes it.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let selection = liasse_surface::AuthSelection::new(
         "token",
         liasse_surface::Credential::new(text("s_alice")),

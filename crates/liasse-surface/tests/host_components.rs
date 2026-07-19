@@ -73,7 +73,7 @@ fn login_signs_over_composed_keyring_and_verifies() {
     let mut host = host();
     host.register_keyring("session_keys", cose_keyring());
     host.keyring_bootstrap("session_keys").expect("bootstrap");
-    host.connect("c1");
+    host.connect("c1").unwrap();
 
     // The login mutation commits its session (§8) — a plain admitted transition.
     let outcome = host
@@ -184,7 +184,7 @@ fn blob_put_get_round_trips_by_digest_through_host() {
 fn blob_parameter_call_verifies_before_admission() {
     let mut host = host();
     host.register_blob("attachment", blob_host());
-    host.connect("c1");
+    host.connect("c1").unwrap();
 
     // An accepted blob: the containing call commits, and the verified descriptor
     // is retained (its digest is fetchable).

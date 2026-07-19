@@ -44,7 +44,7 @@ fn run() -> Engine<MemoryStore> {
 fn identical_request_sequences_reproduce_identical_state() {
     let a = run();
     let b = run();
-    assert_eq!(a.head(), b.head(), "same number of commits");
+    assert_eq!(a.head().unwrap(), b.head().unwrap(), "same number of commits");
     assert_eq!(
         rows(&a, "tasks"),
         rows(&b, "tasks"),

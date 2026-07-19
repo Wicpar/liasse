@@ -118,7 +118,7 @@ fn router(model: &liasse_model::Model) -> SurfaceRouter {
 /// as `credential`. Returns the refusal, or panics if the watch unexpectedly opened.
 fn watch_denial(scope: &[Value], credential: &str) -> Denial {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let mut watch = SurfaceWatch::new(SurfaceAddress::parse("admin.company").expect("addr"), "w1")
         .with_auth(liasse_surface::AuthSelection::new("token", Credential::new(text(credential))));
     if !scope.is_empty() {
@@ -136,7 +136,7 @@ fn watch_denial(scope: &[Value], credential: &str) -> Denial {
 #[test]
 fn legitimate_scope_watch_opens() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let watch = SurfaceWatch::new(SurfaceAddress::parse("admin.company").expect("addr"), "w1")
         .with_scope([text("acme")])
         .with_auth(liasse_surface::AuthSelection::new("token", Credential::new(text("alice"))));

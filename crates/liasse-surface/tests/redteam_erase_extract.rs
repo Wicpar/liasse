@@ -81,7 +81,7 @@ fn task_count(host: &SurfaceHost<MemoryStore>) -> usize {
 #[test]
 fn unique_projection_binds_extract() {
     let mut host = probe_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add(&mut host, "r1", "alpha");
     add(&mut host, "r2", "beta");
 
@@ -103,7 +103,7 @@ fn unique_projection_binds_extract() {
 #[test]
 fn committed_erasure_of_coprojecting_row_binds_extract() {
     let mut host = probe_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add(&mut host, "r1", "dup");
     add(&mut host, "r2", "dup");
     assert_eq!(task_count(&host), 2, "two rows before the erase");

@@ -143,7 +143,7 @@ impl<S: InstanceStore> Engine<S> {
         // (`$from`/`$back`). Build that combined plan and reject the downgrade when a
         // populated live field the older shape cannot represent has no such transform.
         let plan = if decision.relation == UpdateRelation::Downgrade {
-            let active = self.definition_source().ok_or_else(|| {
+            let active = self.definition_source().map_err(UpdateError::Engine)?.ok_or_else(|| {
                 UpdateError::Engine(EngineError::Internal("active definition unavailable for downgrade".to_owned()))
             })?;
             let plan = downgrade_plan(&active, target).map_err(UpdateError::Engine)?;
@@ -185,7 +185,10 @@ impl<S: InstanceStore> Engine<S> {
     /// `$model` cannot be re-parsed yields `None` (the migration then fails its
     /// ordinary pipeline instead).
     fn boundary_narrowing(&self, target: &str, candidate: &Compilation) -> Option<String> {
-        let active_definition = self.definition_source()?;
+        // A store fault reading the active definition falls to `None` here, exactly
+        // as an unparseable `$model` does — the migration then fails its ordinary
+        // pipeline instead (this method is a pre-check, not the effecting path).
+        let active_definition = self.definition_source().ok().flatten()?;
         let active_doc = model_document(&active_definition)?;
         let candidate_doc = model_document(target)?;
         let active = BoundaryContract::extract(self.compiled(), &active_doc);

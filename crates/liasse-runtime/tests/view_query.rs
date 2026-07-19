@@ -61,7 +61,7 @@ fn app() -> Engine<liasse_store::MemoryStore> {
 
 /// The `id` fields of a view result, in result order.
 fn ids(engine: &Engine<liasse_store::MemoryStore>, name: &str, query: &ViewQuery) -> Vec<String> {
-    let head = engine.head();
+    let head = engine.head().unwrap();
     let result = engine
         .view_with(name, head, query)
         .expect("view read ok")
@@ -109,7 +109,7 @@ fn role_view_binds_actor_from_query() {
 #[test]
 fn undeclared_view_is_none() {
     let engine = app();
-    assert!(engine.view_with("public.nope", engine.head(), &ViewQuery::new()).expect("ok").is_none());
+    assert!(engine.view_with("public.nope", engine.head().unwrap(), &ViewQuery::new()).expect("ok").is_none());
 }
 
 /// §10.1: the declared `$params` of a surface view are exposed by name and scalar
@@ -145,7 +145,7 @@ const BUCKET_APP: &str = r#"{
 fn parameterized_bucket_view_reads_the_argument_instant() {
     let mut generator = generator();
     let engine = Engine::load(store("vqb"), BUCKET_APP, &mut generator).expect("load");
-    let head = engine.head();
+    let head = engine.head().unwrap();
     let at = |micros: i128| {
         let t = Value::Timestamp(liasse_value::Timestamp::new(micros, liasse_value::Precision::Micros));
         let result = engine

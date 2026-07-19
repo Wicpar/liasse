@@ -140,7 +140,7 @@ fn composite_keyed_actor_authenticates_and_binds() {
     // exactly-one), and the role call MUST commit with `$actor` resolved to that
     // composite row, returning `{ org: acme, user: alice }` (§11.1).
     let mut host = composite_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let auth = host
         .authenticate(
             "c1",
@@ -243,7 +243,7 @@ fn scalar_keyed_actor_authenticates_and_binds_control() {
     // proving the harness, actor resolution, role membership, and `$actor`
     // threading are correct — so the composite failure is the composite-key gap.
     let mut host = scalar_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let auth = host
         .authenticate(
             "c1",

@@ -27,11 +27,11 @@ fn committed_state_survives_a_restart_unchanged() {
     // fresh connection must read it. Rebuilding reuses the engine, so no `$data`
     // seed is re-applied and no key is re-rolled.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let id = add_task(&mut host, "c1", "durable");
 
     let mut host = restart(host);
-    host.connect("c2");
+    host.connect("c2").unwrap();
 
     let view = host.engine().view_at_head("index").expect("view").expect("declared");
     let row = view
@@ -47,7 +47,7 @@ fn a_restart_drops_volatile_operation_records() {
     // An operation record is at-most-once *within a run*, not durable: a restart
     // clears the retained log, so the identifier's status is `Unknown` afterwards.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let op = "op-restart-1";
     let outcome = host
         .call("c1", &call("public.tasks.add", [("title", text("logged"))]).with_operation_id(op))
@@ -72,13 +72,13 @@ fn a_restart_resets_connections_to_the_retained_head() {
     // host has none, and a freshly opened connection's frontier is the engine's
     // retained head — the same committed position the torn-down host left.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add_task(&mut host, "c1", "before");
-    let head = host.engine().head();
+    let head = host.engine().head().unwrap();
     assert!(host.frontier("c1").is_some(), "the pre-restart connection is open");
 
     let mut host = restart(host);
     assert!(host.frontier("c1").is_none(), "the restart drops the old connection");
-    host.connect("c2");
+    host.connect("c2").unwrap();
     assert_eq!(host.frontier("c2"), Some(head), "a fresh connection starts at the retained head");
 }

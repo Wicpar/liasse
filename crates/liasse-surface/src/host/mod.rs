@@ -182,7 +182,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
     /// [`SurfaceError::Engine`] from a store or view fault while sweeping.
     pub(super) fn sweep_all(&mut self) -> Result<(), SurfaceError> {
         let now = self.clock.instant();
-        let head = self.engine.head();
+        let head = self.engine.head()?;
         let barrier = barrier::Barrier::new(&self.engine, &self.router, now);
         for connection in self.connections.values_mut() {
             connection.advance_frontier(head);
@@ -194,9 +194,14 @@ impl<S: InstanceStore> SurfaceHost<S> {
 
     /// Open a logical connection named `id`, its frontier starting at the current
     /// head (§12).
-    pub fn connect(&mut self, id: impl Into<String>) {
-        let frontier = self.engine.head();
+    ///
+    /// # Errors
+    /// [`SurfaceError::Engine`] if the store cannot read its head to seed the
+    /// connection's initial frontier.
+    pub fn connect(&mut self, id: impl Into<String>) -> Result<(), SurfaceError> {
+        let frontier = self.engine.head()?;
         self.connections.insert(id.into(), Connection::new(frontier));
+        Ok(())
     }
 
     /// Close connection `id`, dropping its subscriptions.

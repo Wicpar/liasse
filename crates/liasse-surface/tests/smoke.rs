@@ -10,7 +10,7 @@ use support::{call, host, text};
 #[test]
 fn fixture_loads_and_public_call_commits() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
 
     let sub = host.watch("c1", &liasse_surface::SurfaceWatch::new(support::address("public.tasks"), "w1")).expect("watch");
     assert!(matches!(sub, Subscription::Init(ref result) if result.is_empty()), "empty init");

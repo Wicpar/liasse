@@ -229,7 +229,7 @@ impl<S: InstanceStore> ConnectCore<S> {
         // ft/occ. `C` never enters a token, so a leaked ft/occ never yields it.
         let keys = ConnKeys::new(self.minter.nonce(), self.minter.nonce());
         let token = keys.connection_token();
-        self.host.connect(token.as_str());
+        self.host.connect(token.as_str())?;
         self.connections.insert(token.clone(), ConnState::new(keys, self.capacity));
 
         if let Some(auth) = auth

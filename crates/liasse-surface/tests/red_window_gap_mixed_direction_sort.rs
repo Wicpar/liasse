@@ -108,7 +108,7 @@ fn occurrence(host: &SurfaceHost<MemoryStore>, id: &str) -> RowId {
 #[test]
 fn absent_anchor_gap_respects_a_mixed_direction_multi_key_sort() {
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
 
     // Order `[-rank, id]` over the `open` view: [e, b, c, d, a]. Open a size-2
     // window anchored on "c" — the anchor becomes the first row (§12.2), and the

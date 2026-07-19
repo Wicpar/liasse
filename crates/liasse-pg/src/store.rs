@@ -1,10 +1,17 @@
 //! [`PgStore`]: one package instance's durable state on PostgreSQL.
 //!
-//! The store owns one connection (one writer per instance, so one connection
-//! suffices) and an in-memory [`Projection`] of committed state for the `&self`
-//! read path. Every mutating contract call maps to exactly one SQL transaction;
-//! reads are served from the projection, which the write path keeps equal to the
-//! durable tables.
+//! The store owns one writer connection (one writer per instance, so one
+//! connection suffices) and an in-memory [`Projection`] of committed state for
+//! the `&self` read path. Every mutating contract call maps to exactly one SQL
+//! transaction; reads are served from the projection, which the write path keeps
+//! equal to the durable tables.
+//!
+//! It also owns an r2d2 [`ReadPool`] of read connections (§5 of
+//! `DESIGN-pure-pg.md`), built by the factory after `reconcile` succeeds. In
+//! Phase 0 the pool is **unused** — every contract read is still projection-served
+//! — and exists so the later phases can move each `&self` read onto a pooled SQL
+//! statement without another contract change; [`PgStore::pool`] is the seam they
+//! reach it through.
 
 use liasse_ident::{HistoryPoint, InstanceId, RowIncarnation, TransactionId};
 use liasse_store::{
@@ -12,7 +19,9 @@ use liasse_store::{
     DefinitionText, InstanceStore, RowAddress, Snapshot, StoreError, StoredRow,
 };
 use liasse_value::Sha512;
-use postgres::Client;
+use postgres::{Client, NoTls};
+use r2d2::Pool;
+use r2d2_postgres::PostgresConnectionManager;
 use serde_json::Value as J;
 use sha2::{Digest as _, Sha512 as Sha512Hasher};
 
@@ -24,12 +33,25 @@ use crate::record_codec::encode_op;
 use crate::schema::Schema;
 use crate::transition::PgTransition;
 
+/// The `&self` read-connection pool: r2d2 over the same synchronous `postgres`
+/// client the writer uses (§5.1). A pool is the maintainer-directed answer to
+/// serving the contract's `&self` reads without contract-wide `&mut`-ification
+/// or hand-rolled interior mutability; it manages an *external* resource
+/// (database connections), which AGENTS.md's interior-mutability prohibition
+/// (aimed at the crate's own state types) explicitly exempts.
+#[doc(hidden)]
+pub type ReadPool = Pool<PostgresConnectionManager<NoTls>>;
+
 /// A PostgreSQL-backed store for one package instance.
 pub struct PgStore {
     client: Client,
     schema: Schema,
     instance: InstanceId,
     projection: Projection,
+    /// The `&self` read pool (§5), built post-`reconcile` by the factory. UNUSED
+    /// in Phase 0: no contract read consults it yet — every read is still served
+    /// from `projection` — and Phase 1 is the first reader ([`PgStore::pool`]).
+    reads: ReadPool,
 }
 
 impl core::fmt::Debug for PgStore {
@@ -45,15 +67,28 @@ impl core::fmt::Debug for PgStore {
 }
 
 impl PgStore {
-    /// Adopt an opened connection whose `schema` is created and current, loading
-    /// the read model from its durable tables.
+    /// Adopt an opened writer connection whose `schema` is created and current,
+    /// loading the read model from its durable tables. `reads` is the read pool
+    /// the factory built against the same DSN *after* `reconcile` succeeded, so
+    /// every pooled connection observes the reconciled schema (§5.3).
     pub(crate) fn open(
         mut client: Client,
         schema: Schema,
         instance: InstanceId,
+        reads: ReadPool,
     ) -> Result<Self, StoreError> {
         let projection = Projection::load(&mut client, &schema)?;
-        Ok(Self { client, schema, instance, projection })
+        Ok(Self { client, schema, instance, projection, reads })
+    }
+
+    /// The `&self` read-connection pool (§5). Doc-hidden and stable in shape only
+    /// for the internal read path: Phase 1 checks a connection out of it to serve
+    /// leaf reads from SQL. It exists now (and is exercised here) so the field is
+    /// live before its first real reader lands — no `#[allow(dead_code)]` needed.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn pool(&self) -> &ReadPool {
+        &self.reads
     }
 
     /// The live current row at `address` — the base a staged read overlays.
@@ -162,8 +197,10 @@ impl InstanceStore for PgStore {
         &self.instance
     }
 
-    fn head(&self) -> CommitSeq {
-        self.projection.head()
+    fn head(&self) -> Result<CommitSeq, StoreError> {
+        // Phase 0: still projection-served (the pool is unused). Phase 1 replaces
+        // this body with a pooled `SELECT head FROM instance_meta` (§4.4).
+        Ok(self.projection.head())
     }
 
     fn row(&self, address: &RowAddress) -> Result<Option<StoredRow>, StoreError> {
@@ -227,8 +264,8 @@ impl InstanceStore for PgStore {
         Ok(())
     }
 
-    fn point_position(&self, point: &HistoryPoint) -> Option<CommitSeq> {
-        self.projection.point_position(point)
+    fn point_position(&self, point: &HistoryPoint) -> Result<Option<CommitSeq>, StoreError> {
+        Ok(self.projection.point_position(point))
     }
 
     fn put_blob(&mut self, bytes: &[u8]) -> Result<Sha512, StoreError> {
@@ -254,15 +291,17 @@ impl InstanceStore for PgStore {
         Ok(self.projection.blob(digest).cloned())
     }
 
-    fn has_blob(&self, digest: &Sha512) -> bool {
-        self.projection.has_blob(digest)
+    fn has_blob(&self, digest: &Sha512) -> Result<bool, StoreError> {
+        Ok(self.projection.has_blob(digest))
     }
 
-    fn definition(&self) -> Option<&DefinitionText> {
-        self.projection.definition()
+    fn definition(&self) -> Result<Option<DefinitionText>, StoreError> {
+        // Owned per the contract: clone the projection's copy (Phase 1 decodes it
+        // per read from `instance_meta` instead).
+        Ok(self.projection.definition().cloned())
     }
 
-    fn composition(&self) -> Option<&Composition> {
-        self.projection.composition()
+    fn composition(&self) -> Result<Option<Composition>, StoreError> {
+        Ok(self.projection.composition().cloned())
     }
 }

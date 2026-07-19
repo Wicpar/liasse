@@ -60,7 +60,7 @@ fn scalar_host() -> SurfaceHost<MemoryStore> {
     let engine = Engine::load(store("winscalar"), APP, &mut clock).expect("app loads");
     let router = router(engine.model());
     let mut host = SurfaceHost::new(engine, router, clock);
-    host.connect("c1");
+    host.connect("c1").unwrap();
     host
 }
 
@@ -110,7 +110,7 @@ fn windowed_subscription_over_a_scalar_view_delivers_the_authorized_value() {
     // The authorized declared `count` view is the scalar 2 (externally deducible:
     // size(.items) over {a, b}). An UNWINDOWED subscription delivers it as the §7.5
     // scalar delta — the reference for what §12.2 must convey for this view.
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let mut plain = Watch::open("count", WatchAuthz::public(), seq);
     let plain_init = plain.init(count_view(&host), seq).expect("plain init");
     assert_eq!(
@@ -138,7 +138,7 @@ fn windowed_subscription_over_a_scalar_view_delivers_the_authorized_value() {
     // view (the scalar 3). The windowed advance is a frontier-only empty `Patch([])`,
     // so the subscriber never observes the change.
     add(&mut host, "c");
-    let seq = host.engine().head();
+    let seq = host.engine().head().unwrap();
     let win_advance = windowed.advance(count_view(&host), seq);
     assert_eq!(
         conveyed_scalar(&win_advance),

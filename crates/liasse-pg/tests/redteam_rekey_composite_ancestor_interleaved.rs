@@ -97,7 +97,7 @@ fn apply_workload<S: InstanceStore>(store: &mut S) -> (Sha512, Sha512) {
 
     // A blob and a history point recorded at this head, between commits.
     let blob_a = store.put_blob(b"blob-A-bytes").unwrap();
-    store.record_point(store.head(), point("lin-main", "before-rekey")).unwrap();
+    store.record_point(store.head().unwrap(), point("lin-main", "before-rekey")).unwrap();
 
     // 4. THE HEADLINE: rekey the composite ANCESTOR org(eu,1) -> org(gb,3), while it
     //    has a LIVE descendant (teams/sales/10) and a TOMBSTONED descendant
@@ -121,7 +121,7 @@ fn apply_workload<S: InstanceStore>(store: &mut S) -> (Sha512, Sha512) {
     txn.commit().unwrap();
 
     let blob_b = store.put_blob(b"blob-B-bytes").unwrap();
-    store.record_point(store.head(), point("lin-main", "after-revive")).unwrap();
+    store.record_point(store.head().unwrap(), point("lin-main", "after-revive")).unwrap();
 
     // 7. Rekey the surviving live orphan leaf under the revived ancestor; new
     //    composition in the same commit.
@@ -171,7 +171,7 @@ fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(
     blobs: (Sha512, Sha512),
     label: &str,
 ) {
-    assert_eq!(a.head(), b.head(), "{label}: head disagrees");
+    assert_eq!(a.head().unwrap(), b.head().unwrap(), "{label}: head disagrees");
 
     for address in touched() {
         assert_eq!(
@@ -187,7 +187,7 @@ fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(
     }
 
     // Snapshot at every frontier from genesis to head folds the durable log.
-    let head = a.head().get();
+    let head = a.head().unwrap().get();
     for f in 0..=head {
         let frontier = CommitSeq::from_stored(f);
         assert_eq!(
@@ -205,14 +205,14 @@ fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(
     );
 
     // Definition and composition — the metadata carried inline with node ops.
-    assert_eq!(a.definition(), b.definition(), "{label}: definition disagrees");
-    assert_eq!(a.composition(), b.composition(), "{label}: composition disagrees");
+    assert_eq!(a.definition().unwrap(), b.definition().unwrap(), "{label}: definition disagrees");
+    assert_eq!(a.composition().unwrap(), b.composition().unwrap(), "{label}: composition disagrees");
 
     // Every history point maps to the same position.
     for p in [point("lin-main", "before-rekey"), point("lin-main", "after-revive")] {
         assert_eq!(
-            a.point_position(&p),
-            b.point_position(&p),
+            a.point_position(&p).unwrap(),
+            b.point_position(&p).unwrap(),
             "{label}: history point position disagrees"
         );
     }
@@ -220,7 +220,7 @@ fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(
     // Blobs round-trip identically.
     let (blob_a, blob_b) = blobs;
     for digest in [blob_a, blob_b] {
-        assert_eq!(a.has_blob(&digest), b.has_blob(&digest), "{label}: has_blob disagrees");
+        assert_eq!(a.has_blob(&digest).unwrap(), b.has_blob(&digest).unwrap(), "{label}: has_blob disagrees");
         assert_eq!(
             a.get_blob(&digest).expect("blob a"),
             b.get_blob(&digest).expect("blob b"),

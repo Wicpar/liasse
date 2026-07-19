@@ -123,7 +123,7 @@ fn ref_typed_session_account_resolves_the_actor() {
     // §5.6: `$session.account` is a `Value::Ref`; resolving `$actor` must deref it
     // to the accounts key. Before the fix this denied with `ActorUnresolved`.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert!(
         matches!(authenticate(&mut host, "c1", "s_alice"), AuthResult::Bound),
         "a ref-typed session account resolves the actor account row"
@@ -135,7 +135,7 @@ fn authenticated_member_call_binds_actor_and_commits() {
     // The full flagship shape: authenticate, then a role mutation writing `$actor`
     // into a ref field commits, and its `return` projects the actor's account key.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert!(matches!(authenticate(&mut host, "c1", "s_alice"), AuthResult::Bound));
 
     let outcome = host
@@ -154,7 +154,7 @@ fn login_then_actor_backed_call_round_trips() {
     // §11.5: a login inserts a fresh (ref-account) session, and the freshly-issued
     // session immediately authenticates and admits an `$actor`-reading mutation.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let open = host
         .call(
             "c1",

@@ -7,8 +7,9 @@ Binding instructions for anyone — human or agent — writing code in this repo
 - Structure state so that invalid state is unrepresentable in the type system.
 - Do not validate; parse. Turn raw input into a richer type once, at the boundary; past that boundary the type is proof the data is well-formed.
 - Use semantic types: types that have meaning and group reusable functionality, instead of abusing meaningless scalars.
-- Do not use interior-mutability structures. Avoid reference counts. They are a sign of a bad design; normally everything is expressible as owned values, `&`, and `&mut`.
+- Do not use interior-mutability structures. Avoid reference counts. They are a sign of a bad design; normally everything is expressible as owned values, `&`, and `&mut`. This prohibition targets smuggling mutability into a crate's *own* state types; a mature third-party connection pool managing an *external* resource (e.g. `liasse-pg`'s r2d2 read pool over PostgreSQL connections) is internally synchronised by design and is exempt.
 - Code must never panic. The exception is unrecoverable states, like poisoned locks in some cases. Tests are expected to panic on failed cases.
+- The workspace forbids `unsafe` (`unsafe_code = "forbid"`); the one sanctioned exception is the forthcoming `liasse-pg-ext` crate (the `pgrx` PostgreSQL extension), permitted `unsafe` solely for the `pgrx` FFI boundary, confined to the FFI shim and justified with `// SAFETY:` comments.
 - Keep it simple: if it's long and complicated, you are missing an abstraction and should research better representations. Leverage the Rust type system to create safe abstractions that have pre-validated states instead of propagating `Result`/`Option` everywhere.
 - Do not reinvent the wheel; try to find existing crates that do the job.
 - When parsing a language, emit rustc-like helpful diagnostics. A diagnostic MUST allow a new user to understand what went wrong, why, and how to fix it (when a hint is available).

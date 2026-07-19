@@ -104,10 +104,10 @@ fn restrict_blocks_delete_of_composite_keyed_target() {
     committed(call(&mut e, &CallRequest::new("add_account").arg("org", text("acme")).arg("user", text("ann"))));
     committed(call(&mut e, &CallRequest::new("add_doc").arg("id", text("d1"))));
     committed(call(&mut e, &CallRequest::new("add_reviewer").arg("id", text("d1")).arg("acct", composite_ref("acme", "ann"))));
-    let head = e.head();
+    let head = e.head().unwrap();
     let outcome = call(&mut e, &CallRequest::new("delete_account").arg("org", text("acme")).arg("user", text("ann")));
     assert_eq!(outcome.rejection().map(|r| r.reason()), Some(RejectionReason::Restricted));
-    assert_eq!(e.head(), head, "a blocked delete leaves no commit");
+    assert_eq!(e.head().unwrap(), head, "a blocked delete leaves no commit");
 }
 
 // -- 2. set member is a STRUCT-keyed ref (A.8) ----------------------------
@@ -166,10 +166,10 @@ fn restrict_blocks_delete_of_struct_keyed_target() {
     committed(call(&mut e, &CallRequest::new("add_account").arg("org", text("acme")).arg("user", text("ann"))));
     committed(call(&mut e, &CallRequest::new("add_doc").arg("id", text("d1"))));
     committed(call(&mut e, &CallRequest::new("add_reviewer").arg("id", text("d1")).arg("acct", struct_ref("acme", "ann"))));
-    let head = e.head();
+    let head = e.head().unwrap();
     let outcome = call(&mut e, &CallRequest::new("delete_account").arg("acct", struct_key("acme", "ann")));
     assert_eq!(outcome.rejection().map(|r| r.reason()), Some(RejectionReason::Restricted));
-    assert_eq!(e.head(), head, "a blocked delete leaves no commit");
+    assert_eq!(e.head().unwrap(), head, "a blocked delete leaves no commit");
 }
 
 // -- 3. set-of-ref on a COMPOSITE-keyed CONTAINING row --------------------
@@ -284,7 +284,7 @@ fn patch_set_member_dangling_residual_is_rejected_by_finalize() {
     committed(call(&mut e, &CallRequest::new("add_account").arg("id", text("a1"))));
     committed(call(&mut e, &CallRequest::new("add_doc").arg("id", text("d1"))));
     committed(call(&mut e, &CallRequest::new("add_reviewer").arg("id", text("d1")).arg("acct", scalar_ref("a1"))));
-    let head = e.head();
+    let head = e.head().unwrap();
 
     let outcome = call(&mut e, &CallRequest::new("delete_account").arg("id", text("a1")));
     assert_eq!(
@@ -292,7 +292,7 @@ fn patch_set_member_dangling_residual_is_rejected_by_finalize() {
         Some(RejectionReason::DanglingRef),
         "a `= patch` that leaves a dangling set member must be rejected (§22.1); got {outcome:?}"
     );
-    assert_eq!(e.head(), head, "the rejected transition leaves no commit");
+    assert_eq!(e.head().unwrap(), head, "the rejected transition leaves no commit");
     // The rolled-back state is intact: a1 still live, still a member.
     assert_eq!(count(&e, "accounts_view"), 1, "a1 survives the rejected delete");
     let dangling = reviewers(&e).iter().any(|m| matches!(m, Value::Ref(r) if matches!(r.key(), RefKey::Scalar(k) if **k == text("a1"))));

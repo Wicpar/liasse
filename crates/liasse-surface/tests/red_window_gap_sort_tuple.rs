@@ -107,7 +107,7 @@ fn occurrence(host: &SurfaceHost<MemoryStore>, id: &str) -> RowId {
 #[test]
 fn gap_coordinate_is_the_anchor_sort_tuple_not_a_row_before_it() {
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
 
     // Open a size-2 window anchored on "c" over the `open` view [a, b, c, d, e].
     // "A concrete anchor normally becomes the first row" -> [c, d].

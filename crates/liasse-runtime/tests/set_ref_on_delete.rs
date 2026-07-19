@@ -105,7 +105,7 @@ fn restrict_blocks_delete_of_referenced_account() {
     add_account(&mut engine, "a1");
     add_doc(&mut engine, "d1");
     add_reviewer(&mut engine, "d1", "a1");
-    let head = engine.head();
+    let head = engine.head().unwrap();
 
     let outcome = delete_account(&mut engine, "a1");
     assert_eq!(
@@ -113,7 +113,7 @@ fn restrict_blocks_delete_of_referenced_account() {
         Some(RejectionReason::Restricted),
         "a restrict set-of-ref member must block deletion of its target (§5.6/§21.1); got {outcome:?}"
     );
-    assert_eq!(engine.head(), head, "a blocked delete leaves no commit");
+    assert_eq!(engine.head().unwrap(), head, "a blocked delete leaves no commit");
     assert_eq!(reviewers(&engine), vec![account_ref("a1")], "state is intact");
     assert_eq!(account_ids(&engine), vec![text("a1")], "the referenced account survives");
 }

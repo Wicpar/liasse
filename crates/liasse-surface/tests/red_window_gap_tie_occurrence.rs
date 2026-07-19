@@ -116,7 +116,7 @@ fn occurrence(host: &SurfaceHost<MemoryStore>, id: &str) -> RowId {
 #[test]
 fn absent_anchor_gap_respects_the_occurrence_tiebreak_within_an_equal_sort_group() {
     let mut host = items_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
 
     // The `open` view is [a, b, c, d, e] — every row rank 5, ordered solely by
     // the B.5 occurrence (key text) tiebreak. Open a size-2 window anchored on

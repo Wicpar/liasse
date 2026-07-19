@@ -32,7 +32,7 @@ fn view_titles(engine: &Engine<MemoryStore>) -> Vec<Value> {
 #[test]
 fn erase_removes_row_from_view_and_from_a_fresh_export() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let id = add_task(&mut host, "c1", "gamma");
 
     // The row is observable before the erasure.
@@ -73,7 +73,7 @@ fn erase_removes_row_from_view_and_from_a_fresh_export() {
 #[test]
 fn erasing_an_absent_key_commits_nothing_and_binds_no_extract() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     // No such task: the routed removal changes nothing (§8.9), so there is no
     // scrubbed payload and therefore no extract (§21.2 extracts only on removal).
     let erased = host

@@ -20,7 +20,7 @@ fn denial(outcome: &SurfaceOutcome) -> DenialReason {
 #[test]
 fn public_surface_admits_unauthenticated_call() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let outcome = host.call("c1", &call("public.tasks.add", [("title", text("x"))])).expect("call");
     assert!(matches!(outcome, SurfaceOutcome::Committed { .. }), "public call commits: {outcome:?}");
 }
@@ -30,7 +30,7 @@ fn internal_mutation_is_not_addressable() {
     // `disable` and `revoke` are declared mutations, but `public.tasks` exposes
     // only add/rename/remove — an internal name resolves to nothing (§10.1).
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let outcome = host.call("c1", &call("public.tasks.disable", [("id", text("alice"))])).expect("call");
     assert_eq!(denial(&outcome), DenialReason::Unresolved);
 }
@@ -38,7 +38,7 @@ fn internal_mutation_is_not_addressable() {
 #[test]
 fn nonexistent_surface_and_call_are_unresolved() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let ghost = host.call("c1", &call("public.ghost.add", [("title", text("x"))])).expect("call");
     assert_eq!(denial(&ghost), DenialReason::Unresolved);
     let ghost_call = host.call("c1", &call("public.tasks.frobnicate", [("title", text("x"))])).expect("call");
@@ -49,7 +49,7 @@ fn nonexistent_surface_and_call_are_unresolved() {
 fn case_variant_names_do_not_resolve() {
     // §2.5 names are ASCII and exact; no folding is implied.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let surface = host.call("c1", &call("public.Tasks.add", [("title", text("x"))])).expect("call");
     assert_eq!(denial(&surface), DenialReason::Unresolved);
     let member = host.call("c1", &call("public.tasks.Add", [("title", text("x"))])).expect("call");
@@ -59,7 +59,7 @@ fn case_variant_names_do_not_resolve() {
 #[test]
 fn unknown_role_is_unresolved() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let outcome = host.call("c1", &call("admin.tasks.complete", [("id", text("x")), ("title", text("y"))])).expect("call");
     assert_eq!(denial(&outcome), DenialReason::Unresolved);
 }
@@ -71,7 +71,7 @@ fn role_surface_requires_authentication() {
     // nonexistent role (see `unknown_role_is_unresolved`) — an `unauthenticated`
     // reason here would leak that `member` exists to an anonymous enumerator.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let outcome = host.call("c1", &call("member.tasks.complete", [("id", text("x")), ("title", text("y"))])).expect("call");
     assert_eq!(denial(&outcome), DenialReason::Unresolved);
 }
@@ -81,7 +81,7 @@ fn denied_is_distinct_from_rejected() {
     // Exposure/authorization failure is `denied`; a well-addressed request that
     // the admission pipeline refuses is `rejected` — the two never collapse.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
 
     let unexposed = host.call("c1", &call("public.tasks.disable", [("id", text("alice"))])).expect("call");
     assert!(unexposed.denial().is_some(), "unexposed name denies");
@@ -98,7 +98,7 @@ fn denied_is_distinct_from_rejected() {
 #[test]
 fn view_address_cannot_be_called_and_call_cannot_be_watched() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     // `public.tasks` (two segments) is the view target; calling it is unresolved.
     let as_call = host.call("c1", &SurfaceCall::new(support::address("public.tasks"), support::args([]))).expect("call");
     assert_eq!(denial(&as_call), DenialReason::Unresolved);

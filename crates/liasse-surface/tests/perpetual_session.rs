@@ -112,7 +112,7 @@ fn perpetual_session_authenticates() {
     // §11.7 + §14: a session with no expiry is unbounded above, so it stays valid
     // until revoked. It must bind, not deny.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert!(
         matches!(authenticate(&mut host, "s_perpetual"), AuthResult::Bound),
         "a session with no expiry is perpetual and authenticates",
@@ -123,7 +123,7 @@ fn perpetual_session_authenticates() {
 fn future_expiry_authenticates() {
     // A finite expiry strictly after `now` is still live (half-open interval).
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert!(
         matches!(authenticate(&mut host, "s_future"), AuthResult::Bound),
         "a session expiring in the future authenticates",
@@ -134,7 +134,7 @@ fn future_expiry_authenticates() {
 fn past_expiry_is_denied() {
     // At or after the expiry instant the session is dead (§11.7 half-open bound).
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert_eq!(denial_reason(authenticate(&mut host, "s_past")), DenialReason::SessionInvalid);
 }
 
@@ -142,6 +142,6 @@ fn past_expiry_is_denied() {
 fn revoked_session_is_denied() {
     // Revocation denies regardless of a still-future expiry (§11.7).
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     assert_eq!(denial_reason(authenticate(&mut host, "s_revoked")), DenialReason::SessionInvalid);
 }

@@ -78,7 +78,7 @@ fn index(host: &SurfaceHost<MemoryStore>) -> ViewResult {
 #[test]
 fn front_insert_places_the_new_row_at_position_zero() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add_task(&mut host, "c1", "m");
     let prev = index(&host); // [m]
     add_task(&mut host, "c1", "a");
@@ -94,7 +94,7 @@ fn front_insert_places_the_new_row_at_position_zero() {
 #[test]
 fn middle_insert_places_the_new_row_at_its_sorted_position() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add_task(&mut host, "c1", "a");
     add_task(&mut host, "c1", "z");
     let prev = index(&host); // [a, z]
@@ -113,7 +113,7 @@ fn front_to_back_move_via_sort_key_change_updates_and_moves() {
     // The sort key (`title`) is a projected field, so renaming both changes the
     // exposed value (update) and moves the occurrence.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add_task(&mut host, "c1", "m");
     let a_id = add_task(&mut host, "c1", "a");
     let prev = index(&host); // [a, m]
@@ -133,7 +133,7 @@ fn front_to_back_move_via_sort_key_change_updates_and_moves() {
 #[test]
 fn remove_drops_the_departed_occurrence() {
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let a_id = add_task(&mut host, "c1", "a");
     add_task(&mut host, "c1", "m");
     let prev = index(&host); // [a, m]
@@ -150,7 +150,7 @@ fn combined_commit_across_several_mutations_stays_coherent() {
     // A patch between two non-adjacent frontiers combines a remove, a value+move,
     // and an insert in one ordered sequence.
     let mut host = host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     let b_id = add_task(&mut host, "c1", "b");
     let d_id = add_task(&mut host, "c1", "d");
     let prev = index(&host); // [b, d]
@@ -229,7 +229,7 @@ fn pure_reorder_with_unchanged_fields_is_a_move() {
     // while its exposed value (`name`, `label`) is unchanged: a `move` with no
     // `update`. The old positionless delta could not express this at all.
     let mut host = patch_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add_item(&mut host, "a", "A", 0);
     add_item(&mut host, "b", "B", 1);
     let prev = listing(&host); // [a, b]  (prio 0 < 1)
@@ -254,7 +254,7 @@ fn rekey_is_a_remove_and_insert_that_reaches_the_authorized_order() {
     // ordered view (§12.2). Emitting a `rekey` op needs occurrence continuity the
     // key-derived result does not carry (documented seam).
     let mut host = patch_host();
-    host.connect("c1");
+    host.connect("c1").unwrap();
     add_item(&mut host, "a", "A", 0);
     add_item(&mut host, "m", "M", 0);
     let prev = listing(&host); // [a, m]  (equal prio, name tiebreak)

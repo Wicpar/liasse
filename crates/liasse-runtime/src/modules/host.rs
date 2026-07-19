@@ -275,7 +275,7 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// declared.
     pub fn root_view(&self, name: &str, query: &ViewQuery) -> Result<Option<ViewResult>, ModuleError> {
         let aggregate = self.aggregate_snapshot()?;
-        let frontier = self.root.head();
+        let frontier = self.root.head().map_err(ModuleError::Engine)?;
         self.root.view_with_modules(name, frontier, query, &aggregate).map_err(ModuleError::Engine)
     }
 

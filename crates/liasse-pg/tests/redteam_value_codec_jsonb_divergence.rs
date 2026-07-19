@@ -309,9 +309,9 @@ fn scan_key(address: &RowAddress) -> i64 {
 /// pg and memory must agree at every frontier snapshot (folding the durable log)
 /// and on the whole log — the §22.7/§19.2 durability gate, on both value axes.
 fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(a: &A, b: &B, label: &str) {
-    assert_eq!(a.head(), b.head(), "{label}: head");
+    assert_eq!(a.head().unwrap(), b.head().unwrap(), "{label}: head");
 
-    let head = a.head().get();
+    let head = a.head().unwrap().get();
     for f in 0..=head {
         let frontier = CommitSeq::from_stored(f);
         let sa = a.snapshot(frontier).expect("snapshot a");

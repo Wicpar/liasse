@@ -201,7 +201,7 @@ fn sorted_scan<S: InstanceStore>(store: &S, c: &CollectionPath) -> Vec<(RowAddre
 /// absence, incarnation included), every collection scan (order included), every
 /// frontier snapshot, and the whole commit log.
 fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(a: &A, b: &B, label: &str) {
-    assert_eq!(a.head(), b.head(), "{label}: head disagrees");
+    assert_eq!(a.head().unwrap(), b.head().unwrap(), "{label}: head disagrees");
 
     for address in touched() {
         assert_eq!(
@@ -222,7 +222,7 @@ fn assert_stores_agree<A: InstanceStore, B: InstanceStore>(a: &A, b: &B, label: 
 
     // Snapshot at every frontier from genesis to head folds the durable log; both
     // backends must produce the identical row set at each.
-    let head = a.head().get();
+    let head = a.head().unwrap().get();
     for f in 0..=head {
         let frontier = CommitSeq::from_stored(f);
         let sa = a.snapshot(frontier).expect("snapshot a");
