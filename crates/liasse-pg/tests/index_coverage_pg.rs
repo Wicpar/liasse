@@ -483,3 +483,48 @@ fn meta_tables_are_single_row() {
         assert_eq!(count, 1, "{table} must hold exactly one row (id = 1)");
     }
 }
+
+/// The Phase-6 `snapshot(head)` fast path (`DESIGN-pure-pg.md` §4.3) materializes the
+/// whole live-row set from the `nodes` adjacency tree in ONE statement. A full-state
+/// materialization has no selective plan — it legitimately reads every node — so it
+/// is EXEMPT from the no-Seq-Scan gate, exactly like the single-row `instance_meta`
+/// reads ([`meta_tables_are_single_row`]). This pins the exemption's RATIONALE: the
+/// fast-path read is a single sequential scan of exactly one relation (`nodes`), and
+/// correctness is cross-checked by the tree-≡-log-fold equivalence test
+/// (`node_tree_consistency::head_fast_path_equals_log_fold`) plus the parity gate,
+/// NOT by an index plan. A future "optimization" that made this selective would be
+/// reintroducing the forbidden in-memory projection, and this test would catch it.
+#[test]
+fn head_fast_path_is_single_full_scan_exempt() {
+    let handle = support::acquire();
+    let factory = handle.factory("fastexempt");
+    let instance = InstanceId::new("fast-path-exempt");
+    let _guard = SchemaGuard::new(&factory, instance.clone());
+
+    let (mut client, schema) = provision(&factory, &instance);
+    let _ = populate(&mut client, &schema);
+    let s = schema.quoted();
+
+    // The EXACT statement `node_load::materialize_head` issues (kept in sync there).
+    let plan = explain(
+        &mut client,
+        &format!("SELECT id, parent_id, step_name, key_wire, incarnation, value FROM {s}.nodes"),
+        &[],
+    );
+
+    // ONE statement over exactly ONE relation: `nodes` is the sole scan source.
+    let relations = collect_field(&plan, "Relation Name");
+    assert_eq!(
+        relations,
+        vec!["nodes".to_owned()],
+        "the head fast path reads only the nodes table in one statement, got {relations:?}"
+    );
+    // EXEMPT from the no-Seq-Scan gate: a whole-table materialization is EXPECTED to
+    // Seq Scan (no WHERE, no selective plan). Asserting so pins the exemption — the
+    // deliberate opposite of gates (1)-(12), which forbid a Seq Scan.
+    let types = node_types(&plan);
+    assert!(
+        types.iter().any(|t| t == "Seq Scan"),
+        "a full-state materialization scans the whole nodes table: {types:?}"
+    );
+}

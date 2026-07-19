@@ -9,10 +9,14 @@
 //! `point_position`, `get_blob`, `has_blob`, `definition`, `composition` — from
 //! the pool; **Phase 2 (§4.1/§4.2)** adds the `row`/`scan` node reads
 //! ([`crate::read`]); and **Phase 3 (§4.3)** serves `snapshot` from a pooled
-//! `commit_log` read folded by the shared [`Snapshot::replay`]. Each read checks a
-//! connection out of `reads`, runs one single-statement autocommit SQL query
-//! (consistency case 1, nothing to pin — §5.4; `snapshot`'s frontier log prefix is
-//! immutable, case 2), decodes it with the existing codecs, and returns.
+//! `commit_log` read folded by the shared [`Snapshot::replay`], with **Phase 6**
+//! adding the `snapshot(head)` fast path — at `frontier == head` the live-row set is
+//! materialized directly from the `nodes` tree ([`crate::node_load`]) in O(state)
+//! rather than folding the whole log in O(history). Each read checks a connection
+//! out of `reads`, runs one single-statement autocommit SQL query (consistency case
+//! 1, nothing to pin — §5.4; `snapshot`'s frontier log prefix is immutable, case 2,
+//! and its head fast path is a single `nodes` scan, case 1), decodes it with the
+//! existing codecs, and returns.
 //!
 //! The store holds **no in-memory read model of durable state** — the projection is
 //! gone (Phase 3, the "no in-memory projection" mandate). The staging read base a
@@ -34,6 +38,7 @@ use sha2::{Digest as _, Sha512 as Sha512Hasher};
 
 use crate::backend::{backend, cell, corrupt, pool};
 use crate::jsonb_text;
+use crate::node_load;
 use crate::node_write::NodeWriter;
 use crate::read;
 use crate::record_codec::{
@@ -256,13 +261,12 @@ impl InstanceStore for PgStore {
     }
 
     fn snapshot(&self, frontier: CommitSeq) -> Result<Snapshot, StoreError> {
-        // §4.3: the frontier-past-head check reads the durable head first, then the
-        // snapshot folds the append-only `commit_log` prefix `≤ frontier`, index-
-        // ordered by the PK (index gate 4), decoded by the shared `record_codec` path
-        // and replayed by the same `Snapshot::replay` MemoryStore uses — so parity is
-        // by construction. The log `≤ frontier` is immutable, so this needs no SQL
-        // transaction for coherence (§5.4 case 2): interleaved commits append *past*
-        // the frontier and are invisible to the `WHERE seq <= $1` filter.
+        // The frontier-past-head check reads the durable head first (§4.3). The
+        // one-writer-per-instance invariant plus Rust exclusivity (a commit needs
+        // `&mut`, a reader holds `&`) means no commit interleaves this `&self` read,
+        // so the head read and the materialization below observe the same state
+        // (§5.4 case 3; the §5.4-case-2 in-statement head recheck is the seam wired
+        // only if that premise is ever relaxed).
         let head = self.head()?;
         if frontier > head {
             return Err(corrupt(format!(
@@ -272,9 +276,31 @@ impl InstanceStore for PgStore {
             )));
         }
         let s = self.schema.quoted();
+        let mut conn = self.reads.get().map_err(pool)?;
+        if frontier == head {
+            // Phase-6 head fast path (§4.3): the `nodes` tree holds exactly head
+            // state, so materialize the live-row set directly in ONE full read of
+            // `nodes` (O(state)) instead of folding the whole `commit_log`
+            // (O(history)). The reconstructed `Snapshot` is byte-identical to the
+            // log fold at head — the tree-≡-log-fold equivalence — because
+            // `materialize_head` reuses the same value/key codecs the parity-gated
+            // `row`/`scan` reads use and walks the same tombstone-through adjacency
+            // chain (`node_tree_consistency::head_fast_path_equals_log_fold`). That
+            // one statement legitimately scans the whole table (a full-state
+            // materialization has no selective plan); it is the pinned no-Seq-Scan
+            // exemption (`index_coverage_pg::head_fast_path_is_single_full_scan_exempt`).
+            let rows = node_load::materialize_head(&mut *conn, &s)?;
+            return Ok(Snapshot::from_rows(head, rows));
+        }
+        // §4.3 log fold for a historical frontier (`frontier < head`): fold the
+        // append-only `commit_log` prefix `≤ frontier`, index-ordered by the PK
+        // (index gate 4), decoded by the shared `record_codec` path and replayed by
+        // the same `Snapshot::replay` MemoryStore uses — so parity is by
+        // construction. The log `≤ frontier` is immutable, so this needs no SQL
+        // transaction for coherence (§5.4 case 2): interleaved commits append *past*
+        // the frontier and are invisible to the `WHERE seq <= $1` filter.
         let frontier_num =
             i64::try_from(frontier.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
-        let mut conn = self.reads.get().map_err(pool)?;
         let log = conn
             .query(
                 &format!(

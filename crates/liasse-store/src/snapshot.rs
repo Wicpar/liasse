@@ -29,6 +29,24 @@ impl Snapshot {
         Self { frontier: CommitSeq::GENESIS, rows: BTreeMap::new() }
     }
 
+    /// Build a snapshot directly from an already-materialized live-row set at
+    /// `frontier`, without folding the log.
+    ///
+    /// This is the backend-agnostic constructor a store uses when it can produce
+    /// the committed live rows *without* replaying the commit log — the O(state)
+    /// alternative to the O(history) [`Self::replay`] fold. Its motivating caller
+    /// is `PgStore`'s Phase-6 `snapshot(head)` fast path (`DESIGN-pure-pg.md`
+    /// §4.3): the `nodes` adjacency tree holds exactly head state, so the store
+    /// materializes the live rows straight from it. The result is required to be
+    /// byte-identical to `replay(.., frontier)` over the same committed history —
+    /// the tree-≡-log-fold equivalence a backend must uphold — so this performs no
+    /// validation the fold guarantees: `rows` is the live set the caller has
+    /// already assembled, keyed by its Annex-B [`RowAddress`] order.
+    #[must_use]
+    pub fn from_rows(frontier: CommitSeq, rows: BTreeMap<RowAddress, StoredRow>) -> Self {
+        Self { frontier, rows }
+    }
+
     /// Replay committed transitions up to and including `frontier`, folding them
     /// into materialized state.
     ///

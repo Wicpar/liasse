@@ -52,15 +52,13 @@ criterion = { version = "0.5", default-features = false }
 proptest = "1"
 
 [[bench]]
-# Backend op vs. equivalent raw-SQL query on a shared populated database.
+# Pure-PG substrate: each contract read/commit vs the IDENTICAL hand-written SQL
+# on the same pooled database, so the backend's overhead over raw PostgreSQL is
+# measurable (DESIGN-pure-pg.md §9). The complex-query (filter/join/aggregate/view)
+# matrix is Phase 10's concern — post-pushdown, over the `liasse` extension — and is
+# NOT measured here (the old "projection vs SQL" matrix measured the deleted
+# projection and was void).
 name = "backend_vs_raw"
-harness = false
-
-[[bench]]
-# Comparative MATRIX: backend path vs. native-PG SQL across dataset sizes
-# (small/large) and query classes (simple point/scan, moderate range, complex
-# filter/join/aggregate/view, like-for-like commit).
-name = "backend_vs_native_matrix"
 harness = false
 
 [lints]

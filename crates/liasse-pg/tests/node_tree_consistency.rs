@@ -32,7 +32,8 @@ use std::collections::BTreeMap;
 
 use liasse_ident::{InstanceId, NameSegment};
 use liasse_store::{
-    AddressStep, InstanceStore, KeyValue, MemoryStoreFactory, RowAddress, StoreFactory, Transition,
+    AddressStep, CommitSeq, InstanceStore, KeyValue, MemoryStoreFactory, RowAddress, Snapshot,
+    StoreFactory, Transition,
 };
 use liasse_value::{Integer, Text, Value};
 use postgres::Client;
@@ -237,6 +238,116 @@ fn node_tree_mirrors_rows_and_memory() {
     }
     for address in &absent {
         assert!(pg.row(address).expect("pg row").is_none(), "expected {} absent", address.render());
+    }
+    // `_guard` drops the throwaway schema on scope exit (and on a panic).
+}
+
+/// A workload rich in the head-fast-path SUBTLETIES: updates at two depths, a leaf
+/// tombstone, a leaf rekey, a **non-leaf delete** that leaves a live orphan under a
+/// tombstoned ancestor, and a **nested insert under never-created ancestors** (auto
+/// tombstones). Both backends run it identically, so the head fast path
+/// (`nodes`-materialization) and the log fold must reconstruct the same live set —
+/// orphans reconstructed through tombstoned ancestors included (§5.4).
+fn apply_orphan_workload<S: InstanceStore>(store: &mut S) {
+    let mut txn = store.begin();
+    txn.insert(org(1), text("org-1")).expect("insert org 1");
+    txn.insert(org(2), text("org-2")).expect("insert org 2");
+    txn.commit().expect("commit orgs");
+
+    let mut txn = store.begin();
+    txn.insert(team(1, 10), text("team-1-10")).expect("insert team 1/10");
+    txn.insert(team(1, 11), text("team-1-11")).expect("insert team 1/11");
+    txn.commit().expect("commit teams");
+
+    let mut txn = store.begin();
+    txn.insert(member(1, 10, 100), text("member-100")).expect("insert member 100");
+    txn.insert(member(1, 10, 101), text("member-101")).expect("insert member 101");
+    txn.insert(member(1, 11, 200), text("member-200")).expect("insert member 200");
+    txn.commit().expect("commit members");
+
+    // Updates at two depths.
+    let mut txn = store.begin();
+    txn.update(&org(1), text("org-1-updated")).expect("update org 1");
+    txn.update(&member(1, 10, 100), text("member-100-updated")).expect("update member 100");
+    txn.commit().expect("commit updates");
+
+    // Leaf delete → a leaf tombstone.
+    let mut txn = store.begin();
+    txn.delete(&member(1, 10, 101)).expect("delete member 101");
+    txn.commit().expect("commit leaf delete");
+
+    // Same-parent leaf rekey: member 100 -> member 300, still under team 1/10.
+    let mut txn = store.begin();
+    txn.rekey(&member(1, 10, 100), member(1, 10, 300), text("member-300")).expect("rekey member");
+    txn.commit().expect("commit rekey");
+
+    // NON-leaf delete: dropping team 1/10 leaves member 1/10/300 a LIVE ORPHAN under a
+    // tombstoned ancestor — the fast path must reconstruct its address THROUGH the
+    // tombstone (§5.4), never emitting the tombstone itself.
+    let mut txn = store.begin();
+    txn.delete(&team(1, 10)).expect("delete team 1/10");
+    txn.commit().expect("commit non-leaf delete");
+
+    // Nested insert under NEVER-created ancestors: member 5/50/500 with no org 5 /
+    // team 5/50 ever inserted. The pg node writer auto-creates those ancestors as
+    // tombstones; the memory oracle just holds the flat address. Another orphan the
+    // fast path reconstructs through auto-created tombstone ancestors.
+    let mut txn = store.begin();
+    txn.insert(member(5, 50, 500), text("member-500")).expect("insert nested orphan member 500");
+    txn.commit().expect("commit nested orphan");
+}
+
+/// The Phase-6 `snapshot(head)` fast path (§4.3) must produce a `Snapshot`
+/// **byte-identical** to the O(history) commit-log fold it replaces — the
+/// tree-≡-log-fold equivalence. This drives the orphan-rich workload, then asserts
+/// the fast path equals BOTH the independent commit-log fold AND the in-memory oracle
+/// (the external reference that makes the expected live set deducible, not merely two
+/// pg paths agreeing), and that it holds exactly the hand-derived live rows.
+#[test]
+fn head_fast_path_equals_log_fold() {
+    let handle = support::acquire();
+    let mut pg_factory = handle.factory("fastpath");
+    let instance = InstanceId::new("head-fast-path");
+    let _guard = support::SchemaGuard::new(&pg_factory, instance.clone());
+
+    let mut memory = MemoryStoreFactory.create(instance.clone()).expect("create memory store");
+    apply_orphan_workload(&mut memory);
+
+    let mut pg = pg_factory.create(instance.clone()).expect("create pg store");
+    apply_orphan_workload(&mut pg);
+
+    let head = pg.head().expect("pg head");
+
+    // The Phase-6 head fast path: `snapshot(head)` materializes straight from `nodes`.
+    let fast = pg.snapshot(head).expect("head fast-path snapshot");
+
+    // The independent O(history) oracle: fold the whole durable commit log with the
+    // shared `Snapshot::materialize` (the replay the fast path REPLACES). Byte
+    // equality here is the tree-≡-log-fold cross-check §4.3 demands.
+    let log = pg.log_from(CommitSeq::GENESIS).expect("full commit log");
+    let folded = Snapshot::materialize(&log, head).expect("commit-log fold at head");
+    assert_eq!(fast, folded, "head fast path diverges from the commit-log fold");
+
+    // The external reference: the in-memory oracle's own head snapshot.
+    let mem_head = memory.head().expect("memory head");
+    assert_eq!(head, mem_head, "both backends ran the identical workload");
+    let mem_snapshot = memory.snapshot(mem_head).expect("memory head snapshot");
+    assert_eq!(fast, mem_snapshot, "head fast path diverges from the in-memory oracle");
+
+    // Hand-derived live set (Annex A/B, §5.4): exactly these rows survive, including
+    // two ORPHANS — members/300 under a DELETED team, members/500 under NEVER-created
+    // ancestors — while the tombstones (team 1/10, and auto-created org 5 / team 5/50)
+    // are addressable positions, never rows.
+    let present =
+        [org(1), org(2), team(1, 11), member(1, 10, 300), member(1, 11, 200), member(5, 50, 500)];
+    let absent =
+        [team(1, 10), member(1, 10, 100), member(1, 10, 101), org(5), team(5, 50)];
+    assert_eq!(fast.len(), present.len(), "head fast path holds exactly the live rows, got {fast:?}");
+    for address in &present {
+        assert!(fast.row(address).is_some(), "expected {} present in the fast path", address.render());
+    }
+    for address in &absent {
+        assert!(fast.row(address).is_none(), "expected {} absent from the fast path", address.render());
     }
     // `_guard` drops the throwaway schema on scope exit (and on a panic).
 }
