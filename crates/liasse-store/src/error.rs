@@ -37,4 +37,13 @@ pub enum StoreError {
     /// of the underlying driver.
     #[error("store backend failure: {detail}")]
     Backend { detail: String },
+
+    /// A [`ViewProgram`](crate::ViewProgram) face faulted while evaluating one
+    /// candidate during [`scan_view`](crate::InstanceStore::scan_view) — a
+    /// division by zero on the candidate's values, a shape mismatch, an unbound
+    /// reference. Distinct from [`StoreError::Corruption`]: the durable record is
+    /// well-formed, the *evaluation* faulted. The runtime answers this with the
+    /// interpreter fallback so the surfaced behaviour is interpreter-exact.
+    #[error("view-program evaluation fault: {detail}")]
+    Eval { detail: String },
 }

@@ -17,6 +17,7 @@ use crate::key::{CollectionPath, RowAddress};
 use crate::meta::{Composition, DefinitionText};
 use crate::row::StoredRow;
 use crate::snapshot::Snapshot;
+use crate::view_program::{scan_view_impl, EvaluatedRow, ViewProgram, ViewSource};
 
 /// A store for one package instance's durable state, history, and blobs.
 pub trait InstanceStore {
@@ -97,6 +98,29 @@ pub trait InstanceStore {
     /// The current composition of mounted children (§19.5), if recorded.
     /// Returned owned, for the same reason as [`InstanceStore::definition`].
     fn composition(&self) -> Result<Option<Composition>, StoreError>;
+
+    /// The evaluated view read (§7 of `liasse-pg/DESIGN-pure-pg.md`): admit,
+    /// project, and sort-evaluate the source's rows through `program`, returning
+    /// rows in the view's delivered order — the Annex-B sort-tuple order (under the
+    /// program's directions) with the key path as the final occurrence tiebreak
+    /// when the program sorts, else source order (flat: key order; coverage:
+    /// depth-first key order). `skip`/`limit` apply after ordering for a
+    /// [`ViewSource::Collection`]; [`ViewSource::Coverage`] ignores them (§10.5 has
+    /// no bounds). A face fault surfaces as [`StoreError::Eval`].
+    ///
+    /// This default is the in-Rust oracle over the store's own `scan`/`row`
+    /// primitives: it evaluates every candidate through the same
+    /// [`ViewProgram`](crate::ViewProgram) faces, so any two stores agree by
+    /// construction. A pushdown backend overrides it with one SQL statement.
+    fn scan_view(
+        &self,
+        source: ViewSource<'_>,
+        program: &dyn ViewProgram,
+        skip: Option<u64>,
+        limit: Option<u64>,
+    ) -> Result<Vec<EvaluatedRow>, StoreError> {
+        scan_view_impl(self, source, program, skip, limit)
+    }
 }
 
 /// A staged state transition: the unit of atomic admission (§22.2).

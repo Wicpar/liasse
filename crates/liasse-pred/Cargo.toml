@@ -1,0 +1,38 @@
+[package]
+name = "liasse-pred"
+description = "The one row-program evaluator: the three logical view faces over the shared interpreter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+# The opaque `ViewProgram`/`CandidateSubtree` contract this crate is the sole
+# implementor of, and the typed keys/values at the boundary.
+liasse-store = { path = "../liasse-store" }
+# THE interpreter, linked once: the faces evaluate residual `TypedExpr`s through
+# `TypedExpr::evaluate_bound`, and the `eval-wire` feature carries the version-locked
+# postcard wire the pushdown backend ships into the database (§7.3/§7.4).
+liasse-expr = { path = "../liasse-expr", features = ["eval-wire"] }
+liasse-value = { path = "../liasse-value" }
+# Annex D.2 canonical key text: a candidate row's stable `RowId` identity, built
+# through the one shared codec, exactly as the runtime's `materialize` does.
+liasse-ident = { path = "../liasse-ident" }
+# The internal, version-locked wire (§7.4): the residual faces and hoisted env
+# serialize with the same postcard the extension consumes.
+postcard = { version = "1", features = ["use-std"] }
+
+[dev-dependencies]
+# The order-preserving `sort_enc` codec, gated against the shared Annex-B tuple
+# comparison (`SortOrder::compare`) the in-Rust oracle sorts by.
+liasse-pg = { path = "../liasse-pg" }
+liasse-syntax = { path = "../liasse-syntax" }
+liasse-diag = { path = "../liasse-diag" }
+# Round-tripping a `json`-typed value through its canonical wire form in the codec
+# proptest, matching the arbitrary-precision build the value layer uses.
+serde_json = { version = "1.0", features = ["arbitrary_precision"] }
+proptest = "1"
+
+[lints]
+workspace = true

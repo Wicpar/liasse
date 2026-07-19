@@ -72,6 +72,26 @@ impl TypedExpr {
         self.evaluator(env, currents).collect_view(self)
     }
 
+    /// Evaluate against `env` with `current` as `.` and an initial frame carrying
+    /// `bindings` — the row-program entry (§7.3 of `liasse-pg/DESIGN-pure-pg.md`).
+    /// The candidate is `.`, and the filter/coverage bind name plus any hoisted
+    /// synthetic bindings resolve from this frame, mirroring how
+    /// `select_bind_scopes`/`project_row` seed one scope's evaluation. The
+    /// bindings are frame-local, so a `ScopeBinding`/`LocalBinding` referencing one
+    /// resolves through the evaluator's own frames or `Environment::binding`.
+    pub fn evaluate_bound(
+        &self,
+        env: &dyn Environment,
+        current: &Cell,
+        bindings: impl IntoIterator<Item = (String, Cell)>,
+    ) -> Result<Cell, EvalError> {
+        let mut evaluator = self.evaluator(env, std::slice::from_ref(current));
+        for (name, cell) in bindings {
+            evaluator.bind(name, cell);
+        }
+        evaluator.eval(self)
+    }
+
     fn evaluator<'a>(&self, env: &'a dyn Environment, currents: &[Cell]) -> Evaluator<'a> {
         Evaluator {
             env,

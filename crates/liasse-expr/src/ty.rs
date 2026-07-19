@@ -13,10 +13,11 @@ use liasse_value::Type;
 
 /// The static type of an expression's result.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExprType {
     /// A scalar or structured value of a canonical [`Type`] (includes
     /// `optional<T>`, `set<T>`, `map<K,V>`, `ref<T>`, and static structs).
-    Scalar(Type),
+    Scalar(#[cfg_attr(feature = "eval-wire", serde(with = "crate::wire::type_serde"))] Type),
     /// Exactly one row of a collection or view.
     Row(RowType),
     /// A stream of rows (a view / selection result).
@@ -80,6 +81,7 @@ impl ExprType {
 /// with the same visible fields and key denote the same shape (§12.4/Annex E view
 /// identity), so [`PartialEq`] compares only `fields` and `key`.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct RowType {
     fields: BTreeMap<String, ExprType>,
     key: Option<Box<ExprType>>,

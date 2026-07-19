@@ -30,6 +30,7 @@ use crate::error::EvalError;
 /// One segment of a [`RowId`]: an identity component along the source-row chain
 /// (§7.2, Annex D.1).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum RowIdPart {
     /// Identity derived from a keyed row's key: its canonical key text (Annex
     /// D.2). A source-collection row uses its collection key; a synthetic-`$key`
@@ -52,6 +53,7 @@ pub enum RowIdPart {
 /// Identity derives from the row's *key*, never its materialized position, so a
 /// row keeps its identity when earlier rows disappear.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct RowId(Vec<RowIdPart>);
 
 impl RowId {
@@ -106,9 +108,10 @@ impl RowId {
 /// A member of a [`Row`]: a scalar value, a nested single row (a static struct
 /// or a resolved single target row), or a collection of rows.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum Cell {
     /// A scalar or structured [`Value`] (text, int, ref, set, struct, `none`, …).
-    Scalar(Value),
+    Scalar(#[cfg_attr(feature = "eval-wire", serde(with = "crate::wire::value_serde"))] Value),
     /// A nested static struct or a single row.
     Row(Box<Row>),
     /// A keyed collection, set-as-rows, or view source, in canonical row order.
@@ -160,10 +163,13 @@ impl Cell {
 /// anchor that later leaves the view — the immutable ordered gap coordinate
 /// §12.2 retains to decide where the window resumes.
 #[derive(Debug, Clone, PartialEq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct Row {
     id: RowId,
+    #[cfg_attr(feature = "eval-wire", serde(with = "crate::wire::value_serde"))]
     key: Value,
     cells: BTreeMap<String, Cell>,
+    #[cfg_attr(feature = "eval-wire", serde(with = "crate::wire::value_vec_serde"))]
     sort: Vec<Value>,
 }
 
@@ -312,6 +318,7 @@ pub struct BlobPlacement {
 /// carries no instant: it names a lifecycle role over a keyring's managed
 /// versions, which only the keyring-managing environment can resolve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum KeyringSelector {
     /// `.$current` — the single active signing version's metadata (§17.2, §17.3:
     /// at most one version is active at an admitted state position).

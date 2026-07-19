@@ -18,6 +18,20 @@ liasse-value = { path = "../liasse-value" }
 # (§12.4) is its group key rendered through the one shared D.2 codec, never a
 # hand-rolled spelling.
 liasse-ident = { path = "../liasse-ident" }
+# The `eval-wire` codec (§7.3/§7.4 of `liasse-pg/DESIGN-pure-pg.md`): an internal,
+# version-locked postcard wire over feature-gated serde derives on the checked
+# typed tree. `serde_json` (arbitrary-precision) round-trips a `json`-typed literal
+# through its canonical text. All three are pulled in only by the `eval-wire`
+# feature — the default build never sees them, and they impose no public-format
+# obligation (§7.4).
+serde = { version = "1", features = ["derive"], optional = true }
+postcard = { version = "1", features = ["use-std"], optional = true }
+serde_json = { version = "1.0", features = ["arbitrary_precision"], optional = true }
+
+[features]
+# The postcard row-program wire and the hoisting boundary — enabled by `liasse-pred`
+# and `liasse-runtime`, never by the default library build.
+eval-wire = ["dep:serde", "dep:postcard", "dep:serde_json"]
 
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false }

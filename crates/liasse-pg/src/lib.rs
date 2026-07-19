@@ -58,6 +58,9 @@ mod read;
 mod reconcile;
 mod record_codec;
 mod schema;
+// The order-preserving `sort_enc` BYTEA codec (§7.4): the `ORDER BY` key the
+// pushdown `liasse.eval_sort` face emits, built on the shared [`key_enc`] machinery.
+mod sort_enc;
 mod store;
 mod transition;
 mod value_codec;
@@ -71,5 +74,6 @@ mod key_enc_proptest;
 
 pub use factory::PgStoreFactory;
 pub use schema::{IndexSpec, SCHEMA_VERSION, Schema, TableSpec};
+pub use sort_enc::encode_sort_tuple;
 pub use store::PgStore;
 pub use transition::PgTransition;

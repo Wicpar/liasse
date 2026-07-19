@@ -42,6 +42,7 @@ mod meta;
 mod row;
 mod snapshot;
 mod staging;
+mod view_program;
 
 pub mod contract_tests;
 
@@ -54,3 +55,7 @@ pub use meta::{Composition, DefinitionText, Mount};
 pub use row::StoredRow;
 pub use snapshot::Snapshot;
 pub use staging::MemoryTransition;
+pub use view_program::{
+    CandidateSubtree, EvalFault, EvaluatedRow, SortDirection, ViewProgram, ViewSource,
+    MAX_SUBTREE_DEPTH,
+};

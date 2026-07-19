@@ -41,11 +41,17 @@ mod check;
 mod env;
 mod error;
 mod eval;
+#[cfg(feature = "eval-wire")]
+pub mod hoist;
+#[cfg(feature = "eval-wire")]
+pub mod lower;
 mod host;
 mod order;
 mod scope;
 mod ty;
 mod typed;
+#[cfg(feature = "eval-wire")]
+pub mod wire;
 
 pub use check::{check_composite_delete_operand, check_expression, check_statement};
 pub use env::{

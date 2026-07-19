@@ -27,7 +27,9 @@ use crate::ty::ExprType;
 /// A type-checked expression: its span, its resolved result type, and its
 /// resolved operation.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct TypedExpr {
+    #[cfg_attr(feature = "eval-wire", serde(with = "crate::wire::byte_span_serde"))]
     span: ByteSpan,
     ty: ExprType,
     kind: TypedKind,
@@ -147,9 +149,10 @@ impl TypedExpr {
 /// A resolved operation. Overloads (`+` as int/decimal/text, `-` as
 /// arithmetic/difference, `==` on scalars vs refs) are already decided.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum TypedKind {
     /// A constant scalar (`1`, `"x"`, `true`, `none`, a `[]`/`{}` literal value).
-    Literal(Value),
+    Literal(#[cfg_attr(feature = "eval-wire", serde(with = "crate::wire::value_serde"))] Value),
     /// The package root `/`.
     Root,
     /// The current value or row `.`.
@@ -281,7 +284,7 @@ pub(crate) enum TypedKind {
     /// [`CallSite`] (source + span) so the environment resolves a distinct value
     /// per call site, even for two byte-identical defaults compiled into
     /// different sub-sources (SPEC-ISSUES item 4, §5.1/§8.12).
-    Uuid(CallSite),
+    Uuid(#[cfg_attr(feature = "eval-wire", serde(with = "crate::wire::callsite_serde"))] CallSite),
     /// A temporal selector over a bucketed base view (§14.1): `.$at`,
     /// `.$between`, `.$all`. Evaluation reduces the query's instants and defers
     /// activity resolution to the environment's temporal index.
@@ -320,6 +323,7 @@ pub(crate) enum TypedKind {
 /// off it, and the placement members are the engine's logical observations of
 /// where the content is stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum BlobMember {
     /// `$sha512` — the content hash, as its canonical lowercase-hex `text` (§18.1).
     Sha512,
@@ -343,6 +347,7 @@ pub(crate) enum BlobMember {
 /// A resolved temporal selector form (§14.1). The instant operands are typed
 /// `timestamp` expressions, reduced to values only at evaluation.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum TypedTemporal {
     /// `.$at(t)` — rows active at instant `t`.
     At(Box<TypedExpr>),
@@ -357,6 +362,7 @@ pub(crate) enum TypedTemporal {
 
 /// A resolved row selector.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum TypedSelector {
     /// One or more independent key sources, concatenated in operand order
     /// (§6.3).
@@ -370,6 +376,7 @@ pub(crate) enum TypedSelector {
 
 /// A resolved projection.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct Projection {
     /// The synthetic `$key` output field names, if grouping (§7.2).
     pub(crate) key: Vec<String>,
@@ -390,6 +397,7 @@ pub(crate) struct Projection {
 
 /// One projected output field.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct Output {
     pub(crate) name: String,
     pub(crate) expr: TypedExpr,
@@ -397,6 +405,7 @@ pub(crate) struct Output {
 
 /// One sort key (§7.3).
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) struct SortKey {
     pub(crate) expr: TypedExpr,
     pub(crate) descending: bool,
@@ -404,6 +413,7 @@ pub(crate) struct SortKey {
 
 /// The additive/negation numeric class of an operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum NumClass {
     Int,
     Decimal,
@@ -413,6 +423,7 @@ pub(crate) enum NumClass {
 
 /// A resolved arithmetic operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum ArithOp {
     Add,
     Sub,
@@ -423,6 +434,7 @@ pub(crate) enum ArithOp {
 
 /// A resolved comparison operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum CmpOp {
     Eq,
     Ne,
@@ -434,6 +446,7 @@ pub(crate) enum CmpOp {
 
 /// A resolved boolean connective.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum LogicOp {
     And,
     Or,
@@ -441,6 +454,7 @@ pub(crate) enum LogicOp {
 
 /// A resolved aggregate function (§7.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum AggFunc {
     Count,
     Sum,
@@ -452,6 +466,7 @@ pub(crate) enum AggFunc {
 
 /// A resolved set-style view combinator (§7.4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum CombineOp {
     Union,
     Intersect,
@@ -460,6 +475,7 @@ pub(crate) enum CombineOp {
 
 /// A resolved built-in function from the language surface or a namespace (§6.5).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum BuiltinFn {
     /// `size(x)` — text length in Unicode scalars, or collection/set cardinality.
     Size,
