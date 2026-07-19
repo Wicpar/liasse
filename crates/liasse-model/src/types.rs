@@ -117,6 +117,13 @@ fn map_type(node: &SpannedType, named: &NamedTypes) -> Result<Type, String> {
         TypeExprKind::Map(key, value) => {
             let key = map_type(key, named)?;
             let value = map_type(value, named)?;
+            // A.1: `none` is absence, never a value, so it is never carried as a
+            // map key — an `optional<K>` key would key an entry on `none`, which is
+            // nonsensical. Symmetric to the optional-value/optional-set-element
+            // rejections, this is a static error at model build.
+            if matches!(key, Type::Optional(_)) {
+                return Err(map_key_optional_reason());
+            }
             // A.1: a map never stores a `none` value — absence is the key not
             // being present — so a map value type is never `optional<V>`.
             if matches!(value, Type::Optional(_)) {
@@ -188,4 +195,11 @@ pub(crate) fn set_optional_reason() -> String {
 /// A map value type spelled `optional<V>` (A.1).
 fn map_value_optional_reason() -> String {
     "a map value type is never `optional<V>`: a map never stores a `none` value; absence is the key being absent (A.1) — declare the value as `V`".to_owned()
+}
+
+/// A map key type spelled `optional<K>` (§5.5 / A.1). Symmetric to the
+/// optional-value and optional-set-element rejections: `none` is absence, never a
+/// value, so it can never be carried as a map key.
+fn map_key_optional_reason() -> String {
+    "a map key type is never `optional<K>`: `none` is absence, not a value, so it is never a map key (§5.5, A.1) — declare the key as `K`".to_owned()
 }

@@ -10,9 +10,9 @@
 use liasse_expr::Cell;
 use liasse_ident::NameSegment;
 use liasse_store::{CollectionPath, RowAddress};
-use liasse_value::{Precision, RefKey, Timestamp, Value};
+use liasse_value::{Precision, RefKey, Struct, StructType, Text, Timestamp, Value};
 
-use crate::compiled::{Compiled, CompiledCollection};
+use crate::compiled::{Compiled, CompiledCollection, CompiledField};
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
 use crate::generator::Generation;
@@ -61,11 +61,84 @@ pub(crate) fn apply_defaults(
 /// declared shape holding (§22.1) — and lets a later `+`/`-` (a `map` entry
 /// write) act against the existing membership rather than against `none`.
 fn absent_value(ty: &liasse_value::Type) -> Value {
+    empty_container(ty).unwrap_or(Value::None)
+}
+
+/// The §5.5 empty-container default a non-optional `set`/`map` takes when omitted —
+/// an empty set or empty map — or `None` for any other declared type (a scalar, an
+/// `optional`, a `struct`), which carries no container default. This is the single
+/// seam the "row OR struct" empty-container rule flows through: the row field
+/// absent-fill ([`absent_value`], reached from [`apply_defaults`]) and the static
+/// struct member fill ([`complete_struct_containers`]) both resolve their omitted
+/// containers here, so the two paths cannot drift.
+fn empty_container(ty: &liasse_value::Type) -> Option<Value> {
     match ty {
-        liasse_value::Type::Set(_) => Value::Set(std::collections::BTreeSet::new()),
-        liasse_value::Type::Map(..) => Value::Map(std::collections::BTreeMap::new()),
-        _ => Value::None,
+        liasse_value::Type::Set(_) => Some(Value::Set(std::collections::BTreeSet::new())),
+        liasse_value::Type::Map(..) => Some(Value::Map(std::collections::BTreeMap::new())),
+        _ => None,
     }
+}
+
+/// Complete a freshly built static struct with its §5.5/§22.1 container defaults so
+/// the declared shape holds in every committed state (§5.3): every omitted
+/// non-optional `set`/`map` member starts as the empty container — the "row OR
+/// struct" default, symmetric to the row field absent-fill [`apply_defaults`] runs
+/// — and every supplied nested static struct is recursed into so a struct-in-struct
+/// completes its own containers too. An omitted optional member stays absent: `none`
+/// is absence, never a stored value (A.1). Only the container/struct shape is
+/// completed; a supplied scalar member is untouched. Run after the struct's explicit
+/// member defaults and before its `$check`, so the check sees the completed shape
+/// (§5.10).
+pub(crate) fn complete_struct_containers(fields: &mut FieldMap, struct_fields: &[CompiledField]) {
+    for field in struct_fields {
+        match fields.get_mut(&field.name) {
+            // A supplied nested static struct completes its own containers; any other
+            // supplied member keeps its value verbatim.
+            Some(value) => {
+                if let liasse_value::Type::Struct(inner) = &field.ty {
+                    let owned = std::mem::replace(value, Value::None);
+                    *value = complete_nested_struct(inner, owned);
+                }
+            }
+            // An omitted non-optional set/map starts empty; anything else stays absent.
+            None => {
+                if let Some(container) = empty_container(&field.ty) {
+                    fields.insert(field.name.clone(), container);
+                }
+            }
+        }
+    }
+}
+
+/// Recurse the §5.5 container default into a nested static-struct value, which a
+/// struct carries only as a `Type::Struct` (not a compiled struct), so
+/// [`complete_struct_containers`] cannot reach its members directly. Applies the
+/// identical rule one level down: a present nested struct recurses, an omitted
+/// non-optional `set`/`map` member starts empty, an omitted optional stays absent.
+/// A non-struct value — the documented view/ref struct-initializer seam — is
+/// returned unchanged. Rebuilt in the same style as [`coerce_value`]'s struct arm.
+fn complete_nested_struct(struct_ty: &StructType, value: Value) -> Value {
+    let Value::Struct(existing) = value else { return value };
+    // Keep every present member, recursing into a nested static struct.
+    let mut members: Vec<(Text, Value)> = existing
+        .fields()
+        .map(|(name, member)| {
+            let completed = match struct_ty.field(name.as_str()) {
+                Some(liasse_value::Type::Struct(inner)) => complete_nested_struct(inner, member.clone()),
+                _ => member.clone(),
+            };
+            (name.clone(), completed)
+        })
+        .collect();
+    // Add the empty container for every omitted non-optional set/map member.
+    for (name, member_ty) in struct_ty.fields() {
+        if members.iter().all(|(present, _)| present.as_str() != name.as_str())
+            && let Some(container) = empty_container(member_ty)
+        {
+            members.push((Text::new(name.as_str()), container));
+        }
+    }
+    Value::Struct(Struct::new(members))
 }
 
 /// Coerce every present enum-typed field value to a validated enum label (§5.9):

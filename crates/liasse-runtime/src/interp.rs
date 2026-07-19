@@ -1302,6 +1302,13 @@ impl<'a> Interp<'a> {
                 fields.insert(field.name.clone(), value);
             }
         }
+        // §5.5/§22.1: complete the struct's declared shape after its explicit member
+        // defaults — an omitted non-optional `set`/`map` member starts as the empty
+        // container (the "row OR struct" default, the same absent-container fill
+        // `apply_defaults` runs for a row's collection fields), recursing into nested
+        // static structs. An omitted optional member stays absent (A.1). Runs before
+        // the struct `$check` so the check sees the completed shape (§5.10).
+        rules::complete_struct_containers(&mut fields, &struct_meta.fields);
         // §5.10: a struct `$check` constrains the complete struct after defaults,
         // with `.` the prospective struct; a failure rejects the containing insert.
         let struct_cell = struct_row_cell(struct_meta, &fields);
