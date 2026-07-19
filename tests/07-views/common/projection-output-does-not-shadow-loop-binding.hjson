@@ -1,0 +1,32 @@
+{
+  format: 1
+  name: projection-output-does-not-shadow-loop-binding
+  suite: scenario
+  spec: ["#views", "§7.1", "§6.4"]
+  note: "§6.4: a row binding 'names each row while a selector or projection evaluates', so the loop binding 's' denotes the row throughout the projection. §7.1 (pinned): an output member name never shadows an in-scope row binding when evaluating a sibling member's expression. In '.companies[:s] { s: s.id, sn: s.name }' the output member 's' (the id text) does NOT shadow the loop binding 's' for the sibling RHS 's.name' — 's.name' reads the row and yields its name. The view loads and emits the flat { s, sn } row."
+
+  package: {
+    $liasse: 1
+    $app: "t.shadow@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        v: { $view: ".companies[:s] { s: s.id, sn: s.name }" }
+      }
+    }
+    $data: {
+      companies: {
+        c1: { name: "ACME" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.v", id: "w1",
+      expect_init: { value: [ { s: "c1", sn: "ACME" } ] } }
+  ]
+}

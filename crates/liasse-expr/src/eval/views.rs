@@ -238,17 +238,25 @@ impl Evaluator<'_> {
         group: Option<(Cell, Value)>,
     ) -> Result<Row, EvalError> {
         self.push(Cell::Row(Box::new(scope.row.clone())));
+        // §7.1/§6.4 (pinned): the in-scope row/loop bindings are never shadowed by a
+        // same-named sibling output member, so track their names and never let an
+        // output value overwrite one — mirrors the checker's resolution exactly.
+        let mut loop_binds: BTreeSet<String> = BTreeSet::new();
         for (name, cell) in &scope.binds {
+            loop_binds.insert(name.clone());
             self.bind(name.clone(), cell.clone());
         }
         if let Some((group_cell, _)) = &group {
+            loop_binds.insert("group".to_owned());
             self.bind("group".to_owned(), group_cell.clone());
         }
         let mut cells: BTreeMap<String, Cell> = BTreeMap::new();
         for output in &projection.outputs {
             match self.eval(&output.expr) {
                 Ok(cell) => {
-                    self.bind(output.name.clone(), cell.clone());
+                    if !loop_binds.contains(&output.name) {
+                        self.bind(output.name.clone(), cell.clone());
+                    }
                     cells.insert(output.name.clone(), cell);
                 }
                 Err(err) => {
@@ -293,11 +301,18 @@ impl Evaluator<'_> {
         sort: &[SortKey],
     ) -> Result<Vec<Value>, EvalError> {
         self.push(Cell::Row(Box::new(scope.row.clone())));
+        // §7.1/§6.4 (pinned): a projected output never shadows a same-named row/loop
+        // binding — a sort key referencing such a name reads the row binding, not the
+        // like-named output, matching the projection-body resolution.
+        let mut loop_binds: BTreeSet<String> = BTreeSet::new();
         for (name, cell) in &scope.binds {
+            loop_binds.insert(name.clone());
             self.bind(name.clone(), cell.clone());
         }
         for (name, cell) in projected.cells() {
-            self.bind(name.clone(), cell.clone());
+            if !loop_binds.contains(name) {
+                self.bind(name.clone(), cell.clone());
+            }
         }
         let mut keys = Vec::with_capacity(sort.len());
         for key in sort {

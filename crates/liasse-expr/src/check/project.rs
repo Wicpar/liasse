@@ -120,14 +120,23 @@ impl Checker<'_> {
         // may read `name.field`. Eval threads these through `RowScope`; the
         // checker mirrors the whole chain here.
         Self::traverse_binds(&base, &mut binds);
+        // §7.1/§6.4 (pinned): a row/loop binding is NEVER shadowed by a sibling
+        // output member of the same name. Track the in-scope binding names so a
+        // like-named output neither creates a cross-reference dependency edge
+        // (below) nor overwrites the binding in the frame — a bare reference to
+        // such a name always resolves to the row binding, not the output.
+        let mut loop_binds: BTreeSet<String> = BTreeSet::new();
         for (name, ty) in binds {
+            loop_binds.insert(name.clone());
             self.bind(name, ty);
         }
         if grouped {
+            loop_binds.insert("group".to_owned());
             self.bind("group".to_owned(), ExprType::View(source_row.clone()));
         }
 
-        let order = match order_outputs(&raw_outputs) {
+        let loop_bind_names: BTreeSet<&str> = loop_binds.iter().map(String::as_str).collect();
+        let order = match order_outputs(&raw_outputs, &loop_bind_names) {
             Some(order) => order,
             None => {
                 self.pop_frame();
@@ -181,7 +190,12 @@ impl Checker<'_> {
                     return None;
                 }
             };
-            self.bind(raw.name.clone(), typed.ty().clone());
+            // §7.1/§6.4 (pinned): only enter the output as a sibling-referenceable
+            // binding when it does NOT collide with an in-scope loop binding; a
+            // colliding name keeps denoting the row for every sibling RHS.
+            if !loop_binds.contains(&raw.name) {
+                self.bind(raw.name.clone(), typed.ty().clone());
+            }
             field_types.push((raw.name.clone(), typed.ty().clone()));
             outputs.push(Output { name: raw.name.clone(), expr: typed });
         }

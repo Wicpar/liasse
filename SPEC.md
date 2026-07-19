@@ -812,7 +812,7 @@ Example:
 }
 ```
 
-`.` remains the source row. Projection members are unordered named outputs. They MAY refer to one another when their dependency graph is acyclic; the implementation evaluates them in any valid dependency order.
+`.` remains the source row. Projection members are unordered named outputs. They MAY refer to one another when their dependency graph is acyclic; the implementation evaluates them in any valid dependency order. An output member name never shadows an in-scope row binding (§6.4) when evaluating a sibling member's expression: where an output name collides with a `[:name]`/`::` binding in scope, a bare reference to that name resolves to the row binding, not to the like-named output.
 
 ### 7.2 View identity
 

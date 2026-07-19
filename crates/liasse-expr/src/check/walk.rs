@@ -21,8 +21,22 @@ pub(super) struct RawOutput {
 /// bound is its own: the `Visit` marking visits each output at most once,
 /// capping the recursion depth at the projection's output count — independent
 /// of liasse-syntax's 512 expression-nesting cap.
-pub(super) fn order_outputs(outputs: &[RawOutput]) -> Option<Vec<usize>> {
-    let names: BTreeSet<&str> = outputs.iter().map(|o| o.name.as_str()).collect();
+///
+/// `loop_binds` names the in-scope §6.4 row bindings (a `[:name]`/`::` bind, and
+/// the grouped `group` binding). §7.1/§6.4 (pinned): an output member never
+/// shadows a same-named loop binding for a sibling member's expression, so a bare
+/// reference to such a name reads the row binding, NOT the like-named output. Those
+/// names therefore carry NO cross-reference dependency edge — they are excluded
+/// from the output-name set the DFS follows.
+pub(super) fn order_outputs(
+    outputs: &[RawOutput],
+    loop_binds: &BTreeSet<&str>,
+) -> Option<Vec<usize>> {
+    let names: BTreeSet<&str> = outputs
+        .iter()
+        .map(|o| o.name.as_str())
+        .filter(|name| !loop_binds.contains(name))
+        .collect();
     let mut ordered = Vec::with_capacity(outputs.len());
     let mut state = vec![Visit::New; outputs.len()];
     for start in 0..outputs.len() {
