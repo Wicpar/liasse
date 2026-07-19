@@ -30,7 +30,7 @@ use crate::window::{Window, WindowError};
 use super::barrier::Barrier;
 use super::{Subscription, SurfaceError, SurfaceHost};
 
-impl<S: InstanceStore> SurfaceHost<S> {
+impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// Invoke a surface mutation on connection `id` (§12.1).
     ///
     /// # Errors

@@ -64,7 +64,7 @@ pub enum UpdateOutcome {
     Incompatible(String),
 }
 
-impl<S: InstanceStore> SurfaceHost<S> {
+impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// Update this host's instance to a target definition **in place** (§20, §9.2),
     /// keeping every live connection and subscription. The migration is admitted
     /// through the host's owned engine ([`Engine::update`]); on success the exposed

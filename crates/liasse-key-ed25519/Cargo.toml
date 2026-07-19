@@ -1,0 +1,37 @@
+[package]
+name = "liasse-key-ed25519"
+description = "Software Ed25519 KeyProvider (§17) backed by ed25519-dalek"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+license.workspace = true
+
+[dependencies]
+# The §17.5 KeyProvider contract, capability set, and typed key/public/attestation
+# values this crate implements.
+liasse-host = { path = "../liasse-host" }
+# Public key material and attestation carried as canonical typed values (§17.2).
+liasse-value = { path = "../liasse-value" }
+# The vetted Ed25519 signing backend: keypair generation, detached signatures,
+# and verifying-key extraction. Default features (`fast`, `std`, `zeroize`).
+ed25519-dalek = { workspace = true }
+# XChaCha20-Poly1305 AEAD for the at-rest keystore: private seeds are sealed
+# under a key derived from the constructor master key. RustCrypto, matching the
+# family already used for hashing (`sha2`). `alloc` only — no OsRng feature, as
+# nonces are drawn through `getrandom` directly.
+chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+# OS CSPRNG for Ed25519 seeds and AEAD nonces.
+getrandom = "0.3"
+# Domain-separated key derivation of the vault sealing key from the master key.
+sha2 = "0.10"
+# Zero private seed buffers after they are consumed.
+zeroize = "1"
+thiserror = "2"
+
+[dev-dependencies]
+# A throwaway directory for the encrypted-keystore round-trip test.
+tempfile = "3"
+
+[lints]
+workspace = true

@@ -23,7 +23,7 @@ use liasse_store::InstanceStore;
 
 use super::{SurfaceError, SurfaceHost};
 
-impl<S: InstanceStore> SurfaceHost<S> {
+impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// Export the current committed boundary as a verified `.liasse` artifact
     /// (§19.5, §19.7): the active definition, the selected state, and a minimal
     /// history index naming the selected `(lineage, point)`. The returned bytes are

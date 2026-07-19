@@ -27,8 +27,8 @@
 //!   verifies a blob parameter (§18.2/§18.7) and binds the verified descriptor
 //!   into the surface call before it is admitted.
 
-use liasse_host::sim::{SimConnector, SimKeyProvider};
-use liasse_host::{CoseClaims, CoseToken};
+use liasse_host::sim::SimConnector;
+use liasse_host::{CoseClaims, CoseToken, KeyProvider};
 use liasse_runtime::{
     DeclaredDescriptor, KeyringError, Placement, PlacementState, Rejection, RejectionReason,
     RotationOutcome, StoreId, Timestamp, Value, VersionId,
@@ -54,12 +54,18 @@ pub enum HostComponentError {
     NoBlob(String),
 }
 
-impl<S: InstanceStore> SurfaceHost<S> {
+impl<S: InstanceStore, P: KeyProvider> SurfaceHost<S, P> {
     // ---- keyring composition (§17) ---------------------------------------
 
     /// Compose a §17 keyring under `name` (the `$keyring` declaration name a
     /// `cose.sign`/`cose.verify` call addresses as `/name`).
-    pub fn register_keyring(&mut self, name: impl Into<String>, ring: CoseKeyring<SimKeyProvider>) {
+    ///
+    /// The ring is backed by this host's key provider `P` — [`SimKeyProvider`]
+    /// for the corpus double, or any real §17.5 [`KeyProvider`] (e.g.
+    /// `Ed25519KeyProvider`) for a production host.
+    ///
+    /// [`SimKeyProvider`]: liasse_host::sim::SimKeyProvider
+    pub fn register_keyring(&mut self, name: impl Into<String>, ring: CoseKeyring<P>) {
         self.keyrings.insert(name.into(), ring);
     }
 
@@ -69,11 +75,11 @@ impl<S: InstanceStore> SurfaceHost<S> {
         self.keyrings.contains_key(name)
     }
 
-    fn keyring(&self, name: &str) -> Result<&CoseKeyring<SimKeyProvider>, HostComponentError> {
+    fn keyring(&self, name: &str) -> Result<&CoseKeyring<P>, HostComponentError> {
         self.keyrings.get(name).ok_or_else(|| HostComponentError::NoKeyring(name.to_owned()))
     }
 
-    fn keyring_mut(&mut self, name: &str) -> Result<&mut CoseKeyring<SimKeyProvider>, HostComponentError> {
+    fn keyring_mut(&mut self, name: &str) -> Result<&mut CoseKeyring<P>, HostComponentError> {
         self.keyrings.get_mut(name).ok_or_else(|| HostComponentError::NoKeyring(name.to_owned()))
     }
 
@@ -167,7 +173,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
     ///
     /// # Errors
     /// [`HostComponentError::NoKeyring`] if unregistered.
-    pub fn provider_mut(&mut self, ring: &str) -> Result<&mut SimKeyProvider, HostComponentError> {
+    pub fn provider_mut(&mut self, ring: &str) -> Result<&mut P, HostComponentError> {
         Ok(self.keyring_mut(ring)?.admin_mut().provider_mut())
     }
 
@@ -175,7 +181,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
     ///
     /// # Errors
     /// [`HostComponentError::NoKeyring`] if unregistered.
-    pub fn keyring_admin(&self, ring: &str) -> Result<&KeyringAdmin<SimKeyProvider>, HostComponentError> {
+    pub fn keyring_admin(&self, ring: &str) -> Result<&KeyringAdmin<P>, HostComponentError> {
         Ok(self.keyring(ring)?.admin())
     }
 

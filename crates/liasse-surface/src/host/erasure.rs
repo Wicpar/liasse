@@ -77,7 +77,7 @@ impl EraseOutcome {
     }
 }
 
-impl<S: InstanceStore> SurfaceHost<S> {
+impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// Erase the row an erasure surface call targets (§21.2): route the removal
     /// through ordinary admission (committing it and sweeping every subscription),
     /// then synthesize and bind the [`Extract`] from the rows it took out of the

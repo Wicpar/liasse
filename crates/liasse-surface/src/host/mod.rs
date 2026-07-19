@@ -83,7 +83,13 @@ pub enum Subscription {
 }
 
 /// The owned surface state over one engine.
-pub struct SurfaceHost<S> {
+///
+/// `P` is the §17 [`KeyProvider`](liasse_host::KeyProvider) backing every
+/// composed keyring. It defaults to [`SimKeyProvider`] — the corpus/testkit
+/// double — so `SurfaceHost<S>` keeps naming a sim-backed host; a real deployment
+/// registers, say, `liasse_key_ed25519::Ed25519KeyProvider` as `SurfaceHost<S,
+/// Ed25519KeyProvider>` (§17.5).
+pub struct SurfaceHost<S, P = SimKeyProvider> {
     engine: Engine<S>,
     router: SurfaceRouter,
     clock: VirtualClock,
@@ -93,7 +99,7 @@ pub struct SurfaceHost<S> {
     /// provisions one per case `$keyring` declaration over a host key provider;
     /// a `cose.sign`/`cose.verify` call resolves the ring by name here
     /// (§17.7/§17.8). Empty until a driver registers one.
-    keyrings: BTreeMap<String, CoseKeyring<SimKeyProvider>>,
+    keyrings: BTreeMap<String, CoseKeyring<P>>,
     /// The §18 blob hosts composed into this host, by blob-field name. A driver
     /// provisions one per accepted blob field over registered stores and
     /// connectors; a blob-parameter mutation resolves it by name at admission.
@@ -101,7 +107,7 @@ pub struct SurfaceHost<S> {
     blobs: BTreeMap<String, BlobHost<SimConnector>>,
 }
 
-impl<S: InstanceStore> SurfaceHost<S> {
+impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// Build a host over `engine`, exposing `router`, driven by `clock`.
     #[must_use]
     pub fn new(engine: Engine<S>, router: SurfaceRouter, clock: VirtualClock) -> Self {

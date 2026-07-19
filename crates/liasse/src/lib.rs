@@ -120,7 +120,9 @@
 //!     .build(engine.model())
 //!     .expect("the bindings validate against the model");
 //!
-//! let mut host = SurfaceHost::new(engine, router, clock);
+//! // `SurfaceHost<S, P = SimKeyProvider>` is generic over its §17 key provider;
+//! // this embedding composes no keyring, so name the sim-backed default.
+//! let mut host: SurfaceHost<_> = SurfaceHost::new(engine, router, clock);
 //! host.connect("client").expect("the connection opens at the current head");
 //!
 //! // `watch public.tasks` — the open-tasks view is empty at genesis.

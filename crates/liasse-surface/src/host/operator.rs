@@ -33,7 +33,7 @@ use crate::router::Resolved;
 
 use super::{SurfaceError, SurfaceHost};
 
-impl<S: InstanceStore> SurfaceHost<S> {
+impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// Admit a trusted operator transition (§23.5): resolve the target mutation,
     /// bypass surface role authentication, and commit it through the ordinary
     /// admission pipeline. A committed transition sweeps every open subscription

@@ -23,6 +23,9 @@ thiserror = "2"
 # the tests reach it through the shared `support::apply_patch` adapter so there is
 # a single source of truth for apply semantics.
 liasse-wire = { path = "../liasse-wire" }
+# The real Ed25519 §17.5 provider, exercised end-to-end through the de-hardwired
+# `register_keyring` + `cose.sign`/`cose.verify` façade (§17.7/§17.8).
+liasse-key-ed25519 = { path = "../liasse-key-ed25519" }
 
 [lints]
 workspace = true

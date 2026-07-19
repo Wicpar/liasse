@@ -224,7 +224,7 @@ pub enum CorrectionError {
     Unmatched(String),
 }
 
-impl<S: InstanceStore> SurfaceHost<S> {
+impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// Apply a host correction over a §19.9 reconciliation plan's conflicts,
     /// addressed by D.3 display path.
     ///

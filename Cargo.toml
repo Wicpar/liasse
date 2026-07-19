@@ -28,3 +28,6 @@ indexing_slicing = "deny"
 # `postgres` 0.19 client — no async runtime, matching the sync `&mut` contract.
 r2d2 = "0.8"
 r2d2_postgres = "0.18"
+# The vetted Ed25519 signing backend for `liasse-key-ed25519`'s software §17.5
+# KeyProvider (keypair generation, detached signatures, verifying-key extraction).
+ed25519-dalek = "2"
