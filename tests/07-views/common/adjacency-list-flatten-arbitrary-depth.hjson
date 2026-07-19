@@ -1,0 +1,54 @@
+{
+  format: 1
+  name: adjacency-list-flatten-arbitrary-depth
+  suite: scenario
+  // §7.1: a projected view over a keyed collection returns one flat row per
+  // source row. A self-referential hierarchy modelled as a flat adjacency list —
+  // one keyed collection whose rows carry an optional `parent` link to another
+  // row of the SAME collection — is flattened at ARBITRARY depth by a plain
+  // projected read: every node at every depth is a top-level row, so `.companies
+  // { id, name, parent }` returns the whole tree regardless of how deep it nests.
+  // §7.3: default order is key ascending, so the flattened rows read in id order.
+  spec: ["#views", "§7.1", "§7.3"]
+  tags: ["recursive", "flatten"]
+  note: "Adjacency-list representation of a self-referential hierarchy: a flat keyed collection with a `parent` self-link. A plain projected view flattens the hierarchy at arbitrary depth (here acme -> labs -> labs-eu -> rnd, four levels) into one row per node; the parent link makes the tree reconstructable from the flat result. This is the runtime-viable arbitrary-depth flatten with current constructs; the nested §5.8/§10.5 vehicles are exercised elsewhere."
+
+  package: {
+    $liasse: 1
+    $app: "t.adj@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        // Self-referential link: the parent's id, absent at the root. The tree
+        // may nest to any depth without any change to the (flat) shape.
+        parent: "text?"
+      }
+      $public: {
+        tree: { $view: ".companies { id, name, parent }" }
+      }
+    }
+    $data: {
+      companies: {
+        acme: { name: "Acme" }
+        labs: { name: "Labs", parent: "acme" }
+        "labs-eu": { name: "Labs EU", parent: "labs" }
+        rnd: { name: "R&D", parent: "labs-eu" }
+      }
+    }
+  }
+
+  steps: [
+    // Every node at every depth is present, in key-ascending order (§7.3). The
+    // root's `parent` is none; the extra-member matcher on that row leaves the
+    // representation of the absent optional link unpinned (§7.3 does not pin it),
+    // while every deeper node's parent link is asserted exactly.
+    { watch: "public.tree", id: "w1", expect_init: { value: [
+      { id: "acme",    name: "Acme",    "...": true }
+      { id: "labs",    name: "Labs",    parent: "acme" }
+      { id: "labs-eu", name: "Labs EU", parent: "labs" }
+      { id: "rnd",     name: "R&D",     parent: "labs-eu" }
+    ] } }
+  ]
+}

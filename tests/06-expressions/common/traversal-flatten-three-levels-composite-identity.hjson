@@ -1,0 +1,81 @@
+{
+  format: 1
+  name: traversal-flatten-three-levels-composite-identity
+  suite: scenario
+  // §6.4 row bindings: `.companies[:c].divisions[:d].teams[:t]` traverses three
+  // nested keyed collections, binding each level; the projection block flattens
+  // the traversed nesting into one flat row per leaf. §7.2: view identity is the
+  // source row chain (companies.$key + divisions.$key + teams.$key). §5.4: a
+  // nested collection key is unique only within its parent row, so the SAME local
+  // team key `eu` under different (company, division) ancestors is a DISTINCT row
+  // — its identity is the ancestor+local composite. §B.5: rows read in the source
+  // chain's key-ascending order, ancestor before local at every level.
+  spec: ["#expressions", "§6.4", "§7.2", "#state-model", "§5.4", "§B.5"]
+  tags: ["recursive", "flatten"]
+  note: "Fixed-depth traversal-flatten (§6.4) over three DISTINCT nested keyed collections. The flattened view returns every leaf with its full ancestor+local composite identity (§5.4/D.1) in ancestor-then-local key order (§B.5). The repeated local key `eu` under three different ancestors yields three distinct rows."
+
+  package: {
+    $liasse: 1
+    $app: "t.flat3@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        divisions: {
+          $key: "id"
+          id: "text"
+          teams: {
+            $key: "id"
+            id: "text"
+            name: "text"
+          }
+        }
+      }
+      $public: {
+        leaves: {
+          $view: ".companies[:c].divisions[:d].teams[:t] { company: c.id, division: d.id, team: t.id, name: t.name }"
+        }
+      }
+    }
+    $data: {
+      companies: {
+        acme: {
+          divisions: {
+            labs: {
+              teams: {
+                eu: { name: "Acme Labs EU" }
+                us: { name: "Acme Labs US" }
+              }
+            }
+            ops: {
+              teams: {
+                eu: { name: "Acme Ops EU" }
+              }
+            }
+          }
+        }
+        globex: {
+          divisions: {
+            labs: {
+              teams: {
+                eu: { name: "Globex Labs EU" }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // Ancestor-then-local key-ascending order (§B.5): companies (acme < globex),
+    // then divisions (labs < ops), then teams (eu < us). The three `eu` leaves are
+    // distinct rows keyed by their full ancestor+local composite (§5.4).
+    { watch: "public.leaves", id: "w1", expect_init: { value: [
+      { company: "acme",   division: "labs", team: "eu", name: "Acme Labs EU" }
+      { company: "acme",   division: "labs", team: "us", name: "Acme Labs US" }
+      { company: "acme",   division: "ops",  team: "eu", name: "Acme Ops EU" }
+      { company: "globex", division: "labs", team: "eu", name: "Globex Labs EU" }
+    ] } }
+  ]
+}
