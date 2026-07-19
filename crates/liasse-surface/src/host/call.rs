@@ -214,19 +214,37 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
             Authority::Role(role) => {
                 let role_def =
                     self.router.role(role).ok_or_else(|| SurfaceOutcome::Denied(Self::unresolved_name()))?;
-                // §10.4: an actor-required denial over this (unenumerable) role is
-                // collapsed to `unresolved`, so an anonymous caller cannot tell an
+                // §10.4: an actor-absent denial over this (unenumerable) role — no
+                // per-request `auth` and no bound context, so no established authority
+                // — is collapsed to `unresolved`, so an anonymous caller cannot tell an
                 // existing role from a nonexistent one by the wire code.
                 let selection = self.call_selection(id, call).map_err(|denial| {
-                    SurfaceOutcome::Denied(Self::hide_unenumerable_denial(call.address().authority(), denial))
+                    SurfaceOutcome::Denied(Self::hide_unenumerable_denial(call.address().authority(), false, denial))
                 })?;
                 let now = self.clock.instant();
                 let reader = EngineReader::new(&self.engine, now);
+                // A per-request `auth` selection is a fresh probe (no established
+                // authority); a bound connection context (`auth` absent, so
+                // `call_selection` returned a stored context) is a caller that already
+                // authenticated to this role (§10.4's exception).
+                let established = call.auth().is_none();
                 // §10.3/§10.5: membership is confirmed for the SCOPE the request
                 // addresses, so a holder scoped to one row is not admitted to another.
+                // §10.4: for a caller without established authority every authorize
+                // denial over this (unenumerable) role — the whole authentication-
+                // FAILURE path (unaccepted authenticator, forged credential, invalid
+                // session/actor) as well as non-membership — collapses to the uniform
+                // `unresolved`, so it cannot tell an existing role from a nonexistent
+                // one by the wire code; an established caller reads the precise reason.
                 let context = self
                     .authorize_role(role_def, &selection, call.scope(), &reader)
-                    .map_err(SurfaceOutcome::Denied)?;
+                    .map_err(|denial| {
+                        SurfaceOutcome::Denied(Self::hide_unenumerable_denial(
+                            call.address().authority(),
+                            established,
+                            denial,
+                        ))
+                    })?;
                 // Member confirmed: only now may the surface/call binding's
                 // existence be revealed (SPEC-ISSUES item 8).
                 let binding = self.router.role_call(role, call.address()).map_err(SurfaceOutcome::Denied)?;
@@ -281,29 +299,52 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         Denial::new(DenialReason::Unresolved, "the address names nothing exposed to this caller")
     }
 
-    /// Collapse an actor-required denial over a target the caller cannot enumerate
-    /// to the uniform unresolvable-name denial (§10.4).
+    /// Collapse a pre-authority denial over a target the caller cannot enumerate to
+    /// the uniform unresolvable-name denial (§10.4).
     ///
-    /// [`DenialReason::Unauthenticated`] is *not* name-independent: it fires only
-    /// after a role's existence is confirmed — an existing role passes the
-    /// role-existence check and reaches the actor check, while a nonexistent role
-    /// short-circuits to [`DenialReason::Unresolved`]. Emitting `unauthenticated`
-    /// for an [`Authority::Role`] target would therefore let an *unauthenticated*
-    /// caller enumerate the role catalog by wire code — `member.x` (exists) denying
-    /// `unauthenticated` while `ghost.x` (absent) denies `unresolved`. For a role
-    /// (unenumerable) target the denial is remapped to the uniform unresolvable-name
-    /// outcome, identical in class, code, and message to a nonexistent name
-    /// ([`Self::unresolved_name`]).
+    /// A role catalog is unenumerable. Every denial reason other than the uniform
+    /// [`DenialReason::Unresolved`] fires ONLY after a role's existence is confirmed:
+    /// a nonexistent role short-circuits to `unresolved` at the `router.role()`
+    /// lookup, while an existing role advances to the authenticator-acceptance,
+    /// credential-`$verify`, `$check`/`$session`/`$actor`, and membership checks. So
+    /// for an [`Authority::Role`] target ANY distinct reason — `unauthenticated` (no
+    /// actor), `authenticator-not-accepted`/`-missing`, `unverified` (a forged
+    /// credential), `check-failed`, `session-invalid`, `actor-unresolved` — is a
+    /// role-existence oracle: `member.x` (exists) denies it while `ghost.x` (absent)
+    /// denies `unresolved`.
     ///
-    /// An [`Authority::Public`] target is enumerable via `manifest`, so an
-    /// actor-required denial over it would disclose nothing and is preserved. (A
-    /// public surface can never in fact require an actor — a `$actor`/`$session`
-    /// read inside a public program is rejected at load, and an indirect one faults
-    /// at admission as a `rejected`, never a `denied`, §10.2 — so the preserved
-    /// branch guards a structural invariant; the remap stays predicated on authority
-    /// so a caller who *may* enumerate the target still reads the precise reason.)
-    fn hide_unenumerable_denial(authority: &Authority, denial: Denial) -> Denial {
-        if matches!(authority, Authority::Role(_)) && denial.reason() == DenialReason::Unauthenticated {
+    /// §10.4's exception is narrow: "membership- or existence-specific diagnostics
+    /// are permitted only toward a caller that has already established authority over
+    /// the target." `established` carries that predicate. It is set when the request
+    /// authorizes from a bound connection context — a selection the caller already
+    /// authenticated to this role through [`SurfaceHost::authenticate`], which denies
+    /// a nonexistent role `unresolved` and binds nothing, so a bound context proves
+    /// the caller already learned the role exists. Such a caller reads the precise
+    /// reason (e.g. a `session-invalid` once its session expires or is revoked,
+    /// §11.7) — hiding existence from someone who already established it is pointless.
+    ///
+    /// A caller WITHOUT established authority — a fresh per-request `auth` probe, or
+    /// no actor at all — is `established = false`: every pre-authority reason over a
+    /// role target is remapped to the uniform unresolvable-name outcome, identical in
+    /// class, code, and message to a nonexistent name ([`Self::unresolved_name`]), so
+    /// the whole authentication-FAILURE path (a forged credential, an unaccepted
+    /// authenticator, an invalid session/actor — none of which established authority)
+    /// cannot betray that the role exists. A non-member's membership failure already
+    /// denies the uniform `unresolved` in [`Self::authorize_role`], so it passes
+    /// through unchanged whether or not the caller is established.
+    ///
+    /// An [`Authority::Public`] target is enumerable via `manifest`, so a denial over
+    /// it discloses nothing and every reason is preserved. (A public surface can
+    /// never in fact require an actor — a `$actor`/`$session` read inside a public
+    /// program is rejected at load, and an indirect one faults at admission as a
+    /// `rejected`, never a `denied`, §10.2 — so the preserved branch guards a
+    /// structural invariant; the remap stays predicated on authority so a caller who
+    /// *may* enumerate the target still reads the precise reason.)
+    fn hide_unenumerable_denial(authority: &Authority, established: bool, denial: Denial) -> Denial {
+        let leaks_existence = matches!(authority, Authority::Role(_))
+            && !established
+            && denial.reason() != DenialReason::Unresolved;
+        if leaks_existence {
             Self::unresolved_name()
         } else {
             denial
@@ -560,7 +601,9 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
 
     /// Resolve a subscription's view and authorization context (§12.2). A role
     /// subscription authorizes from its per-request `auth` selection (§11.4) when
-    /// one is supplied, otherwise from the connection's stored context.
+    /// one is supplied, otherwise from the connection's stored context. A public
+    /// subscription carries NO selection: one attached is malformed and refused
+    /// before the credential is inspected (§10.2/§11.4), mirroring the `call` path.
     fn resolve_view(
         &self,
         id: &str,
@@ -572,6 +615,22 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         match address.authority() {
             Authority::Public => {
                 let binding = self.router.public_view(address)?;
+                // §10.2/§11.4: a public address carries no authenticator selection. A
+                // public subscription that nonetheless attaches one is malformed —
+                // refused here, BEFORE the credential is inspected, never dropped and
+                // served actor-less (mirrors `resolve_call`'s public arm). The `call`
+                // pipeline reports this as a `rejected` admission refusal; a
+                // `Subscription` has no `rejected` arm and adding one would ripple into
+                // `liasse-connect`/clients, so the refusal surfaces on the shared
+                // `denied` channel — still fail-closed, never serving the request. A
+                // public target is enumerable via `manifest`, so a reason distinct from
+                // a nonexistent public address discloses nothing (§10.4).
+                if selection.is_some() {
+                    return Err(Denial::new(
+                        DenialReason::AuthenticatorNotAccepted,
+                        "a public address carries no authenticator selection",
+                    ));
+                }
                 Ok((binding.view().to_owned(), WatchAuthz::public(), None))
             }
             Authority::Role(role) => {
@@ -593,6 +652,7 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
                         let Some(connection) = self.connections.get(id) else {
                             return Err(Self::hide_unenumerable_denial(
                                 address.authority(),
+                                false,
                                 Denial::new(DenialReason::Unauthenticated, "the connection is not open"),
                             ));
                         };
@@ -601,6 +661,7 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
                             None => {
                                 return Err(Self::hide_unenumerable_denial(
                                     address.authority(),
+                                    false,
                                     Denial::new(
                                         DenialReason::Unauthenticated,
                                         "a role surface requires an authenticated actor",
@@ -619,7 +680,20 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
                 // scope row it names, so a holder scoped to one company cannot watch
                 // another company's covered `$view` (the cross-scope read is denied
                 // with the same uniform outcome, §10.4).
-                let auth_context = self.authorize_role(role_def, &selection, scope, &reader)?;
+                // §10.4: as on the `call` path, for a caller without established
+                // authority every authorize denial over this (unenumerable) role — the
+                // authentication-FAILURE path (unaccepted authenticator, forged
+                // credential, invalid session/actor) as well as non-membership —
+                // collapses to the uniform `unresolved`, so it cannot enumerate the
+                // role by wire code. A per-request `auth` selection (`inline`) is a
+                // fresh probe; a bound connection context is an established caller that
+                // already authenticated to this role and reads the precise reason.
+                let established = inline.is_none();
+                let auth_context = self
+                    .authorize_role(role_def, &selection, scope, &reader)
+                    .map_err(|denial| {
+                        Self::hide_unenumerable_denial(address.authority(), established, denial)
+                    })?;
                 let binding = self.router.role_view(role, address)?;
                 let context = context.unwrap_or(DEFAULT_CONTEXT).to_owned();
                 let mut authz = WatchAuthz::role(context, role_def.name().to_owned());

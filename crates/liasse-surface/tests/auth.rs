@@ -123,15 +123,20 @@ fn disabled_account_fails_role_membership() {
 
 #[test]
 fn role_rejects_unaccepted_authenticator() {
-    // The member role accepts only `token`; a per-request `api` selection is
-    // refused before any credential is resolved (§11.4).
+    // The member role accepts only `token`; a per-request `api` selection is refused
+    // before any credential is resolved (§11.4). This caller is a fresh probe with no
+    // established authority over `member` (no prior `authenticate`), so §10.4 makes
+    // the observable denial the uniform `Unresolved` — identical to a nonexistent
+    // role — rather than the acceptance-specific `AuthenticatorNotAccepted`, which
+    // would let an unauthenticated caller enumerate the role catalog by wire code
+    // (pinned by `redteam_denial_oracle_auth_failure`).
     let mut host = host();
     host.connect("c1").unwrap();
     let id = add_task(&mut host, "c1", "t");
     let request = call("member.tasks.complete", [("id", id), ("title", text("x"))])
         .with_auth(AuthSelection::new("api", Credential::new(text("alice"))));
     let outcome = host.call("c1", &request).expect("call");
-    assert_eq!(call_denial(&outcome), DenialReason::AuthenticatorNotAccepted);
+    assert_eq!(call_denial(&outcome), DenialReason::Unresolved);
 }
 
 #[test]
