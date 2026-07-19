@@ -12,7 +12,7 @@ use liasse_ident::NameSegment;
 use liasse_store::{CollectionPath, RowAddress};
 use liasse_value::{Precision, RefKey, Struct, StructType, Text, Timestamp, Value};
 
-use crate::compiled::{Compiled, CompiledCollection, CompiledField};
+use crate::compiled::{Compiled, CompiledCollection, CompiledField, CompiledStruct};
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
 use crate::generator::Generation;
@@ -485,6 +485,7 @@ pub(crate) fn finalize(
         check_key_components(address)?;
         check_fields(collection, fields, address, ctx, prospective)?;
         check_row(collection, fields, address, ctx, prospective)?;
+        check_structs(collection, fields, address, ctx, prospective)?;
         check_refs(compiled, prospective, collection, fields, address)?;
         check_uniqueness(prospective, collection, fields, address)?;
         if let Some(bucket) = compiled.bucket(&name) {
@@ -561,6 +562,69 @@ fn check_row(
         if !passes(ctx.eval(prospective, &check.condition, &current)?) {
             return Err(Rejection::new(RejectionReason::Check, check.message.clone())
                 .at(address.render()));
+        }
+    }
+    Ok(())
+}
+
+/// Enforce every static-struct `$check` (§5.3/§5.10/§8.8) over the FINAL
+/// prospective row, descending nested structs to any depth. A struct materializes
+/// as a `Value::Struct` scalar; its check reads the struct as `.` and — through
+/// `^`, `^^`, … — the containing row and any ancestor structs (§6.2), so the
+/// lexical parent chain is supplied here rather than at struct-construction time,
+/// where the containing row is not yet assembled. This mirrors the read/view path
+/// (`fold_struct_computed`) fdc7639 established: without the parent frame a struct
+/// check reading `^` overruns the evaluator's scope stack and faults on every
+/// insert instead of enforcing.
+fn check_structs(
+    collection: &CompiledCollection,
+    fields: &FieldMap,
+    address: &RowAddress,
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+) -> Result<(), Rejection> {
+    if collection.structs.is_empty() {
+        return Ok(());
+    }
+    let row = row_cell(collection, fields);
+    for structure in &collection.structs {
+        if let Some(value) = fields.get(&structure.name) {
+            check_struct(structure, value, std::slice::from_ref(&row), address, ctx, prospective)?;
+        }
+    }
+    Ok(())
+}
+
+/// Enforce one static struct's `$check`s with `parents` (outermost-first) as its
+/// lexical ancestor chain, then recurse into its nested structs (§5.3), extending
+/// the chain so a deeper check reaches an ancestor field through `^`, `^^`, ….
+fn check_struct(
+    structure: &CompiledStruct,
+    value: &Value,
+    parents: &[Cell],
+    address: &RowAddress,
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+) -> Result<(), Rejection> {
+    let struct_cell = Cell::Scalar(value.clone());
+    if !structure.row_checks.is_empty() {
+        let mut currents = parents.to_vec();
+        currents.push(struct_cell.clone());
+        for check in &structure.row_checks {
+            if !passes(ctx.eval_scoped(prospective, &check.condition, &currents)?) {
+                return Err(Rejection::new(RejectionReason::Check, check.message.clone()).at(address.render()));
+            }
+        }
+    }
+    if !structure.structs.is_empty()
+        && let Value::Struct(inner) = value
+    {
+        let mut child_parents = parents.to_vec();
+        child_parents.push(struct_cell);
+        for nested in &structure.structs {
+            if let Some(nested_value) = inner.get(&nested.name) {
+                check_struct(nested, nested_value, &child_parents, address, ctx, prospective)?;
+            }
         }
     }
     Ok(())

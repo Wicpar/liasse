@@ -1309,14 +1309,12 @@ impl<'a> Interp<'a> {
         // static structs. An omitted optional member stays absent (A.1). Runs before
         // the struct `$check` so the check sees the completed shape (§5.10).
         rules::complete_struct_containers(&mut fields, &struct_meta.fields);
-        // §5.10: a struct `$check` constrains the complete struct after defaults,
-        // with `.` the prospective struct; a failure rejects the containing insert.
-        let struct_cell = struct_row_cell(struct_meta, &fields);
-        for check in &struct_meta.row_checks {
-            if !matches!(self.ctx.eval(self.prospective, &check.condition, &struct_cell)?, Cell::Scalar(Value::Bool(true))) {
-                return Err(Rejection::new(RejectionReason::Check, check.message.clone()));
-            }
-        }
+        // §5.3/§5.10/§8.8: the struct `$check` is NOT enforced here — a struct check
+        // reading the containing row via `^` (§6.2) needs the parent scope frame,
+        // which the row is not yet in when its members are being built. It is
+        // enforced over the completed prospective row in the final rule pass
+        // (`rules::check_structs`), where `.` is the struct and `^` the containing
+        // row, matching the read/view path fdc7639 established.
         Ok(Value::Struct(Struct::new(
             fields.into_iter().map(|(name, value)| (Text::new(name), value)),
         )))

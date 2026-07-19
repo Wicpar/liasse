@@ -672,9 +672,17 @@ fn compile_collection(
     depth: u32,
 ) -> Result<CompiledCollection, EngineError> {
     let name = path.last().map_or("", String::as_str);
+    // §5.8: at a deep self-referential compiled depth `receiver_row_type` resolves
+    // to `None` — it walks the depth-capped root row type, whose self-ref field
+    // truncates to `json` past the resolver's `MAX_DEPTH`, which does not line up
+    // with `MAX_SELF_REF_DEPTH`. Falling back to an EMPTY row there made every
+    // field-referencing computed value / `$check` (`= .name`, `size(.name) > 0`)
+    // fail to compile and rejected the whole load. Fall back to the collection's
+    // OWN row shape instead, which is identical at every self-ref depth, so the
+    // computed/check sees `.name` and compiles at every level (§5.2/§5.10).
     let row_ty = schema
         .receiver_row_type(path)
-        .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
+        .unwrap_or_else(|| schema.collection_row_type(collection));
     let row_scope = RuntimeScope::new(row_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
 
     let mut fields = Vec::new();

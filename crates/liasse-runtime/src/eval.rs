@@ -615,6 +615,21 @@ impl<'a> EvalCtx<'a> {
         typed.evaluate(&env, current).map_err(Rejection::from)
     }
 
+    /// Evaluate `typed` with an explicit lexical current chain (§6.2): `currents`
+    /// runs outermost-first, so its last element is `.` and earlier elements are
+    /// reachable as `^`, `^^`, …. This is the admission-time counterpart of the
+    /// read path's [`TypedExpr::evaluate_scoped`], used to enforce a static-struct
+    /// `$check` whose `^` reads the containing row (§5.3/§8.8).
+    pub(crate) fn eval_scoped(
+        &self,
+        prospective: &Prospective,
+        typed: &TypedExpr,
+        currents: &[Cell],
+    ) -> Result<Cell, Rejection> {
+        let env = self.env(prospective);
+        typed.evaluate_scoped(&env, currents).map_err(Rejection::from)
+    }
+
     /// Evaluate one admitted row's insertion default at `generation` (SPEC-ISSUES
     /// item 4, §5.1/§8.12): a `uuid()` call site yields a distinct value per row
     /// because each row draws a fresh generation, while a state-derived default
@@ -844,11 +859,22 @@ fn fold_views(env: &RuntimeEnv<'_>, views: &[crate::compiled::CompiledView], mut
 /// A logical row cell over a field map, for evaluating a default, normalizer, or
 /// row check whose `.` is the provisional row (§5.1, §5.10). Every declared field
 /// is present (absent values read as `none`), so a check can reference a sibling.
+///
+/// §5.3: a static-struct member is stored as a `Value::Struct` scalar (it compiles
+/// into `collection.structs`, not `collection.fields`); expose it as a cell too, so
+/// a row `$check` reading `.meta.tag` descends the struct the same way the
+/// materialized read path does (`build_row`, `materialize::build_row`) rather than
+/// faulting on a missing field.
 pub(crate) fn row_cell(collection: &CompiledCollection, fields: &FieldMap) -> Cell {
-    let cells = collection.fields.iter().map(|field| {
+    let field_cells = collection.fields.iter().map(|field| {
         let value = fields.get(&field.name).cloned().unwrap_or(Value::None);
         (field.name.clone(), Cell::Scalar(value))
     });
+    let struct_cells = collection.structs.iter().map(|structure| {
+        let value = fields.get(&structure.name).cloned().unwrap_or(Value::None);
+        (structure.name.clone(), Cell::Scalar(value))
+    });
+    let cells = field_cells.chain(struct_cells);
     let key = collection
         .key
         .iter()

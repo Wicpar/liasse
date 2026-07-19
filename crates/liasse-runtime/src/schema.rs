@@ -53,6 +53,18 @@ impl<'m> Schema<'m> {
         Some(current)
     }
 
+    /// The receiver `.` row type of a collection's OWN rows (§8.2), built directly
+    /// from the collection shape rather than by walking the depth-capped root row
+    /// type. A self-referential collection (§5.8) has the same row shape at every
+    /// nesting depth, so this yields the correct, non-empty row type even at a
+    /// compiled self-ref depth where [`Self::receiver_row_type`] — which folds the
+    /// self-ref field to opaque `json` past `MAX_DEPTH` and then resolves to `None`
+    /// (the two independent depth caps do not line up) — would truncate. Its own
+    /// nested self-ref expansion is still bounded by `MAX_DEPTH`, so it terminates.
+    pub(crate) fn collection_row_type(&self, collection: &Collection) -> ExprType {
+        ExprType::Row(self.collection_row(collection, 0))
+    }
+
     /// The top-level collection declared under `name`, if any. A member naming a
     /// keyed `$types` shape (`companies: "company"`, §5.8) resolves to that shape's
     /// collection, so a top-level named collection is a first-class collection.
