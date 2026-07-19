@@ -118,6 +118,12 @@ impl Request {
                 operation_id: step.member("operation_id").and_then(Value::as_str).map(ToOwned::to_owned),
                 auth: step.member("auth").map(|selection| env.resolve(selection)),
                 context: step.member("context").and_then(Value::as_str).map(ToOwned::to_owned),
+                // §10.3/§10.5: a scoped-role call names the containing row it is
+                // addressed under (`scope`) and, for a covered descendant, its key
+                // path down through `$field`/`$through` (`descendant`); both resolve
+                // through `env` like any bound payload.
+                scope: step.member("scope").map(|scope| env.resolve(scope)),
+                descendant: step.member("descendant").map(|descendant| env.resolve(descendant)),
             })),
             StepKind::Watch => Ok(Self::Watch(WatchRequest {
                 target: require_str(&step.target, action, "surface address")?.to_owned(),

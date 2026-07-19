@@ -17,6 +17,7 @@ use liasse_value::Value;
 pub struct CallRequest {
     mutation: String,
     receiver: Vec<Value>,
+    receiver_path: Option<Vec<String>>,
     args: BTreeMap<String, Value>,
     actor: Option<Value>,
     session: Option<Value>,
@@ -29,6 +30,7 @@ impl CallRequest {
         Self {
             mutation: mutation.into(),
             receiver: Vec::new(),
+            receiver_path: None,
             args: BTreeMap::new(),
             actor: None,
             session: None,
@@ -71,6 +73,25 @@ impl CallRequest {
     pub fn receiver(mut self, component: Value) -> Self {
         self.receiver.push(component);
         self
+    }
+
+    /// Override the collection declaration path the receiver key addresses (§10.5):
+    /// a scoped-role covered-descendant call addresses a row *below* the mutation's
+    /// declared collection — `companies[root].subcompanies[a]` for a `companies`
+    /// mutation — so the receiver descends this path (in `$key` order across every
+    /// level) rather than the mutation's own declared path. Absent for an ordinary
+    /// call, which addresses the receiver at the mutation's declared location.
+    #[must_use]
+    pub fn receiver_path(mut self, path: impl IntoIterator<Item = String>) -> Self {
+        self.receiver_path = Some(path.into_iter().collect());
+        self
+    }
+
+    /// The receiver collection path override (§10.5), if a scoped-role descendant
+    /// call set one. `None` addresses the receiver at the mutation's declared path.
+    #[must_use]
+    pub fn receiver_path_override(&self) -> Option<&[String]> {
+        self.receiver_path.as_deref()
     }
 
     /// Bind a mutation argument `@name` to a typed value (§8.3).

@@ -139,12 +139,14 @@ fn adjacency_list_flatten_arbitrary_depth() {
 }
 
 // ===========================================================================
-// §10.5 RECURSIVE SURFACE COVERAGE — green conformance (F2–F5, landed) plus the
-// one held repro (F6). F2–F5 lock the runtime MATERIALIZATION of `$recursive`
-// coverage: a scoped-role surface's `$view` projection re-applies to the covered
-// row and every included descendant, nested under `$field` as a keyed tree, with
-// `$where`/`$except` hereditary pruning bounded by the stored data depth. F6
-// remains `#[ignore]`d — scoped-role descendant MUTATION addressing is unwired.
+// §10.5 RECURSIVE SURFACE COVERAGE — green conformance (F2–F6, all landed). F2–F5
+// lock the runtime MATERIALIZATION of `$recursive` coverage: a scoped-role
+// surface's `$view` projection re-applies to the covered row and every included
+// descendant, nested under `$field` as a keyed tree, with `$where`/`$except`
+// hereditary pruning bounded by the stored data depth. F6 completes the mechanism:
+// scoped-role descendant MUTATION addressing — a covered descendant is addressed as
+// a mutation receiver by (role handle + key path), the admission re-walking the
+// recursive relation along the whole path (§10.3/§10.5).
 // ===========================================================================
 
 /// §5.8 + §6.4: fixed-depth traversal-flatten over a SELF-REFERENTIAL shape.
@@ -336,14 +338,11 @@ fn recursive_coverage_empty_children_leaf() {
 /// projection AND mutations" to included children; admission re-walks the recursive
 /// relation along the whole path and binds the addressed descendant as the mutation
 /// `.` receiver (the role-holding row is the empty path).
-/// Expected: renaming the covered subcompany `labs` under scope `acme` succeeds.
-/// Observed: `denied` — scoped-role addressing (even non-recursive, §10.3) is
-/// unwired this phase, so `scope`/`descendant` never bind a receiver.
-/// Root cause: scoped-role (row-nested role) admission/addressing is not threaded
-/// through the surface host call path (same seam that denies
-/// `tests/10-interfaces-roles/common/scoped-role-addressed-by-row-and-name.hjson`).
+/// Result: renaming the covered subcompany `labs` under scope `acme` succeeds — the
+/// surface host resolves the scoped role held by row `acme`, confirms membership for
+/// that exact scope row, and re-walks `$through` to bind `labs` as the receiver
+/// (§10.3/§10.5). (Formerly an `#[ignore]`d repro of the now-closed addressing gap.)
 #[test]
-#[ignore = "FINDING F6: §10.5/§10.3 scoped-role + $recursive descendant addressing unwired (observed `denied`); repro-only"]
 fn recursive_descendant_addressing() {
     let case = r##"{
       format: 1
@@ -388,6 +387,71 @@ fn recursive_descendant_addressing() {
       ]
     }"##;
     assert_pass(&run(case, "rec-addr"), "$recursive descendant mutation addressing");
+}
+
+/// §10.3/§10.5: scoped-role coverage VIEW authorization is PER SCOPE ROW, not
+/// global. A holder of the role scoped to one company must NOT read another
+/// company's covered `$view` merely because it holds the same role name elsewhere —
+/// membership is confirmed for the exact row the subscription addresses (§10.3
+/// "Their location defines scope"). Here alice is admin of `acme` and bob of
+/// `globex`: alice reads `acme`'s coverage, bob reads `globex`'s, but alice's watch
+/// on `globex` is DENIED — the same uniform unresolvable-name outcome as a
+/// nonexistent scope (§10.4), so the cross-scope read is no oracle. This guards the
+/// read side of the scoped membership check (the scope-mismatch corpus cases are
+/// mutations; this pins the `view`/`watch` path).
+#[test]
+fn scoped_coverage_view_is_per_scope() {
+    let case = r##"{
+      format: 1
+      name: rec-view-scope
+      suite: scenario
+      spec: ["#interfaces", "§10.5", "§10.3"]
+      package: {
+        $liasse: 1
+        $app: "t.recvs@1.0.0"
+        $model: {
+          accounts: { $key: "id", id: "text" }
+          companies: {
+            $key: "id", id: "text", name: "text", plan: "text = 'active'"
+            subcompanies: { $like: "^" }
+            members: { $key: "account", account: { $ref: "/accounts" }, admin: "bool = false" }
+            $roles: { admin: {
+              $auth: "token"
+              $members: ".members[:m | m.admin].account"
+              company: {
+                $view: ". { id, name, plan }"
+                $recursive: { $field: "subcompanies", $through: ".subcompanies", $bind: "child" }
+              }
+            } }
+          }
+          $auth: { token: { $credential: "text", $verify: "$credential", $actor: "/accounts[$proof]" } }
+        }
+        $data: {
+          accounts: { alice: {}, bob: {} }
+          companies: {
+            acme:   { name: "Acme",   members: { alice: { admin: true } } }
+            globex: { name: "Globex", members: { bob:   { admin: true } } }
+          }
+        }
+      }
+      steps: [
+        { connect: "c1", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+        { connect: "c2", authenticate: { role: "admin", auth: "token", credential: "bob" } }
+        // The holder of scope `acme` reads acme's coverage view.
+        { watch: "admin.company", scope: "acme", id: "w1", on: "c1", expect_init: { value: {
+          id: "acme", name: "Acme", plan: "active", subcompanies: [], "...": true
+        } } }
+        // Cross-scope read: alice (scoped to acme) is DENIED globex's coverage view —
+        // the uniform §10.4 outcome, indistinguishable from a nonexistent scope.
+        { watch: "admin.company", scope: "globex", id: "w2", on: "c1",
+          expect: { outcome: denied } }
+        // The legitimate holder of scope `globex` reads globex's coverage view.
+        { watch: "admin.company", scope: "globex", id: "w3", on: "c2", expect_init: { value: {
+          id: "globex", name: "Globex", plan: "active", subcompanies: [], "...": true
+        } } }
+      ]
+    }"##;
+    assert_pass(&run(case, "rec-view-scope"), "scoped-role coverage view is per scope row");
 }
 
 /// The shared head of a `$recursive` role package: a self-referential `companies`

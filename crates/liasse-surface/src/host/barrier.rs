@@ -8,7 +8,7 @@
 //! the authorized view and emits a coherent patch, or emits `close` when the
 //! state has removed that subscription's authority.
 
-use liasse_runtime::{CommitSeq, EngineError, Engine, Timestamp};
+use liasse_runtime::{CommitSeq, EngineError, Engine, Timestamp, Value};
 use liasse_store::InstanceStore;
 
 use crate::authn::AuthContext;
@@ -61,7 +61,10 @@ impl<'a, S: InstanceStore> Barrier<'a, S> {
                 continue;
             }
             let authz = watch.authz().clone();
-            if self.authorized(&authz, connection)?.is_none()
+            // §10.5: re-check membership for the subscription's own scope, so a
+            // scope whose grant was removed (or that a peer never held) closes here.
+            let scope = watch.scope().to_vec();
+            if self.authorized(&authz, &scope, connection)?.is_none()
                 && let Some(watch) = connection.watch_mut(&id)
             {
                 watch.close("authority removed at frontier");
@@ -87,8 +90,9 @@ impl<'a, S: InstanceStore> Barrier<'a, S> {
 
         // §12.2: re-evaluate authorization and, for a role subscription, recover
         // the actor identity so the recomputed `$view` sees the same `$actor` as
-        // the initial read. `None` means authority was removed.
-        let context = match self.authorized(&authz, connection)? {
+        // the initial read. `None` means authority was removed. §10.5: the
+        // subscription's own scope gates the per-frontier membership re-check.
+        let context = match self.authorized(&authz, &scope, connection)? {
             Some(context) => context,
             None => {
                 if let Some(watch) = connection.watch_mut(id) {
@@ -122,6 +126,7 @@ impl<'a, S: InstanceStore> Barrier<'a, S> {
     pub(crate) fn authorized(
         &self,
         authz: &WatchAuthz,
+        scope: &[Value],
         connection: &Connection,
     ) -> Result<Option<Option<AuthContext>>, EngineError> {
         let Some(role_name) = authz.role_name() else {
@@ -152,7 +157,7 @@ impl<'a, S: InstanceStore> Barrier<'a, S> {
             Ok(context) => context,
             Err(_) => return Ok(None),
         };
-        if role.holds(context.actor().key(), &reader)? {
+        if role.holds(context.actor().key(), scope, &reader)? {
             Ok(Some(Some(context)))
         } else {
             Ok(None)

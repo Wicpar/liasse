@@ -43,6 +43,14 @@ pub struct CallRequest {
     /// The named authentication context on a multiplexed connection (§11.8), if
     /// the step selects one.
     pub context: Option<String>,
+    /// The scope-row key a scoped-role call is addressed under (§10.3/§10.5),
+    /// verbatim — the containing row identity whose surface the call targets. The
+    /// driver decodes it against the scope collection's key type.
+    pub scope: Option<Value>,
+    /// The covered-descendant key path a §10.5 call addresses, verbatim — the key
+    /// path from the role-holding row down through `$field`/`$through` to the
+    /// covered descendant the mutation receiver binds to.
+    pub descendant: Option<Value>,
 }
 
 /// A request to open a live subscription over a surface view.

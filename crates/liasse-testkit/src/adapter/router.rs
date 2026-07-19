@@ -211,8 +211,9 @@ pub fn build(
         let surfaces = match plan.scoped_role_collection(&name) {
             // §10.5: a scoped role's surfaces are declared inside the collection it
             // is nested on; bind their `$view` as the covered surface view keyed by
-            // the scope, recording the scope key type for decoding.
-            Some(scope) => scoped_role_surfaces(&name, scope, state, &mut routing),
+            // the scope, and their `$mut` calls onto the row mutation the scope (or a
+            // covered descendant) receives, recording the scope key type for decoding.
+            Some(scope) => scoped_role_surfaces(&name, scope, state, &catalog, &mut routing),
             None => roles
                 .and_then(|roles| roles.get(&name))
                 .map(|definition| role_surfaces(&name, definition, &catalog, &mut routing))
@@ -224,16 +225,22 @@ pub fn build(
     Ok((builder.build(model)?, routing))
 }
 
-/// The `$view` surface bindings a SCOPED role grants (§10.5), read from the role's
-/// declaration inside its scope collection's `$roles`. Only the `$view` is bound —
-/// as a covered surface view keyed by its dotted address — and the scope
-/// collection's key type is recorded so a subscription's scope key decodes by
-/// value. The scoped role's `$mut` calls are left unbound this phase (scoped-role
-/// mutation addressing is deferred), so a call on one stays denied.
+/// The surface bindings a SCOPED role grants (§10.3/§10.5), read from the role's
+/// declaration inside its scope collection's `$roles`. The `$view` is bound as a
+/// covered surface view keyed by its dotted address; each `$mut` call is bound onto
+/// the row mutation the addressed row (the role-holding row keyed by the request
+/// scope, or a covered descendant) receives. The scope collection's key type is
+/// recorded so a call/subscription's scope key decodes by value.
+///
+/// A scoped-role call's receiver is the addressed row identity, supplied by the
+/// request scope path — not the call arguments — so the call binds only the
+/// mutation's own parameters as its closed argument shape (§10.1); the surface
+/// admission threads the receiver from the resolved scope/descendant (§10.5).
 fn scoped_role_surfaces(
     role: &str,
     scope: &str,
     state: Option<&J>,
+    catalog: &Catalog<'_>,
     routing: &mut Routing,
 ) -> Vec<(String, SurfaceBinding)> {
     let Some(definition) = state
@@ -247,12 +254,39 @@ fn scoped_role_surfaces(
     let key_type = state.map_or(Type::Text, |model| super::auth::collection_key_type(model, scope));
     let mut surfaces = Vec::new();
     for (name, surface) in definition {
-        if name.starts_with('$') || surface.get("$view").is_none() {
+        if name.starts_with('$') {
             continue;
         }
         let address = format!("{role}.{name}");
+        let mut binding = SurfaceBinding::new();
+        let mut has_member = false;
+        if surface.get("$view").is_some() {
+            binding = binding.with_view(ViewBinding::surface(&address));
+            has_member = true;
+        }
+        if let Some(calls) = surface.get("$mut").and_then(J::as_object) {
+            for call in calls.keys() {
+                let call_address = format!("{address}.{call}");
+                let Some((call_binding, types)) =
+                    call_binding(&calls[call], &call_address, &catalog.muts, catalog.lift)
+                else {
+                    continue;
+                };
+                // §8.11/§12.1: the closed argument shape is the mutation's parameters
+                // only — the receiver comes from the addressed scope row, not the args.
+                let names: BTreeSet<String> =
+                    call_binding.receiver().iter().chain(call_binding.params()).cloned().collect();
+                routing.call_param_names.insert(call_address.clone(), names);
+                routing.call_arg_types.insert(call_address, types);
+                binding = binding.with_call(call.clone(), call_binding);
+                has_member = true;
+            }
+        }
+        if !has_member {
+            continue;
+        }
         routing.scope_key_types.insert(address.clone(), key_type.clone());
-        surfaces.push((name.clone(), SurfaceBinding::new().with_view(ViewBinding::surface(&address))));
+        surfaces.push((name.clone(), binding));
     }
     surfaces
 }

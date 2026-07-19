@@ -9,7 +9,10 @@
 
 use std::collections::BTreeMap;
 
-use liasse_runtime::{CallOutcome, CallRequest, CommitSeq, Rejection, RejectionReason, Value, ViewQuery};
+use liasse_runtime::{
+    CallOutcome, CallRequest, CommitSeq, Rejection, RejectionReason, ScopedReceiver, ScopedResolution,
+    Value, ViewQuery,
+};
 use liasse_store::InstanceStore;
 
 use crate::address::{Authority, SurfaceAddress};
@@ -38,14 +41,15 @@ impl<S: InstanceStore> SurfaceHost<S> {
         if !self.connections.contains_key(id) {
             return Err(SurfaceError::NoConnection(id.to_owned()));
         }
-        let (binding, context) = match self.resolve_call(id, call) {
-            Ok(pair) => pair,
+        let (binding, context, receiver) = match self.resolve_call(id, call) {
+            Ok(triple) => triple,
             Err(outcome) => return Ok(outcome),
         };
-        let (request, model) = match Self::build_request(&binding, call.args(), context.as_ref()) {
-            Ok(pair) => pair,
-            Err(rejection) => return Ok(SurfaceOutcome::Rejected(rejection)),
-        };
+        let (request, model) =
+            match Self::build_request(&binding, call.args(), context.as_ref(), receiver.as_ref()) {
+                Ok(pair) => pair,
+                Err(rejection) => return Ok(SurfaceOutcome::Rejected(rejection)),
+            };
 
         let auth_name = context.as_ref().map(|c| c.auth_name().to_owned());
         let op_key = call
@@ -191,7 +195,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
         &self,
         id: &str,
         call: &SurfaceCall,
-    ) -> Result<(CallBinding, Option<AuthContext>), SurfaceOutcome> {
+    ) -> Result<(CallBinding, Option<AuthContext>, Option<ScopedReceiver>), SurfaceOutcome> {
         match call.address().authority() {
             Authority::Public => {
                 let binding = self.router.public_call(call.address()).map_err(SurfaceOutcome::Denied)?;
@@ -205,7 +209,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
                         "a public address carries no authenticator selection",
                     )));
                 }
-                Ok((binding.clone(), None))
+                Ok((binding.clone(), None, None))
             }
             Authority::Role(role) => {
                 let role_def =
@@ -218,13 +222,53 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 })?;
                 let now = self.clock.instant();
                 let reader = EngineReader::new(&self.engine, now);
-                let context =
-                    self.authorize_role(role_def, &selection, &reader).map_err(SurfaceOutcome::Denied)?;
+                // §10.3/§10.5: membership is confirmed for the SCOPE the request
+                // addresses, so a holder scoped to one row is not admitted to another.
+                let context = self
+                    .authorize_role(role_def, &selection, call.scope(), &reader)
+                    .map_err(SurfaceOutcome::Denied)?;
                 // Member confirmed: only now may the surface/call binding's
                 // existence be revealed (SPEC-ISSUES item 8).
                 let binding = self.router.role_call(role, call.address()).map_err(SurfaceOutcome::Denied)?;
-                Ok((binding.clone(), Some(context)))
+                // §10.5: resolve the addressed receiver — the role-holding row, or a
+                // covered descendant whose whole key path re-walks the recursive
+                // relation (strict, `$where`-included, non-`$except` at every step). A
+                // scope that names no live row or a non-included descendant collapses
+                // to the same uniform unresolvable-name denial as a nonexistent
+                // address (§10.4), so a bad key path is no oracle.
+                let receiver = self
+                    .resolve_scoped_receiver(call, context.actor().key())
+                    .map_err(SurfaceOutcome::Denied)?;
+                Ok((binding.clone(), Some(context), receiver))
             }
+        }
+    }
+
+    /// Resolve the receiver a scoped-role addressed call mutates (§10.5): the
+    /// role-holding row keyed by the request scope, or a covered descendant addressed
+    /// by its key path down through `$field`/`$through`. Returns `Ok(None)` when the
+    /// address is not a scoped-role surface — an ordinary call whose receiver comes
+    /// from its arguments — and `Err(unresolved)` when the scope names no live row or
+    /// a descendant step is not a strict, `$where`-included, non-`$except` descendant,
+    /// indistinguishable from a nonexistent address (§10.4). A store fault fails
+    /// closed to the same denial.
+    fn resolve_scoped_receiver(
+        &self,
+        call: &SurfaceCall,
+        actor: &Value,
+    ) -> Result<Option<ScopedReceiver>, Denial> {
+        let frontier = self.engine.head();
+        let resolution = self.engine.scoped_receiver(
+            &call.address().surface_prefix(),
+            frontier,
+            Some(actor),
+            call.scope(),
+            call.descendant(),
+        );
+        match resolution {
+            Ok(ScopedResolution::Unscoped) => Ok(None),
+            Ok(ScopedResolution::Receiver(receiver)) => Ok(Some(receiver)),
+            Ok(ScopedResolution::Denied) | Err(_) => Err(Self::unresolved_name()),
         }
     }
 
@@ -289,6 +333,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
         &self,
         role: &Role,
         selection: &AuthSelection,
+        scope: &[Value],
         reader: &EngineReader<'_, S>,
     ) -> Result<AuthContext, Denial> {
         let context = self.verify_selection(role, selection, reader)?;
@@ -296,8 +341,11 @@ impl<S: InstanceStore> SurfaceHost<S> {
         // membership, fail-closed — denies as the uniform unresolvable-name
         // outcome, indistinguishable (class and diagnostic code) from a name that
         // does not exist, so a non-member cannot enumerate the role's surfaces.
+        // §10.3/§10.5: for a scoped role the membership is confirmed for the exact
+        // scope row the request addresses, so a holder scoped to another row denies
+        // with the same uniform outcome — no cross-scope grant.
         let member = role
-            .holds(context.actor().key(), reader)
+            .holds(context.actor().key(), scope, reader)
             .map_err(|_| Self::unresolved_name())?;
         if member {
             Ok(context)
@@ -312,6 +360,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
         binding: &CallBinding,
         args: &BTreeMap<String, Value>,
         context: Option<&AuthContext>,
+        scoped: Option<&ScopedReceiver>,
     ) -> Result<(CallRequest, RequestModel), Rejection> {
         let mut request = CallRequest::new(binding.mutation());
         // §11.1/§11.3: an authenticated call carries its resolved `$actor` (and
@@ -324,15 +373,31 @@ impl<S: InstanceStore> SurfaceHost<S> {
             }
         }
         let mut receiver = Vec::new();
-        for name in binding.receiver() {
-            let Some(value) = args.get(name) else {
-                return Err(Rejection::new(
-                    RejectionReason::Malformed,
-                    format!("missing receiver argument `{name}`"),
-                ));
-            };
-            request = request.receiver(value.clone());
-            receiver.push(value.clone());
+        match scoped {
+            // §10.3/§10.5: a scoped-role call binds the receiver from the addressed
+            // row identity — the role-holding row keyed by the request scope, or the
+            // covered descendant its key path resolved to — not from the call
+            // arguments. The descendant addresses a row below the mutation's declared
+            // collection, so the request also carries that receiver path override.
+            Some(scoped) => {
+                for component in &scoped.key {
+                    request = request.receiver(component.clone());
+                    receiver.push(component.clone());
+                }
+                request = request.receiver_path(scoped.path.clone());
+            }
+            None => {
+                for name in binding.receiver() {
+                    let Some(value) = args.get(name) else {
+                        return Err(Rejection::new(
+                            RejectionReason::Malformed,
+                            format!("missing receiver argument `{name}`"),
+                        ));
+                    };
+                    request = request.receiver(value.clone());
+                    receiver.push(value.clone());
+                }
+            }
         }
         // A declared parameter the caller omitted is not bound here: the runtime
         // binds an absent optional parameter to `none` (§8.3/§A.1) and rejects an
@@ -359,7 +424,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
             return Err(SurfaceError::NoConnection(id.to_owned()));
         }
         let (view_name, authz, context) =
-            match self.resolve_view(id, watch.address(), watch.context(), watch.auth()) {
+            match self.resolve_view(id, watch.address(), watch.context(), watch.auth(), watch.scope()) {
                 Ok(triple) => triple,
                 Err(denial) => return Ok(Subscription::Denied(denial)),
             };
@@ -389,8 +454,10 @@ impl<S: InstanceStore> SurfaceHost<S> {
         if !self.connections.contains_key(id) {
             return Err(SurfaceError::NoConnection(id.to_owned()));
         }
+        // A resume reconstructs the same stream (§12.2); this phase carries no scope
+        // key on a resume, so an unscoped read is rebuilt (empty scope).
         let (view_name, authz, context) =
-            match self.resolve_view(id, resume.address(), resume.context(), resume.auth()) {
+            match self.resolve_view(id, resume.address(), resume.context(), resume.auth(), &[]) {
                 Ok(triple) => triple,
                 Err(denial) => return Ok(Subscription::Denied(denial)),
             };
@@ -493,6 +560,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
         address: &SurfaceAddress,
         context: Option<&str>,
         selection: Option<&AuthSelection>,
+        scope: &[Value],
     ) -> Result<(String, WatchAuthz, Option<AuthContext>), Denial> {
         match address.authority() {
             Authority::Public => {
@@ -540,7 +608,11 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 // §11.1/§11.3: resolve `$actor`/`$session` so a role `$view`
                 // reading them is served the authenticated identity, not the
                 // unbound (fail-closed) read.
-                let auth_context = self.authorize_role(role_def, &selection, &reader)?;
+                // §10.3/§10.5: a scoped-role subscription is authorized for the exact
+                // scope row it names, so a holder scoped to one company cannot watch
+                // another company's covered `$view` (the cross-scope read is denied
+                // with the same uniform outcome, §10.4).
+                let auth_context = self.authorize_role(role_def, &selection, scope, &reader)?;
                 let binding = self.router.role_view(role, address)?;
                 let context = context.unwrap_or(DEFAULT_CONTEXT).to_owned();
                 let mut authz = WatchAuthz::role(context, role_def.name().to_owned());
@@ -581,7 +653,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
     /// `Denied` while the same probe to a nonexistent one `Rejected`, revealing
     /// existence by outcome class.
     pub fn authorize_view(&self, id: &str, watch: &SurfaceWatch) -> Result<(), Denial> {
-        self.resolve_view(id, watch.address(), watch.context(), watch.auth()).map(|_| ())
+        self.resolve_view(id, watch.address(), watch.context(), watch.auth(), watch.scope()).map(|_| ())
     }
 }
 

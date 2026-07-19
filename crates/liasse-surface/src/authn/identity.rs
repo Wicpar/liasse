@@ -253,6 +253,28 @@ impl RowSource {
             .unwrap_or_else(|| row.field(&self.key_field).cloned().unwrap_or_else(|| lookup.clone()))
     }
 
+    /// Whether any row in `result` records `actor` as a member *scoped to*
+    /// `scope_key` (§10.3): a grant whose projected `scope_field` equals the
+    /// role-holding-row key and whose `key_field` equals the actor. Both are
+    /// compared by application key (§5.6), so a `$ref` column (the actor account, or
+    /// a ref-typed scope key) matches its target's typed key. A holder scoped to one
+    /// row therefore fails this test for another — the per-scope membership §10.3
+    /// requires, closing the cross-scope read/mutation grant.
+    pub(crate) fn contains_scoped(
+        &self,
+        result: &ViewResult,
+        scope_field: &str,
+        scope_key: &Value,
+        actor: &Value,
+    ) -> bool {
+        let scope_needle = application_key(scope_key);
+        let actor_needle = application_key(actor);
+        result.rows().iter().any(|row| {
+            row.field(scope_field).map(application_key) == Some(scope_needle)
+                && row.field(&self.key_field).map(application_key) == Some(actor_needle)
+        })
+    }
+
     /// Whether any row in `result` carries the key identity `key` — §10.3
     /// membership ("its exact row identity occurs at least once"; repeated
     /// occurrences grant no extra authority). A composite key matches by row

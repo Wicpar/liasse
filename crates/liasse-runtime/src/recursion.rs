@@ -43,6 +43,34 @@ pub(crate) struct CompiledRecursive {
     pub(crate) except_pred: Option<TypedExpr>,
 }
 
+/// The receiver row a scoped-role addressed call mutates (§10.3/§10.5): the
+/// collection declaration path and the key components (in `$key` order across
+/// every level) that address it. The role-holding row is the empty descendant
+/// path (`path` = the scope collection, `key` = the request scope); a covered
+/// descendant extends both with each `$field` step the addressing walk descends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScopedReceiver {
+    /// The collection declaration path of the addressed row.
+    pub path: Vec<String>,
+    /// The key components of the addressed row, in `$key` order across levels.
+    pub key: Vec<Value>,
+}
+
+/// How a call address resolves against the scoped-role coverage machinery
+/// (§10.3/§10.5) — the read-only disposition the surface admission gates on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopedResolution {
+    /// The address is not a scoped-role surface; its receiver comes from the
+    /// call's own arguments (an ordinary public or package-level-role call).
+    Unscoped,
+    /// A scoped-role surface, but the addressed scope row does not live or the
+    /// covered descendant is not a strict, `$where`-included, non-`$except` step —
+    /// denied uniformly, indistinguishable from a nonexistent address (§10.4).
+    Denied,
+    /// The resolved receiver of a scoped-role addressed call.
+    Receiver(ScopedReceiver),
+}
+
 /// The scope binding of a scoped-role surface view (§10.3/§10.5): the declaration
 /// path of the collection whose row `.` (the role-holding row) resolves to, and —
 /// when the surface declares one — the recursive coverage that nests the same
@@ -83,6 +111,50 @@ impl CompiledScope {
         let json = Json::from_wire(&J::Object(object))
             .map_err(|error| EngineError::Internal(error.to_string()))?;
         Ok(Some(ViewResult::Scalar(Value::Json(json))))
+    }
+
+    /// Resolve the receiver a scoped-role addressed call mutates (§10.5): the
+    /// role-holding row keyed by `scope_key` (the empty `descendant` path), or a
+    /// covered descendant addressed by its key path down through `$field`. The walk
+    /// re-evaluates the recursive relation at every step — a strict, `$where`-included,
+    /// non-`$except` descendant — reusing the same admit logic the coverage view
+    /// materializes with ([`CompiledRecursive::included`]), so a step that is absent,
+    /// pruned, or excluded yields `None` (denied uniformly, §10.4). `None` too when
+    /// the scope names no live row, or a descendant is addressed on a surface that
+    /// declares no `$recursive` coverage — only the role-holding row is then
+    /// addressable.
+    pub(crate) fn resolve_receiver(
+        &self,
+        ctx: &EvalCtx<'_>,
+        prospective: &Prospective,
+        scope_key: &[Value],
+        descendant: &[Value],
+    ) -> Result<Option<ScopedReceiver>, EngineError> {
+        let Some(key) = key_of(scope_key) else { return Ok(None) };
+        let Some(name) = self.collection_path.last() else { return Ok(None) };
+        let address = top_address(name, key);
+        let Some(mut current) = ctx.materialize_row_cell(prospective, &self.collection_path, &address)
+        else {
+            return Ok(None);
+        };
+        let mut path = self.collection_path.clone();
+        let mut receiver_key = scope_key.to_vec();
+        if descendant.is_empty() {
+            return Ok(Some(ScopedReceiver { path, key: receiver_key }));
+        }
+        // §10.5: a covered descendant is reachable only through the declared
+        // recursive relation; a non-recursive scoped surface addresses only its
+        // role-holding row.
+        let Some(recursive) = &self.recursive else { return Ok(None) };
+        for component in descendant {
+            let Some(child) = recursive.included_child(ctx, prospective, &current, component)? else {
+                return Ok(None);
+            };
+            path.push(recursive.field.clone());
+            receiver_key.push(component.clone());
+            current = Cell::Row(Box::new(child));
+        }
+        Ok(Some(ScopedReceiver { path, key: receiver_key }))
     }
 }
 
@@ -135,6 +207,32 @@ impl CompiledRecursive {
             return Ok(false);
         }
         Ok(true)
+    }
+
+    /// The INCLUDED descendant of `node` keyed by `component` under `$field` (§10.5),
+    /// or `None` when no child carries that key, or the child is not included (fails
+    /// the `$where` allow-list, or matched by the `$except` deny-list). The §10.5
+    /// addressing walk admits exactly the set the coverage view surfaces — both go
+    /// through [`Self::included`] — so a descendant is addressable as a mutation
+    /// receiver iff it appears in the covered keyed tree.
+    fn included_child(
+        &self,
+        ctx: &EvalCtx<'_>,
+        prospective: &Prospective,
+        node: &Cell,
+        component: &Value,
+    ) -> Result<Option<Row>, EngineError> {
+        let Some(Cell::Collection(rows)) = node.as_row().and_then(|row| row.cell(&self.field)) else {
+            return Ok(None);
+        };
+        for candidate in rows {
+            if candidate.key() == component {
+                return Ok(self
+                    .included(ctx, prospective, candidate)?
+                    .then(|| candidate.clone()));
+            }
+        }
+        Ok(None)
     }
 
     /// Evaluate a `$where`/`$except` predicate with the candidate bound to `$bind`

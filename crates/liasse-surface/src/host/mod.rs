@@ -334,7 +334,11 @@ impl<S: InstanceStore> SurfaceHost<S> {
             if !role.accepts(selection.auth()) {
                 continue;
             }
-            if role.holds(context.actor().key(), &reader)? {
+            // §12.1: the manifest lists a scoped role's surfaces when the actor
+            // holds it under ANY scope row (an empty scope asks the enumeration-safe
+            // "member anywhere" question); admission still re-checks the exact scope
+            // a request addresses (§10.3).
+            if role.holds(context.actor().key(), &[], &reader)? {
                 for surface in self.router.role_surfaces(role_name) {
                     surfaces.push(format!("{role_name}.{surface}"));
                 }

@@ -99,6 +99,8 @@ pub struct SurfaceCall {
     operation_id: Option<String>,
     auth: Option<AuthSelection>,
     context: Option<String>,
+    scope: Vec<Value>,
+    descendant: Vec<Value>,
 }
 
 impl SurfaceCall {
@@ -106,7 +108,34 @@ impl SurfaceCall {
     /// default authentication context.
     #[must_use]
     pub fn new(address: SurfaceAddress, args: BTreeMap<String, Value>) -> Self {
-        Self { address, args, operation_id: None, auth: None, context: None }
+        Self {
+            address,
+            args,
+            operation_id: None,
+            auth: None,
+            context: None,
+            scope: Vec::new(),
+            descendant: Vec::new(),
+        }
+    }
+
+    /// Bind the scope-row key path this call is addressed under (§10.3/§10.5): the
+    /// containing row identity a scoped-role surface reads `.` (the role-holding
+    /// row) as, in `$key` order. Empty for a `$public`/package-level call.
+    #[must_use]
+    pub fn with_scope(mut self, scope: impl IntoIterator<Item = Value>) -> Self {
+        self.scope = scope.into_iter().collect();
+        self
+    }
+
+    /// Bind the covered-descendant key path this call addresses (§10.5): the key
+    /// path from the role-holding row down through `$field`/`$through` to the
+    /// covered descendant the mutation receiver binds to. Empty addresses the
+    /// role-holding row itself.
+    #[must_use]
+    pub fn with_descendant(mut self, descendant: impl IntoIterator<Item = Value>) -> Self {
+        self.descendant = descendant.into_iter().collect();
+        self
     }
 
     /// Attach a §12.3 operation identifier.
@@ -167,6 +196,21 @@ impl SurfaceCall {
     #[must_use]
     pub fn context(&self) -> Option<&str> {
         self.context.as_deref()
+    }
+
+    /// The scope-row key path this call is addressed under (§10.3/§10.5), in `$key`
+    /// order. Empty for an unscoped (public or package-level) call.
+    #[must_use]
+    pub fn scope(&self) -> &[Value] {
+        &self.scope
+    }
+
+    /// The covered-descendant key path this call addresses (§10.5), from the
+    /// role-holding row down through `$field`/`$through`. Empty addresses the
+    /// role-holding row itself.
+    #[must_use]
+    pub fn descendant(&self) -> &[Value] {
+        &self.descendant
     }
 }
 

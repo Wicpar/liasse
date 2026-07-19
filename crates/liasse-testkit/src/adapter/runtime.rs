@@ -412,6 +412,17 @@ impl<S: InstanceStore> Instance for Runtime<S> {
                 if let Some(context) = &request.context {
                     call = call.with_context(context.clone());
                 }
+                // §10.3/§10.5: a scoped-role call names the containing row it is
+                // addressed under (`scope`) and, for a covered descendant, its key
+                // path (`descendant`), each decoded against the scope collection's key
+                // type so a `uuid`/`int` key matches by value.
+                let scope_ty = loaded.routing.scope_key_type(&surface_prefix).cloned();
+                if let Some(scope) = &request.scope {
+                    call = call.with_scope([wire::decode_value(scope, scope_ty.as_ref())]);
+                }
+                if let Some(descendant) = &request.descendant {
+                    call = call.with_descendant(decode_key_path(descendant, scope_ty.as_ref()));
+                }
                 let outcome = loaded.host.call(&connection, &call).map_err(host_fault)?;
                 let op_record = request
                     .operation_id
@@ -815,6 +826,20 @@ fn operation_status_value(status: &OperationStatus) -> serde_json::Value {
         }),
         OperationStatus::Rejected => serde_json::json!({ "status": "rejected" }),
         OperationStatus::Unknown => serde_json::json!({ "status": "unknown" }),
+    }
+}
+
+/// Decode a §10.5 covered-descendant key path from its wire form into the key
+/// components, in `$key` order: a JSON array is each element decoded against the
+/// scope collection's key type (`ty`), and any other value is a single-component
+/// path. A self-referential coverage relation (`subcompanies: { $like: "^" }`)
+/// keys every level by that same type, so one `ty` decodes the whole path.
+fn decode_key_path(wire: &serde_json::Value, ty: Option<&liasse_value::Type>) -> Vec<liasse_value::Value> {
+    match wire {
+        serde_json::Value::Array(items) => {
+            items.iter().map(|item| super::wire::decode_value(item, ty)).collect()
+        }
+        other => vec![super::wire::decode_value(other, ty)],
     }
 }
 

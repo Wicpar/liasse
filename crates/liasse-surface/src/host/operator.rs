@@ -52,8 +52,9 @@ impl<S: InstanceStore> SurfaceHost<S> {
             Ok(binding) => binding,
             Err(denial) => return Ok(SurfaceOutcome::Denied(denial)),
         };
-        // §11.1: a host-operator transition executes with no actor.
-        let (request, _model) = match Self::build_request(&binding, call.args(), None) {
+        // §11.1: a host-operator transition executes with no actor and no scoped
+        // receiver — its receiver comes from the call arguments (§23.5).
+        let (request, _model) = match Self::build_request(&binding, call.args(), None, None) {
             Ok(pair) => pair,
             Err(rejection) => return Ok(SurfaceOutcome::Rejected(rejection)),
         };

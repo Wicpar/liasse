@@ -329,16 +329,15 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- fail:outcome ---
     ("05-state-model/nested-initializer-failure-rejects-parent-insert", "outcome divergence: expected `ok` observed `rejected`"),
     ("06-expressions/row-mutation-receiver-duplicate-occurrences-reject", "outcome divergence: expected `ok` observed `rejected`"),
-    ("10-interfaces-roles/deleted-scope-row-revokes-role", "outcome divergence: expected `ok` observed `denied`"),
+    // (§10.3/§10.5 scoped-role addressing is now wired — the surface host resolves a
+    // role held by a specific ROW addressed by (row identity + role name) and, under
+    // `$recursive`, a covered DESCENDANT by (role handle + key path); membership is
+    // re-evaluated PER SCOPE ROW. This landed `scoped-role-addressed-by-row-and-name`,
+    // `recursive-descendant-mutation-addressing`, and `deleted-scope-row-revokes-role`,
+    // whose entries were pruned as stale.)
     ("10-interfaces-roles/fixed-call-argument-not-overridable", "outcome divergence: expected `ok` observed `denied`"),
     ("10-interfaces-roles/membership-reevaluated-each-admission", "outcome divergence: expected `ok` observed `rejected`"),
-    // §10.5 descendant key-path addressing pin (SPEC-ISSUES #11(a)): the case's
-    // step-2 scoped-role rename already observes `denied` (scoped-role addressing
-    // is unwired this phase, same seam as `scoped-role-addressed-by-row-and-name`);
-    // step-3 descendant re-walk addressing is likewise unlanded.
-    ("10-interfaces-roles/recursive-descendant-mutation-addressing", "outcome divergence: expected `ok` observed `denied` — scoped-role (and §10.5 descendant key-path) addressing unwired this phase"),
     ("10-interfaces-roles/row-mutation-receiver-exactly-one", "outcome divergence: expected `rejected` observed `denied`"),
-    ("10-interfaces-roles/scoped-role-addressed-by-row-and-name", "outcome divergence: expected `ok` observed `denied`"),
     ("11-auth-sessions/login-operation-id-replay-at-most-once", "outcome divergence: expected `ok` observed `rejected`"),
     ("11-auth-sessions/login-operation-id-reuse-different-request-rejected", "outcome divergence: expected `ok` observed `rejected`"),
     ("11-auth-sessions/login-token-immediately-usable", "outcome divergence: expected `ok` observed `rejected`"),

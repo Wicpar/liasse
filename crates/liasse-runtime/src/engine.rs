@@ -1100,6 +1100,59 @@ impl<S: InstanceStore> Engine<S> {
         Ok(Some(ViewResult::from_cell(&cell, self.compiled.view_order_of(expr))))
     }
 
+    /// §10.3/§10.5: resolve the receiver a scoped-role addressed call mutates — the
+    /// role-holding row keyed by `scope_key` (the empty `descendant` path), or a
+    /// covered descendant addressed by `descendant` (its key path down through
+    /// `$field`/`$through`) — at `frontier`.
+    ///
+    /// The addressing walk re-evaluates the recursive coverage relation at every
+    /// step, so a descendant that is not a strict, `$where`-included, non-`$except`
+    /// step, or a scope that names no live row, is [`ScopedResolution::Denied`] —
+    /// indistinguishable by class from a nonexistent address (§10.4), so a bad key
+    /// path is no oracle. `actor_key` binds `$actor` for a `$where`/`$except`
+    /// predicate that reads it (§11.1), re-materialized from committed state at
+    /// `frontier`. An `address` that is not a scoped-role surface is
+    /// [`ScopedResolution::Unscoped`]: its receiver comes from the call's own
+    /// arguments, exactly as an ordinary public or package-level-role call.
+    pub fn scoped_receiver(
+        &self,
+        address: &str,
+        frontier: CommitSeq,
+        actor_key: Option<&liasse_value::Value>,
+        scope_key: &[liasse_value::Value],
+        descendant: &[liasse_value::Value],
+    ) -> Result<crate::recursion::ScopedResolution, EngineError> {
+        use crate::recursion::ScopedResolution;
+        let Some(scope) =
+            self.compiled.surface_view(address).and_then(|surface| surface.scope.as_ref())
+        else {
+            return Ok(ScopedResolution::Unscoped);
+        };
+        let snapshot = self.store.snapshot(frontier)?;
+        let schema = Schema::new(&self.model);
+        let prospective = Prospective::from_snapshot(&snapshot, schema);
+        let keyrings = self.keyring_snapshots();
+        let mut ctx = EvalCtx {
+            schema,
+            compiled: &self.compiled,
+            params: BTreeMap::new(),
+            now: self.clock,
+            seed: 0,
+            keyrings: &keyrings,
+            placements: &self.blob_placements,
+            context: self.base_context(),
+            hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
+            modules: None,
+        };
+        // §11.1/§10.3: bind `$actor` so a `$where`/`$except` predicate reading it
+        // resolves the actor row at this frontier, exactly as the coverage read does.
+        ctx.context.extend(bind_context(&self.compiled, &ctx, &prospective, actor_key, None));
+        match scope.resolve_receiver(&ctx, &prospective, scope_key, descendant)? {
+            Some(receiver) => Ok(ScopedResolution::Receiver(receiver)),
+            None => Ok(ScopedResolution::Denied),
+        }
+    }
+
     /// The parameter cells a surface `$view` read runs against (§10.1): each
     /// supplied argument, then each omitted declared parameter bound to its
     /// declared default (or `none` when it declares none, §8.3). A plain view
@@ -1390,10 +1443,17 @@ fn receiver_target(
     if mutation.receiver_is_root || mutation.path.is_empty() {
         return Ok(None);
     }
+    // §10.5: a scoped-role covered-descendant call addresses a row below the
+    // mutation's declared collection (`companies[root].subcompanies[a]` through a
+    // `companies` mutation), so the receiver descends the request's own path
+    // override — validated as an included descendant chain by the surface's §10.5
+    // admission — rather than the mutation's declared path. An ordinary call carries
+    // none, addressing the receiver at the mutation's own location.
+    let path = request.receiver_path_override().unwrap_or(&mutation.path);
     let mut remaining = request.receiver_key();
     let mut address: Option<RowAddress> = None;
-    let mut prefix: Vec<String> = Vec::with_capacity(mutation.path.len());
-    for name in &mutation.path {
+    let mut prefix: Vec<String> = Vec::with_capacity(path.len());
+    for name in path {
         prefix.push(name.clone());
         let arity = compiled.collection_at(&prefix).map_or(1, |c| c.key.len().max(1));
         if remaining.len() < arity {
@@ -1414,7 +1474,7 @@ fn receiver_target(
     let address = address.ok_or_else(|| {
         Rejection::new(RejectionReason::Malformed, "a row mutation requires a receiver key")
     })?;
-    Ok(Some(RowTarget { address, path: mutation.path.clone() }))
+    Ok(Some(RowTarget { address, path: path.to_vec() }))
 }
 
 fn stage<T: Transition>(txn: &mut T, changes: Vec<Change>) -> Result<(), EngineError> {

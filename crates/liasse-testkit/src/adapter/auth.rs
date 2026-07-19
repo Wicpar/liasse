@@ -175,6 +175,10 @@ struct RoleSpec {
     /// its surfaces read `.` as a row of that collection, addressed by the request
     /// scope. `None` for a package-level role, whose `.` is the package root.
     scope: Option<String>,
+    /// The membership-view column projecting each grant's role-holding-row key, for
+    /// a SCOPED role (§10.3), so admission confirms membership for the exact scope
+    /// row a request addresses. `None` for a package-level role.
+    scope_field: Option<String>,
 }
 
 /// The reconstructed authentication wiring for a package: the synthetic views to
@@ -362,6 +366,7 @@ impl AuthPlan {
             members_view,
             members_key: key,
             scope: None,
+            scope_field: None,
         });
     }
 
@@ -389,15 +394,28 @@ impl AuthPlan {
         let Some(relation) = stream_collection(members) else { return };
         let Some(key) = nested_collection_key(model, scope, relation) else { return };
         let stream = members.strip_suffix(&format!(".{key}")).unwrap_or(members);
+        // §10.3: membership is decided PER SCOPE ROW ("Their location defines
+        // scope"), so the flattened membership view projects, alongside each grant's
+        // actor key, the role-holding-row key under a distinct `scope_row` column
+        // (the scope collection's own `$key`). Admission then confirms the grant is
+        // recorded for the exact row a request addresses, denying a holder scoped to
+        // one row on another (no cross-scope grant). A member relation keyed
+        // `scope_row` would collide — a documented CORE limit, not reached by the
+        // corpus (members are keyed `account`).
+        let scope_key = collection_key(model, scope).unwrap_or_else(|| "id".to_owned());
+        let scope_field = "scope_row";
         let members_view = format!("liasse_role_members_{name}");
-        self.synthetic_views
-            .push((members_view.clone(), format!(".{scope}[:__scope_c]{stream} {{ {key} }}")));
+        self.synthetic_views.push((
+            members_view.clone(),
+            format!(".{scope}[:__scope_c]{stream} {{ {scope_field}: __scope_c.{scope_key}, {key} }}"),
+        ));
         self.roles.push(RoleSpec {
             name: name.to_owned(),
             accepts,
             members_view,
             members_key: key,
             scope: Some(scope.to_owned()),
+            scope_field: Some(scope_field.to_owned()),
         });
     }
 
@@ -448,11 +466,18 @@ impl AuthPlan {
         self.roles
             .iter()
             .map(|spec| {
-                Role::new(
-                    spec.name.clone(),
-                    spec.accepts.clone(),
-                    RowSource::new(spec.members_view.clone(), spec.members_key.clone()),
-                )
+                let members = RowSource::new(spec.members_view.clone(), spec.members_key.clone());
+                match &spec.scope_field {
+                    // §10.3: a scoped role's membership is decided per scope row, via
+                    // its membership view's `scope_field` column.
+                    Some(scope_field) => Role::scoped(
+                        spec.name.clone(),
+                        spec.accepts.clone(),
+                        members,
+                        scope_field.clone(),
+                    ),
+                    None => Role::new(spec.name.clone(), spec.accepts.clone(), members),
+                }
             })
             .collect()
     }
