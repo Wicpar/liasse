@@ -77,6 +77,11 @@ impl Artifact {
             .data();
         let manifest = Manifest::parse(manifest_bytes)?;
 
+        // §19.5 fixes each role `path` to its canonical literal (`liasse.json`,
+        // `state/current.cbor.zst`, `history/index.json`) — pin them BEFORE trusting
+        // any role member, so a role member can only name the entries-covered
+        // canonical leaf and its checksum is the same bytes `entries` certifies.
+        verify_canonical_role_paths(&manifest)?;
         verify_entries_membership(&manifest)?;
         verify_entry_checksums(&archive, &manifest)?;
         verify_named_entry(&archive, &manifest.state.path, &manifest.state.sha256)?;
@@ -187,13 +192,40 @@ fn verify_mimetype(archive: &Archive) -> Result<(), ArtifactError> {
     }
 }
 
+/// Pin the three §19.5 role paths to the fixed canonical literals. The required
+/// manifest structure gives `definition.path`, `state.path`, and `history.path`
+/// literal values (no `<placeholder>`), so a role member can only ever name the
+/// entries-covered canonical leaf. Rejecting a repointed role path here — before
+/// any role member is trusted — is what makes §19.5's "Where a covered entry's
+/// checksum also appears in a role member, the two MUST be equal" real: the role
+/// member and its `entries` coverage now describe the *same* file by construction,
+/// so a decoy leaf cannot be substituted for the section the runtime consumes.
+fn verify_canonical_role_paths(manifest: &Manifest) -> Result<(), ArtifactError> {
+    let roles = [
+        ("definition", manifest.definition.path.as_str(), LIASSE_JSON_PATH),
+        ("state", manifest.state.path.as_str(), STATE_PATH),
+        ("history", manifest.history.path.as_str(), HISTORY_INDEX_PATH),
+    ];
+    for (role, actual, expected) in roles {
+        if actual != expected {
+            return Err(ArtifactError::NonCanonicalRolePath {
+                role,
+                path: actual.to_owned(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Enforce the §19.5 `entries` membership rule (SPEC-ISSUES #33): `entries` covers
 /// every required direct archive *leaf* — the four structural leaves here, plus any
 /// present resource/history/blob section — and MUST NOT list `manifest.json`
 /// (self-checksum) or a nested child artifact under `modules/` (which
-/// `included_modules` inventories). The equality of a leaf's `entries` checksum and
-/// any role-member checksum (`state`, `history`) is enforced transitively: each is
-/// verified against the identical file bytes, so a divergence fails verification.
+/// `included_modules` inventories). A leaf's `entries` checksum and any role-member
+/// checksum (`state`, `history`) are the *same bytes* by construction:
+/// [`verify_canonical_role_paths`] pins each role `path` to its canonical literal,
+/// so a role member can only name the entries-covered leaf — the §19.5 "the two
+/// MUST be equal" clause then holds because both verify against the identical file.
 fn verify_entries_membership(manifest: &Manifest) -> Result<(), ArtifactError> {
     for required in REQUIRED_ENTRIES {
         if !manifest.entries.contains_key(*required) {

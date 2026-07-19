@@ -154,6 +154,23 @@ pub enum ArtifactError {
         path: String,
     },
 
+    /// A role member (`definition`, `state`, or `history`) names an archive path
+    /// other than the §19.5 canonical literal it is fixed to (`liasse.json`,
+    /// `state/current.cbor.zst`, `history/index.json`). §19.5 pins each role `path`
+    /// to its literal so a role member can only name the entries-covered leaf; that
+    /// is what makes "Where a covered entry's checksum also appears in a role
+    /// member, the two MUST be equal" real (the role checksum and its `entries`
+    /// coverage are then the same bytes). A repointed role path would let the
+    /// consumed section (`state`/`history`/`liasse.json`) silently diverge from what
+    /// `entries` certifies, so it is rejected before any role member is trusted.
+    #[error("manifest `{role}` role path `{path}` is not the fixed §19.5 canonical archive path")]
+    NonCanonicalRolePath {
+        /// The role whose path is non-canonical (`definition`, `state`, `history`).
+        role: &'static str,
+        /// The non-canonical archive path the manifest declared for that role.
+        path: String,
+    },
+
     /// The manifest's declared definition identity disagrees with the D.4
     /// identity recomputed from `liasse.json` — the mandatory Annex D.5
     /// internal self-consistency check `open` runs (see

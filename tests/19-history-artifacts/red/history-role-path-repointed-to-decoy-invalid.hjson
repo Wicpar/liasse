@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: history-role-path-repointed-to-decoy-invalid
+  suite: scenario
+  tags: [tampering, integrity]
+  // Attack: repoint the manifest `history` role path to an uncovered DECOY leaf.
+  // The genuine history/index.json stays present and `entries`-covered; a decoy
+  // history-index leaf is added, the `history` role member is pointed at it, and
+  // every byte checksum is recomputed so each verifies against its own file. The
+  // artifact is thus internally checksum-consistent, yet the `history` role
+  // member and its `entries` coverage now describe DIFFERENT files — the history
+  // index the runtime consumes (history_index) is the uncertified decoy.
+  //
+  // §19.5 fixes each role `path` to a literal — `history.path` =
+  // "history/index.json" — and pins "Where a covered entry's checksum also
+  // appears in a role member (`state`, `history`), the two MUST be equal". A
+  // repointed role path makes that equality vacuous (the role checksum and the
+  // entries coverage are no longer the same bytes), so open MUST reject the
+  // artifact and no instance is restored. Unknown extra entries are otherwise
+  // tolerated (Annex D.5); the rejection here is specifically the non-canonical
+  // role path, not the presence of the decoy leaf.
+  spec: ["§19.5"]
+
+  package: {
+    $liasse: 1
+    $app: "t.hist@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+      $mut: {
+        put: [
+          "n = .notes + { id: @id, body: @body }"
+          "return n { id, body }"
+        ]
+      }
+      all: { $view: ".notes { id, body, $sort: [id] }" }
+      $public: {
+        notes: {
+          $view: ".all"
+          $mut: { put: ".put" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.notes.put", args: { id: "n1", body: "one" },
+      expect: { outcome: ok, value: { id: "n1", body: "one" } } }
+    { export: { as: "a1" }, expect: { outcome: ok } }
+    // Add a decoy history-index leaf, repoint the `history` role path to it, then
+    // recompute every byte checksum: `history.sha256` now matches the decoy (its
+    // own bytes) while `entries` still covers the genuine history/index.json leaf.
+    { tamper_artifact: { from: "a1", as: "a1x", ops: [
+      { add_entry: { path: "history/decoy.json", text: "{\"format\":1,\"selected\":{\"lineage\":\"evil\",\"point\":\"pX\"}}" } }
+      { edit_json: { path: "manifest.json", pointer: "/history/path", value: "history/decoy.json" } }
+      { fix_checksums: true }
+    ] } }
+    { in_sandbox: "s1", steps: [
+      { restore: { from: "a1x" },
+        expect: { outcome: invalid, violates: ["§19.5"],
+                  detail: "history role path is not the fixed canonical history/index.json" } }
+    ] }
+  ]
+}
