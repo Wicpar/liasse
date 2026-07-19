@@ -100,18 +100,27 @@ impl Role {
         self.accepted.iter().any(|name| name == auth)
     }
 
-    /// §10.3: whether `actor` holds the role at the current admission position,
-    /// under the scope `scope` addresses. The actor holds it when its exact row
-    /// identity occurs at least once in `$members`; repeated occurrences grant no
-    /// extra authority.
+    /// §10.3/§10.4: whether `actor` holds the role for the EXACT scope a request
+    /// addresses — the per-scope membership admission gates on. The actor holds it
+    /// when its exact row identity occurs at least once in `$members`; repeated
+    /// occurrences grant no extra authority. Identity compares by application key
+    /// (§5.6/§5.4), so a `$ref` actor column (the spec's own §10.3 example projects
+    /// `.account`, a `$ref`) matches its target's typed key, and a composite-keyed
+    /// actor matches by its positional-tuple row identity — see
+    /// [`RowSource::contains`]/[`RowSource::contains_scoped`].
     ///
-    /// For a SCOPED role (§10.3), membership is decided *per scope row*: a non-empty
-    /// `scope` confirms the grant is recorded for that exact role-holding row (the
-    /// membership view's `scope_field` equals the scope key), so a holder scoped to
-    /// row A is not admitted to row B. An empty `scope` on a scoped role asks only
-    /// whether the actor holds the role under *any* row (the enumeration-safe
-    /// manifest question, §12.1). A package-level role ignores `scope` entirely —
-    /// its membership is scope-independent.
+    /// For a SCOPED role (§10.3) the grant is confirmed *per scope row*: a non-empty
+    /// `scope` carries the addressed role-holding-row key, and membership holds only
+    /// when the membership view records that actor under that exact key (its
+    /// `scope_field` equals the scope key), so a holder scoped to row A is not
+    /// admitted to row B. An EMPTY scope on a scoped role names no row, so it can
+    /// confirm no per-scope grant: a scoped surface addressed without its scope key
+    /// is UNRESOLVABLE, denied uniformly like a nonexistent address (§10.4). It must
+    /// NEVER fall through to the any-row "member somewhere" question — that would let
+    /// an empty-scope probe distinguish a member-somewhere from a non-member and leak
+    /// self-membership over the wire (the §10.4 oracle). Use [`Self::holds_anywhere`]
+    /// for the enumeration-safe manifest question. A package-level role ignores
+    /// `scope` — its membership is scope-independent.
     ///
     /// # Errors
     /// Propagates a store/engine fault from evaluating the membership view.
@@ -125,21 +134,35 @@ impl Role {
             // A membership view that is not declared grants the role to no one.
             return Ok(false);
         };
-        // §5.6/§5.4/§10.3: membership compares the actor's exact row identity
-        // against the projected `$members` view. A single-field key compares by
-        // application key, so a ref column (the spec's own §10.3 example projects
-        // `.account`, a `$ref`) matches its target's typed key; a composite-keyed
-        // actor (§5.4) matches by its positional-tuple row identity — the same
-        // split `$actor`/`$session` resolution uses (`RowSource::contains`).
-        //
-        // §10.3: a scoped role addressed under a specific row additionally requires
-        // the grant's projected `scope_field` to equal that row's key, so the same
-        // role name grants under one scope row and denies under another.
         match (&self.scope_field, scope.first()) {
+            // §10.3/§10.5: a scoped role addressed under a specific row requires the
+            // grant's projected `scope_field` to equal that row's key, so the same
+            // role name grants under one scope row and denies under another.
             (Some(scope_field), Some(scope_key)) => {
                 Ok(self.members.contains_scoped(&result, scope_field, scope_key, actor))
             }
-            _ => Ok(self.members.contains(&result, actor)),
+            // §10.4: a scoped role addressed with an EMPTY scope names no row to
+            // confirm a grant for — unresolvable, never the any-row grant.
+            (Some(_), None) => Ok(false),
+            // §10.3: a package-level role is scope-independent.
+            (None, _) => Ok(self.members.contains(&result, actor)),
         }
+    }
+
+    /// §12.1: whether `actor` holds this role under ANY scope row (a scoped role) or
+    /// at all (a package-level role) — the enumeration-safe "member somewhere"
+    /// question the manifest lists a role's surfaces on. It confers NO admission on
+    /// its own: admission ([`Self::holds`]) still re-confirms the exact scope a
+    /// request addresses (§10.3), so this reveals only that the CALLER holds the role
+    /// somewhere — never another actor's grant, nor a specific scope's existence.
+    ///
+    /// # Errors
+    /// Propagates a store/engine fault from evaluating the membership view.
+    pub fn holds_anywhere(&self, actor: &Value, reader: &dyn StateReader) -> Result<bool, EngineError> {
+        let Some(result) = reader.view(self.members.view())? else {
+            // A membership view that is not declared grants the role to no one.
+            return Ok(false);
+        };
+        Ok(self.members.contains(&result, actor))
     }
 }

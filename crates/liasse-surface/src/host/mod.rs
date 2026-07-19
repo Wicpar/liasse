@@ -335,10 +335,12 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 continue;
             }
             // §12.1: the manifest lists a scoped role's surfaces when the actor
-            // holds it under ANY scope row (an empty scope asks the enumeration-safe
-            // "member anywhere" question); admission still re-checks the exact scope
-            // a request addresses (§10.3).
-            if role.holds(context.actor().key(), &[], &reader)? {
+            // holds it under ANY scope row (the enumeration-safe "member anywhere"
+            // question); admission still re-checks the exact scope a request
+            // addresses (§10.3). This is deliberately NOT `holds` with an empty
+            // scope — that path is now unresolvable (§10.4), so the manifest asks the
+            // any-row question explicitly.
+            if role.holds_anywhere(context.actor().key(), &reader)? {
                 for surface in self.router.role_surfaces(role_name) {
                     surfaces.push(format!("{role_name}.{surface}"));
                 }

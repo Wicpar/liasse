@@ -507,11 +507,13 @@ impl<S: InstanceStore> SurfaceHost<S> {
         // §10.1: a parameterized `$view` and a role `$view` reading `$actor` are
         // served through the param- and actor-aware read; a plain public view
         // supplies an empty query, matching the argument-free read.
+        // §10.4: a scoped covered `$view` that materializes no row (an empty/absent
+        // scope, or a fault-closed absent view, §6.3) must deny with the SAME uniform
+        // unresolvable-name outcome as a nonexistent address — never a bespoke,
+        // distinguishable message. Routing through `unresolved_name` keeps the
+        // view/watch path from ever minting a message an enumeration probe could read.
         let Some(result) = self.engine.view_with(&view_name, frontier, query)? else {
-            return Ok(Subscription::Denied(Denial::new(
-                DenialReason::Unresolved,
-                "the surface view is not declared",
-            )));
+            return Ok(Subscription::Denied(Self::unresolved_name()));
         };
         match window {
             Some(window) => {
