@@ -14,7 +14,7 @@ use liasse_value::{Precision, RefKey, Struct, StructType, Text, Timestamp, Value
 
 use crate::compiled::{Compiled, CompiledCollection, CompiledField, CompiledStruct};
 use crate::error::{Rejection, RejectionReason};
-use crate::eval::{row_cell, EvalCtx};
+use crate::eval::EvalCtx;
 use crate::generator::Generation;
 use crate::materialize::FieldMap;
 use crate::refid::{identity_of, ref_identity};
@@ -42,7 +42,14 @@ pub(crate) fn apply_defaults(
             continue;
         }
         if let Some((typed, _)) = &field.default {
-            let current = row_cell(collection, fields);
+            // §5.1: defaults and computed insertion values form one dependency
+            // graph, so a default MAY read a computed value (`booked: "int = .tax
+            // + 1"` over `tax: "= ..."`). Expose the provisional row with its
+            // computed values folded in (dependency order), exactly as a row/struct
+            // `$check` does, so the default reads `.tax` instead of faulting on a
+            // missing field. `row_cell_of` degenerates to the bare `row_cell` when
+            // the collection has no computed values.
+            let current = ctx.row_cell_of(prospective, collection, fields);
             let value = scalar(ctx.eval_generative(prospective, typed, &current, generation)?);
             fields.insert(field.name.clone(), value);
         }

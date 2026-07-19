@@ -59,11 +59,22 @@ impl<'a> Builder<'a> {
         if value.member("$modules").is_some() {
             return self.modules_node(reporter, value, path);
         }
+        // §5.3/§14.4/§14.6: a source-backed bucket (its `$bucket` object declares
+        // a `$source`) derives its rows and MAY carry a custom `$key` built from
+        // its structural bindings (`$source.external_id`, `$from`); it routes to
+        // the source-bucket node even alongside a `$key`, so the ordinary
+        // keyed-collection `$key` validation (which knows only declared fields)
+        // never falsely rejects those bindings. A `$bucket` without a `$key` is
+        // likewise source-backed. A *lifecycle* bucket (§14.1) has no `$source`;
+        // it composes `$bucket` with an ordinary `$key` and builds as a keyed
+        // collection through the `$key` branch below.
+        if value.member("$bucket").is_some()
+            && (source_backed(value) || value.member("$key").is_none())
+        {
+            return self.source_bucket_node(value, path);
+        }
         if value.member("$key").is_some() {
             return Node::Collection(Box::new(self.collection(reporter, value, path)));
-        }
-        if value.member("$bucket").is_some() {
-            return self.source_bucket_node(value, path);
         }
         if let Some(set) = value.member("$set") {
             return self.set_node(reporter, value, set);
@@ -371,4 +382,17 @@ impl<'a> Builder<'a> {
             }
         }
     }
+}
+
+/// Whether an object declares a source-backed bucket (§14.4): a `$bucket` whose
+/// value is an object carrying a `$source` view. This is the discriminator
+/// between a source-backed bucket (which derives its rows and may carry a custom
+/// `$key`, §14.6) and a lifecycle bucket (§14.1: an until-expression `$bucket`,
+/// with no `$source`, that composes with an ordinary `$key`). The runtime uses
+/// the same test to compile the bucket (`source_bucket.rs::is_source_bucket`).
+fn source_backed(value: &DocValue) -> bool {
+    value
+        .member("$bucket")
+        .and_then(|bucket| bucket.value.as_object())
+        .is_some_and(|members| members.iter().any(|m| m.name.text == "$source"))
 }

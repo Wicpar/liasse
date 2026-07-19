@@ -324,6 +324,18 @@ impl BucketPhase<'_, '_> {
             }
         }
 
+        // §14.6: a source-backed bucket MAY carry a custom `$key` built from its
+        // structural bindings (`$source.external_id`, `$from`) and declared output
+        // fields. Validate each component as an expression in the source scope —
+        // the same scope the runtime compiles it against
+        // (`source_bucket.rs::compile_key`) — so the model gate matches what the
+        // runtime materializes, and a component naming no available binding is
+        // reported here instead of the ordinary keyed-collection "not a declared
+        // field" rejection (which does not know the structural bindings).
+        if let Some(key) = members.iter().find(|m| m.name.text == "$key") {
+            self.check_custom_key(&scope, &key.value);
+        }
+
         let mut structural: Vec<(String, ExprType)> = vec![
             ("from".to_owned(), ExprType::scalar(Type::timestamp())),
             ("until".to_owned(), ExprType::scalar(Type::Optional(Box::new(Type::timestamp())))),
@@ -337,6 +349,38 @@ impl BucketPhase<'_, '_> {
         // rejects a bare enumeration.
         let unbounded = has_repeat && until_optional;
         Some(RowType::keyless(fields).with_structural(structural).unbounded(unbounded))
+    }
+
+    /// Validate a source-backed bucket's custom `$key` (§14.6): one component or
+    /// an array of components, each a structural-binding or output-field
+    /// expression typed in the source scope. Uniqueness "for every generated row"
+    /// is a runtime property of the derived series and is enforced at admission.
+    fn check_custom_key(&mut self, scope: &ModelScope, value: &liasse_syntax::DocValue) {
+        if let Some(text) = value.as_string() {
+            self.type_expr(scope, text, value.span);
+            return;
+        }
+        if let Some(items) = value.as_array() {
+            for item in items {
+                match item.as_string() {
+                    Some(text) => {
+                        self.type_expr(scope, text, item.span);
+                    }
+                    None => self.reporter.reject(
+                        item.span,
+                        code::KEY,
+                        "each `$key` component is a structural-binding or output-field expression (§14.6)",
+                    ),
+                }
+            }
+            return;
+        }
+        self.reporter.reject_hint(
+            value.span,
+            code::KEY,
+            "a source-backed bucket `$key` names one component or an array of components",
+            "e.g. `\"$key\": [\"$source.external_id\", \"$from\"]`",
+        );
     }
 
     /// Type one output-field expression against the bucket source scope (§14.4).

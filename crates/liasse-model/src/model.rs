@@ -108,11 +108,13 @@ impl Model {
         // an application or a module with no `$config`, which binds nothing.
         let config_row = build.config.as_ref().map(|shape| resolver.shape_row(shape));
         let config_binding = config_row.as_ref().map(|row| ExprType::Row(row.clone()));
-        // §5.1/§5.2: refine each model-root computed value's placeholder `json`
-        // type from its expression before the tree check, so a reference `.name`
-        // resolves to the value's real type (a `bool` condition, an `int` operand)
-        // rather than the widest `json`. Diagnostics are the tree check's job.
-        infer::root_computed_types(sources, &resolver, &mut root, config_binding.as_ref());
+        // §5.1/§5.2/§5.3: refine each computed value's placeholder `json` type
+        // from its expression before the tree check — at the model root and in
+        // every nested struct and collection — so a reference `.name` resolves to
+        // the value's real type (a `bool` condition, an `int` operand) rather than
+        // the widest `json`, which has no typed operator. Diagnostics are the tree
+        // check's job.
+        infer::computed_types(sources, &resolver, &mut root, config_binding.as_ref());
         // §14.4–§14.6: type each source-backed bucket into its temporal-collection
         // row before the tree/surface checks, so a temporal selector over the
         // bucket resolves against real output-field and structural-binding types.
