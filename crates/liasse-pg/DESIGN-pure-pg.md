@@ -1,6 +1,9 @@
 # DESIGN — Pure-PostgreSQL `liasse-pg` (no in-memory projection)
 
-Status: **design, not implemented**. Mandates, in force together:
+Status: **Phases 0–4 landed** (projection deleted, all contract reads SQL,
+§12 hydration shared per (instance, frontier)); **Phase 5 (`scan_subtree`) in
+flight — note its §3/§7.6 shape-directed revision**; **Phases 6–10 are design,
+not implemented**. Mandates, in force together:
 
 1. *"IN MEMORY PROJECTION IS FORBIDDEN IN PG BACKEND. PG backend must be pure PG."*
    Every contract read must be served by a PostgreSQL query; the backend may hold
@@ -27,6 +30,21 @@ Status: **design, not implemented**. Mandates, in force together:
    incl. durable `next_incarnation` (§6), `scan_subtree` and the §7.2 coverage
    semantics, the §12-watch treatment (§8), the parity/gate discipline (§9), and
    the phase plan structure (§10).
+5. **Maintainer scope expansion, revising this document (v4)**: *"pgrx extension
+   is not only for `$where` and `$except`, it's for ANY cel expression."* The
+   extension is a **general Liasse-expression evaluator** — the same checked
+   `TypedExpr` interpreter, run in-database — and read-side expression
+   evaluation **over persisted rows pushes down into PostgreSQL through it**:
+   a `$view`'s filter, projection (computed fields included), and `$sort` are
+   served by ONE index-served SQL statement whose per-row evaluation is the
+   extension, and the §10.5 coverage read of mandates 3+4 becomes a **special
+   case** of that general mechanism (the recursive source with a hereditary
+   admit program). What stays in Rust is enumerated, not implied: admission and
+   staging (the in-memory overlay SQL cannot see, §5.4 case 3), `$normalize`
+   and every write-side evaluation, the MemoryStore oracle (always in-Rust —
+   the parity target), the §12 diff/window/anchor machinery, and the
+   expressions the pushdown fragment cannot carry (per-view interpreter
+   fallback, §7.5).
 
 This document is the implementation plan an agent fleet builds from, phase by
 phase. Every claim about SQL plan shape in §4 and §6 was **prototyped against
@@ -37,7 +55,10 @@ prototypes (operator table, `liasse_text_key` corpus) are superseded with the
 machinery they validated; their adversarial corpus survives as the §9 regression
 backstop. The v3 extension mechanics — a pgrx `#[pg_extern]` function pruning a
 recursive CTE with an index-served plan, packaged into the two-stage Docker
-image — are prototyped end to end in §7.8.
+image — are prototyped end to end in §7.8, and the v4 general-evaluator
+mechanics — a one-statement filter+projection+sort `$view` read through three
+extension faces, plus the shape-directed recursive descent — extend the same
+prototype (§7.8).
 
 ---
 
@@ -119,61 +140,109 @@ error mapping; `Engine::head`, `Engine::definition_source` and the few engine re
 that consume the five methods become fallible. Mechanical, wide, one commit (Phase 0).
 
 Phase 5 adds one semantics-free method (see §7 for how it now divides labor with
-the coverage read):
+the evaluated read). Revised for the shape-directed-descent finding (§7.6): the
+caller supplies the **step universe** — the declared nested-collection names
+occurring anywhere in the subtree's compiled shape — because a recursive join on
+`parent_id` alone plans as a Seq Scan + hash join (prototyped, §7.8); joining
+`(parent_id, step_name = ANY($steps))` rides `node_key_lookup`.
 
 ```rust
 /// Every row of the subtree rooted at `root` (excluding `root` itself), i.e. all
 /// rows whose address strictly extends `root`'s, in Annex B address order.
 /// Semantics-free: no predicates; tombstoned intermediates are traversed so
-/// logical orphans (§5.4) are included.
-fn scan_subtree(&self, root: &RowAddress) -> Result<Vec<(RowAddress, StoredRow)>, StoreError>;
+/// logical orphans (§5.4) are included. `steps` is the set of declared nested
+/// collection names occurring in the subtree's shape — the descent visits only
+/// child rows under those step names, which is every row a well-formed store
+/// holds there (the caller derives `steps` from the compiled shape; §7.6).
+fn scan_subtree(&self, root: &RowAddress, steps: &[String]) -> Result<Vec<(RowAddress, StoredRow)>, StoreError>;
 ```
 
-Phases 7–9 add the **coverage read** (mandates 3+4). Revised for the extension
-architecture: the store contract carries the predicate **opaquely**, behind a
-trait, so `liasse-store` stays semantics-free and gains no dependency on the
-expression layer. The predicate's semantics live in ONE implementation
+Phases 7–10 add the **evaluated read** (mandates 3+4+5) — the one
+semantics-carrying read of the contract. The store carries the evaluation
+**opaquely**, behind a trait, so `liasse-store` stays semantics-free and gains
+no dependency on the expression layer. The semantics live in ONE implementation
 (`liasse-pred`, §7.3) that the in-memory store calls directly and the PG
 extension calls after deserialization — v2's `RowPredicate`/`PredOperand`/
-`CompareClass` store-level IR is **eliminated**.
+`CompareClass` store-level IR is **eliminated**, and v3's single-purpose
+`CoveragePredicate`/`scan_coverage` pair is **generalized** into it (coverage is
+now one *source shape* of the same read).
 
 ```rust
-/// A §10.5 candidate predicate, opaque to the store contract. The single
-/// implementor is `liasse_pred::CandidatePredicate` (§7.3); the trait exists so
-/// `liasse-store` carries predicates without depending on the expression layer.
-pub trait CoveragePredicate {
-    /// The admit verdict over one candidate: the stored row payload and its
-    /// typed key. Truthiness is strict `Bool(true)` (§7.2); a predicate
-    /// evaluation fault is an error, never a silent verdict.
-    fn admits(&self, value: &Value, key: &KeyValue) -> Result<bool, PredicateFault>;
-    /// The version-locked serialized form (§7.4) a pushdown backend ships to
-    /// its in-database twin. MemoryStore never calls this.
-    fn wire(&self) -> &[u8];
+/// A compiled per-row evaluation program, opaque to the store contract: the
+/// admit filter, the projection, and the sort-tuple evaluation of one lowered
+/// view read. The single implementor is `liasse_pred::RowPrograms` (§7.3); the
+/// trait exists so `liasse-store` carries programs without depending on the
+/// expression layer. Each face is total over (stored payload, typed key); an
+/// evaluation fault is an error, never a silent verdict or a guessed value.
+pub trait ViewProgram {
+    /// The admit verdict over one row. For a flat view this is the lowered
+    /// filter; for §10.5 coverage it is the composed hereditary
+    /// `$where && !$except` (§7.2). Truthiness is strict `Bool(true)`.
+    /// `None`-program (no filter) admits everything — the store skips the call.
+    fn admits(&self, value: &Value, key: &KeyValue) -> Result<bool, EvalFault>;
+    /// The projected output row: the scalar/struct output cells of the `$view`
+    /// projection (§7.1) with computed fields (§5.2) folded, as one
+    /// `Value::Struct` in output-name order. Keyed sub-view cells are not part
+    /// of this scalar projection (they are separate streams, §12.2).
+    fn project(&self, value: &Value, key: &KeyValue) -> Result<Value, EvalFault>;
+    /// The evaluated `$sort` tuple (§7.3), highest priority first; empty for an
+    /// unsorted view (order = source key order).
+    fn sort_tuple(&self, value: &Value, key: &KeyValue) -> Result<Vec<Value>, EvalFault>;
+    /// The version-locked serialized faces (§7.4) a pushdown backend ships to
+    /// its in-database twin: admit / project / sort expression wires and the
+    /// shared hoisted-env wire. MemoryStore never calls these.
+    fn admit_wire(&self) -> Option<&[u8]>;
+    fn project_wire(&self) -> &[u8];
+    fn sort_wire(&self) -> Option<&[u8]>;
+    fn env_wire(&self) -> &[u8];
 }
 
-/// The §10.5 coverage tree under `root` through nested keyed collection
-/// `field`: depth-first in Annex B key order, live rows only (a tombstone is not
-/// a candidate and blocks its subtree), each DESCENDANT admitted by the
-/// hereditary `where_`/`except` pair. The root row itself is NOT filtered —
-/// §10.5 predicates admit candidates; the covered row is admitted by scope
-/// membership (§10.3), which the caller has already resolved.
-/// Rel paths are the key components under `field`, one per level.
-fn scan_coverage(
+/// Where the evaluated read draws its candidate rows.
+pub enum ViewSource<'a> {
+    /// A collection's direct rows (§4.2's scan, evaluated): the common `$view`.
+    Collection(&'a CollectionPath),
+    /// The §10.5 coverage tree under `root` through nested keyed collection
+    /// `field`: depth-first in Annex B key order, live rows only (a tombstone
+    /// blocks its branch), each DESCENDANT admitted hereditarily by
+    /// `program.admits`. The root row itself is NOT filtered — predicates admit
+    /// candidates; the covered row is admitted by scope membership (§10.3),
+    /// which the caller has already resolved. The root IS projected.
+    Coverage { root: &'a RowAddress, field: &'a str },
+}
+
+/// One evaluated result row: its rel key path from the source (one component
+/// for a flat scan, one per descended level for coverage), its incarnation,
+/// the projected output struct, and the evaluated sort tuple.
+pub struct EvaluatedRow {
+    pub key_path: Vec<KeyValue>,
+    pub incarnation: RowIncarnation,
+    pub projected: Value,
+    pub sort: Vec<Value>,
+}
+
+/// The evaluated view read (§7): admit, project, and sort-evaluate the source's
+/// rows through `program`, returning rows in the view's delivered order — the
+/// Annex-B sort-tuple order with the key path as final tiebreak when the
+/// program sorts, else source order (flat: key order; coverage: depth-first key
+/// order). `skip`/`limit` (§7.3 bounds) apply after ordering; `Coverage`
+/// ignores them (§10.5 has no bounds) and delivers depth-first key order.
+fn scan_view(
     &self,
-    root: &RowAddress,
-    field: &str,
-    where_: Option<&dyn CoveragePredicate>,
-    except: Option<&dyn CoveragePredicate>,
-) -> Result<Vec<(Vec<KeyValue>, StoredRow)>, StoreError>;
+    source: ViewSource<'_>,
+    program: &dyn ViewProgram,
+    skip: Option<u64>,
+    limit: Option<u64>,
+) -> Result<Vec<EvaluatedRow>, StoreError>;
 ```
 
-`MemoryStore` implements `scan_coverage` as a `BTreeMap` range descent calling
-`admits` — **pruning in Rust, through the same evaluator**. `PgStore` ships
-`wire()` into the recursive CTE of §7.6, where the extension deserializes it and
-calls the same `admits` — **pruning in SQL, through the same evaluator**. A
-`PredicateFault` maps to a new `StoreError::Predicate` variant, which the runtime
-answers with the interpreter fallback (§7.5) so fault behavior is
-interpreter-exact.
+`MemoryStore` implements `scan_view` as a `BTreeMap` range scan/descent calling
+`admits`/`project`/`sort_tuple` and sorting with the shared Annex-B tuple
+comparison — **evaluating in Rust, through the same evaluator**. `PgStore` ships
+the wires into the §7.6 SQL, where the extension deserializes them and runs
+**the same evaluator inside PostgreSQL** — filter in `WHERE`, projection in the
+`SELECT` list, sort key in `ORDER BY`, bounds as `OFFSET`/`LIMIT`. An
+`EvalFault` maps to a new `StoreError::Eval` variant, which the runtime answers
+with the interpreter fallback (§7.5) so fault behavior is interpreter-exact.
 
 ## 4. The read path: one indexed SQL statement per contract read
 
@@ -316,7 +385,7 @@ where a pooled read sees a *partial* commit (single SQL txn, atomic visibility).
 
 ### 5.4 Consistency taxonomy (which read needs what)
 
-1. **Single-statement reads** — `row`, `scan`, `scan_subtree`, `scan_coverage`,
+1. **Single-statement reads** — `row`, `scan`, `scan_subtree`, `scan_view`,
    `head`, `log_from`, `point_position`, `get_blob`, `has_blob`, `definition`,
    `composition`: one SQL statement = one MVCC statement snapshot. Internally
    consistent on any pooled connection, autocommit. Nothing to pin.
@@ -402,9 +471,9 @@ end: tokens `0`, `1`, `2` allocated across an interleaved `BEGIN …
 FOR UPDATE … ROLLBACK` admission — the aborted transaction did not return token
 `1`; monotone, no reuse.
 
-## 7. The scope call (revised again): the REAL interpreter prunes inside PostgreSQL
+## 7. The general in-PG evaluator: ANY read-side expression over persisted rows
 
-### 7.1 What changed and why — v2's SQL lowering is superseded
+### 7.1 What changed and why — from a predicate function to the general evaluator
 
 v2 satisfied mandate 3 by compiling a statically checked predicate *fragment* to
 exact-semantics SQL: a store-level `RowPredicate` IR, an operator-by-operator SQL
@@ -415,17 +484,42 @@ honest, permanent cost: **a second evaluator** for the fragment, an enumerated
 fragment boundary users hit, and a parity obligation renewed with every operator
 the fragment ever grows.
 
-Mandate 4 removes the second evaluator instead of containing it: **link the one
+Mandate 4 removed the second evaluator instead of containing it: **link the one
 interpreter into PostgreSQL.** A `pgrx` extension crate builds the same
 `liasse-expr` evaluator the runtime and MemoryStore execute into a `.so` loaded
-by the self-hosted PostgreSQL, exposing one SQL function the coverage CTE calls
-per candidate during descent. Because it is literally the same Rust code
+by the self-hosted PostgreSQL. Because it is literally the same Rust code
 evaluating the same `TypedExpr` against the same truthiness contract, parity with
-the MemoryStore oracle is **by construction**, and the expressiveness of a §10.5
-predicate over the candidate is the full core language — field access (including
-nested static structs), computed fields, arithmetic (including its error paths),
-string builtins, `has`/`in`/`size`, comparisons, logic, ternary, `$key` — with
-**no fragment table and no per-operator SQL**.
+the MemoryStore oracle is **by construction**, and expressiveness over the
+candidate is the full core language — field access (including nested static
+structs), computed fields, arithmetic (including its error paths), string
+builtins, `has`/`in`/`size`, comparisons, logic, ternary, `$key` — with **no
+fragment table and no per-operator SQL**.
+
+Mandate 5 draws the conclusion v3 stopped short of: if the real interpreter is
+in the database, restricting it to `$where`/`$except` is arbitrary. The
+extension becomes a **general evaluator** — `liasse.eval` takes any serialized
+checked expression, a stored row, its key, and a hoisted env, and returns the
+serialized result value; a boolean predicate is the special case whose result is
+consumed as a SQL boolean (§7.4). On top of it, **read-side evaluation over
+persisted rows pushes down**: a `$view` over a stored collection — source scan
+`+` optional filter `+` projection `+` `$sort` (§7.1/§7.3 of SPEC.md) — is
+served by ONE index-served SQL statement in which the extension evaluates the
+filter in `WHERE`, the projection (computed fields folded, §5.2) in the `SELECT`
+list, and the sort key in `ORDER BY`, with `$skip`/`$limit` as `OFFSET`/`LIMIT`.
+The evaluated view rows come straight from PostgreSQL — no
+hydrate-everything-then-evaluate-in-Rust for the covered cases. The §10.5
+coverage read of mandates 3+4 is re-derived as the **recursive source shape** of
+this one mechanism (§3 `ViewSource::Coverage`): same programs, same faces, same
+CTE — pruning-during-descent is what "the filter runs in `WHERE`" means when the
+source is recursive.
+
+What does NOT push down is enumerated in §7.5 (candidate-dependent host calls,
+candidate-subtree reads, non-collection sources, engine-state reads), and what
+NEVER pushes down is structural: admission/staging evaluation runs over the
+staged in-memory overlay that `nodes` does not yet contain (§5.4 case 3), so
+`$check`/`$normalize`/defaults/mutation programs stay interpreter-based in Rust;
+and MemoryStore always evaluates in Rust — it is the oracle that makes the
+0-divergence gate meaningful.
 
 **Eliminated from v2, explicitly**: the predicate→SQL compiler; the
 `RowPredicate`/`PredOperand`/`CompareClass` store-level IR; the §7.4 fragment
@@ -439,8 +533,35 @@ unfiltered and tombstone-barrier rules, the CTE shape and its index-served plan
 discipline, `scan_subtree` as the distinct semantics-free primitive, and the
 adversarial predicate corpus (now a regression backstop, §9).
 
-### 7.2 How §10.5 executes today — the semantics to reproduce
+### 7.2 How read-side evaluation executes today — the semantics to reproduce
 
+**The general view path.** Every read evaluation is a pure function of an
+environment whose root is the materialized package-root `Row`
+(`materialize.rs`): `EvalCtx::root` builds the WHOLE root — every collection's
+rows with nested collections (`build_row`), computed values folded to a fixed
+point (`fold_computed`, §5.2: fault ⇒ `none`, non-scalar ⇒ skip), keyrings,
+source buckets, module folds, meter accessors, then every declared view folded
+onto the root as a same-named cell (`expose_views`, to a fixed point) — and the
+view expression evaluates against it (`TypedExpr::evaluate`). A surface `$view`
+(`Engine::view_with`) additionally binds `@params` and `$actor`/`$session`; the
+result becomes a `ViewResult` (`view.rs`): per row the projected scalar/struct
+output fields, the `$sort` tuple, and the key-derived `RowId` (D.1) — exactly
+the triple `EvaluatedRow` carries (§3). Two structural facts the pushdown must
+mirror:
+
+- **Projection output** (`view.rs::cell_field_value`): a `none` optional output
+  is an omitted member; a keyless nested row is carried inline as a
+  `Value::Struct`; a keyed nested cell (sub-view) is NOT part of the row's
+  scalar projection — it is a separately-addressed stream. So `project` (§3)
+  returning one `Value::Struct` of scalar/struct outputs is the complete §12
+  row payload, not an approximation.
+- **Order** (`§7.3`, `order.rs`): the delivered order is the `$sort` tuple
+  compared per key direction under the Annex-B total order, with
+  PostgreSQL-style absence placement (ascending: present then `none`;
+  descending: `none` then present reversed) and occurrence identity as the
+  final tiebreak. An unsorted view delivers source (key) order.
+
+**The §10.5 coverage path.**
 `recursion.rs` (`CompiledRecursive`): the covered row is materialized with its full
 nested tree (`materialize_row_cell`), then `cover` walks it: **the covered root is
 projected unconditionally** (predicates admit *candidates*, i.e. descendants — the
@@ -476,58 +597,82 @@ read).
 ### 7.3 Architecture: who lowers, who evaluates, who falls back
 
 ```
-liasse-expr  (feature `predicate-wire`, new `predicate` module)
+liasse-expr  (feature `eval-wire`, new `wire` module)
   • serde derives (postcard) on the closed set: TypedExpr/TypedKind, ExprType,
     Value, Cell/Row/RowId — version-locked, never a public wire format (§7.4)
   • candidate-dependence classification + HOIST: every maximal candidate-free
     subtree is evaluated ONCE (callback into the runtime interpreter) and
     replaced by a synthetic binding; its value ships as an env entry
   • RESIDUAL AUDIT: the hoisted tree must contain only in-PG-evaluable nodes
-    (§7.5 whitelist); anything else reports a typed, span-carrying reason
+    (§7.5 boundary); anything else reports a typed, span-carrying reason
 
-liasse-pred  (new crate: the ONE candidate-predicate implementation)
-  CandidatePredicate {
-      expr:       hoisted TypedExpr          (candidate refs only)
+liasse-pred  (new crate: the ONE row-program implementation)
+  RowPrograms {
+      admit:      Option<hoisted TypedExpr>  (filter; for coverage the composed
+                                              `$where && !$except`, §7.2 order)
+      project:    hoisted projection outputs (name → TypedExpr, dep-ordered)
+      sort:       Vec<(hoisted TypedExpr, direction)>   ($sort keys, §7.3)
       env:        Vec<(SyntheticName, Cell)> (hoisted candidate-free values)
-      bind:       String                      ($bind)
+      bind:       Option<String>              ($bind / filter binding name)
       candidate:  CandidateDescriptor         (declared scalar/struct members,
                                                carried computed exprs in fold
                                                order, key arity)
   }
-  admits(value: &Value, key: &KeyValue) -> Result<bool, PredicateFault>
+  implements liasse-store's ViewProgram (§3):
+  admits / project / sort_tuple (value: &Value, key: &KeyValue)
      = build shallow candidate Row (descriptor-driven, absent ⇒ none)
        → fold carried computed exprs (the shared fixed-point fold)
-       → TypedExpr::evaluate(PredEnv{env, bind→candidate}, candidate)
-       → matches!(cell, Cell::Scalar(Value::Bool(true)))
-  to_wire()/from_wire(): postcard; PRED_ABI: the version-lock constant (§7.7)
+       → TypedExpr::evaluate(ProgEnv{env, bind→candidate}, candidate)
+       → consume per face: strict Bool(true) | output Value::Struct | tuple
+  to_wire()/from_wire() per face + env: postcard; EVAL_ABI: the version-lock
+  constant (§7.7); sort-tuple ordering via the shared Annex-B comparison and,
+  for the pushdown side, the order-preserving `sort_enc` (liasse-pg-codec §7.4)
 
 liasse-store
-  CoveragePredicate trait (opaque; §3) + scan_coverage
-     MemoryStore: BTreeMap descent calling admits()      — prunes in Rust
-     PgStore:     WITH RECURSIVE calling liasse.eval()   — prunes in SQL (§7.6)
+  ViewProgram trait + ViewSource + scan_view (opaque; §3), scan_subtree(steps)
+     MemoryStore: range scan / BTreeMap descent calling the faces, sorting by
+                  the shared tuple comparison        — evaluates in Rust
+     PgStore:     ONE SQL statement calling liasse.eval_bool / liasse.eval /
+                  liasse.eval_sort (§7.6)            — evaluates in SQL
 
-liasse-pg-ext  (new pgrx cdylib crate; §12.1)
-  #[pg_extern] liasse.eval(pred, value, key_wire, env)
-     = from_wire(pred ⊕ env)  [per-backend LRU-cached]
+liasse-pg-ext  (new pgrx cdylib crate; §12.1) — ONE evaluator, three SQL faces
+  #[pg_extern] liasse.eval(expr, value, key_wire, env)      -> jsonb
+  #[pg_extern] liasse.eval_bool(expr, value, key_wire, env) -> boolean
+  #[pg_extern] liasse.eval_sort(expr, value, key_wire, env) -> bytea
+     = from_wire(expr ⊕ env)  [per-backend LRU-cached]
        → value_codec::decode(value), key from key_wire
-       → THE SAME admits()
+       → THE SAME RowPrograms face → tagged-wire jsonb | strict truthiness |
+         sort_enc order-preserving bytes
 
-liasse-runtime (recursion compiler, new module beside recursion.rs)
-  compile_recursive → lower each $where/$except:
-     Lowered::Pushdown(CandidatePredicate)   — the live path
-     Lowered::Fallback(reason)               — per §7.5 policy
-  CompiledScope::materialize
-     head-frontier view read ──▶ scan_coverage + project each row through $view
+liasse-runtime (view/coverage lowering, new module beside recursion.rs)
+  compile: lower each surface/declared $view and each $recursive block:
+     Lowered::Pushdown(RowPrograms + ViewSource + bounds)  — the live path
+     Lowered::Fallback(reason)                             — per §7.5 policy
+  read path (Engine::view_with / CompiledScope::materialize / watch advance):
+     head-frontier read of a lowered view ──▶ store.scan_view → ViewResult
+          (rows already filtered, projected, sorted; coverage rows nested into
+          the §10.5 keyed tree by key_path)
      non-head frontier (§19.2 replay/resume) ──▶ today's path: snapshot(frontier)
-          hydration + interpreter pruning (correct by construction, off the live path)
-     hoist-eval error, or StoreError::Predicate from the store ──▶ same fallback
+          hydration + interpreter evaluation (correct by construction, off the
+          live path)
+     hoist-eval error, or StoreError::Eval from the store ──▶ same fallback
           (reproduces interpreter behavior exactly, including which error and
           the per-candidate short-circuit timing)
+     non-lowerable view (§7.5 classes) ──▶ per-view interpreter fallback,
+          recorded in the load-time pushdown report (§7.5 policy)
      admission receiver walk (resolve_receiver) ──▶ stays interpreter-based: it
           checks ONE key path with point reads under a staged overlay the nodes
           table does not yet contain — not the perf killer, and CTE-over-nodes
           would be unsound mid-staging
+     admission/staging evaluation ($check/$normalize/defaults/programs,
+          Prospective::gather) ──▶ ALWAYS interpreter-based in Rust (§7.1)
 ```
+
+The composed coverage admit (`$where && !$except` over the bound candidate) is
+semantics-preserving against `CompiledRecursive::included`: the interpreter
+short-circuits `&&` left-to-right, so `$where` evaluates first and a failing
+candidate never reaches `$except` — the same order and the same fault surface as
+the two-call form, in one program and one SQL call per row.
 
 **Hoisting rule (kept from v2, now feeding an env instead of SQL parameters).** A
 maximal subexpression that does not reference `$bind`/`.` (the candidate) is
@@ -562,26 +707,60 @@ and every §12 watch advance. Historical frontiers (§19.2 replay, resume of a
 stale client) fold the log and prune in Rust, as today: correct, off the hot
 path, and unavoidable without versioned rows.
 
-**What the pushdown actually saves (unchanged).** The covered subtree no longer
-round-trips: pruned branches are never fetched, included rows arrive in one
-statement already in depth-first order. State the `$view` projection needs
-*outside* the coverage tree hydrates as today — the pushdown targets the
-recursive tree, which is the unbounded part.
+**What the pushdown actually saves (extended by mandate 5).** For coverage, the
+covered subtree no longer round-trips: pruned branches are never fetched,
+included rows arrive in one statement already projected and in depth-first
+order. For a flat pushed `$view`, the collection no longer round-trips as whole
+rows to be materialized and evaluated in Rust: filtered-out rows are dropped at
+the heap, the wire carries only projected output columns, and a `$limit` view
+transfers only its bounded top-N. State a program needs *outside* the candidate
+(the `$actor` row, hoisted `/`-reads) arrives via `env` from ordinary §4
+point/scan reads — never a full hydration.
 
-### 7.4 The extension function contract
+### 7.4 The extension function contract — one evaluator, three SQL faces
 
-One SQL function, installed by the extension into its own schema (never the
-instance schema — it is shared by every instance in the database):
+The extension installs ONE evaluator behind three SQL faces, in its own schema
+(never the instance schema — it is shared by every instance in the database).
+The faces exist because SQL types the call site: a `WHERE` clause consumes
+`boolean`, a `SELECT` list consumes the result value, an `ORDER BY` consumes a
+memcmp-orderable key. All three deserialize the same wire, build the same
+candidate, and run the same interpreter; they differ only in how the result
+`Cell` is consumed — and each consumption is the *same* consumption the Rust
+side performs (§7.3), so the faces add no semantics.
 
 ```sql
-FUNCTION liasse.eval(pred bytea, value jsonb, key_wire jsonb, env bytea)
+-- the general face: the serialized result Cell, tagged wire form (value_codec)
+FUNCTION liasse.eval(expr bytea, value jsonb, key_wire jsonb, env bytea)
+RETURNS jsonb
+IMMUTABLE STRICT PARALLEL SAFE COST 100
+
+-- the predicate face: strict truthiness, consumed as `… IS TRUE`
+FUNCTION liasse.eval_bool(expr bytea, value jsonb, key_wire jsonb, env bytea)
 RETURNS boolean
+IMMUTABLE STRICT PARALLEL SAFE COST 100
+
+-- the ordering face: the order-preserving sort_enc bytes of the evaluated
+-- $sort tuple (direction-folded), consumed in ORDER BY
+FUNCTION liasse.eval_sort(expr bytea, value jsonb, key_wire jsonb, env bytea)
+RETURNS bytea
 IMMUTABLE STRICT PARALLEL SAFE COST 100
 ```
 
-- **`pred`** — `postcard`-serialized `CandidatePredicate` *minus* its env: the
-  hoisted `TypedExpr`, the bind name, and the `CandidateDescriptor`. Stable for
-  the lifetime of a compiled view, so its deserialization is cached (below).
+*Deviation from the mandate sketch, deliberate*: the sketch was one
+`eval(…) -> jsonb` with the bool case "consumed as `IS TRUE`", but `IS TRUE`
+does not type-check over `jsonb` — the faithful realization is a typed boolean
+face over the same evaluator (`eval_bool(…) IS TRUE`), and the ordering
+consumption needs bytes whose memcmp order IS the Annex-B tuple order, which a
+jsonb result cannot provide (PostgreSQL's jsonb ordering is not Annex B's).
+A composite-returning `eval_row` (admit + projected + ord in one call) is a
+documented optimization seam, not the design: separate faces keep each call in
+its natural clause, where the planner places it (§7.6/§7.8), and the decode
+cache makes the shared prefix work (wire decode, candidate build) cheap.
+
+- **`expr`** — `postcard`-serialized program face *minus* its env: the hoisted
+  `TypedExpr` (for `eval_sort`, the sort-key list with directions), the bind
+  name, and the `CandidateDescriptor`. Stable for the lifetime of a compiled
+  view, so its deserialization is cached (below).
 - **`value`** — the candidate row's stored tagged wire form, exactly the `nodes.value`
   column (`value_codec`). The extension decodes it with the *same* codec the
   store uses (`liasse-pg-codec`, §12.1) and builds the shallow candidate per the
@@ -597,42 +776,68 @@ IMMUTABLE STRICT PARALLEL SAFE COST 100
   has both columns in hand; passing the decodable one is strictly simpler than
   teaching the extension to invert `key_enc`.
 - **`env`** — `postcard`-serialized `Vec<(SyntheticName, Cell)>`: the hoisted
-  candidate-free values. Separate from `pred` because it varies per *read*
-  (session `$actor`, `@params`, `/`-read collections at this frontier) while
-  `pred` varies only per *view* — so each blob caches at its own rate.
-- **Return** — the truthiness contract verbatim:
-  `matches!(result, Cell::Scalar(Value::Bool(true)))`; anything else is `false`.
-  A predicate evaluation fault (an `EvalError` — e.g. division by zero on the
-  candidate's values) is reported via `pgrx`'s error path as a PG error with a
-  reserved SQLSTATE (`LQ001`) and the sanitized message; `PgStore` maps that
-  SQLSTATE to `StoreError::Predicate`, and the runtime answers with the
-  interpreter fallback (§7.3) so the surfaced error is the interpreter's own —
-  including *which* candidate errors first, which SQL evaluation order does not
-  promise.
-- **Volatility** — `IMMUTABLE` is truthful: the function is a pure function of
-  its four arguments (the interpreter is pure; every nondeterminism source was
-  hoisted into `env` by construction). `STRICT` makes a NULL `value` (a
-  tombstone, if the planner ever reorders around the `value IS NOT NULL`
-  barrier) yield NULL — filtered, never evaluated. `PARALLEL SAFE` is truthful
-  (no state beyond a per-backend cache); recursive CTEs do not parallelize
-  today, so it is future-proofing, not a load-bearing claim. `COST 100` tells
-  the planner this filter is expensive relative to `c.value IS NOT NULL`, so the
-  cheap conditions order first.
+  candidate-free values, shared by every face of one lowered view. Separate
+  from `expr` because it varies per *read* (session `$actor`, `@params`,
+  `/`-read collections at this frontier) while `expr` varies only per *view* —
+  so each blob caches at its own rate.
+- **Result consumption, per face** — `eval`: the result `Cell` in tagged wire
+  form as jsonb — a projected row is its output `Value::Struct` (a `none`
+  output an omitted member, §7.2), a scalar its tagged value; the store decodes
+  it with the same `value_codec`. `eval_bool`: the truthiness contract
+  verbatim, `matches!(result, Cell::Scalar(Value::Bool(true)))`; anything else
+  is `false`. `eval_sort`: the evaluated sort tuple encoded by `sort_enc`
+  (below). An evaluation fault (an `EvalError` — e.g. division by zero on the
+  candidate's values) is reported identically by all faces via `pgrx`'s error
+  path as a PG error with a reserved SQLSTATE (`LQ001`) and the sanitized
+  message; `PgStore` maps that SQLSTATE to `StoreError::Eval`, and the runtime
+  answers with the interpreter fallback (§7.3) so the surfaced error is the
+  interpreter's own — including *which* candidate errors first, which SQL
+  evaluation order does not promise. (The §5.2 computed-fold exception stands:
+  a *computed member's* fault folds to `none` inside the candidate build, by
+  the shared fold — only the program's own evaluation faults escape.)
+- **`sort_enc` (new, in `liasse-pg-codec`)** — an order-preserving byte
+  encoding of an evaluated `$sort` tuple: per key, a rank byte placing `none`
+  per §7.3 (ascending: after every present value; descending: before), then
+  the value's Annex-B-order-preserving bytes (the `key_enc` machinery — sign-
+  flipped big-endian numerics through the shared decimal normalization,
+  NUL-escaped text — extended with the non-key-eligible scalar classes in
+  their Annex-B class rank), with every byte inverted for a descending key so
+  one ascending memcmp realizes mixed directions. The occurrence tiebreak is
+  NOT encoded — the SQL appends the key-path columns (`key_enc` / the coverage
+  `sort_path`) as trailing `ORDER BY` terms, which IS the D.1 occurrence
+  identity order. **Honest limit**: a sort key of static type `json` would need
+  the full Annex-B JSON internal order encoded byte-comparably; that is
+  designable (the JSON order is total) but is NOT built in v1 — a view sorting
+  on a `json`-typed key falls back per §7.5, recorded in the pushdown report.
+- **Volatility** — `IMMUTABLE` is truthful for all three faces: each is a pure
+  function of its four arguments (the interpreter is pure; every
+  nondeterminism source was hoisted into `env` by construction). `STRICT`
+  makes a NULL `value` (a tombstone, if the planner ever reorders around the
+  `value IS NOT NULL` barrier) yield NULL — filtered/last-ordered, never
+  evaluated. `PARALLEL SAFE` is truthful (no state beyond a per-backend
+  cache); recursive CTEs do not parallelize today, so it is future-proofing,
+  not a load-bearing claim. `COST 100` tells the planner these calls are
+  expensive relative to `c.value IS NOT NULL`, so the cheap conditions order
+  first.
 - **Serialization** — `postcard` over feature-gated `serde` derives
-  (`liasse-expr` feature `predicate-wire`; `liasse-value` feature `serde`) on
-  the closed type set. This is an **internal, version-locked wire**: producer
+  (`liasse-expr` feature `eval-wire`; `liasse-value` feature `serde`) on the
+  closed type set. This is an **internal, version-locked wire**: producer
   (runtime) and consumer (extension) are required to be the same build (§7.7
   handshake), so no cross-version stability is promised or needed, and the
   derives impose no public-format obligation. A proptest round-trip gate (§9)
   pins encode∘decode = id.
-- **Per-backend decode cache** — deserializing `pred` per worktable row would be
-  O(rows × |pred|). The extension keeps a small per-backend (thread-local — a PG
+- **Per-backend decode cache** — deserializing `expr` per row would be
+  O(rows × |expr|). The extension keeps a small per-backend (thread-local — a PG
   backend is single-threaded; parallel workers each get their own) LRU, keyed by
-  a 128-bit hash of the blob, holding deserialized `CandidatePredicate`s and env
-  tables. One query passes byte-identical blobs, so every row after the first is
-  a hash-lookup. This is an infrastructure cache over immutable inputs, not a
+  a 128-bit hash of the blob, holding deserialized programs and env tables. One
+  query passes byte-identical blobs — and the three faces of one view share the
+  candidate descriptor and env — so every call after the first is a
+  hash-lookup. This is an infrastructure cache over immutable inputs, not a
   data projection — same footing as the §11 prepared-statement cache and the
-  r2d2 pool.
+  r2d2 pool. The remaining per-row duplicated work across faces (each face
+  re-decodes `value` and rebuilds the shallow candidate) is the price of the
+  three-face shape; the composite `eval_row` seam (above) exists if the §9
+  bench axis shows it dominating.
 
 ### 7.5 The hoisting boundary: what runs in-PG, what remains outside
 
@@ -640,26 +845,84 @@ With the full interpreter linked in, the boundary is no longer "which operators
 compile" but "which *inputs* exist inside PostgreSQL". The lowering audit (§7.3)
 enforces exactly that, over the hoisted tree:
 
-**In-PG (the residual whitelist — the full core language over the candidate):**
-`Literal`, the candidate itself (`Current`, the `$bind` binding), synthetic
-hoisted bindings, `Field` chains resolving to the candidate's stored scalar
-members, nested *static-struct* members, or carried computed members; `Key` (the
-candidate's `$key`, from `key_wire`); `Compare` (full Annex-B `Value::cmp` — all
-types, canonical decimal equality, `none` ranking, NUL-bearing text — because it
-*is* `Value::cmp`); `Logic`/`Not` (interpreter short-circuit and strict
-truthiness); `In` (hoisted set/collection haystacks); `Ternary`; `Arith`/`Neg`
-(including error paths — a fault maps per §7.4); `Builtin` `size`/`has`/
-`string.lower`/`string.upper`/`string.trim`; `Struct`/`List`/`Composite`
-literals (composite-key operands). Computed fields the predicate reads are
-carried in the descriptor with their own hoisted expressions and audited
-recursively; their fold reproduces `fold_computed` (fault ⇒ `none`, non-scalar ⇒
-skip) via the shared implementation.
+**First, the SOURCE classification — which reads push down at all.** The
+per-row boundary below applies to the filter/projection/sort programs of a read
+whose *source* is servable by the store. Lowerable sources:
+
+- **a stored collection scan** — the view chain `Field{Root/Current-of-root,
+  name}` resolving to a stored keyed collection (NOT a folded view cell),
+  optionally wrapped in a `Select::Bind` filter and/or a `Project` block:
+  `ViewSource::Collection`. This is SPEC.md's own canonical `$view` shape
+  (`.projects[:p | …] { … }`), the overwhelmingly common case;
+- **§10.5 coverage** — the `$recursive` descent: `ViewSource::Coverage`.
+
+Everything else keeps its runtime treatment, each with a defined disposition
+rather than a vague "unsupported":
+
+- **a reference to another view** (`.other_view` as source): lowered iff the
+  referenced view lowers — the lowering resolves the reference at compile time
+  and pushes the *composition* when the result is still one collection chain;
+  otherwise fallback. (Recursive view-through-view chains bottom out exactly as
+  `view_order_of`'s fuel does.)
+- **combinators** (`a | b`, `a & b`, `a - b`, `?:`, `??`): each operand that
+  lowers is served by its own pushed query; the combinator itself (an
+  identity-keyed merge honoring SPEC §7.4's order rules) runs in Rust over the
+  two evaluated row streams. Designed as a seam, NOT built in v1 — v1 falls
+  back for the whole combinator expression.
+- **aggregates over a lowerable view** (`count`/`sum`/… SPEC §7.5): the source
+  pushes (filter/projection in-PG); the fold runs in Rust over the returned
+  stream. (Pushing the fold itself into SQL aggregation over `liasse.eval`
+  results is a bench-driven seam — correctness is identical, only the
+  transferred row count differs.)
+- **keyed selection** (`.coll[k]`): already a §4.1 point read; the projection
+  program applies to the one row in Rust — no pushdown needed to avoid
+  hydration.
+- **temporal/bucketed sources** (§14): a bucket's activity test is itself a
+  row-level expression over the row's fields at the request clock — it is
+  *composable into the pushed filter* (hoist `now`, conjoin the compiled
+  `$from`/`$until` interval test). Designed as a seam; v1 falls back for
+  bucketed sources.
+- **engine-state sources** — keyring version views (§17.2), meter accessors
+  (§15.6), module aggregation (§13.9), source-backed buckets (§14.4), blob
+  placement members (§18.5): their rows/values are engine-derived, not stored
+  `nodes` rows; as *sources* they fall back, and as *subexpressions inside a
+  pushed program* they are candidate-free and hoist into `env` like any other
+  engine value.
+
+**In-PG (the residual boundary — the full core language over the candidate):**
+`Literal`, the candidate itself (`Current`, the `$bind`/filter binding),
+synthetic hoisted bindings, `Field` chains resolving to the candidate's stored
+scalar members, nested *static-struct* members, or carried computed members;
+`Key` (the candidate's `$key`, from `key_wire`); `Compare` (full Annex-B
+`Value::cmp` — all types, canonical decimal equality, `none` ranking,
+NUL-bearing text — because it *is* `Value::cmp`); `Logic`/`Not` (interpreter
+short-circuit and strict truthiness); `In` (hoisted set/collection haystacks);
+`Ternary`; `Arith`/`Neg` (including error paths — a fault maps per §7.4);
+`Builtin` `size`/`has`/`string.lower`/`string.upper`/`string.trim`;
+`Struct`/`List`/`Composite` literals (composite-key operands, struct outputs);
+`Select`/`Traverse`/`Aggregate`/`Project` whose base is a *hoisted* collection
+cell (e.g. `/accounts[.owner]` — the candidate-dependent selection runs in-PG
+over the hoisted `/accounts` haystack, like `In` does; weigh the env size,
+below). Computed fields the program reads are carried in the descriptor with
+their own hoisted expressions and audited recursively; their fold reproduces
+`fold_computed` (fault ⇒ `none`, non-scalar ⇒ skip) via the shared
+implementation. Projection outputs may reference earlier outputs (§7.1
+dependency order) — the lowering inlines them in the checker's own output
+order, which is already cycle-free.
 
 **Hoisted (candidate-free, evaluated once in Rust, shipped in `env`):** literals
 aside — session structurals (`$actor`/`$session`), surface `@params`, `#imports`,
 `/`-reads of any collection, `now()`/`uuid()`, aggregates/views/traversals over
-*other* state, and **any host-namespace call whose arguments are candidate-free**
-(evaluated through the app's registered namespace, §16.3 `pure`).
+*other* state, keyring/meter/placement selectors, and **any host-namespace call
+whose arguments are candidate-free** (evaluated through the app's registered
+namespace, §16.3 `pure`). *Env-size caveat, honest*: hoisting a `/`-collection
+(an `in /admins` haystack, a `/accounts[.owner]` deref base) ships that
+collection's cells in `env` per read — bounded by the referenced collection,
+not the source, but a large deref target makes the env blob large; the §9
+bench axis measures env-heavy programs, and a per-view fallback remains
+available if a hoisted haystack is pathological. (A future alternative — the
+extension resolving the deref by its own indexed point-read via SPI — is the
+same SPI seam as below, not designed in.)
 
 **Not in-PG, by nature (candidate-DEPENDENT but needing runtime context the
 extension lacks):**
@@ -683,19 +946,29 @@ extension lacks):**
    noted as a seam in §11, not designed in: it reintroduces per-row table access
    the plan gate would have to reason about.)
 
-**Policy for these two classes — recommendation.** Same reasoning as v2 §7.7,
-now over a far smaller surface: a *silent* per-view interpreter fallback would
-quietly reintroduce the exact perf killer mandate 3 forbids, and under AGENTS.md
-("performance is a correctness gate") that is a correctness hole. Recommended:
-**load-time rejection with a rustc-like diagnostic** (offending span; why —
-"this host call takes the candidate as an argument, and the storage-side
+**Policy — split by what mandate 3 protects, recommendation.** For **§10.5
+coverage predicates** the v3 policy stands unchanged: a *silent* per-view
+interpreter fallback would quietly reintroduce the exact perf killer mandate 3
+forbids (an unpushed coverage read fetches the whole unbounded subtree), and
+under AGENTS.md ("performance is a correctness gate") that is a correctness
+hole. So: **load-time rejection with a rustc-like diagnostic** (offending span;
+why — "this host call takes the candidate as an argument, and the storage-side
 evaluator has no app namespaces"; how to fix — hoist the candidate-free part,
 restructure as a stored/computed field, or filter in the surface `$view`), plus
 an **explicit per-surface opt-in** (an engine-configuration escape, not a SPEC
 surface) that re-admits interpreter pruning *visibly* for a view that truly
-needs it. The two *dynamic* cases — non-head frontiers (§19.2) and
-hoist-eval/predicate-fault errors — keep the automatic interpreter fallback:
-they are correctness routes, not silent performance routes.
+needs it. For **general `$view` pushdown** (mandate 5) the calculus differs: an
+unpushed flat view is what EVERY view was before this revision — correct, and
+bounded by its own collection, not an unbounded recursive over-fetch — and
+load-rejecting every non-lowerable view shape would regress working packages.
+So: **automatic per-view interpreter fallback, never silent** — load emits a
+**pushdown report** (per view: pushed, or the typed span-carrying reason it is
+not), queryable through engine introspection, plus an engine-configuration
+**strict mode** that promotes residuals to load errors for deployments that
+want the §10.5-style guarantee everywhere. The two *dynamic* cases — non-head
+frontiers (§19.2) and hoist-eval/`StoreError::Eval` faults — keep the
+automatic interpreter fallback on both policies: they are correctness routes,
+not silent performance routes.
 
 **Does ANY restriction remain?** For the common case, none: every predicate over
 the candidate's own data — the spec's own §10.5 examples, and every plausible
@@ -713,10 +986,50 @@ evaluated once per read. A predicate that applies a host-namespace function to a
 candidate-dependent argument, or reads through the candidate's nested
 collections, is a load-time error."* The v2 fragment line is withdrawn.
 
-### 7.6 The coverage CTE calling the extension
+### 7.6 The SQL shapes: flat view, coverage CTE, and the shape-directed descent rule
 
-Shape, for `$where` wire `$W`, `$except` wire `$X`, env wire `$E` (an absent
-predicate drops its conjunct — default include, deny overrides):
+**The flat `$view` statement** (`ViewSource::Collection`), for admit wire `$A`
+(absent ⇒ conjunct dropped), projection wire `$P`, sort wire `$S` (absent ⇒
+`ORDER BY c.key_enc` — source key order), env wire `$E`, over the §4.2 resolved
+parent chain:
+
+```sql
+SELECT c.key_wire, c.incarnation,
+       liasse.eval($P, c.value, c.key_wire, $E)      AS projected,
+       liasse.eval($S, c.value, c.key_wire, $E)      AS sort_tuple   -- only when sorted
+FROM {s}.nodes c
+WHERE c.parent_id = (…chained InitPlan, §4.1…)
+  AND c.step_name = $name AND c.value IS NOT NULL
+  AND liasse.eval_bool($A, c.value, c.key_wire, $E) IS TRUE
+ORDER BY liasse.eval_sort($S, c.value, c.key_wire, $E), c.key_enc
+OFFSET $skip LIMIT $limit
+```
+
+- The filter runs in the scan's **Filter line** (never a scan source): rows the
+  admit program excludes are dropped at the heap, before projection or sort
+  evaluation — SQL's clause order does what the interpreter's
+  filter-then-project does.
+- The **`ORDER BY` is the evaluated `$sort`** in `sort_enc` order (§7.4), with
+  `c.key_enc` as the trailing occurrence tiebreak — Annex-B/§7.3 order by
+  construction of the encoding. `$skip`/`$limit` become `OFFSET`/`LIMIT`, and
+  with a `LIMIT` the sort is a bounded top-N heapsort (prototyped, §7.8) — the
+  first time a `$limit` view's cost stops being O(collection) transfer.
+- The `sort_tuple` column carries the decodable evaluated tuple for §12's
+  window gap coordinate (§8); it is selected only when a subscription needs it
+  (a plain `view` read skips the column). This is the one place a sort
+  expression evaluates twice per row (`eval_sort` + `eval`); the per-backend
+  cache amortizes the decode, and the composite `eval_row` seam (§7.4) exists
+  if benches flag it.
+- **Plan shape** (prototyped, §7.8): an index-served scan of the collection's
+  `(parent_id, step_name)` range — `Index Scan` or `Bitmap Index Scan +
+  Bitmap Heap Scan` `using node_key_lookup`, the planner's call for wide
+  ranges; both are index-served, and the gate accepts both — with `eval_bool`
+  **only in the Filter/Recheck line**, `eval_sort` **only in the Sort Key**, a
+  `Sort` (or top-N) node above, and **no Seq Scan anywhere**.
+
+**The coverage CTE** (`ViewSource::Coverage`), for the composed admit wire `$A`
+(= `$where && !$except`, §7.3; absent ⇒ conjunct dropped — default include),
+projection wire `$P`, env wire `$E`:
 
 ```sql
 WITH RECURSIVE cover AS (
@@ -732,30 +1045,63 @@ WITH RECURSIVE cover AS (
     FROM cover p
     JOIN {s}.nodes c ON c.parent_id = p.id AND c.step_name = $field
     WHERE c.value IS NOT NULL                       -- tombstone blocks the branch (§7.2)
-      AND liasse.eval($W, c.value, c.key_wire, $E) IS TRUE
-      AND NOT (liasse.eval($X, c.value, c.key_wire, $E) IS TRUE)
+      AND liasse.eval_bool($A, c.value, c.key_wire, $E) IS TRUE
 )
-SELECT key_path, incarnation, value FROM cover ORDER BY sort_path
+SELECT key_path, incarnation, value,
+       liasse.eval($P, value, (…last key_path element…), $E) AS projected
+FROM cover ORDER BY sort_path
 ```
 
-- `included(c)` is realized as `(W IS TRUE) AND NOT (X IS TRUE)` — the `IS TRUE`
-  wrappers collapse a STRICT-NULL (only reachable if the planner evaluates the
-  call before the `value IS NOT NULL` barrier) to *excluded*, never admitted.
-- **Pruning during descent**: a candidate failing `included` never enters the
-  worktable, so its subtree is never joined, fetched, or decoded — the recursion
-  itself is the pruning, identical to v2's compiled CTE and to the §7.8 plan.
+- The `IS TRUE` wrapper collapses a STRICT-NULL (only reachable if the planner
+  evaluates the call before the `value IS NOT NULL` barrier) to *excluded*,
+  never admitted.
+- **Pruning during descent**: a candidate failing the admit never enters the
+  worktable, so its subtree is never joined, fetched, or decoded — the
+  recursion itself is the pruning, identical to v3 (§7.8's 139-of-781 plan).
+  The **projection runs in the outer SELECT** — evaluated once per *included*
+  row, after pruning, never on a pruned candidate.
 - **Plan shape**: anchor = the §4.1 chained-InitPlan `Index Scan using
   node_key_lookup`; recursive term = `Nested Loop` of `WorkTable Scan` +
   `Index Scan using node_key_lookup` with the extension calls appearing **only
-  in the Filter line** — a per-worktable-row function call, never a scan source,
-  so it cannot introduce a Seq Scan. This is EXPLAIN gate (11), unchanged in
-  meaning from v2 (§9): anchor + recursive term index-served, no Seq Scan
-  anywhere, worktable row count = included count (the pruning proof).
+  in the Filter line** — a per-worktable-row function call, never a scan
+  source, so it cannot introduce a Seq Scan. This is EXPLAIN gate (11): anchor
+  + recursive term index-served, no Seq Scan anywhere, worktable row count =
+  included count (the pruning proof).
 - Ordering: `sort_path` (arrays of memcmp-ordered `key_enc`) yields depth-first
-  Annex-B order; `key_path` decodes to the per-level `KeyValue` rel path via the
-  shared codec, and `incarnation`+`value` decode to the `StoredRow`.
+  Annex-B order — §10.5's keyed-tree order; coverage has no `$sort`/bounds.
+  `key_path` decodes to the per-level `KeyValue` rel path via the shared codec,
+  and the runtime nests the projected rows into the §10.5 keyed tree by path.
 - The recursion depth guard (§11) is shared with `scan_subtree`; a cycle in
   corrupt data is reported as corruption, not an infinite descent.
+
+**The shape-directed descent rule (binding for EVERY recursive descent).** A
+recursive term that joins children by `parent_id = p.id` **alone** does not use
+`node_key_lookup` — `parent_id` without `step_name` is not a usable prefix
+selective enough for the planner, which chooses **Seq Scan + Hash Join**
+(prototyped, §7.8; independently hit by the Phase-5 `scan_subtree` work). Every
+descent — the coverage CTE, `scan_subtree`, any future subtree read — MUST name
+the step(s) it descends: `c.parent_id = p.id AND c.step_name = $field` for the
+single-relation coverage descent, and `c.step_name = ANY($steps)` for a
+multi-collection subtree walk, where `$steps` is the set of nested-collection
+names declared anywhere in the subtree's compiled shape (the §3 `steps`
+parameter; a stored child row's step name is always a declared one, so the walk
+is complete). PostgreSQL keeps `= ANY` inside the **Index Cond** — one probe
+per (parent, step) — so the plan stays index-served (prototyped, §7.8).
+PostgreSQL permits exactly one self-reference in a recursive term, so the
+K-collection descent is one term with a K-element array, not K terms. A
+multi-collection walk's `sort_path` accumulates `(step_name, key_enc)` PAIRS
+(not bare `key_enc`) so the final `ORDER BY` yields Annex-B **address** order —
+sibling collections order by name segment before key — where the
+single-relation coverage CTE can keep bare `key_enc` (one step name per level). Two
+consequences, stated: (a) `scan_subtree`'s step universe comes from the CURRENT
+compiled shape — a migration walking rows of a *previous* model must derive its
+universe from that model's shape (or the physical `SELECT DISTINCT step_name`,
+one indexed statement), not the new one; (b) a truly shape-free all-children
+descent, if one is ever needed, is servable by adding a dedicated
+`nodes(parent_id)` btree — prototyped: with that index the planner DOES switch
+to a parameterized index nested-loop — but no current read needs it, and the
+index is NOT added (it would be dead weight the reconciler must justify;
+revisit only with a concrete consumer).
 
 ### 7.7 Extension presence and the version lock
 
@@ -772,8 +1118,8 @@ Two invariants, both enforced at open, both failing loud:
    database), reconcile runs `ALTER EXTENSION liasse UPDATE` — the
    self-reconciling story extended to the extension.
 2. **Version identity.** The runtime and the `.so` must be the same build of the
-   predicate semantics and wire. `liasse-pred` exports a single
-   `PRED_ABI: &str` — its crate version plus a wire-revision component — which
+   evaluation semantics and wire. `liasse-pred` exports a single
+   `EVAL_ABI: &str` — its crate version plus a wire-revision component — which
    the extension exposes as `liasse.abi_version()` and the store compares
    against its own linked constant on every open, refusing on mismatch
    ("extension ABI `X`, store ABI `Y`: deploy the matching image"). Discipline
@@ -845,13 +1191,53 @@ this workspace's sandbox (Docker 29.4, no local pgrx toolchain: the build runs
   inner index scan runs `loops=139` — once per *included* row, never per stored
   row (781): hereditary pruning is visible in the plan itself, exactly as gate
   (11) will pin it.
+**The v4 general-evaluator claims, prototyped in the same image** (extension
+extended with stand-in `liasse_eval_demo_project` → jsonb and
+`liasse_eval_demo_ord` → order-preserving bytea faces; `demo-eval.sql`, run
+after `demo.sql`; the v3 numbers above re-reproduced first — 139/139/781,
+index-served):
+
+- **ONE statement serves a `$view`** over a 2 000-row `projects` collection
+  (plus the 40 000 noise rows and the companies tree): filter
+  (`status != 'closed'`), projection with a computed-style output
+  (`margin = revenue - cost`, evaluated per row in the SELECT list, returned as
+  the tagged-wire jsonb row), and a mixed-direction `$sort`
+  (`[-priority, name]`) where `priority` is ABSENT (`none`) on every fifth row
+  — the §7.3 placement (descending ⇒ none first) realized purely by the
+  `sort_enc` rank byte, `ORDER BY <ord bytea>, key_enc`.
+- **Full-stream parity**: `jsonb_agg` of the extension-evaluated, extension-
+  ordered row stream **equals** the same view hand-written in native SQL
+  (field extraction, native `revenue - cost`, `ORDER BY priority DESC NULLS
+  FIRST, name, key_enc`) — `parity = t`, 1 715 view rows of 2 000 stored (285
+  filtered), none-block ordering included.
+- **Plan**: `Sort` (Sort Key = the `eval_ord` call + `key_enc`) over a
+  `Bitmap Heap Scan` + `Bitmap Index Scan on node_key_lookup`
+  (`Index Cond: parent_id = 0 AND step_name = 'projects'`), the filter face
+  only in the Filter line (`Rows Removed by Filter: 285`), **no Seq Scan**.
+  The planner chose the bitmap form over a plain Index Scan for the 2 000-row
+  range — still index-served; gate (12) accepts either. With `LIMIT 10` the
+  Sort becomes **top-N heapsort** (26 kB), halving execution time — `$limit`
+  pushdown observed working.
+- **Shape-directed descent** (the rule in §7.6): a two-collection recursive
+  descent (`step_name = ANY('{subcompanies,offices}')`) plans as
+  `Nested Loop(WorkTable Scan, Index Scan using node_key_lookup)` with the
+  `ANY` **inside the Index Cond** — 843 rows, no Seq Scan. The all-children
+  form (`parent_id = p.id` alone) plans as **Seq Scan + Hash Join** —
+  the Phase-5 trap, reproduced and pinned. With a dedicated
+  `nodes(parent_id)` index the planner DOES switch to a parameterized
+  `Index Scan using nodes_parent` nested-loop (answering the Phase-5 open
+  question) — kept as the documented rescue, not built (§7.6).
 - **Not covered by the prototype, honestly**: linking the full `liasse-expr`
   interpreter (the demo links serde_json only — but a cdylib linking pure-Rust
   rlibs is a plain Cargo property, not a pgrx risk), the postcard wire + decode
-  cache, and per-row cost at scale (a §9 bench axis). The prototype artifacts —
-  Dockerfile, extension source, initdb script, demo SQL — are committed at
+  cache, the real `sort_enc` (the demo encodes int/text with a NUL-terminator
+  shortcut; the real encoding reuses `key_enc`'s NUL-escaping and decimal
+  normalization), coverage-projection-in-outer-SELECT (composed from proven
+  parts: the v3 CTE + the v4 jsonb face), and per-row cost at scale (a §9
+  bench axis). The prototype artifacts — Dockerfile, extension source, initdb
+  script, `demo.sql`, `demo-eval.sql` — are committed at
   `crates/liasse-pg/design-prototype/` (design collateral, not implementation)
-  and are the templates §12 builds from; `docker build` + the `demo.sql` run
+  and are the templates §12 builds from; `docker build` + the two demo runs
   reproduce every number above.
 
 ## 8. §12 live views and windowing over pure PG
@@ -859,52 +1245,85 @@ this workspace's sandbox (Docker 29.4, no local pgrx toolchain: the build runs
 **Mechanics that stay in Rust (and why) — confirmed against mandate 2.**
 `watch.rs`/`window.rs` diff recomputed `ViewResult`s and slice windows over the
 view's total sort order — evaluated sort tuples plus `RowId` occurrence tiebreak
-(§12.2, §7.3, B.5). Those tuples come from expression evaluation (possibly via
-host calls), not stored columns, so a "PG-side window" (pushing `$size`/`$anchor`
-down as `LIMIT`/range) is **rejected**: the window is defined over the view order,
-which PostgreSQL cannot compute. Window and frozen-gap anchor state are
-*session-relative* — exactly what mandate 2 assigns to Rust session code. **No §12
-window predicate needs the §7 CTE treatment**: there is no store-level predicate in
-the window path to push down; the §10.5 coverage *inside* a watched view is pushed
-down by §7 on every advance, because a watch always advances to the committed head
-(the `frontier == head` case §7.3 serves).
+(§12.2, §7.3, B.5). The §12.2 diff (`patch.rs`), the window partition, and the
+frozen-gap anchor state are *session-relative* — exactly what mandate 2 assigns
+to Rust session code — and they stay there unchanged under pushdown: what
+changes is where the `ViewResult` they consume comes from. A "PG-side window"
+(pushing `$size`/`$anchor` down as its own `LIMIT`/range) remains **rejected**:
+the window is defined over the view order at a frozen gap coordinate with
+neighbor tracking, which needs the full ordered row stream regardless (below).
+The pushed query DOES apply the surface's own `$skip`/`$limit` (§7.6) — the
+view's declared bounds, which cap what any window can see (§12.2).
 
-**What changes: where each frontier's state comes from.** Per commit, per
-subscription, the engine runs `store.snapshot(head)` → `Prospective::from_snapshot`
-→ re-evaluate → `Watch::advance` diff. Under pure PG that snapshot is a real query.
+**What changes under mandate 5: a pushed view's advance is one query, not a
+hydration.** Per commit, per subscription, the engine today runs
+`store.snapshot(head)` → `Prospective::from_snapshot` → re-evaluate →
+`Watch::advance` diff. The pushdown splits subscriptions in two:
+
+- **Pushed views** (the §7.5-lowerable ones — flat filtered/projected/sorted
+  views and §10.5 coverage): the advance calls `scan_view` at the committed
+  head — ONE SQL statement returning the evaluated, ordered view rows — decodes
+  them into the `ViewResult`, and diffs. No snapshot, no `Prospective`, no root
+  materialization for this subscription. The per-read hoisted env (the `$actor`
+  row, `@params`, hoisted `/`-reads at this frontier) is rebuilt per advance —
+  its `/`-read entries are themselves §4 point/scan reads, so an env with k
+  hoisted collection reads costs k+1 statements, not a hydration. The §12.2
+  re-authorization at each frontier (role membership, actor liveness) already
+  runs on point reads and is unchanged.
+- **Fallback views** (§7.5 residuals, non-head frontiers): today's path —
+  `snapshot(head)` hydration + interpreter — with the Phase-4/6 mitigations.
+
 Honest cost accounting and the mitigations, in order:
 
-1. **Until Phase 6**, `snapshot(head)` is an O(history) log fold *per advance*. This
-   is correct but the dominant §12 cost on long histories. **Phase 6's head fast
-   path** makes it O(state) — one indexed/full-tree statement.
-2. **Per-frontier sharing (Phase 4)**: today every watch on an instance re-hydrates
-   the same frontier independently. Hydrate **once per (instance, frontier)** and
-   share the `Prospective` across all subscriptions advancing to that frontier
-   (surface-level change; semantically invisible — all watches read the same
-   committed frontier). Turns N-subscription cost into 1 hydration + N evaluations.
-3. **Commit-scoped skip (seam, phase-later)**: `log_from(prior_frontier)` yields
-   exactly the committed ops between two frontiers (already SQL-served). A
-   subscription whose compiled view's collection-dependency set is disjoint from the
-   touched addresses can skip re-evaluation and emit a frontier-only no-op. Requires
-   static dependency extraction from the compiled view — designed as a seam, not
-   built now (it must be conservative: any host-call/keyring-reading view is
-   "depends on everything").
+1. **Until Phase 6**, `snapshot(head)` is an O(history) log fold *per advance*
+   for FALLBACK views. **Phase 6's head fast path** makes it O(state). A pushed
+   view never pays either — its floor is O(its own result), the §7.6 statement.
+2. **Sharing (Phase 4, generalized)**: hydration sharing stays **once per
+   (instance, frontier)** for fallback subscriptions. Pushed subscriptions
+   share at a finer grain: one `scan_view` per distinct
+   **(view address, args, scope, frontier)** serves every subscription on that
+   tuple (the common fan-out — many clients watching the same surface — is
+   exactly this case); distinct args/scopes are genuinely distinct queries.
+3. **Commit-scoped skip (seam, phase-later)**: `log_from(prior_frontier)`
+   yields exactly the committed ops between two frontiers (already SQL-served).
+   A subscription whose compiled view's collection-dependency set is disjoint
+   from the touched addresses can skip its re-query/re-evaluation and emit a
+   frontier-only no-op. For a pushed view the dependency set is a byproduct of
+   lowering (the source path + every hoisted `/`-read), so the conservative
+   analysis is *easier* there; still a seam, not built now.
 4. **True incremental maintenance** (per-op delta → per-view patch without
-   re-evaluation) is out of scope — it belongs with the deferred `liasse-connect`
-   deliverable, and the §12.2 contract ("after applying every patch the client
-   result MUST equal the authorized declared view") is exactly what makes
-   recompute-and-diff the safe baseline.
+   re-evaluation) is out of scope — it belongs with the deferred
+   `liasse-connect` deliverable, and the §12.2 contract ("after applying every
+   patch the client result MUST equal the authorized declared view") is exactly
+   what makes recompute-and-diff the safe baseline. The pushed re-query IS
+   recompute-and-diff — recompute moved to PG, diff unchanged.
 
-**Hard parts, honestly**: (a) O(state) per commit per instance is the floor for this
-architecture — acceptable while instances are modest, and the §12.3 coherence unit
-(one connection) bounds it; measure in Phase 6 benches before optimizing further.
-(b) The window's full-view neighbor tracking means a bounded window still needs the
-full recomputed row stream, so windows do not reduce hydration cost — only wire
-cost. The §7 pushdown *does* reduce it for scoped recursive views: the pruned
-coverage tree never leaves PostgreSQL. (c) Resumable frontiers (`init`/`patch`
-replay for reconnecting clients) read old frontiers → O(history) log folds plus
-Rust-side pruning by design; that is the §19.2 replay primitive working as
-specified, not a regression (§7.3 "frontier scope").
+**Coherence.** A pushed advance evaluates "at head" as one SQL statement (case-1
+consistency, §5.4); in-process writer exclusivity (`&mut Engine` to commit vs
+`&Engine` to advance) guarantees the head cannot move between the commit that
+triggered the advance and the advance's query — the same argument that already
+covers `Prospective::gather`'s multi-scan sequences, now needed for at most
+1 + k statements (query + env reads). The env reads and the view query thus see
+the same frontier; the §5.4 `read_session()` seam remains the defence-in-depth
+if one-writer is ever relaxed.
+
+**Hard parts, honestly**: (a) per commit, the engine now runs one query per
+distinct watched (view, args, scope) tuple — N distinct watched views = N
+indexed queries per commit. That is the recompute-and-diff floor relocated, not
+removed; it beats O(state) hydration when views are selective or bounded
+(`$limit` becomes top-N in-PG, §7.8) and loses nothing when they are not — but
+a commit storm over many distinct watched views is still N×, and only seam 3 /
+IVM reduce that. Measure in Phase 10 benches. (b) The window's full-view
+neighbor tracking means a bounded window still consumes the full (post-`$limit`)
+recomputed row stream — the pushdown reduces what leaves PostgreSQL to the
+view's own result (projected columns, not whole rows; pruned coverage subtrees
+never fetched), not below it. (c) The §12.2 `sort_tuple` gap coordinate
+requires the decodable evaluated tuple per row — the `eval` sort-tuple column
+(§7.6), a second per-row sort evaluation; watch queries pay it, plain `view`
+reads skip it. (d) Resumable frontiers (`init`/`patch` replay for reconnecting
+clients) read old frontiers → O(history) log folds plus Rust-side evaluation by
+design; that is the §19.2 replay primitive working as specified, not a
+regression (§7.3 "frontier scope").
 
 ## 9. Parity, gates, benchmarks
 
@@ -912,23 +1331,28 @@ specified, not a regression (§7.3 "frontier scope").
   0-divergence gate and the shared `contract_tests` battery must be green after
   *every phase* (the battery is updated once, in Phase 0, for the §3 signatures).
   `snapshot` parity is by construction (shared `Snapshot::replay`).
-- **Predicate parity (revised for mandate 4)** — v2's three layers collapse to
-  two, because the store-vs-store layer is now the same linked code:
-  1. *Lowering parity* (runtime unit level): for a corpus of §10.5 predicates ×
-     candidate rows, `CompiledRecursive::included` (the interpreter over the
-     fully materialized candidate) must agree with
-     `CandidatePredicate::admits` (the lowered, hoisted, shallow-candidate
-     form). This is the gate on the ONLY reimplemented seam (§7.3): hoisting,
-     the residual audit, descriptor-driven candidate construction, and the
-     computed fold.
-  2. *Store parity as a regression backstop*: `scan_coverage` on MemoryStore vs
-     PgStore over the same `CandidatePredicate`. Agreement is by construction
-     (same `admits`), so what this actually guards is the machinery *around* it:
-     the postcard wire (also pinned directly by an encode∘decode proptest), the
-     jsonb `value_codec`/`key_wire` decode inside the extension, the decode
-     cache keying, the CTE's traversal semantics, and the SQLSTATE→
-     `StoreError::Predicate` fault mapping (a division-by-zero predicate must
-     surface, through the fallback, as the interpreter's own error on both
+- **Evaluation parity (revised for mandates 4+5)** — v2's three layers collapse
+  to two, because the store-vs-store layer is now the same linked code:
+  1. *Lowering parity* (runtime unit level): for a corpus of views × states,
+     the interpreter path (materialize root → evaluate → `ViewResult`) must
+     agree — rows, exposed values, order, sort tuples — with the lowered path
+     (`scan_view` on MemoryStore → `ViewResult`); and for §10.5, for a corpus
+     of predicates × candidate rows, `CompiledRecursive::included` must agree
+     with the composed `RowPrograms::admits`. This is the gate on the ONLY
+     reimplemented seam (§7.3): hoisting, the residual audit, the source
+     classification, descriptor-driven candidate construction, the computed
+     fold, projection-output ordering, and the sort-tuple comparison.
+  2. *Store parity as a regression backstop*: `scan_view` on MemoryStore vs
+     PgStore over the same `RowPrograms`. Agreement is by construction (same
+     faces), so what this actually guards is the machinery *around* it: the
+     postcard wire (also pinned directly by an encode∘decode proptest), the
+     jsonb `value_codec`/`key_wire` decode inside the extension, the projected
+     jsonb result decode, **`sort_enc` vs the shared Annex-B tuple comparison**
+     (also pinned directly by a proptest: for random tuple pairs and direction
+     vectors, memcmp of encodings ≡ the tuple comparison), `OFFSET`/`LIMIT` vs
+     Rust bounds, the decode cache keying, the CTE's traversal semantics, and
+     the SQLSTATE→`StoreError::Eval` fault mapping (a division-by-zero program
+     must surface, through the fallback, as the interpreter's own error on both
      stores).
   3. *Adversarial corpus — kept, verbatim, as the backstop's teeth*: decimal
      stored at three scales compared for equality (`1` = `1.0` = `1.00`); text
@@ -936,33 +1360,52 @@ specified, not a regression (§7.3 "frontier scope").
      three durable spellings under `==`, `!=`, and an ordering op; a hoisted
      `$actor`; `$except` overriding `$where`; a `closed` root (anchor
      unfiltered); a tombstoned intermediate (branch blocked); `child.$key`
-     compares including a scale-variant decimal key; an `in` set; `has()`. Plus
-     the newly admitted expressiveness: a computed field; candidate arithmetic
-     including a division-by-zero fault case; `string.lower` on a NUL-bearing
-     candidate field; a nested-static-struct member; an `in` over a hoisted
-     `/`-collection. Expected verdicts hand-derived from Annex A.1/B —
+     compares including a scale-variant decimal key; an `in` set; `has()`; a
+     computed field; candidate arithmetic including a division-by-zero fault
+     case; `string.lower` on a NUL-bearing candidate field; a
+     nested-static-struct member; an `in` over a hoisted `/`-collection. Plus
+     the mandate-5 surface: a projection with a computed output and an omitted
+     `none` optional output; `$sort` on an absent-optional key ascending AND
+     descending (placement per §7.3); a mixed-direction two-key sort; a sort
+     key of NUL-bearing text; a descending decimal key at mixed scales;
+     `$skip`/`$limit` over ties; an unsorted view (key order); a projected
+     static-struct output; a `/accounts[.owner]`-style hoisted-haystack deref
+     in an output. Expected results hand-derived from Annex A.1/B and §7.3 —
      externally deducible, per AGENTS.md.
 - **New refusal gates** (§7.7/§12): open against a database without the
   extension → actionable `StoreError`, nothing partially reconciled; open
   against a skewed ABI (simulated by installing a stub `liasse.abi_version()`
   returning a different string on a bare PG) → actionable refusal; the
-  load-time diagnostic for a candidate-dependent app-host-call predicate
-  (corpus case, written before the lowering lands).
+  load-time diagnostic for a candidate-dependent app-host-call coverage
+  predicate (corpus case, written before the lowering lands); the load-time
+  **pushdown report** naming a non-lowerable view with its typed reason, and
+  strict mode promoting it to an error (§7.5).
 - **Index gates** (`index_coverage_pg.rs`) — the gate becomes the READ gate. Keep
   (1)–(6); add, on the populated tree:
   - (7) depth-3 `row` chained-InitPlan point lookup → index-only, no Seq Scan;
   - (8) depth-3 `scan` in the §4.2 form → index-**ordered** (no Sort, no Seq Scan) —
     this pins the scalar-subquery formulation against the join formulation regressing in;
-  - (9) `scan_subtree` recursive CTE → no Seq Scan anywhere; anchor and recursive
-    term each use `node_key_lookup` (walk the `Recursive Union` children);
+  - (9) `scan_subtree` recursive CTE (shape-directed, `step_name = ANY`) → no
+    Seq Scan anywhere; anchor and recursive term each use `node_key_lookup`
+    with the `ANY` **inside the Index Cond** (walk the `Recursive Union`
+    children) — this pins the §7.6 shape-directed rule against the
+    all-children `parent_id`-only join regressing in (which plans Seq Scan +
+    Hash Join, §7.8);
   - (10) `has_blob` EXISTS probe → index-only;
-  - (11) `scan_coverage` extension CTE (an and/or/not predicate with a hoisted
-    parameter) → anchor and recursive term each `Index Scan using
-    node_key_lookup`, no Seq Scan; `liasse.eval` appears **only in a Filter
-    line** (never a scan source); the recursive term's inner-scan loop count
-    equals the included-row count (pruning-during-descent, pinned from the
-    plan). This is the EXPLAIN tripwire for mandates 3+4, matching the §7.8
-    prototype plan.
+  - (11) the coverage `scan_view` CTE (a composed and/or/not admit with a
+    hoisted parameter) → anchor and recursive term each `Index Scan using
+    node_key_lookup`, no Seq Scan; `liasse.eval_bool` appears **only in a
+    Filter line** (never a scan source); the recursive term's inner-scan loop
+    count equals the included-row count (pruning-during-descent, pinned from
+    the plan). This is the EXPLAIN tripwire for mandates 3+4, matching the
+    §7.8 prototype plan.
+  - (12) the flat `scan_view` statement (filter + projection + two-key mixed
+    sort) → the collection range served by `Index Scan` OR
+    `Bitmap Index Scan`+`Bitmap Heap Scan` `using node_key_lookup` (both
+    index-served; the planner picks by range width, §7.8), **no Seq Scan**;
+    `eval_bool` only in the Filter/Recheck line; `eval_sort` only in the Sort
+    Key; with `$limit`, a `Limit` over a top-N sort. This is the EXPLAIN
+    tripwire for mandate 5.
   - Pinned-exemption tests: single-row `instance_meta` reads (exists), the
     `alloc_incarnation` single-row UPDATE (§6.3), and the Phase-6 head fast path
     (a full-state materialization has no selective plan; assert instead that it is
@@ -971,19 +1414,26 @@ specified, not a regression (§7.3 "frontier scope").
   forbidden projection). Re-run the criterion suite against pure PG with the
   overhead axis defined as *contract read vs the identical hand-written SQL on the
   same pool* (the AGENTS.md "near-raw-PostgreSQL overhead" gate — near **raw SQL**,
-  not near RAM). For `scan_coverage` the "raw SQL" comparator is the §7.6 CTE
-  itself run by hand on the pooled connection — the extension call is part of
-  the raw cost on both sides, so the gate keeps measuring the *backend's*
-  overhead, not the interpreter's. Axes: `row` at depth 1/3/5; `scan` of
-  64/4 096 rows; `scan_subtree` of ~1 000 nodes; `scan_coverage` of a
-  ~1 000-node tree at 10 %/50 %/90 % pruned (vs the same tree via
-  `scan_subtree`+Rust pruning — the number that justifies mandate 3);
-  **`liasse.eval` per-row cost** (the CTE with the extension predicate vs the
-  same CTE with v2's hand-lowered native-SQL predicate from the retained
-  corpus — the measured price of generality, recorded, with the decode cache on
-  and off); `snapshot(head)` fast path vs log fold at 10³/10⁵ commits; `head`;
-  `alloc_incarnation`; commit. Record results in the crate before closing
-  Phase 6 (core axes) and Phase 9 (coverage axes).
+  not near RAM). For `scan_view` the "raw SQL" comparator is the §7.6
+  statement/CTE itself run by hand on the pooled connection — the extension
+  calls are part of the raw cost on both sides, so the gate keeps measuring the
+  *backend's* overhead, not the interpreter's. Axes: `row` at depth 1/3/5;
+  `scan` of 64/4 096 rows; `scan_subtree` of ~1 000 nodes; coverage
+  `scan_view` of a ~1 000-node tree at 10 %/50 %/90 % pruned (vs the same tree
+  via `scan_subtree`+Rust pruning — the number that justifies mandate 3);
+  **the headline mandate-5 axis: a watched flat `$view` (filter+projection+
+  sort, 10 %/90 % selectivity, with and without `$limit`) served by pushed
+  `scan_view` vs the same view by `snapshot(head)`-hydrate-then-evaluate — the
+  number that justifies the pushdown**, recorded per state size 10³/10⁵ rows;
+  **per-row face cost** (the statement with the extension faces vs the same
+  statement with hand-lowered native-SQL expressions from the retained corpus —
+  the measured price of generality, with the decode cache on and off, and the
+  `eval_sort`+`eval` double-evaluation overhead recorded to judge the
+  `eval_row` seam); env-heavy programs (a hoisted 10³-row `/`-collection
+  haystack — the §7.5 env-size caveat, measured); `snapshot(head)` fast path
+  vs log fold at 10³/10⁵ commits; `head`; `alloc_incarnation`; commit. Record
+  results in the crate before closing Phase 6 (core axes), Phase 9 (extension
+  axes), and Phase 10 (pushdown/§12 axes).
 
 ## 10. Migration plan — every phase lands green (corpus + parity + index gates)
 
@@ -994,21 +1444,24 @@ specified, not a regression (§7.3 "frontier scope").
 | **2** | `row`/`scan` → §4.1/§4.2 SQL; `PgTransition` overlays the SQL base; `NodeWriter` resolves via in-txn SQL (§6.1); commit trusts durable head and stops writing `next_incarnation` (§6.2); **`alloc_incarnation` → durable burn-on-allocate `UPDATE … RETURNING` (§6.3)**; delete `by_id`, the `new_ids` plumbing, and the projection's incarnation counter | gates (7)(8) added and green; parity green incl. abort-then-commit token scenarios |
 | **3** | `snapshot` → §4.3 log fold; delete `projection.log`; **delete `projection.rs`**; gut `node_load.rs` to the address-reconstruction helper Phase 6 will reuse; `PgStore` fields = §2 exactly | grep-provable: no durable-state field on `PgStore`; reopen test still passes (now trivially) |
 | **4** | §12/read-path hygiene: hydrate once per (instance, frontier), share across watches; engine read paths prefer `snapshot(head)` hydration over N live `scan`s where committed-state reads suffice | parity + corpus green; watch tests green |
-| **5** | `scan_subtree`: contract + MemoryStore range impl + PG CTE + adoption in `gather_tree`/`rows_at`/`materialize_row_cell` (semantics-free hydration: admission gathers, receiver walks, non-recursive scoped views, fallback path); depth guard | gate (9) green; hydration round trips measured before/after |
+| **5** | `scan_subtree`: contract (**with the §3 `steps` parameter — shape-directed per §7.6; the `parent_id`-only join is a pinned anti-pattern**) + MemoryStore range impl + PG CTE + adoption in `gather_tree`/`rows_at`/`materialize_row_cell` (semantics-free hydration: admission gathers, receiver walks, fallback-path views); depth guard | gate (9) green (incl. the `= ANY` Index Cond pin); hydration round trips measured before/after |
 | **6** | `snapshot(head)` fast path from `nodes` + tree≡log-fold equivalence test; core benchmark re-run + recorded numbers | bench report committed; overhead within gate |
-| **7** | The predicate stack, Rust side: `liasse-expr` `predicate-wire` feature (serde derives, hoist + residual audit, postcard wire); **`liasse-pred`** crate (`CandidatePredicate`, `admits`, descriptor, shared computed fold, `PRED_ABI`, round-trip proptest); `liasse-store` `CoveragePredicate` trait + `StoreError::Predicate` + `scan_coverage` + MemoryStore descent impl; runtime lowering (hoist, audit, computed read-set) + §10.5 head-frontier reads served via `scan_coverage` on **both** stores (MemoryStore prunes in Rust — behavior identical, architecture in place); load-time diagnostic + SPEC.md §10.5 note (§7.5 wording, maintainer-edited) + corpus cases for the rejection and the layer-1 parity corpus (corpus first, per AGENTS.md) | parity green; lowering-parity suite green; wire round-trip proptest green; corpus rejection case red→green |
-| **8** | The extension + image: **`liasse-pg-codec`** split out of `liasse-pg` (`value_codec`, `jsonb_text`, `key_enc*` + their test files; mechanical, liasse-pg re-exports); **`liasse-pg-ext`** pgrx cdylib (`liasse.eval`, `liasse.abi_version`, decode cache, lint carve-out §12.1); the two-stage Dockerfile + image build (§12.2, from the §7.8 template); test-harness container path + `LIASSE_PG_IMAGE` (§12.4); CI image job | extension unit tests (`cargo pgrx test`) green; image builds in CI; harness boots it; abi handshake round-trips |
-| **9** | PgStore `scan_coverage` → the §7.6 CTE calling `liasse.eval`; reconcile extension step + ABI handshake + refusal gates (§7.7); fallback wiring (non-head frontier, hoist-eval error, `StoreError::Predicate`); gate (11) + §9 adversarial corpus over the extension path; coverage + per-row-cost bench axes | gate (11) green; 0-divergence on the adversarial corpus; refusal gates green; pruned-tree + eval-cost benches recorded |
+| **7** | The evaluator stack, Rust side: `liasse-expr` `eval-wire` feature (serde derives, hoist + residual audit, postcard wire); **`liasse-pred`** crate (`RowPrograms` with the three faces, descriptor, shared computed fold, composed coverage admit, `EVAL_ABI`, round-trip proptests); `sort_enc` in the codec (+ the memcmp≡tuple-cmp proptest); `liasse-store` `ViewProgram`/`ViewSource`/`EvaluatedRow` + `StoreError::Eval` + `scan_view` + MemoryStore impl (scan + descent); runtime lowering (source classification, hoist, audit, computed read-set) + head-frontier reads of §10.5 coverage AND lowerable `$view`s served via `scan_view` on **both** stores (MemoryStore evaluates in Rust — behavior identical, architecture in place); coverage load-time diagnostic + pushdown report + strict mode + SPEC.md §10.5 note (§7.5 wording, maintainer-edited) + corpus cases for the rejection, the report, and the layer-1 parity corpus (corpus first, per AGENTS.md) | parity green; lowering-parity suite green (views + coverage); wire + sort_enc proptests green; corpus rejection/report cases red→green |
+| **8** | The extension + image: **`liasse-pg-codec`** split out of `liasse-pg` (`value_codec`, `jsonb_text`, `key_enc*`, `sort_enc` + their test files; mechanical, liasse-pg re-exports); **`liasse-pg-ext`** pgrx cdylib (`liasse.eval` + `liasse.eval_bool` + `liasse.eval_sort`, `liasse.abi_version`, decode cache, lint carve-out §12.1); the two-stage Dockerfile + image build (§12.2, from the §7.8 template); test-harness container path + `LIASSE_PG_IMAGE` (§12.4); CI image job | extension unit tests (`cargo pgrx test`) green; image builds in CI; harness boots it; abi handshake round-trips |
+| **9** | PgStore `scan_view` → the §7.6 SQL (flat statement + coverage CTE) calling the three faces; reconcile extension step + ABI handshake + refusal gates (§7.7); fallback wiring (non-head frontier, hoist-eval error, `StoreError::Eval`, non-lowerable views); gates (11)(12) + §9 adversarial corpus over the extension path; coverage + per-row-face bench axes | gates (11)(12) green; 0-divergence on the adversarial corpus; refusal gates green; pruned-tree + face-cost benches recorded |
+| **10** | §12 adoption: watch/window advance over pushed views (`scan_view` at head → `ViewResult` → diff, §8); per-(view, args, scope, frontier) query sharing beside the Phase-4 hydration sharing; sort-tuple column wiring for windowed subscriptions; **the pushed-read benchmark axes — the whole point: pushed `scan_view` vs hydrate-then-evaluate, watch-advance end to end** | watch/window suites green on both paths; §8 sharing observable in tests (one query per tuple per frontier); pushdown bench report committed |
 
 Ordering rationale: reads convert one contract method at a time **behind the parity
 gate**; the projection dies only when its last reader does (Phase 3); optimizations
-(5, 6) come only after the pure-PG semantics are locked by the gates. The predicate
-pushdown splits three ways (7, 8, 9) so that the semantics (lowering + `admits` +
-MemoryStore realization) land gated **before** any PG artifact exists, the build
-artifacts (codec split, extension crate, image, harness) land as pure
-infrastructure with their own unit gates, and only then does PgStore switch its
-coverage read onto the extension — making any Phase-9 divergence attributable to
-transport (wire/jsonb/CTE), never to predicate semantics.
+(5, 6) come only after the pure-PG semantics are locked by the gates. The evaluator
+pushdown splits four ways (7, 8, 9, 10) so that the semantics (lowering + the
+program faces + MemoryStore realization) land gated **before** any PG artifact
+exists, the build artifacts (codec split, extension crate, image, harness) land as
+pure infrastructure with their own unit gates, then PgStore switches its evaluated
+read onto the extension — making any Phase-9 divergence attributable to transport
+(wire/jsonb/sort_enc/SQL), never to evaluation semantics — and only then does the
+§12 loop consume the pushed path, so a watch regression is attributable to the §8
+wiring, never to the read itself.
 
 ## 11. Risks and judgment calls
 
@@ -1027,7 +1480,7 @@ transport (wire/jsonb/CTE), never to predicate semantics.
 2. **Version skew** between the `.so` and the runtime: two artifacts now share
    one semantics. Contained by the §7.7 double lock — CI builds both from one
    commit; the `abi_version` handshake refuses operational skew at open, before
-   any read. Residual risk is a wire change without a `PRED_ABI` bump slipping
+   any read. Residual risk is a wire change without an `EVAL_ABI` bump slipping
    through review *and* the round-trip/parity gates on one commit — accepted as
    comparable to any same-repo protocol.
 3. **Panic and unsafe containment**: the workspace forbids `unsafe` and denies
@@ -1041,15 +1494,17 @@ transport (wire/jsonb/CTE), never to predicate semantics.
    the transaction with a PG ERROR — never the postmaster — and surfaces as
    `StoreError`, satisfying "fail loud". AGENTS.md gets one clarifying sentence
    in Phase 8, like the Phase-0 pool sentence.
-4. **Per-row evaluation cost**: the interpreter per candidate replaces v2's
-   native SQL operators per candidate — generality has a price (jsonb decode +
-   tree walk per row; the pred/env decode is amortized by the §7.4 cache). The
-   §9 eval-cost bench axis measures it against the v2-style hand-lowered
-   predicate on the same tree, and the near-raw gate keeps the *backend*
+4. **Per-row evaluation cost**: the interpreter per row replaces v2's native
+   SQL operators per row — generality has a price (jsonb decode + candidate
+   build + tree walk per row *per face*, §7.4; the expr/env decode is amortized
+   by the cache). The §9 face-cost bench axis measures it against hand-lowered
+   native-SQL expressions on the same data, the double sort evaluation
+   (`eval_sort` + the tuple column) is recorded separately to judge the
+   `eval_row` composite seam, and the near-raw gate keeps the *backend*
    overhead honest. If the price is ever intolerable, the v2 lowering could
-   return as a *transparent optimization* for predicates it can serve — the
-   architecture (opaque `CoveragePredicate` behind the contract) leaves that
-   door open without another contract change.
+   return as a *transparent optimization* for expressions it can serve — the
+   architecture (opaque `ViewProgram` behind the contract) leaves that door
+   open without another contract change.
 5. **Planner drift**: the no-Sort scan plan and the index-served recursive terms
    are plan shapes, not guarantees; a PG major could regress them. Mitigation:
    EXPLAIN gates (7)–(11) are deterministic CI tripwires, and the deployment
@@ -1079,24 +1534,59 @@ transport (wire/jsonb/CTE), never to predicate semantics.
 **Judgment calls the mandates did not fully specify** (flagged for maintainer review)
 
 - **Serialized form = the hoisted `TypedExpr` itself** (postcard, feature-gated
-  derives), not a new predicate IR: a second IR would reintroduce exactly the
+  derives), not a new expression IR: a second IR would reintroduce exactly the
   lowering-divergence surface mandate 4 exists to kill. Cost: serde derives on
   internal expression types — accepted as a private, version-locked wire (§7.4),
   never a public format.
+- **Three typed SQL faces over one evaluator, not the sketch's single
+  `eval(…) -> jsonb`** (§7.4): `IS TRUE` does not type-check over jsonb, and
+  `ORDER BY` needs memcmp-Annex-B bytes a jsonb result cannot provide. The
+  faces share wire, cache, candidate build, and interpreter; the composite
+  `eval_row` (one call returning admit+projected+ord) is a bench-driven seam.
+- **`sort_enc` is a NEW order-preserving encoding** (direction-folded, §7.3
+  none placement) rather than sorting in Rust after an unordered fetch: SQL
+  ordering is what makes `$limit` a top-N and keeps the statement "one query".
+  Its equivalence to the shared tuple comparison is proptest-pinned (§9). The
+  admitted gap: a `json`-typed sort key is not encodable in v1 → per-view
+  fallback, reported. Encoding the total Annex-B JSON internal order is
+  designable if a real package needs it.
 - **`key_wire` instead of the sketch's `key_enc`** as the function's key
   parameter — `key_enc` is one-way by design; the decodable identity is
   `key_wire` (§7.4).
-- **Candidate-dependent app-host-calls and candidate-subtree reads: load-time
-  rejection by default with an explicit per-surface interpreter opt-in** (§7.5),
-  not a silent fallback; SPEC.md gets the one narrow note (maintainer words it).
-  The SPI escape (extension reading the candidate's children mid-descent) and
-  the app-namespaces-linked-into-a-downstream-image escape are documented seams,
-  built only on demand.
+- **Coverage admit composed as `$where && !$except`** in ONE program/call
+  (§7.3), not two calls: interpreter short-circuit reproduces the two-step
+  `included()` order and fault surface exactly; one face call per worktable row
+  instead of two.
+- **Policy split (§7.5)**: coverage predicates keep **load-time rejection** +
+  explicit opt-in (an unpushed coverage read is the mandate-3 perf killer);
+  general `$view`s get **automatic per-view fallback + a load-time pushdown
+  report + strict mode** (an unpushed flat view is pre-revision behavior, and
+  rejecting every non-lowerable shape would regress working packages). SPEC.md
+  gets the one narrow §10.5 note (maintainer words it); the report/strict knob
+  is engine configuration, not SPEC surface.
+- **Candidate-dependent app-host-calls and candidate-subtree reads** stay
+  outside the pushdown; the SPI escape (extension reading the candidate's
+  children or a deref target mid-statement), a LATERAL-assembled deep-candidate
+  (the row's subtree aggregated per candidate into the `value` argument), and
+  the app-namespaces-linked-into-a-downstream-image escape are documented
+  seams, built only on demand.
+- **Aggregates fold in Rust over the pushed stream; combinators/view-refs
+  fall back in v1** (§7.5) — dispositions chosen to keep v1's lowering surface
+  small and gateable; both have designed upgrade paths that change no contract.
 - **The shallow-candidate seam** (§7.3): descriptor-driven candidate
   construction + the shared computed fold are the one reimplemented sliver,
   gated by lowering parity; judged far smaller than v2's per-operator SQL
   surface it replaces.
-- **`PRED_ABI` = crate version + wire revision**, not a build-time content hash:
+- **Shape-directed descent everywhere** (§7.6): the `steps` universe comes from
+  the CURRENT compiled shape; a migration walking a previous model's rows must
+  use that model's universe (or one indexed `SELECT DISTINCT step_name`). The
+  dedicated `nodes(parent_id)` index that would rescue a shape-free descent is
+  prototyped but NOT added — no consumer, and the reconciler would carry dead
+  weight.
+- **Env-size**: hoisting a `/`-collection haystack ships it per read (§7.5);
+  accepted with a bench axis and the per-view fallback as the relief valve —
+  not silently truncated, never partially hoisted.
+- **`EVAL_ABI` = crate version + wire revision**, not a build-time content hash:
   a hash would also lock semantically neutral refactors and needs reproducible
   hashing of type layouts; the revision constant plus the gates was judged
   proportionate. Revisit if skew ever bites.
@@ -1112,10 +1602,11 @@ transport (wire/jsonb/CTE), never to predicate semantics.
   moves to PG 18.
 - `snapshot()` still returns the materialized `Snapshot` value — a
   session-relative computed result under mandate 2, not a read model.
-- `scan_subtree` + `scan_coverage` remain contract *extensions*; `scan_coverage`
-  stays the single semantics-carrying read, but its semantics now enter through
-  an opaque trait object (§3) rather than a store-defined IR — the contract
-  itself is *more* semantics-free than v2's.
+- `scan_subtree` + `scan_view` remain contract *extensions*; `scan_view` stays
+  the single semantics-carrying read (both source shapes), but its semantics
+  enter through an opaque trait object (§3) rather than a store-defined IR —
+  the contract itself is *more* semantics-free than v2's, while serving
+  strictly more of the read path.
 - The Phase-6 head fast path deliberately full-scans `nodes` (exempted, pinned).
 - **Incarnation burn-on-allocate** (§6.3) — unchanged; gapless tokens would be a
   spec change, not a storage one.
@@ -1137,16 +1628,20 @@ transport (wire/jsonb/CTE), never to predicate semantics.
   crate": the physical wire representation is now a named concern shared by the
   store and its in-database twin. `record_codec` (commit-op wire) stays in
   `liasse-pg` — the extension never reads the log.
-- **`crates/liasse-pred`** (new): `CandidatePredicate` + `admits` + descriptor +
-  shared computed fold + postcard wire + `PRED_ABI` (§7.3–§7.4). Depends on
-  `liasse-expr` (with `predicate-wire`), `liasse-value`, `liasse-store` (for
-  `KeyValue`/`Value` types and the `CoveragePredicate` trait), `liasse-ident`,
-  `postcard`. No pgrx, no postgres — fully testable on the host.
+- **`crates/liasse-pred`** (new): `RowPrograms` (the three faces: `admits` /
+  `project` / `sort_tuple`) + descriptor + shared computed fold + composed
+  coverage admit + postcard wire + `EVAL_ABI` (§7.3–§7.4). Depends on
+  `liasse-expr` (with `eval-wire`), `liasse-value`, `liasse-store` (for
+  `KeyValue`/`Value` types and the `ViewProgram` trait), `liasse-ident`,
+  `postcard`. No pgrx, no postgres — fully testable on the host. (The name
+  predates mandate 5; it now carries programs, not just predicates — renaming
+  to `liasse-prog` is a maintainer's one-word call, nothing else changes.)
 - **`crates/liasse-pg-ext`** (new, the ONLY pgrx crate): `crate-type =
   ["cdylib", "rlib"]` (pgrx convention; the rlib serves `cargo pgrx test`).
   Depends on `pgrx`, `liasse-pred`, `liasse-pg-codec`, `serde_json`. Exposes
-  `liasse.eval` and `liasse.abi_version` (§7.4, §7.7) and the per-backend decode
-  cache; control file: `schema = liasse`, `relocatable = false`,
+  the three evaluator faces `liasse.eval` / `liasse.eval_bool` /
+  `liasse.eval_sort` and `liasse.abi_version` (§7.4, §7.7) and the per-backend
+  decode cache; control file: `schema = liasse`, `relocatable = false`,
   `default_version` = the workspace version. Does **not** opt into the workspace
   lint set (risk 3): pgrx's generated glue is `unsafe`, and its boundary
   converts panics; the crate-level header documents the containment rules. It is
@@ -1197,8 +1692,8 @@ possible and with actionable refusals where not:
 2. `ALTER EXTENSION liasse UPDATE` when `pg_available_extensions` shows a newer
    packaged default than the installed version — the self-reconciling lifecycle
    applied to the extension.
-3. `SELECT liasse.abi_version()` compared to `liasse_pred::PRED_ABI` — refuse on
-   mismatch, before any predicate is ever shipped.
+3. `SELECT liasse.abi_version()` compared to `liasse_pred::EVAL_ABI` — refuse on
+   mismatch, before any program is ever shipped.
 
 `PgStoreFactory` is unchanged in shape: it still takes a DSN; what that DSN
 points at is now expected to be the liasse image (or a manually provisioned
@@ -1211,7 +1706,7 @@ equivalent — the handshake, not the image, is the contract).
   `docker build` (layer-cached; the toolchain layers change only on pin bumps),
   `cargo pgrx test -p liasse-pg-ext` in the build stage, then the full
   `liasse-pg` integration suite — conformance corpus, 0-divergence parity,
-  EXPLAIN gates (1)–(11), refusal gates — pointed at a container of the freshly
+  EXPLAIN gates (1)–(12), refusal gates — pointed at a container of the freshly
   built image. Same commit builds the binaries and the image, closing the
   version lock in CI (§7.7).
 - **Harness** (`tests/support/mod.rs`): the resolution order grows one rung —
@@ -1222,10 +1717,10 @@ equivalent — the handshake, not the image, is the contract).
   drop exactly like today's disposable cluster; (4) the `initdb` disposable
   cluster — which now serves only extension-free development and fails loudly
   at reconcile (§7.7's actionable message) for anything touching
-  `scan_coverage`. No suite ever silently skips (AGENTS.md).
+  `scan_view`. No suite ever silently skips (AGENTS.md).
 - **The near-raw-overhead gate keeps its meaning** (§9): contract read vs the
   identical hand-written SQL on the same pooled connection of the same
-  extension-equipped PG — for coverage reads the hand-written SQL includes the
-  same `liasse.eval` calls, so the gate isolates backend overhead from
+  extension-equipped PG — for evaluated reads the hand-written SQL includes the
+  same extension-face calls, so the gate isolates backend overhead from
   interpreter cost, and the separate eval-cost bench axis (§9) tracks the
   interpreter itself.
