@@ -25,7 +25,7 @@
 //!
 //! Resolves the DSN through [`support`] and drops its throwaway schema through a
 //! [`support::SchemaGuard`] even on a panic.
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::type_complexity)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::type_complexity, clippy::indexing_slicing)]
 
 mod support;
 
