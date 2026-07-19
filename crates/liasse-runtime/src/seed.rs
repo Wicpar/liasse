@@ -26,6 +26,22 @@ struct Staged<'a> {
     address: RowAddress,
 }
 
+/// How a seed row whose address already holds a value is treated (§9.1 vs §13.13).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SeedMode {
+    /// Genesis / installation (§9.1): every seed identity is fresh, so a
+    /// collision with an already-staged row is a duplicate-key fault, and
+    /// singleton `$data` members seed the reserved §8.2 root row.
+    Genesis,
+    /// Update apply-if-absent (§13.13/§4.1): a seed applies only where its
+    /// address holds no current value — an ABSENT address is inserted, an
+    /// occupied one is RETAINED unchanged (never overwritten). The §8.2 singleton
+    /// is already carried by the §20.1 copy, so singleton `$data` on update stays
+    /// with that carry (a documented seam); only keyed-collection rows reconcile
+    /// here.
+    ApplyIfAbsent,
+}
+
 /// Admit every `$data` row into the prospective state, recording touched
 /// addresses for the final rule pass.
 ///
@@ -34,12 +50,18 @@ struct Staged<'a> {
 /// state; then each row's defaults and normalization resolve against that whole
 /// state — so a default reading another seeded collection (`count(/companies)`)
 /// observes it regardless of the order the two appear in `$data`.
+///
+/// `mode` selects the collision policy (§9.1 genesis vs §13.13 update
+/// apply-if-absent). On the update path an occupied address is retained rather
+/// than rejected, and the §8.2 singleton — already carried by the §20.1 copy — is
+/// left untouched (a documented seam), so only keyed-collection rows reconcile.
 pub(crate) fn admit(
     compiled: &Compiled,
     ctx: &EvalCtx<'_>,
     prospective: &mut Prospective,
     touched: &mut Vec<RowAddress>,
     data: &DocValue,
+    mode: SeedMode,
 ) -> Result<(), Rejection> {
     let Some(collections) = doc::object(data) else {
         return Err(Rejection::new(RejectionReason::Malformed, "`$data` must be an object"));
@@ -52,13 +74,16 @@ pub(crate) fn admit(
     for member in collections {
         if let Some(collection) = compiled.collection(&member.name.text) {
             let store_path = CollectionPath::top(NameSegment::new(member.name.text.clone()));
-            stage_rows(ctx, prospective, &mut staged, collection, &store_path, &member.value)?;
+            stage_rows(ctx, prospective, &mut staged, collection, &store_path, &member.value, mode)?;
             continue;
         }
         // §8.2/§9.1: a `$data` member naming a singleton root field seeds that
         // field; an unknown or computed member is not seedable. §4.2/C.4: the value
-        // (and each static-struct member) is a literal-or-expression position.
-        if let Some(node) = model.root().member(&member.name.text).map(|m| &m.node)
+        // (and each static-struct member) is a literal-or-expression position. On
+        // update the §20.1 singleton copy owns the reserved row, so a singleton
+        // `$data` member is left to that carry (a documented §13.13 seam).
+        if mode == SeedMode::Genesis
+            && let Some(node) = model.root().member(&member.name.text).map(|m| &m.node)
             && crate::singleton::member_type(model, node).is_some()
         {
             let value = crate::seed_value::materialize_singleton(
@@ -67,11 +92,16 @@ pub(crate) fn admit(
             singleton.insert(member.name.text.clone(), value);
         }
     }
-    if !singleton.is_empty() {
-        prospective.insert(crate::singleton::address(), singleton);
+    // §8.2 singleton seeding/defaulting/normalization runs only at genesis; on the
+    // update path the §20.1 singleton copy and its `apply_singleton_*` passes in
+    // `build_migrated` already staged the reserved row.
+    if mode == SeedMode::Genesis {
+        if !singleton.is_empty() {
+            prospective.insert(crate::singleton::address(), singleton);
+        }
+        apply_singleton_defaults(compiled, ctx, prospective)?;
+        apply_singleton_normalizes(compiled, ctx, prospective)?;
     }
-    apply_singleton_defaults(compiled, ctx, prospective)?;
-    apply_singleton_normalizes(compiled, ctx, prospective)?;
     // Phase two: with the full prospective state in place, resolve each staged
     // row's defaults and normalization against it (§9.1 "defaults are then
     // evaluated by dependency").
@@ -102,6 +132,7 @@ fn stage_rows<'a>(
     collection: &'a CompiledCollection,
     store_path: &CollectionPath,
     rows: &DocValue,
+    mode: SeedMode,
 ) -> Result<(), Rejection> {
     let Some(entries) = doc::object(rows) else {
         return Err(Rejection::new(
@@ -116,8 +147,17 @@ fn stage_rows<'a>(
         let key = row_key(collection, &fields)?;
         let address = store_path.row(key);
         if prospective.contains(&address) {
-            return Err(Rejection::new(RejectionReason::DuplicateKey, "duplicate seed key")
-                .at(address.render()));
+            match mode {
+                // §9.1: two seed rows at one key is a duplicate-key fault.
+                SeedMode::Genesis => {
+                    return Err(Rejection::new(RejectionReason::DuplicateKey, "duplicate seed key")
+                        .at(address.render()));
+                }
+                // §13.13/§4.1 apply-if-absent: the occupied address keeps its
+                // current value — the seed neither overwrites it nor re-stages it,
+                // and its nested initializers are left to the retained row.
+                SeedMode::ApplyIfAbsent => continue,
+            }
         }
         prospective.insert(address.clone(), fields);
         staged.push(Staged { collection, address: address.clone() });
@@ -130,7 +170,7 @@ fn stage_rows<'a>(
                     address.steps().cloned(),
                     NameSegment::new(member.name.text.clone()),
                 );
-                stage_rows(ctx, prospective, staged, child, &child_path, &member.value)?;
+                stage_rows(ctx, prospective, staged, child, &child_path, &member.value, mode)?;
             }
         }
     }

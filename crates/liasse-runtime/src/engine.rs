@@ -733,7 +733,7 @@ impl<S: InstanceStore> Engine<S> {
         let mut prospective = Prospective::empty();
         let mut touched = Vec::new();
         if let Some(data) = data {
-            crate::seed::admit(&self.compiled, &ctx, &mut prospective, &mut touched, data)
+            crate::seed::admit(&self.compiled, &ctx, &mut prospective, &mut touched, data, crate::seed::SeedMode::Genesis)
                 .map_err(EngineError::Seed)?;
         } else {
             // §8.2: even with no `$data`, a writable singleton root field declared
@@ -801,7 +801,7 @@ impl<S: InstanceStore> Engine<S> {
         };
         let mut prospective = Prospective::gather(&self.store, schema)?;
         let mut touched = Vec::new();
-        crate::seed::admit(&self.compiled, &ctx, &mut prospective, &mut touched, data)
+        crate::seed::admit(&self.compiled, &ctx, &mut prospective, &mut touched, data, crate::seed::SeedMode::Genesis)
             .map_err(EngineError::Seed)?;
         crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched).map_err(EngineError::Seed)?;
         ctx.validate_source_series(&prospective).map_err(EngineError::Seed)?;

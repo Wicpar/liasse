@@ -91,6 +91,31 @@ impl<S: InstanceStore> Engine<S> {
         let compilation =
             compile_definition(target, &crate::host::HostSignatures::default()).map_err(UpdateError::Engine)?;
         let decision = compatibility(self.model(), &compilation.model)?;
+        // §20.1/§20.3/Annex E.9: an in-place update is compatible only when a
+        // CONNECTED §20.1 delta path exists between the active version and the
+        // target — the single implicit structural-diff delta (no declared
+        // `$migrations` key strictly between the two held-model endpoints) or a
+        // delta declared for the exact active source version. A package off the
+        // target's declared lineage (a declared key sits strictly between with no
+        // delta from the active version) has NO such path even when it is
+        // shape-compatible, so refuse it and leave the active package in force
+        // (§9.4, Annex E.9) rather than run a single-hop compatible copy over an
+        // undeclared route. The runtime never synthesizes an undeclared
+        // intermediate version.
+        if !self.connected_delta_path(target, &compilation.model) {
+            let active = &self.model().header().identity.version;
+            let want = &compilation.model.header().identity.version;
+            return Err(UpdateError::Rejected(Rejection::new(
+                RejectionReason::Compatibility,
+                format!(
+                    "no connected §20.1 delta path from the active `{}.{}.{}` to the target \
+                     `{}.{}.{}`: the active version is off the target's declared migration \
+                     lineage and the runtime never synthesizes an undeclared intermediate \
+                     (§20.3, Annex E.9)",
+                    active.major, active.minor, active.patch, want.major, want.minor, want.patch,
+                ),
+            )));
+        }
         // §13.14/§20.3/Annex E: a same-major forward move (minor or patch) MUST
         // preserve or widen every exposed boundary contract, and Annex E.1 holds
         // a same-version republish to the identical gate. Reject a narrowing
@@ -167,6 +192,71 @@ impl<S: InstanceStore> Engine<S> {
         let candidate = BoundaryContract::extract(&candidate.compiled, &candidate_doc);
         active.narrowing(&candidate)
     }
+
+    /// Whether a connected §20.1 delta path exists from the active version to the
+    /// `target_model`'s version (§20.3, Annex E.9), reading declared `$migrations`
+    /// keys from the `target` definition text.
+    ///
+    /// A path exists exactly when either:
+    /// - the target declares a delta keyed to the EXACT active source version
+    ///   (`$migrations["<active>"]`) — a declared one-hop delta from the active
+    ///   version; or
+    /// - the single implicit structural-diff delta between the active and target
+    ///   versions is available, which requires that NO declared `$migrations` key
+    ///   lies strictly between them (both endpoint models are held on this path).
+    ///   This covers the adjacent compatible minor/patch, the shape-compatible
+    ///   downgrade, and the same-version republish (an empty strictly-between
+    ///   range).
+    ///
+    /// It does NOT exist when a declared key lies strictly between the two
+    /// versions with no delta from the active version — the active version is off
+    /// the target's declared lineage, so the implicit direct delta is blocked and
+    /// no declared delta reaches it. Applying an undeclared intermediate is
+    /// forbidden (§20.1), so the in-place update is refused.
+    fn connected_delta_path(&self, target: &str, target_model: &Model) -> bool {
+        let active = &self.model().header().identity.version;
+        let active_source = format!("{}.{}.{}", active.major, active.minor, active.patch);
+        // A declared one-hop delta from the exact active source version.
+        if target_model.migrations().program(&active_source).is_some() {
+            return true;
+        }
+        let active = (active.major, active.minor, active.patch);
+        let want = &target_model.header().identity.version;
+        let want = (want.major, want.minor, want.patch);
+        let (lo, hi) = (active.min(want), active.max(want));
+        // The implicit structural-diff delta is available only when no declared
+        // `$migrations` key sits strictly between the two endpoints (§20.1).
+        !declared_migration_sources(target)
+            .into_iter()
+            .any(|key| lo < key && key < hi)
+    }
+}
+
+/// The declared `$migrations` source versions of `target` (§20.1) as
+/// `(major, minor, patch)` triples — the versions from which the target declares
+/// a delta. Empty when the target declares no `$migrations`. The keys parsed
+/// clean during `compile_definition` (a malformed key is a load rejection before
+/// this point), so an unparsable key here — which cannot occur on a compiled
+/// target — is conservatively skipped.
+fn declared_migration_sources(target: &str) -> Vec<(u64, u64, u64)> {
+    let Some(model) = model_document(target) else { return Vec::new() };
+    let Some(migrations) = doc::member(&model, "$migrations") else { return Vec::new() };
+    let Some(members) = doc::object(migrations) else { return Vec::new() };
+    members.iter().filter_map(|member| parse_version_triple(&member.name.text)).collect()
+}
+
+/// Parse a `major.minor.patch` version key into its `(major, minor, patch)`
+/// triple, whose tuple ordering matches version precedence; `None` for anything
+/// that is not exactly three `u64` components.
+fn parse_version_triple(text: &str) -> Option<(u64, u64, u64)> {
+    let mut parts = text.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((major, minor, patch))
 }
 
 /// Re-parse a definition text and return its `$model` document, or `None` when it
@@ -373,7 +463,21 @@ fn build_migrated<G: crate::generator::Generators>(
     // row (and rewrite inbound references to it) before the final admission check,
     // so committed state is in canonical key order and stays addressable by its own
     // current key.
-    let addresses = rekey_coerced(schema, &target.compiled, &mut prospective, addresses)?;
+    let mut addresses = rekey_coerced(schema, &target.compiled, &mut prospective, addresses)?;
+    // §13.13/§4.1: the target's `$seed` (`$data` alias) applies APPLY-IF-ABSENT
+    // over the migrated state — a seed row whose address is ABSENT after migration
+    // is inserted, while an address already PRESENT (a carried, program-written, or
+    // rekeyed row) keeps its migrated value unchanged and is never overwritten.
+    // Seeded rows admit through the SAME rule pipeline the migrated rows do:
+    // `seed::admit` resolves their defaults/normalization, and the `finalize` /
+    // source-series / meter passes below check them alongside the rest. The §8.2
+    // singleton is carried by the §20.1 copy above, so `ApplyIfAbsent` reconciles
+    // only keyed-collection rows.
+    if let Some(data) = &target.data {
+        let mut seeded = Vec::new();
+        crate::seed::admit(&target.compiled, &ctx, &mut prospective, &mut seeded, data, crate::seed::SeedMode::ApplyIfAbsent)?;
+        addresses.extend(seeded);
+    }
     rules::finalize(&target.compiled, &ctx, &prospective, &addresses)?;
     // §20.1: the migrated state runs the SAME eager admission suite an ordinary
     // transition does, not just keys/refs/uniqueness/checks. §14.5/§14.7: reject a
