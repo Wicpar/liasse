@@ -163,7 +163,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
     pub fn advance_time(&mut self, now: Timestamp) -> Result<(), SurfaceError> {
         self.clock.set(now.count());
         self.engine.set_time(now);
-        let barrier = barrier::Barrier::new(&self.engine, &self.router, now);
+        let mut barrier = barrier::Barrier::new(&self.engine, &self.router, now);
         for connection in self.connections.values_mut() {
             let frontier = connection.frontier();
             barrier.sweep(connection, frontier)?;
@@ -183,7 +183,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
     pub(super) fn sweep_all(&mut self) -> Result<(), SurfaceError> {
         let now = self.clock.instant();
         let head = self.engine.head()?;
-        let barrier = barrier::Barrier::new(&self.engine, &self.router, now);
+        let mut barrier = barrier::Barrier::new(&self.engine, &self.router, now);
         for connection in self.connections.values_mut() {
             connection.advance_frontier(head);
             let frontier = connection.frontier();

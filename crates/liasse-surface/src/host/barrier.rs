@@ -8,7 +8,10 @@
 //! the authorized view and emits a coherent patch, or emits `close` when the
 //! state has removed that subscription's authority.
 
-use liasse_runtime::{CommitSeq, EngineError, Engine, Timestamp, Value};
+use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
+
+use liasse_runtime::{CommitSeq, EngineError, Engine, HydratedFrontier, Timestamp, Value};
 use liasse_store::InstanceStore;
 
 use crate::authn::AuthContext;
@@ -26,18 +29,40 @@ pub(crate) struct Barrier<'a, S> {
     engine: &'a Engine<S>,
     router: &'a SurfaceRouter,
     now: Timestamp,
+    /// Committed-state hydrations built once per frontier and shared across every
+    /// subscription this barrier advances to that frontier (DESIGN-pure-pg.md §8
+    /// mitigation 2, §10 Phase 4). A sweep of N subscriptions on a connection then
+    /// pays one `snapshot(frontier)` hydration and N per-view evaluations instead
+    /// of N identical hydrations. Keyed strictly by the explicit advance frontier
+    /// and scoped to this barrier — one commit-advance / time-advance cycle — and
+    /// because the barrier holds the engine immutably for its whole lifetime no
+    /// commit can change what a frontier hydrates to mid-cycle: a hydration is a
+    /// pure function of `(instance, frontier)` over the immutable committed log,
+    /// so sharing it is semantically invisible.
+    hydrations: BTreeMap<CommitSeq, HydratedFrontier>,
 }
 
 impl<'a, S: InstanceStore> Barrier<'a, S> {
     pub(crate) fn new(engine: &'a Engine<S>, router: &'a SurfaceRouter, now: Timestamp) -> Self {
-        Self { engine, router, now }
+        Self { engine, router, now, hydrations: BTreeMap::new() }
+    }
+
+    /// The committed-state hydration for `frontier`, built once with
+    /// [`Engine::hydrate`] and cached for the lifetime of this barrier so every
+    /// subscription advancing to `frontier` shares it (§8 mitigation 2).
+    fn hydration(&mut self, frontier: CommitSeq) -> Result<&HydratedFrontier, EngineError> {
+        let engine = self.engine;
+        match self.hydrations.entry(frontier) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(entry) => Ok(entry.insert(engine.hydrate(frontier)?)),
+        }
     }
 
     /// Advance every open subscription on `connection` through `frontier` (§12.3).
     /// A subscription that has lost authority or whose view is gone is closed;
     /// the rest are recomputed at `frontier` and patched coherently.
     pub(crate) fn sweep(
-        &self,
+        &mut self,
         connection: &mut Connection,
         frontier: CommitSeq,
     ) -> Result<(), EngineError> {
@@ -74,7 +99,7 @@ impl<'a, S: InstanceStore> Barrier<'a, S> {
     }
 
     fn advance_one(
-        &self,
+        &mut self,
         connection: &mut Connection,
         id: &str,
         frontier: CommitSeq,
@@ -105,7 +130,15 @@ impl<'a, S: InstanceStore> Barrier<'a, S> {
         // identity, so a parameterized or actor-scoped view recomputes correctly
         // after a commit or a time advance rather than faulting to an empty result.
         let query = super::call::view_query(args, context.as_ref(), &scope);
-        let Some(result) = self.engine.view_with(&view, frontier, &query)? else {
+        // §8 mitigation 2 / §10 Phase 4: evaluate against this frontier's shared
+        // committed-state hydration — built once and reused across every
+        // subscription this barrier advances to `frontier` — rather than rebuilding
+        // it per subscription. All subscriptions in a sweep advance to the same
+        // committed frontier and read the same committed state, so this is identical
+        // in result to a per-subscription `view_with(&view, frontier, &query)`.
+        let engine = self.engine;
+        let hydrated = self.hydration(frontier)?;
+        let Some(result) = engine.view_with_hydrated(&view, hydrated, &query)? else {
             if let Some(watch) = connection.watch_mut(id) {
                 watch.close("surface removed at frontier");
             }

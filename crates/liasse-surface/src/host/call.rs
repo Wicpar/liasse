@@ -159,7 +159,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
     /// regressing to a stale position.
     fn settle_commit(&mut self, id: &str, seq: CommitSeq) -> Result<CommitSeq, SurfaceError> {
         let now = self.clock.instant();
-        let barrier = Barrier::new(&self.engine, &self.router, now);
+        let mut barrier = Barrier::new(&self.engine, &self.router, now);
         let mut caller_frontier = seq;
         for (conn_id, connection) in &mut self.connections {
             if conn_id == id {

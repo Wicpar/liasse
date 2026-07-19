@@ -182,7 +182,7 @@ pub use blobs::{
 pub use deletion::{
     DeleteError, DeletePolicy, DeletionPlan, Erasure, Extract, Graph, Occurrence, RefEdge, RowRef,
 };
-pub use engine::Engine;
+pub use engine::{Engine, HydratedFrontier};
 pub use error::{EngineError, Rejection, RejectionReason};
 pub use host::CoseVerifyError;
 

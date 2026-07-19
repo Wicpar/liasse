@@ -177,6 +177,38 @@ pub struct Engine<S> {
     blob_placements: crate::env::BlobPlacements,
 }
 
+/// A committed-state hydration at one frontier, built once and shared across
+/// several view evaluations at that frontier (DESIGN-pure-pg.md §8 mitigation 2,
+/// §10 Phase 4).
+///
+/// Every view read at a frontier otherwise rebuilds the same read-only working
+/// copy from its own `snapshot(frontier)` — an O(history) log fold on a durable
+/// backend (§4.3). The §12 completion barrier advances every subscription on a
+/// connection to one committed frontier, so it hydrates that frontier ONCE with
+/// [`Engine::hydrate`] and evaluates each subscription's `$view` against this
+/// shared value through [`Engine::view_with_hydrated`], turning an N-subscription
+/// sweep's N hydrations into one hydration and N per-view evaluations.
+///
+/// Sharing is semantically invisible: a hydration is a pure function of
+/// `(instance, frontier)` over the append-only, immutable committed log (§5.4
+/// "logically pinned reads"), so every read at one frontier observes the identical
+/// committed state whether it built the hydration itself or reused this value. The
+/// per-view parameters, `$actor`/`$session` binding, scope, and virtual-clock
+/// temporal filtering are all applied *after* hydration, per evaluation, so no
+/// per-subscription state crosses between the views that share it.
+pub struct HydratedFrontier {
+    frontier: CommitSeq,
+    prospective: Prospective,
+}
+
+impl HydratedFrontier {
+    /// The committed frontier this hydration reflects.
+    #[must_use]
+    pub fn frontier(&self) -> CommitSeq {
+        self.frontier
+    }
+}
+
 /// Bootstrap a live keyring per declaration (§17.3), over the in-process key
 /// provider, at the load clock. A ring whose provider fails the capability check
 /// is dropped rather than failing the whole load, leaving its selector to fault
@@ -1028,10 +1060,52 @@ impl<S: InstanceStore> Engine<S> {
         self.view_with_impl(name, frontier, query, Some(modules))
     }
 
+    /// Hydrate committed state at `frontier` into a reusable read-only working copy
+    /// (DESIGN-pure-pg.md §8 mitigation 2, §10 Phase 4), so one `snapshot(frontier)`
+    /// hydration can be shared across several view reads at that frontier — the §12
+    /// completion barrier's per-(instance, frontier) sharing. The hydration this
+    /// performs is exactly the one [`Engine::view_with`] runs internally, so reusing
+    /// the returned value across subscriptions is behaviour-identical to each
+    /// rebuilding its own (§5.4 "logically pinned reads").
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if the store cannot read the frontier snapshot.
+    pub fn hydrate(&self, frontier: CommitSeq) -> Result<HydratedFrontier, EngineError> {
+        let snapshot = self.store.snapshot(frontier)?;
+        let prospective = Prospective::from_snapshot(&snapshot, self.schema());
+        Ok(HydratedFrontier { frontier, prospective })
+    }
+
+    /// Evaluate view `name` against a shared committed-state `hydrated` frontier
+    /// (§8 mitigation 2), binding `query`'s parameters and actor/session/scope
+    /// exactly as [`Engine::view_with`] does. Identical in result to
+    /// `view_with(name, hydrated.frontier(), query)`; only the hydration is reused
+    /// rather than rebuilt from a fresh `snapshot(frontier)`, so the §12 barrier
+    /// pays one hydration for every subscription advancing to the frontier.
+    pub fn view_with_hydrated(
+        &self,
+        name: &str,
+        hydrated: &HydratedFrontier,
+        query: &ViewQuery,
+    ) -> Result<Option<ViewResult>, EngineError> {
+        self.view_hydrated_impl(name, hydrated, query, None)
+    }
+
     fn view_with_impl(
         &self,
         name: &str,
         frontier: CommitSeq,
+        query: &ViewQuery,
+        modules: Option<&crate::modules::ModuleAggregate>,
+    ) -> Result<Option<ViewResult>, EngineError> {
+        let hydrated = self.hydrate(frontier)?;
+        self.view_hydrated_impl(name, &hydrated, query, modules)
+    }
+
+    fn view_hydrated_impl(
+        &self,
+        name: &str,
+        hydrated: &HydratedFrontier,
         query: &ViewQuery,
         modules: Option<&crate::modules::ModuleAggregate>,
     ) -> Result<Option<ViewResult>, EngineError> {
@@ -1046,9 +1120,11 @@ impl<S: InstanceStore> Engine<S> {
                 None => return Ok(None),
             },
         };
-        let snapshot = self.store.snapshot(frontier)?;
         let schema = Schema::new(&self.model);
-        let prospective = Prospective::from_snapshot(&snapshot, schema);
+        // §8 mitigation 2: the committed working copy is the shared hydration; every
+        // per-view binding below is computed fresh from it, so the shared read is
+        // invisible to the view's result.
+        let prospective = &hydrated.prospective;
         let keyrings = self.keyring_snapshots();
         let mut ctx = EvalCtx {
             schema,
@@ -1073,12 +1149,12 @@ impl<S: InstanceStore> Engine<S> {
         // §10.1: bind each supplied argument, then fill an omitted declared
         // parameter with its declared default (§8.3), so a `$view` reading `@name`
         // resolves whether or not the caller supplied it.
-        ctx.params = self.bind_params(&ctx, &prospective, query, params)?;
+        ctx.params = self.bind_params(&ctx, prospective, query, params)?;
         // §11.1/§11.3: a role `$view` reads `$actor`/`$session`, bound to the row
         // each key resolves at this frontier — the same re-materialization an
         // authenticated admission performs, so the view sees state as of the read.
         ctx.context
-            .extend(bind_context(&self.compiled, &ctx, &prospective, query.actor_key(), query.session_key()));
+            .extend(bind_context(&self.compiled, &ctx, prospective, query.actor_key(), query.session_key()));
         // §10.3/§10.5: a scoped-role surface view reads `.` as the role-holding row
         // keyed by the request scope, and — under `$recursive` — nests the same
         // projection through the checked descendant relation as a keyed tree. This
@@ -1086,10 +1162,10 @@ impl<S: InstanceStore> Engine<S> {
         // self-referential nested collections in full, §5.4/§5.8), not through the
         // root-rooted evaluation a `$public`/package-level view takes.
         if let Some(scope) = surface.and_then(|surface| surface.scope.as_ref()) {
-            return scope.materialize(&ctx, &prospective, expr, query.scope_key());
+            return scope.materialize(&ctx, prospective, expr, query.scope_key());
         }
-        let current = Cell::Row(Box::new(ctx.root(&prospective)));
-        let env = ctx.env(&prospective);
+        let current = Cell::Row(Box::new(ctx.root(prospective)));
+        let env = ctx.env(prospective);
         // §12.2: a `$view` delivers a row stream. Evaluate in view context so a
         // scalar/composite-key selection the view wraps (`.people['a'] { … }`)
         // yields its 0/1-row view — one row when present, none when absent — rather
@@ -1132,9 +1208,9 @@ impl<S: InstanceStore> Engine<S> {
         else {
             return Ok(ScopedResolution::Unscoped);
         };
-        let snapshot = self.store.snapshot(frontier)?;
+        let hydrated = self.hydrate(frontier)?;
+        let prospective = &hydrated.prospective;
         let schema = Schema::new(&self.model);
-        let prospective = Prospective::from_snapshot(&snapshot, schema);
         let keyrings = self.keyring_snapshots();
         let mut ctx = EvalCtx {
             schema,
@@ -1150,8 +1226,8 @@ impl<S: InstanceStore> Engine<S> {
         };
         // §11.1/§10.3: bind `$actor` so a `$where`/`$except` predicate reading it
         // resolves the actor row at this frontier, exactly as the coverage read does.
-        ctx.context.extend(bind_context(&self.compiled, &ctx, &prospective, actor_key, None));
-        match scope.resolve_receiver(&ctx, &prospective, scope_key, descendant)? {
+        ctx.context.extend(bind_context(&self.compiled, &ctx, prospective, actor_key, None));
+        match scope.resolve_receiver(&ctx, prospective, scope_key, descendant)? {
             Some(receiver) => Ok(ScopedResolution::Receiver(receiver)),
             None => Ok(ScopedResolution::Denied),
         }
@@ -1237,9 +1313,9 @@ impl<S: InstanceStore> Engine<S> {
         let Some(expr) = self.compiled.exposed_view(interface) else {
             return Ok(None);
         };
-        let snapshot = self.store.snapshot(self.store.head()?)?;
+        let hydrated = self.hydrate(self.store.head()?)?;
+        let prospective = &hydrated.prospective;
         let schema = Schema::new(&self.model);
-        let prospective = Prospective::from_snapshot(&snapshot, schema);
         let keyrings = self.keyring_snapshots();
         let ctx = EvalCtx {
             schema,
@@ -1257,8 +1333,8 @@ impl<S: InstanceStore> Engine<S> {
             // exposes no further module spaces of its own here.
             modules: None,
         };
-        let current = Cell::Row(Box::new(ctx.root(&prospective)));
-        let env = ctx.env(&prospective);
+        let current = Cell::Row(Box::new(ctx.root(prospective)));
+        let env = ctx.env(prospective);
         let cell = expr
             .evaluate_view(&env, &current)
             .map_err(|error| EngineError::Internal(error.message()))?;
