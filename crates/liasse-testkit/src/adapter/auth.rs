@@ -171,6 +171,10 @@ struct RoleSpec {
     accepts: Vec<String>,
     members_view: String,
     members_key: String,
+    /// The collection the role is nested on when it is a SCOPED role (§10.3/§10.5):
+    /// its surfaces read `.` as a row of that collection, addressed by the request
+    /// scope. `None` for a package-level role, whose `.` is the package root.
+    scope: Option<String>,
 }
 
 /// The reconstructed authentication wiring for a package: the synthetic views to
@@ -210,7 +214,31 @@ impl AuthPlan {
                 plan.plan_role(model, name, definition);
             }
         }
+        // §10.3/§10.5: a role nested on a collection row is a scoped role. Walk each
+        // top-level collection's `$roles` and wire those separately, recording the
+        // scope collection so the covered `$view` reads the addressed row.
+        if let Some(collections) = model.as_object() {
+            for (collection, shape) in collections {
+                if collection.starts_with('$') {
+                    continue;
+                }
+                let Some(nested) = shape.get("$roles").and_then(J::as_object) else { continue };
+                for (name, definition) in nested {
+                    plan.plan_scoped_role(model, collection, name, definition);
+                }
+            }
+        }
         plan
+    }
+
+    /// The collection a scoped role registered under `name` is nested on (§10.5),
+    /// so the router can bind its surfaces and decode a subscription's scope key.
+    #[must_use]
+    pub fn scoped_role_collection(&self, name: &str) -> Option<&str> {
+        self.roles
+            .iter()
+            .find(|spec| spec.name == name)
+            .and_then(|spec| spec.scope.as_deref())
     }
 
     /// Whether any authenticator was wired.
@@ -333,6 +361,43 @@ impl AuthPlan {
             accepts,
             members_view,
             members_key: key,
+            scope: None,
+        });
+    }
+
+    /// §10.3/§10.5: wire a role nested on a collection row (a SCOPED role). Its
+    /// `$members` reads `.` as the role-holding row (`.members[:m | m.admin]…`), so
+    /// membership is reconstructed as the flattened view of that relation across the
+    /// scope collection (`.<coll>[:__c].members[:m | m.admin] { <key> }`). Scope-row
+    /// admission (denying a watch on a row the actor does not hold) is threaded with
+    /// the deferred §10.5 addressing; this phase authorizes any holder of the role
+    /// and lets the covered `$view` project the scope row the subscription names.
+    fn plan_scoped_role(&mut self, model: &J, scope: &str, name: &str, definition: &J) {
+        let accepts = accepted_authenticators(definition);
+        if accepts.is_empty() || !accepts.iter().all(|auth| self.has_authenticator(auth)) {
+            return;
+        }
+        let Some(members) = definition.get("$members").and_then(J::as_str) else { return };
+        // A `$members` reading a request-scoped `$actor` is a further seam; skip it.
+        if members.contains('$') {
+            return;
+        }
+        // The `$members` relation is rooted at `.` (the scope row). Its member
+        // collection is the leading segment; the actor key it projects is that
+        // collection's `$key` (`account`), so drop a trailing `.<key>` navigation
+        // and project the key field directly.
+        let Some(relation) = stream_collection(members) else { return };
+        let Some(key) = nested_collection_key(model, scope, relation) else { return };
+        let stream = members.strip_suffix(&format!(".{key}")).unwrap_or(members);
+        let members_view = format!("liasse_role_members_{name}");
+        self.synthetic_views
+            .push((members_view.clone(), format!(".{scope}[:__scope_c]{stream} {{ {key} }}")));
+        self.roles.push(RoleSpec {
+            name: name.to_owned(),
+            accepts,
+            members_view,
+            members_key: key,
+            scope: Some(scope.to_owned()),
         });
     }
 
@@ -561,10 +626,20 @@ fn collection_key(model: &J, name: &str) -> Option<String> {
     }
 }
 
+/// The single-field `$key` of a collection `nested` declared inside collection
+/// `parent` (§5.4) — the member-relation key a scoped role's `$members` projects
+/// (`companies.members.$key` = `account`). `None` for an absent or composite key.
+fn nested_collection_key(model: &J, parent: &str, nested: &str) -> Option<String> {
+    match model.get(parent)?.get(nested)?.get("$key")? {
+        J::String(key) => Some(key.clone()),
+        _ => None,
+    }
+}
+
 /// The key type of collection `name` (its single-field `$key`), read from the
 /// raw field declaration. A collection whose key field is undeclared or composite
 /// falls back to `text`.
-fn collection_key_type(model: &J, name: &str) -> Type {
+pub(super) fn collection_key_type(model: &J, name: &str) -> Type {
     let Some(key) = collection_key(model, name) else { return Type::Text };
     let decl = model.get(name).and_then(|collection| collection.get(&key)).and_then(J::as_str);
     decl.map_or(Type::Text, scalar_type)

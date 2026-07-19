@@ -107,6 +107,10 @@ pub struct Watch {
     /// re-evaluation so a parameterized `$view` sees the same arguments after each
     /// commit and time advance (§12.2, §14.1).
     args: BTreeMap<String, Value>,
+    /// The scope-row key path a scoped-role subscription is addressed under (§10.5),
+    /// re-supplied on every re-evaluation so the covered `$view` recomputes over the
+    /// same row after a commit or time advance. Empty for an unscoped subscription.
+    scope: Vec<Value>,
     frontier: CommitSeq,
     last: Option<ViewResult>,
     window: Option<Window>,
@@ -123,6 +127,7 @@ impl Watch {
             view: view.into(),
             authz,
             args: BTreeMap::new(),
+            scope: Vec::new(),
             frontier,
             last: None,
             window: None,
@@ -144,6 +149,7 @@ impl Watch {
             view: view.into(),
             authz,
             args: BTreeMap::new(),
+            scope: Vec::new(),
             frontier,
             last: None,
             window: Some(window),
@@ -158,6 +164,22 @@ impl Watch {
     pub fn with_args(mut self, args: BTreeMap<String, Value>) -> Self {
         self.args = args;
         self
+    }
+
+    /// Bind the scope-row key path this subscription re-supplies on every
+    /// re-evaluation (§10.5), so a scoped-role covered `$view` recomputes over the
+    /// same row after a commit or time advance.
+    #[must_use]
+    pub fn with_scope(mut self, scope: Vec<Value>) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    /// The scope-row key path this subscription is addressed under (§10.5), in
+    /// `$key` order. Empty for an unscoped subscription.
+    #[must_use]
+    pub fn scope(&self) -> &[Value] {
+        &self.scope
     }
 
     /// The runtime view this subscription reads.

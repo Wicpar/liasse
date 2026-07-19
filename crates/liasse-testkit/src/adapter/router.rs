@@ -55,6 +55,10 @@ pub struct Routing {
     /// (§17.7), so the auth layer gates that authenticator's credential through
     /// [`Engine::cose_verify`](liasse_runtime::Engine::cose_verify).
     cose_authenticators: BTreeMap<String, String>,
+    /// Each scoped-role surface address (`<role>.<surface>`, §10.5) → the key type
+    /// of the collection its role is nested on, so a `watch`'s `scope` decodes to
+    /// the covered row's key by value.
+    scope_key_types: BTreeMap<String, Type>,
 }
 
 impl Routing {
@@ -112,6 +116,14 @@ impl Routing {
     #[must_use]
     pub fn role_for_auth(&self, auth: &str) -> Option<&str> {
         self.authenticator_roles.get(auth).map(String::as_str)
+    }
+
+    /// The key type of the collection the scoped-role surface at `address`
+    /// (`<role>.<surface>`) is nested on (§10.5), so a `watch`'s `scope` key
+    /// decodes to the covered row's key by value. `None` for an unscoped surface.
+    #[must_use]
+    pub fn scope_key_type(&self, address: &str) -> Option<&Type> {
+        self.scope_key_types.get(address)
     }
 
     /// The keyring the authenticator named `auth` verifies against, when it is a
@@ -196,14 +208,53 @@ pub fn build(
         for auth in role.accepted_names() {
             routing.authenticator_roles.entry(auth.clone()).or_insert_with(|| name.clone());
         }
-        let surfaces = roles
-            .and_then(|roles| roles.get(&name))
-            .map(|definition| role_surfaces(&name, definition, &catalog, &mut routing))
-            .unwrap_or_default();
+        let surfaces = match plan.scoped_role_collection(&name) {
+            // §10.5: a scoped role's surfaces are declared inside the collection it
+            // is nested on; bind their `$view` as the covered surface view keyed by
+            // the scope, recording the scope key type for decoding.
+            Some(scope) => scoped_role_surfaces(&name, scope, state, &mut routing),
+            None => roles
+                .and_then(|roles| roles.get(&name))
+                .map(|definition| role_surfaces(&name, definition, &catalog, &mut routing))
+                .unwrap_or_default(),
+        };
         builder = builder.role(role, surfaces);
     }
 
     Ok((builder.build(model)?, routing))
+}
+
+/// The `$view` surface bindings a SCOPED role grants (§10.5), read from the role's
+/// declaration inside its scope collection's `$roles`. Only the `$view` is bound —
+/// as a covered surface view keyed by its dotted address — and the scope
+/// collection's key type is recorded so a subscription's scope key decodes by
+/// value. The scoped role's `$mut` calls are left unbound this phase (scoped-role
+/// mutation addressing is deferred), so a call on one stays denied.
+fn scoped_role_surfaces(
+    role: &str,
+    scope: &str,
+    state: Option<&J>,
+    routing: &mut Routing,
+) -> Vec<(String, SurfaceBinding)> {
+    let Some(definition) = state
+        .and_then(|model| model.get(scope))
+        .and_then(|collection| collection.get("$roles"))
+        .and_then(|roles| roles.get(role))
+        .and_then(J::as_object)
+    else {
+        return Vec::new();
+    };
+    let key_type = state.map_or(Type::Text, |model| super::auth::collection_key_type(model, scope));
+    let mut surfaces = Vec::new();
+    for (name, surface) in definition {
+        if name.starts_with('$') || surface.get("$view").is_none() {
+            continue;
+        }
+        let address = format!("{role}.{name}");
+        routing.scope_key_types.insert(address.clone(), key_type.clone());
+        surfaces.push((name.clone(), SurfaceBinding::new().with_view(ViewBinding::surface(&address))));
+    }
+    surfaces
 }
 
 /// Assemble the surface bindings a role grants, recording their per-call argument

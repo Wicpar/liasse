@@ -180,6 +180,7 @@ pub struct SurfaceWatch {
     window: Option<Window>,
     args: BTreeMap<String, Value>,
     auth: Option<AuthSelection>,
+    scope: Vec<Value>,
 }
 
 impl SurfaceWatch {
@@ -187,7 +188,31 @@ impl SurfaceWatch {
     /// context and tracking the whole view.
     #[must_use]
     pub fn new(address: SurfaceAddress, id: impl Into<String>) -> Self {
-        Self { address, id: id.into(), context: None, window: None, args: BTreeMap::new(), auth: None }
+        Self {
+            address,
+            id: id.into(),
+            context: None,
+            window: None,
+            args: BTreeMap::new(),
+            auth: None,
+            scope: Vec::new(),
+        }
+    }
+
+    /// Bind the scope-row key path this subscription is addressed under (§10.5):
+    /// the containing row identity a scoped-role surface reads `.` as, in `$key`
+    /// order. Empty for a `$public`/package-level subscription.
+    #[must_use]
+    pub fn with_scope(mut self, scope: impl IntoIterator<Item = Value>) -> Self {
+        self.scope = scope.into_iter().collect();
+        self
+    }
+
+    /// The scope-row key path this subscription is addressed under (§10.5), in
+    /// `$key` order. Empty for an unscoped subscription.
+    #[must_use]
+    pub fn scope(&self) -> &[Value] {
+        &self.scope
     }
 
     /// Attach a per-request authenticator selection (§11.4): the subscription

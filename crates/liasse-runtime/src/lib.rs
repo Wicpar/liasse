@@ -161,6 +161,7 @@ mod modules;
 mod outcome;
 mod patch;
 mod portable;
+mod recursion;
 mod refid;
 mod request;
 mod response;

@@ -127,6 +127,9 @@ impl Request {
                 window: step.member("window").cloned(),
                 auth: step.member("auth").map(|selection| env.resolve(selection)),
                 context: step.member("context").and_then(Value::as_str).map(ToOwned::to_owned),
+                // §10.5: a scoped-role subscription names the containing row it is
+                // addressed under; resolved through `env` like any bound payload.
+                scope: step.member("scope").map(|scope| env.resolve(scope)),
             })),
             StepKind::Unwatch => Ok(Self::Unwatch(WatchId::new(require_str(&step.target, action, "subscription id")?))),
             StepKind::ExpectView => Ok(Self::ReadView(WatchId::new(target_member_str(&step.target, "watch", action)?))),

@@ -325,12 +325,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("annex-c-grammar/noparam-call-paren-equals-empty-args", "no value produced (unsupported call path)"),
     ("annex-c-grammar/set-field-form-add-and-remove-members", "no value produced (unsupported call path)"),
     // --- fail:noview ---
-    ("10-interfaces-roles/except-prunes-entire-branch", "no view value produced (unsupported view/watch path)"),
-    ("10-interfaces-roles/recursive-coverage-nests-included-descendants", "no view value produced (unsupported view/watch path)"),
-    // §10.5 hereditary-$where pin (SPEC-ISSUES #11(b)): recursive coverage is
-    // validated statically but not materialized at runtime, so the covered view
-    // produces no value — same seam as the two recursive cases above.
-    ("10-interfaces-roles/where-excluded-branch-hereditary", "no view value produced (unsupported view/watch path); §10.5 recursive coverage validated but not materialized at runtime"),
     ("14-buckets/short-form-from-defaults-to-created", "no view value produced (unsupported view/watch path)"),
     // --- fail:outcome ---
     ("05-state-model/nested-initializer-failure-rejects-parent-insert", "outcome divergence: expected `ok` observed `rejected`"),

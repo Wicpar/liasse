@@ -65,6 +65,10 @@ pub struct WatchRequest {
     /// The named authentication context on a multiplexed connection (§11.8), if
     /// the step selects one.
     pub context: Option<String>,
+    /// The scope-row key a scoped-role subscription is addressed under (§10.5),
+    /// verbatim — the containing row identity whose surface `$view` is watched. The
+    /// driver decodes it against the scope collection's key type.
+    pub scope: Option<Value>,
 }
 
 /// The observed result of performing an action.

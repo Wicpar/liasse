@@ -364,7 +364,7 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 Err(denial) => return Ok(Subscription::Denied(denial)),
             };
         let frontier = self.connection_frontier(id);
-        let query = view_query(watch.args().clone(), context.as_ref());
+        let query = view_query(watch.args().clone(), context.as_ref(), watch.scope());
         self.open_subscription(
             id,
             watch.id(),
@@ -402,7 +402,9 @@ impl<S: InstanceStore> SurfaceHost<S> {
         // parameterized subscription on its filtered result instead of collapsing
         // to declared parameter defaults (§8.3).
         let frontier = self.connection_frontier(id);
-        let query = view_query(resume.args().clone(), context.as_ref());
+        // A resume reconstructs the same stream (§12.2); scoped-role resume carries
+        // no scope key this phase, so an unscoped read is rebuilt (empty scope).
+        let query = view_query(resume.args().clone(), context.as_ref(), &[]);
         self.open_subscription(
             id,
             resume.id(),
@@ -454,7 +456,9 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 if result.scalar().is_some() {
                     return Ok(Subscription::Failed(WindowError::ScalarView));
                 }
-                let mut opened = Watch::windowed(view_name, authz, frontier, window).with_args(args);
+                let mut opened = Watch::windowed(view_name, authz, frontier, window)
+                    .with_args(args)
+                    .with_scope(query.scope_key().to_vec());
                 if let Err(error) = opened.init(result, frontier) {
                     return Ok(Subscription::Failed(error));
                 }
@@ -463,7 +467,9 @@ impl<S: InstanceStore> SurfaceHost<S> {
                 Ok(Subscription::Window(rows))
             }
             None => {
-                let mut opened = Watch::open(view_name, authz, frontier).with_args(args);
+                let mut opened = Watch::open(view_name, authz, frontier)
+                    .with_args(args)
+                    .with_scope(query.scope_key().to_vec());
                 let _ = opened.init(result.clone(), frontier);
                 self.install_watch(id, watch_id, opened);
                 Ok(Subscription::Init(result))
@@ -581,10 +587,15 @@ impl<S: InstanceStore> SurfaceHost<S> {
 
 /// Build the runtime [`ViewQuery`] a subscription evaluates its `$view` under: the
 /// surface `$params` arguments (§10.1) plus, for a role subscription, the resolved
-/// `$actor`/`$session` identity (§11.1/§11.3). A public subscription with no
-/// parameters yields the empty query — the argument-free read.
-pub(crate) fn view_query(args: BTreeMap<String, Value>, context: Option<&AuthContext>) -> ViewQuery {
-    let mut query = ViewQuery::new();
+/// `$actor`/`$session` identity (§11.1/§11.3) and — for a scoped-role subscription
+/// (§10.5) — the scope-row key path the covered `$view` reads `.` as. A public
+/// subscription with no parameters yields the empty query — the argument-free read.
+pub(crate) fn view_query(
+    args: BTreeMap<String, Value>,
+    context: Option<&AuthContext>,
+    scope: &[Value],
+) -> ViewQuery {
+    let mut query = ViewQuery::new().scope(scope.iter().cloned());
     for (name, value) in args {
         query = query.param(name, value);
     }

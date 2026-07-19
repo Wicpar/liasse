@@ -22,6 +22,7 @@ use liasse_value::{StructType, Type};
 use crate::doc;
 use crate::error::EngineError;
 use crate::host::HostSignatures;
+use crate::recursion::{CompiledRecursive, CompiledScope};
 use crate::schema::Schema;
 use crate::scope::RuntimeScope;
 
@@ -283,6 +284,12 @@ pub(crate) struct CompiledSurfaceView {
     pub(crate) address: String,
     pub(crate) expr: TypedExpr,
     pub(crate) params: Vec<CompiledParam>,
+    /// The scope binding of a scoped-role surface view (§10.3/§10.5): the covered
+    /// row `.` resolves to the collection row keyed by the request scope, and — when
+    /// declared — the `$recursive` coverage that nests the same projection through a
+    /// descendant relation (§10.5). `None` for a `$public`/package-level view, whose
+    /// `.` is the package root.
+    pub(crate) scope: Option<crate::recursion::CompiledScope>,
 }
 
 /// A compiled lifecycle bucket (§14): the collection it bounds and its optional
@@ -1670,6 +1677,7 @@ fn compile_surface_views(
             compile_one_surface_view(
                 sources,
                 root_ty,
+                None,
                 &format!("public.{}", surface.name.text),
                 &surface.value,
                 &structurals,
@@ -1678,6 +1686,8 @@ fn compile_surface_views(
             );
         }
     }
+    // A package-level `$roles` block: its surfaces read `.` as the package root
+    // (an unscoped role), so they compile against `root_ty` like a `$public` one.
     if let Some(roles) = doc::member(model_doc, "$roles").and_then(doc::object) {
         for role in roles {
             let Some(members) = doc::object(&role.value) else { continue };
@@ -1690,6 +1700,7 @@ fn compile_surface_views(
                 compile_one_surface_view(
                     sources,
                     root_ty,
+                    None,
                     &format!("{}.{}", role.name.text, member.name.text),
                     &member.value,
                     &structurals,
@@ -1699,16 +1710,55 @@ fn compile_surface_views(
             }
         }
     }
-    let _ = schema;
+    // §10.3/§10.5: a role nested on a collection row is a SCOPED role — its
+    // surface `$view` (and `$recursive` coverage) reads `.` as the role-holding
+    // row, keyed by the request scope. Compile each against that collection's row
+    // type, recording the scope path so the read resolves the covered row.
+    for collection in doc::object(model_doc).into_iter().flatten() {
+        if collection.name.text.starts_with('$') {
+            continue;
+        }
+        let Some(roles) = doc::member(&collection.value, "$roles").and_then(doc::object) else {
+            continue;
+        };
+        let path = vec![collection.name.text.clone()];
+        let Some(covered_ty) = schema.receiver_row_type(&path) else { continue };
+        for role in roles {
+            let Some(members) = doc::object(&role.value) else { continue };
+            for member in members {
+                if member.name.text.starts_with('$') {
+                    continue;
+                }
+                compile_one_surface_view(
+                    sources,
+                    root_ty,
+                    Some((&path, &covered_ty)),
+                    &format!("{}.{}", role.name.text, member.name.text),
+                    &member.value,
+                    &structurals,
+                    hosts,
+                    &mut out,
+                );
+            }
+        }
+    }
     out
 }
 
 /// Compile one surface declaration's `$view` (§10.1) at dotted `address`, adding
 /// it to `out` when it carries a compilable `$view`. A surface with only `$mut`
 /// calls contributes nothing here.
+///
+/// `covered` is `Some((path, row_ty))` for a scoped-role surface (§10.3/§10.5):
+/// its `$view`/`$recursive` read `.` as the role-holding row at `path`, so they
+/// compile against `row_ty`, and the recorded [`CompiledScope`] resolves that row
+/// from the request scope at read time. `None` for a `$public`/package-level view,
+/// whose `.` is the package root.
+#[allow(clippy::too_many_arguments)]
 fn compile_one_surface_view(
     sources: &mut SourceMap,
     root_ty: &ExprType,
+    covered: Option<(&[String], &ExprType)>,
     address: &str,
     surface: &liasse_syntax::DocValue,
     structurals: &[(String, ExprType)],
@@ -1724,15 +1774,79 @@ fn compile_one_surface_view(
         Some(params) => params,
         None => return,
     };
-    let mut scope = RuntimeScope::new(root_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
+    let current_ty = covered.map_or(root_ty, |(_, row_ty)| row_ty);
+    let mut scope = RuntimeScope::new(current_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
     for param in &params {
         scope = scope.with_param(param.name.clone(), param.ty.clone());
     }
     for (name, ty) in structurals {
         scope = scope.with_structural(name.clone(), ty.clone());
     }
-    if let Ok((expr, _)) = compile_expr(sources, &scope, "surface-view", view_text) {
-        out.push(CompiledSurfaceView { address: address.to_owned(), expr, params });
+    let Ok((expr, _)) = compile_expr(sources, &scope, "surface-view", view_text) else {
+        return;
+    };
+    let scope_binding = match covered {
+        None => None,
+        Some((path, covered_ty)) => {
+            // §10.5: compile the `$recursive` coverage when declared. If it is
+            // declared but does not compile (unreachable for a package the model
+            // validated), drop the whole surface rather than serve it uncovered.
+            let declared = doc::member(surface, "$recursive").is_some();
+            let recursive =
+                compile_recursive(sources, covered_ty, root_ty, surface, &params, structurals, hosts);
+            if declared && recursive.is_none() {
+                return;
+            }
+            Some(CompiledScope { collection_path: path.to_vec(), recursive })
+        }
+    };
+    out.push(CompiledSurfaceView { address: address.to_owned(), expr, params, scope: scope_binding });
+}
+
+/// Compile a scoped-role surface's `$recursive` coverage block (§10.5), or `None`
+/// when the surface declares none (or a declared predicate does not compile). The
+/// `$field`/`$bind` name the descendant relation and candidate; `$where`/`$except`
+/// are hereditary `bool` predicates that read the candidate through `$bind`, so
+/// they compile against the covered row with the candidate row bound to `$bind`.
+fn compile_recursive(
+    sources: &mut SourceMap,
+    covered_ty: &ExprType,
+    root_ty: &ExprType,
+    surface: &liasse_syntax::DocValue,
+    params: &[CompiledParam],
+    structurals: &[(String, ExprType)],
+    hosts: &HostSignatures,
+) -> Option<CompiledRecursive> {
+    let recursive = doc::member(surface, "$recursive")?;
+    let field = doc::member(recursive, "$field").and_then(doc::string)?.trim().to_owned();
+    let bind = doc::member(recursive, "$bind").and_then(doc::string)?.trim().to_owned();
+    let candidate = field_row_type(covered_ty, &field)?;
+    let mut where_pred = None;
+    let mut except_pred = None;
+    for (directive, slot) in [("$where", &mut where_pred), ("$except", &mut except_pred)] {
+        let Some(text) = doc::member(recursive, directive).and_then(doc::string) else { continue };
+        let mut scope = RuntimeScope::new(covered_ty.clone(), root_ty.clone())
+            .with_host_ops(hosts.clone())
+            .with_binding(bind.clone(), candidate.clone());
+        for param in params {
+            scope = scope.with_param(param.name.clone(), param.ty.clone());
+        }
+        for (name, ty) in structurals {
+            scope = scope.with_structural(name.clone(), ty.clone());
+        }
+        let (expr, _) = compile_expr(sources, &scope, "recursive-predicate", text.trim()).ok()?;
+        *slot = Some(expr);
+    }
+    Some(CompiledRecursive { field, bind, where_pred, except_pred })
+}
+
+/// The single-row type of a keyed-collection field of `covered` (§10.5): the
+/// candidate a `$recursive` `$bind` names. `None` when the field is not a keyed
+/// collection (the model rejects such a `$field`, so this is a compile guard).
+fn field_row_type(covered: &ExprType, field: &str) -> Option<ExprType> {
+    match covered.as_row()?.field(field)? {
+        ExprType::View(row) | ExprType::Row(row) => Some(ExprType::Row(row.clone())),
+        _ => None,
     }
 }
 

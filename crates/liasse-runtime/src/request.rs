@@ -129,6 +129,7 @@ pub struct ViewQuery {
     params: BTreeMap<String, Value>,
     actor: Option<Value>,
     session: Option<Value>,
+    scope: Vec<Value>,
 }
 
 impl ViewQuery {
@@ -180,5 +181,22 @@ impl ViewQuery {
     #[must_use]
     pub fn session_key(&self) -> Option<&Value> {
         self.session.as_ref()
+    }
+
+    /// Bind the scope-row key path this read runs under (§10.5): the containing
+    /// row identity a scoped-role surface is addressed by, in `$key` order (a
+    /// single-component key is a one-element path). A scoped-role `$view` reads
+    /// `.` as that row; an empty scope leaves the read rooted at the package root.
+    #[must_use]
+    pub fn scope(mut self, key: impl IntoIterator<Item = Value>) -> Self {
+        self.scope = key.into_iter().collect();
+        self
+    }
+
+    /// The scope-row key path this read runs under (§10.5), in `$key` order.
+    /// Empty for an unscoped (public or package-level) read.
+    #[must_use]
+    pub fn scope_key(&self) -> &[Value] {
+        &self.scope
     }
 }

@@ -33,6 +33,19 @@ pub fn decode_args(args: &J, types: &BTreeMap<String, Type>) -> BTreeMap<String,
     out
 }
 
+/// Decode a single wire value against an optional declared [`Type`] — the §10.5
+/// scope-row key a scoped subscription is addressed under. When the scope
+/// collection's key type is known the value is decoded against it (so a
+/// `uuid`/`int` scope matches by value); otherwise its JSON shape picks the
+/// nearest scalar.
+#[must_use]
+pub fn decode_value(wire: &J, ty: Option<&Type>) -> Value {
+    match ty {
+        Some(ty) => ty.decode(wire).unwrap_or_else(|_| infer(wire)),
+        None => infer(wire),
+    }
+}
+
 /// The nearest canonical value for a wire JSON with no declared type: a string is
 /// text, a bool is bool, and any composite or number is carried verbatim as
 /// `json` so nothing is silently coerced.

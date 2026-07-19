@@ -83,6 +83,7 @@ impl<'a, S: InstanceStore> Barrier<'a, S> {
         let view = watch.view().to_owned();
         let authz = watch.authz().clone();
         let args = watch.args().clone();
+        let scope = watch.scope().to_vec();
 
         // §12.2: re-evaluate authorization and, for a role subscription, recover
         // the actor identity so the recomputed `$view` sees the same `$actor` as
@@ -99,7 +100,7 @@ impl<'a, S: InstanceStore> Barrier<'a, S> {
         // §10.1: re-supply the subscription's `$params` arguments and resolved
         // identity, so a parameterized or actor-scoped view recomputes correctly
         // after a commit or a time advance rather than faulting to an empty result.
-        let query = super::call::view_query(args, context.as_ref());
+        let query = super::call::view_query(args, context.as_ref(), &scope);
         let Some(result) = self.engine.view_with(&view, frontier, &query)? else {
             if let Some(watch) = connection.watch_mut(id) {
                 watch.close("surface removed at frontier");

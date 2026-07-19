@@ -1034,9 +1034,10 @@ impl<S: InstanceStore> Engine<S> {
         // A plain top-level view (§7) takes no parameters; a `$public`/role surface
         // view (§10.1) reads `$params`/`$actor`. Resolve the plain view first, then
         // the surface view addressed by `name`.
+        let surface = self.compiled.surface_view(name);
         let (expr, params) = match self.compiled.view(name) {
             Some(view) => (&view.expr, None),
-            None => match self.compiled.surface_view(name) {
+            None => match surface {
                 Some(surface) => (&surface.expr, Some(surface.params.as_slice())),
                 None => return Ok(None),
             },
@@ -1074,6 +1075,15 @@ impl<S: InstanceStore> Engine<S> {
         // authenticated admission performs, so the view sees state as of the read.
         ctx.context
             .extend(bind_context(&self.compiled, &ctx, &prospective, query.actor_key(), query.session_key()));
+        // §10.3/§10.5: a scoped-role surface view reads `.` as the role-holding row
+        // keyed by the request scope, and — under `$recursive` — nests the same
+        // projection through the checked descendant relation as a keyed tree. This
+        // is materialized directly over the covered row (already carrying its
+        // self-referential nested collections in full, §5.4/§5.8), not through the
+        // root-rooted evaluation a `$public`/package-level view takes.
+        if let Some(scope) = surface.and_then(|surface| surface.scope.as_ref()) {
+            return scope.materialize(&ctx, &prospective, expr, query.scope_key());
+        }
         let current = Cell::Row(Box::new(ctx.root(&prospective)));
         let env = ctx.env(&prospective);
         // §12.2: a `$view` delivers a row stream. Evaluate in view context so a

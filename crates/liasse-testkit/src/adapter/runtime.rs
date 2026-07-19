@@ -172,6 +172,13 @@ impl<S: InstanceStore> Runtime<S> {
             if let Some(context) = &request.context {
                 watch = watch.with_context(context.clone());
             }
+            // §10.5: a scoped-role subscription names the containing row it is
+            // addressed under; decode the scope key against the scope collection's
+            // key type so the covered `$view` resolves that row.
+            if let Some(scope) = &request.scope {
+                let key = wire::decode_value(scope, loaded.routing.scope_key_type(&request.target));
+                watch = watch.with_scope([key]);
+            }
             // §12.2: a singular view delivers one object; a collection a row array.
             let singular = loaded.routing.is_singular_view(&request.target);
             let subscription = loaded.host.watch(&connection, &watch).map_err(host_fault)?;

@@ -139,9 +139,12 @@ fn adjacency_list_flatten_arbitrary_depth() {
 }
 
 // ===========================================================================
-// FINDINGS (held repros) — spec'd mechanisms the runtime does not materialize.
-// Each asserts the SPEC-correct result and is #[ignore]d so the shared gate
-// stays green; `cargo test -- --ignored` reproduces the divergence.
+// §10.5 RECURSIVE SURFACE COVERAGE — green conformance (F2–F5, landed) plus the
+// one held repro (F6). F2–F5 lock the runtime MATERIALIZATION of `$recursive`
+// coverage: a scoped-role surface's `$view` projection re-applies to the covered
+// row and every included descendant, nested under `$field` as a keyed tree, with
+// `$where`/`$except` hereditary pruning bounded by the stored data depth. F6
+// remains `#[ignore]`d — scoped-role descendant MUTATION addressing is unwired.
 // ===========================================================================
 
 /// §5.8 + §6.4: fixed-depth traversal-flatten over a SELF-REFERENTIAL shape.
@@ -182,21 +185,17 @@ fn selfref_fixed_depth_traversal_flatten() {
     assert_pass(&run(case, "selfref-flat"), "self-referential fixed-depth traversal flatten");
 }
 
-/// FINDING F2 — §10.5: `$recursive` surface coverage at full depth. A scoped role
+/// F2 — §10.5: `$recursive` surface coverage at full depth. A scoped role
 /// propagates one surface through the self-referential `subcompanies` relation;
 /// §10.5 requires the output to appear under `$field` as a nested keyed tree in
 /// which every included descendant (four levels deep here) is surfaced with the
-/// same projection. The `$recursive` block type-checks at load
-/// (liasse-model/src/surface.rs:187 `check_recursive`), but the runtime never
-/// materializes it.
-/// Expected: the nested `{ id, name, subcompanies: [ … ] }` tree to full depth.
-/// Observed: the watch produces NO view value ("expected a view value, none
-/// observed").
-/// Root cause: the surface compiler reads only `$view` and drops role `$`-members,
-/// so `$recursive` is never expanded — liasse-runtime/src/compiled.rs:1650-1655
-/// (role `$`-members skipped) and compile_one_surface_view (only `$view` compiled).
+/// same `. { id, name, plan }` projection. The runtime compiles the scoped-role
+/// surface view against the covered row and materializes the coverage over the
+/// already-materialized self-referential tree (§5.4/§5.8), so the watch delivers
+/// the nested `{ id, name, plan, subcompanies: [ … ] }` tree to full depth,
+/// bounded by the stored data. (Formerly an `#[ignore]`d repro of the
+/// now-closed materialization gap.)
 #[test]
-#[ignore = "FINDING F2: §10.5 $recursive coverage validated at load but not materialized at runtime (compiled.rs:1650-1655); repro-only"]
 fn recursive_coverage_full_depth() {
     let case = RECURSIVE_TREE_PACKAGE_HEADER.to_owned()
         + r##"
@@ -234,15 +233,13 @@ fn recursive_coverage_full_depth() {
     assert_pass(&run(&case, "rec-full-depth"), "$recursive full-depth coverage");
 }
 
-/// FINDING F3 — §10.5: `$recursive` `$where`/`$except` pruning at depth. `$where`
-/// is a hereditary allow-list and `$except` a hereditary deny-list: a node the
+/// F3 — §10.5: `$recursive` `$where`/`$except` pruning at depth. `$where` is a
+/// hereditary allow-list and `$except` a hereditary deny-list: a node the
 /// predicate excludes contributes no slot and NONE of its descendants are
 /// surfaced or reparented. Here `closed` (fails `$where`) and `hr` (matched by
-/// `$except`) must vanish WITH their whole subtrees, while `keep` under the
-/// included `active` node remains. Fails for the same reason as F2 (no
-/// materialization).
+/// `$except`) vanish WITH their whole subtrees, while `keep` under the included
+/// `active` node remains — the runtime descends only into included candidates.
 #[test]
-#[ignore = "FINDING F3: §10.5 $recursive $where/$except pruning not materialized at runtime (compiled.rs:1650-1655); repro-only"]
 fn recursive_coverage_prunes_subtrees_at_depth() {
     let case = RECURSIVE_TREE_PACKAGE_HEADER_PRUNED.to_owned()
         + r##"
@@ -285,11 +282,10 @@ fn recursive_coverage_prunes_subtrees_at_depth() {
     assert_pass(&run(&case, "rec-prune"), "$recursive $where/$except pruning at depth");
 }
 
-/// FINDING F4 — §10.5: a single-node tree. The role-holding row has no included
+/// F4 — §10.5: a single-node tree. The role-holding row has no included
 /// descendants, so the surface projects just that node with an empty `$field`
-/// nested view. Fails identically (no view value).
+/// nested view (`subcompanies: []`).
 #[test]
-#[ignore = "FINDING F4: §10.5 $recursive single-node coverage not materialized at runtime (compiled.rs:1650-1655); repro-only"]
 fn recursive_coverage_single_node() {
     let case = RECURSIVE_TREE_PACKAGE_HEADER.to_owned()
         + r##"
@@ -308,11 +304,10 @@ fn recursive_coverage_single_node() {
     assert_pass(&run(&case, "rec-single"), "$recursive single-node coverage");
 }
 
-/// FINDING F5 — §10.5: an included non-leaf node whose covered child is itself a
-/// leaf (empty children). The leaf's `$field` nested view is empty (`[]`). Fails
-/// identically (no view value).
+/// F5 — §10.5: an included non-leaf node whose covered child is itself a leaf
+/// (empty children). The covered node carries one included child, and that
+/// child's `$field` nested view is the empty array (`subcompanies: []`).
 #[test]
-#[ignore = "FINDING F5: §10.5 $recursive empty-children-leaf coverage not materialized at runtime (compiled.rs:1650-1655); repro-only"]
 fn recursive_coverage_empty_children_leaf() {
     let case = RECURSIVE_TREE_PACKAGE_HEADER.to_owned()
         + r##"
