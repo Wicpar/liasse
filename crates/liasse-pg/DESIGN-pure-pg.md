@@ -48,16 +48,16 @@ not implemented**. Mandates, in force together:
 6. **Maintainer decisions, revising this document (v5) — the evaluator becomes
    FULLY general; no per-view restriction remains.** Two decisions remove the
    two per-row exclusions v4's §7.5 carried. (a) *App-registered host
-   namespaces are REMOVED from the language* — a clean break, no deprecation
-   window, no compatibility path (there are zero deployments). The only host
-   namespaces are the fixed built-in set — `string`, `time`, `convert`, `hex`,
-   `base64`, `sha`, plus the language operators (SPEC.md §6.5/§16.1) —
-   deterministic, in-crate, and therefore **bundled into the extension**: every
-   function a program can call exists inside PostgreSQL, so a
-   candidate-dependent host call always evaluates in-PG. §16 registration
-   (`Registry`, `$requires`, descriptors) is gone; SPEC.md §16 gets the note;
-   the code/spec removal is a separate workstream this design takes as a
-   prerequisite (§7.5). (b) *Candidate-subtree reads push down*: a program that
+   namespaces are REMOVED from the language* — **superseded by mandate 7
+   below: app namespaces are KEPT; the built-in-only property of DB-run
+   programs is obtained by a load-time language rule instead of removal.**
+   (v5's original rationale, retained for the record: with only the fixed
+   built-in set — `string`, `time`, `convert`, `hex`, `base64`, `sha`, plus
+   the language operators, SPEC.md §6.5/§16.1 — deterministic and in-crate,
+   every function a program can call is **bundled into the extension**, so a
+   candidate-dependent host call always evaluates in-PG. Mandate 7 preserves
+   exactly that property for the programs the extension actually receives,
+   without deleting §16.) (b) *Candidate-subtree reads push down*: a program that
    reads through the candidate's own nested collections
    (`size(child.subcompanies)`, aggregates/filters over the candidate's
    subtree) is served by a **compiler-prefetched subtree lateral** (§7.6) — the
@@ -69,6 +69,40 @@ not implemented**. Mandates, in force together:
    **scope** (deferred combinator/aggregate-fold/json-sort and non-stored
    sources, §7.5), not restriction, and the v4 load-time coverage-rejection
    policy dissolves (§7.5).
+7. **Maintainer decision, revising this document (v6) — SEPARATE expressions
+   by WHERE they run; supersedes mandate 6(a), mandate 6(b) stands.** App-
+   registered host namespaces (§16: registration, `Registry`, `$requires`,
+   descriptors) are **KEPT** — they are the substrate for §11 custom
+   authentication (webauthn/oidc/password verifier namespaces the runtime
+   cannot natively perform), §17 cose, and §20 migration codecs. Instead, the
+   language separates expression contexts by execution locus, and the split
+   is maximal (maintainer correction, binding: *"verify, check, normalize
+   should also be in db. the only place an app provided procedure can run is
+   in a mutation, since it's modeled as a transaction"*).
+   **Framework-run** is exactly ONE context: the **mutation program body** —
+   the §8 sequential atomic program (including §11.5 login/auth mutations,
+   §21.1 delete patches, and the §20.1 `$up`/`$down` delta programs, which
+   are programs of mutation statements) — because a mutation is modeled as a
+   transaction, and the transaction is where app procedures' effects,
+   recording, and replay fixing are defined. Only there may an
+   app-registered namespace be called. **Database-run** is everything
+   else — every read AND every validation: a `$view`'s filter/selection,
+   projection, and `$sort`; §10.5 coverage `$where`/`$except`; computed
+   values; **`$verify` (§11), `$check` (§5.10/§8.8), `$normalize` (§8.8)**;
+   defaults; bucket/meter/placement expressions; migration `$as`/`$back` —
+   all restricted to the **built-in namespaces only** (§6.5 + the language
+   operators; native keyring verification, §17.7, remains available in
+   `$verify` — it is runtime-dispatched, not an app namespace). An
+   app-registered call in ANY non-mutation-body position is a **load-time
+   error** with a rustc-like diagnostic; no runtime fallback exists for that
+   case. Custom credential verification is re-modeled onto the §11.5 pattern:
+   an **auth mutation** invokes the verifier namespace inside its transaction
+   and mints a native token that later requests verify through a built-in
+   `$verify` (§7.5). The extension therefore holds **every function a DB-run
+   program can contain** — by construction at load, not by removing §16 —
+   and v5's §16-removal workstream is **CANCELLED**. Enforcement lands in
+   the checker (`liasse-expr`), §7.5; the SPEC.md amendments (§16.5, §11.3,
+   §16.3, §8.8) are drafted there.
 
 This document is the implementation plan an agent fleet builds from, phase by
 phase. Every claim about SQL plan shape in §4 and §6 was **prototyped against
@@ -571,17 +605,25 @@ this one mechanism (§3 `ViewSource::Coverage`): same programs, same faces, same
 CTE — pruning-during-descent is what "the filter runs in `WHERE`" means when the
 source is recursive.
 
-What does NOT push down in v1 is **scope, not restriction** (mandate 6): §7.5
-enumerates the deferred source dispositions (combinators, view-refs that do
-not compose, bucketed and engine-state sources, the aggregate fold) — the
-per-row expression universe itself has no excluded class: every core-language
-operator and every built-in namespace function over the candidate's own row
-AND its nested subtree evaluates in-PG (§7.5, §7.6). What NEVER pushes down is
-structural: admission/staging evaluation runs over the
+What does NOT push down in v1 is **scope, not restriction** (mandates 6+7):
+§7.5 enumerates the deferred source dispositions (combinators, view-refs that
+do not compose, bucketed and engine-state sources, the aggregate fold) — the
+per-row expression universe of a *checked* DB-run program has no excluded
+class: every core-language operator and every built-in namespace function over
+the candidate's own row AND its nested subtree evaluates in-PG (§7.5, §7.6),
+and an app-registered call cannot occur in such a program because the checker
+rejected it at load (mandate 7, §7.5). What does not push down in v1 by
+EXECUTION-MODEL choice is admission/staging evaluation: it runs over the
 staged in-memory overlay that `nodes` does not yet contain (§5.4 case 3), so
-`$check`/`$normalize`/defaults/mutation programs stay interpreter-based in Rust;
-and MemoryStore always evaluates in Rust — it is the oracle that makes the
-0-divergence gate meaningful.
+`$check`/`$normalize`/defaults and the mutation program itself stay
+interpreter-executed in Rust — the mutation body because it is the one
+framework-run context (mandate 7), and `$check`/`$normalize`/defaults as the
+v1 executor choice for DB-run-classified, built-in-only expressions (§7.5
+"admission under the mutation-only rule": classification restricts the
+expression, not the executor; the in-transaction PG admission seam is now
+unlocked by construction but deliberately not v1). MemoryStore always
+evaluates in Rust — it is the oracle that makes the 0-divergence gate
+meaningful.
 
 **Eliminated from v2, explicitly**: the predicate→SQL compiler; the
 `RowPredicate`/`PredOperand`/`CompareClass` store-level IR; the §7.4 fragment
@@ -590,7 +632,9 @@ bound, the none-rank CASE, the wire-injective-ref rule, and the
 optional-struct-member exclusion); the `liasse_text_key` managed function and the
 reconciler's `functions()` declared-set; the §7.7 fragment policy and its
 proposed SPEC.md §10.5 fragment line (replaced in v4 by a narrower §7.5 note,
-itself withdrawn in v5 — mandate 6 leaves nothing to restrict).
+withdrawn in v5, and re-founded in v6 as the mandate-7 language rule: the one
+restriction on DB-run programs is built-in-only namespaces, enforced by the
+checker at load, not by a lowering-time fragment policy — §7.5).
 What v2 pinned and this design keeps: the §7.2 execution semantics, the anchor-
 unfiltered and tombstone-barrier rules, the CTE shape and its index-served plan
 discipline, `scan_subtree` as the distinct semantics-free primitive, and the
@@ -675,8 +719,10 @@ liasse-expr  (feature `eval-wire`, new `wire` module)
     depth, which the guarded recursive lateral serves
   • RESIDUAL AUDIT: confirms the source lowers and no scope-deferred form
     (§7.5 dispositions) remains, reporting a typed, span-carrying reason
-    otherwise; per mandate 6 the per-row expression universe itself is total —
-    the audit classifies sources and scope, it no longer excludes expressions
+    otherwise; per mandates 6+7 the per-row expression universe of a checked
+    DB-run program is total — the checker's load-time DbRead rule (§7.5) has
+    already excluded app-registered calls, so the audit classifies sources
+    and scope, it never excludes expressions
 
 liasse-pred  (new crate: the ONE row-program implementation)
   RowPrograms {
@@ -751,7 +797,11 @@ liasse-runtime (view/coverage lowering, new module beside recursion.rs)
           table does not yet contain — not the perf killer, and CTE-over-nodes
           would be unsound mid-staging
      admission/staging evaluation ($check/$normalize/defaults/programs,
-          Prospective::gather) ──▶ ALWAYS interpreter-based in Rust (§7.1)
+          Prospective::gather) ──▶ interpreter-executed in Rust in v1: the
+          mutation program because it is THE framework context (mandate 7);
+          $check/$normalize/defaults by executor choice — they are DB-run
+          classified, built-in-only, so the in-txn PG admission seam exists
+          by construction (§7.5), deliberately not built in v1
 ```
 
 The composed coverage admit (`$where && !$except` over the bound candidate) is
@@ -767,9 +817,10 @@ interpreter, same frontier state, same session env — and binds the resulting
 `Cell` (scalar, row, or whole collection — e.g. an `in /admins` haystack) under a
 synthetic name outside the identifier grammar (NUL-prefixed, so no source binding
 can collide). This is semantics-preserving because every built-in namespace
-function is deterministic ("same logical inputs produce the same output" — the
-fixed set of mandate 6a; there are no app-registered namespaces to worry
-about), `now()` is the fixed per-operation sample (A.5), and `uuid()` is
+function is deterministic ("same logical inputs produce the same output",
+§16.3 `pure` — and a DB-run program contains no app-registered call at all,
+by the mandate-7 load rule, so hoisting never has to reason about one),
+`now()` is the fixed per-operation sample (A.5), and `uuid()` is
 pinned per call site per request — one evaluation equals N. Hoisting remains
 an *optimization* for candidate-free subtrees (evaluate once, not per row),
 never a necessity: a candidate-dependent built-in call evaluates in-PG. The one observable difference is error timing:
@@ -955,14 +1006,296 @@ cache makes the shared prefix work (wire decode, candidate build) cheap.
   three-face shape; the composite `eval_row` seam (above) exists if the §9
   bench axis shows it dominating.
 
-### 7.5 The hoisting boundary: what runs in-PG, what remains outside
+### 7.5 The two execution contexts, the load rule, and the hoisting boundary
 
 With the full interpreter linked in, the boundary is no longer "which operators
-compile" but "which *inputs* exist inside PostgreSQL" — and under mandate 6
-**every input a read-side program can need exists there**: the candidate's
-stored row and key (the CTE columns), the hoisted candidate-free environment
-(`env`), and the candidate's own live subtree (the §7.6 prefetch). The
-lowering audit (§7.3) classifies sources and scope; it excludes no expression:
+compile" but "which *inputs* exist inside PostgreSQL" — and under mandates 6+7
+**every input a checked read-side program can need exists there**: the
+candidate's stored row and key (the CTE columns), the hoisted candidate-free
+environment (`env`), the candidate's own live subtree (the §7.6 prefetch), and
+— because the checker enforced it at load — only functions the extension
+links: the built-in namespaces. The lowering audit (§7.3) classifies sources
+and scope; it excludes no expression.
+
+**The two execution contexts (mandate 7).** Every SPEC expression position is
+classified by WHERE its evaluation runs when a conforming engine serves it,
+and the discriminator is maximally simple (maintainer correction, binding):
+**framework-run = the mutation program body, nothing else** — a mutation is
+modeled as a transaction, and the transaction is the only place an
+app-provided procedure can run. Everything that *reads or validates* is
+database-run and built-in-only. The complete classification, every
+expression-bearing SPEC context:
+
+| SPEC context | Position | Class |
+|---|---|---|
+| §7.1/§6.4/§10.1/§10.2 | `$view` source selection + `[:x \| …]` filter (declared, surface, and public views) | **DB-run** |
+| §7.1/§7.2 | `$view` projection outputs, synthetic `$key` groupings, `group` aggregates | **DB-run** |
+| §7.3 | `$sort` keys (on views AND on collections), `$skip`/`$limit` values | **DB-run** |
+| §7.4/§7.5/§7.6 | view-combinator operands, aggregate arguments, ref traversal in view positions | **DB-run** (the merge/fold machinery is engine code, not an expression) |
+| §10.3 | role `$members` views | **DB-run** (admission *evaluates* it framework-side — see the artifact/executor rule below) |
+| §10.5 | coverage `$where`/`$except`, `$through` | **DB-run** (the admission re-walk is framework *execution* of the same artifact) |
+| §10.1 | surface `$mut` receiver references (`.projects[@project].rename` — the selector outside the body) | **DB-run** (a read/selection; the *named mutation's body* is framework) |
+| §5.2 | computed values | **DB-run** |
+| §5.10/§8.8 | `$check` (field, struct, row) | **DB-run** (built-in-only; v1 executor = the interpreter in the admission transaction — mechanism block below) |
+| §8.8 | `$normalize` | **DB-run** (same; its output is stored state) |
+| §11.3 | auth `$verify`, `$actor`, `$session`, auth `$check` | **DB-run** (built-in-only + native §17.7 keyring verification; custom verification re-models as an auth mutation — below) |
+| §5.1 | field defaults (incl. generated keys) | **DB-run** for namespace calls (language `uuid()`/`now()` remain legal per §8.8 — they are language functions, not namespaces; app-generated calls move into the mutation body — flagged below) |
+| §14.1–14.5 | bucket `$from`/`$until`/`$repeat`, `$order`, source-backed `$source` views | **DB-run** |
+| §15.1–15.4 | meter `$sources` pool views, `$quantity`, spend `$amount`/`$time`/`$eligible` | **DB-run** (built-in-only; allocation is engine machinery) |
+| §18.4 | blob placement `$in`/`$serve` store views | **DB-run** |
+| §20.1/§20.2 | migration field transforms `$as`/`$back` | **DB-run** (an app codec conversion moves into the delta's `$up`/`$down` program) |
+| §9.1/§13 | seed/bundle data, module `$config` | **DB-run** (data/expressions outside any mutation body; seeds are values) |
+| §8, §8.10, §8.11 | **the mutation program body**: statements, their embedded values and selectors, patches, local bindings, `assert`, internal calls, `return` | **framework** — THE app-procedure context (all §16.3 effect classes: pure, verifier, generated) |
+| §11.5/§11.6 | login/SSO **auth mutations** (webauthn/oidc/password/api-key verification, session open, `cose.sign` token mint) | **framework** (they ARE mutation bodies — the §11.5 pattern is the re-model target) |
+| §17.8/§17 | keyring operations in mutation statements; rotation transitions (system commits) | **framework** (mutation-class transitions) |
+| §20.1/§20.2 | migration `$up`/`$down` delta programs | **framework** (programs of mutation statements, one atomic transaction; §20.1's own pure+deterministic constraint still applies, so app *pure* codecs are legal here and only here) |
+| §21.1 | `$on_delete` delete patches (`$target`) | **framework** (mutation programs) |
+
+Positions with no expressions (§5.7 `$unique` field lists, §12 wire ops, §19
+history) classify vacuously. Engine-state *values* readable inside DB-run
+expressions (§17.2 keyring metadata, §15.6 meter accessors, §18.5 placement
+members) are not namespace calls and are untouched by the rule: candidate-free
+uses hoist into `env`, and the candidate-addressed accessor keeps its
+scope-deferred disposition below.
+
+**The rule for an artifact read in BOTH contexts.** Classification restricts
+the *artifact*; it never dictates the *executor*. A DB-run-classified
+expression must satisfy the built-in-only restriction because SOME evaluation
+may run it in the database — but the framework remains free to evaluate it
+too (MemoryStore, fallback routes, §10.5 admission re-walks, §10.3 membership
+checks, and — the v1 executor choice — `$check`/`$normalize`/`$verify` at
+admission). So "read in both a view and a check" collapses to: the artifact
+carries the union of its contexts' restrictions — which is exactly the DB
+restriction, since framework-run adds none — and each evaluation chooses its
+executor freely. The converse never arises: the one framework-only artifact,
+the mutation body, is never handed to the extension, so its app calls never
+need a DB story.
+
+**The computed-value question — subsumed by the uniform rule.** The v6 draft
+deliberated whether computed values (§5.2) should be built-in-only globally
+or only when transitively projectable in a view; the corrected mandate
+dissolves the question: computed values are a non-mutation-body position like
+every other, hence built-in-only globally — declaration-local, one-span
+diagnostic, no transitive contains-app-call analysis, no
+action-at-a-distance (a pass-through `$view` never trips over a distant
+computed declaration, because that declaration was already rejected on its
+own). The deliberation's conclusion is retained because it independently
+reached the same rule and supplies the escape the diagnostic suggests:
+compute the app-fn value in a mutation body into a stored field — also the
+right modeling for expensive host crypto (store once, don't recompute per
+read).
+
+**The §11 auth re-model (custom verification becomes an auth MUTATION).**
+`$verify` is now built-in-only, so it covers exactly what is native and
+deterministic: token verification through the built-ins and §17.7 keyring
+acceptance (`cose.verify(/session_keys, $credential)` — runtime-dispatched
+against accepted key versions, no provider call, no app namespace). Custom
+credential verification — webauthn, OIDC, password hashing, api-key
+exchange: precisely the §16.3 *verifier* namespaces — can no longer sit in
+`$verify`; it re-models onto the pattern SPEC.md §11.5 already canonizes:
+a public **auth mutation** invokes the verifier namespace inside its atomic
+program (`identity = webauthn.verify(@response)`), maps the verified
+identity to application login/account state, records the session row, mints
+a native token (`cose.sign`, §17.8), and returns it; every subsequent
+request authenticates through an authenticator whose `$verify` is the
+built-in/native token check. The primary SPEC flow (§11.5 `passkey_login`,
+§11.6 `oidc_callback`) already IS this shape — what the re-model removes is
+only the *per-request* app-verifier authenticator (§11.3's `api_key`
+example, `$verify: "api_keys.verify($credential)"`): such a credential is
+either exchanged once for a native token via an auth mutation, or verified
+natively (store `sha.sha256` of the key in state and compare in `$verify` —
+built-ins suffice). App verifier namespaces are **KEPT**; only their
+position narrows to the mutation body, where the transaction gives their
+result the §8.12 recording and replay-fixing semantics — which a
+per-request `$verify` (re-evaluated at every admission, never recorded)
+could not.
+
+**Admission under the mutation-only rule (`$check`/`$normalize` mechanism,
+honest).** The mutation body (framework; may call app procedures) *proposes*
+the transition into the staged overlay; `$normalize` then `$check`
+(built-in-only) *validate* the prospective state (§8.8 order). Are they now
+evaluated in-PG? Two readings, resolved: **classification restricts the
+expression, not the executor** — being DB-run-classified means the database
+CAN evaluate them, not that it must. v1 keeps the existing admission
+mechanism unchanged: the interpreter evaluates `$normalize`/`$check`/
+defaults inside the admission transaction over the staged in-memory overlay
+(§5.4 case 3) — the same linked code, the same results, and consistent with
+mandate 2 (the prospective overlay is session-relative working state, not
+persisted state), so **Phases 0–6's in-memory-staging model is untouched**.
+What the rule *unlocks*, by construction, is the in-transaction PG admission
+seam that was previously impossible: because no `$check`/`$normalize` can
+contain an app call, the writer connection could stage the proposed rows
+inside its open transaction and evaluate validation through the §7.4 faces
+over in-txn `nodes` state, rolling back on rejection — validation next to
+the data, one round trip. That seam is recorded, NOT built: it inverts §5.4
+case 3 and re-opens the §6 write path, a material re-architecture. **Flag
+for the maintainer**: if "should also be in db" intends *mandated in-PG
+execution* of `$normalize`/`$check` (not just the built-in-only
+restriction), the admission model of Phases 0–6 changes materially
+(staged-overlay evaluation → stage-into-PG-transaction evaluation) and that
+is a separate, phased decision this document does not take unilaterally.
+`$verify` execution likewise stays framework in v1 (it reads keyring engine
+state plus the request credential — engine values, not `nodes` rows).
+
+**No hoisting exemption (decided by the mandate's wording).** An
+app-registered call in a DB-run expression is rejected even when it is
+candidate-free and would hoist ("an app-registered-namespace call in ANY of
+these positions is a load-time error"). Deliberately so: hoistability is a
+pushdown implementation property, not a language property — tying legality to
+"whether this subtree happens to be candidate-free under the current
+compiler" would leak §7.3's hoist machinery into the language and make
+programs break or un-break as the lowering evolves. The uniform rule keeps
+hoisting a pure optimization (§7.3) and the language rule storage-agnostic.
+Consequence, stated honestly: a candidate-free scalar view such as
+`{ $view: "util.double(.n)" }` — legal today, exercised by the corpus — is
+rejected under mandate 7 even though the engine would evaluate it in Rust;
+the §9 corpus note lists the cases this flips.
+
+**The load-time check (the checker design — `liasse-expr`).** The enforcement
+extends the §16.3 effect-class machinery that already rejects a generated
+function in a view at load (`check/views.rs::check_host_call`, corpus-pinned
+by `generated-function-in-view-rejected.hjson`) — the identical mechanism,
+one more axis:
+
+- **`HostOrigin` on `HostOp`** (`host.rs`): `Core | Registered`. The
+  runtime's `HostBinding::expr_signatures()` (liasse-runtime `host.rs`) tags
+  every `$requires`-resolved descriptor `Registered`; the §6.5 namespaces the
+  checker resolves itself (`BuiltinFn`, `core_string_fn`, and the core
+  surfaces as they land) are `Core`, as is the §20 codec binding
+  (`HostBinding::codecs()` — hex/base64/string-bytes ARE core). The partition
+  is total and unambiguous by §16.2's own rule: a `$requires` local key MUST
+  be distinct from every core namespace name.
+- **`HostPosition` collapses to the mandate-7 shape** (`host.rs`): the
+  current `Pure`/`Write`/`Admission` triple becomes
+
+  ```rust
+  enum HostPosition {
+      /// Database-evaluated position (everything but a mutation body):
+      /// built-in namespaces only, pure effect only. The kind names the
+      /// sub-position for the diagnostic.
+      DbRead(DbReadPosition),
+      /// A field default: still built-in-only for NAMESPACE calls, but the
+      /// language generated functions (uuid(), now()) stay legal (§8.8) —
+      /// they are typed as language calls and never reach check_host_call.
+      Default,
+      /// The mutation program body — the transaction. The only position
+      /// where an app-registered namespace may be called, with any declared
+      /// effect class (pure, verifier, generated — §16.3 as amended).
+      Mutation,
+  }
+  // DbReadPosition: ViewFilter | ViewProjection | SortKey | Coverage |
+  //   Computed | Check | Normalize | Verify | ActorSession | BucketBound |
+  //   MeterSource | Placement | MigrationTransform | Receiver
+  ```
+
+  `permits(effect, origin)`: `DbRead(_)`/`Default` ⇒ `(Pure, Core)` only;
+  `Mutation` ⇒ any effect, any origin. The old `Admission` variant (which
+  admitted verifier effects in `$verify`) is DELETED — verifier functions
+  now run in `Mutation` position, and `$verify` is `DbRead(Verify)` (native
+  cose verification is runtime-dispatched, not a `HostOp` call, so it is
+  untouched by `check_host_call`).
+- **Position wiring** (liasse-model `check.rs`/`scope.rs`, liasse-runtime
+  `compiled.rs`/`recursion.rs`): the same `with_host_position` mechanism that
+  today selects `Write` for defaults and mutation values now selects
+  `Mutation` exactly where a §8 program body is checked (mutation programs,
+  §11.5 auth mutations, §20.1 delta programs, §21.1 delete patches),
+  `Default` for field defaults, and `DbRead(kind)` everywhere else — view
+  sources/filters/projections/sorts (`check_tree`, view compilation),
+  coverage predicates (`compile_recursive`), computed values, **`$check`,
+  `$normalize`, and the §11.3 authenticator expressions** (today all
+  `Pure`/`Admission`), bucket bounds, meter expressions, placement views,
+  migration `$as`/`$back`.
+- **The check, in `check_host_call`, AFTER the effect check** (order matters:
+  a generated fn in a view keeps its §16.3 effect diagnostic — the stronger,
+  position-class-wide violation — and the origin check fires only for
+  otherwise-admissible pure app calls), and before arity/argument typing:
+
+  ```text
+  error: app-registered function `pki.check` cannot be called outside a
+         mutation program
+    --> package.hjson:41:23 (the $view filter of surface `documents`)
+     |
+  41 |   "$view": ".docs[:d | pki.check(d.sig, d.payload)] { id }"
+     |                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+     |            `pki` is an app-registered namespace (§16.2 `$requires`)
+     |
+     = note: every position outside a mutation body — a view's filter,
+             projection, or `$sort`, a `$recursive` `$where`/`$except`, a
+             computed value, a `$check`, a `$normalize`, an auth `$verify`,
+             a bucket bound — is database-evaluated, and only the built-in
+             namespaces exist there (§6.5: hex, base64, sha, string,
+             convert, time)
+     = help: an application procedure runs inside a mutation — the
+             transaction: compute the value in a mutation statement and
+             store it, then read the stored field here; for credential
+             verification, use an auth mutation that mints a native token
+             (§11.5)
+  ```
+
+  No runtime fallback exists for this case: the rejection is a load error,
+  so `RowPrograms` — and every `$check`/`$normalize`/`$verify` program — can
+  never contain an app-registered call and the extension never sees one:
+  the v5 "every function a program can call exists inside PostgreSQL"
+  property, obtained by construction.
+- **Prototype disposition**: not separately prototyped — the seam is the
+  shipped effect-class rejection at the same call site, already exercised
+  end-to-end by the static corpus (`generated-function-in-view-rejected`,
+  `verifier-function-in-view-rejected`); the new check is one enum variant,
+  one field, one conjunct, and position wiring over the existing
+  `with_host_position` plumbing.
+
+**The SPEC.md amendments this design depends on (replace v5's §16-removal
+note).** §16's registration machinery stays as written; one normative rule is
+ADDED and three passages are AMENDED to match. Draft normative text:
+
+> **§16.5 Execution contexts (new).** A call to a `$requires`-registered
+> namespace (§16.2) is legal only within a mutation program — the atomic
+> sequential program of §8, including auth mutations (§11.5), delete patches
+> (§21.1), and migration delta programs (§20.1). Every other expression
+> position is *database-evaluated*: a `$view`'s source selection, filter,
+> projection, and `$sort` (§7), a `$recursive` `$where`/`$except` (§10.5), a
+> computed value (§5.2), a field default (§5.1), `$normalize` and every
+> `$check` (§8.8, §5.10), the authenticator expressions `$verify`, `$actor`,
+> `$session`, and `$check` (§11.3), bucket, meter, and placement expressions
+> (§14, §15, §18.4), and migration field transforms (§20.1). A
+> database-evaluated expression is restricted to the language operators and
+> the built-in namespaces (§6.5); a registered-namespace call there is a
+> static (load-time) error. This is a language rule, not a storage choice:
+> it guarantees a conforming engine can evaluate everything that reads or
+> validates inside its storage engine, which hosts only the built-in
+> surface, while application procedures run exactly where atomicity,
+> result recording, and replay fixing are defined — the transaction (§8.12).
+
+> **§11.3 (amended).** Replace "`$verify` MAY use a registered verifier
+> namespace and performs no application-state mutation" with: "`$verify` is
+> a database-evaluated expression (§16.5): it is restricted to the language
+> operators, the built-in namespaces (§6.5), and native keyring verification
+> (§17.7), and performs no application-state mutation. Application-defined
+> credential verification — webauthn, OIDC, password hashing, API-key
+> exchange — runs inside a mutation program (§11.5): the mutation invokes
+> the registered verifier namespace, maps the verified identity to
+> application login and account state, and constructs a native token
+> (§17.8) that subsequent requests verify through `$verify`."
+
+> **§16.3 (amended).** Replace "Pure functions MAY run during views, checks,
+> and replay. Verifiers run during external request admission. Generated
+> functions run in mutation/write-time positions." with: "A built-in pure
+> function MAY run in any expression position. A registered namespace
+> function of any effect class is callable only within a mutation program
+> (§16.5): a verifier validates untrusted input inside the mutation that
+> admits it; a generated function produces its recorded result inside the
+> mutation that commits it."
+
+> **§8.8 "Expression effects" (amended).** Replace with: "Computed fields,
+> views, `$normalize`, and `$check` are database-evaluated (§16.5) and use
+> built-in pure functions only. Defaults MAY additionally use the language
+> generated functions (`uuid()`, `now()`). Mutation programs MAY use
+> registered namespaces of every effect class. The checker rejects an
+> effect class — or a registered namespace — used in the wrong position
+> while loading the package."
+
+(§7.1 and §10.5 each gain one informative cross-reference sentence to
+§16.5.)
 
 **First, the SOURCE classification — which reads push down at all.** The
 per-row boundary below applies to the filter/projection/sort programs of a read
@@ -1028,11 +1361,14 @@ selection over the candidate's subtree at any depth of the read-set);
 NUL-bearing text — because it *is* `Value::cmp`); `Logic`/`Not` (interpreter
 short-circuit and strict truthiness); `In` (hoisted set/collection haystacks);
 `Ternary`; `Arith`/`Neg` (including error paths — a fault maps per §7.4);
-`Builtin` — **the complete built-in surface** (mandate 6a): `size`/`has` and
-the whole `string`/`time`/`convert`/`hex`/`base64`/`sha` namespaces (SPEC.md
-§6.5/§16.1), deterministic and linked into the extension with the interpreter,
+`Builtin` — **the complete host surface a checked DB-run program can contain**
+(mandate 7): `size`/`has` and the whole
+`string`/`time`/`convert`/`hex`/`base64`/`sha` namespaces (SPEC.md §6.5/§16.1),
+deterministic and linked into the extension with the interpreter,
 so a candidate-dependent call (`sha.sha256(child.doc)`,
-`time.add(child.created, @grace)`) evaluates in-PG like any operator;
+`time.add(child.created, @grace)`) evaluates in-PG like any operator — and an
+app-registered call is not in this list because it cannot reach a DB-run
+program at all (the load rule above);
 `Struct`/`List`/`Composite` literals (composite-key operands, struct outputs);
 `Select`/`Traverse`/`Aggregate`/`Project` whose base is a *hoisted* collection
 cell (e.g. `/accounts[.owner]` — the candidate-dependent selection runs in-PG
@@ -1063,24 +1399,33 @@ available if a hoisted haystack is pathological. (A future alternative — the
 extension resolving the deref by its own indexed point-read via SPI — is the
 same SPI seam as below, not designed in.)
 
-**The excluded set is empty (mandate 6).** v4 carved out two
-candidate-dependent classes the extension could not serve; both are gone:
+**The excluded set is empty for a CHECKED program (mandates 6+7).** v4 carved
+out two candidate-dependent classes the extension could not serve; both are
+gone — one by a load-time language rule, one by the prefetch:
 
-1. **App-registered host calls — the class no longer exists.** §16
-   app-registered host namespaces are **removed from the language**: a clean
-   break, no deprecation window, no compatibility path (there are zero
-   deployments). The complete host surface is the fixed built-in set —
-   `string`, `time`, `convert`, `hex`, `base64`, `sha`, plus the language
-   operators (SPEC.md §6.5/§16.1) — deterministic, implemented in-crate, and
-   linked into runtime, MemoryStore path, and extension alike, so the
-   in-database evaluator has **every function it can ever encounter**. The
-   pushdown design therefore *assumes* built-in-only namespaces. The removal
-   itself — deleting the `Registry`/registration API and `$requires`
-   resolution, and rewriting SPEC.md §16 to state that host namespaces are the
-   fixed built-in set — is a **prerequisite/parallel workstream** decided by
-   the maintainer and executed separately; this document only records the
-   decision and builds on it. (SPEC.md §16 gets the corresponding note; no
-   migration path is designed because none is needed.)
+1. **App-registered host calls — excluded at LOAD, kept in the language
+   (mandate 7, superseding v5's removal).** §16 app-registered host
+   namespaces, `$requires`, the `Registry`, descriptors, §11 verifier
+   namespaces, §17 cose, and §20 codecs are all **KEPT** — they are how an
+   application does webauthn/oidc/password verification, token signing, and
+   migration codecs, crypto the runtime cannot perform natively — but their
+   one legal position is the mutation program body (the transaction). What
+   guarantees the extension never meets one is the mandate-7 rule above: ANY
+   position outside a mutation body (view filter/projection/sort, coverage
+   predicate, computed value, `$check`, `$normalize`, `$verify`, default,
+   bucket bound, meter/placement expression, migration `$as`/`$back`) that
+   calls an app-registered namespace is a **load-time error** in the
+   checker, so every program that reaches lowering — and every admission
+   validation program — is built-in-only *by construction*. The complete host surface of a checked
+   DB-run program is the fixed built-in set — `string`, `time`, `convert`,
+   `hex`, `base64`, `sha`, plus the language operators (SPEC.md §6.5/§16.1) —
+   deterministic, implemented in-crate, and linked into runtime, MemoryStore
+   path, and extension alike, so the in-database evaluator has **every
+   function it can ever encounter**. No app-fn runtime fallback exists, and
+   none is needed: the case is statically impossible, not dynamically
+   routed. v5's §16-removal workstream (registration-API deletion, SPEC.md
+   §16 rewrite) is **cancelled**; the SPEC edit is the additive §16.5 rule
+   drafted above.
 2. **Reads through the candidate's own subtree — now served by the prefetch.**
    A program reading the candidate's nested keyed collections
    (`size(child.subcompanies)`, aggregates/filters over the candidate's
@@ -1096,16 +1441,21 @@ candidate-dependent classes the extension could not serve; both are gone:
    escape is superseded as the default and remains a documented seam only
    (§7.6 records why it lost).
 
-**Policy — uniform, because there is nothing left to reject.** The v3/v4
-split — load-time rejection for coverage predicates, automatic fallback for
-general views — existed because a coverage predicate could contain a
-non-pushable *expression*, and an unpushed coverage read is the mandate-3
-perf killer. With mandate 6 no such expression exists: every predicate and
-every program over the candidate's row, key, subtree, and hoisted environment
-pushes. The load-time rejection, its rustc-like diagnostic, its per-surface
-opt-in escape, and the proposed SPEC.md §10.5 restriction line all
-**dissolve — withdrawn**, and coverage predicates and general `$view` programs
-are governed by ONE policy. What still routes to the interpreter, exhaustively:
+**Policy — uniform at lowering time, because the checker already did the
+rejecting.** The v3/v4 split — load-time rejection for coverage predicates,
+automatic fallback for general views — existed because a coverage predicate
+could contain a non-pushable *expression*, and an unpushed coverage read is
+the mandate-3 perf killer. Under mandates 6+7 no such expression survives to
+lowering: an app-registered call in a DB-run position died in the CHECKER
+(the mandate-7 language rule — a rejection with a rustc-like diagnostic, but
+a §16.5 language error over every DB-run position uniformly, not v4's
+engine-policy carve-out for coverage with a per-surface opt-in escape; that
+v4 policy and its SPEC.md §10.5 restriction line stay withdrawn), and every
+checked predicate and program over the candidate's row, key, subtree, and
+hoisted environment pushes. Coverage predicates and general `$view` programs
+are governed by ONE lowering policy, and **no app-fn fallback exists** — the
+interpreter fallback list below contains no expression-restriction entry.
+What still routes to the interpreter, exhaustively:
 
 - **Dynamic, correctness routes (unchanged, both automatic):** non-head
   frontiers (§19.2 replay / stale-client resume) — the `nodes` table holds
@@ -1131,17 +1481,21 @@ are governed by ONE policy. What still routes to the interpreter, exhaustively:
   for a whole *class* of ordinary predicates no longer applies when the class
   is one exotic accessor with a designed upgrade seam.
 
-**Does ANY restriction remain? No.** Every expression over the candidate's own
-data — the spec's §10.5 examples, every ACL/tenancy/status/plan predicate,
-computed fields, arithmetic, the full built-in namespaces, `in`-sets, nested
-structs, `$key`, and now reads through the candidate's nested collections at
-any depth — runs in-PG. v2's fragment table, v3/v4's two excluded classes, and
-the load-time rejection policy are all gone; what is deferred in v1 is scope
-(the bullet above), reported and strict-promotable, never a silent route. No
-SPEC.md change is needed for the pushdown itself anymore — the one SPEC.md
-edit this design depends on is the **§16 removal note** (mandate 6a, separate
-workstream): host namespaces are the fixed built-in set; the registration API
-and `$requires` are gone.
+**Does ANY restriction remain? Exactly one — and it is a language rule, not
+an engine policy.** Every expression outside a mutation body is built-in-only
+(mandate 7, the §16.5 draft above), checked at load with a precise
+diagnostic; the mutation body — the transaction — keeps the full
+app-registered surface, every effect class. Within that rule, every
+expression over the candidate's own data — the spec's §10.5 examples, every
+ACL/tenancy/status/plan predicate, computed fields, arithmetic, the full
+built-in namespaces, `in`-sets, nested structs, `$key`, and reads through the
+candidate's nested collections at any depth — runs in-PG. v2's fragment
+table, v3/v4's engine-level excluded classes, and the v4 coverage rejection
+policy are all gone; what is deferred in v1 is scope (the bullet above),
+reported and strict-promotable, never a silent route. The SPEC.md edits this
+design depends on are the **§16.5 execution-contexts rule plus the
+§11.3/§16.3/§8.8 amendments** (drafted above; §16's registration machinery
+stays as written — the v5 removal note is void).
 
 ### 7.6 The SQL shapes: flat view, coverage CTE, and the shape-directed descent rule
 
@@ -1708,12 +2062,55 @@ regression (§7.3 "frontier scope").
   returning a different string on a bare PG) → actionable refusal; the
   load-time **pushdown report** naming a scope-deferred view with its typed
   reason, and strict mode promoting it to an error (§7.5 — the v4 gate for
-  the app-host-call load rejection is deleted with the rejection itself,
-  mandate 6); the **cycle/depth bail gate**: a corrupt over-deep chain (and a
+  the app-host-call load rejection was deleted with that rejection under
+  mandate 6; mandate 7's replacement is a CHECKER rule with its own static
+  corpus cases, below, not a store gate); the **cycle/depth bail gate**: a
+  corrupt over-deep chain (and a
   forced descent on a planted ring, per the §7.8 construction) surfaces the
   reserved-SQLSTATE guard error as the corruption-classed `StoreError` on
   PgStore AND the identical error from MemoryStore's counter — never a hang,
   never a truncated result (corpus case, written before the mechanism lands).
+- **Mandate-7 corpus (the mutation-only load rule; corpus first, per
+  AGENTS.md).** NEW static (`suite: static`, `outcome: invalid`) cases
+  modeled on
+  `tests/16-host-namespaces/common/generated-function-in-view-rejected.hjson`,
+  one per position family — an app-registered fn in: a `$view` filter
+  (`app-function-in-view-filter-rejected`), a projection output, a `$sort`
+  key, a §10.5 `$where` (`app-function-in-coverage-where-rejected`), a
+  computed value (`app-function-in-computed-value-rejected`), a `$check`
+  (`app-function-in-check-rejected`), a `$normalize`
+  (`app-function-in-normalize-rejected`), an auth `$verify`
+  (`app-verifier-in-dollar-verify-rejected`), and a field default
+  (`app-function-in-default-rejected`); each pins the load rejection and
+  its §16.5 citation. UNAFFECTED and kept verbatim: every
+  mutation-body app-fn case — the w2 worked examples
+  (`webauthn.verify`/`oidc.verify` invoked in §11.5 login MUTATION bodies:
+  `w2-passkey-login-opens-session-and-authenticates` and siblings), the
+  §17 cose/keyring suite (`cose.sign` in mutation statements, `$verify:
+  "cose.verify(…)"` — native), and §20 delta-program codec cases. MUST BE
+  RECAST — cases that today run an app fn OUTSIDE a mutation body as their
+  carrier and would contradict the amended SPEC:
+  `required-namespace-pure-function-runs-in-view` (asserts the very behavior
+  §16.5 forbids — recast the pure call into a mutation body, or flip it to
+  the static rejection), `verifier-namespace-runs-at-admission` (an app
+  verifier in `$verify` — recast onto the §11.5 auth-mutation pattern: the
+  scenario's per-request app verification becomes a login mutation minting
+  a native token), `generated-default-fixed-and-recorded`
+  (`token: "text = util.token()"` — the app generated call moves into the
+  creating mutation's body; the §8.12 recording semantics under test are
+  unchanged there), `compatible-minor-resolves-within-major`,
+  `pinned-descriptor-drift-fails-reopen`,
+  `required-namespace-removed-fails-reopen` (their initial load must
+  succeed, so their `util.double(.n)` view carrier moves into a mutation
+  body; the resolution/drift mechanics under test are
+  position-independent), and `namespace-signature-type-mismatch-rejected`
+  (still invalid, but its pinned detail names the signature mismatch — move
+  the carrier into a mutation body so that diagnostic, not the position
+  one, stays the asserted error). Effect-class cases
+  (`generated-function-in-view-rejected`, `verifier-function-in-view-rejected`)
+  keep their diagnostics: the checker tests effect class BEFORE origin
+  (§7.5 check order). The SPEC's own §11.3 `api_key` authenticator example
+  is amended with the §11.3 draft (its pattern re-models per §7.5).
 - **Index gates** (`index_coverage_pg.rs`) — the gate becomes the READ gate. Keep
   (1)–(6); add, on the populated tree:
   - (7) depth-3 `row` chained-InitPlan point lookup → index-only, no Seq Scan;
@@ -1793,7 +2190,7 @@ regression (§7.3 "frontier scope").
 | **4** | §12/read-path hygiene: hydrate once per (instance, frontier), share across watches; engine read paths prefer `snapshot(head)` hydration over N live `scan`s where committed-state reads suffice | parity + corpus green; watch tests green |
 | **5** | `scan_subtree`: contract (**with the §3 `steps` parameter — shape-directed per §7.6; the `parent_id`-only join is a pinned anti-pattern**) + MemoryStore range impl + PG CTE + adoption in `gather_tree`/`rows_at`/`materialize_row_cell` (semantics-free hydration: admission gathers, receiver walks, fallback-path views); depth guard | gate (9) green (incl. the `= ANY` Index Cond pin); hydration round trips measured before/after |
 | **6** | `snapshot(head)` fast path from `nodes` + tree≡log-fold equivalence test; core benchmark re-run + recorded numbers | bench report committed; overhead within gate |
-| **7** | The evaluator stack, Rust side: `liasse-expr` `eval-wire` feature (serde derives, hoist + residual audit, postcard wire, **subtree read-set extraction — transitive over carried computeds, §7.3**); **`liasse-pred`** crate (`RowPrograms` with the three faces incl. the `CandidateSubtree` argument and deep-candidate build, descriptor with read-set, shared computed fold, composed coverage admit, `EVAL_ABI`, round-trip proptests); `sort_enc` in the codec (+ the memcmp≡tuple-cmp proptest); `liasse-store` `ViewProgram`/`CandidateSubtree`/`ViewSource`/`EvaluatedRow` + `StoreError::Eval` + the corruption-classed depth-guard error + `MAX_SUBTREE_DEPTH` + `scan_view` + MemoryStore impl (scan + descent + per-candidate depth-guarded live subtree build); runtime lowering (source classification, hoist, audit, read-set) + head-frontier reads of §10.5 coverage AND lowerable `$view`s served via `scan_view` on **both** stores (MemoryStore evaluates in Rust — behavior identical, architecture in place); pushdown report + strict mode + corpus cases for the report, the depth-guard bail, and the layer-1 parity corpus incl. the mandate-6 subtree cases (corpus first, per AGENTS.md). **Prerequisite tracked separately: the §16 removal workstream (mandate 6a) — this phase's lowering assumes built-in-only namespaces** | parity green; lowering-parity suite green (views + coverage + subtree programs); wire + sort_enc proptests green; corpus report/guard cases red→green |
+| **7** | The evaluator stack, Rust side: `liasse-expr` `eval-wire` feature (serde derives, hoist + residual audit, postcard wire, **subtree read-set extraction — transitive over carried computeds, §7.3**); **`liasse-pred`** crate (`RowPrograms` with the three faces incl. the `CandidateSubtree` argument and deep-candidate build, descriptor with read-set, shared computed fold, composed coverage admit, `EVAL_ABI`, round-trip proptests); `sort_enc` in the codec (+ the memcmp≡tuple-cmp proptest); `liasse-store` `ViewProgram`/`CandidateSubtree`/`ViewSource`/`EvaluatedRow` + `StoreError::Eval` + the corruption-classed depth-guard error + `MAX_SUBTREE_DEPTH` + `scan_view` + MemoryStore impl (scan + descent + per-candidate depth-guarded live subtree build); runtime lowering (source classification, hoist, audit, read-set) + head-frontier reads of §10.5 coverage AND lowerable `$view`s served via `scan_view` on **both** stores (MemoryStore evaluates in Rust — behavior identical, architecture in place); pushdown report + strict mode + corpus cases for the report, the depth-guard bail, and the layer-1 parity corpus incl. the mandate-6 subtree cases (corpus first, per AGENTS.md). **Prerequisite folded in (mandate 7 — the v5 §16-removal workstream is CANCELLED, §16 stays): the mutation-only load rule lands with or before this phase — `HostOrigin` on `HostOp` + the collapsed `HostPosition` (`DbRead(kind)`/`Default`/`Mutation`, §7.5) + the `check_host_call` origin conjunct (liasse-expr), position wiring at every site (liasse-model `check_tree`, liasse-runtime `compiled.rs`/`recursion.rs` — incl. `$check`/`$normalize`/`$verify` moving to `DbRead`), the §16.5/§11.3/§16.3/§8.8 SPEC amendments, and the mandate-7 static corpus incl. the §9 carrier-case recasts (auth-mutation re-model) — so this phase's lowering, and every admission validation program, receives built-in-only expressions by construction** | parity green; lowering-parity suite green (views + coverage + subtree programs); wire + sort_enc proptests green; corpus report/guard cases red→green; mandate-7 static cases red→green |
 | **8** | The extension + image: **`liasse-pg-codec`** split out of `liasse-pg` (`value_codec`, `jsonb_text`, `key_enc*`, `sort_enc` + their test files; mechanical, liasse-pg re-exports); **`liasse-pg-ext`** pgrx cdylib (the five-argument `liasse.eval` + `liasse.eval_bool` + `liasse.eval_sort` incl. subtree decode, `liasse.guard_depth`, `liasse.abi_version`, decode cache, lint carve-out §12.1); the two-stage Dockerfile + image build (§12.2, from the §7.8 template); test-harness container path + `LIASSE_PG_IMAGE` (§12.4); CI image job | extension unit tests (`cargo pgrx test`) green; image builds in CI; harness boots it; abi handshake round-trips |
 | **9** | PgStore `scan_view` → the §7.6 SQL (flat statement + coverage CTE + the subtree-prefetch lateral with `liasse.guard_depth` in every recursive term) calling the three faces; reconcile extension step + ABI handshake + refusal gates (§7.7) incl. the cycle/depth bail gate; fallback wiring (non-head frontier, hoist-eval error, `StoreError::Eval`, scope-deferred views); gates (11)(12)(13) + §9 adversarial corpus (incl. the mandate-6 subtree cases) over the extension path; coverage + per-row-face + subtree-prefetch bench axes | gates (11)(12)(13) green; 0-divergence on the adversarial corpus; refusal + bail gates green; pruned-tree + face-cost + subtree-lateral benches recorded |
 | **10** | §12 adoption: watch/window advance over pushed views (`scan_view` at head → `ViewResult` → diff, §8); per-(view, args, scope, frontier) query sharing beside the Phase-4 hydration sharing; sort-tuple column wiring for windowed subscriptions; **the pushed-read benchmark axes — the whole point: pushed `scan_view` vs hydrate-then-evaluate, watch-advance end to end** | watch/window suites green on both paths; §8 sharing observable in tests (one query per tuple per frontier); pushdown bench report committed |
@@ -1808,12 +2205,17 @@ pure infrastructure with their own unit gates, then PgStore switches its evaluat
 read onto the extension — making any Phase-9 divergence attributable to transport
 (wire/jsonb/sort_enc/SQL), never to evaluation semantics — and only then does the
 §12 loop consume the pushed path, so a watch regression is attributable to the §8
-wiring, never to the read itself. One dependency lives outside this table: the
-**§16 removal workstream** (mandate 6a — delete the registration API and
-`$requires` resolution, rewrite SPEC.md §16 to the fixed built-in set) must
-land before or alongside Phase 7, because the lowering audit assumes
-built-in-only namespaces; it is a clean break with no migration path (zero
-deployments) and is deliberately NOT designed in this document.
+wiring, never to the read itself. The one dependency that formerly lived
+outside this table — v5's §16 removal workstream — is **cancelled by
+mandate 7**: §16, the registration API, and `$requires` all stay. Its
+replacement, the mutation-only load rule (§7.5), is small enough to live
+INSIDE Phase 7 (checker enum + origin field + one conjunct + position
+wiring + static corpus + the SPEC.md §16.5/§11.3/§16.3/§8.8 amendments) and
+must land with or before that phase's lowering, which assumes checked
+DB-run programs are built-in-only. The §11 auth re-model (custom
+verification as auth mutations) rides the same workstream: it is a SPEC +
+corpus change, not an engine one — the §11.5 login-mutation machinery
+already exists.
 
 ## 11. Risks and judgment calls
 
@@ -1920,23 +2322,68 @@ deployments) and is deliberately NOT designed in this document.
   (§7.3), not two calls: interpreter short-circuit reproduces the two-step
   `included()` order and fault surface exactly; one face call per worktable row
   instead of two.
-- **Policy, uniform (v5, §7.5)**: with mandate 6 nothing is left to
-  load-reject — coverage predicates and general `$view` programs are equally
-  pushable, so the v4 split (coverage load-time rejection + opt-in vs view
-  fallback) collapses to ONE rule: automatic per-view interpreter fallback
-  only for scope-deferred forms and dynamic routes, never silent (pushdown
-  report), with strict mode promoting any reported residual to a load error.
-  The v4 §10.5 SPEC note is **withdrawn** (no restriction remains to trace);
-  the report/strict knob stays engine configuration, not SPEC surface.
-  Mandate-3 exposure narrows to "a scope-deferred form inside a coverage
-  predicate" (practically: a candidate-addressed engine accessor) — reported,
-  strict-refusable, with a designed upgrade seam.
-- **§16 app-registered host namespaces: removed, clean break (mandate 6a)** —
-  no deprecation window, no compatibility path, zero deployments. This design
-  *assumes* built-in-only namespaces and bundles them into the extension; the
-  actual removal (registration API, `$requires`, SPEC.md §16 rewrite) is a
-  separate prerequisite workstream (§10). The v4
-  app-namespaces-linked-into-a-downstream-image seam is void with the class.
+- **Policy, uniform at lowering (v5+v6, §7.5)**: nothing is left for the
+  LOWERING to reject — coverage predicates and general `$view` programs are
+  equally pushable, so the v4 split (coverage load-time rejection + opt-in
+  vs view fallback) stays collapsed to ONE rule: automatic per-view
+  interpreter fallback only for scope-deferred forms and dynamic routes,
+  never silent (pushdown report), with strict mode promoting any reported
+  residual to a load error. The one load-time rejection that exists is the
+  CHECKER's mandate-7 rule (a §16.5 language error, uniform over every
+  non-mutation-body position — not an engine pushdown policy); the v4 §10.5
+  SPEC note stays withdrawn, and the report/strict knob stays engine
+  configuration, not SPEC surface. Mandate-3 exposure narrows to "a
+  scope-deferred form inside a coverage predicate" (practically: a
+  candidate-addressed engine accessor) — reported, strict-refusable, with a
+  designed upgrade seam.
+- **§16 app-registered host namespaces: KEPT; position narrowed to the
+  mutation body (mandate 7, superseding v5's removal)** — registration API,
+  `$requires`, descriptors, §11 verifier namespaces, §17 cose, §20 codecs
+  all stay; the v5 removal workstream is cancelled. The extension bundles
+  only built-ins and never needs an app namespace because no DB-run program
+  can contain one (load-checked). The v4
+  app-namespaces-linked-into-a-downstream-image seam stays void — not
+  because the class is gone, but because it can never reach the extension.
+- **Mandate-7 judgment calls and flags (maintainer review):**
+  - **Field defaults**: classified DB-run for namespace calls per the
+    binding operationalization ("the only framework-run row is the mutation
+    body"), so an app *generated/provider* call in a `$default` is now a
+    load error and moves into the creating mutation's body
+    (`generated-default-fixed-and-recorded` recast, §9). FLAGGED: the
+    correction's *rationale* (transactionality) would equally cover a
+    default, since defaults evaluate inside the admitted transaction —
+    confirm the strict body-only reading. Language `uuid()`/`now()` in
+    defaults are unaffected (language functions, not namespaces).
+  - **Migration `$up`/`$down` vs `$as`/`$back`**: delta programs are
+    classified framework-run (they are programs of mutation statements run
+    as one atomic transaction, §20.1 — and §20.1's own pure+deterministic
+    constraint still limits them to *pure* app codecs); the per-field
+    `$as`/`$back` transforms are declaration-level, hence DB-run — an app
+    codec conversion is written in the delta program instead. Judged, not
+    explicitly stated by the correction.
+  - **Surface `$mut` receiver references** (`.projects[@project].rename`):
+    the selector outside the named mutation's body is DB-run (a
+    read/selection); selectors INSIDE body statements are body. The
+    boundary is the program array, exactly the parser's own boundary.
+    Judged.
+  - **Admission execution model**: `$check`/`$normalize`/`$verify` are
+    built-in-only (classification) but v1 keeps interpreter execution over
+    the staged overlay inside the admission transaction — Phases 0–6
+    untouched; the in-txn PG admission seam is unlocked by construction and
+    recorded, not built (§7.5 mechanism block). FLAGGED: if "should also be
+    in db" mandates in-PG *execution* of admission validation, §5.4 case 3
+    and the §6 write path re-open — a separate phased decision.
+  - **Per-request app-verifier authenticators are gone by design** (the
+    §11.3 `api_key` shape): re-modeled as token exchange through an auth
+    mutation, or native hash comparison (`sha.sha256`) in `$verify`. The
+    §8.12/§16.3 recording semantics actually *improve*: a verifier result
+    that matters durably now always lives in a transaction that records it.
+  - **Diagnostic ordering**: effect-class violation reports before the
+    origin/position violation in `check_host_call`, so the existing
+    effect-class corpus diagnostics stay pinned (§7.5, §9).
+  - **Candidate-free app calls in DB-run positions are errors too** (no
+    hoisting exemption, §7.5): legality never depends on the compiler's
+    hoist analysis; the corpus carrier cases this flips are listed in §9.
 - **Candidate-subtree reads: prefetch lateral (option (a)) over SPI (option
   (b))** (§7.6): (a) keeps the faces `IMMUTABLE` and every per-candidate probe
   plan-visible and EXPLAIN-gateable; (b) hides per-row table access from the
