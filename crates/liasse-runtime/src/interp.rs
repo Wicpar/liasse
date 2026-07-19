@@ -359,11 +359,31 @@ impl<'a> Interp<'a> {
         if let Some(loc) = self.collection_ref(target, source)? {
             return self.replace_collection(&loc, value, source);
         }
-        let Some((row, field)) = self.field_target(target, source)? else {
+        // §8.6/§6.3: `.receiver.field = value` writes the field on every selected
+        // row. A multi-operand keyed / bound selector writes each concatenated row
+        // (an absent key contributes none); a single keyed selector or the receiver
+        // writes exactly one row (a missing target rejects at apply time, §8.9).
+        let ExprKind::Field { base: field_base, member } = &target.kind else {
             // A target that is neither a row field nor a collection stages nothing
             // (a documented seam).
             return Ok(());
         };
+        let Some(plan) = self.plan_rows(field_base, source)? else {
+            // A base that is not a row source (a local binding, a scalar) stages
+            // nothing (a documented seam).
+            return Ok(());
+        };
+        let field = member.text.clone();
+        let rows: Vec<RowTarget> = match plan {
+            PatchPlan::Single(row) => vec![row],
+            PatchPlan::Many(rows) => rows,
+        };
+        // §8.9: a bulk field write selecting no rows stages nothing.
+        let Some(first) = rows.first() else {
+            return Ok(());
+        };
+        let path = first.path.clone();
+        let where_path = format!("{}/{}", first.address.render(), field);
         let current = self.current()?;
         let typed = check_expression(&self.scope(), source, value)
             .map_err(|_| Rejection::new(RejectionReason::Malformed, "the assigned value did not type-check"))?;
@@ -371,12 +391,12 @@ impl<'a> Interp<'a> {
             Cell::Scalar(value) => value,
             _ => return Err(Rejection::new(RejectionReason::TypeError, "a field is assigned a scalar value")),
         };
-        let collection = self.collection_at(&row.path)?;
+        let collection = self.collection_at(&path)?;
         // An enum field takes a declared label (§5.9): coerce a `text` value to a
         // positioned enum value, rejecting an undeclared label. Non-enum fields
-        // keep the ordinary static assignability check.
+        // keep the ordinary static assignability check. The field type is shared by
+        // every selected row, so coerce/validate once, then write each row (§8.6).
         let scalar = if let Some(field_meta) = collection.field(&field) {
-            let where_path = format!("{}/{}", row.address.render(), field);
             if crate::rules::is_enum_field(&field_meta.ty) {
                 crate::rules::coerce_value(&field_meta.ty, &scalar, &field, &where_path)?
             } else {
@@ -394,7 +414,10 @@ impl<'a> Interp<'a> {
         } else {
             scalar
         };
-        self.write_field(&row, &field, scalar)
+        for row in &rows {
+            self.write_field(row, &field, scalar.clone())?;
+        }
+        Ok(())
     }
 
     /// When `target` is a bare root member (`.field`) that names a durable
@@ -1531,11 +1554,23 @@ impl<'a> Interp<'a> {
         for (row, patch) in planned.plan.patches() {
             let Some(address) = planned.addresses.get(row) else { continue };
             let Some(mut fields) = self.prospective.get(address).cloned() else { continue };
-            for (field, value) in patch {
-                fields.insert(field.clone(), value.clone());
-            }
             let decl = std::slice::from_ref(&row.collection);
             let collection = self.collection_at(decl)?;
+            for (field, value) in patch {
+                // §5.6/§21.1/§22.1: an `$on_delete = { ref: key }` patch assigns a
+                // reference field its target's application key; coerce it to the
+                // `Value::Ref` carrier every other ref write produces (the same
+                // `refid::ref_of` construction the `$set`-of-`$ref` operand path
+                // uses), so the finalize reference-validity pass (`check_refs`)
+                // rejects a patch that repoints a ref at a non-existent target
+                // rather than committing a dangling ref. A `none` (optional clear)
+                // and a non-ref field pass through unchanged.
+                let coerced = match collection.field(field).and_then(|f| f.reference.as_ref()) {
+                    Some(info) => self.ref_member(&info.target, value.clone())?,
+                    None => value.clone(),
+                };
+                fields.insert(field.clone(), coerced);
+            }
             for field in patch.keys() {
                 rules::normalize_field(collection, field, &mut fields, self.ctx, self.prospective)?;
             }
@@ -1583,39 +1618,66 @@ impl<'a> Interp<'a> {
         }
     }
 
-    /// Resolve a patch base to the row(s) it targets: the receiver or a keyed
-    /// selector names exactly one row (§8.9, a missing one rejects); a bound
-    /// filtered selector `.coll[:x | pred]` names its whole matching set (§8.9
-    /// bulk patch), possibly empty.
+    /// Resolve a patch base to the row(s) it targets, rejecting a base that is
+    /// not a row source (§8.9: a patch needs one).
     fn patch_plan(&self, base: &Expr, source: SourceId) -> Result<PatchPlan, Rejection> {
-        if let ExprKind::Select { base: inner, selector: Selector::Bind { .. } } = &base.kind {
-            let Some(loc) = self.collection_ref(inner, source)? else {
-                return Err(Rejection::new(RejectionReason::Malformed, "a patch needs a row source"));
+        self.plan_rows(base, source)?
+            .ok_or_else(|| Rejection::new(RejectionReason::Malformed, "a patch needs a row source"))
+    }
+
+    /// Resolve a patch or field-write base to the row(s) it targets (§6.3/§8.6),
+    /// or `None` when the base is not a row source (a local binding, a scalar,
+    /// an unsupported target).
+    ///
+    /// A bound filter `.coll[:x | pred]` or a MULTI-operand / set keyed selector
+    /// is a bulk row source: it targets EVERY selected row, its operands'
+    /// selected rows concatenated in operand order (§6.3), an absent scalar key
+    /// contributing zero rows (§8.9) and repeated incarnations deduplicated
+    /// before one statement applies (§6.3). A single scalar/composite key or the
+    /// receiver names exactly one row — a missing target rejects at apply time
+    /// (§8.9). This mirrors the multi-operand DELETE path (`exec_delete`), which
+    /// already iterates the whole operand set.
+    fn plan_rows(&self, base: &Expr, source: SourceId) -> Result<Option<PatchPlan>, Rejection> {
+        if let ExprKind::Select { base: inner, selector } = &base.kind {
+            let bulk = match selector {
+                Selector::Bind { .. } => true,
+                // §6.3: comma-separated operands are independent key sources whose
+                // selected rows concatenate — a keyed patch/write over more than
+                // one operand is a bulk write over the whole selected set, exactly
+                // as the static checker types it `View` (a lone scalar/composite
+                // key stays the one-row receiver typed `Row`, §8.9).
+                Selector::Keys(keys) => keys.len() != 1,
             };
-            let current = self.current()?;
-            let keys: Vec<Value> = match self.eval_value(base, source, &current)? {
-                Cell::Collection(rows) => rows.iter().map(|row| row.key().clone()).collect(),
-                Cell::Row(row) => vec![row.key().clone()],
-                Cell::Scalar(_) => Vec::new(),
-            };
-            let targets = keys
-                .into_iter()
-                .map(|key| RowTarget {
+            if bulk {
+                let Some(loc) = self.collection_ref(inner, source)? else {
+                    return Ok(None);
+                };
+                let current = self.current()?;
+                let keys: Vec<Value> = match self.eval_value(base, source, &current)? {
+                    Cell::Collection(rows) => rows.iter().map(|row| row.key().clone()).collect(),
+                    Cell::Row(row) => vec![row.key().clone()],
+                    Cell::Scalar(_) => Vec::new(),
+                };
+                let mut targets = Vec::with_capacity(keys.len());
+                let mut seen = BTreeSet::new();
+                for key in keys {
                     // §5.4/§8.9: `key` is a row's application-visible identity, a
                     // positional `Value::Composite` for a composite key; route it
-                    // through `key_value_of` so a bulk patch over a composite-keyed
+                    // through `key_value_of` so a bulk write over a composite-keyed
                     // collection addresses the stored N-component row rather than a
                     // never-matching one-component `KeyValue::single`.
-                    address: loc.store_path.row(materialize::key_value_of(&key)),
-                    path: loc.decl.clone(),
-                })
-                .collect();
-            return Ok(PatchPlan::Many(targets));
+                    let address = loc.store_path.row(materialize::key_value_of(&key));
+                    // §6.3: deduplicate selected rows by incarnation before one
+                    // statement applies (an operand may alias another's row),
+                    // preserving first-occurrence order.
+                    if seen.insert(address.clone()) {
+                        targets.push(RowTarget { address, path: loc.decl.clone() });
+                    }
+                }
+                return Ok(Some(PatchPlan::Many(targets)));
+            }
         }
-        let row = self
-            .row_target(base, source)?
-            .ok_or_else(|| Rejection::new(RejectionReason::Malformed, "a patch needs a row source"))?;
-        Ok(PatchPlan::Single(row))
+        Ok(self.row_target(base, source)?.map(PatchPlan::Single))
     }
 
     /// Apply one patch to `row` whose current fields are `original` (§8.6): every
