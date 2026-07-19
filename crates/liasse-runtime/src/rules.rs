@@ -557,7 +557,13 @@ fn check_row(
     if collection.row_checks.is_empty() {
         return Ok(());
     }
-    let current = row_cell(collection, fields);
+    // §5.2 (SPEC.md:402): a computed value "participates in views, checks, sorting,
+    // and projections like any other value." The prospective row a row `$check` reads
+    // must therefore expose EVERY member kind — plain fields and static structs
+    // (`row_cell`) AND computed values, folded in dependency order (`row_cell_of`) —
+    // so a `$check` reading `.label` (a computed) enforces instead of faulting on a
+    // missing field (the F-N2 seam: F3 exposed structs but not computed values).
+    let current = ctx.row_cell_of(prospective, collection, fields);
     for check in &collection.row_checks {
         if !passes(ctx.eval(prospective, &check.condition, &current)?) {
             return Err(Rejection::new(RejectionReason::Check, check.message.clone())
@@ -586,7 +592,12 @@ fn check_structs(
     if collection.structs.is_empty() {
         return Ok(());
     }
-    let row = row_cell(collection, fields);
+    // The containing row supplied as a struct check's `^` frame (§6.2) must be the
+    // COMPLETE prospective row — fields, sibling static structs, and computed values
+    // (§5.2) — so a struct `$check` reading `^.<computed>` resolves like any other
+    // ancestor member instead of faulting (F-N2: `row_cell_of` folds the computed
+    // values `row_cell` alone omits).
+    let row = ctx.row_cell_of(prospective, collection, fields);
     for structure in &collection.structs {
         if let Some(value) = fields.get(&structure.name) {
             check_struct(structure, value, std::slice::from_ref(&row), address, ctx, prospective)?;

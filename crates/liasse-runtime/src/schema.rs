@@ -65,6 +65,43 @@ impl<'m> Schema<'m> {
         ExprType::Row(self.collection_row(collection, 0))
     }
 
+    /// The lexical context chain (§6.2) at declaration-name `path`: the package root
+    /// followed by the receiver `.` row type at each successive prefix, descending
+    /// collections (§5.4) and static structs (§5.3) directly from their shapes.
+    /// Unlike walking [`Self::receiver_row_type`] per prefix — which folds a
+    /// self-referential collection's field to opaque `json` past `MAX_DEPTH` and then
+    /// resolves to `None`, silently truncating the chain at a deep self-ref level
+    /// (§5.8) so a deeply-nested struct's own row is lost and `.`/`^` misalign — this
+    /// resolves every prefix from its own shape. A self-ref row shares one shape at
+    /// every depth, so the chain is complete and correctly aligned at every depth. The
+    /// `path` is finite, so the descent terminates; each level's own nested self-ref
+    /// expansion stays `MAX_DEPTH`-bounded (`collection_row_type`/`shape_row`). The
+    /// struct compile builds its scope from this, so a struct-nested computed/`$check`
+    /// sees its OWN members (`.tag`) and its `^` ancestors at every self-ref depth
+    /// (§5.2/§5.3/§5.10).
+    pub(crate) fn context_chain(&self, path: &[String]) -> Vec<ExprType> {
+        let mut chain = vec![ExprType::Row(self.root_row_type())];
+        let mut shape: &Shape = self.model.root();
+        for segment in path {
+            let Some(member) = shape.member(segment) else { break };
+            match self.resolved_node(&member.node) {
+                Node::Collection(collection) => {
+                    chain.push(self.collection_row_type(collection));
+                    shape = &collection.shape;
+                }
+                Node::Struct(struct_shape) => {
+                    chain.push(ExprType::Row(self.shape_row(struct_shape, None, 0)));
+                    shape = struct_shape;
+                }
+                // A scalar/set/ref/view segment carries no descendable shape beneath
+                // it; stop rather than misalign the chain (never reached for a valid
+                // struct declaration path, whose every prefix is a collection/struct).
+                _ => break,
+            }
+        }
+        chain
+    }
+
     /// The top-level collection declared under `name`, if any. A member naming a
     /// keyed `$types` shape (`companies: "company"`, §5.8) resolves to that shape's
     /// collection, so a top-level named collection is a first-class collection.

@@ -672,17 +672,19 @@ fn compile_collection(
     depth: u32,
 ) -> Result<CompiledCollection, EngineError> {
     let name = path.last().map_or("", String::as_str);
-    // §5.8: at a deep self-referential compiled depth `receiver_row_type` resolves
-    // to `None` — it walks the depth-capped root row type, whose self-ref field
-    // truncates to `json` past the resolver's `MAX_DEPTH`, which does not line up
-    // with `MAX_SELF_REF_DEPTH`. Falling back to an EMPTY row there made every
-    // field-referencing computed value / `$check` (`= .name`, `size(.name) > 0`)
-    // fail to compile and rejected the whole load. Fall back to the collection's
-    // OWN row shape instead, which is identical at every self-ref depth, so the
-    // computed/check sees `.name` and compiles at every level (§5.2/§5.10).
-    let row_ty = schema
-        .receiver_row_type(path)
-        .unwrap_or_else(|| schema.collection_row_type(collection));
+    // §5.8: the collection's `.` row type is its OWN row shape, which is identical at
+    // every self-referential compiled depth — so build it directly from the collection
+    // shape (`collection_row_type`) rather than by walking the depth-capped root row
+    // type (`receiver_row_type`). The latter truncates at a deep self-ref level: past
+    // the type resolver's `MAX_DEPTH` (which does not line up with `MAX_SELF_REF_DEPTH`)
+    // it folds not just the self-ref field but EVERY member — a static struct `.meta`
+    // included — to opaque `json`, and at the very deepest levels resolves to `None`.
+    // A `$check`/computed reading a plain field (`= .name`), a struct member
+    // (`.meta.tag`), or any other member then fails to compile at those depths and
+    // rejects the whole load. The own-shape build is complete at every depth (its own
+    // nested self-ref expansion stays `MAX_DEPTH`-bounded, so it terminates), so the
+    // row check/computed compiles identically at every level (§5.2/§5.3/§5.10).
+    let row_ty = schema.collection_row_type(collection);
     let row_scope = RuntimeScope::new(row_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
 
     let mut fields = Vec::new();
@@ -817,8 +819,13 @@ fn compile_struct(
 ) -> Result<CompiledStruct, EngineError> {
     // §6.2: the lexical context chain — the package root, then each ancestor row
     // down to this struct — mirrors the model's tree checker, so a computed value
-    // resolves `^` to its containing row exactly as the model validated it.
-    let contexts = struct_contexts(schema, path);
+    // resolves `^` to its containing row exactly as the model validated it. Built by
+    // descending the declaration path from shapes (`Schema::context_chain`) so a
+    // struct inside a self-referential collection (§5.8) keeps its OWN row — with its
+    // own members (`.tag`) — and its `^` ancestors at every compiled self-ref depth,
+    // instead of being truncated to a shallow ancestor by the type resolver's depth
+    // cap (the F-N1 seam: the F1 fallback applied to the collection row only).
+    let contexts = schema.context_chain(path);
     let row_ty = contexts.last().cloned().unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
     let row_scope = RuntimeScope::nested(contexts, root_ty.clone()).with_host_ops(hosts.clone());
     let mut fields = Vec::new();
@@ -851,17 +858,6 @@ fn compile_struct(
     }
     let row_checks = compile_checks(sources, &row_scope, "struct-check", &shape.checks)?;
     Ok(CompiledStruct { name: name.to_owned(), fields, computed, row_checks, structs })
-}
-
-/// The lexical context chain of a static struct at declaration-name `path`
-/// (§6.2): the package root followed by each ancestor row down to the struct
-/// itself, folding each collection to its single-row type. Mirrors the model's
-/// tree checker (`ModelScope::nested`) so a struct-nested computed value's `^`
-/// resolves to the same containing-row type the model validated against.
-fn struct_contexts(schema: Schema<'_>, path: &[String]) -> Vec<ExprType> {
-    (0..=path.len())
-        .filter_map(|depth| path.get(..depth).and_then(|prefix| schema.receiver_row_type(prefix)))
-        .collect()
 }
 
 /// Compile one writable field (scalar, reference, or set) of a row or struct
