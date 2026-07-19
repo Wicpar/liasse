@@ -21,6 +21,11 @@
     outcome `invalid` maps to the open-time validation diagnostic.
     This differs from pinned-descriptor-drift-fails-reopen: there the
     namespace is present but incompatible; here it is absent (unavailable).
+    (Recast per §16.5: the `util.double` carrier moved out of a
+    database-evaluated `$view` into the mutation body — its one legal
+    position — so the removal-at-reopen mechanic under test is
+    position-independent; the mutation `add` exercises the live descriptor
+    before it is stripped.)
   '''
 
   package: {
@@ -30,13 +35,23 @@
       util: "test.util@1"
     }
     $model: {
-      n: "int = 0"
-      doubled: { $view: "util.double(.n)" }
+      nums: {
+        $key: "id"
+        id: "text"
+        n: "int"
+        doubled: "int = 0"
+      }
+      $mut: {
+        add: [
+          "d = util.double(@n)"
+          "row = .nums + { id: @id, n: @n, doubled: d }"
+          "return row { id, doubled }"
+        ]
+      }
       $public: {
-        stats: { $view: ".doubled" }
+        nums: { $view: ".nums { id, n, doubled }", $mut: { add: ".add" } }
       }
     }
-    $data: { n: 7 }
   }
 
   hosts: {
@@ -54,8 +69,8 @@
 
   steps: [
     // application is genuinely live before the dependency is stripped
-    { watch: "public.stats", id: "w1", expect_init: { value: "14" } }
-    { unwatch: "w1" }
+    { call: "public.nums.add", args: { id: "r1", n: "7" },
+      expect: { outcome: ok, value: { id: "r1", doubled: "14" } } }
     // reopen the durable store against a context missing the required namespace
     { reopen: { hosts: { namespaces: [] } }
       expect: {

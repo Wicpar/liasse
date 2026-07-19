@@ -1,13 +1,13 @@
 //! Typing of selectors, `::` traversal, calls (aggregates, built-ins, `now`,
 //! `uuid`), and object literals (§6.3, §6.4, §6.5, §7.5).
 
-use liasse_diag::Span;
+use liasse_diag::{Diagnostic, Span};
 use liasse_syntax::{Arg, BlockMember, BlockMemberKind, Expr, ExprKind, Selector};
 use liasse_value::{StructType, Type};
 
 use crate::check::Checker;
 use crate::env::CallSite;
-use crate::host::HostOp;
+use crate::host::{HostOp, HostPosition};
 use crate::ty::ExprType;
 use crate::typed::{AggFunc, BuiltinFn, TypedExpr, TypedKind, TypedSelector};
 
@@ -288,8 +288,10 @@ impl Checker<'_> {
         }
     }
 
-    /// Type-check a resolved host-namespace call against its pinned signature and
-    /// the current position's effect policy (§16.2/§16.3, §8.8).
+    /// Type-check a resolved host-namespace call against its pinned signature, the
+    /// current position's effect policy (§16.2/§16.3, §8.8), and the §16.5
+    /// execution-context rule (a `$requires`-registered namespace is legal only in
+    /// a mutation program).
     fn check_host_call(
         &mut self,
         expr: &Expr,
@@ -298,10 +300,12 @@ impl Checker<'_> {
         args: &[Arg],
         op: &HostOp,
     ) -> Option<TypedExpr> {
-        // §16.3/§8.8: only an effect class the position admits may run here — a
-        // generated or verifier function in a view/check is rejected at load.
         let position = self.scope.host_position();
-        if !position.permits(op.effect()) {
+        // §16.3/§8.8: the effect-class check runs FIRST — a generated or verifier
+        // function in a database-evaluated position is the stronger, position-wide
+        // violation, and its diagnostic is corpus-pinned. Only an otherwise
+        // admissible *pure* app call then reaches the §16.5 origin check below.
+        if !position.permits_effect(op.effect()) {
             return self.error(
                 expr,
                 format!(
@@ -310,6 +314,13 @@ impl Checker<'_> {
                     position.describe(),
                 ),
             );
+        }
+        // §16.5: a call to a `$requires`-registered namespace is legal only inside
+        // a mutation program body; every other expression position is
+        // database-evaluated and restricted to the built-in namespaces (§6.5).
+        if !position.permits_origin(op.origin()) {
+            self.report_host_origin(expr, namespace, position);
+            return None;
         }
         // §16.2: the argument count and each argument's type must match the
         // pinned signature — a mismatch is a static type error, not a runtime one.
@@ -358,6 +369,34 @@ impl Checker<'_> {
                 args: typed,
             },
         ))
+    }
+
+    /// Emit the §16.5 rejection for an app-registered namespace call in a
+    /// database-evaluated position (a view/filter/projection/sort, a coverage
+    /// predicate, a computed value, a `$check`/`$normalize`, an auth `$verify`, a
+    /// field default, a bucket/meter/placement/migration expression). The
+    /// diagnostic names the namespace, cites §16.5, lists the built-ins the
+    /// position does admit, and points the author at the mutation body.
+    fn report_host_origin(&mut self, expr: &Expr, namespace: &str, position: HostPosition) {
+        self.diags.push(
+            Diagnostic::error(format!(
+                "app-registered namespace `{namespace}` cannot be called in {} — only a \
+                 mutation program may call a `$requires` namespace (§16.5)",
+                position.describe(),
+            ))
+            .code("E-EXPR")
+            .primary(Span::new(self.source, expr.span), "app-registered namespace call")
+            .help(
+                "every position outside a mutation body is database-evaluated and admits only \
+                 the built-in namespaces (§6.5: string, time, convert, hex, base64, sha)",
+            )
+            .help(
+                "run an application procedure inside a mutation: compute the value in a mutation \
+                 statement and store it, then read the stored field here; for credential \
+                 verification, use an auth mutation that mints a native token (§11.5)",
+            )
+            .build(),
+        );
     }
 
     /// Type-check `size` (§7). `size` counts the elements of a `text`, a `set`, a

@@ -1,0 +1,79 @@
+{
+  format: 1
+  name: app-function-in-coverage-where-rejected
+  suite: static
+  spec: ["#host-namespaces", "§16.5", "#interfaces", "§10.5"]
+  note: '''
+    §16.5: a `$recursive` `$where`/`$except` coverage predicate (§10.5) is
+    database-evaluated, so an app-registered namespace call in it is a
+    load-time error. The re-walk of a coverage predicate happens inside a
+    conforming engine, which hosts only the built-in surface. The pure
+    `double` isolates §16.5 (namespace origin) from the §16.3 effect-class
+    rule.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.appcoverage@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+      }
+      companies: {
+        $key: "id"
+        id: "text"
+        n: "int"
+        subcompanies: { $like: "^" }
+        members: {
+          $key: "account"
+          account: { $ref: "/accounts" }
+        }
+        $roles: {
+          viewer: {
+            $auth: "token"
+            $members: ".members.account"
+            tree: {
+              $view: ". { id, n }"
+              $recursive: {
+                $field: "subcompanies"
+                $through: ".subcompanies"
+                $bind: "child"
+                $where: "util.double(child.n) > 0"
+              }
+            }
+          }
+        }
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
+        }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "§16.5", "#interfaces"]
+    detail: "an app-registered namespace call in a database-evaluated `$recursive` `$where` coverage predicate is a load-time error (§16.5)"
+  }
+}

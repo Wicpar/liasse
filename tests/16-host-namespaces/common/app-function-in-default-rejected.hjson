@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: app-function-in-default-rejected
+  suite: static
+  spec: ["#host-namespaces", "§16.5", "#state-model", "§5.1"]
+  note: '''
+    §16.5/§5.1: a field default is database-evaluated for NAMESPACE calls, so
+    an app-registered namespace call in it is a load-time error — the
+    application-generated value moves into the creating mutation body. The
+    language generated functions `uuid()`/`now()` stay legal in a default
+    (they are language calls, not namespaces); only the `$requires` namespace
+    call is rejected here. The pure `double` isolates §16.5 (namespace origin)
+    from the §16.3 effect-class rule.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.appdefault@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      nums: {
+        $key: "id"
+        id: "text"
+        n: "int"
+        doubled: "int = util.double(.n)"
+      }
+      $public: {
+        nums: { $view: ".nums { id, n, doubled }" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "§16.5", "#state-model"]
+    detail: "an app-registered namespace call in a field default is a load-time error (§16.5); the language `uuid()`/`now()` stay legal, but a `$requires` namespace call moves into the mutation body"
+  }
+}

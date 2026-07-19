@@ -10,7 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::SourceMap;
-use liasse_expr::{check_statement, ExprType, HostPosition, Scope};
+use liasse_expr::{check_statement, DbReadPosition, ExprType, HostPosition, Scope};
 use liasse_syntax::{parse_expression, Expr, ExprKind, SpannedExpression};
 use liasse_value::Type;
 
@@ -70,7 +70,8 @@ impl TreeChecker<'_, '_> {
         for check in &shape.checks {
             let scope = ModelScope::nested(contexts.clone(), self.root.clone())
                 .with_host_ops(self.hosts.clone())
-                .with_optional_structural("config", self.config.as_ref());
+                .with_optional_structural("config", self.config.as_ref())
+                .with_host_position(HostPosition::DbRead(DbReadPosition::Check));
             self.check_bool(&scope, check, "a row/struct `$check` must be a `bool` condition");
         }
         for member in &shape.members {
@@ -106,23 +107,34 @@ impl TreeChecker<'_, '_> {
             .with_optional_structural("config", self.config.as_ref());
 
         if let Some(default) = &field.default {
-            // §8.8/§16.3: a field default is a write position, so a generated host
-            // function may run in it (unlike a computed value or a `$check`).
-            let default_scope = row_scope.clone().with_host_position(HostPosition::Write);
+            // §5.1/§8.8/§16.5: a field default is built-in-only for NAMESPACE calls
+            // (an app-registered namespace call moves into the mutation body), but
+            // the language generated functions `now()`/`uuid()` stay legal here —
+            // they are language calls that never reach the host-call checker.
+            let default_scope = row_scope.clone().with_host_position(HostPosition::Default);
             if let Some(typed) = self.check_value(&default_scope, default) {
                 self.expect_assignable(&typed, &field.ty, default);
             }
         }
         if let Some(computed) = &field.computed {
-            self.check_pure_value(&row_scope, computed);
+            // §5.2/§16.5: a computed value is database-evaluated, built-in-only.
+            let computed_scope =
+                row_scope.clone().with_host_position(HostPosition::DbRead(DbReadPosition::Computed));
+            self.check_pure_value(&computed_scope, computed);
         }
-        if let Some(normalize) = &field.normalize
-            && let Some(typed) = self.check_pure_value(&value_scope, normalize)
-        {
-            self.expect_assignable(&typed, &field.ty, normalize);
+        if let Some(normalize) = &field.normalize {
+            // §8.8/§16.5: `$normalize` is database-evaluated, built-in-only.
+            let normalize_scope =
+                value_scope.clone().with_host_position(HostPosition::DbRead(DbReadPosition::Normalize));
+            if let Some(typed) = self.check_pure_value(&normalize_scope, normalize) {
+                self.expect_assignable(&typed, &field.ty, normalize);
+            }
         }
         for check in &field.checks {
-            self.check_bool(&value_scope, check, "a field `$check` must be a `bool` condition");
+            // §5.10/§8.8/§16.5: a `$check` is database-evaluated, built-in-only.
+            let check_scope =
+                value_scope.clone().with_host_position(HostPosition::DbRead(DbReadPosition::Check));
+            self.check_bool(&check_scope, check, "a field `$check` must be a `bool` condition");
         }
     }
 

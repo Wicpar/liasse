@@ -8,7 +8,10 @@
     compatible MAJOR ("test.util@1"). §E.8: a namespace requirement MAY move
     to a compatible minor or patch descriptor within the same namespace
     major. A context registering test.util@1.4.2 therefore satisfies the
-    requirement test.util@1 and the package loads.
+    requirement test.util@1 and the package loads. (Recast per §16.5: the
+    `util.double` carrier moved out of a database-evaluated `$view` into the
+    mutation body — its one legal position — so the version-resolution
+    mechanic under test is position-independent.)
   '''
 
   package: {
@@ -18,10 +21,21 @@
       util: "test.util@1"
     }
     $model: {
-      n: "int = 0"
-      doubled: { $view: "util.double(.n)" }
+      nums: {
+        $key: "id"
+        id: "text"
+        n: "int"
+        doubled: "int = 0"
+      }
+      $mut: {
+        add: [
+          "d = util.double(@n)"
+          "row = .nums + { id: @id, n: @n, doubled: d }"
+          "return row { id, doubled }"
+        ]
+      }
       $public: {
-        stats: { $view: ".doubled" }
+        nums: { $view: ".nums { id, n, doubled }", $mut: { add: ".add" } }
       }
     }
   }

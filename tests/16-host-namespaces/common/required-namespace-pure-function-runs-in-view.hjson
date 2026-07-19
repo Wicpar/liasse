@@ -2,14 +2,18 @@
   format: 1
   name: required-namespace-pure-function-runs-in-view
   suite: scenario
-  spec: ["#host-namespaces"]
+  spec: ["#host-namespaces", "§16.5", "§16.2", "§16.3"]
   note: '''
     §16.2: the local $requires key is the expression namespace and the value
     identifies the semantic contract and compatible major; at load time the
-    context supplies the descriptor and the install record pins it. §16.3:
-    pure functions MAY run during views. The simulated pure function `double`
-    (see NOTES.md) doubles its integer argument, so the expected view value
-    14 is deduced from this case file, not from an implementation.
+    context supplies the descriptor and the install record pins it. §16.3/
+    §16.5: a registered pure function runs inside a mutation program. The
+    simulated pure function `double` (see NOTES.md) doubles its integer
+    argument, so the mutation `add` computes `double(7) = 14`, stores it, and
+    the database-evaluated view reads the stored field — the expected value 14
+    is deduced from this case file, not from an implementation. (Recast per
+    §16.5: the pure app call moved out of the former `util.double(.n)` view
+    into the mutation body that produces the stored value.)
   '''
 
   package: {
@@ -19,13 +23,23 @@
       util: "test.util@1"
     }
     $model: {
-      n: "int = 0"
-      doubled: { $view: "util.double(.n)" }
+      nums: {
+        $key: "id"
+        id: "text"
+        n: "int"
+        doubled: "int = 0"
+      }
+      $mut: {
+        add: [
+          "d = util.double(@n)"
+          "row = .nums + { id: @id, n: @n, doubled: d }"
+          "return row { id, n, doubled }"
+        ]
+      }
       $public: {
-        stats: { $view: ".doubled" }
+        nums: { $view: ".nums { id, n, doubled }", $mut: { add: ".add" } }
       }
     }
-    $data: { n: 7 }
   }
 
   hosts: {
@@ -42,6 +56,9 @@
   }
 
   steps: [
-    { watch: "public.stats", id: "w1", expect_init: { value: "14" } }
+    { call: "public.nums.add", args: { id: "r1", n: "7" },
+      expect: { outcome: ok, value: { id: "r1", n: "7", doubled: "14" } } }
+    { watch: "public.nums", id: "w1",
+      expect_init: { value: [ { id: "r1", n: "7", doubled: "14" } ] } }
   ]
 }

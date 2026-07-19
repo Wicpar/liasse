@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 
-use liasse_expr::{ExprType, HostOp, HostPosition, Scope};
+use liasse_expr::{DbReadPosition, ExprType, HostOp, HostPosition, Scope};
 
 use crate::host::HostSignatures;
 
@@ -23,8 +23,10 @@ pub(crate) struct RuntimeScope {
     /// scope in a package with no host requirements, so a host call there faults
     /// as an unknown function.
     hosts: HostSignatures,
-    /// Which host effect classes this position admits (§16.3, §8.8). A view/check
-    /// stays `Pure`; a field default or mutation value opts into `Write`.
+    /// Which execution context this position is (§16.3/§8.8, §16.5). A view/check
+    /// is a database-evaluated `DbRead` position (built-in-only, pure-only); a
+    /// field default opts into `Default`; a mutation program body opts into
+    /// `Mutation`, the only position where an app-registered namespace may run.
     host_position: HostPosition,
 }
 
@@ -46,7 +48,7 @@ impl RuntimeScope {
             structurals: BTreeMap::new(),
             bindings: BTreeMap::new(),
             hosts: HostSignatures::default(),
-            host_position: HostPosition::Pure,
+            host_position: HostPosition::DbRead(DbReadPosition::ViewProjection),
         }
     }
 
@@ -57,9 +59,10 @@ impl RuntimeScope {
         self
     }
 
-    /// Set the host effect policy of this checking position (§16.3, §8.8): a field
-    /// default or mutation value is a `Write` position (generated permitted); a
-    /// view/check stays the default `Pure`.
+    /// Set the execution context of this checking position (§16.3/§8.8, §16.5): a
+    /// field default is a `Default` position; a mutation program body is
+    /// `Mutation` (any effect class, an app-registered namespace); a view/check
+    /// stays the default database-evaluated `DbRead`.
     pub(crate) fn with_host_position(mut self, position: HostPosition) -> Self {
         self.host_position = position;
         self

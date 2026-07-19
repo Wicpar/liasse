@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: app-verifier-in-dollar-verify-rejected
+  suite: static
+  spec: ["#host-namespaces", "§16.5", "#authentication", "§11.3"]
+  note: '''
+    §16.5/§11.3 (amended): an authenticator `$verify` is a database-evaluated
+    expression restricted to the language operators, the built-in namespaces
+    (§16.1), and native keyring verification (§17.7). A call to a
+    $requires-registered verifier namespace in `$verify` is a load-time error
+    — custom credential verification re-models onto the §11.5 auth-mutation
+    pattern: the mutation invokes the verifier namespace, maps the identity to
+    application state, and mints a native token that `$verify` then accepts.
+    The verifier `check` in `$verify` violates both the §16.3 effect-class
+    rule (a verifier may not run in a database-evaluated position) and the
+    §16.5 origin rule (an app-registered namespace outside a mutation body).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.appverify@1.0.0"
+    $requires: {
+      authns: "test.auth@1"
+    }
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "authns.check($credential)"
+          $actor: "/accounts[$proof.account]"
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: "/accounts"
+          me: { $view: "$actor { id, name }" }
+        }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.auth"
+        version: "1.0.0"
+        interface_hash: "ih-auth-1"
+        functions: {
+          check: {
+            signature: "(text) -> { account: text }"
+            effect: "verifier"
+            op: "accept"
+            accepts: { "good-credential": { account: "a1" } }
+          }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "§16.5", "#authentication"]
+    detail: "an app-registered verifier namespace call in an authenticator `$verify` is a load-time error (§16.5/§11.3); credential verification re-models onto the §11.5 auth-mutation pattern"
+  }
+}

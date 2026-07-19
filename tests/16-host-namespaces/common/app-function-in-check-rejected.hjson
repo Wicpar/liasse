@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: app-function-in-check-rejected
+  suite: static
+  spec: ["#host-namespaces", "§16.5", "#state-model", "§5.10"]
+  note: '''
+    §16.5: a field/struct/row `$check` (§5.10/§8.8) is database-evaluated, so
+    an app-registered namespace call in it is a load-time error. The pure
+    `double` isolates §16.5 (namespace origin) from the §16.3 effect-class
+    rule.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.appcheck@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      nums: {
+        $key: "id"
+        id: "text"
+        n: "int"
+        $check: "util.double(.n) > 0"
+      }
+      $public: {
+        nums: { $view: ".nums { id, n }" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "§16.5", "#state-model"]
+    detail: "an app-registered namespace call in a database-evaluated `$check` is a load-time error (§16.5)"
+  }
+}

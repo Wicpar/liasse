@@ -59,7 +59,7 @@ pub use env::{
     TemporalQuery,
 };
 pub use error::EvalError;
-pub use host::{HostEffect, HostOp, HostPosition};
+pub use host::{DbReadPosition, HostEffect, HostOp, HostOrigin, HostPosition};
 pub use order::{SortOrder, ViewOrders};
 pub use scope::Scope;
 pub use ty::{ExprType, RowType};

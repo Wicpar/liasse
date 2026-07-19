@@ -23,8 +23,8 @@ use std::collections::BTreeMap;
 use liasse_diag::SourceMap;
 use liasse_expr::hoist::{audit, hoist, CandidateRefs};
 use liasse_expr::{
-    CallSite, Cell, Environment, EvalError, ExprType, HostEffect, HostOp, HostPosition, Row, RowId,
-    RowType, Scope, TypedExpr,
+    CallSite, Cell, DbReadPosition, Environment, EvalError, ExprType, HostEffect, HostOp,
+    HostOrigin, HostPosition, Row, RowId, RowType, Scope, TypedExpr,
 };
 use liasse_syntax::parse_expression;
 use liasse_value::{Integer, Timestamp, Type, Uuid, Value};
@@ -71,11 +71,13 @@ impl Scope for HoistScope {
         (name == "c").then(|| ExprType::scalar(Type::Int))
     }
     fn namespace_op(&self, namespace: &str, function: &str) -> Option<HostOp> {
+        // §16.5: only a built-in (Core) namespace can appear in a DB-run program,
+        // so a hoistable host call is Core. `util.double` stands in for one.
         ((namespace, function) == ("util", "double"))
-            .then(|| HostOp::new([Type::Int], Type::Int, HostEffect::Pure))
+            .then(|| HostOp::new([Type::Int], Type::Int, HostEffect::Pure, HostOrigin::Core))
     }
     fn host_position(&self) -> HostPosition {
-        HostPosition::Pure
+        HostPosition::DbRead(DbReadPosition::ViewProjection)
     }
 }
 

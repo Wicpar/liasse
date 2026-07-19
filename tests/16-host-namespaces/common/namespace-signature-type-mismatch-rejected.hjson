@@ -2,19 +2,22 @@
   format: 1
   name: namespace-signature-type-mismatch-rejected
   suite: static
-  spec: ["#host-namespaces", "#expressions"]
+  spec: ["#host-namespaces", "#expressions", "§16.2", "§16.5"]
   note: '''
     §16.2: the load-time descriptor supplies "function names and typed
     signatures" for each namespace function, and "every used function has a
-    known type ... and pinned contract." §6.5 (line 747): "Package loading
-    validates every function name, type, determinism class, and namespace
-    contract." The descriptor declares util.double : (int) -> int, but the
-    package calls util.double(.label) where .label is a text field. The
-    argument type does not match the pinned signature, so the typed
-    namespace contract is violated and loading is rejected — the mismatch is
-    a static type error, not a runtime failure. The signature is stated in
-    this case's hosts descriptor, so the expectation is deducible here
-    rather than from an implementation.
+    known type ... and pinned contract." §6.5: "Package loading validates
+    every function name, type, determinism class, and namespace contract."
+    The descriptor declares util.double : (int) -> int, but the mutation body
+    calls util.double(@label) where @label is a text parameter. The argument
+    type does not match the pinned signature, so the typed namespace contract
+    is violated and loading is rejected — the mismatch is a static type error,
+    not a runtime failure. (Recast per §16.5: the carrier moved out of a
+    database-evaluated `$view` into the mutation body — its one legal position
+    — so the asserted diagnostic is the signature mismatch, not the §16.5
+    position rule that would otherwise fire in a view. The signature is stated
+    in this case's hosts descriptor, so the expectation is deducible here
+    rather than from an implementation.)
   '''
 
   package: {
@@ -24,11 +27,21 @@
       util: "test.util@1"
     }
     $model: {
-      label: "text = ''"
-      // util.double expects int; .label is text -> typed-signature violation
-      bad: { $view: "util.double(.label)" }
+      items: {
+        $key: "id"
+        id: "text"
+        n: "int = 0"
+      }
+      $mut: {
+        // util.double expects int; @label is text -> typed-signature violation
+        "add({ id: text, label: text })": [
+          "d = util.double(@label)"
+          "row = .items + { id: @id, n: d }"
+          "return row { id, n }"
+        ]
+      }
       $public: {
-        stats: { $view: ".bad" }
+        items: { $view: ".items { id, n }", $mut: { add: ".add" } }
       }
     }
   }
@@ -49,6 +62,6 @@
   expect: {
     outcome: invalid
     violates: ["#host-namespaces", "#expressions"]
-    detail: "util.double is called with a text argument but its pinned signature is (int) -> int; the typed namespace contract fails validation at load"
+    detail: "util.double is called with a text argument but its pinned signature is (int) -> int; the typed namespace contract fails validation (§16.2/§6.5) when the mutation program is checked"
   }
 }

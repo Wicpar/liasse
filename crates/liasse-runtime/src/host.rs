@@ -26,7 +26,7 @@
 
 use std::collections::BTreeMap;
 
-use liasse_expr::{EvalError, ExprType, HostEffect, HostOp};
+use liasse_expr::{EvalError, ExprType, HostEffect, HostOp, HostOrigin};
 use liasse_host::sim::SimKeyProvider;
 use liasse_host::{
     cose_descriptor, ConformanceGuard, ContractRef, CoseClaims, CoseToken, EffectClass, GuardError,
@@ -74,6 +74,22 @@ const fn effect_of(effect: EffectClass) -> HostEffect {
 /// internally-provisioned keyrings (§17.7/§17.8), so a package requiring it
 /// resolves without an externally registered component.
 const COSE_CONTRACT: &str = "liasse.cose";
+
+/// The built-in core-codec contracts (§16.1/§20): the engine links them, so their
+/// functions are [`HostOrigin::Core`] and stay legal in a database-evaluated
+/// position (a migration `$as`/`$back`, a view), unlike an application namespace
+/// (§16.5). Every other resolved `$requires` contract is `Registered`.
+const CORE_CODEC_CONTRACTS: &[&str] = &["liasse.base64", "liasse.hex", "liasse.string"];
+
+/// The §16.5 origin of a `$requires`-resolved namespace: `Core` for the built-in
+/// codec contracts the engine links, `Registered` for an application namespace.
+fn origin_of(contract: &ContractRef) -> HostOrigin {
+    if CORE_CODEC_CONTRACTS.contains(&contract.name().as_str()) {
+        HostOrigin::Core
+    } else {
+        HostOrigin::Registered
+    }
+}
 
 /// The resolved host components an activated package binds: the registered
 /// [`Registry`] plus the resolved `$requires` map (§16.2). Owned by the engine.
@@ -183,6 +199,10 @@ impl HostBinding {
                 continue;
             }
             let Some(namespace) = self.namespace(local) else { continue };
+            // §16.5: a resolved codec contract the engine links is Core (legal in a
+            // database-evaluated position); every other application namespace is
+            // Registered (legal only inside a mutation program).
+            let origin = origin_of(contract);
             let mut functions = BTreeMap::new();
             for (name, func) in namespace.descriptor().functions() {
                 let signature = func.signature();
@@ -192,6 +212,7 @@ impl HostBinding {
                         signature.params().iter().cloned(),
                         signature.result().clone(),
                         effect_of(func.effect()),
+                        origin,
                     ),
                 );
             }

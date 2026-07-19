@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use liasse_expr::{ExprType, HostOp, HostPosition, Scope};
+use liasse_expr::{DbReadPosition, ExprType, HostOp, HostPosition, Scope};
 
 use crate::host::HostDescriptors;
 
@@ -30,9 +30,10 @@ pub(crate) struct ModelScope {
     /// scope in a package with no host requirements, so a host call there faults
     /// as an unknown function.
     hosts: HostDescriptors,
-    /// Which host effect classes this position admits (§16.3, §8.8). A
-    /// view/computed/`$check`/`$normalize` stays `Pure`; a field default opts into
-    /// `Write`, where a generated function may run.
+    /// Which execution context this position is (§16.3/§8.8, §16.5). A
+    /// view/computed/`$check`/`$normalize` is a database-evaluated `DbRead`
+    /// position (built-in-only, pure-only); a field default opts into `Default`;
+    /// the mutation program body is `Mutation`.
     host_position: HostPosition,
 }
 
@@ -48,7 +49,7 @@ impl ModelScope {
             imports: BTreeMap::new(),
             bindings: BTreeMap::new(),
             hosts: HostDescriptors::default(),
-            host_position: HostPosition::Pure,
+            host_position: HostPosition::DbRead(DbReadPosition::ViewProjection),
         }
     }
 
@@ -60,9 +61,9 @@ impl ModelScope {
         self
     }
 
-    /// Set the host effect policy of this checking position (§16.3, §8.8): a field
-    /// default is a `Write` position (a generated function may run); a
-    /// view/computed/`$check`/`$normalize` stays the default `Pure`.
+    /// Set the execution context of this checking position (§16.3/§8.8, §16.5): a
+    /// field default is a `Default` position; a view/computed/`$check`/`$normalize`
+    /// stays the default database-evaluated `DbRead`.
     pub(crate) fn with_host_position(mut self, position: HostPosition) -> Self {
         self.host_position = position;
         self

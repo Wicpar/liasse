@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use liasse_artifact::{CompatibilityDecision, PackageIdentity, PackageName, UpdateRelation, Version};
 use liasse_diag::SourceMap;
-use liasse_expr::{check_statement, Cell, ExprType, Row, TypedExpr};
+use liasse_expr::{check_statement, Cell, DbReadPosition, ExprType, HostPosition, Row, TypedExpr};
 use liasse_model::{nondeterministic_call, Model, PackageId};
 use liasse_store::{CommitSeq, InstanceStore, RowAddress};
 use liasse_syntax::{parse_document, parse_expression};
@@ -979,14 +979,16 @@ fn verify_reversible(
 /// Type-check a transform expression whose `.` is a scalar of `dot_ty`, resolving
 /// the built-in codec namespaces (§16.1) so `base64.encode`/`string.bytes` type.
 ///
-/// A `$from`/`$as`/`$back` transform is a *pure* position (§20.1): its `.`-rooted
-/// scope carries only the pure codec namespaces and defaults to
-/// [`HostPosition::Pure`](liasse_expr::HostPosition), so a generated host op is
-/// already refused by the effect-position check. The one remaining generated
-/// surface is the core `now()`/`uuid()`, which `check_statement` types without a
-/// position gate; the §20.1 [`nondeterministic_call`] classifier — the same one a
-/// `$migrations` program uses — bars it here so no fresh non-source-derived value
-/// bakes into committed migrated state.
+/// A `$from`/`$as`/`$back` transform is a database-evaluated position (§20.1/
+/// §16.5): its `.`-rooted scope carries only the built-in (Core) codec namespaces
+/// and is a [`HostPosition::DbRead`](liasse_expr::HostPosition) migration-transform
+/// position, so a generated host op is refused by the effect-position check and an
+/// app-registered namespace by the origin check — an app codec conversion is
+/// written in the delta's `$up`/`$down` program instead. The one remaining
+/// generated surface is the core `now()`/`uuid()`, which `check_statement` types
+/// without a position gate; the §20.1 [`nondeterministic_call`] classifier — the
+/// same one a `$migrations` program uses — bars it here so no fresh
+/// non-source-derived value bakes into committed migrated state.
 fn compile(
     text: &str,
     dot_ty: Type,
@@ -1008,7 +1010,9 @@ fn compile(
             ),
         ));
     }
-    let scope = RuntimeScope::new(ExprType::scalar(dot_ty), root_ty.clone()).with_host_ops(codec_sigs.clone());
+    let scope = RuntimeScope::new(ExprType::scalar(dot_ty), root_ty.clone())
+        .with_host_ops(codec_sigs.clone())
+        .with_host_position(HostPosition::DbRead(DbReadPosition::MigrationTransform));
     check_statement(&scope, src, &parsed).map_err(|d| {
         Rejection::new(RejectionReason::TypeError, format!("migration transform: {}", d.render(sources)))
     })

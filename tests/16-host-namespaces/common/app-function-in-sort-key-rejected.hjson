@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: app-function-in-sort-key-rejected
+  suite: static
+  spec: ["#host-namespaces", "§16.5", "#views", "§7.3"]
+  note: '''
+    §16.5: a `$sort` key is database-evaluated (§7.3), so an app-registered
+    namespace call in it is a load-time error. The pure `double` isolates
+    §16.5 (namespace origin) from the §16.3 effect-class rule.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.appsort@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      nums: {
+        $key: "id"
+        id: "text"
+        n: "int"
+      }
+      ranked: { $view: ".nums { id, $sort: [util.double(.n)] }" }
+      $public: {
+        ranked: { $view: ".ranked" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "§16.5", "#views"]
+    detail: "an app-registered namespace call in a database-evaluated `$sort` key is a load-time error (§16.5)"
+  }
+}

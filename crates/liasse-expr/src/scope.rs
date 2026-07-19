@@ -12,7 +12,7 @@
 //! `::` traversal, a projection self-reference) are the checker's own concern
 //! and never reach the scope.
 
-use crate::host::{HostOp, HostPosition};
+use crate::host::{DbReadPosition, HostOp, HostPosition};
 use crate::ty::ExprType;
 
 /// Resolves the roots and bindings of §6.2 to static types.
@@ -58,11 +58,13 @@ pub trait Scope {
         None
     }
 
-    /// Which host effect classes this checking position admits (§16.3, §8.8).
-    /// The default is the most restrictive — a pure read/replay position — so
-    /// any scope that permits an effect (a field default, a mutation value, an
-    /// admission verifier) opts in explicitly.
+    /// Which execution context this checking position is (§16.3/§8.8 effect
+    /// classes, §16.5 namespace origin). The default is the most restrictive — a
+    /// database-evaluated read position, built-in-only and pure-only — so any
+    /// scope that admits more (a field default, or the mutation program body where
+    /// an app-registered namespace of any effect class may run) opts in
+    /// explicitly.
     fn host_position(&self) -> HostPosition {
-        HostPosition::Pure
+        HostPosition::DbRead(DbReadPosition::ViewProjection)
     }
 }

@@ -159,12 +159,14 @@ fn nonconforming_return_in_an_expression_call_is_caught() {
     assert_eq!(engine.head().unwrap(), head_before, "the rejected insert commits nothing");
 }
 
-/// §16.2/§16.3: a *pure* host call in a `$view` (a read position) type-checks
-/// against the pinned `(int) -> int` signature at load — the position `check_tree`
-/// once rejected as an unknown function — and evaluates through the view env's
-/// host-call hook, so `double(21) = 42` is the view's value.
+/// §16.5 (mandate 7): a *pure* app-registered host call in a `$view` (a
+/// database-evaluated position) is rejected at load — a `$requires` namespace is
+/// legal only inside a mutation program, so the package fails to type-check before
+/// activation even though the function's effect class is pure. The escape is to
+/// compute the value in a mutation body and store it, then read the stored field
+/// in the view (exercised by `pure_host_call_in_an_insert_member_flows_into_state`).
 #[test]
-fn pure_host_call_in_a_view_type_checks_and_loads() {
+fn pure_host_call_in_a_view_rejects_at_load() {
     let def = r#"{
       "$liasse": 1,
       "$app": "t.pureview@1.0.0",
@@ -175,10 +177,11 @@ fn pure_host_call_in_a_view_type_checks_and_loads() {
       },
       "$data": { "items": { "r1": { "n": 21 } } }
     }"#;
-    let engine = load(def).expect("a pure host call in a view loads");
-    let view = engine.view_at_head("doubled").expect("no engine fault").expect("declared view");
-    let row = &view.rows()[0];
-    assert_eq!(row.field("d"), Some(&int(42)), "the view evaluates the pure host call");
+    match load(def) {
+        Err(EngineError::Invalid(_)) => {}
+        Err(_) => panic!("expected a static Invalid rejection, got a different engine error"),
+        Ok(_) => panic!("expected §16.5 to reject an app namespace call in a view, but it loaded"),
+    }
 }
 
 /// §16.3/§8.8: a *generated* host call in a `$view` (a pure read position) is

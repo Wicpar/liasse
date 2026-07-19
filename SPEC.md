@@ -383,6 +383,8 @@ A default is any value or view expression visible from its declaration scope who
 "tax_rate": "decimal = /tax_rates[{ country: .country, kind: .kind }].rate"
 ```
 
+A default is database-evaluated (§16.5): it MAY call the language generated functions `uuid()` and `now()` and the built-in namespaces (§16.1), but a call to a `$requires`-registered namespace is a load-time error — an application-generated value is produced in a mutation statement and stored instead.
+
 Fields and object members form named structure; their source order has no semantic effect. During insertion, `.` denotes the provisional row containing every supplied value and every default whose dependencies have resolved. Defaults and computed insertion values form one dependency graph. The model is valid when that graph is acyclic, and the implementation MAY evaluate it in any topological order.
 
 External reads made by a default observe the transaction state produced by preceding mutation statements. Rows created by one bulk insertion statement become selectable together only after every row in that statement has resolved. A model requiring one inserted row to observe another uses separate mutation statements to establish that sequence. Generative values such as `uuid()` and `now()` are produced once for the admitted insertion.
@@ -399,7 +401,7 @@ A computed value is a read-only value determined by an expression. It exposes de
 "total": "= .subtotal + .tax"
 ```
 
-A computed value is read-only and determined by its expression. It participates in views, checks, sorting, and projections like any other value. The engine MAY compute, cache, materialize, index, or incrementally maintain it.
+A computed value is read-only and determined by its expression. It participates in views, checks, sorting, and projections like any other value. The engine MAY compute, cache, materialize, index, or incrementally maintain it. A computed value is database-evaluated (§16.5): it uses the language operators and the built-in namespaces (§16.1) only; a call to a `$requires`-registered namespace is a load-time error — derive the value in a mutation statement and store it.
 
 A computed expression yielding `none` produces an absent optional value.
 
@@ -638,7 +640,7 @@ The `$enum` array lists distinct accepted labels and establishes their declarati
 }
 ```
 
-A row or struct `$check` accepts the same one-check and multiple-check forms as a field check. Field checks, nested shape checks, and containing shape checks are all state constraints; package logic MUST NOT depend on their diagnostic evaluation order.
+A row or struct `$check` accepts the same one-check and multiple-check forms as a field check. Field checks, nested shape checks, and containing shape checks are all state constraints; package logic MUST NOT depend on their diagnostic evaluation order. Every `$check` — like `$normalize` — is database-evaluated (§16.5): the language operators and the built-in namespaces (§16.1) only, no `$requires`-registered namespace call.
 
 ---
 
@@ -1164,9 +1166,9 @@ A failed assertion or check rejects the complete proposed transition and returns
 
 #### Expression effects
 
-Computed fields, views, `$normalize`, and `$check` use pure functions only. Defaults and mutation programs MAY use generated functions. Authentication `$verify` MAY use verifier functions. Provider-backed generated operations are accepted only in write-time mutation positions.
+Computed fields, views, `$normalize`, and `$check` are database-evaluated (§16.5) and use built-in pure functions only. Defaults MAY additionally use the language generated functions (`uuid()`, `now()`). Mutation programs MAY use registered namespaces of every effect class. Provider-backed generated operations, and every verifier, are accepted only inside a mutation program.
 
-The checker rejects an effect class used in the wrong position while loading the package.
+The checker rejects an effect class — or a registered namespace — used in the wrong position while loading the package.
 
 ### 8.9 Zero matches and unchanged calls
 
@@ -1564,13 +1566,15 @@ A package or module scope MAY contain one `$auth` object. Its members are named 
   }
 
   "api_key": {
-    "$credential": "text"
-    "$verify": "api_keys.verify($credential)"
+    "$credential": "bytes"
+    "$verify": "cose.verify(/session_keys, $credential)"
     "$actor": "/integrations[$proof.integration]"
     "$check": "$proof.auth == $auth_name"
   }
 }
 ```
+
+The `api_key` authenticator verifies a **native token**, not a raw API key. A raw credential whose verification needs a registered namespace (an API-key exchange, webauthn, OIDC, password hashing) is checked inside an auth mutation (§11.5): the mutation invokes the verifier namespace, maps the verified identity to application login and account state, records the session, and mints the native token (§17.8) this authenticator's `$verify` then accepts on every subsequent request.
 
 Bindings:
 
@@ -1582,7 +1586,7 @@ $actor        row selected by the required $actor expression
 $auth_name    authenticator explicitly selected by the request
 ```
 
-External request arguments, including `$credential`, exist for the call lifetime. Application state contains values written explicitly by the mutation. Ordinary diagnostics and audit records contain parameter names, declared types, stable error codes, and namespace-defined sanitized audit projections. `$verify` MAY use a registered verifier namespace and performs no application-state mutation.
+External request arguments, including `$credential`, exist for the call lifetime. Application state contains values written explicitly by the mutation. Ordinary diagnostics and audit records contain parameter names, declared types, stable error codes, and namespace-defined sanitized audit projections. `$verify` is a database-evaluated expression (§16.5): it is restricted to the language operators, the built-in namespaces (§16.1), and native keyring verification (§17.7), and performs no application-state mutation. Application-defined credential verification — webauthn, OIDC, password hashing, API-key exchange — runs inside a mutation program (§11.5): the mutation invokes the registered verifier namespace, maps the verified identity to application login and account state, and constructs a native token (§17.8) that subsequent requests verify through `$verify`.
 
 When declared, `$session` MUST resolve exactly one row. `$actor` MUST resolve exactly one row. Zero or several rows reject authentication. `$check` runs after those bindings resolve; a scalar is one condition and a sequence lists conditions that must all pass. Their sequence affects diagnostic reporting only.
 
@@ -2818,7 +2822,7 @@ generated   may use randomness, clocks, or provider operations; one successful
             result is fixed for the admitted operation
 ```
 
-Pure functions MAY run during views, checks, and replay. Verifiers run during external request admission. Generated functions run in mutation/write-time positions. A generated result affecting state, identity, funding, authorization, or another durable admission fact is recorded. "One successful result is fixed for the admitted operation" scopes a single generated call — its result is fixed once produced and reused verbatim on replay (§8.12) — not a field default evaluated once per row: a `uuid()` default across several rows is several evaluations, each with its own fresh result (§5.1).
+A built-in pure function MAY run in any expression position. A registered namespace function of any effect class is callable only within a mutation program (§16.5): a verifier validates untrusted input inside the mutation that admits it; a generated function produces its recorded result inside the mutation that commits it. A generated result affecting state, identity, funding, authorization, or another durable admission fact is recorded. "One successful result is fixed for the admitted operation" scopes a single generated call — its result is fixed once produced and reused verbatim on replay (§8.12) — not a field default evaluated once per row: a `uuid()` default across several rows is several evaluations, each with its own fresh result (§5.1).
 
 A host namespace return that does not satisfy its declared result type — including a struct return carrying an undeclared member (§5.8) — is a §2.1 nonconformance: the runtime rejects the call and commits no effect, exactly as for any off-contract return. The runtime does not coerce, widen, or strip an off-contract return. The result type is checked against the returned value's actual decoded type, not its wire spelling, so a value whose canonical wire form would round-trip through the declared type (a numeric `text` returned where `int`, `uuid`, `date`, `decimal`, or `bytes` is declared) is still caught.
 
@@ -2842,6 +2846,12 @@ let context = LiasseContext::builder()
 A namespace receives typed Liasse values and explicitly granted provider handles. It MAY define additional named value types when their canonical codec and semantics are part of the pinned descriptor. It does not receive unrestricted access to application state.
 
 A namespace-defined value type may anchor application identity (a collection `$key`, an additional `$unique`) only when its descriptor declares it key-eligible (§16.2 "key eligibility for namespace types when provided") — exactly as a non-key-eligible built-in scalar is refused as a key, so row addressing rests on defined equality. This generation defines no `$model` field spelling that names a namespace-defined value type; a field whose declared type references such a type is not an accepted spelling and rejects loading. A later generation that introduces the spelling gates its use as identity on the descriptor's key-eligibility flag.
+
+### 16.5 Execution contexts
+
+A call to a `$requires`-registered namespace (§16.2) is legal only within a mutation program — the atomic sequential program of [Mutations](#mutations), including auth mutations (§11.5), delete patches (§21.1), and migration delta programs (§20.1). Every other expression position is *database-evaluated*: a `$view`'s source selection, filter, projection, and `$sort` ([Views](#views)), a `$recursive` `$where`/`$except` (§10.5), a computed value (§5.2), a field default (§5.1), `$normalize` and every `$check` (§8.8, §5.10), the authenticator expressions `$verify`, `$actor`, `$session`, and `$check` (§11.3), bucket, meter, and placement expressions (§14, §15, §18.4), and migration field transforms (§20.1). A database-evaluated expression is restricted to the language operators and the built-in namespaces (§16.1); a registered-namespace call in one of these positions is a static (load-time) error.
+
+This is a language rule, not a storage choice: it guarantees a conforming engine can evaluate everything that reads or validates inside its storage engine, which hosts only the built-in surface, while application procedures run exactly where atomicity, result recording, and replay fixing are defined — the transaction (§8.12). An application value a database-evaluated position would otherwise derive from a registered namespace is instead produced in a mutation statement and stored, then read from the stored field; a credential the framework must verify with a registered namespace is checked inside an auth mutation that maps the verified identity to application state and mints a native token (§11.5) that subsequent requests verify through the built-in surface.
 
 ---
 

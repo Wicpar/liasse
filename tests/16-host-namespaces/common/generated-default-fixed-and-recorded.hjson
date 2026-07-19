@@ -2,16 +2,19 @@
   format: 1
   name: generated-default-fixed-and-recorded
   suite: scenario
-  spec: ["#host-namespaces", "#mutations"]
+  spec: ["#host-namespaces", "#mutations", "§16.5", "§8.12"]
   note: '''
     §16.3: generated functions run in mutation/write-time positions; "one
     successful result is fixed for the admitted operation" and "A generated
-    result affecting state ... is recorded." §8.8 (expression effects):
-    defaults MAY use generated functions. §8.12: generated results are
-    produced once per admitted request and recorded when they enter
-    committed state. The generated `token` value written by the insert must
-    therefore survive a restart unchanged: replay must reuse the recorded
-    result, never re-invoke the generated function.
+    result affecting state ... is recorded." §16.5: a registered generated
+    function runs inside a mutation program (not a field default). §8.12:
+    generated results are produced once per admitted request and recorded
+    when they enter committed state. The generated `token` value written by
+    the insert must therefore survive a restart unchanged: replay must reuse
+    the recorded result, never re-invoke the generated function. (Recast per
+    §16.5: `util.token()` moved out of the former `token: "text = util.token()"`
+    default into the creating mutation's body; the §8.12 recording semantics
+    under test are unchanged there.)
   '''
 
   package: {
@@ -24,12 +27,13 @@
       rows: {
         $key: "id"
         id: "uuid = uuid()"
-        token: "text = util.token()"
+        token: "text"
       }
       all: { $view: ".rows { id, token }" }
       $mut: {
         add: [
-          "row = .rows + {}"
+          "t = util.token()"
+          "row = .rows + { token: t }"
           "return row { id, token }"
         ]
       }

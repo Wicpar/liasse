@@ -12,9 +12,12 @@
     local $requires alias is `enc` while the registered descriptor's contract
     id is `liasse.cbor@1.0.0`. A match-by-key reading would fail (nothing is
     registered under the name `enc`); resolution by contract succeeds, and the
-    package calls it as `enc.*`. The simulated pure `transform` doubles its
+    mutation calls it as `enc.*`. The simulated pure `transform` doubles its
     integer argument (op `double`, §16 NOTES), so `enc.transform(7) == 14` is
-    deduced from this file, not from an implementation.
+    deduced from this file, not from an implementation. (Recast per §16.5: the
+    `enc.transform` carrier moved out of a database-evaluated `$view` into the
+    mutation body — its one legal position — so the by-contract resolution
+    mechanic under test is position-independent.)
   '''
 
   package: {
@@ -26,13 +29,23 @@
       enc: "liasse.cbor@1"
     }
     $model: {
-      n: "int = 0"
-      doubled: { $view: "enc.transform(.n)" }
+      nums: {
+        $key: "id"
+        id: "text"
+        n: "int"
+        doubled: "int = 0"
+      }
+      $mut: {
+        add: [
+          "d = enc.transform(@n)"
+          "row = .nums + { id: @id, n: @n, doubled: d }"
+          "return row { id, doubled }"
+        ]
+      }
       $public: {
-        stats: { $view: ".doubled" }
+        nums: { $view: ".nums { id, n, doubled }", $mut: { add: ".add" } }
       }
     }
-    $data: { n: 7 }
   }
 
   hosts: {
@@ -49,6 +62,7 @@
   }
 
   steps: [
-    { watch: "public.stats", id: "w1", expect_init: { value: "14" } }
+    { call: "public.nums.add", args: { id: "r1", n: "7" },
+      expect: { outcome: ok, value: { id: "r1", doubled: "14" } } }
   ]
 }

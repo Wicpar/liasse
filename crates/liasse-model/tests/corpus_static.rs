@@ -62,6 +62,14 @@ const SKIP: &[(&str, &str)] = &[
         "16-host-namespaces/requires-key-aliases-expression-namespace",
         "aliased host expr-namespace resolution (§16.2); registry lacks `codec.*`",
     ),
+    (
+        "16-host-namespaces/app-verifier-in-dollar-verify-rejected",
+        "the §16.5 app-namespace-in-`$verify` rule: the CORE model only parse-checks an authenticator `$verify` (auth.rs `parse_only`), so an app verifier there is not type-checked; the rule is enforced where `$verify` is compiled/evaluated (runtime/surface auth path), not in the CORE static model — like the other skipped §11/§16 auth/host seams",
+    ),
+    (
+        "16-host-namespaces/namespace-signature-type-mismatch-rejected",
+        "recast per §16.5: the mismatched call now sits in a mutation program body (its one legal position), whose host-signature typing runs in the runtime host-typing path (checked when the mutation is compiled/evaluated), not in the CORE static model — the mismatch is unit-tested by liasse-expr `host_calls::argument_type_mismatch_is_rejected`",
+    ),
     // --- §17 keyring provider capabilities / §9.2 provider registry ---
     // Each needs a resolved host key provider and its declared capabilities,
     // which the CORE model has no host context to consult.

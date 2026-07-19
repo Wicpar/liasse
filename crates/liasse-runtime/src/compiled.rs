@@ -605,7 +605,11 @@ fn compile_on_delete(
             let target_ty = schema
                 .receiver_row_type(std::slice::from_ref(&target.to_owned()))
                 .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
-            let scope = RuntimeScope::new(row_ty.clone(), root_ty.clone()).with_structural("target", target_ty);
+            // §21.1: an `$on_delete` patch is a mutation program (a delete-time
+            // transition), so it is a `Mutation` position (§16.5).
+            let scope = RuntimeScope::new(row_ty.clone(), root_ty.clone())
+                .with_structural("target", target_ty)
+                .with_host_position(HostPosition::Mutation);
             let (patch, _) = compile_expr(sources, &scope, "on-delete", body)?;
             Ok(OnDelete::Patch(Box::new(patch)))
         }
@@ -906,13 +910,15 @@ fn compile_field(
             if scalar.unique {
                 unique.push(vec![name.clone()]);
             }
-            // §8.8: a field default is a write-time position, so a generated host
-            // function MAY run there (a pure one always may). The `row_scope`
+            // §5.1/§8.8/§16.5: a field default is built-in-only for NAMESPACE
+            // calls (an app-registered namespace call moves into the mutation
+            // body), but the language generated functions `now()`/`uuid()` stay
+            // legal here (they never reach the host-call checker). The `row_scope`
             // already carries the resolved host signatures; opt this one into the
-            // write effect policy.
+            // `Default` policy.
             let default = match &scalar.default {
                 Some(source) => {
-                    let default_scope = row_scope.clone().with_host_position(HostPosition::Write);
+                    let default_scope = row_scope.clone().with_host_position(HostPosition::Default);
                     Some(compile_expr(sources, &default_scope, "default", &source.text)?)
                 }
                 None => None,
@@ -1095,11 +1101,13 @@ fn compile_mutations(
         let receiver_ty = schema
             .receiver_row_type(&mutation.path)
             .ok_or_else(|| EngineError::Internal(format!("mutation `{}` has no receiver", mutation.name.as_str())))?;
-        // §16.3/§8.8: a mutation-program value is a write-time position, so a
-        // resolved generated (or pure) host call may appear in a value expression.
+        // §16.3/§8.8/§16.5: a mutation program body is THE application-procedure
+        // context — the transaction — so a resolved host call of any effect class
+        // (pure, verifier, or generated) and any origin (an app-registered
+        // namespace) may appear in a value expression.
         let mut scope = RuntimeScope::new(receiver_ty, root_ty.clone())
             .with_host_ops(hosts.clone())
-            .with_host_position(HostPosition::Write);
+            .with_host_position(HostPosition::Mutation);
         for (name, ty) in &mutation.params {
             scope = scope.with_param(name.clone(), ty.clone());
         }
@@ -1242,8 +1250,9 @@ fn compile_root_singleton(
 }
 
 /// Compile the insertion default of each writable singleton root field (§8.2). A
-/// default is a write-time position, so it may call generated host functions
-/// (§8.8); it types over the package root (`.` = the root row).
+/// default is a `Default` position: built-in-only for namespace calls but the
+/// language generated functions `now()`/`uuid()` stay legal (§8.8/§16.5); it
+/// types over the package root (`.` = the root row).
 fn compile_root_singleton_defaults(
     sources: &mut SourceMap,
     schema: Schema<'_>,
@@ -1252,7 +1261,7 @@ fn compile_root_singleton_defaults(
 ) -> Result<Vec<CompiledSingletonDefault>, EngineError> {
     let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone())
         .with_host_ops(hosts.clone())
-        .with_host_position(HostPosition::Write);
+        .with_host_position(HostPosition::Default);
     let mut out = Vec::new();
     for member in &schema.model().root().members {
         if let Node::Scalar(scalar) = &member.node

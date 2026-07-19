@@ -267,16 +267,37 @@ pub const SKIP: &[(&str, &str)] = &[
     // past the clock resolve; the rollover-at-boundary, future-spanning window, and
     // calendar-monthly-clamp cases pass and were pruned from the ledger.
     ("14-buckets/dst-fall-back-ambiguous-earlier", "package does not load yet (upstream compile/model gap)"),
-    // §16 registered host namespaces now resolve strictly (`Engine::load_with_hosts`,
-    // adapter/namespaces.rs), so these packages load and a host call in a collection
-    // view/default runs (`generated-default-fixed-and-recorded` passes). These three
-    // read a host call through a *root-scalar* view (`stats: ".doubled"` over
-    // `doubled: "util.double(.n)"`), and the runtime materializes no row for a
-    // top-level scalar view — a plain `.n` root-scalar view is empty too — so the
-    // step-0 watch diverges before `reopen` is ever reached. A runtime root-scalar
-    // view seam, not a §16 wiring gap.
-    ("16-host-namespaces/pinned-descriptor-drift-fails-reopen", "root-scalar host-call view yields no row (runtime materializes no top-level scalar view; a plain `.n` view is empty too), so the step-0 watch diverges before `reopen`"),
-    ("16-host-namespaces/required-namespace-removed-fails-reopen", "root-scalar host-call view yields no row (runtime materializes no top-level scalar view), so the step-0 watch diverges before `reopen`"),
+    // §16 registered host namespaces resolve strictly (`Engine::load_with_hosts`,
+    // adapter/namespaces.rs). Under the §16.5 mutation-only rule (Phase 7b) a host
+    // call in a database-evaluated position is a load error, so these cases were
+    // recast to run `util.double` inside a mutation body (`add`) that a first step
+    // exercises live. The residual is the `reopen` re-validation itself: the
+    // memory adapter's reopen does not re-resolve the recorded descriptor against
+    // the replaced host context (a drifted interface hash / a removed namespace),
+    // so the `reopen` step does not yet produce the §9.2 open-time diagnostic. A
+    // reopen re-validation seam, not a §16.5 wiring gap (the recast package loads,
+    // the descriptor runs live before the swap).
+    ("16-host-namespaces/pinned-descriptor-drift-fails-reopen", "reopen does not re-validate the recorded pinned descriptor against a drifted interface hash on the replaced host context (§9.2 open-time validation seam); the recast package loads and runs util.double live before the swap"),
+    ("16-host-namespaces/required-namespace-removed-fails-reopen", "reopen does not re-validate a removed required namespace against the replaced (empty) host context (§9.2 open-time validation seam); the recast package loads and runs util.double live before the swap"),
+    // Phase 7b §16.5 recast: an app verifier can no longer sit in `$verify`; the
+    // case re-models onto a §11.5 login mutation invoking `authns.check` in its
+    // body. Fully DRIVING it needs the testkit to carry a registered verifier's
+    // declared `accepts` table onto the registered-namespace dispatch path used
+    // inside a mutation body (adapter/namespaces.rs `read_function` wires `accepts`
+    // only into the auth-layer `$verify` verifier, not the mutation dispatch), a
+    // testkit enablement outside Phase 7b's scope. The recast package is
+    // spec-correct and loads; the login step is acknowledged debt until that lands.
+    ("16-host-namespaces/verifier-namespace-runs-at-admission", "recast onto the §11.5 auth-mutation pattern; the app verifier `authns.check` invoked in the mutation body needs the testkit to carry the verifier `accepts` table onto the registered-namespace dispatch path (currently wired only into the auth-layer `$verify` verifier) — a testkit enablement outside Phase 7b's scope"),
+    // Phase 7b §16.5: the case's premise — an app pure function recomputed in a
+    // database-evaluated `$view` across replay, yielding an unspecified post-restart
+    // value — is superseded: an app-registered call in a view is now a load error
+    // (§16.5), and in its one legal position (a mutation body) a computed value is
+    // written into committed state and reused verbatim on replay (§8.12), so no
+    // recomputation-divergence remains to be unspecified about. The lying-pure
+    // replay concern (SPEC-ISSUES #15) needs re-authoring against a native/built-in
+    // divergence or a mutation-body recorded result; the app-fn-in-view form cannot
+    // survive the §16.5 position move, so it is acknowledged debt pending re-author.
+    ("23-host-contract/impure-pure-function-replay-divergence-unspecified", "superseded by §16.5: an app pure function in a database-evaluated `$view` is now a load error, and in a mutation body its result is recorded (§8.12) so replay is deterministic — the recomputation-divergence premise cannot survive the position move; needs re-authoring"),
     // §18 blob views: a parameterized surface/top-level `$view` a case reads now
     // compiles and serves (adapter/surface_params.rs reconstructs its `$params`),
     // and the §18.5 placement facts are recorded into the engine before a placement

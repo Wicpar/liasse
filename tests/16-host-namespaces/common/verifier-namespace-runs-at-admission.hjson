@@ -2,17 +2,32 @@
   format: 1
   name: verifier-namespace-runs-at-admission
   suite: scenario
-  spec: ["#host-namespaces", "#authentication"]
+  spec: ["#host-namespaces", "§16.5", "#authentication", "§11.5"]
   tags: ["authz"]
   note: '''
-    §16.3: a verifier validates untrusted input against declared
-    keys/configuration and returns a typed proof or diagnostic; verifiers
-    run during external request admission. §11.3: $verify MAY use a
-    registered verifier namespace; $proof is its typed result and $actor
-    must resolve exactly one row. The simulated verifier (op: accept, see
-    NOTES.md) accepts exactly the credential "good-credential" and returns
-    the proof { account: "a1" }; any other credential yields a verification
-    diagnostic, so authentication is denied.
+    §16.5/§11.3 (amended): a verifier can no longer sit in `$verify` (a
+    database-evaluated position); custom credential verification re-models onto
+    the §11.5 auth-mutation pattern. §16.3: a verifier validates untrusted
+    input inside the mutation that admits its request. The simulated verifier
+    (op: accept, see NOTES.md) accepts exactly the credential "good-credential"
+    and returns the proof { account: "a1" }; any other credential yields a
+    verification diagnostic. Re-modeled: a public `login` mutation invokes
+    `authns.check(@credential)` inside its atomic program, maps the verified
+    identity to a session, and returns the session id as the credential a
+    subsequent request presents; a forged credential fails the verifier inside
+    the mutation, which rejects and mints no session.
+
+    (Recast per §16.5: the app verifier moved out of the former
+    `$verify: "authns.check($credential)"` authenticator into the login
+    mutation body — its one legal position — with `$verify: "$credential"`
+    (the presented session id is the proof) checking the minted credential
+    natively. The package is spec-correct; fully DRIVING it needs the testkit
+    to carry a registered verifier's declared `accepts` table onto the
+    registered-namespace dispatch path used inside a mutation body
+    (adapter/namespaces.rs currently wires `accepts` only into the auth-layer
+    `$verify` verifier), a testkit enablement outside this phase's scope — so
+    the scenario is acknowledged debt on the memory-store ledger until that
+    lands.)
   '''
 
   package: {
@@ -27,11 +42,24 @@
         id: "text"
         name: "text"
       }
+      sessions: {
+        $key: "id"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+      }
+      $mut: {
+        login: [
+          "identity = authns.check(@credential)"
+          "session = /sessions + { account: identity.account }"
+          "return { token: session.$key }"
+        ]
+      }
       $auth: {
         token: {
           $credential: "text"
-          $verify: "authns.check($credential)"
-          $actor: "/accounts[$proof.account]"
+          $verify: "$credential"
+          $session: "/sessions[$proof]"
+          $actor: "/accounts[$session.account]"
         }
       }
       $roles: {
@@ -40,6 +68,9 @@
           $members: "/accounts"
           me: { $view: "$actor { id, name }" }
         }
+      }
+      $public: {
+        login: { $mut: { login: ".login" } }
       }
     }
     $data: {
@@ -68,13 +99,14 @@
   }
 
   steps: [
-    { connect: "c1"
-      authenticate: { role: "member", auth: "token", credential: "good-credential" }
-      expect: { outcome: ok } }
-    { watch: "member.me", on: "c1", id: "w1",
-      expect_init: { value: { id: "a1", name: "Ada" } } }
+    { call: "public.login.login", args: { credential: "good-credential" }, on: "c1",
+      expect: { outcome: ok, value: { token: "$bind:tok1" } } }
     { connect: "c2"
-      authenticate: { role: "member", auth: "token", credential: "forged-credential" }
-      expect: { outcome: denied, violates: ["#authentication", "#host-namespaces"] } }
+      authenticate: { role: "member", auth: "token", credential: "$ref:tok1" }
+      expect: { outcome: ok } }
+    { watch: "member.me", on: "c2", id: "w1",
+      expect_init: { value: { id: "a1", name: "Ada" } } }
+    { call: "public.login.login", args: { credential: "forged-credential" }, on: "c1",
+      expect: { outcome: rejected, violates: ["#authentication", "#host-namespaces"] } }
   ]
 }

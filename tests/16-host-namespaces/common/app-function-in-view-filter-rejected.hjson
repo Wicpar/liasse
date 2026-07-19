@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: app-function-in-view-filter-rejected
+  suite: static
+  spec: ["#host-namespaces", "§16.5", "#views", "§7.1"]
+  note: '''
+    §16.5 (new): a call to a $requires-registered namespace is legal only
+    within a mutation program; every other expression position is
+    database-evaluated and restricted to the built-in namespaces (§16.1). A
+    `$view` filter is database-evaluated, so an app-registered namespace call
+    in it is a load-time error — even for a PURE function (the origin rule is
+    independent of the effect class). The pure `double` isolates §16.5 from
+    the §16.3 effect-class rule.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.appfilter@1.0.0"
+    $requires: {
+      util: "test.util@1"
+    }
+    $model: {
+      nums: {
+        $key: "id"
+        id: "text"
+        n: "int"
+      }
+      big: { $view: ".nums[:x | util.double(x.n) > 10] { id }" }
+      $public: {
+        big: { $view: ".big" }
+      }
+    }
+  }
+
+  hosts: {
+    namespaces: [
+      {
+        id: "test.util"
+        version: "1.2.0"
+        interface_hash: "ih-util-1"
+        functions: {
+          double: { signature: "(int) -> int", effect: "pure", op: "double" }
+        }
+      }
+    ]
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#host-namespaces", "§16.5", "#views"]
+    detail: "an app-registered namespace call in a database-evaluated view filter is a load-time error (§16.5); the load-time checker rejects it"
+  }
+}
