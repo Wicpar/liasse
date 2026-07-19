@@ -31,8 +31,16 @@ pub(crate) struct RuntimeScope {
 impl RuntimeScope {
     /// A scope whose innermost `.` is `current`, over the package `root`.
     pub(crate) fn new(current: ExprType, root: ExprType) -> Self {
+        Self::nested(vec![current], root)
+    }
+
+    /// A scope with an explicit lexical context chain (ancestors first, current
+    /// last) over the package `root` (§6.2). A computed value or check declared
+    /// inside a static struct reads the containing row through `^`, so its scope
+    /// carries the whole chain from the root down to the struct row.
+    pub(crate) fn nested(contexts: Vec<ExprType>, root: ExprType) -> Self {
         Self {
-            contexts: vec![current],
+            contexts,
             root,
             params: BTreeMap::new(),
             structurals: BTreeMap::new(),

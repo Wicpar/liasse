@@ -239,16 +239,39 @@ impl ViewDelta {
 fn view_row(row: &liasse_expr::Row) -> ViewRow {
     let fields = row
         .cells()
-        .filter_map(|(name, cell)| match cell {
-            // §A.9 / Annex A wire table: a `none` optional field is an *absent*
-            // optional value whose field-position wire form is an omitted member
-            // (SPEC "omitted optional field"), distinct from a present JSON
-            // `null` (`Value::Json(Json::Null)`). Drop it so a projected
-            // optional that is `none` does not appear as a member.
-            Cell::Scalar(Value::None) => None,
-            Cell::Scalar(value) => Some((name.clone(), value.clone())),
-            _ => None,
-        })
+        .filter_map(|(name, cell)| Some((name.clone(), cell_field_value(cell)?)))
         .collect();
     ViewRow { id: row.id().clone(), fields, sort_tuple: row.sort().to_vec() }
+}
+
+/// The exposed value of one projected output cell, or `None` when it is omitted.
+///
+/// A `none` optional is an *absent* optional whose field-position wire form is an
+/// omitted member (§A.9 / Annex A wire table, "omitted optional field"), distinct
+/// from a present JSON `null` (`Value::Json(Json::Null)`). A §5.3 static struct —
+/// a keyless nested projection — is projected as a nested object sharing the row's
+/// identity/lifecycle, so it is carried inline as a `Value::Struct`, recursing to
+/// any depth (Annex C.7). A keyed nested cell (a §12.2 sub-view row stream, or a
+/// single keyed sub-view row) is an addressable stream delivered separately, not
+/// part of this row's scalar projection, so it is dropped here.
+fn cell_field_value(cell: &Cell) -> Option<Value> {
+    match cell {
+        Cell::Scalar(Value::None) => None,
+        Cell::Scalar(value) => Some(value.clone()),
+        // A keyless row is a static-struct value (§5.3); a keyed row is a sub-view.
+        Cell::Row(row) if row.key() == &Value::None => Some(struct_value(row)),
+        Cell::Row(_) | Cell::Collection(_) => None,
+    }
+}
+
+/// A keyless projected row as a canonical [`Value::Struct`] (§5.3): its member
+/// cells in declaration order, each recursively converted, with an absent (`none`)
+/// or dropped sub-view member omitted — the nested-object wire form of a static
+/// struct.
+fn struct_value(row: &liasse_expr::Row) -> Value {
+    Value::Struct(liasse_value::Struct::new(
+        row.cells().filter_map(|(name, cell)| {
+            Some((liasse_value::Text::new(name.clone()), cell_field_value(cell)?))
+        }),
+    ))
 }

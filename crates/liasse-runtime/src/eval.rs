@@ -16,7 +16,7 @@ use liasse_value::{Timestamp, Value};
 use liasse_model::Node;
 
 use crate::bucket;
-use crate::compiled::{Compiled, CompiledCollection, CompiledComputed};
+use crate::compiled::{Compiled, CompiledCollection, CompiledComputed, CompiledStruct};
 use crate::env::{NamedExtant, RuntimeEnv};
 use crate::error::Rejection;
 use crate::generator::Generation;
@@ -190,6 +190,10 @@ impl<'a> EvalCtx<'a> {
         // evaluation leaves the module spaces empty.
         let base = self.expose_modules(base);
         let base = self.expose_computed(prospective, base);
+        // §5.2/§5.3: fold each root static-struct member's own computed values onto
+        // its materialized struct-row (recursing into nested structs), before views
+        // so a view or projection reads a struct-nested computed value like a field.
+        let base = self.expose_struct_computed(prospective, base);
         let base = self.expose_nested_views(prospective, base);
         let base = self.expose_root_computed(prospective, base);
         // §15.6: fold the `.<meter>.balance`/`.pools` and `funding` accessor cells
@@ -233,6 +237,35 @@ impl<'a> EvalCtx<'a> {
                         .map(|row| fold_computed(&env, &collection.computed, row.clone()))
                         .collect();
                     (name.clone(), Cell::Collection(folded))
+                }
+                _ => (name.clone(), cell.clone()),
+            })
+            .collect();
+        Row::new(base.id().clone(), base.key().clone(), cells)
+    }
+
+    /// Fold each root static-struct member's read-only computed values (§5.2/§5.3)
+    /// onto its materialized struct-row, so a view or projection reads a
+    /// struct-nested computed value like a stored field. A computed value's `.` is
+    /// the struct row and its `^` the containing row (§6.2); the fold recurses into
+    /// nested static structs to any depth (Annex C.7). Only the root singleton
+    /// structs are folded here — they materialize as a keyless `Cell::Row`; a
+    /// collection-nested struct materializes as a `Value::Struct` scalar and remains
+    /// a documented seam.
+    fn expose_struct_computed(&self, prospective: &Prospective, base: Row) -> Row {
+        let structs = &self.compiled.root_singleton.structs;
+        if structs.iter().all(|meta| !meta.has_computed()) {
+            return base;
+        }
+        let temporal = self.temporal_index(prospective);
+        let env = self.fold_env(base.clone(), temporal, self.source_horizon(prospective, self.now));
+        let parents = [Cell::Row(Box::new(base.clone()))];
+        let cells: Vec<(String, Cell)> = base
+            .cells()
+            .map(|(name, cell)| match (cell, structs.iter().find(|meta| &meta.name == name)) {
+                (Cell::Row(row), Some(meta)) => {
+                    let folded = fold_struct_computed(&env, meta, &parents, (**row).clone());
+                    (name.clone(), Cell::Row(Box::new(folded)))
                 }
                 _ => (name.clone(), cell.clone()),
             })
@@ -703,22 +736,37 @@ pub(crate) fn with_cell(row: Row, name: &str, cell: Cell) -> Row {
 }
 
 /// Fold a row's computed values (§5.2) into it as cells, evaluated against
-/// `env` with the row itself as `.`. A computed value that faults or yields a
-/// non-scalar is left as an absent (`none`) cell — §5.2 makes a computed value
-/// yielding `none` an absent optional. Iterated to a fixed point (bounded by the
-/// number of computed values, since the model forbids cyclic dependencies) so
-/// one computed value may read another regardless of declaration order.
-fn fold_computed(env: &RuntimeEnv<'_>, computed: &[CompiledComputed], mut row: Row) -> Row {
+/// `env` with the row itself as `.`. See [`fold_computed_scoped`]; a bare row has
+/// no lexical parent, so `^` is out of reach.
+fn fold_computed(env: &RuntimeEnv<'_>, computed: &[CompiledComputed], row: Row) -> Row {
+    fold_computed_scoped(env, computed, &[], row)
+}
+
+/// Fold a row's computed values (§5.2) into it as cells, evaluated against `env`
+/// with the row itself as `.` and `parents` (outermost first) reachable as `^`,
+/// `^^`, … (§6.2) — the lexical chain a struct-nested computed value reads its
+/// containing row through. A computed value that faults or yields a non-scalar is
+/// left as an absent (`none`) cell — §5.2 makes a computed value yielding `none`
+/// an absent optional. Iterated to a fixed point (bounded by the number of
+/// computed values, since the model forbids cyclic dependencies) so one computed
+/// value may read another regardless of declaration order.
+fn fold_computed_scoped(
+    env: &RuntimeEnv<'_>,
+    computed: &[CompiledComputed],
+    parents: &[Cell],
+    mut row: Row,
+) -> Row {
     if computed.is_empty() {
         return row;
     }
     for _ in 0..computed.len() {
-        let current = Cell::Row(Box::new(row.clone()));
+        let mut currents = parents.to_vec();
+        currents.push(Cell::Row(Box::new(row.clone())));
         let mut cells: Vec<(String, Cell)> =
             row.cells().map(|(name, cell)| (name.clone(), cell.clone())).collect();
         let mut changed = false;
         for comp in computed {
-            let value = match comp.expr.evaluate(env, &current) {
+            let value = match comp.expr.evaluate_scoped(env, &currents) {
                 Ok(Cell::Scalar(value)) => value,
                 // A non-scalar computed result (a row/collection) is a documented
                 // CORE seam; leave it absent rather than guess a projection.
@@ -744,6 +792,37 @@ fn fold_computed(env: &RuntimeEnv<'_>, computed: &[CompiledComputed], mut row: R
         }
     }
     row
+}
+
+/// Fold a static struct's computed values (§5.2) onto its materialized
+/// struct-row, then recurse into each nested static struct (§5.3), passing the
+/// folded row as the child's lexical parent so a deeper computed value reaches an
+/// ancestor field through `^`, `^^`, … (§6.2). `parents` is the chain (outermost
+/// first) already above this struct; the whole walk is bounded by the compiled
+/// struct tree, which is finite, so it cannot recurse forever.
+fn fold_struct_computed(
+    env: &RuntimeEnv<'_>,
+    meta: &CompiledStruct,
+    parents: &[Cell],
+    row: Row,
+) -> Row {
+    let row = fold_computed_scoped(env, &meta.computed, parents, row);
+    if meta.structs.is_empty() {
+        return row;
+    }
+    let mut child_parents = parents.to_vec();
+    child_parents.push(Cell::Row(Box::new(row.clone())));
+    let cells: Vec<(String, Cell)> = row
+        .cells()
+        .map(|(name, cell)| match (cell, meta.structs.iter().find(|nested| &nested.name == name)) {
+            (Cell::Row(child), Some(nested)) => {
+                let folded = fold_struct_computed(env, nested, &child_parents, (**child).clone());
+                (name.clone(), Cell::Row(Box::new(folded)))
+            }
+            _ => (name.clone(), cell.clone()),
+        })
+        .collect();
+    Row::new(row.id().clone(), row.key().clone(), cells)
 }
 
 /// Fold a collection row's nested `$view` members (§7.1) into it as cells,

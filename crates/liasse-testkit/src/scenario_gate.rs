@@ -238,24 +238,16 @@ pub const SKIP: &[(&str, &str)] = &[
     ("23-host-contract/operator-retains-meter-capacity", "`operator` on a collection-row mutation needs receiver-row wiring"),
     // --- `restart` step ---
     // ========================================================================
-    // HOST-ENVIRONMENT SHAPING INVARIANTS (ENGINE)
-    // The step reached the engine but tripped an engine invariant while shaping the
-    // evaluation environment (a row/collection the runtime could not present in the
-    // expected shape). A runtime gap, surfaced as a host fault and skipped.
-    //
-    // The §5.8 self-referential nested-collection shaping gap is now closed: a
-    // member naming a `$types`/`$like` keyed shape (`subcompanies: "company"`,
-    // `children: { $like: "^" }`) resolves to that collection everywhere the runtime
-    // walks the state tree (compile, seed, store gather, materialization), so the two
-    // §5.8 cases pass and were removed here. The residual `hostfault:row-field`
-    // entries below are a SEPARATE gap (`^` lexical-parent scope, keyless plain-object
-    // struct projection, deep keyless projection) that this fix does not touch.
-    // --- hostfault:row-field ---
-    ("06-expressions/caret-reads-lexical-parent-scope", "host environment row-field shaping gap (engine invariant)"),
-    ("annex-c-grammar/computed-field-equals-prefix-form", "host environment row-field shaping gap (engine invariant)"),
-    ("annex-c-grammar/deep-nested-projection-loads", "host environment row-field shaping gap (engine invariant)"),
-    ("annex-c-grammar/member-order-carries-no-semantics", "host environment row-field shaping gap (engine invariant)"),
-    ("annex-c-grammar/plain-object-is-static-struct", "host environment row-field shaping gap (engine invariant)"),
+    // HOST-ENVIRONMENT SHAPING INVARIANTS (ENGINE) — CLOSED
+    // Both env-shaping seams are now closed. The §5.8 self-referential
+    // nested-collection shaping gap resolves a `$types`/`$like` keyed member to its
+    // collection everywhere the runtime walks the state tree. The §5.2/§5.3 static
+    // struct shaping gap folds each static struct's read-only computed values onto
+    // its materialized struct-row (with `^` resolving to the containing row, §6.2)
+    // and carries a keyless nested-struct projection inline as a `Value::Struct`, so
+    // a struct-nested computed value, a `^` lexical-parent read, a computed field,
+    // and a deep keyless projection all materialize — those cases pass and their
+    // entries were removed here.
     // ========================================================================
     // PACKAGE DOES NOT LOAD YET (UPSTREAM COMPILE/MODEL GAP)
     // The definition fails static validation or seed admission, so the case never

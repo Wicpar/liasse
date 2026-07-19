@@ -132,14 +132,30 @@ pub(crate) struct CompiledCollection {
 
 /// A compiled static struct member (§5.3): a plain nested object sharing the
 /// containing row's identity and lifecycle. Its fields carry their own defaults
-/// and normalizers, resolved during the containing insertion (§5.1).
+/// and normalizers, resolved during the containing insertion (§5.1); its computed
+/// values (§5.2) and nested static structs are folded onto the materialized
+/// struct-row at read time, so a view reads a struct-nested computed value like a
+/// stored field.
 pub(crate) struct CompiledStruct {
     pub(crate) name: String,
     pub(crate) fields: Vec<CompiledField>,
+    /// Read-only computed values declared inside this struct (§5.2), each typed with
+    /// the struct row as `.` and the containing row reachable as `^` (§6.2).
+    pub(crate) computed: Vec<CompiledComputed>,
     pub(crate) row_checks: Vec<CompiledCheck>,
+    /// Static structs nested directly inside this one (§5.3), compiled the same way,
+    /// so a computed value at any depth is folded onto its own struct-row.
+    pub(crate) structs: Vec<CompiledStruct>,
 }
 
 impl CompiledStruct {
+    /// Whether this struct, or any static struct nested inside it, declares a
+    /// read-only computed value (§5.2) — the cheap guard the read-time fold uses to
+    /// skip a struct tree that carries none.
+    pub(crate) fn has_computed(&self) -> bool {
+        !self.computed.is_empty() || self.structs.iter().any(Self::has_computed)
+    }
+
     /// The raw `Type::Struct` this static struct member declares (§5.3), over its
     /// compiled fields in field-name text order — the same field-name-ordered
     /// struct `Type` the portable state codec and Annex E identity comparison build
@@ -773,9 +789,13 @@ fn compile_nested_view(
 }
 
 /// Compile a static struct member (§5.3): its writable fields (with defaults,
-/// normalizers, and checks) and its struct-level `$check`s, so a supplied struct
-/// initializer resolves omitted defaults and is validated with the row (§5.1,
-/// §5.10). Nested collections inside a struct remain a documented seam.
+/// normalizers, and checks), its read-only computed values (§5.2), its nested
+/// static structs, and its struct-level `$check`s, so a supplied struct
+/// initializer resolves omitted defaults and is validated with the row, and a
+/// struct-nested computed value materializes at read time (§5.1, §5.10). Its
+/// scope carries the whole lexical chain from the root down to this struct
+/// (§6.2), so a computed value reads the containing row through `^`. Nested
+/// collections inside a struct remain a documented seam.
 #[allow(clippy::too_many_arguments)]
 fn compile_struct(
     sources: &mut SourceMap,
@@ -787,26 +807,53 @@ fn compile_struct(
     shape: &Shape,
     hosts: &HostSignatures,
 ) -> Result<CompiledStruct, EngineError> {
-    let row_ty = schema
-        .receiver_row_type(path)
-        .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
-    let row_scope = RuntimeScope::new(row_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
+    // §6.2: the lexical context chain — the package root, then each ancestor row
+    // down to this struct — mirrors the model's tree checker, so a computed value
+    // resolves `^` to its containing row exactly as the model validated it.
+    let contexts = struct_contexts(schema, path);
+    let row_ty = contexts.last().cloned().unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
+    let row_scope = RuntimeScope::nested(contexts, root_ty.clone()).with_host_ops(hosts.clone());
     let mut fields = Vec::new();
     let mut unique = Vec::new();
     let mut computed = Vec::new();
+    let mut structs = Vec::new();
     for member in &shape.members {
-        if let Node::Scalar(_) | Node::Reference(_) | Node::Set(_) = &member.node {
-            let member_doc =
-                doc::shape_at(model_doc, path).and_then(|s| doc::member(s, member.name.as_str()));
-            if let Some(field) = compile_field(
-                sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed, member_doc, hosts,
-            )? {
-                fields.push(field);
+        match &member.node {
+            // §5.3: a nested static struct compiles the same way, one level deeper,
+            // so its own computed values are folded onto its own struct-row at read.
+            Node::Struct(inner) => {
+                let mut child_path = path.to_vec();
+                child_path.push(member.name.as_str().to_owned());
+                structs.push(compile_struct(
+                    sources, schema, root_ty, model_doc, &child_path, member.name.as_str(), inner, hosts,
+                )?);
             }
+            Node::Scalar(_) | Node::Reference(_) | Node::Set(_) => {
+                let member_doc =
+                    doc::shape_at(model_doc, path).and_then(|s| doc::member(s, member.name.as_str()));
+                if let Some(field) = compile_field(
+                    sources, schema, root_ty, &row_ty, &row_scope, member, &mut unique, &mut computed, member_doc, hosts,
+                )? {
+                    fields.push(field);
+                }
+            }
+            // A nested collection/view inside a struct is a documented seam.
+            _ => {}
         }
     }
     let row_checks = compile_checks(sources, &row_scope, "struct-check", &shape.checks)?;
-    Ok(CompiledStruct { name: name.to_owned(), fields, row_checks })
+    Ok(CompiledStruct { name: name.to_owned(), fields, computed, row_checks, structs })
+}
+
+/// The lexical context chain of a static struct at declaration-name `path`
+/// (§6.2): the package root followed by each ancestor row down to the struct
+/// itself, folding each collection to its single-row type. Mirrors the model's
+/// tree checker (`ModelScope::nested`) so a struct-nested computed value's `^`
+/// resolves to the same containing-row type the model validated against.
+fn struct_contexts(schema: Schema<'_>, path: &[String]) -> Vec<ExprType> {
+    (0..=path.len())
+        .filter_map(|depth| path.get(..depth).and_then(|prefix| schema.receiver_row_type(prefix)))
+        .collect()
 }
 
 /// Compile one writable field (scalar, reference, or set) of a row or struct
