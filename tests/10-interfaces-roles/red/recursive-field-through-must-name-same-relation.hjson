@@ -1,0 +1,70 @@
+{
+  format: 1
+  name: recursive-field-through-must-name-same-relation
+  suite: static
+  // §10.5: "The output appears under $field as a nested keyed view ..." and an
+  // external request addresses a covered descendant by "the descendant's key
+  // path from that row down through $field/$through" — $field and $through name
+  // ONE descendant relation. Here $field is the self-referential `subcompanies`
+  // collection but $through descends into the UNRELATED `members` collection, so
+  // the key-path addressing is incoherent: the path keys index `subcompanies`
+  // while the traversal walks `members`, and the tree nested under
+  // `subcompanies` would carry `members` rows. Each half is independently
+  // well-formed (`subcompanies` is a keyed collection; `.members` yields keyed
+  // descendants), so the checker must reject the DIVERGENCE, not either half.
+  spec: ["#interfaces", "§10.5"]
+  tags: ["recursive", "boundary"]
+
+  package: {
+    $liasse: 1
+    $app: "t.rec_coherence@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+      }
+      companies: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        plan: "text = 'active'"
+        subcompanies: { $like: "^" }
+        members: {
+          $key: "account"
+          account: { $ref: "/accounts" }
+          admin: "bool = false"
+        }
+        $roles: {
+          admin: {
+            $auth: "token"
+            $members: ".members[:m | m.admin].account"
+            company: {
+              $view: ". { id, name, plan }"
+              $recursive: {
+                $field: "subcompanies"
+                // Invalid: $through descends into `members`, a relation unrelated
+                // to the `subcompanies` collection $field names, so
+                // $field/$through do not name one descendant relation.
+                $through: ".members"
+                $bind: "child"
+              }
+            }
+          }
+        }
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces"]
+    detail: "$recursive $field and $through must name one descendant relation; $through descends into an unrelated collection"
+  }
+}

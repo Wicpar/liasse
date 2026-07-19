@@ -279,9 +279,14 @@ impl SurfacePhase<'_, '_> {
 
     /// §10.5: validate a `$recursive` descendant-coverage block. `$field`,
     /// `$through`, and `$bind` are required; `$where`/`$except` are optional bool
-    /// predicates that read the candidate through `$bind`. The checker verifies
-    /// the descendant relation resolves to a keyed row stream (descendant shape
-    /// and identity) and that each predicate is `bool`.
+    /// predicates that read the candidate through `$bind`. `$field` and `$through`
+    /// name ONE descendant relation (the coverage output "appears under `$field`
+    /// as a nested keyed view" and a descendant is addressed by "the key path from
+    /// that row down through `$field`/`$through`"), so the checker verifies that
+    /// `$field` is a keyed collection of the covered row, that `$through` resolves
+    /// to a keyed row stream (descendant shape and identity), that `$through`
+    /// descends into the `$field` collection (same relation) and yields `$field`'s
+    /// element shape, and that each predicate is `bool`.
     fn check_recursive(&mut self, value: &liasse_syntax::DocValue, params: &[(String, ExprType)]) {
         let Some(members) = value.as_object() else {
             self.reporter.reject(value.span, code::SURFACE, "`$recursive` must be an object");
@@ -309,22 +314,42 @@ impl SurfacePhase<'_, '_> {
             );
             return;
         };
-        // `$field` names where the nested descendant view appears; it is a field
-        // of the covered row.
-        if self.receiver_row.as_row().and_then(|r| r.field(&field)).is_none() {
+        // §10.5: the coverage output "appears under `$field` as a nested keyed
+        // view — a keyed tree in which every node's ancestors are all included",
+        // so `$field` must name a field of the covered row that is a KEYED
+        // COLLECTION. A scalar, struct, or set field can hold no keyed tree and
+        // gives its nodes no identity, so the coverage could never materialize
+        // under it. (Clone the field type so no borrow of the covered row outlives
+        // the `recursive_view` re-borrow below.)
+        let Some(field_ty) = self.receiver_row.as_row().and_then(|r| r.field(&field)).cloned() else {
             self.reporter.reject_hint(
                 value.span,
                 code::SURFACE,
                 format!("`$recursive` `$field` `{field}` is not a field of the covered row (§10.5)"),
                 "name the descendant collection field the coverage nests under",
             );
-        }
-        // `$through` yields strict descendants: it must resolve to a keyed row
-        // stream (descendant shape + identity).
-        let Some(descendant) = self.recursive_view(&through) else {
             return;
         };
-        if descendant.as_view().and_then(liasse_expr::RowType::key).is_none() {
+        let Some(field_row) = field_ty.as_view().filter(|row| row.key().is_some()).cloned() else {
+            self.reporter.reject_hint(
+                value.span,
+                code::SURFACE,
+                format!(
+                    "`$recursive` `$field` `{field}` must be a keyed collection so the nested \
+                     coverage view carries descendant shape and identity, not `{}` (§10.5)",
+                    field_ty.describe()
+                ),
+                "name a nested keyed collection field the coverage descends into, e.g. `subcompanies`",
+            );
+            return;
+        };
+        // `$through` yields strict descendants: it must resolve to a keyed row
+        // stream (descendant shape + identity). `relation` is the collection it
+        // descends into off the covered row.
+        let Some((descendant, relation)) = self.recursive_view(&through) else {
+            return;
+        };
+        let Some(descendant_row) = descendant.as_view().filter(|row| row.key().is_some()) else {
             self.reporter.reject_hint(
                 value.span,
                 code::SURFACE,
@@ -332,11 +357,43 @@ impl SurfacePhase<'_, '_> {
                 "traverse to a keyed collection so each descendant has identity",
             );
             return;
+        };
+        // §10.5 addresses a covered descendant by "the descendant's key path from
+        // that row down through `$field`/`$through`" — the two name ONE relation,
+        // so `$through` must descend into the `$field` collection off the covered
+        // row. A divergent pair makes the key-path addressing incoherent.
+        if relation.as_deref() != Some(field.as_str()) {
+            self.reporter.reject_hint(
+                value.span,
+                code::SURFACE,
+                format!(
+                    "`$recursive` `$field` `{field}` and `$through` `{through}` must name one \
+                     descendant relation, but `$through` descends into `{}` (§10.5)",
+                    relation.as_deref().unwrap_or("a different relation")
+                ),
+                "root `$through` at the `$field` collection, e.g. `$field: \"subcompanies\"` with \
+                 `$through: \".subcompanies\"`",
+            );
+            return;
+        }
+        // The nested keyed view lives under `$field`, and the recursion re-applies
+        // the same surface to `$field`'s rows, so the descendant `$through` yields
+        // must have `$field`'s element shape (a `$through` that descends *past*
+        // `$field` yields the wrong shape even when its first step matches).
+        if descendant_row != &field_row {
+            self.reporter.reject_hint(
+                value.span,
+                code::SURFACE,
+                format!(
+                    "`$recursive` `$through` `{through}` yields a row shape that differs from the \
+                     `$field` `{field}` collection it nests under (§10.5)"
+                ),
+                "make `$through` descend into `$field` so their rows share one descendant shape",
+            );
+            return;
         }
         // `$where`/`$except` are bool predicates over one bound candidate.
-        let candidate = descendant
-            .as_view()
-            .map_or_else(|| descendant.clone(), |row| ExprType::Row(row.clone()));
+        let candidate = ExprType::Row(descendant_row.clone());
         for directive in ["$where", "$except"] {
             if let Some(text) = self.recursive_string(value, directive) {
                 self.check_recursive_predicate(&bind, &candidate, params, &text);
@@ -356,8 +413,10 @@ impl SurfacePhase<'_, '_> {
     }
 
     /// Type-check a `$recursive` `$through` expression against the covered row,
-    /// returning its result type. A non-stream result is rejected.
-    fn recursive_view(&mut self, text: &str) -> Option<ExprType> {
+    /// returning its result type together with the collection it descends into
+    /// off the covered row (the `$field`/`$through` relation name, §10.5). A
+    /// non-stream result is rejected.
+    fn recursive_view(&mut self, text: &str) -> Option<(ExprType, Option<String>)> {
         let scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
             .with_optional_structural("config", self.config.as_ref());
         let sub = self.sources.add_label("recursive-through", text.to_owned());
@@ -386,8 +445,9 @@ impl SurfacePhase<'_, '_> {
             );
             return None;
         }
+        let relation = through_relation(parsed.statement());
         match liasse_expr::check_statement(&scope, sub, &parsed) {
-            Ok(typed) if typed.ty().as_view().is_some() => Some(typed.ty().clone()),
+            Ok(typed) if typed.ty().as_view().is_some() => Some((typed.ty().clone(), relation)),
             Ok(_) => {
                 self.reporter.reject_hint(
                     parsed.statement().span,
@@ -829,6 +889,31 @@ fn descends_from_current(expr: &Expr) -> bool {
             }
             ExprKind::Current => return steps > 0,
             _ => return false,
+        }
+    }
+}
+
+/// The collection a strict-descendant `$through` spine descends into directly off
+/// the covered row (`.<name>` ..., §10.5): the field or same-name step whose base
+/// is the covered row `.`, with any row selectors skipped. This is the relation
+/// `$field`/`$through` jointly name; the coverage checker requires it to equal
+/// `$field`. `None` when the spine takes no such step (a non-`.`-rooted spine,
+/// already rejected by [`strict_descendant_through`]).
+fn through_relation(stmt: &Stmt) -> Option<String> {
+    let StmtKind::Bare(expr) = &stmt.kind else {
+        return None;
+    };
+    let mut node = expr;
+    let mut relation = None;
+    loop {
+        match &node.kind {
+            ExprKind::Field { base, member } | ExprKind::SameName { base, member } => {
+                relation = Some(member.text.clone());
+                node = base;
+            }
+            ExprKind::Select { base, .. } => node = base,
+            ExprKind::Current => return relation,
+            _ => return None,
         }
     }
 }
