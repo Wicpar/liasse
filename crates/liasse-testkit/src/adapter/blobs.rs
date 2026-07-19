@@ -354,7 +354,12 @@ pub(super) fn stage<S: InstanceStore>(
     let address = SurfaceAddress::parse(&spec.call)
         .map_err(|err| AdapterError::Host(format!("malformed blob call `{}`: {err}", spec.call)))?;
     let types = loaded.routing.arg_types(&spec.call);
-    let args = wire::decode_args(&spec.args, &types);
+    // §12.1 step 3 / §18.2: a blob-mutation argument that does not decode against
+    // its declared type is a malformed request, rejected before admission (before
+    // any bytes are streamed) rather than coerced to a best-effort inference.
+    let Ok(args) = wire::decode_args(&spec.args, &types) else {
+        return Ok(Staged::Rejected(Observation::outcome(Outcome::Rejected)));
+    };
     let mut call = SurfaceCall::new(address, args);
     if let Some(operation_id) = &spec.operation_id {
         call = call.with_operation_id(operation_id.clone());
@@ -498,7 +503,12 @@ pub(super) fn get<S: InstanceStore>(
     let address = SurfaceAddress::parse(&spec.surface)
         .map_err(|err| AdapterError::Host(format!("malformed blob surface `{}`: {err}", spec.surface)))?;
     let arg_types = loaded.routing.view_arg_types(&spec.surface);
-    let args = wire::decode_args(&spec.args, &arg_types);
+    // §12.1 step 3 / Annex A.1: a blob-surface `$params` argument that does not
+    // decode against its declared type is a malformed request, rejected rather
+    // than coerced to a best-effort inference.
+    let Ok(args) = wire::decode_args(&spec.args, &arg_types) else {
+        return Ok(Observation::outcome(Outcome::Rejected));
+    };
     let mut watch = SurfaceWatch::new(address, format!("$blob_get:{}", spec.surface));
     if !args.is_empty() {
         watch = watch.with_args(args);

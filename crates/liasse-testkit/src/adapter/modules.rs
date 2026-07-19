@@ -226,8 +226,14 @@ impl ModuleState {
     ) -> Option<Observation> {
         let types: BTreeMap<String, Type> =
             self.deployment.root().surface_view_params(address).into_iter().collect();
+        // §12.1 step 3 / Annex A.1: a `$params` argument that does not decode
+        // against its declared type is a malformed request, rejected rather than
+        // coerced to a best-effort inference.
+        let Ok(decoded) = wire::decode_args(args, &types) else {
+            return Some(Observation::outcome(Outcome::Rejected));
+        };
         let mut query = ViewQuery::new();
-        for (name, value) in wire::decode_args(args, &types) {
+        for (name, value) in decoded {
             query = query.param(name, value);
         }
         match self.deployment.root_view(address, &query) {
@@ -260,8 +266,15 @@ impl ModuleState {
         // §13.10: the child mutation receives every argument the selector did not
         // consume (the space/instance `@param`s address the instance, not the child).
         let forwarded = forward_args(args, &resolved.consumed);
+        // §12.1 step 3 / Annex A.1: a forwarded child-mutation argument that does
+        // not decode is a malformed request, rejected rather than coerced. The
+        // forwarded arguments carry no resolved types here, so each is shape-
+        // inferred (§8.3) and this decode does not fail in practice.
+        let Ok(forwarded_args) = wire::decode_args(&forwarded, &BTreeMap::new()) else {
+            return Ok(Observation::outcome(Outcome::Rejected));
+        };
         let mut request = CallRequest::new(String::new());
-        for (name, value) in wire::decode_args(&forwarded, &BTreeMap::new()) {
+        for (name, value) in forwarded_args {
             request = request.arg(name, value);
         }
         match self.deployment.interface_call(

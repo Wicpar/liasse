@@ -4,33 +4,98 @@
 //! each argument is decoded against its parameter's declared [`Type`] into a
 //! canonical [`Value`] the surface layer accepts, so `"20"` becomes an `int` and
 //! `"  x  "` a `text` exactly as the wire form pins (FORMAT.md "int wire values
-//! are JSON strings"). Outbound, a mutation `return` ([`ResponseValue`]) and a
-//! view result ([`ViewResult`]) are rendered back to the same canonical JSON the
-//! corpus matchers expect. When a parameter's type is unknown (a receiver key of
-//! a row mutation, whose type this phase does not resolve), the value's own JSON
-//! shape picks the nearest scalar type — a best effort the triage loop tightens.
+//! are JSON strings"). A declared argument whose wire value does NOT decode
+//! against its type is a §12.1-step-3 malformed request: the boundary surfaces
+//! the typed-decode failure as an [`ArgDecodeError`] the caller reports as
+//! `rejected`, never coerced to a best-effort inference (mirroring the seed
+//! path, which rejects the same mismatch — `liasse-runtime/src/seed.rs`).
+//!
+//! Two decode shapes are legitimate and preserved. A parameter whose type this
+//! phase does not resolve (a receiver key of a row mutation, §8.3) is shape-
+//! inferred — the legitimate inference, not a swallowed rejection. And a set
+//! operand (`set_field + values` / `- values`, §8.5) accepts EITHER a set (its
+//! canonical JSON-array wire form) OR a single member: a non-array wire value for
+//! a `set<T>` parameter decodes against the element type `T` as a one-member
+//! operand, exactly as the runtime's set add/remove takes "a member or a set"
+//! and as a set ref member is named by its target's typed key (§5.5/§A.9). A
+//! wrong-typed member (a scalar that does not decode against `T`) still rejects.
+//!
+//! Outbound, a mutation `return` ([`ResponseValue`]) and a view result
+//! ([`ViewResult`]) are rendered back to the same canonical JSON the corpus
+//! matchers expect.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use liasse_runtime::{ResponseValue, ViewResult, ViewRow};
-use liasse_value::{Json, Text, Type, Value};
+use liasse_value::{Json, Text, Type, Value, ValueError};
 use serde_json::Value as J;
 
+/// A §12.1 typed-argument-decode rejection (Annex A.1): one declared call/watch
+/// argument's wire value did not decode against its parameter's declared type,
+/// so the request is malformed and rejected at the wire boundary — never coerced
+/// to a best-effort inference. Carries the offending argument name and the
+/// underlying decode error for a diagnostic.
+#[derive(Debug, Clone)]
+pub struct ArgDecodeError {
+    name: String,
+    source: ValueError,
+}
+
+impl fmt::Display for ArgDecodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "argument `{}` does not decode against its declared type: {}", self.name, self.source)
+    }
+}
+
+impl std::error::Error for ArgDecodeError {}
+
 /// Decode one `args` object into typed [`Value`]s, using `types[name]` for each
-/// argument's declared type and falling back to a shape inference otherwise.
-#[must_use]
-pub fn decode_args(args: &J, types: &BTreeMap<String, Type>) -> BTreeMap<String, Value> {
+/// argument's declared type. A declared argument that fails its typed decode
+/// surfaces as an [`ArgDecodeError`] (§12.1 malformed request); an argument
+/// whose type is not resolved is shape-inferred (§8.3).
+///
+/// # Errors
+/// [`ArgDecodeError`] when a declared argument's wire value does not decode
+/// against its parameter's declared type.
+pub fn decode_args(
+    args: &J,
+    types: &BTreeMap<String, Type>,
+) -> Result<BTreeMap<String, Value>, ArgDecodeError> {
     let mut out = BTreeMap::new();
     if let Some(map) = args.as_object() {
         for (name, wire) in map {
             let value = match types.get(name) {
-                Some(ty) => ty.decode(wire).unwrap_or_else(|_| infer(wire)),
+                // §12.1 step 3 / Annex A.1: a declared argument decodes against
+                // its parameter type; a typed-decode FAILURE is a malformed
+                // request, surfaced as a rejection rather than coerced to a
+                // best-effort inference (the seed path rejects the same mismatch).
+                Some(ty) => decode_typed(ty, wire)
+                    .map_err(|source| ArgDecodeError { name: name.clone(), source })?,
+                // §8.3: an argument whose parameter type this phase does not
+                // resolve (a receiver key of a row mutation) is shape-inferred —
+                // the legitimate inference, not a swallowed typed-decode rejection.
                 None => infer(wire),
             };
             out.insert(name.clone(), value);
         }
     }
-    out
+    Ok(out)
+}
+
+/// Decode one argument against its declared type, honoring the §8.5 set-operand
+/// rule: a `set<T>` parameter accepts either a set (its canonical JSON-array wire
+/// form) or a single member. A non-array wire value for a `set<T>` decodes
+/// against the element type `T` as a one-member operand — the form the runtime's
+/// set add/remove takes ("a member or a set"), and by which a set ref member is
+/// named by its target's typed key (§5.5/§A.9). Every other type, and a set given
+/// an array, decodes against the declared type directly; a wrong-typed value
+/// (including a scalar that does not decode against `T`) rejects.
+fn decode_typed(ty: &Type, wire: &J) -> Result<Value, ValueError> {
+    match ty {
+        Type::Set(element) if !wire.is_array() => element.decode(wire),
+        _ => ty.decode(wire),
+    }
 }
 
 /// Decode a single wire value against an optional declared [`Type`] — the §10.5

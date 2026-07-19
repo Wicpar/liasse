@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: wrong-typed-argument-rejected
+  suite: scenario
+  spec: ["#clients", "§12.1", "#mutations", "§8.11"]
+  tags: ["boundary", "protocol"]
+  note: '''
+    Attack: send a call argument whose wire value does not decode against the
+    parameter's declared type, hoping the boundary coerces it to some nearby
+    value instead of refusing the request. Here `title` is declared `text`
+    (inferred §8.3 from `{ title: @title }` assigning a `text` field), but the
+    call supplies the JSON number 5. §12.1 step 3 decodes each argument against
+    its declared type at the machine wire/request boundary (Annex A.1): a value
+    of the wrong shape is a MALFORMED request and is rejected before admission,
+    never best-effort coerced to a `json`/inferred value. This mirrors the seed
+    path, which rejects the same type mismatch (M-SEED); the request boundary
+    must be no more lenient than the seed boundary. Rejecting here also keeps
+    §12.3 deduplication well-defined: a request's identity is exactly its decoded
+    set of declared, correctly-typed arguments, with no silently-coerced member.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.livetasks@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "uuid = uuid()"
+        title: "text"
+      }
+      $mut: {
+        add: [
+          "task = .tasks + { title: @title }"
+          "return task { id, title }"
+        ]
+      }
+      index: {
+        $view: ".tasks { id, title, $sort: [title] }"
+      }
+      $public: {
+        tasks: {
+          $view: ".index"
+          $mut: {
+            add: ".add"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    {
+      call: "public.tasks.add"
+      args: { title: 5 }
+      on: "c1"
+      expect: { outcome: rejected, violates: ["#clients", "§12.1"] }
+    }
+  ]
+}

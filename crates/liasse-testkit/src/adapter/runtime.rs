@@ -152,8 +152,13 @@ impl<S: InstanceStore> Runtime<S> {
             let mut watch = SurfaceWatch::new(address, watch_id.clone());
             // §10.1/§12.1: a parameterized `$view` reads its `$params` from the
             // subscription's arguments, decoded against the view's declared types.
+            // An argument that does not decode against its declared type is a
+            // malformed request, rejected before the subscription opens — never
+            // coerced to a best-effort inference (§12.1 step 3 / Annex A.1).
             let arg_types = loaded.routing.view_arg_types(&request.target);
-            let args = wire::decode_args(&request.args, &arg_types);
+            let Ok(args) = wire::decode_args(&request.args, &arg_types) else {
+                return Ok(Observation::outcome(Outcome::Rejected));
+            };
             if !args.is_empty() {
                 watch = watch.with_args(args);
             }
@@ -399,7 +404,14 @@ impl<S: InstanceStore> Instance for Runtime<S> {
                 // authenticator, and the identifier — the exact key the host records under.
                 let surface_prefix = address.surface_prefix();
                 let types = loaded.routing.arg_types(&request.target);
-                let args = wire::decode_args(&request.args, &types);
+                // §12.1 step 3 (Annex A.1): an argument that does not decode
+                // against its declared parameter type is a malformed request,
+                // rejected before admission — never coerced to a best-effort
+                // inference. The seed path rejects the same mismatch (M-SEED);
+                // the request boundary must be no more lenient than the seed one.
+                let Ok(args) = wire::decode_args(&request.args, &types) else {
+                    return Ok(Observation::outcome(Outcome::Rejected));
+                };
                 let mut call = SurfaceCall::new(address, args);
                 if let Some(operation_id) = &request.operation_id {
                     call = call.with_operation_id(operation_id.clone());
@@ -597,7 +609,12 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         let address = SurfaceAddress::parse(&address_text)
             .map_err(|err| AdapterError::Host(format!("malformed operator address `{address_text}`: {err}")))?;
         let types = loaded.routing.arg_types(&address_text);
-        let decoded = wire::decode_args(&args, &types);
+        // §12.1 step 3 (Annex A.1): an operator argument that does not decode
+        // against its declared type is a malformed request, rejected before
+        // admission rather than coerced to a best-effort inference.
+        let Ok(decoded) = wire::decode_args(&args, &types) else {
+            return Ok(Observation::outcome(Outcome::Rejected));
+        };
         let call = SurfaceCall::new(address, decoded);
         let outcome = loaded.host.operator_call(&call).map_err(host_fault)?;
         Ok(observe_call(&outcome))
