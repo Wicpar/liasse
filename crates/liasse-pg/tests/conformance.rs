@@ -67,6 +67,14 @@ fn scan_order_matches_annex_b() {
 }
 
 #[test]
+fn scan_subtree_reaches_nested_orphans() {
+    run(
+        suite::scan_subtree_reaches_nested_orphans,
+        "scan_subtree reaches nested rows and orphans in Annex B order",
+    );
+}
+
+#[test]
 fn rekey_preserves_incarnation() {
     run(suite::rekey_preserves_incarnation, "rekey preserves incarnation");
 }

@@ -151,6 +151,25 @@ impl InstanceStore for MemoryStore {
             .collect())
     }
 
+    fn scan_subtree(
+        &self,
+        root: &RowAddress,
+        steps: &[String],
+    ) -> Result<Vec<(RowAddress, StoredRow)>, StoreError> {
+        // The oracle: an ordered prefix range over the live address map restricted
+        // to descents through `steps`. `current` holds only live rows, so a
+        // tombstoned intermediate is simply absent while its live orphan
+        // descendants — whose addresses still extend `root` through `steps` — are
+        // kept, exactly as `scan_subtree` promises. The `BTreeMap` iterates in
+        // `RowAddress` (Annex B) order, so no sort is needed.
+        Ok(self
+            .current
+            .iter()
+            .filter(|(address, _)| address.descends_from(root, steps))
+            .map(|(address, row)| (address.clone(), row.clone()))
+            .collect())
+    }
+
     fn snapshot(&self, frontier: CommitSeq) -> Result<Snapshot, StoreError> {
         if frontier > self.head {
             return Err(StoreError::Corruption {

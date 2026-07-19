@@ -28,11 +28,24 @@ fn collection(name: &str) -> CollectionPath {
     CollectionPath::top(NameSegment::new(name))
 }
 
+/// One address step from a collection name and a single-`int` key.
+fn int_step(name: &str, key: i64) -> AddressStep {
+    AddressStep::new(NameSegment::new(name), KeyValue::single(Value::Int(Integer::from(key))))
+}
+
 fn address(name: &str, key: i64) -> RowAddress {
-    RowAddress::root(AddressStep::new(
-        NameSegment::new(name),
-        KeyValue::single(Value::Int(Integer::from(key))),
-    ))
+    RowAddress::root(int_step(name, key))
+}
+
+/// Build a nested row address from a required root `(name, key)` step and deeper
+/// `(name, key)` steps — the deeper addresses the subtree gate reasons over. Taking
+/// the root explicitly keeps it total (no empty-address case to fault on).
+fn path_address(root: (&str, i64), rest: &[(&str, i64)]) -> RowAddress {
+    let mut address = RowAddress::root(int_step(root.0, root.1));
+    for &(name, key) in rest {
+        address = address.child(int_step(name, key));
+    }
+    address
 }
 
 fn payload(text: &str) -> Value {
@@ -367,6 +380,67 @@ pub fn history_points_map_to_positions<F: StoreFactory>(
     Ok(())
 }
 
+/// `scan_subtree` returns exactly the live descendants of the root reachable
+/// through the given nested-collection step names, excluding the root, in Annex B
+/// address order — TRAVERSING a tombstoned intermediate so a logical orphan (§5.4)
+/// is still reached, while a step outside the universe and a sibling top-level row
+/// are excluded (§7.6 shape-directed descent). The expected sets are hand-derived
+/// from Annex B, so this gates both backends against the same externally-known oracle.
+pub fn scan_subtree_reaches_nested_orphans<F: StoreFactory>(
+    factory: &mut F,
+) -> Result<(), StoreError> {
+    let mut store = factory.create(instance())?;
+
+    // A self-referential `subcompanies` chain and a sibling `offices` collection
+    // under `/companies/1`, plus a second top-level `/companies/2` that must never
+    // appear in `/companies/1`'s subtree.
+    let mut txn = store.begin();
+    txn.insert(path_address(("companies", 1), &[]), payload("c1"))?;
+    txn.insert(path_address(("companies", 1), &[("subcompanies", 2)]), payload("s2"))?;
+    txn.insert(path_address(("companies", 1), &[("subcompanies", 2), ("subcompanies", 3)]), payload("s3"))?;
+    txn.insert(path_address(("companies", 1), &[("offices", 5)]), payload("o5"))?;
+    txn.insert(path_address(("companies", 2), &[]), payload("c2"))?;
+    txn.commit()?;
+
+    // Tombstone the intermediate `/companies/1/subcompanies/2`, orphaning its child.
+    let mut txn = store.begin();
+    txn.delete(&path_address(("companies", 1), &[("subcompanies", 2)]))?;
+    txn.commit()?;
+
+    let root = path_address(("companies", 1), &[]);
+    let steps = vec!["subcompanies".to_owned(), "offices".to_owned()];
+
+    // Full step universe: the live `offices/5` and the orphaned grandchild — the
+    // tombstoned intermediate is traversed but not emitted; `/companies/2` and the
+    // root itself are excluded. Annex B address order places `offices` before
+    // `subcompanies` (name segment compares first).
+    let addresses: Vec<RowAddress> =
+        store.scan_subtree(&root, &steps)?.into_iter().map(|(addr, _)| addr).collect();
+    assert_eq!(
+        addresses,
+        vec![
+            path_address(("companies", 1), &[("offices", 5)]),
+            path_address(("companies", 1), &[("subcompanies", 2), ("subcompanies", 3)]),
+        ]
+    );
+
+    // Restricting the universe to `subcompanies` drops the `offices` branch: the
+    // descent is shape-directed, visiting only the named collections.
+    let only_sub: Vec<RowAddress> = store
+        .scan_subtree(&root, &["subcompanies".to_owned()])?
+        .into_iter()
+        .map(|(addr, _)| addr)
+        .collect();
+    assert_eq!(
+        only_sub,
+        vec![path_address(("companies", 1), &[("subcompanies", 2), ("subcompanies", 3)])]
+    );
+
+    // An empty step universe (a leaf shape) means no subtree at all.
+    assert!(store.scan_subtree(&root, &[])?.is_empty());
+    Ok(())
+}
+
 /// Run the whole battery against `factory`.
 pub fn run_all<F: StoreFactory>(factory: &mut F) -> Result<(), StoreError> {
     serial_positions_gapless_and_monotone(factory)?;
@@ -375,6 +449,7 @@ pub fn run_all<F: StoreFactory>(factory: &mut F) -> Result<(), StoreError> {
     abort_then_commit_keeps_positions_gapless(factory)?;
     snapshot_at_frontier_ignores_later_commits(factory)?;
     scan_order_matches_annex_b(factory)?;
+    scan_subtree_reaches_nested_orphans(factory)?;
     rekey_preserves_incarnation(factory)?;
     replay_from_seq_reproduces(factory)?;
     blob_round_trips_by_digest(factory)?;

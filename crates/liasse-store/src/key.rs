@@ -164,6 +164,28 @@ impl RowAddress {
         }
     }
 
+    /// Whether this address names a row strictly below `root` reached only through
+    /// the nested-collection `steps` — the oracle membership `scan_subtree`
+    /// enumerates (§7.6 shape-directed descent). It holds iff `root` is a strict
+    /// prefix of this address and every step past the prefix names a collection in
+    /// `steps`. Because a well-formed store holds a stored child only under a
+    /// declared nested collection, restricting the descent to `steps` (the shape's
+    /// declared nested-collection names) still reaches every descendant row.
+    #[must_use]
+    pub fn descends_from(&self, root: &RowAddress, steps: &[String]) -> bool {
+        if self.depth() <= root.depth() {
+            return false;
+        }
+        let mut own = self.steps();
+        for root_step in root.steps() {
+            match own.next() {
+                Some(step) if step == root_step => {}
+                _ => return false,
+            }
+        }
+        own.all(|step| steps.iter().any(|name| name == step.name.as_str()))
+    }
+
     /// A rendering for diagnostics: `/name/key/name/key…` over canonical-JSON
     /// key text. Not the D.3 display path (that needs the schema); enough to name
     /// an address in a [`StoreError`].

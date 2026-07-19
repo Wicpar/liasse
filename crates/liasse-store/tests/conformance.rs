@@ -44,6 +44,12 @@ fn scan_order_matches_annex_b() {
 }
 
 #[test]
+fn scan_subtree_reaches_nested_orphans() {
+    suite::scan_subtree_reaches_nested_orphans(&mut MemoryStoreFactory::new())
+        .expect("scan_subtree reaches nested rows and orphans in Annex B order");
+}
+
+#[test]
 fn rekey_preserves_incarnation() {
     suite::rekey_preserves_incarnation(&mut MemoryStoreFactory::new())
         .expect("rekey preserves incarnation");

@@ -83,6 +83,22 @@ impl Snapshot {
             .collect()
     }
 
+    /// Every row of the subtree rooted at `root` (excluding `root`) reached through
+    /// the nested collections `steps`, in Annex B address order — the frontier read
+    /// twin of [`crate::InstanceStore::scan_subtree`] (§7.6). A snapshot holds only
+    /// live rows, so this is the same prefix range the [`MemoryStore`] oracle
+    /// enumerates, with tombstoned intermediates absent but their live orphans kept.
+    ///
+    /// [`MemoryStore`]: crate::MemoryStore
+    #[must_use]
+    pub fn scan_subtree(&self, root: &RowAddress, steps: &[String]) -> Vec<(RowAddress, StoredRow)> {
+        self.rows
+            .iter()
+            .filter(|(address, _)| address.descends_from(root, steps))
+            .map(|(address, row)| (address.clone(), row.clone()))
+            .collect()
+    }
+
     /// The number of live rows.
     #[must_use]
     pub fn len(&self) -> usize {

@@ -7,7 +7,7 @@
 //! admits atomically. Nothing here touches the durable store; a rejected
 //! admission simply drops the `Prospective`, leaving committed state intact.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_ident::NameSegment;
 use liasse_model::Collection;
@@ -19,10 +19,17 @@ use crate::materialize::{self, FieldMap};
 use crate::schema::Schema;
 
 /// Scans a collection path for its direct committed rows: the primitive a
-/// [`Prospective`] gathers from, backed by either the live store or a frontier
-/// [`Snapshot`]. The recursion in [`Prospective::gather_from`] descends nested
-/// collections (§5.4) by re-scanning under each parent address.
+/// [`Prospective`] gathers each top-level collection's rows from, backed by either
+/// the live store or a frontier [`Snapshot`].
 type Scan<'a> = dyn Fn(&CollectionPath) -> Result<Vec<(RowAddress, Value)>, StoreError> + 'a;
+
+/// Gathers the whole committed subtree under one row, reached through the given
+/// declared nested-collection step names, in Annex B address order — the
+/// shape-directed `scan_subtree` (§7.6) that replaces the former per-row,
+/// per-nested-collection scan storm. Backed by either the live store or a frontier
+/// [`Snapshot`], each of which serves it index-first / in one range.
+type SubtreeScan<'a> =
+    dyn Fn(&RowAddress, &[String]) -> Result<Vec<(RowAddress, Value)>, StoreError> + 'a;
 
 /// One resolved change between the committed base and the admitted working
 /// state, ready to stage into a store transition.
@@ -60,6 +67,13 @@ impl Prospective {
     ) -> Result<Self, StoreError> {
         Self::gather_from(
             &|path| Ok(store.scan(path)?.into_iter().map(|(a, r)| (a, r.value().clone())).collect()),
+            &|root, steps| {
+                Ok(store
+                    .scan_subtree(root, steps)?
+                    .into_iter()
+                    .map(|(a, r)| (a, r.value().clone()))
+                    .collect())
+            },
             schema,
         )
     }
@@ -70,12 +84,23 @@ impl Prospective {
         // A snapshot scan is infallible, so this cannot error.
         Self::gather_from(
             &|path| Ok(snapshot.scan(path).into_iter().map(|(a, r)| (a, r.value().clone())).collect()),
+            &|root, steps| {
+                Ok(snapshot
+                    .scan_subtree(root, steps)
+                    .into_iter()
+                    .map(|(a, r)| (a, r.value().clone()))
+                    .collect())
+            },
             schema,
         )
         .unwrap_or_else(|_| Self::empty())
     }
 
-    fn gather_from(scan: &Scan<'_>, schema: Schema<'_>) -> Result<Self, StoreError> {
+    fn gather_from(
+        scan: &Scan<'_>,
+        subtree: &SubtreeScan<'_>,
+        schema: Schema<'_>,
+    ) -> Result<Self, StoreError> {
         let mut committed = BTreeMap::new();
         let mut working = BTreeMap::new();
         for member in &schema.model().root().members {
@@ -84,7 +109,7 @@ impl Prospective {
             // collection's. `resolved_collection` is the identity for a real collection.
             if let Some(collection) = schema.resolved_collection(&member.node) {
                 let path = CollectionPath::top(NameSegment::new(member.name.as_str()));
-                gather_tree(scan, schema, collection, &path, &mut committed, &mut working)?;
+                gather_tree(scan, subtree, schema, collection, &path, &mut committed, &mut working)?;
             }
         }
         // §8.2: the package root's singleton fields live in one reserved row.
@@ -173,32 +198,64 @@ impl Prospective {
     }
 }
 
-/// Gather every direct row of the collection at `path`, then recurse into each
-/// row's nested keyed collections (§5.4), so the whole subtree of committed rows
-/// enters the working copy.
-fn gather_tree(
+/// Gather every direct row of the collection at `path`, then the whole subtree of
+/// committed rows under each in ONE shape-directed `scan_subtree` per row (§7.6),
+/// so the working copy ends up identical to the former per-nested-collection scan
+/// recursion while touching the store far fewer times. `steps` is the set of
+/// nested keyed-collection names declared anywhere in this collection's shape —
+/// exactly the collections that recursion descended — so every descendant row of a
+/// well-formed store is reached (a stored child always sits under a declared nested
+/// collection). A leaf shape has no nested collections, so `scan_subtree`
+/// short-circuits without a store round trip.
+fn gather_tree<'m>(
     scan: &Scan<'_>,
-    schema: Schema<'_>,
-    collection: &Collection,
+    subtree: &SubtreeScan<'_>,
+    schema: Schema<'m>,
+    collection: &'m Collection,
     path: &CollectionPath,
     committed: &mut BTreeMap<RowAddress, Value>,
     working: &mut BTreeMap<RowAddress, FieldMap>,
 ) -> Result<(), StoreError> {
+    let steps = nested_step_names(schema, collection);
     for (address, value) in scan(path)? {
         working.insert(address.clone(), materialize::fields_of(&value));
-        for member in &collection.shape.members {
-            // §5.4/§5.8: recurse into every nested keyed collection, whether declared
-            // directly or adopted through a `$types`/`$like` name (`subcompanies:
-            // "company"`). The recursion is bounded by the stored data: `scan` returns
-            // rows only where they exist, so a self-referential shape stops at the
-            // deepest stored level.
-            if let Some(nested) = schema.resolved_collection(&member.node) {
-                let nested_path =
-                    CollectionPath::nested(address.steps().cloned(), NameSegment::new(member.name.as_str()));
-                gather_tree(scan, schema, nested, &nested_path, committed, working)?;
+        if !steps.is_empty() {
+            for (nested_address, nested_value) in subtree(&address, &steps)? {
+                working.insert(nested_address.clone(), materialize::fields_of(&nested_value));
+                committed.insert(nested_address, nested_value);
             }
         }
         committed.insert(address, value);
     }
     Ok(())
+}
+
+/// The declared nested keyed-collection names reachable anywhere in `collection`'s
+/// shape — the §7.6 step universe `scan_subtree` descends. It is the transitive
+/// closure of `resolved_collection` over the shape graph, exactly the collections
+/// the former [`gather_tree`] recursion visited level by level. A self-referential
+/// shape (`subcompanies: "company"`) resolves its recursive member back to the same
+/// shared collection node, so a visited-set over resolved collection identities
+/// terminates the closure (the guard against a cyclic shape with shallow data).
+fn nested_step_names<'m>(schema: Schema<'m>, collection: &'m Collection) -> Vec<String> {
+    let mut steps: BTreeSet<String> = BTreeSet::new();
+    let mut visited: Vec<*const Collection> = Vec::new();
+    let mut stack: Vec<&'m Collection> = vec![collection];
+    while let Some(current) = stack.pop() {
+        let identity = std::ptr::from_ref::<Collection>(current);
+        if visited.contains(&identity) {
+            continue;
+        }
+        visited.push(identity);
+        for member in &current.shape.members {
+            // §5.4/§5.8: a nested keyed collection, whether declared directly or
+            // adopted through a `$types`/`$like` name, contributes its step name and
+            // its own shape's nested collections to the descent universe.
+            if let Some(nested) = schema.resolved_collection(&member.node) {
+                steps.insert(member.name.as_str().to_owned());
+                stack.push(nested);
+            }
+        }
+    }
+    steps.into_iter().collect()
 }

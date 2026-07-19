@@ -40,6 +40,21 @@ pub trait InstanceStore {
     /// Scan a collection's direct rows in Annex B key-ascending order (B.5).
     fn scan(&self, collection: &CollectionPath) -> Result<Vec<(RowAddress, StoredRow)>, StoreError>;
 
+    /// Every row of the subtree rooted at `root` (excluding `root` itself), i.e.
+    /// all rows whose address strictly extends `root`'s, in Annex B address order.
+    /// Semantics-free: no predicates; tombstoned intermediates are traversed so
+    /// logical orphans (§5.4) are included. `steps` is the set of declared nested
+    /// collection names occurring in the subtree's shape — the descent visits only
+    /// child rows under those step names, which is every row a well-formed store
+    /// holds there (the caller derives `steps` from the compiled shape; §7.6). A
+    /// `root` shape with no nested collections passes an empty `steps` and gets an
+    /// empty result without a query.
+    fn scan_subtree(
+        &self,
+        root: &RowAddress,
+        steps: &[String],
+    ) -> Result<Vec<(RowAddress, StoredRow)>, StoreError>;
+
     /// A materialized snapshot of committed state at `frontier` — the live-view
     /// and replay read primitive. A `frontier` past [`InstanceStore::head`] is a
     /// corruption error; equal to the head yields current state.

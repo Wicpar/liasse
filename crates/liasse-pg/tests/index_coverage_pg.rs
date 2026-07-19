@@ -118,6 +118,27 @@ fn walk(plan: &J, out: &mut Vec<String>) {
     }
 }
 
+/// Collect every occurrence of a string-valued plan field (e.g. `Index Name`,
+/// `Index Cond`) across the plan tree, depth first — the evidence gate 9 reads to
+/// prove the shape-directed descent stays on `node_key_lookup` with the `= ANY`
+/// inside the Index Cond.
+fn collect_field(plan: &J, field: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_field_walk(plan, field, &mut out);
+    out
+}
+
+fn collect_field_walk(plan: &J, field: &str, out: &mut Vec<String>) {
+    if let Some(value) = plan.get(field).and_then(J::as_str) {
+        out.push(value.to_owned());
+    }
+    if let Some(children) = plan.get("Plans").and_then(J::as_array) {
+        for child in children {
+            collect_field_walk(child, field, out);
+        }
+    }
+}
+
 /// Assert a plan is served by an index and never scans the whole table.
 fn assert_index_only(plan: &J, label: &str) {
     let types = node_types(plan);
@@ -310,6 +331,57 @@ fn every_query_pattern_is_index_served() {
         &[&"orgs", &key_enc(1), &teams, &key_enc(1), &members],
     );
     assert_index_ordered(&plan, "depth-3 scan §4.2 chained-InitPlan, index-ordered no Sort");
+
+    // (9) `scan_subtree` shape-directed recursive CTE (§7.6) — the anchor resolves
+    // the subtree root `/orgs/1` by the chained InitPlan, and the recursive term
+    // descends `c.parent_id = p.id AND c.step_name = ANY($steps)` over the DECLARED
+    // nested collections. This is the whole point of the shape-directed form: naming
+    // the step(s) keeps the recursive probe on `node_key_lookup` with the `= ANY`
+    // INSIDE the Index Cond — index-served, no Seq Scan at anchor OR recursive term.
+    // The `parent_id`-only join (no `step_name`) is the pinned anti-pattern: it plans
+    // a Seq Scan + Hash Join, which this gate would catch. The final SELECT emits the
+    // live descendants; ordering is done in Rust (no `Sort` here).
+    let steps: Vec<String> = vec!["teams".to_owned(), "items".to_owned(), "members".to_owned()];
+    let depth_cap: i64 = 10_000;
+    let plan = explain(
+        &mut client,
+        &format!(
+            "WITH RECURSIVE sub AS ( \
+               SELECT n.id, '[]'::jsonb AS rel_path, 0::bigint AS depth, n.incarnation, n.value \
+               FROM {s}.nodes n \
+               WHERE n.parent_id = 0 AND n.step_name = $1 AND n.key_enc = $2 \
+             UNION ALL \
+               SELECT c.id, \
+                      p.rel_path || jsonb_build_array(jsonb_build_array(to_jsonb(c.step_name), c.key_wire)), \
+                      p.depth + 1, c.incarnation, c.value \
+               FROM sub p \
+               JOIN {s}.nodes c ON c.parent_id = p.id AND c.step_name = ANY($3) \
+               WHERE p.depth < $4 \
+             ) \
+             SELECT rel_path, depth, incarnation, value FROM sub WHERE depth > 0 AND value IS NOT NULL"
+        ),
+        &[&"orgs", &key_enc(1), &steps, &depth_cap],
+    );
+    assert_index_only(&plan, "scan_subtree shape-directed recursive CTE");
+    // Anchor AND recursive term each ride `node_key_lookup` — no other index, and at
+    // least two node lookups (the two scan sources of the recursive union).
+    let index_names = collect_field(&plan, "Index Name");
+    assert!(
+        index_names.iter().all(|name| name == "node_key_lookup"),
+        "scan_subtree: an index scan rides an index other than node_key_lookup: {index_names:?}"
+    );
+    assert!(
+        index_names.iter().filter(|name| name.as_str() == "node_key_lookup").count() >= 2,
+        "scan_subtree: anchor and recursive term must each use node_key_lookup: {index_names:?}"
+    );
+    // The shape-directed rule's teeth: the `step_name = ANY(...)` predicate stays in
+    // the Index Cond (one probe per (parent, step)), never demoted to a Filter over a
+    // Seq Scan.
+    let index_conds = collect_field(&plan, "Index Cond");
+    assert!(
+        index_conds.iter().any(|cond| cond.contains("step_name") && cond.contains("ANY")),
+        "scan_subtree: the `step_name = ANY(steps)` descent must stay inside the Index Cond: {index_conds:?}"
+    );
 
     // (3) Commit-log read from a seq (log_from / replay) — WHERE seq >= $1 ORDER BY
     // seq, served in order by the `commit_log` primary key.

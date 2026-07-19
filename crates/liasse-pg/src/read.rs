@@ -25,7 +25,7 @@
 //! decoded `key_wire` (via [`crate::node_load::decode_key_wire`]) — never a
 //! parent-chain walk.
 
-use liasse_ident::RowIncarnation;
+use liasse_ident::{NameSegment, RowIncarnation};
 use liasse_store::{AddressStep, CollectionPath, KeyValue, RowAddress, StoreError, StoredRow};
 use liasse_value::Value;
 use postgres::GenericClient;
@@ -143,6 +143,105 @@ pub(crate) fn scan<C: GenericClient>(
             Ok((collection.row(key), stored_row(row)?))
         })
         .collect()
+}
+
+/// Depth cap for the subtree descent (§11, risk 9). A well-formed `nodes`
+/// adjacency tree is finite and far shallower than this; reaching it means the
+/// table holds a `parent_id` cycle (corruption), which the recursive term would
+/// otherwise follow forever. It is a corruption tripwire, not a schema limit —
+/// legitimate data never approaches it.
+const MAX_SUBTREE_DEPTH: i64 = 10_000;
+
+/// Every live row of the subtree rooted at `address` (excluding the root itself),
+/// reached through the declared nested-collection `steps`, in Annex B address
+/// order (§7.6 shape-directed descent). One pooled `WITH RECURSIVE` statement:
+///
+/// - the **anchor** resolves the root by the §4.1 chained-InitPlan point lookup
+///   (an `Index Scan using node_key_lookup`); it does NOT filter `value IS NOT
+///   NULL`, because a tombstoned root still has orphan descendants to reach and
+///   the root row is never emitted anyway;
+/// - the **recursive term** joins children on `c.parent_id = p.id AND c.step_name
+///   = ANY($steps)`, which keeps the probe on `node_key_lookup` with the `ANY`
+///   inside the Index Cond — index-served, no Seq Scan (the `parent_id`-only join
+///   plans a Seq Scan + Hash Join and is the pinned anti-pattern, gate 9). It does
+///   NOT filter `value IS NOT NULL` either, so it TRAVERSES tombstoned
+///   intermediates to their live orphans (the opposite of the coverage CTE, whose
+///   tombstone barrier blocks a branch);
+/// - each step carries the relative `(step_name, key_wire)` path so the caller
+///   rebuilds the descendant's full address without a parent-chain walk.
+///
+/// Only live rows (`value IS NOT NULL`) below the root are emitted; ordering is
+/// done in Rust over the reconstructed [`RowAddress`] (no `Sort` in the plan), so
+/// the delivered order is byte-identical to the in-memory oracle's `BTreeMap`
+/// order. A `steps`-empty shape needs no query.
+pub(crate) fn scan_subtree<C: GenericClient>(
+    client: &mut C,
+    schema: &str,
+    root: &RowAddress,
+    steps: &[String],
+) -> Result<Vec<(RowAddress, StoredRow)>, StoreError> {
+    if steps.is_empty() {
+        return Ok(Vec::new());
+    }
+    let root_steps: Vec<&AddressStep> = root.steps().collect();
+    let (final_step, ancestors) =
+        root_steps.split_last().ok_or_else(|| corrupt("subtree root has no steps"))?;
+    let mut binds = Vec::new();
+    let chain = parent_chain(schema, ancestors, &mut binds);
+    let root_name = push(&mut binds, final_step.name().as_str().to_owned());
+    let root_key = push(&mut binds, key_enc::encode_key_value(final_step.key()));
+    let steps_param = push(&mut binds, steps.to_vec());
+    let depth_param = push(&mut binds, MAX_SUBTREE_DEPTH);
+    let sql = format!(
+        "WITH RECURSIVE sub AS ( \
+           SELECT n.id, '[]'::jsonb AS rel_path, 0::bigint AS depth, n.incarnation, n.value \
+           FROM {schema}.nodes n \
+           WHERE n.parent_id = {chain} AND n.step_name = ${root_name} AND n.key_enc = ${root_key} \
+         UNION ALL \
+           SELECT c.id, \
+                  p.rel_path || jsonb_build_array(jsonb_build_array(to_jsonb(c.step_name), c.key_wire)), \
+                  p.depth + 1, c.incarnation, c.value \
+           FROM sub p \
+           JOIN {schema}.nodes c ON c.parent_id = p.id AND c.step_name = ANY(${steps_param}) \
+           WHERE p.depth < ${depth_param} \
+         ) \
+         SELECT rel_path, depth, incarnation, value FROM sub WHERE depth > 0 AND value IS NOT NULL"
+    );
+    let rows = client.query(&sql, &bind_refs(&binds)).map_err(backend)?;
+    let mut out = Vec::with_capacity(rows.len());
+    for row in &rows {
+        if cell::<i64>(row, "sub", "depth")? >= MAX_SUBTREE_DEPTH {
+            return Err(corrupt(format!(
+                "subtree descent from `{}` reached depth {MAX_SUBTREE_DEPTH}; `nodes` holds a parent_id cycle",
+                root.render()
+            )));
+        }
+        let rel_path = jsonb_text::from_jsonb(&cell::<J>(row, "sub", "rel_path")?);
+        out.push((rebuild_address(root, &rel_path)?, stored_row(row)?));
+    }
+    // Order in Rust by the reconstructed address (Annex B / `RowAddress` order),
+    // matching the in-memory oracle exactly and keeping the plan sort-free.
+    out.sort_by(|(a, _), (b, _)| a.cmp(b));
+    Ok(out)
+}
+
+/// Rebuild a descendant's full address from `root` plus the relative
+/// `(step_name, key_wire)` pairs the subtree CTE carried, decoding each level's
+/// key with the same `key_wire` inverter the scan uses.
+fn rebuild_address(root: &RowAddress, rel_path: &J) -> Result<RowAddress, StoreError> {
+    let pairs = rel_path.as_array().ok_or_else(|| corrupt("subtree rel_path is not an array"))?;
+    let mut address = root.clone();
+    for pair in pairs {
+        let pair = pair.as_array().ok_or_else(|| corrupt("subtree rel_path level is not a pair"))?;
+        let name = pair
+            .first()
+            .and_then(J::as_str)
+            .ok_or_else(|| corrupt("subtree rel_path level has no step name"))?;
+        let wire = pair.get(1).ok_or_else(|| corrupt("subtree rel_path level has no key_wire"))?;
+        let key = crate::node_load::decode_key_wire(wire)?;
+        address = address.child(AddressStep::new(NameSegment::new(name), key));
+    }
+    Ok(address)
 }
 
 /// Resolve the surrogate id of the node at `address` — live row OR tombstone — as

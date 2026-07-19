@@ -239,6 +239,22 @@ impl InstanceStore for PgStore {
         read::scan(&mut *conn, &s, collection)
     }
 
+    fn scan_subtree(
+        &self,
+        root: &RowAddress,
+        steps: &[String],
+    ) -> Result<Vec<(RowAddress, StoredRow)>, StoreError> {
+        // §7.6: one pooled shape-directed `WITH RECURSIVE` statement — the anchor
+        // resolves `root` via the chained InitPlan, the recursive term descends
+        // `c.step_name = ANY($steps)` (staying on `node_key_lookup`, no Seq Scan,
+        // index gate 9), traversing tombstones and emitting live descendants only.
+        // Ordering is done in Rust over the reconstructed address, so the plan
+        // carries no `Sort` and the order is byte-identical to the memory oracle.
+        let s = self.schema.quoted();
+        let mut conn = self.reads.get().map_err(pool)?;
+        read::scan_subtree(&mut *conn, &s, root, steps)
+    }
+
     fn snapshot(&self, frontier: CommitSeq) -> Result<Snapshot, StoreError> {
         // §4.3: the frontier-past-head check reads the durable head first, then the
         // snapshot folds the append-only `commit_log` prefix `≤ frontier`, index-
