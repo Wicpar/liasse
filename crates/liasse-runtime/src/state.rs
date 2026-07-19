@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use liasse_ident::NameSegment;
-use liasse_model::{Collection, Node};
+use liasse_model::Collection;
 use liasse_store::{CollectionPath, InstanceStore, RowAddress, Snapshot, StoreError};
 use liasse_value::Value;
 
@@ -79,9 +79,12 @@ impl Prospective {
         let mut committed = BTreeMap::new();
         let mut working = BTreeMap::new();
         for member in &schema.model().root().members {
-            if let Node::Collection(collection) = &member.node {
+            // §5.8: a top-level member naming a keyed shape (`companies: "company"`)
+            // resolves to that collection, so its stored rows are gathered like any
+            // collection's. `resolved_collection` is the identity for a real collection.
+            if let Some(collection) = schema.resolved_collection(&member.node) {
                 let path = CollectionPath::top(NameSegment::new(member.name.as_str()));
-                gather_tree(scan, collection, &path, &mut committed, &mut working)?;
+                gather_tree(scan, schema, collection, &path, &mut committed, &mut working)?;
             }
         }
         // §8.2: the package root's singleton fields live in one reserved row.
@@ -175,6 +178,7 @@ impl Prospective {
 /// enters the working copy.
 fn gather_tree(
     scan: &Scan<'_>,
+    schema: Schema<'_>,
     collection: &Collection,
     path: &CollectionPath,
     committed: &mut BTreeMap<RowAddress, Value>,
@@ -183,10 +187,15 @@ fn gather_tree(
     for (address, value) in scan(path)? {
         working.insert(address.clone(), materialize::fields_of(&value));
         for member in &collection.shape.members {
-            if let Node::Collection(nested) = &member.node {
+            // §5.4/§5.8: recurse into every nested keyed collection, whether declared
+            // directly or adopted through a `$types`/`$like` name (`subcompanies:
+            // "company"`). The recursion is bounded by the stored data: `scan` returns
+            // rows only where they exist, so a self-referential shape stops at the
+            // deepest stored level.
+            if let Some(nested) = schema.resolved_collection(&member.node) {
                 let nested_path =
                     CollectionPath::nested(address.steps().cloned(), NameSegment::new(member.name.as_str()));
-                gather_tree(scan, nested, &nested_path, committed, working)?;
+                gather_tree(scan, schema, nested, &nested_path, committed, working)?;
             }
         }
         committed.insert(address, value);

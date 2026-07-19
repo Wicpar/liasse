@@ -53,9 +53,42 @@ impl<'m> Schema<'m> {
         Some(current)
     }
 
-    /// The top-level collection declared under `name`, if any.
+    /// The top-level collection declared under `name`, if any. A member naming a
+    /// keyed `$types` shape (`companies: "company"`, §5.8) resolves to that shape's
+    /// collection, so a top-level named collection is a first-class collection.
     pub(crate) fn top_collection(&self, name: &str) -> Option<&'m Collection> {
-        Self::collection_member(self.model.root(), name)
+        self.collection_member(self.model.root(), name)
+    }
+
+    /// Resolve a [`Node::Named`] (§5.8) to the concrete node it adopts, following a
+    /// bounded chain of `$types` aliases. A bare-alias cycle (`a: "b", b: "a"`) or an
+    /// unknown name ends the walk at the last node, so resolution is total and cannot
+    /// loop: a recursive `$types` shape recurses through a keyed collection, never a
+    /// bare alias, so the load gate admits no such cycle, but the bound keeps this
+    /// safe regardless. A non-named node is returned as-is.
+    pub(crate) fn resolved_node(&self, node: &'m Node) -> &'m Node {
+        let types = self.model.types();
+        let mut current = node;
+        // The alias chain is at most one hop per table entry; a longer walk is a cycle.
+        for _ in 0..=types.len() {
+            match current {
+                Node::Named(name) => match types.get(name) {
+                    Some(next) => current = next,
+                    None => return current,
+                },
+                _ => return current,
+            }
+        }
+        current
+    }
+
+    /// The keyed collection a node adopts once its `$types`/`$like` names are
+    /// resolved (§5.8), or `None` when it is not a collection.
+    pub(crate) fn resolved_collection(&self, node: &'m Node) -> Option<&'m Collection> {
+        match self.resolved_node(node) {
+            Node::Collection(collection) => Some(collection),
+            _ => None,
+        }
     }
 
     /// The identity key type of top-level collection `name` (§5.4, A.9): a scalar
@@ -74,19 +107,17 @@ impl<'m> Schema<'m> {
         let (head, rest) = path.split_first()?;
         let mut current = self.top_collection(head)?;
         for segment in rest {
-            current = match current.shape.member(segment).map(|m| &m.node) {
-                Some(Node::Collection(nested)) => nested,
-                _ => return None,
-            };
+            // §5.8: a nested member naming a `$types`/`$like` collection shape
+            // (`subcompanies: "company"`, `children: { $like: "^" }`) resolves to that
+            // collection, so a self-referential nested collection is descendable.
+            let member = current.shape.member(segment)?;
+            current = self.resolved_collection(&member.node)?;
         }
         Some(current)
     }
 
-    fn collection_member<'a>(shape: &'a Shape, name: &str) -> Option<&'a Collection> {
-        match shape.member(name).map(|m| &m.node) {
-            Some(Node::Collection(collection)) => Some(collection),
-            _ => None,
-        }
+    fn collection_member(&self, shape: &'m Shape, name: &str) -> Option<&'m Collection> {
+        self.resolved_collection(&shape.member(name)?.node)
     }
 
     fn shape_row(&self, shape: &Shape, key: Option<ExprType>, depth: u32) -> RowType {

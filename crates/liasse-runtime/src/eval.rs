@@ -476,7 +476,7 @@ impl<'a> EvalCtx<'a> {
         let keep = |name: &str, fields: &FieldMap| self.active_at(name, fields, now);
         let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
         let temporal = Temporal { keep: &keep, interval: &interval };
-        let row = materialize::materialize_row(collection, address, prospective.working(), &temporal)?;
+        let row = materialize::materialize_row(self.schema, collection, address, prospective.working(), &temporal)?;
         match self.compiled.collection_at(decl_path) {
             Some(compiled) if !compiled.computed.is_empty() => {
                 let env = self.env_at(prospective, now);
@@ -545,7 +545,7 @@ impl<'a> EvalCtx<'a> {
                     // selector addressing this bucket resolves against it by name.
                     index.push(NamedExtant {
                         name: name.to_owned(),
-                        rows: materialize::extant_bucketed_rows(collection, name, prospective.working(), &temporal),
+                        rows: materialize::extant_bucketed_rows(self.schema, collection, name, prospective.working(), &temporal),
                     });
                 }
             }
@@ -640,7 +640,7 @@ impl<'a> EvalCtx<'a> {
         let keep = |name: &str, fields: &FieldMap| self.active(name, fields);
         let interval = |name: &str, fields: &FieldMap| self.interval(name, fields);
         let temporal = Temporal { keep: &keep, interval: &interval };
-        let row = materialize::materialize_row(collection, address, prospective.working(), &temporal)?;
+        let row = materialize::materialize_row(self.schema, collection, address, prospective.working(), &temporal)?;
         let compiled = self.compiled.collection_at(decl_path);
         let row = match compiled {
             Some(compiled) if !compiled.computed.is_empty() => {

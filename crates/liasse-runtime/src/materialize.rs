@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use liasse_expr::{Cell, Row, RowId};
 use liasse_ident::NameSegment;
-use liasse_model::{Collection, Node};
+use liasse_model::Collection;
 use liasse_store::{AddressStep, CollectionPath, KeyValue, RowAddress};
 use liasse_value::{Struct, Text, Timestamp, Value};
 
@@ -177,16 +177,20 @@ pub(crate) fn top_address(name: &str, key: KeyValue) -> RowAddress {
 /// each surviving bucketed row carries its `$from`/`$until` interval cells so a
 /// temporal selector can re-derive activity. A non-bucketed collection keeps
 /// every row and no interval, reproducing §8.2 exactly.
-pub(crate) fn materialize_root_filtered(
-    schema: Schema<'_>,
+pub(crate) fn materialize_root_filtered<'m>(
+    schema: Schema<'m>,
     working: &BTreeMap<RowAddress, FieldMap>,
     temporal: &Temporal<'_>,
 ) -> Row {
     let mut cells: Vec<(String, Cell)> = Vec::new();
     for member in &schema.model().root().members {
-        if let Node::Collection(collection) = &member.node {
+        // §5.8: a top-level member naming a keyed shape (`companies: "company"`)
+        // resolves to that collection and materializes as a keyed cell, exactly like
+        // a directly-declared collection. `resolved_collection` is the identity for a
+        // real `Node::Collection`, so the two cases share this arm.
+        if let Some(collection) = schema.resolved_collection(&member.node) {
             let name = member.name.as_str();
-            let rows = collection_rows(name, collection, working, temporal, true);
+            let rows = collection_rows(schema, name, collection, working, temporal, true);
             cells.push((name.to_owned(), Cell::Collection(rows)));
         }
     }
@@ -201,8 +205,9 @@ pub(crate) fn materialize_root_filtered(
 /// Materialize the single row at `address` (top-level or nested) with its
 /// nested collections and struct cells (§5.4), for a row receiver / local-row
 /// binding read (§8.1, §8.10). `None` when no row lives there.
-pub(crate) fn materialize_row(
-    collection: &Collection,
+pub(crate) fn materialize_row<'m>(
+    schema: Schema<'m>,
+    collection: &'m Collection,
     address: &RowAddress,
     working: &BTreeMap<RowAddress, FieldMap>,
     temporal: &Temporal<'_>,
@@ -211,34 +216,36 @@ pub(crate) fn materialize_row(
     let step = address.steps().last()?;
     let key = key_identity(collection, step.key());
     let id = RowId::keyed(row_id_text(step.key()));
-    Some(build_row(collection, fields, key, id, address, working, temporal))
+    Some(build_row(schema, collection, fields, key, id, address, working, temporal))
 }
 
 /// The full extant row set of one bucketed collection (§14.2), ignoring current
 /// activity — the working set a temporal selector re-derives from. Each row
 /// carries its `$from`/`$until` interval cells.
-pub(crate) fn extant_bucketed_rows(
-    collection: &Collection,
+pub(crate) fn extant_bucketed_rows<'m>(
+    schema: Schema<'m>,
+    collection: &'m Collection,
     name: &str,
     working: &BTreeMap<RowAddress, FieldMap>,
     temporal: &Temporal<'_>,
 ) -> Vec<Row> {
-    collection_rows(name, collection, working, temporal, false)
+    collection_rows(schema, name, collection, working, temporal, false)
 }
 
 /// The rows of one top-level collection in key-ascending order (B.5). When
 /// `filter_active` holds, a bucketed collection's inactive rows are dropped (a
 /// bare read, §14.1); otherwise every extant row is kept (`.$all`, §14.2). Each
 /// bucketed row carries its evaluated `$from`/`$until` interval cells.
-fn collection_rows(
+fn collection_rows<'m>(
+    schema: Schema<'m>,
     name: &str,
-    collection: &Collection,
+    collection: &'m Collection,
     working: &BTreeMap<RowAddress, FieldMap>,
     temporal: &Temporal<'_>,
     filter_active: bool,
 ) -> Vec<Row> {
     let path = CollectionPath::top(NameSegment::new(name));
-    rows_at(&path, collection, working, temporal, filter_active, None)
+    rows_at(schema, &path, collection, working, temporal, filter_active, None)
 }
 
 /// The rows of one collection at `path` in key-ascending order (B.5), each built
@@ -247,9 +254,10 @@ fn collection_rows(
 /// identity for a nested collection, so a nested row extends its ancestor's
 /// identity path (§7.2, Annex D.1). `filter_active` drops a bucketed collection's
 /// inactive rows; nested collections are read in full.
-fn rows_at(
+fn rows_at<'m>(
+    schema: Schema<'m>,
     path: &CollectionPath,
-    collection: &Collection,
+    collection: &'m Collection,
     working: &BTreeMap<RowAddress, FieldMap>,
     temporal: &Temporal<'_>,
     filter_active: bool,
@@ -270,7 +278,7 @@ fn rows_at(
                 None => RowId::keyed(key_text),
                 Some(parent) => parent.child_keyed(key_text),
             };
-            let mut row = build_row(collection, fields, key, id, address, working, temporal);
+            let mut row = build_row(schema, collection, fields, key, id, address, working, temporal);
             if let Some(interval) = (temporal.interval)(name, fields) {
                 row = with_interval_cells(row, interval);
             }
@@ -348,8 +356,10 @@ fn row_id_text(key: &KeyValue) -> String {
 /// field (§5.4). A nested keyed collection member is materialized from the rows
 /// living under this row's `address` (§5.4), extending its identity; every other
 /// field reads its stored value (absent reads as `none`).
-fn build_row(
-    collection: &Collection,
+#[allow(clippy::too_many_arguments)]
+fn build_row<'m>(
+    schema: Schema<'m>,
+    collection: &'m Collection,
     fields: &FieldMap,
     key: Value,
     id: RowId,
@@ -363,13 +373,20 @@ fn build_row(
         .iter()
         .map(|member| {
             let name = member.name.as_str();
-            let cell = match &member.node {
-                Node::Collection(nested) => {
+            // §5.4/§5.8: a nested keyed collection — declared directly OR adopted by a
+            // `$types`/`$like` name (`subcompanies: "company"`, `children: { $like:
+            // "^" }`) — is a traversable keyed-row source. Materialize the rows stored
+            // under this row's address, extending its identity (§7.2, D.1). The
+            // recursion is bounded by the DATA, not the type: `rows_at` only reaches the
+            // rows that exist under `address`, so a type-level-infinite self-referential
+            // shape with finite data terminates when a level has no stored rows.
+            let cell = match schema.resolved_collection(&member.node) {
+                Some(nested) => {
                     let nested_path =
                         CollectionPath::nested(address.steps().cloned(), NameSegment::new(name));
-                    Cell::Collection(rows_at(&nested_path, nested, working, temporal, false, Some(&id)))
+                    Cell::Collection(rows_at(schema, &nested_path, nested, working, temporal, false, Some(&id)))
                 }
-                _ => Cell::Scalar(fields.get(name).cloned().unwrap_or(Value::None)),
+                None => Cell::Scalar(fields.get(name).cloned().unwrap_or(Value::None)),
             };
             (name.to_owned(), cell)
         })

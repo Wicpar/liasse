@@ -144,20 +144,17 @@ fn adjacency_list_flatten_arbitrary_depth() {
 // stays green; `cargo test -- --ignored` reproduces the divergence.
 // ===========================================================================
 
-/// FINDING F1 — §5.8 + §6.4: fixed-depth traversal-flatten over a SELF-REFERENTIAL
-/// shape. Identical in form to the distinct-collection flatten above, but the
-/// nested collection is the SAME named type (`subcompanies: "company"`). The
-/// package compiles; at watch time the runtime's environment builder cannot shape
-/// the self-referential nested field.
-/// Expected: rows `[{ parent: acme, sub: labs, name: "Acme Labs" }]`.
-/// Observed: the watch step is SKIPPED — host fault "engine invariant violated:
-/// environment supplied a value that is not a row with this field".
-/// Root cause: self-referential nested-collection field shaping in the runtime
-/// evaluation environment (liasse-runtime environment/shape builder — the same
-/// seam that skips `tests/05-state-model/common/named-type-recursive-shape.hjson`
-/// and `like-recursion-adopts-containing-shape.hjson`).
+/// §5.8 + §6.4: fixed-depth traversal-flatten over a SELF-REFERENTIAL shape.
+/// Identical in form to the distinct-collection flatten above, but the nested
+/// collection is the SAME named type (`subcompanies: "company"`). A member naming a
+/// keyed `$types`/`$like` shape now resolves to that collection everywhere the
+/// runtime walks the state tree — compile, seed, store gather, and materialization
+/// (§5.4) — so the self-referential nested collection is a proper traversable
+/// keyed-row source at each level, bounded by the actual data depth (§5.4/D.1).
+/// Result: rows `[{ parent: acme, sub: labs, name: "Acme Labs" }]`, each carrying
+/// the ancestor+local composite identity a `::` traversal composes (§7.2/§5.4).
+/// (Formerly FINDING F1, an `#[ignore]`d repro of the now-closed shaping gap.)
 #[test]
-#[ignore = "FINDING F1: §5.8/§6.4 self-referential nested-collection view shaping unimplemented (host fault: 'not a row with this field'); repro-only"]
 fn selfref_fixed_depth_traversal_flatten() {
     let case = r##"{
       format: 1

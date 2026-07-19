@@ -608,6 +608,16 @@ fn retimestamp(ty: &Type, precision: liasse_value::Precision) -> Type {
     }
 }
 
+/// The bound on how deep a self-referential `$types`/`$like` shape (§5.8) is
+/// eagerly expanded into the compiled collection tree, matching the resolver's
+/// recursion cap ([`crate::schema`]). The compiled tree is a finite structure, so
+/// a type that refers to itself (`subcompanies: "company"`) cannot be expanded to
+/// its infinite depth; it is compiled to this depth and cut, a documented CORE
+/// bound identical to the one the model resolver applies when typing the same
+/// shape. Reads (materialization) are bounded by the actual data depth instead, so
+/// a tree deeper than any single mutation/seed still round-trips through reads.
+const MAX_SELF_REF_DEPTH: u32 = 32;
+
 fn compile_collections(
     sources: &mut SourceMap,
     schema: Schema<'_>,
@@ -617,14 +627,17 @@ fn compile_collections(
 ) -> Result<Vec<CompiledCollection>, EngineError> {
     let mut out = Vec::new();
     for member in &schema.model().root().members {
-        if let Node::Collection(collection) = &member.node {
+        // §5.8: a top-level member naming a keyed `$types` shape (`companies:
+        // "company"`) is a first-class collection; resolve the name before compiling.
+        if let Some(collection) = schema.resolved_collection(&member.node) {
             let path = vec![member.name.as_str().to_owned()];
-            out.push(compile_collection(sources, schema, root_ty, model_doc, &path, collection, hosts)?);
+            out.push(compile_collection(sources, schema, root_ty, model_doc, &path, collection, hosts, 0)?);
         }
     }
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_collection(
     sources: &mut SourceMap,
     schema: Schema<'_>,
@@ -633,6 +646,7 @@ fn compile_collection(
     path: &[String],
     collection: &Collection,
     hosts: &HostSignatures,
+    depth: u32,
 ) -> Result<CompiledCollection, EngineError> {
     let name = path.last().map_or("", String::as_str);
     let row_ty = schema
@@ -653,6 +667,24 @@ fn compile_collection(
 
     for member in &collection.shape.members {
         let name = member.name.as_str();
+        // §5.8: a member naming a `$types` shape or a `$like` positional shape is a
+        // `Node::Named` that ADOPTS a keyed collection (`subcompanies: "company"`,
+        // `children: { $like: "^" }`). Resolve it and compile it as an ordinary
+        // nested keyed collection (§5.4), so mutations and seeds can write it. A
+        // named member that is NOT a collection falls through to its own node form.
+        if let Node::Named(_) = &member.node
+            && let Some(nested) = schema.resolved_collection(&member.node)
+        {
+            // A self-referential shape is expanded to `MAX_SELF_REF_DEPTH` and then
+            // cut — a deeper level contributes no compiled child; reads are bounded by
+            // the actual data depth instead, so a deep tree still round-trips.
+            if depth < MAX_SELF_REF_DEPTH {
+                let mut child_path = path.to_vec();
+                child_path.push(name.to_owned());
+                children.push(compile_collection(sources, schema, root_ty, model_doc, &child_path, nested, hosts, depth + 1)?);
+            }
+            continue;
+        }
         match &member.node {
             // A static struct member (§5.3): compiled so its own field defaults,
             // normalizers, and checks run during the containing insertion (§5.1).
@@ -661,11 +693,13 @@ fn compile_collection(
                 child_path.push(name.to_owned());
                 structs.push(compile_struct(sources, schema, root_ty, model_doc, &child_path, name, shape, hosts)?);
             }
-            // A nested keyed collection (§5.4): compiled recursively into a child.
+            // A nested keyed collection (§5.4): compiled recursively into a child. A
+            // directly-declared nested collection is finite, so its depth is kept
+            // (only self-referential `Node::Named` expansion consumes the cap).
             Node::Collection(nested) => {
                 let mut child_path = path.to_vec();
                 child_path.push(name.to_owned());
-                children.push(compile_collection(sources, schema, root_ty, model_doc, &child_path, nested, hosts)?);
+                children.push(compile_collection(sources, schema, root_ty, model_doc, &child_path, nested, hosts, depth)?);
             }
             // A nested `$view` member (§7.1): compiled with the row as `.` so a
             // `/coll[k].view` read (e.g. a `.modules::iface` aggregation) resolves.

@@ -242,11 +242,15 @@ pub const SKIP: &[(&str, &str)] = &[
     // The step reached the engine but tripped an engine invariant while shaping the
     // evaluation environment (a row/collection the runtime could not present in the
     // expected shape). A runtime gap, surfaced as a host fault and skipped.
-    // ========================================================================
-    // --- hostfault:nested ---
-    ("05-state-model/like-recursion-adopts-containing-shape", "host environment nested-collection shaping gap (engine invariant)"),
+    //
+    // The §5.8 self-referential nested-collection shaping gap is now closed: a
+    // member naming a `$types`/`$like` keyed shape (`subcompanies: "company"`,
+    // `children: { $like: "^" }`) resolves to that collection everywhere the runtime
+    // walks the state tree (compile, seed, store gather, materialization), so the two
+    // §5.8 cases pass and were removed here. The residual `hostfault:row-field`
+    // entries below are a SEPARATE gap (`^` lexical-parent scope, keyless plain-object
+    // struct projection, deep keyless projection) that this fix does not touch.
     // --- hostfault:row-field ---
-    ("05-state-model/named-type-recursive-shape", "host environment row-field shaping gap (engine invariant)"),
     ("06-expressions/caret-reads-lexical-parent-scope", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/computed-field-equals-prefix-form", "host environment row-field shaping gap (engine invariant)"),
     ("annex-c-grammar/deep-nested-projection-loads", "host environment row-field shaping gap (engine invariant)"),
