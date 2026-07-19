@@ -30,9 +30,13 @@ impl Decimal {
     /// multi-gigabyte string. A.6 requires only "at least sixteen fractional
     /// digits" (SPEC.md line 4437) and bounds the result scale by an
     /// implementation limit (line 4438); the language version pins no exact
-    /// value, so this crate picks a generous `2^14` — orders of magnitude beyond
-    /// any real decimal yet far below any allocation hazard.
-    pub const MAX_SCALE_MAGNITUDE: u64 = 1 << 14;
+    /// value, so this crate pins it to PostgreSQL `numeric`'s maximum dscale,
+    /// **16383 fractional digits**. The `liasse-pg` backend stores and folds
+    /// decimals as `numeric`, whose fractional-scale ceiling is 16383, so a
+    /// decimal accepted here is always representable there — the two value
+    /// domains agree exactly (one digit under the former `2^14`). Still orders
+    /// of magnitude beyond any real decimal, far below any allocation hazard.
+    pub const MAX_SCALE_MAGNITUDE: u64 = 16383;
 
     /// Parse an exact decimal.
     ///

@@ -452,3 +452,27 @@ fn decimal_rejects_extreme_scale_exponent() {
         Err(ValueError::DecimalScaleOutOfRange { .. })
     ));
 }
+
+#[test]
+fn decimal_scale_bound_matches_postgres_numeric_dscale() {
+    // The scale bound is aligned to PostgreSQL `numeric`'s maximum dscale, so any
+    // decimal accepted at the wire boundary is representable in the `liasse-pg`
+    // backend (which stores and folds decimals as `numeric`, scale ceiling 16383).
+    assert_eq!(Decimal::MAX_SCALE_MAGNITUDE, 16383);
+
+    // Exactly at the bound decodes — 16383 fractional digits and its
+    // negative-scale mirror (16383 trailing zeros).
+    assert!(Type::Decimal.decode(&serde_json::json!("1E-16383")).is_ok());
+    assert!(Type::Decimal.decode(&serde_json::json!("1E+16383")).is_ok());
+
+    // One digit past the bound — the scale PostgreSQL `numeric` cannot hold — is
+    // rejected on both sides, so no admitted decimal can fault the backend fold.
+    assert!(matches!(
+        Type::Decimal.decode(&serde_json::json!("1E-16384")),
+        Err(ValueError::DecimalScaleOutOfRange { .. })
+    ));
+    assert!(matches!(
+        Type::Decimal.decode(&serde_json::json!("1E+16384")),
+        Err(ValueError::DecimalScaleOutOfRange { .. })
+    ));
+}

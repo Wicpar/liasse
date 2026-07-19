@@ -201,7 +201,7 @@ fn battery() -> Vec<(&'static str, Value)> {
         ("dec:10e-1", dec("10e-1")),
         ("dec:10", dec("10")),
         ("dec:100", dec("100")),
-        // near-limit exponents (scale magnitude approaches Decimal::MAX_SCALE_MAGNITUDE = 2^14)
+        // near-limit exponents (scale magnitude approaches Decimal::MAX_SCALE_MAGNITUDE = 16383)
         ("dec:1e-16000", dec("1e-16000")),
         ("dec:1e16000", dec("1e16000")),
         ("dec:-1e16000", dec("-1e16000")),
