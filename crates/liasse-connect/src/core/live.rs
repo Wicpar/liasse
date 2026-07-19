@@ -61,6 +61,37 @@ impl<S: InstanceStore> ConnectCore<S> {
             Ok(name) => name,
             Err(error) => return Ok(Reply::Outcome(encode::decode_error(&error))),
         };
+        // §11.4: decode the authenticator selection up front — it gates authorization,
+        // which must settle before the closed-shape `$params` decode is revealed.
+        let selection = match auth {
+            Some(auth) => match decode::decode_selection(&self.schema, auth) {
+                Ok(selection) => Some(selection),
+                Err(_) => return Ok(Reply::Outcome(encode::unverified())),
+            },
+            None => None,
+        };
+
+        // §10.4/§12.1 (GitHub #39): settle the denied/allowed disposition from name
+        // resolution and membership BEFORE the closed-shape `$params` decode, so a
+        // non-member's refusal is a uniform `denied` independent of the params shape or
+        // whether the view exists. The authorization probe carries no params —
+        // resolution and membership never read them — so an existing ungranted role
+        // view and a nonexistent one deny identically, and the decode's
+        // `malformed`/param-type reveal (item 6/#10) is withheld from a caller that has
+        // not established authority over the target.
+        let mut probe = SurfaceWatch::new(addr.clone(), sub.as_str());
+        if let Some(name) = &context_name {
+            probe = probe.with_context(name.clone());
+        }
+        if let Some(selection) = &selection {
+            probe = probe.with_auth(selection.clone());
+        }
+        if let Err(denial) = self.host.authorize_view(token.as_str(), &probe) {
+            return Ok(Reply::Outcome(encode::denied(&denial)));
+        }
+
+        // Authorized: the closed-shape `$params` decode may now reveal a malformed or
+        // unknown parameter to this authorized caller (§10.1, item 6/#10).
         let args = match decode::decode_args(self.schema.view_params(address), params) {
             Ok(args) => args,
             Err(error) => return Ok(Reply::Outcome(encode::decode_error(&error))),
@@ -69,11 +100,8 @@ impl<S: InstanceStore> ConnectCore<S> {
         if let Some(name) = &context_name {
             watch = watch.with_context(name.clone());
         }
-        if let Some(auth) = auth {
-            match decode::decode_selection(&self.schema, auth) {
-                Ok(selection) => watch = watch.with_auth(selection),
-                Err(_) => return Ok(Reply::Outcome(encode::unverified())),
-            }
+        if let Some(selection) = selection {
+            watch = watch.with_auth(selection);
         }
         if let Some(wire) = window {
             match self.build_window(token, &wire) {
@@ -214,12 +242,29 @@ impl<S: InstanceStore> ConnectCore<S> {
         let Ok(addr) = SurfaceAddress::parse(address) else {
             return Ok(Reply::Outcome(encode::unresolved()));
         };
-        let args = match decode::decode_args(self.schema.view_params(address), params) {
-            Ok(args) => args,
-            Err(error) => return Ok(Reply::Outcome(encode::decode_error(&error))),
-        };
         let scratch = format!("{}::fetch", token.as_str());
         self.host.connect(&scratch);
+
+        // §10.4/§12.1 (GitHub #39): authorize the params-free target BEFORE the
+        // closed-shape `$params` decode, so an existing ungranted role view (here,
+        // always unauthenticated — the scratch connection carries no actor) and a
+        // nonexistent one refuse identically, instead of the existing view decoding
+        // its `$params` cleanly while the nonexistent one rejects them as unknown.
+        let probe = SurfaceWatch::new(addr.clone(), "fetch");
+        if let Err(denial) = self.host.authorize_view(&scratch, &probe) {
+            self.host.disconnect(&scratch);
+            return Ok(Reply::Outcome(encode::denied(&denial)));
+        }
+
+        // Authorized: the closed-shape `$params` decode may now reveal a malformed or
+        // unknown parameter to this authorized caller (§10.1, item 6/#10).
+        let args = match decode::decode_args(self.schema.view_params(address), params) {
+            Ok(args) => args,
+            Err(error) => {
+                self.host.disconnect(&scratch);
+                return Ok(Reply::Outcome(encode::decode_error(&error)));
+            }
+        };
         let watch = SurfaceWatch::new(addr, "fetch").with_args(args);
         let reply = match self.host.watch(&scratch, &watch) {
             Ok(Subscription::Init(result)) => Reply::Fetched(fetch_value(&result)),

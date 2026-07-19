@@ -505,6 +505,33 @@ impl<S: InstanceStore> SurfaceHost<S> {
             }
         }
     }
+
+    /// Decide the authorization disposition of a subscription over `watch`'s target
+    /// WITHOUT opening it, so a boundary can settle the denied/allowed outcome from
+    /// name resolution and membership *before* it applies any closed-shape `$params`
+    /// check (§10.4, §12.1, GitHub #39 — the `view`/`fetch` mirror of the item-8
+    /// `call` oracle [`authorize_call`](Self::authorize_call) closes).
+    ///
+    /// Runs exactly the [`resolve_view`](Self::resolve_view) pipeline `watch`/`resume`
+    /// run — resolve the role, verify the selection, confirm membership — but
+    /// read-only: no subscription is installed and no rows flow. The surface `$params`
+    /// arguments are never read (resolution and membership do not depend on them), so
+    /// the disposition is independent of the params payload:
+    ///
+    /// * `Ok(())` — the caller is a confirmed member of (or holds public access to)
+    ///   the resolved view; a closed-shape `$params` reveal (`malformed`, the declared
+    ///   parameter set/types) is now safe to surface to it (item 6/#10).
+    /// * `Err(Denial)` — a non-member, an unresolvable name, an unauthenticated role
+    ///   read, or an unverified selection; a non-member and a nonexistent name are
+    ///   indistinguishable (class and diagnostic code), whatever the params payload.
+    ///
+    /// A boundary that gates its `$params` decode on this closes the enumeration
+    /// oracle where a valid-param-shaped probe to an existing ungranted view would
+    /// `Denied` while the same probe to a nonexistent one `Rejected`, revealing
+    /// existence by outcome class.
+    pub fn authorize_view(&self, id: &str, watch: &SurfaceWatch) -> Result<(), Denial> {
+        self.resolve_view(id, watch.address(), watch.context(), watch.auth()).map(|_| ())
+    }
 }
 
 /// Build the runtime [`ViewQuery`] a subscription evaluates its `$view` under: the

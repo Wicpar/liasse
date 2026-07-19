@@ -96,6 +96,10 @@ pub const SURFACE_APP: &str = r#"{
           "$view": ".index"
           "$mut": { "complete": ".rename" }
         }
+        "owned": {
+          "$params": { "owner": "text = 'anon'" }
+          "$view": ".tasks[:t | t.owner == @owner] { id, owner, $sort: [id] }"
+        }
       }
     }
   }
@@ -160,6 +164,7 @@ fn router(model: &Model) -> SurfaceRouter {
     let member_tasks = SurfaceBinding::new()
         .with_view(ViewBinding::new("index"))
         .with_call("complete", CallBinding::root("rename", ["id".to_owned(), "title".to_owned()]));
+    let member_owned = SurfaceBinding::new().with_view(ViewBinding::surface("member.owned"));
 
     let token = SessionAuthenticator::session(
         "token",
@@ -181,7 +186,7 @@ fn router(model: &Model) -> SurfaceRouter {
         .public_surface("intake", intake)
         .authenticator(Box::new(token))
         .authenticator(Box::new(api))
-        .role(member, [("tasks".to_owned(), member_tasks)])
+        .role(member, [("tasks".to_owned(), member_tasks), ("owned".to_owned(), member_owned)])
         .build(model)
         .expect("router validates against the model")
 }
@@ -200,6 +205,7 @@ fn schema(engine: &Engine<MemoryStore>) -> Schema {
         .call("member.tasks.complete", mutation_args(model, "rename"))
         .view("public.tasks", engine.surface_view_params("public.tasks"))
         .view("member.tasks", engine.surface_view_params("member.tasks"))
+        .view("member.owned", engine.surface_view_params("member.owned"))
         .credential("token", Type::Text)
         .credential("api", Type::Text)
         .build()
