@@ -17,7 +17,7 @@
 //!   demote and be repaired from another verified holder (`genuinely_tampered_*`),
 //!   so the fix does not weaken the §18.6 repair path.
 
-use std::cell::Cell;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::BTreeMap;
 
 use liasse_host::{
@@ -36,12 +36,12 @@ use liasse_value::{MediaType, Sha512};
 /// whose SHA-512 no longer matches the descriptor — the §18.9 corrupt object.
 struct ToggleConnector {
     objects: BTreeMap<Sha512, Vec<u8>>,
-    available: Cell<bool>,
+    available: AtomicBool,
 }
 
 impl ToggleConnector {
     fn new() -> Self {
-        Self { objects: BTreeMap::new(), available: Cell::new(true) }
+        Self { objects: BTreeMap::new(), available: AtomicBool::new(true) }
     }
 
     /// Corrupt the physical bytes held for `digest` (a bit-rot / tamper): the
@@ -61,7 +61,7 @@ impl BlobConnector for ToggleConnector {
     }
 
     fn upload(&mut self, digest: &Sha512, bytes: &[u8]) -> Result<(), ConnectorFailure> {
-        if !self.available.get() {
+        if !self.available.load(Ordering::Relaxed) {
             return Err(ConnectorFailure::Unavailable);
         }
         self.objects.insert(*digest, bytes.to_vec());
@@ -69,7 +69,7 @@ impl BlobConnector for ToggleConnector {
     }
 
     fn fetch(&self, digest: &Sha512) -> Result<Vec<u8>, ConnectorFailure> {
-        if !self.available.get() {
+        if !self.available.load(Ordering::Relaxed) {
             // Temporary outage: no bytes delivered. The object is NOT corrupt.
             return Err(ConnectorFailure::Unavailable);
         }
@@ -86,14 +86,14 @@ impl BlobConnector for ToggleConnector {
     }
 
     fn exists(&self, digest: &Sha512) -> Result<bool, ConnectorFailure> {
-        if !self.available.get() {
+        if !self.available.load(Ordering::Relaxed) {
             return Err(ConnectorFailure::Unavailable);
         }
         Ok(self.objects.contains_key(digest))
     }
 
     fn delete(&mut self, digest: &Sha512) -> Result<(), ConnectorFailure> {
-        if !self.available.get() {
+        if !self.available.load(Ordering::Relaxed) {
             return Err(ConnectorFailure::Unavailable);
         }
         self.objects.remove(digest);
@@ -145,7 +145,7 @@ fn engine_with_one_copy() -> (BlobEngine<ToggleConnector>, Blob, Placement) {
 fn temporary_outage_does_not_demote_verified_copy() {
     let (mut engine, mut blob, placement) = engine_with_one_copy();
 
-    engine.connector_mut("c").expect("connector").available.set(false);
+    engine.connector_mut("c").expect("connector").available.store(false, Ordering::Relaxed);
     engine.reconcile(&mut blob, &placement);
 
     let state = blob.placement(&StoreId::new("s1"));
@@ -164,9 +164,9 @@ fn temporary_outage_does_not_demote_verified_copy() {
 fn sole_copy_survives_outage_and_recovery() {
     let (mut engine, mut blob, placement) = engine_with_one_copy();
 
-    engine.connector_mut("c").expect("connector").available.set(false);
+    engine.connector_mut("c").expect("connector").available.store(false, Ordering::Relaxed);
     engine.reconcile(&mut blob, &placement);
-    engine.connector_mut("c").expect("connector").available.set(true);
+    engine.connector_mut("c").expect("connector").available.store(true, Ordering::Relaxed);
     engine.reconcile(&mut blob, &placement);
 
     assert_eq!(

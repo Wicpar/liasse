@@ -98,7 +98,7 @@ impl VerifyFailure {
 
 /// The `$verify` host seam (§11.3, §16.3): turn a credential into a typed proof,
 /// or fail. It performs no application-state mutation.
-pub trait Verifier {
+pub trait Verifier: Send + Sync {
     /// Verify `credential`, returning its embedded claims or a failure.
     ///
     /// # Errors
@@ -109,7 +109,7 @@ pub trait Verifier {
 /// An authenticator (§11.3): the runtime piece a targeted role selects to admit
 /// a request. It owns the whole §11.3 resolution — verify, bind, resolve
 /// session/actor, check — and yields a resolved [`AuthContext`] or a [`Denial`].
-pub trait Authenticator {
+pub trait Authenticator: Send + Sync {
     /// The name a role's `$auth` selection and a request name it by (§11.4).
     fn name(&self) -> &str;
 

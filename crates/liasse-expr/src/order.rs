@@ -98,7 +98,7 @@ impl SortOrder {
 /// expression layer only asks by name and never reaches into the registry itself.
 /// This is what lets a §7.4 combinator (`.desc - .never`) recover its left
 /// operand's order and keep a windowed frozen-gap resume monotone (§12.2).
-pub trait ViewOrders {
+pub trait ViewOrders: Send + Sync {
     /// The declared result order of the top-level view named `name`, or `None`
     /// when no view of that name is declared — a field naming a bare data
     /// collection carries no `$sort`, so it stays occurrence-identity ordered

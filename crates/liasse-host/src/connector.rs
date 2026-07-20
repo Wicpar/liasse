@@ -133,7 +133,7 @@ pub struct UsageObservation {
 /// deliver exactly the bytes identified by the requested digest; the runtime
 /// verifies this before delivery (§18.9), so a connector cannot make tampered
 /// bytes a successful fetch — see [`crate::BlobIntegrity`].
-pub trait BlobConnector {
+pub trait BlobConnector: Send + Sync {
     /// The capabilities this connector advertises (§18.12).
     fn capabilities(&self) -> ConnectorCapabilities;
 

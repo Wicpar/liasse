@@ -16,7 +16,7 @@ use crate::descriptor::NamespaceDescriptor;
 /// Object-safe by construction: no generic methods, no `Self` returns. The
 /// runtime resolves a `$requires` entry to one of these and invokes its
 /// functions with typed arguments.
-pub trait HostNamespace {
+pub trait HostNamespace: Send + Sync {
     /// The pinned load-time descriptor (§16.2): named types, typed function
     /// signatures, effect classes, and the semantic interface hash. The
     /// runtime resolves and pins this; the model type-checks call sites

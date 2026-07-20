@@ -35,7 +35,7 @@ use liasse_wire::{ConnectionToken, Ft, Occ};
 /// How a token payload is authenticated on the wire. The connect layer supplies
 /// the payload *structure* (namespace, public id, position); a minter only seals and
 /// re-opens it, so the integrity scheme is swappable without touching the registry.
-pub trait TokenMinter: Send + 'static {
+pub trait TokenMinter: Send + Sync + 'static {
     /// Seal an authenticated payload into its wire form. The default is the
     /// identity — the payload carries only the non-secret public id, and the stream
     /// is protected by requiring the connection secret at the registry.

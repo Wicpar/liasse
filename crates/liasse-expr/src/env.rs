@@ -340,7 +340,7 @@ pub enum KeyringSelector {
 /// (`/`, `.field`, selectors) is performed by the evaluator over the [`Row`]
 /// tree; the environment only supplies the roots, out-of-band bindings, and the
 /// two generative samples.
-pub trait Environment {
+pub trait Environment: Send + Sync {
     /// The package root (`/`).
     fn root(&self) -> &Row;
 

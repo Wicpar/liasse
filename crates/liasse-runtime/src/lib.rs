@@ -170,6 +170,7 @@ mod schema;
 mod scope;
 mod seed;
 mod seed_value;
+mod send_sync;
 mod singleton;
 mod source_bucket;
 mod state;

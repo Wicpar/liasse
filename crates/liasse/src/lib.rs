@@ -213,3 +213,6 @@ pub mod artifact {
 pub mod host {
     pub use liasse_host::*;
 }
+
+// Compile-time pin: `Engine<PgStore>` is `Send` (the pg store is `Send`-not-`Sync`).
+mod send_sync;

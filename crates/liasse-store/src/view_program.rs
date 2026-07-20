@@ -82,7 +82,7 @@ pub struct CandidateSubtree(pub Vec<(Vec<(String, KeyValue)>, Value)>);
 /// evaluation fault is an [`EvalFault`], never a silent verdict. The `*_wire`
 /// methods return the version-locked serialized faces a pushdown backend ships to
 /// its in-database twin; the in-memory oracle never calls them.
-pub trait ViewProgram {
+pub trait ViewProgram: Send + Sync {
     /// The nested-collection step names the program reads through the candidate —
     /// the compiler-extracted candidate-subtree read-set. Empty for the common
     /// shallow program; non-empty directs the store to prefetch each candidate's

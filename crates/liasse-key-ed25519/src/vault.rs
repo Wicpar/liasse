@@ -27,7 +27,7 @@ const KEY_LEN: usize = 32;
 /// Where an [`Ed25519KeyProvider`](crate::Ed25519KeyProvider) persists private
 /// seeds (§17.6). Seeds handed to a vault are secret; an at-rest implementation
 /// MUST encrypt them before they leave process memory.
-pub trait KeyVault {
+pub trait KeyVault: Send + Sync {
     /// Persist the private `seed` for `handle`, replacing any existing entry.
     ///
     /// # Errors

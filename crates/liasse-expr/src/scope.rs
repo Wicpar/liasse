@@ -21,7 +21,7 @@ use crate::ty::ExprType;
 /// "unknown name" diagnostic. A structural binding absent from the current
 /// feature context (e.g. `$config` outside a module expression) is exactly a
 /// `None` from [`Scope::structural`].
-pub trait Scope {
+pub trait Scope: Send + Sync {
     /// The type of the current value or row `.` (§6.2).
     fn current(&self) -> Option<ExprType>;
 

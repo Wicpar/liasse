@@ -161,7 +161,7 @@ impl Attestation {
 /// Object-safe and synchronous. Lifecycle operations that change the provider's
 /// keystore take `&mut self` (one writer per instance); reads take `&self`. A
 /// failure before admission commits no application effect (§17.9).
-pub trait KeyProvider {
+pub trait KeyProvider: Send + Sync {
     /// The capabilities this provider advertises (§17.6).
     fn capabilities(&self) -> KeyCapabilities;
 
