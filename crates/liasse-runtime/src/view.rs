@@ -8,9 +8,11 @@
 
 use std::collections::BTreeMap;
 
-use liasse_expr::{Cell, RowId, SortOrder};
-use liasse_value::Value;
+use liasse_expr::{Cell, Row, RowId, SortOrder};
+use liasse_value::{Json, Struct, Text, Value};
+use serde_json::Value as J;
 
+use crate::error::EngineError;
 use crate::patch::PatchOp;
 
 /// One row of a view result: its stable identity, its scalar output fields, and
@@ -81,13 +83,16 @@ impl ViewResult {
     /// outermost `$sort` fixed (§7.3). A collection or single row becomes a row
     /// stream carrying that order; a scalar/aggregate cell becomes a
     /// [`ViewResult::Scalar`] carrying its value (§12.2), never a dropped empty
-    /// stream.
-    pub(crate) fn from_cell(cell: &Cell, order: SortOrder) -> Self {
-        match cell {
-            Cell::Collection(rows) => Self::Rows { rows: rows.iter().map(view_row).collect(), order },
-            Cell::Row(row) => Self::Rows { rows: vec![view_row(row)], order },
+    /// stream. Fallible because a projected nested sub-collection member is
+    /// materialized through the canonical json codec ([`collection_value`]).
+    pub(crate) fn from_cell(cell: &Cell, order: SortOrder) -> Result<Self, EngineError> {
+        Ok(match cell {
+            Cell::Collection(rows) => {
+                Self::Rows { rows: rows.iter().map(view_row).collect::<Result<_, _>>()?, order }
+            }
+            Cell::Row(row) => Self::Rows { rows: vec![view_row(row)?], order },
             Cell::Scalar(value) => Self::Scalar(value.clone()),
-        }
+        })
     }
 
     /// The rows in canonical order. A scalar result has no rows, so this is an
@@ -236,42 +241,70 @@ impl ViewDelta {
     }
 }
 
-fn view_row(row: &liasse_expr::Row) -> ViewRow {
+fn view_row(row: &Row) -> Result<ViewRow, EngineError> {
     let fields = row
         .cells()
-        .filter_map(|(name, cell)| Some((name.clone(), cell_field_value(cell)?)))
-        .collect();
-    ViewRow { id: row.id().clone(), fields, sort_tuple: row.sort().to_vec() }
+        .filter_map(|(name, cell)| {
+            cell_field_value(cell).map(|opt| opt.map(|value| (name.clone(), value))).transpose()
+        })
+        .collect::<Result<BTreeMap<_, _>, _>>()?;
+    Ok(ViewRow { id: row.id().clone(), fields, sort_tuple: row.sort().to_vec() })
 }
 
 /// The exposed value of one projected output cell, or `None` when it is omitted.
 ///
 /// A `none` optional is an *absent* optional whose field-position wire form is an
 /// omitted member (§A.9 / Annex A wire table, "omitted optional field"), distinct
-/// from a present JSON `null` (`Value::Json(Json::Null)`). A §5.3 static struct —
-/// a keyless nested projection — is projected as a nested object sharing the row's
-/// identity/lifecycle, so it is carried inline as a `Value::Struct`, recursing to
-/// any depth (Annex C.7). A keyed nested cell (a §12.2 sub-view row stream, or a
-/// single keyed sub-view row) is an addressable stream delivered separately, not
-/// part of this row's scalar projection, so it is dropped here.
-fn cell_field_value(cell: &Cell) -> Option<Value> {
-    match cell {
+/// from a present JSON `null` (`Value::Json(Json::Null)`).
+///
+/// A nested cell is a REQUIRED output of the row (§7.1: "projection members are
+/// unordered named outputs"; §8: a response value MAY be a nested collection), so
+/// it is carried inline in the row's INITIAL materialized value, recursing to any
+/// depth (Annex C.7):
+///
+/// - a nested single row — a §5.3 keyless static struct, or a keyed single
+///   sub-view row (§7.1/§8) — as a nested object [`Value::Struct`];
+/// - a nested sub-collection view member (`kids: .children { … }`) as the ordered
+///   array of its projected row objects, in canonical B.5 order ([`Value::Json`]).
+///
+/// The live §12.2 patch stream over such a sub-view is a SEPARATE concern
+/// ([`crate::patch::diff`]); it does not license dropping the member from the
+/// one-shot materialized value a `view`/`view_at_head` read returns.
+fn cell_field_value(cell: &Cell) -> Result<Option<Value>, EngineError> {
+    Ok(match cell {
         Cell::Scalar(Value::None) => None,
         Cell::Scalar(value) => Some(value.clone()),
-        // A keyless row is a static-struct value (§5.3); a keyed row is a sub-view.
-        Cell::Row(row) if row.key() == &Value::None => Some(struct_value(row)),
-        Cell::Row(_) | Cell::Collection(_) => None,
-    }
+        Cell::Row(row) => Some(struct_value(row)?),
+        Cell::Collection(rows) => Some(collection_value(rows)?),
+    })
 }
 
-/// A keyless projected row as a canonical [`Value::Struct`] (§5.3): its member
-/// cells in declaration order, each recursively converted, with an absent (`none`)
-/// or dropped sub-view member omitted — the nested-object wire form of a static
-/// struct.
-fn struct_value(row: &liasse_expr::Row) -> Value {
-    Value::Struct(liasse_value::Struct::new(
-        row.cells().filter_map(|(name, cell)| {
-            Some((liasse_value::Text::new(name.clone()), cell_field_value(cell)?))
-        }),
-    ))
+/// A projected row as a canonical [`Value::Struct`]: its member cells in
+/// declaration order, each recursively converted, with an absent (`none`) member
+/// omitted — the nested-object wire form (§5.3 for a keyless static struct; a
+/// keyed single sub-view row, §7.1/§8, shares the same object shape).
+fn struct_value(row: &Row) -> Result<Value, EngineError> {
+    let members = row
+        .cells()
+        .filter_map(|(name, cell)| {
+            cell_field_value(cell).map(|opt| opt.map(|value| (Text::new(name.clone()), value))).transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(Value::Struct(Struct::new(members)))
+}
+
+/// A projected sub-collection view member as an inline [`Value::Json`] array of
+/// its row objects (§7.1/§8), in the collection's canonical B.5 row order — each
+/// row recursively shaped by its own projection through [`struct_value`]. Routed
+/// through the canonical json codec exactly as [`crate::recursion`] materializes a
+/// nested tree; the codec's json-number bound is total on already-canonical values
+/// and any residual malformation surfaces as an engine invariant break, never a
+/// dropped member or a panic.
+fn collection_value(rows: &[Row]) -> Result<Value, EngineError> {
+    let objects = rows
+        .iter()
+        .map(|row| struct_value(row).map(|value| value.to_wire()))
+        .collect::<Result<Vec<_>, _>>()?;
+    let json = Json::from_wire(&J::Array(objects)).map_err(|error| EngineError::Internal(error.to_string()))?;
+    Ok(Value::Json(json))
 }

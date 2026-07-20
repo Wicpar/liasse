@@ -339,7 +339,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- fail:noview ---
     ("14-buckets/short-form-from-defaults-to-created", "no view value produced (unsupported view/watch path)"),
     // --- fail:outcome ---
-    ("05-state-model/nested-initializer-failure-rejects-parent-insert", "outcome divergence: expected `ok` observed `rejected`"),
     ("06-expressions/row-mutation-receiver-duplicate-occurrences-reject", "outcome divergence: expected `ok` observed `rejected`"),
     // (§10.3/§10.5 scoped-role addressing is now wired — the surface host resolves a
     // role held by a specific ROW addressed by (row identity + role name) and, under
@@ -357,10 +356,7 @@ pub const SKIP: &[(&str, &str)] = &[
     ("15-meters/hierarchical-level-without-meter-adds-no-constraint", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/hierarchical-limits-clear-every-level", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/inactive-bucketed-spend-retains-allocation", "outcome divergence: expected `ok` observed `rejected`"),
-    ("15-meters/plan-downgrade-preserves-recorded-funding", "outcome divergence: expected `ok` observed `rejected`"),
-    ("15-meters/pool-removal-preserves-recorded-funding", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/spend-at-pool-until-boundary-excluded", "outcome divergence: expected `ok` observed `rejected`"),
-    ("15-meters/spend-update-failure-preserves-prior-allocation", "outcome divergence: expected `ok` observed `rejected`"),
     ("23-host-contract/restart-preserves-identity-values-and-view", "outcome divergence: expected `ok` observed `denied`"),
     // --- fail:valdiff ---
     // --- fail:viewdiff ---

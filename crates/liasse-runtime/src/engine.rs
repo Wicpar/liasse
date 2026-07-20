@@ -1550,7 +1550,7 @@ impl<S: InstanceStore> Engine<S> {
         // §7.3/§12.2: carry the view's total `$sort` order alongside the rows so a
         // bounded window partitions at its gap coordinate through the same order the
         // evaluator sorted by.
-        Ok(Some(ViewResult::from_cell(&cell, self.compiled.view_order_of(expr))))
+        Ok(Some(ViewResult::from_cell(&cell, self.compiled.view_order_of(expr))?))
     }
 
     /// §10.3/§10.5: resolve the receiver a scoped-role addressed call mutates — the
@@ -1660,7 +1660,7 @@ impl<S: InstanceStore> Engine<S> {
             .compiled
             .exposed_view(interface)
             .map_or_else(SortOrder::unordered, |expr| self.compiled.view_order_of(expr));
-        Ok(Some(ViewResult::from_cell(&cell, order)))
+        Ok(Some(ViewResult::from_cell(&cell, order)?))
     }
 
     /// The rows an `$expose`d interface `$view` projects through the boundary
