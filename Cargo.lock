@@ -925,6 +925,7 @@ name = "liasse-connect"
 version = "0.0.1"
 dependencies = [
  "liasse-ident",
+ "liasse-key-ed25519",
  "liasse-model",
  "liasse-runtime",
  "liasse-store",
@@ -1062,6 +1063,7 @@ dependencies = [
  "liasse-expr",
  "liasse-host",
  "liasse-ident",
+ "liasse-key-ed25519",
  "liasse-model",
  "liasse-store",
  "liasse-syntax",

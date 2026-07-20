@@ -19,7 +19,7 @@
 //! keyring-lifecycle accessor.
 
 use liasse_host::sim::{ProviderOp, SimKeyProvider};
-use liasse_host::ExternalKeyRef;
+use liasse_host::{ExternalKeyRef, KeyProvider};
 use liasse_runtime::{Engine, Keyring, VersionId, MANUAL_EXTERNAL_KEY};
 use liasse_store::InstanceStore;
 use serde_json::Value as J;
@@ -155,8 +155,10 @@ impl KeyringAdminSpec {
 
     /// The logical [`VersionId`] the step's version ordinal names, resolved from
     /// the ring's retained versions (§17.2 `.$versions.id`). `None` when the step
-    /// carries no version or the ring has no version of that ordinal.
-    fn version_id(&self, ring: &Keyring<SimKeyProvider>) -> Option<VersionId> {
+    /// carries no version or the ring has no version of that ordinal. Generic over
+    /// the ring's provider backing so it reads the engine's heterogeneous keyring
+    /// (`EngineKeyProvider`) without naming that runtime-internal type.
+    fn version_id<P: KeyProvider>(&self, ring: &Keyring<P>) -> Option<VersionId> {
         let ordinal: u64 = self.version.as_ref()?.parse().ok()?;
         ring.versions().iter().find(|version| version.id().get() == ordinal).map(|version| version.id())
     }

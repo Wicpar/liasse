@@ -31,6 +31,11 @@ thiserror = "2"
 [dev-dependencies]
 liasse-model = { path = "../liasse-model" }
 liasse-ident = { path = "../liasse-ident" }
+# The real software Ed25519 §17.5 provider, injected into the engine's keyring so
+# the loopback suite drives a full native-cose auth roundtrip over production keys
+# (Task 5-upstream): hello → login → cose-gated authenticate → authorized call.
+liasse-key-ed25519 = { path = "../liasse-key-ed25519" }
+liasse-value = { path = "../liasse-value" }
 
 [lints]
 workspace = true

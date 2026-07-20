@@ -20,7 +20,10 @@ pub use stream::StreamSession;
 use std::collections::BTreeMap;
 
 use liasse_store::InstanceStore;
-use liasse_surface::{Authenticate, CommitSeq, SurfaceHost};
+use liasse_surface::{
+    Authenticate, AuthSelection, CommitSeq, Credential, KeyProvider, SimKeyProvider, SurfaceHost,
+};
+use liasse_wire::serde_json::Value as Json;
 use liasse_wire::serde_json::json;
 use liasse_wire::{
     CloseReason, ConnectionToken, Downstream, Ft, ResetReason, SseEvent, Upstream,
@@ -40,8 +43,8 @@ const DEFAULT_CAPACITY: usize = 256;
 
 /// The connector core: the surface host, the decode contract, the token minter, and
 /// the live connection registry, owned by value.
-pub struct ConnectCore<S> {
-    host: SurfaceHost<S>,
+pub struct ConnectCore<S, P = SimKeyProvider> {
+    host: SurfaceHost<S, P>,
     schema: Schema,
     minter: Box<dyn TokenMinter>,
     connections: BTreeMap<ConnectionToken, ConnState>,
@@ -50,16 +53,16 @@ pub struct ConnectCore<S> {
     capacity: usize,
 }
 
-impl<S: InstanceStore> ConnectCore<S> {
+impl<S: InstanceStore, P: KeyProvider> ConnectCore<S, P> {
     /// Mount `host` behind `schema`, minting tokens with the default unsigned minter.
     #[must_use]
-    pub fn mount(host: SurfaceHost<S>, schema: Schema) -> Self {
+    pub fn mount(host: SurfaceHost<S, P>, schema: Schema) -> Self {
         Self::with_minter(host, schema, Box::new(UnsignedMinter::new()))
     }
 
     /// Mount with a specific [`TokenMinter`] (the D4 seam: HMAC, signed, …).
     #[must_use]
-    pub fn with_minter(host: SurfaceHost<S>, schema: Schema, minter: Box<dyn TokenMinter>) -> Self {
+    pub fn with_minter(host: SurfaceHost<S, P>, schema: Schema, minter: Box<dyn TokenMinter>) -> Self {
         Self {
             host,
             schema,
@@ -79,7 +82,7 @@ impl<S: InstanceStore> ConnectCore<S> {
 
     /// The underlying host, for reading committed state directly (tests, operators).
     #[must_use]
-    pub fn host(&self) -> &SurfaceHost<S> {
+    pub fn host(&self) -> &SurfaceHost<S, P> {
         &self.host
     }
 
@@ -233,10 +236,10 @@ impl<S: InstanceStore> ConnectCore<S> {
         self.connections.insert(token.clone(), ConnState::new(keys, self.capacity));
 
         if let Some(auth) = auth
-            && let Ok(hello) = decode::decode_hello_auth(&self.schema, auth)
+            && let Some((role, selection)) = self.hello_auth(auth)
         {
             let context_name = decode::decode_context(context).ok().flatten();
-            let mut request = Authenticate::new(hello.role, hello.selection);
+            let mut request = Authenticate::new(role, selection);
             if let Some(name) = context_name {
                 request = request.as_context(name);
             }
@@ -245,6 +248,41 @@ impl<S: InstanceStore> ConnectCore<S> {
             }
         }
         Ok(Reply::Hello { connection: token })
+    }
+
+    /// The role and (cose-gated or normally-decoded) authenticator selection a
+    /// `hello`/`authenticate` wire object carries (§11.4), or `None` when it names
+    /// no role or its credential does not decode — `hello` never leaks why a
+    /// credential failed, so a malformed selection just opens unauthenticated.
+    fn hello_auth(&self, auth: &Json) -> Option<(String, AuthSelection)> {
+        let role = auth.as_object()?.get("role")?.as_str()?.to_owned();
+        let selection = self.decode_selection(auth).ok()?;
+        Some((role, selection))
+    }
+
+    /// Decode a per-request authenticator selection (§11.4), gating a native-cose
+    /// `$verify: "cose.verify(/ring, …)"` credential through the engine's cose gate
+    /// (§17.7) before it reaches the surface [`Verifier`](liasse_surface::Verifier).
+    ///
+    /// For a cose authenticator (the schema records its keyring via
+    /// [`SchemaBuilder::cose`](crate::SchemaBuilder::cose)), the wire credential is
+    /// a login-minted cose token; [`Engine::cose_gate_wire`](liasse_runtime::Engine::cose_gate_wire)
+    /// reconstructs and verifies it against the ring's accepted versions at the
+    /// current instant — the acceptance read the surface verifier seam cannot reach
+    /// the engine to perform — and the VERIFIED CLAIMS struct becomes the
+    /// credential (or the `none` sentinel the surface cose verifier rejects, on any
+    /// failure: never the raw token, never a default identity). Any other
+    /// authenticator decodes through the ordinary strict credential decode.
+    fn decode_selection(&self, auth: &Json) -> Result<AuthSelection, decode::DecodeError> {
+        if let Some(object) = auth.as_object()
+            && let Some(name) = object.get("auth").and_then(Json::as_str)
+            && let Some(ring) = self.schema.cose_ring(name)
+            && let Some(credential) = object.get("credential")
+        {
+            let claims = self.host.engine().cose_gate_wire(ring, credential);
+            return Ok(AuthSelection::new(name.to_owned(), Credential::new(claims)));
+        }
+        decode::decode_selection(&self.schema, auth)
     }
 
     /// The surfaces exposed to the connection's context (§12.1 `manifest`).

@@ -27,14 +27,14 @@
 use std::collections::BTreeMap;
 
 use liasse_expr::{EvalError, ExprType, HostEffect, HostOp, HostOrigin};
-use liasse_host::sim::SimKeyProvider;
 use liasse_host::{
     cose_descriptor, verify_cose_signature, ConformanceGuard, ContractRef, CoseClaims, CoseToken,
-    EffectClass, GuardError, HostNamespace, InvocationFailure, NamespaceDescriptor, Registry,
-    ResolutionError, SignatureError,
+    EffectClass, GuardError, HostNamespace, InvocationFailure, KeyProvider, NamespaceDescriptor,
+    Registry, ResolutionError, SignatureError,
 };
 use liasse_value::{Timestamp, Value};
 
+use crate::engine_provider::EngineKeyProvider;
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::keyring::{Keyring, VersionId};
 
@@ -246,6 +246,14 @@ impl HostBinding {
         let contract = self.contract(local)?;
         self.registry.resolve_namespace(contract).ok()
     }
+
+    /// Remove and return the real key provider registered under `$provider` name
+    /// `name` (§17.5), moving its ownership out of the registry so the engine can
+    /// place it in the keyring it backs. `None` when the application registered no
+    /// provider under that name, so the ring self-provisions its sim double.
+    pub(crate) fn take_provider(&mut self, name: &str) -> Option<Box<dyn KeyProvider>> {
+        self.registry.take_provider(name)
+    }
 }
 
 /// Seed a built-in cose namespace when the registry has none, so a package
@@ -296,7 +304,7 @@ impl HostNamespace for CoseNamespace {
 #[derive(Clone, Copy)]
 pub(crate) struct HostDispatch<'a> {
     binding: Option<&'a HostBinding>,
-    keyrings: &'a [Keyring<SimKeyProvider>],
+    keyrings: &'a [Keyring<EngineKeyProvider>],
     now: Timestamp,
 }
 
@@ -311,7 +319,7 @@ impl<'a> HostDispatch<'a> {
     /// The live per-call dispatch a mutation admission runs against.
     pub(crate) fn new(
         binding: &'a HostBinding,
-        keyrings: &'a [Keyring<SimKeyProvider>],
+        keyrings: &'a [Keyring<EngineKeyProvider>],
         now: Timestamp,
     ) -> Self {
         Self { binding: Some(binding), keyrings, now }
@@ -399,7 +407,7 @@ impl<'a> HostDispatch<'a> {
         Ok(CoseToken::new(ring, token.version().get(), claims, token.signature().to_vec()).to_value())
     }
 
-    fn keyring(&self, ring: &str) -> Result<&Keyring<SimKeyProvider>, Rejection> {
+    fn keyring(&self, ring: &str) -> Result<&Keyring<EngineKeyProvider>, Rejection> {
         self.keyrings.iter().find(|r| r.name() == ring).ok_or_else(|| {
             Rejection::new(RejectionReason::Malformed, format!("`cose.sign` names unknown keyring `/{ring}`"))
         })
@@ -480,7 +488,7 @@ impl From<SignatureError> for CoseVerifyError {
 /// can reject an accepted-but-disallowed version. Used by the surface/testkit
 /// auth path.
 pub(crate) fn cose_verify(
-    keyrings: &[Keyring<SimKeyProvider>],
+    keyrings: &[Keyring<EngineKeyProvider>],
     ring: &str,
     token_value: &Value,
     now: Timestamp,

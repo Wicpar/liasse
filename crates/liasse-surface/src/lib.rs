@@ -121,6 +121,7 @@ pub use liasse_runtime::{
 /// Re-exported so a driver builds keyring providers, blob connectors, cose
 /// claims/tokens, and their fault-injection scripts without a direct dependency
 /// edge on the host crate.
+pub use liasse_host::sim::SimKeyProvider;
 pub use liasse_host::{
     cose_descriptor, BlobConnector, CoseClaims, CoseToken, ExternalKeyRef, KeyProvider,
 };

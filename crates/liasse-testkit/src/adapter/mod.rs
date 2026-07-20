@@ -66,7 +66,7 @@ use liasse_surface::{
     Authenticate, AuthSelection, Credential, SurfaceHost, Subscription, SurfaceError,
     Window, VirtualClock as SurfaceClock,
 };
-use liasse_value::{Json, Struct, Text, Type, Value};
+use liasse_value::{Text, Value};
 
 use crate::case::{Case, PackageSet};
 use crate::contract::{ConnectRequest, Driver, Observation};
@@ -703,62 +703,15 @@ pub(super) fn resolve_authenticate<S: InstanceStore>(
 
 /// Verify a cose-token credential against keyring `ring` (§17.7), yielding the
 /// verified claims as the surface credential on success, or the `none` sentinel a
-/// [`CoseVerifier`](auth) rejects on any verification failure.
+/// [`CoseVerifier`](auth) rejects on any verification failure. The token
+/// reconstruction and acceptance check are the runtime's shared native-cose gate
+/// ([`Engine::cose_gate_wire`]), so the harness and the connector run one gate.
 fn cose_gated_credential<S: InstanceStore>(
     engine: &Engine<S>,
     ring: &str,
     wire: &serde_json::Value,
 ) -> Credential {
-    // §17.7: `cose_verify` returns the verified claims and the accepted key-version
-    // identity; the auth credential carries the claims (the version identity is
-    // where a policy `$check` would reject an accepted-but-disallowed version).
-    match cose_token_from_wire(wire).map(|token| engine.cose_verify(ring, &token)) {
-        Some(Ok((claims, _version))) => Credential::new(claims),
-        _ => Credential::new(Value::None),
-    }
-}
-
-/// Reconstruct a cose-token [`Value`] from its wire JSON (the pinned §17.8 token
-/// format: `$ring`/`$version`/`$claims`/`$sig`), so a login-minted token carried
-/// back through the harness can be re-verified by [`Engine::cose_verify`](Engine::cose_verify).
-/// Each claim decodes to its most-specific scalar so the verified `session` claim
-/// matches the session row's typed key on lookup; canonical JSON is identical
-/// across those scalar spellings, so the token's signed-bytes check is unaffected.
-fn cose_token_from_wire(wire: &serde_json::Value) -> Option<Value> {
-    let object = wire.as_object()?;
-    let ring = object.get("$ring")?.as_str()?;
-    let version = Type::Int.decode(object.get("$version")?).ok()?;
-    let signature = Type::Bytes.decode(object.get("$sig")?).ok()?;
-    let claims = object
-        .get("$claims")?
-        .as_object()?
-        .iter()
-        .map(|(name, wire)| (Text::new(name.clone()), claim_value(wire)))
-        .collect::<Vec<_>>();
-    Some(Value::Struct(Struct::new([
-        (Text::new("$ring"), Value::Text(Text::new(ring.to_owned()))),
-        (Text::new("$version"), version),
-        (Text::new("$claims"), Value::Struct(Struct::new(claims))),
-        (Text::new("$sig"), signature),
-    ])))
-}
-
-/// Decode one claim's wire value to its most-specific scalar: a `uuid`/`int`
-/// string to that typed value (so a `uuid`/`int` session-key claim matches the
-/// session row's key by value), any other string to `text`, and a composite to
-/// `json`.
-fn claim_value(wire: &serde_json::Value) -> Value {
-    match wire {
-        serde_json::Value::String(text) => Type::Uuid
-            .decode(wire)
-            .or_else(|_| Type::Int.decode(wire))
-            .unwrap_or_else(|_| Value::Text(Text::new(text.clone()))),
-        serde_json::Value::Bool(flag) => Value::Bool(*flag),
-        other => Json::from_wire(other).map_or_else(
-            |_| Value::Text(Text::new(other.to_string())),
-            Value::Json,
-        ),
-    }
+    Credential::new(engine.cose_gate_wire(ring, wire))
 }
 
 /// Build a bounded window (§12.2) from a verbatim `window` spec. Handles the

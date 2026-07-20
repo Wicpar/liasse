@@ -26,6 +26,12 @@ pub struct Schema {
     calls: BTreeMap<String, Vec<(String, Type)>>,
     views: BTreeMap<String, Vec<(String, Type)>>,
     credentials: BTreeMap<String, Type>,
+    /// Each native-cose `$verify: "cose.verify(/ring, $credential)"` authenticator
+    /// name mapped to the keyring it verifies against (§17.7). The connector gates
+    /// such a credential through the engine's cose verify before it reaches the
+    /// surface authenticator, so — unlike `credentials` — a cose credential is not
+    /// a scalar the decoder shapes but a token verified against `ring`.
+    cose_rings: BTreeMap<String, String>,
 }
 
 impl Schema {
@@ -55,6 +61,15 @@ impl Schema {
     #[must_use]
     pub fn credential(&self, auth: &str) -> Option<&Type> {
         self.credentials.get(auth)
+    }
+
+    /// The keyring authenticator `auth` verifies against, when it is a native-cose
+    /// `$verify: "cose.verify(/ring, …)"` authenticator (§17.7). `None` for any
+    /// other authenticator, whose credential decodes through the ordinary typed
+    /// [`credential`](Self::credential) path instead of the cose verify gate.
+    #[must_use]
+    pub fn cose_ring(&self, auth: &str) -> Option<&str> {
+        self.cose_rings.get(auth).map(String::as_str)
     }
 }
 
@@ -94,6 +109,18 @@ impl SchemaBuilder {
     #[must_use]
     pub fn credential(mut self, auth: impl Into<String>, ty: Type) -> Self {
         self.schema.credentials.insert(auth.into(), ty);
+        self
+    }
+
+    /// Register a native-cose authenticator (§17.7): `auth` names a
+    /// `$verify: "cose.verify(/ring, $credential)"` authenticator whose wire
+    /// credential the connector gates through keyring `ring`'s cose verify before
+    /// it reaches the surface authenticator. Registered instead of a scalar
+    /// [`credential`](Self::credential) type — the credential is a signed token,
+    /// not a client-shaped scalar.
+    #[must_use]
+    pub fn cose(mut self, auth: impl Into<String>, ring: impl Into<String>) -> Self {
+        self.schema.cose_rings.insert(auth.into(), ring.into());
         self
     }
 

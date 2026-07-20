@@ -133,6 +133,16 @@ impl Registry {
         self.providers.get_mut(name).map(Box::as_mut)
     }
 
+    /// Remove and return a registered provider by name (§17.5), transferring
+    /// ownership of its opaque key material to the caller. The engine calls this
+    /// at load to move each declared `$keyring`'s registered provider into the
+    /// managed keyring it backs — a provider owns live private-key handles, so it
+    /// is *moved* into the ring, not borrowed. A name with no registration
+    /// returns `None`, leaving that ring to self-provision its sim double.
+    pub fn take_provider(&mut self, name: &str) -> Option<Box<dyn KeyProvider>> {
+        self.providers.remove(name)
+    }
+
     /// A registered connector by name, or `None` if unregistered.
     #[must_use]
     pub fn connector(&self, name: &str) -> Option<&dyn BlobConnector> {

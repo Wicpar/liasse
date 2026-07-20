@@ -18,14 +18,15 @@ use liasse_store::{
     AddressStep, CommitOutcome, CommitSeq, DefinitionText, InstanceStore, KeyValue, RowAddress, Transition,
 };
 use liasse_syntax::parse_document;
-use liasse_value::Timestamp;
+use liasse_value::{Json, Struct, Text, Timestamp, Type, Value};
 
 use liasse_host::sim::SimKeyProvider;
 use liasse_host::Registry;
 
 use crate::blobs::PlacementState;
-use crate::compiled::{Compiled, CompiledMutation};
+use crate::compiled::{Compiled, CompiledKeyring, CompiledMutation};
 use crate::doc;
+use crate::engine_provider::EngineKeyProvider;
 use crate::host::{HostBinding, HostDispatch, HostSignatures};
 use crate::keyring::Keyring;
 use crate::keyring_view::KeyringSnapshot;
@@ -151,10 +152,12 @@ pub struct Engine<S> {
     cursor: crate::lineage::HistoryCursor,
     sources: SourceMap,
     /// The live keyrings this package declares (§17): the version lifecycle over
-    /// the in-process key provider, bootstrapped at load and advanced by due
+    /// each ring's key provider — an application-injected real provider registered
+    /// under its `$provider` name, or the engine's self-provisioned sim double
+    /// (§17.5, [`EngineKeyProvider`]) — bootstrapped at load and advanced by due
     /// rotations as the virtual clock moves. A keyring public selector reads a
     /// snapshot of these ([`Self::keyring_snapshots`]).
-    keyrings: Vec<Keyring<SimKeyProvider>>,
+    keyrings: Vec<Keyring<EngineKeyProvider>>,
     /// The resolved host components this package binds (§16.2): the registered
     /// [`Registry`](liasse_host::Registry) and the resolved `$requires` map a
     /// mutation program's host-namespace call dispatches against. Built at load,
@@ -209,20 +212,121 @@ impl HydratedFrontier {
     }
 }
 
-/// Bootstrap a live keyring per declaration (§17.3), over the in-process key
-/// provider, at the load clock. A ring whose provider fails the capability check
-/// is dropped rather than failing the whole load, leaving its selector to fault
-/// exactly as an unmaterialized member would.
-fn build_keyrings(compiled: &Compiled, clock: Timestamp) -> Vec<Keyring<SimKeyProvider>> {
+/// Bootstrap a live keyring per declaration (§17.3) at the load clock, over each
+/// ring's resolved provider: the real §17.5 provider the application registered
+/// under the declaration's `$provider` name (moved out of `host`), or — when none
+/// is registered — the engine's self-provisioned sim double (the default,
+/// unchanged). See [`provision_ring`] for the injected-vs-sim failure discipline.
+///
+/// # Errors
+/// [`EngineError::Keyring`] when a ring's *injected* provider cannot fulfil its
+/// declared policy (a loud fail-before-activation, never a silent sim downgrade).
+fn provision_keyrings(
+    compiled: &Compiled,
+    clock: Timestamp,
+    host: &mut HostBinding,
+) -> Result<Vec<Keyring<EngineKeyProvider>>, EngineError> {
     let mut rings = Vec::new();
     for decl in &compiled.keyrings {
-        let provider = crate::keyring_view::built_in_provider(&decl.policy);
-        if let Ok(mut ring) = Keyring::load(decl.name.clone(), provider, decl.policy.clone()) {
-            let _ = ring.bootstrap(clock);
+        if let Some(ring) = provision_ring(decl, clock, host)? {
             rings.push(ring);
         }
     }
-    rings
+    Ok(rings)
+}
+
+/// Provision one declared keyring (§17.3/§17.5/§17.6) at `clock`.
+///
+/// Resolves the declaration's `$provider` against the host [`Registry`] (through
+/// `host`). The two backings fail differently, per the honesty rule:
+///
+/// - **injected** (a provider is registered under the `$provider` name): the
+///   provider is capability-checked against the policy (§17.6) and bootstrapped;
+///   *either* failure is a loud [`EngineError::Keyring`] — a named production
+///   provider that cannot fulfil its ring rejects loading rather than downgrading
+///   to the forgeable sim double.
+/// - **sim** (no provider registered): the engine's deterministic double, which
+///   advertises everything the policy needs; a (theoretical) capability shortfall
+///   drops the ring, leaving its selector to fault — the established default,
+///   unchanged.
+fn provision_ring(
+    decl: &CompiledKeyring,
+    clock: Timestamp,
+    host: &mut HostBinding,
+) -> Result<Option<Keyring<EngineKeyProvider>>, EngineError> {
+    match decl.provider.as_deref().and_then(|name| host.take_provider(name)) {
+        Some(injected) => {
+            let ring = load_injected_ring(decl, EngineKeyProvider::injected(injected), clock)?;
+            Ok(Some(ring))
+        }
+        None => {
+            let sim = EngineKeyProvider::sim(crate::keyring_view::built_in_provider(&decl.policy));
+            Ok(Keyring::load(decl.name.clone(), sim, decl.policy.clone()).ok().map(|mut ring| {
+                let _ = ring.bootstrap(clock);
+                ring
+            }))
+        }
+    }
+}
+
+/// Load and bootstrap an injected-provider ring, mapping every failure to a loud
+/// [`EngineError::Keyring`] (§17.5/§17.6): a capability shortfall or a first-version
+/// generate/bind failure rejects the load — never a silent sim downgrade.
+fn load_injected_ring(
+    decl: &CompiledKeyring,
+    provider: EngineKeyProvider,
+    clock: Timestamp,
+) -> Result<Keyring<EngineKeyProvider>, EngineError> {
+    let name = &decl.name;
+    let provider_name = decl.provider.as_deref().unwrap_or("");
+    let mut ring = Keyring::load(name.clone(), provider, decl.policy.clone()).map_err(|error| {
+        EngineError::Keyring(format!("`{name}` provider `{provider_name}`: {error}"))
+    })?;
+    ring.bootstrap(clock).map_err(|error| {
+        EngineError::Keyring(format!("`{name}` provider `{provider_name}` bootstrap: {error}"))
+    })?;
+    Ok(ring)
+}
+
+/// Reconstruct a cose-token [`Value`] from its wire JSON (the pinned §17.8 token
+/// format: `$ring`/`$version`/`$claims`/`$sig`), so a login-minted token carried
+/// back through the wire can be re-verified by
+/// [`Engine::cose_verify`](Engine::cose_verify). Each claim decodes to its
+/// most-specific scalar so the verified `session` claim matches the session row's
+/// typed key on lookup; canonical JSON is identical across those scalar spellings,
+/// so the token's signed-bytes check is unaffected.
+fn cose_token_from_wire(wire: &serde_json::Value) -> Option<Value> {
+    let object = wire.as_object()?;
+    let ring = object.get("$ring")?.as_str()?;
+    let version = Type::Int.decode(object.get("$version")?).ok()?;
+    let signature = Type::Bytes.decode(object.get("$sig")?).ok()?;
+    let claims = object
+        .get("$claims")?
+        .as_object()?
+        .iter()
+        .map(|(name, wire)| (Text::new(name.clone()), claim_value(wire)))
+        .collect::<Vec<_>>();
+    Some(Value::Struct(Struct::new([
+        (Text::new("$ring"), Value::Text(Text::new(ring.to_owned()))),
+        (Text::new("$version"), version),
+        (Text::new("$claims"), Value::Struct(Struct::new(claims))),
+        (Text::new("$sig"), signature),
+    ])))
+}
+
+/// Decode one claim's wire value to its most-specific scalar: a `uuid`/`int`
+/// string to that typed value (so a `uuid`/`int` session-key claim matches the
+/// session row's key by value), any other string to `text`, and a composite to
+/// `json`.
+fn claim_value(wire: &serde_json::Value) -> Value {
+    match wire {
+        serde_json::Value::String(text) => Type::Uuid
+            .decode(wire)
+            .or_else(|_| Type::Int.decode(wire))
+            .unwrap_or_else(|_| Value::Text(Text::new(text.clone()))),
+        serde_json::Value::Bool(flag) => Value::Bool(*flag),
+        other => Json::from_wire(other).map_or_else(|_| Value::Text(Text::new(other.to_string())), Value::Json),
+    }
 }
 
 impl<S: InstanceStore> Engine<S> {
@@ -249,10 +353,10 @@ impl<S: InstanceStore> Engine<S> {
         // way faults as an unknown function until the host wiring lands.
         let Compilation { sources, model, compiled, data, requires } =
             compile_definition(definition, &HostSignatures::default())?;
-        let host = HostBinding::resolve(Registry::new(), &requires, false)?;
+        let mut host = HostBinding::resolve(Registry::new(), &requires, false)?;
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
-        let keyrings = build_keyrings(&compiled, clock);
+        let keyrings = provision_keyrings(&compiled, clock, &mut host)?;
         let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
@@ -284,12 +388,12 @@ impl<S: InstanceStore> Engine<S> {
         // here, before activation; only a resolved namespace's signatures are
         // supplied to the checker.
         let requires = requires_of(definition)?;
-        let host = HostBinding::resolve(registry, &requires, true)?;
+        let mut host = HostBinding::resolve(registry, &requires, true)?;
         let Compilation { sources, model, compiled, data, .. } =
             compile_definition(definition, &host.expr_signatures())?;
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
-        let keyrings = build_keyrings(&compiled, clock);
+        let keyrings = provision_keyrings(&compiled, clock, &mut host)?;
         let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
@@ -320,9 +424,9 @@ impl<S: InstanceStore> Engine<S> {
         // empty signatures — the same as the default load.
         let Compilation { sources, model, compiled, requires, .. } =
             compile_definition(definition, &HostSignatures::default())?;
-        let host = HostBinding::resolve(Registry::new(), &requires, false)?;
+        let mut host = HostBinding::resolve(Registry::new(), &requires, false)?;
         let clock = generator.now();
-        let keyrings = build_keyrings(&compiled, clock);
+        let keyrings = provision_keyrings(&compiled, clock, &mut host)?;
         let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.install_state(definition, state)?;
         Ok(engine)
@@ -439,7 +543,7 @@ impl<S: InstanceStore> Engine<S> {
         self.model = model;
         self.compiled = compiled;
         self.sources = sources;
-        self.keyrings = build_keyrings(&self.compiled, self.clock);
+        self.rebuild_keyrings()?;
         Ok(seq)
     }
 
@@ -527,7 +631,7 @@ impl<S: InstanceStore> Engine<S> {
         self.model = target.model;
         self.compiled = target.compiled;
         self.sources = target.sources;
-        self.keyrings = build_keyrings(&self.compiled, self.clock);
+        self.rebuild_keyrings()?;
         Ok(seq)
     }
 
@@ -591,6 +695,31 @@ impl<S: InstanceStore> Engine<S> {
         for ring in &mut self.keyrings {
             ring.ensure_current(clock);
         }
+    }
+
+    /// Re-provision the keyrings after a definition change (§19.10 reinstall, §20
+    /// migration). A ring the new definition still declares is *preserved* — its
+    /// live provider and version lifecycle carry across the linear continuation,
+    /// so retained versions, the rotation schedule, and (critically) an injected
+    /// provider's live signing material do not reset and are never silently
+    /// downgraded to the sim double. A ring the new definition drops is discarded;
+    /// a ring it newly adds is provisioned against the live registry — whose
+    /// registered providers the initial load already consumed, so a newly-declared
+    /// ring self-provisions its sim double unless a provider is (re-)registered.
+    fn rebuild_keyrings(&mut self) -> Result<(), EngineError> {
+        let mut retained: BTreeMap<String, Keyring<EngineKeyProvider>> = std::mem::take(&mut self.keyrings)
+            .into_iter()
+            .map(|ring| (ring.name().to_owned(), ring))
+            .collect();
+        let mut rings = Vec::new();
+        for decl in &self.compiled.keyrings {
+            match retained.remove(&decl.name) {
+                Some(existing) => rings.push(existing),
+                None => rings.extend(provision_ring(decl, self.clock, &mut self.host)?),
+            }
+        }
+        self.keyrings = rings;
+        Ok(())
     }
 
     /// A read-time snapshot of every live keyring's version view at the current
@@ -690,16 +819,22 @@ impl<S: InstanceStore> Engine<S> {
     /// driver reads it to assert acceptance and rotation. `None` when the package
     /// declares no keyring of that name.
     #[must_use]
-    pub fn keyring(&self, ring: &str) -> Option<&Keyring<SimKeyProvider>> {
+    pub fn keyring(&self, ring: &str) -> Option<&Keyring<EngineKeyProvider>> {
         self.keyrings.iter().find(|r| r.name() == ring)
     }
 
-    /// Mutable access to keyring `ring`'s backing key provider, for the §17.9
-    /// `provider_set` fault-injection vocabulary a driver uses to make a
+    /// Mutable access to keyring `ring`'s backing *sim* key provider, for the
+    /// §17.9 `provider_set` fault-injection vocabulary a driver uses to make a
     /// `cose.sign` mutation fail (unavailability, per-operation failure, an
-    /// invalid public key). `None` when no keyring of that name is declared.
+    /// invalid public key). `None` when no keyring of that name is declared, or
+    /// when the ring is backed by an application-injected real provider — a real
+    /// deployment's keys carry no scriptable fault surface (§17.5).
     pub fn keyring_provider_mut(&mut self, ring: &str) -> Option<&mut SimKeyProvider> {
-        self.keyrings.iter_mut().find(|r| r.name() == ring).map(Keyring::provider_mut)
+        self.keyrings
+            .iter_mut()
+            .find(|r| r.name() == ring)
+            .map(Keyring::provider_mut)
+            .and_then(EngineKeyProvider::as_sim_mut)
     }
 
     /// Mutable lifecycle access to the internally-provisioned keyring `ring`
@@ -711,7 +846,7 @@ impl<S: InstanceStore> Engine<S> {
     /// for every subsequent snapshot, so the `/ring.$current`/`.$accepted`/
     /// `.$versions` views reflect the transition on the next read. `None` when the
     /// package declares no keyring of that name.
-    pub fn keyring_admin(&mut self, ring: &str) -> Option<&mut Keyring<SimKeyProvider>> {
+    pub fn keyring_admin(&mut self, ring: &str) -> Option<&mut Keyring<EngineKeyProvider>> {
         self.keyrings.iter_mut().find(|r| r.name() == ring)
     }
 
@@ -742,6 +877,29 @@ impl<S: InstanceStore> Engine<S> {
         token: &liasse_value::Value,
     ) -> Result<(liasse_value::Value, crate::VersionId), crate::host::CoseVerifyError> {
         crate::host::cose_verify(&self.keyrings, ring, token, self.clock)
+    }
+
+    /// The native-cose authentication gate (§17.7): reconstruct a login-minted
+    /// cose token from its wire JSON (`$ring`/`$version`/`$claims`/`$sig`, §17.8),
+    /// verify it against keyring `ring`'s accepted versions at the current instant
+    /// through [`cose_verify`](Self::cose_verify), and return the VERIFIED CLAIMS
+    /// struct — the credential a `$verify: "cose.verify(/ring, $credential)"`
+    /// surface authenticator resolves a session/actor from.
+    ///
+    /// Any failure — a malformed token, a wrong/rotated-out/revoked version, a
+    /// tampered or forged signature — yields [`Value::None`](liasse_value::Value),
+    /// the non-struct sentinel the surface cose verifier rejects. The raw token
+    /// bytes NEVER reach the verifier, and a failure NEVER yields a default
+    /// identity: authentication is denied, fail-closed. The surface/connect auth
+    /// path runs a cose authenticator's wire credential through this before it
+    /// reaches [`SurfaceHost::authenticate`](../liasse_surface/struct.SurfaceHost.html),
+    /// so both the connector and the testkit share one gate (no duplication).
+    #[must_use]
+    pub fn cose_gate_wire(&self, ring: &str, wire: &serde_json::Value) -> liasse_value::Value {
+        match cose_token_from_wire(wire).map(|token| self.cose_verify(ring, &token)) {
+            Some(Ok((claims, _version))) => claims,
+            _ => liasse_value::Value::None,
+        }
     }
 
     fn genesis<G: Generators>(

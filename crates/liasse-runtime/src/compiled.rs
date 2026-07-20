@@ -327,11 +327,17 @@ pub(crate) struct CompiledBucket {
     pub(crate) until: Option<TypedExpr>,
 }
 
-/// A compiled keyring declaration (§17.1): the ring name and its parsed policy.
-/// The live version lifecycle is engine state built from this at load; the
-/// declaration only carries the observable policy a provider must satisfy.
+/// A compiled keyring declaration (§17.1): the ring name, the `$provider` name it
+/// selects (§17.5), and its parsed policy. The live version lifecycle is engine
+/// state built from this at load; the declaration only carries the observable
+/// policy a provider must satisfy and the registration name the engine resolves a
+/// real provider under (falling back to the sim double when none is registered).
 pub(crate) struct CompiledKeyring {
     pub(crate) name: String,
+    /// The `$provider` registration name (§17.1/§17.5). Present for a well-formed
+    /// declaration (the model requires it); the engine resolves it against the
+    /// host [`Registry`](liasse_host::Registry)'s registered providers at load.
+    pub(crate) provider: Option<String>,
     pub(crate) policy: crate::keyring::KeyringPolicy,
 }
 
@@ -1534,7 +1540,8 @@ fn compile_keyrings(schema: Schema<'_>, model_doc: &liasse_syntax::DocValue) -> 
         let Some(shape) = doc::shape_at(model_doc, std::slice::from_ref(&name)) else { continue };
         let Some(keyring) = doc::member(shape, "$keyring") else { continue };
         if let Some(policy) = crate::keyring_view::policy_from_doc(keyring) {
-            out.push(CompiledKeyring { name, policy });
+            let provider = doc::member(keyring, "$provider").and_then(doc::string).map(ToOwned::to_owned);
+            out.push(CompiledKeyring { name, provider, policy });
         }
     }
     out

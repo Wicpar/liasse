@@ -20,6 +20,13 @@ pub enum EngineError {
     /// A required host namespace, provider, or connector did not resolve
     /// against the registry (§9.2 step 4, fail-before-activation).
     Requirement(String),
+    /// A declared `$keyring` whose `$provider` names an application-registered
+    /// real provider could not be provisioned at load (§17.5/§17.6): the
+    /// provider fails the policy capability check, or its first version cannot be
+    /// generated/bound. A named provider that cannot fulfil its ring is a loud
+    /// load failure — the engine NEVER silently downgrades it to the forgeable
+    /// sim double (fail-before-activation).
+    Keyring(String),
     /// The store reported a structural or durability error.
     Store(StoreError),
     /// Genesis seed admission was refused by the rule pipeline (§9.1/§9.2): the
@@ -49,6 +56,7 @@ impl core::fmt::Display for EngineError {
         match self {
             Self::Invalid(_) => f.write_str("the definition failed static validation"),
             Self::Requirement(name) => write!(f, "unresolved host requirement: {name}"),
+            Self::Keyring(detail) => write!(f, "keyring provider failed to load: {detail}"),
             Self::Store(error) => write!(f, "store error: {error}"),
             Self::Seed(rejection) => write!(f, "seed rejected: {}", rejection.message()),
             Self::Internal(detail) => write!(f, "engine invariant violated: {detail}"),

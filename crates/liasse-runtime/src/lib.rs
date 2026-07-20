@@ -144,6 +144,7 @@ mod contract;
 mod deletion;
 mod doc;
 mod engine;
+mod engine_provider;
 mod env;
 mod error;
 mod eval;
@@ -184,6 +185,7 @@ pub use deletion::{
     DeleteError, DeletePolicy, DeletionPlan, Erasure, Extract, Graph, Occurrence, RefEdge, RowRef,
 };
 pub use engine::{Engine, HydratedFrontier};
+pub use engine_provider::EngineKeyProvider;
 pub use error::{EngineError, Rejection, RejectionReason};
 pub use host::CoseVerifyError;
 

@@ -11,14 +11,14 @@
 //! commit, §12.3).
 
 use liasse_store::InstanceStore;
-use liasse_surface::{CommitSeq, ViewRow};
+use liasse_surface::{CommitSeq, KeyProvider, ViewRow};
 use liasse_wire::{CloseReason, ConnectionToken, Downstream, Sub};
 
 use super::frames::{diff_rows, project_rows};
 use super::registry::ConnState;
 use super::ConnectCore;
 
-impl<S: InstanceStore> ConnectCore<S> {
+impl<S: InstanceStore, P: KeyProvider> ConnectCore<S, P> {
     /// Reconcile every subscription through a commit (§12.3): the caller's advance and
     /// patch at its new frontier, every peer's lost-authority subscription closes at
     /// the outgoing frontier.

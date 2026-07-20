@@ -8,9 +8,15 @@
 //! [`Row`] and snapshots the active/accepted classification at the read instant,
 //! so [`RuntimeEnv::keyring`](crate::env::RuntimeEnv) can answer a selector by a
 //! pure lookup. It also parses a `$keyring` declaration into a [`KeyringPolicy`]
-//! and builds the in-process [`SimKeyProvider`] the engine bootstraps against,
-//! so a package that declares a keyring gets a live ring without external host
-//! wiring.
+//! and builds the in-process [`SimKeyProvider`] the engine bootstraps a ring
+//! against *when no real provider is registered under its `$provider` name* — so
+//! a package that declares a keyring gets a live ring without external host
+//! wiring (the corpus/dev default). A deployment that registers a real §17.5
+//! provider under that name (`Registry::register_provider`,
+//! [`Engine::load_with_hosts`](crate::Engine::load_with_hosts)) has the engine
+//! bootstrap the ring over *that* provider ([`EngineKeyProvider`](crate::EngineKeyProvider));
+//! this module's sim double is the fallback, never a silent replacement for a
+//! named provider.
 
 use std::collections::BTreeSet;
 

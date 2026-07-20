@@ -14,8 +14,8 @@ use std::collections::BTreeMap;
 
 use liasse_store::InstanceStore;
 use liasse_surface::{
-    Authority, CommitSeq, OperationKey, SurfaceAddress, SurfaceCall, SurfaceOutcome, SurfaceWatch,
-    Subscription, ViewResult, ViewRow, Window,
+    Authority, CommitSeq, KeyProvider, OperationKey, SurfaceAddress, SurfaceCall, SurfaceOutcome,
+    SurfaceWatch, Subscription, ViewResult, ViewRow, Window,
 };
 use liasse_wire::serde_json::Value as Json;
 use liasse_wire::{ConnectionToken, Downstream, Ft, OperationId, Sub, WireWindow};
@@ -39,7 +39,7 @@ enum WindowBuild {
     Forged,
 }
 
-impl<S: InstanceStore> ConnectCore<S> {
+impl<S: InstanceStore, P: KeyProvider> ConnectCore<S, P> {
     /// Open (or replace) a live subscription over a surface view (§12.1 `view`,
     /// §12.2). The initial `init`/`scalar` is enqueued on the SSE stream; the reply
     /// only reports the opening frontier, or a refusal.
@@ -62,9 +62,12 @@ impl<S: InstanceStore> ConnectCore<S> {
             Err(error) => return Ok(Reply::Outcome(encode::decode_error(&error))),
         };
         // §11.4: decode the authenticator selection up front — it gates authorization,
-        // which must settle before the closed-shape `$params` decode is revealed.
+        // which must settle before the closed-shape `$params` decode is revealed. A
+        // native-cose credential is gated through the engine's cose verify here
+        // ([`ConnectCore::decode_selection`]) so the surface verifier receives the
+        // verified claims, never the raw token (§17.7).
         let selection = match auth {
-            Some(auth) => match decode::decode_selection(&self.schema, auth) {
+            Some(auth) => match self.decode_selection(auth) {
                 Ok(selection) => Some(selection),
                 Err(_) => return Ok(Reply::Outcome(encode::unverified())),
             },
@@ -145,7 +148,7 @@ impl<S: InstanceStore> ConnectCore<S> {
             Err(error) => return Ok(Reply::Outcome(encode::decode_error(&error))),
         };
         let selection = match auth {
-            Some(auth) => match decode::decode_selection(&self.schema, auth) {
+            Some(auth) => match self.decode_selection(auth) {
                 Ok(selection) => Some(selection),
                 Err(_) => return Ok(Reply::Outcome(encode::unverified())),
             },
