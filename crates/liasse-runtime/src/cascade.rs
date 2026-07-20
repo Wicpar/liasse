@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 
 use liasse_ident::NameSegment;
 use liasse_store::{CollectionPath, RowAddress};
-use liasse_value::{RefKey, Value};
+use liasse_value::{RefKey, Struct, Text, Value};
 
 use crate::compiled::{Compiled, OnDelete};
 use crate::deletion::{DeleteError, DeletePolicy, DeletionPlan, Graph, RefEdge, RowRef};
@@ -81,13 +81,13 @@ pub(crate) fn plan(
                     let Some(target_key) = ref_key(value) else { continue };
                     let to = RowRef::new(info.target.clone(), target_key);
                     // A struct-nested ref's ROW-LEVEL policy (`restrict` blocks,
-                    // `cascade` deletes the containing row) applies without any nested
-                    // field addressing; a surviving-row FIELD effect fails closed
-                    // (`nested_scalar_policy`).
+                    // `cascade` deletes the containing row) applies without nested field
+                    // addressing; its SURVIVING-ROW effect (`none` clear / `= patch`) is
+                    // applied at the nested field by `nested_scalar_policy`.
                     let policy = if site.container.is_empty() {
                         resolve_policy(compiled, ctx, prospective, &info.on_delete, &from, &to)?
                     } else {
-                        Some(nested_scalar_policy(&info.on_delete))
+                        nested_scalar_policy(compiled, ctx, prospective, &info.on_delete, &from, &to, site)?
                     };
                     let Some(policy) = policy else { continue };
                     graph.add_edge(RefEdge { from: from.clone(), field: site.display_name(), to, policy });
@@ -113,7 +113,9 @@ pub(crate) fn plan(
                                 member,
                             )?
                         } else {
-                            Some(nested_member_policy(&info.on_delete))
+                            nested_member_policy(
+                                compiled, ctx, prospective, &info.on_delete, &from, &to, member, site,
+                            )?
                         };
                         let Some(policy) = policy else { continue };
                         graph.add_edge(RefEdge {
@@ -154,9 +156,10 @@ fn resolve_policy(
         OnDelete::Cascade => Some(DeletePolicy::Cascade),
         OnDelete::Clear => Some(DeletePolicy::Clear),
         OnDelete::Patch(patch) => {
-            let (Some(from_cell), Some(target_cell)) =
-                (row_cell_at(compiled, prospective, &from.collection, from), row_cell_at(compiled, prospective, &to.collection, to))
-            else {
+            let (Some(from_cell), Some(target_cell)) = (
+                row_cell_at(ctx, compiled, prospective, &from.collection, from),
+                row_cell_at(ctx, compiled, prospective, &to.collection, to),
+            ) else {
                 return Ok(None);
             };
             let structurals = BTreeMap::from([("target".to_owned(), target_cell)]);
@@ -187,35 +190,120 @@ fn resolve_member_policy(
     }
 }
 
-/// The delete policy of a STRUCT-NESTED scalar `$ref` (§5.3/§21.1). The ROW-LEVEL
-/// outcomes — `restrict` (block the delete) and `cascade` (delete the containing
-/// row) — apply correctly regardless of nesting, so they map straight through:
-/// this is what gives a struct-nested `restrict`/`cascade` its §21.1 effect. A
-/// surviving-row FIELD effect (`none`/clear or `= patch`) would need the nested
-/// field addressing the deletion plan does not carry (a documented seam, matching
-/// the model's own struct seams), so it maps to the fail-closed [`DeletePolicy::Undecided`]
-/// backstop: a target deletion that would strand such a ref is REJECTED (§22.1)
-/// rather than mis-applied at the wrong (top-level) field or left dangling. No
-/// patch is evaluated here, so a nested `= patch` never runs against the wrong scope.
-fn nested_scalar_policy(policy: &OnDelete) -> DeletePolicy {
+/// Resolve a STRUCT-NESTED scalar `$ref`'s `$on_delete` policy (§5.3/§21.1),
+/// applying its SURVIVING-ROW effect AT the nested field. The row-level outcomes —
+/// `restrict` (block the delete), `cascade` (delete the containing row) — and a
+/// whole-row-authored `= patch` (whose keys are top-level fields, §21.1 binds `.`
+/// to the whole row) need no nested addressing and resolve through the shared
+/// [`resolve_policy`]. `none` (clear this optional ref) is the one nested-addressed
+/// effect: it is encoded as a top-level struct patch that clears the nested leaf
+/// (`nested_clear_patch`), so the existing flat plan application writes it back. An
+/// undecided ref stays the fail-closed backstop. This CLOSES the wave-2 seam that
+/// rejected every struct-nested survivor effect (§21.1: no spec-valid policy may be
+/// refused).
+fn nested_scalar_policy(
+    compiled: &Compiled,
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+    policy: &OnDelete,
+    from: &RowRef,
+    to: &RowRef,
+    site: &crate::refwalk::RefSite<'_>,
+) -> Result<Option<DeletePolicy>, Rejection> {
     match policy {
-        OnDelete::Restrict => DeletePolicy::Restrict,
-        OnDelete::Cascade => DeletePolicy::Cascade,
-        OnDelete::Undecided | OnDelete::Clear | OnDelete::Patch(_) => DeletePolicy::Undecided,
+        // §21.1 "none — clear this optional ref": assign `none` to the nested
+        // referencing field, carried as a top-level struct patch.
+        OnDelete::Clear => Ok(nested_leaf_patch(compiled, prospective, from, site, &|_| Value::None)),
+        _ => resolve_policy(compiled, ctx, prospective, policy, from, to),
     }
 }
 
-/// The delete policy of a STRUCT-NESTED `$set`-of-`$ref` member (§5.3/§5.6/§21.1).
-/// Only `restrict` is a row-level block that applies without nested addressing;
-/// every removing/patching member effect (a member `cascade`/`none` drop, a
-/// `= patch`) needs the nested set addressing the plan does not carry, so it fails
-/// closed to [`DeletePolicy::Undecided`] (reject rather than mis-apply) — a
-/// documented seam.
-fn nested_member_policy(policy: &OnDelete) -> DeletePolicy {
+/// Resolve a STRUCT-NESTED `$set`-of-`$ref` member's `$on_delete` policy
+/// (§5.3/§5.6/§21.1), applying its SURVIVING-ROW effect at the nested set. A
+/// `cascade`/`none` member effect drops the deleted target from the nested set —
+/// encoded as a top-level struct patch removing that member; `restrict`, an
+/// undecided ref, and a whole-row `= patch` resolve as for a scalar ref through
+/// [`resolve_policy`].
+///
+/// Combination granularity note (§21.1 "patches … combine when they touch disjoint
+/// fields or assign the same resulting value"): because interp applies the flat
+/// plan by TOP-LEVEL field name, a nested effect is carried as a whole-struct
+/// assignment, so its combination unit is the top-level struct field — two nested
+/// effects on the SAME struct in ONE transition would collide. That case needs
+/// leaf-granular plan application (an interp/deletion seam outside this crate's
+/// row-materialization scope); a single nested effect per struct — the reported and
+/// overwhelmingly common case — applies correctly.
+#[allow(clippy::too_many_arguments)]
+fn nested_member_policy(
+    compiled: &Compiled,
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+    policy: &OnDelete,
+    from: &RowRef,
+    to: &RowRef,
+    member: &Value,
+    site: &crate::refwalk::RefSite<'_>,
+) -> Result<Option<DeletePolicy>, Rejection> {
     match policy {
-        OnDelete::Restrict => DeletePolicy::Restrict,
-        _ => DeletePolicy::Undecided,
+        // §21.1 "cascade — delete the containing row or set member"; `none`/clear
+        // likewise drops the membership. Remove the deleted target from the nested set.
+        OnDelete::Cascade | OnDelete::Clear => {
+            let member = member.clone();
+            let drop = move |value: &Value| match value {
+                Value::Set(members) => {
+                    let mut kept = members.clone();
+                    kept.remove(&member);
+                    Value::Set(kept)
+                }
+                other => other.clone(),
+            };
+            Ok(nested_leaf_patch(compiled, prospective, from, site, &drop))
+        }
+        _ => resolve_policy(compiled, ctx, prospective, policy, from, to),
     }
+}
+
+/// Build the top-level struct patch a struct-nested survivor effect induces on the
+/// referencing row `from` (§21.1): read the row's fields, apply `transform` to the
+/// nested leaf `site` addresses, and return a single `(top_field, new_struct)`
+/// assignment — the flat form interp's `apply_deletion` writes back. `None` when
+/// the referencing row or its struct path is not materialized (a live ref always
+/// materializes it, so the edge that produced this call already proved it present).
+fn nested_leaf_patch(
+    compiled: &Compiled,
+    prospective: &Prospective,
+    from: &RowRef,
+    site: &crate::refwalk::RefSite<'_>,
+    transform: &dyn Fn(&Value) -> Value,
+) -> Option<DeletePolicy> {
+    let compiled = compiled.collection(&from.collection)?;
+    let address = address_of(prospective, compiled.key.as_slice(), from)?;
+    let fields = prospective.get(&address)?;
+    let (top, rest) = site.container.split_first()?;
+    let new_top = rebuild_struct(fields.get(*top)?, rest, &site.field.name, transform)?;
+    Some(DeletePolicy::Patch(vec![((*top).to_owned(), new_top)]))
+}
+
+/// Descend the static-struct name `path` into `value` and apply `transform` to
+/// member `leaf`, rebuilding each struct level (§5.3). `None` when a level is not a
+/// struct — the ref cannot live there, so there is nothing to change.
+fn rebuild_struct(
+    value: &Value,
+    path: &[&str],
+    leaf: &str,
+    transform: &dyn Fn(&Value) -> Value,
+) -> Option<Value> {
+    let Value::Struct(existing) = value else { return None };
+    let mut members: Vec<(Text, Value)> = Vec::new();
+    for (name, member) in existing.fields() {
+        let rebuilt = match path.split_first() {
+            Some((head, tail)) if name.as_str() == *head => rebuild_struct(member, tail, leaf, transform)?,
+            None if name.as_str() == leaf => transform(member),
+            _ => member.clone(),
+        };
+        members.push((name.clone(), rebuilt));
+    }
+    Some(Value::Struct(Struct::new(members)))
 }
 
 /// The `(field, value)` assignments a patch object evaluated to (§21.1). A patch
@@ -229,17 +317,24 @@ fn patch_assignments(cell: &liasse_expr::Cell) -> Vec<(String, Value)> {
     }
 }
 
-/// The logical row cell of the live row `row`, if it exists.
+/// The COMPLETE logical row cell of the live row `row`, if it exists (§21.1/§5.2):
+/// its computed values folded (in dependency order) and its nested keyed
+/// collections descended, so an `$on_delete` patch binding this cell to `.` or
+/// `$target` reads a computed member (`.tag`, `$target.badge`) like any stored
+/// field. `materialize_row_cell` is the ONE canonical complete builder; the bare
+/// `row_cell` is the fallback for a row that no longer materializes.
 fn row_cell_at(
+    ctx: &EvalCtx<'_>,
     compiled: &Compiled,
     prospective: &Prospective,
     collection: &str,
     row: &RowRef,
 ) -> Option<liasse_expr::Cell> {
-    let compiled = compiled.collection(collection)?;
-    let address = address_of(prospective, compiled.key.as_slice(), row)?;
-    let fields = prospective.get(&address)?;
-    Some(row_cell(compiled, fields))
+    let comp = compiled.collection(collection)?;
+    let address = address_of(prospective, comp.key.as_slice(), row)?;
+    let decl = [collection.to_owned()];
+    ctx.materialize_row_cell(prospective, &decl, &address)
+        .or_else(|| prospective.get(&address).map(|fields| row_cell(comp, fields)))
 }
 
 /// The live address of `row`, located by scanning its collection for the row

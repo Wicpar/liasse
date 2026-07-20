@@ -491,8 +491,22 @@ pub(crate) fn finalize(
         let Some(collection) = compiled.collection_at(&decl) else { continue };
         check_key_components(address)?;
         check_fields(collection, fields, address, ctx, prospective)?;
-        check_row(collection, fields, address, ctx, prospective)?;
-        check_structs(collection, fields, address, ctx, prospective)?;
+        // §5.2/§5.4/§5.5: a row or static-struct `$check` reads the COMPLETE
+        // prospective row — plain fields, static structs, computed values folded in
+        // dependency order, AND nested keyed collections (an omitted child collection
+        // is empty, not absent) — so a check aggregating a nested child collection
+        // (`count(.departments) >= 0`) resolves instead of faulting on a missing
+        // member. `materialize_row_cell` is the ONE canonical complete builder (it
+        // descends nested collections and folds computed values, degrading to the
+        // field/struct row when there is neither); the `row_cell_of` fallback covers
+        // only the impossible just-removed row. Built once and shared by both checks.
+        if !collection.row_checks.is_empty() || !collection.structs.is_empty() {
+            let row = ctx
+                .materialize_row_cell(prospective, &decl, address)
+                .unwrap_or_else(|| ctx.row_cell_of(prospective, collection, fields));
+            check_row(collection, &row, address, ctx, prospective)?;
+            check_structs(collection, fields, &row, address, ctx, prospective)?;
+        }
         check_refs(compiled, prospective, collection, fields, address)?;
         check_uniqueness(prospective, collection, fields, address)?;
         if let Some(bucket) = compiled.bucket(&name) {
@@ -554,25 +568,19 @@ fn check_fields(
     Ok(())
 }
 
+/// Enforce every row `$check` (§8.8) over the COMPLETE prospective row `current`
+/// (§5.2 computed values, §5.4 nested keyed collections, §5.5 sets) built once by
+/// [`finalize`], so a `$check` reading `.label` (a computed) or aggregating
+/// `.departments` (a nested child collection) enforces instead of faulting.
 fn check_row(
     collection: &CompiledCollection,
-    fields: &FieldMap,
+    current: &Cell,
     address: &RowAddress,
     ctx: &EvalCtx<'_>,
     prospective: &Prospective,
 ) -> Result<(), Rejection> {
-    if collection.row_checks.is_empty() {
-        return Ok(());
-    }
-    // §5.2 (SPEC.md:402): a computed value "participates in views, checks, sorting,
-    // and projections like any other value." The prospective row a row `$check` reads
-    // must therefore expose EVERY member kind — plain fields and static structs
-    // (`row_cell`) AND computed values, folded in dependency order (`row_cell_of`) —
-    // so a `$check` reading `.label` (a computed) enforces instead of faulting on a
-    // missing field (the F-N2 seam: F3 exposed structs but not computed values).
-    let current = ctx.row_cell_of(prospective, collection, fields);
     for check in &collection.row_checks {
-        if !passes(ctx.eval(prospective, &check.condition, &current)?) {
+        if !passes(ctx.eval(prospective, &check.condition, current)?) {
             return Err(Rejection::new(RejectionReason::Check, check.message.clone())
                 .at(address.render()));
         }
@@ -592,6 +600,7 @@ fn check_row(
 fn check_structs(
     collection: &CompiledCollection,
     fields: &FieldMap,
+    row: &Cell,
     address: &RowAddress,
     ctx: &EvalCtx<'_>,
     prospective: &Prospective,
@@ -599,15 +608,14 @@ fn check_structs(
     if collection.structs.is_empty() {
         return Ok(());
     }
-    // The containing row supplied as a struct check's `^` frame (§6.2) must be the
-    // COMPLETE prospective row — fields, sibling static structs, and computed values
-    // (§5.2) — so a struct `$check` reading `^.<computed>` resolves like any other
-    // ancestor member instead of faulting (F-N2: `row_cell_of` folds the computed
-    // values `row_cell` alone omits).
-    let row = ctx.row_cell_of(prospective, collection, fields);
+    // The containing row supplied as a struct check's `^` frame (§6.2) is the
+    // COMPLETE prospective row `finalize` built — fields, sibling static structs,
+    // computed values (§5.2), and nested keyed collections (§5.4) — so a struct
+    // `$check` reading `^.<computed>` or `^.<child_collection>` resolves like any
+    // other ancestor member instead of faulting.
     for structure in &collection.structs {
         if let Some(value) = fields.get(&structure.name) {
-            check_struct(structure, value, std::slice::from_ref(&row), address, ctx, prospective)?;
+            check_struct(structure, value, std::slice::from_ref(row), address, ctx, prospective)?;
         }
     }
     Ok(())

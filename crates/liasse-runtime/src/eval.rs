@@ -229,11 +229,17 @@ impl<'a> EvalCtx<'a> {
     /// unfolded base leaves that target absent, so this iterates to a cross-collection
     /// fixed point: each pass rebuilds the fold env from the progressively-folded root
     /// and re-folds every collection, so the reader observes the target's FOLDED
-    /// value. The computed dependency graph is acyclic (§5.1), so it converges; the
-    /// number of collections carrying computed values bounds the longest
-    /// cross-collection chain (one pass advances the resolved frontier by one hop).
+    /// value. The computed dependency graph is acyclic (§5.1), so it converges.
+    ///
+    /// Each pass advances the resolved frontier by one cross-collection HOP, so the
+    /// pass count needed equals the number of computed→computed edges on the LONGEST
+    /// dependency path. A path may revisit ONE collection through two of its computed
+    /// fields (`a.f1 → b.g → a.f2`), so its hop-count can EXCEED the collection count —
+    /// the bound is therefore the total number of computed FIELDS (whole nested tree),
+    /// which upper-bounds any acyclic chain length. The loop still stops early at the
+    /// fixed point (`next == base`), so over-provisioning the bound costs nothing.
     fn expose_computed(&self, prospective: &Prospective, base: Row) -> Row {
-        let bound = self.compiled.collections.iter().filter(|c| !c.computed.is_empty()).count();
+        let bound: usize = self.compiled.collections.iter().map(computed_count_deep).sum();
         if bound == 0 {
             return base;
         }
@@ -258,9 +264,12 @@ impl<'a> EvalCtx<'a> {
         let cells: Vec<(String, Cell)> = base
             .cells()
             .map(|(name, cell)| match (cell, self.compiled.collection(name)) {
-                (Cell::Collection(rows), Some(collection)) if !collection.computed.is_empty() => {
+                // §5.2/§5.4: fold each row's own computed values AND descend into its
+                // nested keyed collections, folding theirs too — a computed declared
+                // inside a nested collection participates like any other value.
+                (Cell::Collection(rows), Some(collection)) if has_computed_deep(collection) => {
                     let folded =
-                        rows.iter().map(|row| fold_computed(env, &collection.computed, row.clone())).collect();
+                        rows.iter().map(|row| fold_row_computed_deep(env, collection, &[], row.clone())).collect();
                     (name.clone(), Cell::Collection(folded))
                 }
                 _ => (name.clone(), cell.clone()),
@@ -536,9 +545,11 @@ impl<'a> EvalCtx<'a> {
         let temporal = Temporal { keep: &keep, interval: &interval };
         let row = materialize::materialize_row(self.schema, collection, address, prospective.working(), &temporal)?;
         match self.compiled.collection_at(decl_path) {
-            Some(compiled) if !compiled.computed.is_empty() => {
+            // §5.2/§5.4: fold this spend/enforcing row's computed values and every
+            // nested keyed collection's computed values at the spend instant.
+            Some(compiled) if has_computed_deep(compiled) => {
                 let env = self.env_at(prospective, now);
-                Some(fold_computed(&env, &compiled.computed, row))
+                Some(fold_row_computed_fixpoint(&env, compiled, row))
             }
             _ => Some(row),
         }
@@ -608,7 +619,68 @@ impl<'a> EvalCtx<'a> {
                 }
             }
         }
+        self.append_nested_bucket_extants(prospective, &temporal, &mut index);
         index
+    }
+
+    /// Register each NESTED bucketed collection's FULL extant (§14.2), one entry per
+    /// parent instance, so a nested `.$all`/`.$at(t)` recovers the expired rows the
+    /// now active-filtered bare read hides — the nested analogue of the top-level
+    /// extant index above. Each entry carries an instance's whole extant (with the
+    /// `$from`/`$until` interval cells the temporal filter reads) under a synthetic
+    /// name: the temporal identity-match recovers it by active-row-set equality
+    /// (§14.1), so it is parent-scoped and never shadows a same-named top-level
+    /// bucket by name. Costs a single full materialization only when the package
+    /// declares a nested bucketed collection.
+    fn append_nested_bucket_extants(
+        &self,
+        prospective: &Prospective,
+        temporal: &Temporal<'_>,
+        index: &mut Vec<NamedExtant>,
+    ) {
+        if !self.compiled.collections.iter().any(|c| self.has_nested_bucket(c)) {
+            return;
+        }
+        // Materialize the FULL root (every row kept) so each nested bucketed cell
+        // holds its whole extant, then walk it for the nested bucket instances.
+        let keep_all = |_: &str, _: &FieldMap| true;
+        let full = Temporal { keep: &keep_all, interval: temporal.interval };
+        let root = materialize::materialize_root_filtered(self.schema, prospective.working(), &full);
+        for collection in &self.compiled.collections {
+            if let Some(Cell::Collection(rows)) = root.cell(&collection.name) {
+                for row in rows {
+                    self.collect_nested_bucket_extants(collection, row, index);
+                }
+            }
+        }
+    }
+
+    /// Walk `row`'s nested keyed collections, registering the full extant of every
+    /// bucketed child instance (recursively) as a synthetic-named [`NamedExtant`].
+    fn collect_nested_bucket_extants(
+        &self,
+        collection: &CompiledCollection,
+        row: &Row,
+        index: &mut Vec<NamedExtant>,
+    ) {
+        for child in &collection.children {
+            let Some(Cell::Collection(rows)) = row.cell(&child.name) else { continue };
+            if self.compiled.bucket(&child.name).is_some() {
+                index.push(NamedExtant { name: format!("$nested:{}", child.name), rows: rows.clone() });
+            }
+            for nested in rows {
+                self.collect_nested_bucket_extants(child, nested, index);
+            }
+        }
+    }
+
+    /// Whether `collection` has a bucketed keyed collection nested anywhere beneath
+    /// its rows (§5.4/§14) — the gate for the nested extant registration.
+    fn has_nested_bucket(&self, collection: &CompiledCollection) -> bool {
+        collection
+            .children
+            .iter()
+            .any(|child| self.compiled.bucket(&child.name).is_some() || self.has_nested_bucket(child))
     }
 
     /// The regenerable extant set of every source-backed bucket (§14.4–§14.6) at
@@ -716,9 +788,12 @@ impl<'a> EvalCtx<'a> {
         let row = materialize::materialize_row(self.schema, collection, address, prospective.working(), &temporal)?;
         let compiled = self.compiled.collection_at(decl_path);
         let row = match compiled {
-            Some(compiled) if !compiled.computed.is_empty() => {
+            // §5.2/§5.4: fold this row's computed values AND every nested keyed
+            // collection's computed values, so a `return`/receiver read of the row
+            // exposes a nested computed like any stored field.
+            Some(compiled) if has_computed_deep(compiled) => {
                 let env = self.env(prospective);
-                fold_computed(&env, &compiled.computed, row)
+                fold_row_computed_fixpoint(&env, compiled, row)
             }
             _ => row,
         };
@@ -832,6 +907,81 @@ fn fold_computed_scoped(
         }
     }
     row
+}
+
+/// Fold a collection row's computed values (§5.2) onto it, then recurse into each
+/// nested keyed collection (§5.4), folding every nested row's computed values too —
+/// the keyed-collection analogue of [`fold_struct_computed`]. §5.2 makes a computed
+/// value participate "like any other value" with NO carve-out for one declared
+/// inside a nested keyed collection, so it must be folded wherever the row tree is
+/// materialized (a direct view of `d.doubled`, a parent `sum(.departments.doubled)`,
+/// a `$check`/`$on_delete` reading it). `parents` is the lexical chain above this
+/// row (outermost first); each nested row reads its containing row through `^`
+/// (§6.2). The walk is bounded by the finite compiled child tree.
+fn fold_row_computed_deep(
+    env: &RuntimeEnv<'_>,
+    collection: &CompiledCollection,
+    parents: &[Cell],
+    row: Row,
+) -> Row {
+    let row = fold_computed_scoped(env, &collection.computed, parents, row);
+    if collection.children.is_empty() {
+        return row;
+    }
+    let mut child_parents = parents.to_vec();
+    child_parents.push(Cell::Row(Box::new(row.clone())));
+    let cells: Vec<(String, Cell)> = row
+        .cells()
+        .map(|(name, cell)| match (cell, collection.children.iter().find(|child| &child.name == name)) {
+            (Cell::Collection(rows), Some(child)) => {
+                let folded = rows
+                    .iter()
+                    .map(|nested| fold_row_computed_deep(env, child, &child_parents, nested.clone()))
+                    .collect();
+                (name.clone(), Cell::Collection(folded))
+            }
+            _ => (name.clone(), cell.clone()),
+        })
+        .collect();
+    Row::new(row.id().clone(), row.key().clone(), cells)
+}
+
+/// Whether `collection` or any nested keyed collection (§5.4) declares a computed
+/// value — the gate deciding whether a row materialization must run the deep
+/// computed fold ([`fold_row_computed_deep`]).
+fn has_computed_deep(collection: &CompiledCollection) -> bool {
+    !collection.computed.is_empty() || collection.children.iter().any(has_computed_deep)
+}
+
+/// Fold a single row's whole computed tree to a fixed point (§5.2): a row's own
+/// computed value may read a nested collection's computed (`tally = sum(.lines.x2)`)
+/// and vice-versa (`^.parent`), so one [`fold_row_computed_deep`] pass — which
+/// resolves own computed against the CURRENT nested state, then folds the nested —
+/// leaves a cross-level reader one hop stale. Re-fold until stable; the computed
+/// graph is acyclic (§5.1), so it converges within the subtree's computed count.
+/// This is the single-row analogue of the root's cross-collection fixed point
+/// ([`Self::expose_computed`]), so the address-based read path resolves a
+/// nested-aggregating computed exactly as the root view path does.
+fn fold_row_computed_fixpoint(env: &RuntimeEnv<'_>, collection: &CompiledCollection, row: Row) -> Row {
+    let bound = computed_count_deep(collection);
+    let mut row = row;
+    for _ in 0..bound {
+        let next = fold_row_computed_deep(env, collection, &[], row.clone());
+        if next == row {
+            break;
+        }
+        row = next;
+    }
+    row
+}
+
+/// The total number of computed values `collection` declares across its whole
+/// nested keyed-collection tree (§5.4). Bounds the cross-collection computed
+/// fixed point: a dependency path can revisit one collection through two of its
+/// computed fields, so its hop-count is bounded by the number of computed FIELDS,
+/// not the number of collections (the wave-2 bound `a.f1 → b.g → a.f2` under-ran).
+fn computed_count_deep(collection: &CompiledCollection) -> usize {
+    collection.computed.len() + collection.children.iter().map(computed_count_deep).sum::<usize>()
 }
 
 /// Fold a static struct's computed values (§5.2) onto its materialized

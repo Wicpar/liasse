@@ -216,7 +216,11 @@ pub(crate) fn materialize_row<'m>(
     let step = address.steps().last()?;
     let key = key_identity(collection, step.key());
     let id = RowId::keyed(row_id_text(step.key()));
-    Some(build_row(schema, collection, fields, key, id, address, working, temporal))
+    // §14.1: a single-row bare read (a `return`/receiver read, a meter spend row)
+    // descends its nested keyed collections active-filtered exactly like the
+    // top-level bare read — the caller's `temporal.keep` decides activity, so a
+    // nested bucketed collection exposes only its rows active at the read instant.
+    Some(build_row(schema, collection, fields, key, id, address, working, temporal, true))
 }
 
 /// The full extant row set of one bucketed collection (§14.2), ignoring current
@@ -278,7 +282,7 @@ fn rows_at<'m>(
                 None => RowId::keyed(key_text),
                 Some(parent) => parent.child_keyed(key_text),
             };
-            let mut row = build_row(schema, collection, fields, key, id, address, working, temporal);
+            let mut row = build_row(schema, collection, fields, key, id, address, working, temporal, filter_active);
             if let Some(interval) = (temporal.interval)(name, fields) {
                 row = with_interval_cells(row, interval);
             }
@@ -366,6 +370,7 @@ fn build_row<'m>(
     address: &RowAddress,
     working: &BTreeMap<RowAddress, FieldMap>,
     temporal: &Temporal<'_>,
+    filter_active: bool,
 ) -> Row {
     let cells: Vec<(String, Cell)> = collection
         .shape
@@ -380,11 +385,16 @@ fn build_row<'m>(
             // recursion is bounded by the DATA, not the type: `rows_at` only reaches the
             // rows that exist under `address`, so a type-level-infinite self-referential
             // shape with finite data terminates when a level has no stored rows.
+            //
+            // §14.1/§14.2: `filter_active` propagates from the enclosing read, so a
+            // nested BUCKETED collection exposes only its rows active at the clock on a
+            // bare read (matching a top-level bucket) while the `.$all` extant walk
+            // (`filter_active == false`) keeps its expired rows.
             let cell = match schema.resolved_collection(&member.node) {
                 Some(nested) => {
                     let nested_path =
                         CollectionPath::nested(address.steps().cloned(), NameSegment::new(name));
-                    Cell::Collection(rows_at(schema, &nested_path, nested, working, temporal, false, Some(&id)))
+                    Cell::Collection(rows_at(schema, &nested_path, nested, working, temporal, filter_active, Some(&id)))
                 }
                 None => Cell::Scalar(fields.get(name).cloned().unwrap_or(Value::None)),
             };
