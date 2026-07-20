@@ -158,6 +158,23 @@ impl<S: InstanceStore> Runtime<S> {
             // malformed request, rejected before the subscription opens — never
             // coerced to a best-effort inference (§12.1 step 3 / Annex A.1).
             let arg_types = loaded.routing.view_arg_types(&request.target);
+            // §12.1 step 3 (SPEC-ISSUES item 6): the argument object presented to a
+            // `view` request is a CLOSED shape, exactly as for a `call`. A member the
+            // targeted view does not declare as a `$params` parameter — including any
+            // reserved `$`-prefixed name — makes the request malformed and is rejected
+            // here, at parameter parsing, before the subscription opens; it is never
+            // silently dropped. This mirrors the `call` path's closed-shape check
+            // (see [`Self::call`]); like it, the check applies only where the router
+            // reconstructed a non-empty declared shape, so a view the model reports as
+            // taking no declared parameter has no reliable shape to close against and
+            // is left unchecked rather than over-rejecting.
+            let unknown_member = (!arg_types.is_empty())
+                .then(|| request.args.as_object())
+                .flatten()
+                .is_some_and(|object| object.keys().any(|name| !arg_types.contains_key(name)));
+            if unknown_member {
+                return Ok(Observation::outcome(Outcome::Rejected));
+            }
             let Ok(args) = wire::decode_args(&request.args, &arg_types) else {
                 return Ok(Observation::outcome(Outcome::Rejected));
             };

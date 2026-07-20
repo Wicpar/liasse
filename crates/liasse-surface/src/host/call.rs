@@ -227,14 +227,17 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
                 // permitted only toward a caller that has established authority over
                 // THE TARGET. A per-request `auth` selection is always a fresh probe
                 // (no established authority). A bound connection context is
-                // established authority over ONLY the role it authenticated against —
-                // never over an unrelated role the caller never authenticated to — so
-                // it is established here only when that recorded role IS this target
-                // role. Any other bound context (bound against a different role) is
+                // established authority over a role only when it authenticated
+                // against that role AND was a verified MEMBER of it at authenticate
+                // (§11 auth does not check membership, so a non-member whose session
+                // resolves must not be read as established) — never over an unrelated
+                // role, and never as a non-member. Any other bound context is
                 // unestablished over this role and its denial is hidden.
                 let established = call.auth().is_none()
-                    && self.connections.get(id).and_then(|conn| conn.context_role(call.context()))
-                        == Some(role.as_str());
+                    && self
+                        .connections
+                        .get(id)
+                        .is_some_and(|conn| conn.establishes(call.context(), role.as_str()));
                 // §10.3/§10.5: membership is confirmed for the SCOPE the request
                 // addresses, so a holder scoped to one row is not admitted to another.
                 // §10.4: for a caller without established authority every authorize
@@ -706,13 +709,16 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
                 // collapses to the uniform `unresolved`, so it cannot enumerate the
                 // role by wire code. §10.4's exception is TARGET-scoped: a per-request
                 // `auth` selection (`inline`) is a fresh probe (never established), and
-                // a bound connection context is established authority over ONLY the
-                // role it authenticated against — so it is established here only when
-                // that recorded role IS this target role, never over an unrelated role
-                // the caller never authenticated to.
+                // a bound connection context is established authority over a role only
+                // when it authenticated against that role AND was a verified MEMBER of
+                // it at authenticate — so it is established here only for this target
+                // role and only for a member, never over an unrelated role nor for a
+                // non-member whose session merely resolved.
                 let established = inline.is_none()
-                    && self.connections.get(id).and_then(|conn| conn.context_role(context))
-                        == Some(role.as_str());
+                    && self
+                        .connections
+                        .get(id)
+                        .is_some_and(|conn| conn.establishes(context, role.as_str()));
                 let auth_context = self
                     .authorize_role(role_def, &selection, scope, &reader)
                     .map_err(|denial| {

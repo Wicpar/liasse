@@ -280,20 +280,33 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         }
         let now = self.clock.instant();
         let reader = EngineReader::new(&self.engine, now);
+        // §11.8: a context binds on mere verification (the role accepts the
+        // authenticator and the credential resolves an actor/session); membership
+        // is NOT a precondition, since one resolved context may target several
+        // roles. §10.4, however, keys its established-authority exception on
+        // DEMONSTRATED authority, so also evaluate whether the actor is a verified
+        // member of this role right now and record it: only a member establishes
+        // authority over the role. A store fault fails closed to not-a-member.
         let outcome = match self.router.role(request.role()) {
-            Some(role) => self.verify_selection(role, request.selection(), &reader),
+            Some(role) => self.verify_selection(role, request.selection(), &reader).map(|context| {
+                role.holds_anywhere(context.actor().key(), &reader).unwrap_or(false)
+            }),
             None => Err(Denial::new(DenialReason::Unresolved, "the address names no exposed role")),
         };
         match outcome {
-            Ok(_) => {
+            Ok(member) => {
                 if let Some(connection) = self.connections.get_mut(id) {
-                    // §10.4: retain the role this context authenticated against, so
-                    // the bound context is later read as established authority over
-                    // THIS role alone — never over an unrelated role the caller never
-                    // authenticated to.
+                    // §10.4: retain the role this context authenticated against and
+                    // whether the actor DEMONSTRATED authority (verified membership)
+                    // over it, so the bound context is later read as established
+                    // authority over THIS role alone, and only for a member — never
+                    // over an unrelated role, and never for a non-member whose
+                    // credential merely resolved (which would leak the role's
+                    // existence on the authentication-failure path).
                     connection.set_context(
                         request.context().to_owned(),
                         request.role().to_owned(),
+                        member,
                         request.selection().clone(),
                     );
                 }

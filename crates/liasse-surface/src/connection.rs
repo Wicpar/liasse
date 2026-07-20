@@ -21,7 +21,8 @@ pub const DEFAULT_CONTEXT: &str = "default";
 
 /// One authentication context bound on a connection: the client-supplied
 /// *selection* (authenticator name + credential) together with the role it
-/// authenticated against.
+/// authenticated against and whether it demonstrated authority (verified
+/// membership) over that role at `authenticate`.
 ///
 /// The role scopes §10.4's established-authority exception to the exact role
 /// this context proved authority over. A context bound against role `alpha` is
@@ -31,9 +32,27 @@ pub const DEFAULT_CONTEXT: &str = "default";
 /// `beta` (which does not accept `alpha`'s authenticator) would leak `beta`'s
 /// precise reason while a nonexistent role denies the uniform `unresolved` —
 /// exactly the role-existence enumeration oracle §10.4 forbids.
+///
+/// §10.4's exception is for a caller that "has already established authority
+/// over the target" — a *member*. `authenticate` binds a context whenever the
+/// selection merely verifies (the role accepts the authenticator and the
+/// credential resolves an actor/session), *without* checking membership
+/// (§11.8), so the role alone does not prove authority: a non-member whose
+/// session resolves would be recorded against the role and later read as
+/// established, leaking the role's existence through the authentication-FAILURE
+/// path (e.g. a `session-invalid` after revocation). `member` records whether
+/// the actor was a verified member of `role` at `authenticate`, so establishment
+/// requires DEMONSTRATED authority, not merely having named the role.
 struct BoundContext {
     /// The role this context authenticated against (§11.4, `authenticate`).
     role: String,
+    /// Whether the actor was a verified member of `role` at `authenticate`
+    /// (§10.4) — the demonstrated authority §10.4's exception requires. A member
+    /// whose session later expires or is revoked stays `member = true`, so it
+    /// still reads its OWN role's `session-invalid` (§11.7); a non-member is
+    /// `member = false`, so every role denial collapses to the uniform
+    /// `unresolved`.
+    member: bool,
     /// The selection the client supplied, re-verified at every request (§11.4).
     selection: AuthSelection,
 }
@@ -78,17 +97,22 @@ impl Connection {
         }
     }
 
-    /// Bind authentication selection `name`, established against `role`, on this
-    /// connection (§11.8). Retaining `role` scopes §10.4's established-authority
-    /// exception to the exact role this context proved authority over, so a later
-    /// denial over any *other* role stays hidden as the uniform `unresolved`.
+    /// Bind authentication selection `name`, authenticated against `role`, on
+    /// this connection (§11.8), recording whether the actor was a verified
+    /// `member` of that role at `authenticate`. Retaining `role` scopes §10.4's
+    /// established-authority exception to the exact role this context
+    /// authenticated against, so a later denial over any *other* role stays
+    /// hidden as the uniform `unresolved`; gating on `member` further requires
+    /// the caller to have DEMONSTRATED authority over `role`, so a non-member
+    /// whose credential merely resolves never reads that role's precise denials.
     pub fn set_context(
         &mut self,
         name: impl Into<String>,
         role: impl Into<String>,
+        member: bool,
         selection: AuthSelection,
     ) {
-        self.contexts.insert(name.into(), BoundContext { role: role.into(), selection });
+        self.contexts.insert(name.into(), BoundContext { role: role.into(), member, selection });
     }
 
     /// The authentication selection named `name`, if bound.
@@ -104,15 +128,18 @@ impl Connection {
         self.contexts.get(name.unwrap_or(DEFAULT_CONTEXT)).map(|bound| &bound.selection)
     }
 
-    /// The role the selected context established authority over (§10.4), or
-    /// `None` when no such context is bound. A request authorizing from this
-    /// context has established authority over the returned role and no other, so
-    /// the caller reads a role's precise (membership-/existence-specific)
-    /// diagnostics only when it is *this* role — every other role's denial is
-    /// hidden as the uniform unresolvable-name outcome.
+    /// Whether the selected context has established authority over `role`
+    /// (§10.4): it authenticated against `role` AND was a verified member of it
+    /// at `authenticate`. Only then does the caller read that role's precise
+    /// (membership-/existence-specific) diagnostics; a context bound against a
+    /// *different* role, or against `role` as a non-member, has NOT established
+    /// authority over `role`, so its denial is hidden as the uniform
+    /// unresolvable-name outcome. `false` when no such context is bound.
     #[must_use]
-    pub fn context_role(&self, name: Option<&str>) -> Option<&str> {
-        self.contexts.get(name.unwrap_or(DEFAULT_CONTEXT)).map(|bound| bound.role.as_str())
+    pub fn establishes(&self, name: Option<&str>, role: &str) -> bool {
+        self.contexts
+            .get(name.unwrap_or(DEFAULT_CONTEXT))
+            .is_some_and(|bound| bound.member && bound.role == role)
     }
 
     /// The bound context names, for the manifest (§12.1).
