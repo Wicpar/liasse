@@ -39,7 +39,7 @@ use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::eval::EvalCtx;
 use crate::host::{HostBinding, HostDispatch, HostSignatures};
 use crate::interp::{rewrite_inbound_refs_across, Interp};
-use crate::materialize::{self, FieldMap, Temporal};
+use crate::materialize::{self, FieldMap};
 use crate::portable::{CaptureError, StateSection};
 use crate::rules;
 use crate::schema::Schema;
@@ -160,10 +160,17 @@ impl<S: InstanceStore> Engine<S> {
             let version = &self.model().header().identity.version;
             format!("{}.{}.{}", version.major, version.minor, version.patch)
         };
+        // §20.1: `$old` is the complete read-only source state — it MAY read ANY
+        // `$old` view, not only stored collections. Materialize the fully-folded
+        // source root (computed values, root computed, nested/declared views) through
+        // the live source engine now, at head, so `$old.items.doubled` resolves; the
+        // raw stored-collection materialization inside `build_migrated` cannot.
+        let old_root = self.source_root().map_err(UpdateError::Engine)?;
         let migrated = build_migrated(
             self.compiled(),
             self.schema(),
             &old_state,
+            old_root,
             &active_source,
             &compilation,
             &plan,
@@ -305,6 +312,7 @@ fn build_migrated<G: crate::generator::Generators>(
     old_compiled: &Compiled,
     old_schema: Schema<'_>,
     old_state: &StateSection,
+    old_root: Row,
     active_source: &str,
     target: &Compilation,
     plan: &MigrationPlan,
@@ -318,12 +326,15 @@ fn build_migrated<G: crate::generator::Generators>(
     // cose contract, independent of the package's own `$requires`.
     let codec = HostBinding::codecs();
     let codec_sigs = codec.expr_signatures();
-    // §20.1: `$old` is the complete read-only source state, materialized under the
-    // source (old) model and bound as the `$old` structural for the program.
+    // §20.1: `$old` is the complete read-only source state. `old_root` is the
+    // fully-folded source root the caller materialized through the live source engine
+    // ([`Engine::source_root`]) — computed values and views included — so a program
+    // reading `$old.items.doubled` (a computed §5.2 value) resolves it, not just the
+    // stored collections. `old_working` (the raw stored rows) still backs the §8.2
+    // singleton carry below, which reads the reserved row directly.
     let old_working = old_state
         .working(old_schema)
         .map_err(|error| Rejection::new(RejectionReason::Malformed, format!("source state: {error}")))?;
-    let old_root = materialize_all(old_schema, &old_working);
     let old_root_ty = ExprType::Row(old_schema.root_row_type());
     // Migration builds the target's rows; neither a keyring selector nor a blob
     // placement member participates in a state transform (§20.1), so the
@@ -501,15 +512,6 @@ fn build_migrated<G: crate::generator::Generators>(
         .into_iter()
         .filter_map(|address| prospective.get(&address).map(|fields| (address.clone(), fields.clone())))
         .collect())
-}
-
-/// Materialize the whole source root (§20.1 `$old`): every top-level collection
-/// with its stored rows, non-temporal (a migration source is read whole).
-fn materialize_all(schema: Schema<'_>, working: &BTreeMap<RowAddress, FieldMap>) -> Row {
-    let keep = |_: &str, _: &FieldMap| true;
-    let interval = |_: &str, _: &FieldMap| None;
-    let temporal = Temporal { keep: &keep, interval: &interval };
-    materialize::materialize_root_filtered(schema, working, &temporal)
 }
 
 /// Run the package-level `$migrations` program (§20.1) as a root mutation over the

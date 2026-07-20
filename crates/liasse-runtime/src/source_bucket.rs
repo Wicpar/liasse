@@ -413,10 +413,26 @@ impl CompiledSourceBucket {
     /// property of the derived series (two source rows, or two periods of one source,
     /// may resolve the same key), so it is enforced here at admission — the model
     /// records only that the invariant exists ([`check_custom_key`]), never the data.
+    /// A finite series is enumerated in full, so its uniqueness (intra- and
+    /// cross-source) is proven directly. An unbounded recurring series is infinite
+    /// and cannot be enumerated, so its cross-source uniqueness is instead proven
+    /// structurally: the key must distinguish each source under a common period
+    /// binding, or two sources whose grids align at an offset would collide (§14.5).
     ///
     /// Rejects the whole transition on the first offending source row.
     pub(crate) fn validate(&self, inputs: &BucketInputs<'_>) -> Result<(), Rejection> {
         let mut seen: BTreeSet<RowId> = BTreeSet::new();
+        // §14.6 cross-source soundness over an UNBOUNDED recurring series: such a
+        // series is infinite, so the enumeration below can only cover a bounded
+        // prefix and cannot witness a collision that first appears past it (two
+        // sources whose grids align at an offset — s1's period 3 against s2's period
+        // 0). A purely period-derived key (`["$from"]`) is identical across such
+        // aligned grids, so require the custom key to distinguish each source under a
+        // COMMON period binding: `probe` holds each unbounded source's key evaluated
+        // with the SAME synthetic `$from`/`$until`/`$index`, so it varies only with
+        // `$source`. Two sources colliding here cannot be told apart by the key at any
+        // period, so an offset alignment would generate two rows with one key.
+        let mut probe: BTreeSet<RowId> = BTreeSet::new();
         for source_row in self.source_rows(inputs) {
             let Some((from, until, repeat)) = self.bounds(inputs, &source_row) else { continue };
             // A minimal horizon (the start itself): a non-advancing step is caught on
@@ -434,8 +450,33 @@ impl CompiledSourceBucket {
                 // needs a data-dependent uniqueness pass.
                 continue;
             }
+            // §14.5/§14.6: an unbounded recurring series is read only through a
+            // bounded selector, but its uniqueness invariant is over EVERY generated
+            // row — enumeration cannot prove that, so the custom key must be
+            // source-distinguishing (see `probe` above). A bounded (finite `$until`)
+            // or non-recurring series is generated in full by the enumeration below,
+            // which is complete, so it needs no probe (and a legitimate finite
+            // `["$from"]` grid whose starts never coincide must still load).
+            if repeat.is_some()
+                && until.is_none()
+                && !probe.insert(self.probe_identity(inputs, &source_row))
+            {
+                return Err(Rejection::new(
+                    RejectionReason::DuplicateKey,
+                    format!(
+                        "source-backed bucket `{}`: custom `$key` is not provably unique across an \
+                         unbounded recurring series — two sources resolve the same key independent \
+                         of the period, so their aligned grids generate two rows with one key; add \
+                         a source-distinguishing component such as `$source.<key>` (§14.5/§14.6)",
+                        self.name
+                    ),
+                ));
+            }
             // §14.6 uniqueness: enumerate this source row's generated rows and reject
-            // the transition the moment two rows resolve the same custom key.
+            // the transition the moment two rows resolve the same custom key. This is
+            // complete for a finite series (including cross-source, via the shared
+            // `seen` set) and catches an unbounded key that fails to vary per period
+            // (a missing `$from`/`$index` component collides at the first advance).
             let horizon = uniqueness_horizon(from, until, repeat.as_ref());
             let Ok(intervals) = recurring_intervals(from, until, repeat.as_ref(), horizon) else {
                 continue;
@@ -454,6 +495,18 @@ impl CompiledSourceBucket {
             }
         }
         Ok(())
+    }
+
+    /// The identity the custom `$key` resolves for `source_row` under a COMMON
+    /// synthetic period binding — the §14.6 cross-source soundness probe on an
+    /// unbounded recurring series ([`Self::validate`]). Fixing `$from`/`$until`/
+    /// `$index` to the same values for every source makes the key depend only on
+    /// `$source`, so two sources that resolve the same identity here are not
+    /// distinguished by the key and their aligned grids would collide. Mirrors
+    /// [`Self::generated_identity`] with a constant interval.
+    fn probe_identity(&self, inputs: &BucketInputs<'_>, source_row: &Row) -> RowId {
+        let common = Interval { index: 0, from: inputs.now, until: None };
+        self.generated_identity(inputs, source_row, common)
     }
 
     /// The identity a generated row would take, for the §14.6 custom-key uniqueness
@@ -478,10 +531,11 @@ impl CompiledSourceBucket {
 /// generated in full regardless of the horizon, so the start itself suffices. An
 /// unbounded recurring series is infinite, but a custom key that fails to vary per
 /// period repeats within the first two periods; the second boundary is the smallest
-/// horizon that exposes such a collision (a start below it keeps the second
-/// interval). A cross-period-varying key that still collides only across sources at
-/// a wide offset is a documented seam — an unbounded series is only ever read
-/// through a bounded selector (§14.5), so no unbounded materialization exposes it.
+/// horizon that exposes such an intra-source collision (a start below it keeps the
+/// second interval). A key that varies per period yet still collides across two
+/// sources whose grids align at an offset is caught soundly — before this bounded
+/// enumeration ever reaches the offending boundary — by the source-distinguishing
+/// probe in [`CompiledSourceBucket::validate`], not by widening this horizon.
 fn uniqueness_horizon(from: Timestamp, until: Option<Timestamp>, repeat: Option<&Period>) -> Timestamp {
     match repeat {
         Some(period) if until.is_none() => period.advance_from(from, 2).unwrap_or(from),

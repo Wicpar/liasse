@@ -429,18 +429,57 @@ impl<S: InstanceStore> Engine<S> {
         definition: &str,
         generator: &mut G,
     ) -> Result<Self, EngineError> {
-        // The default load manages no host components (only the built-in cose
-        // namespace), so a `$requires` entry is resolved leniently and its
-        // signatures are empty — a host-call view/default in a package loaded this
-        // way faults as an unknown function until the host wiring lands.
+        let (mut engine, data) = Self::assemble(store, definition, generator)?;
+        engine.genesis(definition, data.as_ref(), generator)?;
+        Ok(engine)
+    }
+
+    /// Assemble an activated instance over `store` from a compiled definition
+    /// WITHOUT running genesis, returning the engine and the package `$data` seed
+    /// its genesis will apply. Shared by [`Engine::load`] (which runs genesis
+    /// immediately) and [`Engine::install_load`] (which binds `$config` first).
+    ///
+    /// The default/install load manages no host components (only the built-in cose
+    /// namespace), so a `$requires` entry is resolved leniently and its signatures
+    /// are empty — a host-call view/default in a package loaded this way faults as
+    /// an unknown function until the host wiring lands.
+    fn assemble<G: Generators>(
+        store: S,
+        definition: &str,
+        generator: &mut G,
+    ) -> Result<(Self, Option<liasse_syntax::DocValue>), EngineError> {
         let Compilation { sources, model, compiled, data, requires } =
             compile_definition(definition, &HostSignatures::default())?;
         let mut host = HostBinding::resolve(Registry::new(), &requires, false)?;
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
         let keyrings = provision_keyrings(&compiled, clock, &mut host, ProviderFallback::SimDefault)?;
-        let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
-        engine.genesis(definition, data.as_ref(), generator)?;
+        let engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
+        Ok((engine, data))
+    }
+
+    /// Load a child module instance, binding its installation `$config` (§13.1)
+    /// BEFORE the package genesis `$seed`/`$data` seed runs, so a genesis field
+    /// default may read `$config` (§13.1/§9.1 — a seed row passes through the same
+    /// default rules a mutation insert does, on the installed instance where
+    /// `$config` is bound). Standalone [`Engine::load`] carries no `$config` and
+    /// runs genesis directly; only the module-install path threads the resolved
+    /// configuration in ahead of the seed.
+    ///
+    /// A compile/provision/genesis failure surfaces as [`ConfigBindError::Engine`]
+    /// so the module host maps every install failure uniformly, exactly as it did
+    /// for the standalone-load-then-`bind_config` sequence this replaces.
+    pub(crate) fn install_load<G: Generators>(
+        store: S,
+        definition: &str,
+        config: &BTreeMap<String, liasse_value::Value>,
+        generator: &mut G,
+    ) -> Result<Self, crate::config::ConfigBindError> {
+        use crate::config::ConfigBindError;
+        let (mut engine, data) =
+            Self::assemble(store, definition, generator).map_err(ConfigBindError::Engine)?;
+        engine.bind_config(config, generator)?;
+        engine.genesis(definition, data.as_ref(), generator).map_err(ConfigBindError::Engine)?;
         Ok(engine)
     }
 
@@ -1042,6 +1081,12 @@ impl<S: InstanceStore> Engine<S> {
     ) -> Result<(), EngineError> {
         let schema = Schema::new(&self.model);
         let snapshots = self.keyring_snapshots();
+        // §13.1/§9.1: a genesis `$seed`/`$data` field default may read the
+        // installation `$config` — bound before genesis on the module-install path
+        // ([`Engine::install_load`]) — so genesis carries the same `$config` binding a
+        // post-install mutation does. Empty for a standalone load (no `$config`), so
+        // this leaves the plain-load genesis behaviour unchanged (§11.1: no actor).
+        let context = self.base_context();
         let ctx = EvalCtx {
             schema,
             compiled: &self.compiled,
@@ -1050,8 +1095,7 @@ impl<S: InstanceStore> Engine<S> {
             seed: generator.next_seed(),
             keyrings: &snapshots,
             placements: &self.blob_placements,
-            // §11.1: genesis seeding executes with no actor.
-            context: BTreeMap::new(),
+            context,
             // §16.3/§8.8: a `$data` seed's field default may call a resolved host
             // namespace (a pure or generated function), so genesis carries the live
             // dispatch the same way a mutation admission does.
@@ -1368,6 +1412,41 @@ impl<S: InstanceStore> Engine<S> {
         let snapshot = self.store.snapshot(frontier)?;
         let prospective = Prospective::from_snapshot(&snapshot, self.schema());
         Ok(HydratedFrontier { frontier, prospective })
+    }
+
+    /// The fully-folded package root at head — the §20.1 `$old` "complete read-only
+    /// state under the delta's source model" a migration delta program reads. Every
+    /// collection's computed values (§5.2), root computed values, nested and declared
+    /// views (§7), keyring metadata, and meter accessors are folded onto the stored
+    /// rows, exactly as an ordinary read materializes the root a `$view` resolves
+    /// against ([`EvalCtx::root`]). Binding this as `$old` lets a delta read ANY
+    /// source view — `$old.items.doubled`, not only the stored collections — which
+    /// the raw stored-collection materialization could not resolve (§20.1).
+    ///
+    /// Evaluated through the live source engine, so an old computed value that reads
+    /// `$config`, a keyring, or a blob placement resolves against the real bindings,
+    /// not the codec-only migration context.
+    pub(crate) fn source_root(&self) -> Result<liasse_expr::Row, EngineError> {
+        let hydrated = self.hydrate(self.store.head()?)?;
+        let prospective = &hydrated.prospective;
+        let schema = Schema::new(&self.model);
+        let keyrings = self.keyring_snapshots();
+        let ctx = EvalCtx {
+            schema,
+            compiled: &self.compiled,
+            params: BTreeMap::new(),
+            now: self.clock,
+            seed: 0,
+            keyrings: &keyrings,
+            placements: &self.blob_placements,
+            // §13.1: a source computed value / view may read the instance `$config`.
+            context: self.base_context(),
+            hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
+            // The source read resolves against this instance's own state; a migration
+            // folds in no installed-module aggregate (§20.1).
+            modules: None,
+        };
+        Ok(ctx.root(prospective))
     }
 
     /// Evaluate view `name` against a shared committed-state `hydrated` frontier

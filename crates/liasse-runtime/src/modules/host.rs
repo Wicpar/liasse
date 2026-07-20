@@ -94,19 +94,25 @@ impl<F: StoreFactory> ModuleHost<F> {
             .factory
             .create(incarnation.clone())
             .map_err(|error| ModuleError::Engine(EngineError::Store(error)))?;
-        let mut engine = Engine::load(store, &admitted.definition, generator)?;
+        // §13.1/§13.3/§9.1: type-check the supplied `$config` values against the
+        // child's declared `$config` struct (rejecting an unknown member or a type
+        // mismatch), resolve omitted members from their defaults, and bind the
+        // resolved struct as the `$config` value the child's expressions read — BEFORE
+        // the package genesis `$seed`/`$data` seed runs, so a genesis field default may
+        // read `$config` (a seed row passes through the same default rules a mutation
+        // insert does on the installed, config-bound instance). The subsequent
+        // installation `$data` overlay likewise reads the bound `$config`.
+        let mut engine =
+            Engine::install_load(store, &admitted.definition, &admitted.bindings.config, generator)
+                .map_err(|error| match error {
+                    crate::config::ConfigBindError::Mismatch(mismatch) => ModuleError::ConfigMismatch(mismatch.to_string()),
+                    crate::config::ConfigBindError::Engine(engine) => ModuleError::Engine(engine),
+                })?;
         // §13.8/§13.3: the child's `$expose` must structurally satisfy the module
-        // space's declared `$interfaces` contract before the instance activates.
+        // space's declared `$interfaces` contract before the instance activates. The
+        // contract check reads only the compiled exposed views, so it is unaffected by
+        // whether genesis has run.
         self.check_interface_contracts(space, &engine)?;
-        // §13.1/§13.3: type-check the supplied `$config` values against the child's
-        // declared `$config` struct (rejecting an unknown member or a type mismatch),
-        // resolve omitted members from their defaults, and bind the resolved struct
-        // as the `$config` value the child's expressions read. Done before the
-        // installation `$data` overlay so an overlaid value may read `$config`.
-        engine.bind_config(&admitted.bindings.config, generator).map_err(|error| match error {
-            crate::config::ConfigBindError::Mismatch(mismatch) => ModuleError::ConfigMismatch(mismatch.to_string()),
-            crate::config::ConfigBindError::Engine(engine) => ModuleError::Engine(engine),
-        })?;
         // §13.3: package `$data` was applied by the load; the installation `$data`
         // now overlays onto the child genesis, passing ordinary insertion validation.
         if let Some(data) = &admitted.data {
