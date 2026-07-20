@@ -105,10 +105,20 @@ fn collect_refs<'a>(expr: &'a Expr, names: &BTreeSet<&str>, out: &mut BTreeSet<&
 
 /// Whether a grouped output references a source field outside the key set,
 /// outside any aggregate subtree (§7.2 aggregate/key-derived constraint).
+///
+/// A source field is reached two equivalent ways, both rejected: as a bare name
+/// (`amount`, resolving to `.amount`), or through a source-row binding
+/// (`it.amount`, `lines.amount`) that §6.4 binds to the current source row — so
+/// `b.f` for a `[:name]`/`::` binding `b` and a source field `f` is the same
+/// per-row source value as bare `f`. `row_binds` names those source-row
+/// bindings. The grouped `group` binding is NOT among them: it names the group
+/// view, whose fields are reached only through an aggregate (`max(group.f)`),
+/// which the exemption below already clears.
 pub(super) fn references_nonkey_field(
     expr: &Expr,
     source: &RowType,
     key_set: &BTreeSet<&str>,
+    row_binds: &BTreeSet<&str>,
 ) -> bool {
     if let ExprKind::Call { callee, .. } = &expr.kind
         && let ExprKind::Name(name) = &callee.kind
@@ -122,7 +132,20 @@ pub(super) fn references_nonkey_field(
             return true;
         }
     }
-    children(expr).any(|child| references_nonkey_field(child, source, key_set))
+    // §7.2: a binding-qualified non-key access `b.f` where `b` is a source-row
+    // binding and `f` a non-key source field is the bare `f` in disguise, so it
+    // is rejected identically — closing the leak where `it.amount` slipped past
+    // the bare-name check (`Name("it")` is no source field).
+    if let ExprKind::Field { base, member } = &expr.kind
+        && let ExprKind::Name(base_name) = &base.kind
+        && row_binds.contains(base_name.text.as_str())
+    {
+        let field = member.text.as_str();
+        if source.field(field).is_some() && !key_set.contains(field) {
+            return true;
+        }
+    }
+    children(expr).any(|child| references_nonkey_field(child, source, key_set, row_binds))
 }
 
 fn is_aggregate_name(name: &str) -> bool {

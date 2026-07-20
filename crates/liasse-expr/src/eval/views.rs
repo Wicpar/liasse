@@ -180,11 +180,12 @@ impl Evaluator<'_> {
         let mut ranked = Vec::with_capacity(scopes.len());
         for scope in scopes {
             let row = self.project_row(&scope, projection, None)?;
-            // §7.3: sort keys see the projected outputs and the source row.
+            // §7.3: sort keys see the projected outputs and the source row; a
+            // plain view has no `group` binding.
             let keys = if projection.sort.is_empty() {
                 Vec::new()
             } else {
-                self.eval_keys(&scope, &row, &projection.sort)?
+                self.eval_keys(&scope, &row, None, &projection.sort)?
             };
             ranked.push((row, keys));
         }
@@ -207,11 +208,13 @@ impl Evaluator<'_> {
             let Some(first) = members.first() else { continue };
             let group_cell = Cell::Collection(members.iter().map(|s| s.row.clone()).collect());
             let identity = synthetic_key_value(&key);
-            let row = self.project_row(first, projection, Some((group_cell, identity)))?;
+            let row = self.project_row(first, projection, Some((group_cell.clone(), identity)))?;
+            // §7.3/§7.5: a grouped view's sort keys see the same `group` binding
+            // the outputs do, so `$sort: ["-count(group)"]` resolves.
             let keys = if projection.sort.is_empty() {
                 Vec::new()
             } else {
-                self.eval_keys(first, &row, &projection.sort)?
+                self.eval_keys(first, &row, Some(&group_cell), &projection.sort)?
             };
             ranked.push((row, keys));
         }
@@ -228,6 +231,36 @@ impl Evaluator<'_> {
         order_rows(ranked, sort)
     }
 
+    /// Push the §7.1/§7.2 projection frame shared by every grouped-view evaluator
+    /// entry (`project_row`, `eval_keys`, `group_key`): `.` is the source row, the
+    /// source-chain `[:name]`/`::` row bindings are in scope, and — for a grouped
+    /// output row — the `group` source-row view is bound. Returns the names an
+    /// output MUST NOT shadow (§7.1/§6.4: a like-named output never overrides an
+    /// in-scope row/loop binding). Centralizing the setup keeps the three frames
+    /// from drifting apart. Each caller balances it with a single `self.pop()`.
+    fn push_project_frame(&mut self, scope: &RowScope, group: Option<&Cell>) -> BTreeSet<String> {
+        self.push(Cell::Row(Box::new(scope.row.clone())));
+        let mut loop_binds: BTreeSet<String> = BTreeSet::new();
+        for (name, cell) in &scope.binds {
+            loop_binds.insert(name.clone());
+            self.bind(name.clone(), cell.clone());
+        }
+        if let Some(group_cell) = group {
+            loop_binds.insert("group".to_owned());
+            self.bind("group".to_owned(), group_cell.clone());
+        }
+        loop_binds
+    }
+
+    /// Bind a computed projection output into the current frame unless it would
+    /// shadow an in-scope row/loop binding (§7.1/§6.4): a like-named output leaves
+    /// the binding in place for every sibling that reads that name.
+    fn bind_output(&mut self, loop_binds: &BTreeSet<String>, name: &str, cell: Cell) {
+        if !loop_binds.contains(name) {
+            self.bind(name.to_owned(), cell);
+        }
+    }
+
     /// Evaluate a projection's outputs over one source row, producing the output
     /// row. `group` supplies the grouped-view context: the `group` binding, the
     /// synthetic key value, and an id seed.
@@ -237,26 +270,12 @@ impl Evaluator<'_> {
         projection: &Projection,
         group: Option<(Cell, Value)>,
     ) -> Result<Row, EvalError> {
-        self.push(Cell::Row(Box::new(scope.row.clone())));
-        // §7.1/§6.4 (pinned): the in-scope row/loop bindings are never shadowed by a
-        // same-named sibling output member, so track their names and never let an
-        // output value overwrite one — mirrors the checker's resolution exactly.
-        let mut loop_binds: BTreeSet<String> = BTreeSet::new();
-        for (name, cell) in &scope.binds {
-            loop_binds.insert(name.clone());
-            self.bind(name.clone(), cell.clone());
-        }
-        if let Some((group_cell, _)) = &group {
-            loop_binds.insert("group".to_owned());
-            self.bind("group".to_owned(), group_cell.clone());
-        }
+        let loop_binds = self.push_project_frame(scope, group.as_ref().map(|(cell, _)| cell));
         let mut cells: BTreeMap<String, Cell> = BTreeMap::new();
         for output in &projection.outputs {
             match self.eval(&output.expr) {
                 Ok(cell) => {
-                    if !loop_binds.contains(&output.name) {
-                        self.bind(output.name.clone(), cell.clone());
-                    }
+                    self.bind_output(&loop_binds, &output.name, cell.clone());
                     cells.insert(output.name.clone(), cell);
                 }
                 Err(err) => {
@@ -292,27 +311,22 @@ impl Evaluator<'_> {
         Ok(Row::new(id, key, cells))
     }
 
-    /// Evaluate the sort keys for one row: `.` is the source row, and the
-    /// projected outputs plus any `::` binds are in scope (§7.3).
+    /// Evaluate the sort keys for one row (§7.3): `.` is the source row, the
+    /// source-chain `::`/`[:name]` binds and — for a grouped view — the `group`
+    /// binding are in scope, and the projected outputs are visible (so a sort key
+    /// may name an output or reference `group` directly, `$sort: ["-count(group)"]`).
+    /// Binds through the shared [`Self::push_project_frame`], so the sort-key frame
+    /// carries the identical `group` binding the output frame does.
     fn eval_keys(
         &mut self,
         scope: &RowScope,
         projected: &Row,
+        group: Option<&Cell>,
         sort: &[SortKey],
     ) -> Result<Vec<Value>, EvalError> {
-        self.push(Cell::Row(Box::new(scope.row.clone())));
-        // §7.1/§6.4 (pinned): a projected output never shadows a same-named row/loop
-        // binding — a sort key referencing such a name reads the row binding, not the
-        // like-named output, matching the projection-body resolution.
-        let mut loop_binds: BTreeSet<String> = BTreeSet::new();
-        for (name, cell) in &scope.binds {
-            loop_binds.insert(name.clone());
-            self.bind(name.clone(), cell.clone());
-        }
+        let loop_binds = self.push_project_frame(scope, group);
         for (name, cell) in projected.cells() {
-            if !loop_binds.contains(name) {
-                self.bind(name.clone(), cell.clone());
-            }
+            self.bind_output(&loop_binds, name, cell.clone());
         }
         let mut keys = Vec::with_capacity(sort.len());
         for key in sort {
@@ -332,23 +346,27 @@ impl Evaluator<'_> {
         Ok(keys)
     }
 
+    /// Compute one source row's synthetic group key (§7.2). The key partitions the
+    /// rows into groups, so it is evaluated BEFORE any group exists — hence no
+    /// `group` binding — but through the same [`Self::push_project_frame`] the
+    /// output and sort-key frames use, so the source-chain `::`/`[:name]` binds are
+    /// identically in scope. The key outputs are evaluated in dependency order
+    /// (`projection.outputs` is checker-ordered) and bound as they are computed, so
+    /// a later `$key` component MAY read an earlier one (§7.1, `tag: acct + "-x"`);
+    /// the key value is then assembled in the declared `$key` order.
     fn group_key(&mut self, scope: &RowScope, projection: &Projection) -> Result<Vec<Value>, EvalError> {
-        self.push(Cell::Row(Box::new(scope.row.clone())));
-        // §7.1/§7.2/§6.4: a synthetic `$key` output MAY read a source-chain row
-        // binding a `::` traversal or `[:name]` filter introduced (`companies.name`,
-        // `it.cat`), so the same binding context `project_row`/`eval_keys` replicate
-        // must be in scope while the key output evaluates — otherwise a well-formed
-        // grouped view faults with an unbound binding at read.
-        for (name, cell) in &scope.binds {
-            self.bind(name.clone(), cell.clone());
-        }
-        let mut key = Vec::with_capacity(projection.key.len());
-        for name in &projection.key {
-            let Some(output) = projection.outputs.iter().find(|o| &o.name == name) else {
+        let loop_binds = self.push_project_frame(scope, None);
+        let key_set: BTreeSet<&str> = projection.key.iter().map(String::as_str).collect();
+        let mut values: BTreeMap<&str, Value> = BTreeMap::new();
+        for output in &projection.outputs {
+            if !key_set.contains(output.name.as_str()) {
                 continue;
-            };
+            }
             match self.eval(&output.expr) {
-                Ok(Cell::Scalar(value)) => key.push(value),
+                Ok(Cell::Scalar(value)) => {
+                    self.bind_output(&loop_binds, &output.name, Cell::Scalar(value.clone()));
+                    values.insert(output.name.as_str(), value);
+                }
                 Ok(_) => {
                     self.pop();
                     return Err(EvalError::ShapeMismatch { expected: "a scalar key value" });
@@ -360,6 +378,11 @@ impl Evaluator<'_> {
             }
         }
         self.pop();
+        let key = projection
+            .key
+            .iter()
+            .filter_map(|name| values.get(name.as_str()).cloned())
+            .collect();
         Ok(key)
     }
 

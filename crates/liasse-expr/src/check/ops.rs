@@ -447,8 +447,13 @@ impl Checker<'_> {
 
 /// Whether two scalar types can be compared through the Annex B order.
 ///
-/// Equal types compare; `int` and `decimal` compare after promotion; a bare
-/// `none` (`optional<json>`) compares against any optional; two refs compare
+/// Equal types compare; `int` and `decimal` compare after promotion; an
+/// `optional<T>` compares only against a present value of its own base type `T`
+/// (`optional<int>` vs `int`) or against `json`, so a bare `none`
+/// (`optional<json>`) compares against a `json` value or an identical
+/// `optional<json>` — never against an arbitrary optional. Comparing a typed
+/// `optional<T>` to `none` with `==` is therefore rejected; `has()` is the
+/// sanctioned absence idiom. Two refs compare
 /// only when they name the same target relation (§6.3); and a ref compares
 /// against a key of its own declared target — §6.3 "Equality between a row or
 /// ref and a key of the same declared target compares the current typed key",

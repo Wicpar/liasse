@@ -126,8 +126,13 @@ impl Checker<'_> {
         // (below) nor overwrites the binding in the frame — a bare reference to
         // such a name always resolves to the row binding, not the output.
         let mut loop_binds: BTreeSet<String> = BTreeSet::new();
+        // §7.2: the source-row bindings (`[:name]`/`::`), separately from the
+        // grouped `group` view binding, so a binding-qualified non-key source
+        // access (`it.amount`) is rejected exactly as its bare form is.
+        let mut row_bind_names: BTreeSet<String> = BTreeSet::new();
         for (name, ty) in binds {
             loop_binds.insert(name.clone());
+            row_bind_names.insert(name.clone());
             self.bind(name, ty);
         }
         if grouped {
@@ -145,6 +150,7 @@ impl Checker<'_> {
         };
 
         let key_set: BTreeSet<&str> = key_fields.iter().map(String::as_str).collect();
+        let row_binds: BTreeSet<&str> = row_bind_names.iter().map(String::as_str).collect();
         let mut outputs: Vec<Output> = Vec::with_capacity(raw_outputs.len());
         let mut field_types: Vec<(String, ExprType)> = Vec::new();
         for index in order {
@@ -154,7 +160,7 @@ impl Checker<'_> {
             };
             if grouped
                 && !key_set.contains(raw.name.as_str())
-                && references_nonkey_field(&raw.expr, &source_row, &key_set)
+                && references_nonkey_field(&raw.expr, &source_row, &key_set, &row_binds)
             {
                 self.pop_frame();
                 return self.error(
