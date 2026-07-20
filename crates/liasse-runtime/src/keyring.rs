@@ -156,7 +156,7 @@ pub struct RotationSchedule {
 
 /// The observable keyring policy (§17.1): what a provider must satisfy and how
 /// versions rotate and are retained.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KeyringPolicy {
     /// The `$algorithm`.
     pub algorithm: String,
@@ -336,6 +336,14 @@ impl<P: KeyProvider> Keyring<P> {
     #[must_use]
     pub fn name(&self) -> &str {
         &self.name
+    }
+
+    /// The policy this ring was loaded under (§17.1). A keyring reconstruction
+    /// compares it against a new definition's declaration to detect a policy change
+    /// on a live ring, which the version lifecycle cannot soundly hot-apply (§17.6).
+    #[must_use]
+    pub fn policy(&self) -> &KeyringPolicy {
+        &self.policy
     }
 
     /// Mutable access to the backing provider, for host-driven reconfiguration

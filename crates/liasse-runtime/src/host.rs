@@ -24,7 +24,7 @@
 //! (liasse-expr), which types only the core language namespaces — resolving a
 //! host-namespace call *there* is a documented cross-crate seam.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_expr::{EvalError, ExprType, HostEffect, HostOp, HostOrigin};
 use liasse_host::{
@@ -98,6 +98,14 @@ pub(crate) struct HostBinding {
     registry: Registry,
     /// The local expression namespace → the semantic contract it pins.
     requires: BTreeMap<String, ContractRef>,
+    /// The `$provider` names the application registered at initial load (§17.5),
+    /// captured *before* any provider was `take`n out of the registry. It outlives
+    /// the consumed provider boxes (a migration keeps this binding through
+    /// [`rebind`](Self::rebind)), so a keyring reconstruction can tell a ring the
+    /// application really backed — which must re-provision or refuse loudly, never
+    /// silently sim — from a name it registered nothing for, which keeps the sim
+    /// default (§17.5 honesty rule).
+    registered_providers: BTreeSet<String>,
 }
 
 impl HostBinding {
@@ -120,8 +128,11 @@ impl HostBinding {
         strict: bool,
     ) -> Result<Self, EngineError> {
         ensure_cose(&mut registry);
+        // §17.5: record the registered provider names before any is consumed, so a
+        // later reconstruction knows which rings the application really backed.
+        let registered_providers = registry.provider_names().map(str::to_owned).collect();
         let requires = Self::bind(&registry, requires, strict)?;
-        Ok(Self { registry, requires })
+        Ok(Self { registry, requires, registered_providers })
     }
 
     /// A binding that serves only the built-in core codec namespaces (§16.1):
@@ -136,7 +147,7 @@ impl HostBinding {
             registry.register_namespace(namespace);
         }
         let requires = Self::bind(&registry, &crate::codec::requires(), false).unwrap_or_default();
-        Self { registry, requires }
+        Self { registry, requires, registered_providers: BTreeSet::new() }
     }
 
     /// Re-resolve `requires` against the already-registered components (a §20
@@ -247,12 +258,18 @@ impl HostBinding {
         self.registry.resolve_namespace(contract).ok()
     }
 
-    /// Remove and return the real key provider registered under `$provider` name
-    /// `name` (§17.5), moving its ownership out of the registry so the engine can
-    /// place it in the keyring it backs. `None` when the application registered no
-    /// provider under that name, so the ring self-provisions its sim double.
-    pub(crate) fn take_provider(&mut self, name: &str) -> Option<Box<dyn KeyProvider>> {
-        self.registry.take_provider(name)
+    /// Resolve a declared ring's `$provider` name to the provider that backs it
+    /// (§17.5), moving it out of the registry, *together with* whether the
+    /// application registered anything under that name at initial load.
+    ///
+    /// The two are read as a pair so a reconstruction can decide honestly when the
+    /// provider is `None`: a name the application DID register but which is no
+    /// longer available (consumed by an earlier ring, or gone across a
+    /// reconstruction) must refuse loudly — never self-provision the forgeable sim
+    /// double — while a name it never registered keeps the sim default (§17.5).
+    pub(crate) fn resolve_provider(&mut self, name: &str) -> (Option<Box<dyn KeyProvider>>, bool) {
+        let registered = self.registered_providers.contains(name);
+        (self.registry.take_provider(name), registered)
     }
 }
 

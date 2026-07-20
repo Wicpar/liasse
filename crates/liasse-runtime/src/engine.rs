@@ -8,7 +8,7 @@
 //! ops, so rebuilding an engine over the same store — or replaying the same
 //! request sequence under the same [`Generators`] — reproduces state exactly.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::SourceMap;
 use liasse_expr::{check_expression, Cell, SortOrder};
@@ -21,7 +21,7 @@ use liasse_syntax::parse_document;
 use liasse_value::{Json, Struct, Text, Timestamp, Type, Value};
 
 use liasse_host::sim::SimKeyProvider;
-use liasse_host::Registry;
+use liasse_host::{KeyProvider, Registry};
 
 use crate::blobs::PlacementState;
 use crate::compiled::{Compiled, CompiledKeyring, CompiledMutation};
@@ -212,61 +212,143 @@ impl HydratedFrontier {
     }
 }
 
+/// What to do for a declared `$keyring` whose `$provider` name resolves to *no*
+/// available provider at provisioning time (§17.5 honesty rule). A ring the
+/// application really backed with a real provider must never silently downgrade to
+/// the forgeable sim double at any reconstruction boundary; the choice is exactly
+/// re-provision (when the source still carries it) or refuse loudly.
+#[derive(Clone, Copy)]
+pub(crate) enum ProviderFallback {
+    /// Self-provision the sim double for an unregistered `$provider` — the
+    /// corpus/dev default, and the providers-supplied path (initial `load*`, and
+    /// [`restore_with_hosts`](Engine::restore_with_hosts)): a name the application
+    /// registered nothing for keeps the sim behaviour (§17.5, unchanged).
+    ///
+    /// [`restore_with_hosts`]: crate::Engine::restore_with_hosts
+    SimDefault,
+    /// The live-reconstruction discipline (a §20 migration / §19.8 import that adds
+    /// a ring): a `$provider` the application registered at initial load but which
+    /// is no longer available refuses loudly, while a name it never registered
+    /// keeps the sim default (`registered` decides).
+    RefuseRegistered,
+    /// The provider-less legacy restore ([`restore`](Engine::restore)): any
+    /// `$provider`-named ring refuses loudly, because a bare restore cannot tell an
+    /// intentional sim from a forgotten registry — direct the operator to
+    /// [`restore_with_hosts`](Engine::restore_with_hosts) rather than silently sim.
+    ///
+    /// [`restore`]: crate::Engine::restore
+    /// [`restore_with_hosts`]: crate::Engine::restore_with_hosts
+    RefuseNamed,
+}
+
 /// Bootstrap a live keyring per declaration (§17.3) at the load clock, over each
 /// ring's resolved provider: the real §17.5 provider the application registered
-/// under the declaration's `$provider` name (moved out of `host`), or — when none
-/// is registered — the engine's self-provisioned sim double (the default,
-/// unchanged). See [`provision_ring`] for the injected-vs-sim failure discipline.
+/// under the declaration's `$provider` name (moved out of `host`), or — per
+/// `fallback` — the engine's self-provisioned sim double or a loud refusal. See
+/// [`provision_ring`] for the injected-vs-sim-vs-refuse discipline.
 ///
 /// # Errors
 /// [`EngineError::Keyring`] when a ring's *injected* provider cannot fulfil its
-/// declared policy (a loud fail-before-activation, never a silent sim downgrade).
+/// declared policy, or when a `$provider`-named ring cannot be backed and
+/// `fallback` refuses rather than silently downgrading to the sim double.
 fn provision_keyrings(
     compiled: &Compiled,
     clock: Timestamp,
     host: &mut HostBinding,
+    fallback: ProviderFallback,
 ) -> Result<Vec<Keyring<EngineKeyProvider>>, EngineError> {
     let mut rings = Vec::new();
     for decl in &compiled.keyrings {
-        if let Some(ring) = provision_ring(decl, clock, host)? {
+        let (taken, registered) = resolve_provider(decl, host);
+        if let Some(ring) = provision_ring(decl, clock, taken, registered, fallback)? {
             rings.push(ring);
         }
     }
     Ok(rings)
 }
 
-/// Provision one declared keyring (§17.3/§17.5/§17.6) at `clock`.
+/// Take the provider backing a declared ring's `$provider` (if any) out of the
+/// host, together with whether the application registered anything under that name
+/// at initial load. A declaration with no `$provider` needs neither.
+fn resolve_provider(decl: &CompiledKeyring, host: &mut HostBinding) -> (Option<Box<dyn KeyProvider>>, bool) {
+    match decl.provider.as_deref() {
+        Some(name) => host.resolve_provider(name),
+        None => (None, false),
+    }
+}
+
+/// Provision one declared keyring (§17.3/§17.5/§17.6) at `clock` from an
+/// already-resolved provider, per the honesty rule:
 ///
-/// Resolves the declaration's `$provider` against the host [`Registry`] (through
-/// `host`). The two backings fail differently, per the honesty rule:
-///
-/// - **injected** (a provider is registered under the `$provider` name): the
-///   provider is capability-checked against the policy (§17.6) and bootstrapped;
-///   *either* failure is a loud [`EngineError::Keyring`] — a named production
-///   provider that cannot fulfil its ring rejects loading rather than downgrading
-///   to the forgeable sim double.
-/// - **sim** (no provider registered): the engine's deterministic double, which
-///   advertises everything the policy needs; a (theoretical) capability shortfall
-///   drops the ring, leaving its selector to fault — the established default,
-///   unchanged.
+/// - **injected** (`taken` is `Some`): the provider is capability-checked against
+///   the policy (§17.6) and bootstrapped; *either* failure is a loud
+///   [`EngineError::Keyring`] — a named production provider that cannot fulfil its
+///   ring rejects the operation rather than downgrading to the forgeable sim
+///   double.
+/// - **no `$provider`** declared: the engine's sim double (the default, unchanged).
+/// - **`$provider` named but unavailable**: `fallback` decides — sim only for a
+///   name the application never registered, otherwise a loud refusal. `registered`
+///   reports whether the application registered anything under this name at initial
+///   load.
 fn provision_ring(
     decl: &CompiledKeyring,
     clock: Timestamp,
-    host: &mut HostBinding,
+    taken: Option<Box<dyn KeyProvider>>,
+    registered: bool,
+    fallback: ProviderFallback,
 ) -> Result<Option<Keyring<EngineKeyProvider>>, EngineError> {
-    match decl.provider.as_deref().and_then(|name| host.take_provider(name)) {
-        Some(injected) => {
-            let ring = load_injected_ring(decl, EngineKeyProvider::injected(injected), clock)?;
-            Ok(Some(ring))
-        }
-        None => {
-            let sim = EngineKeyProvider::sim(crate::keyring_view::built_in_provider(&decl.policy));
-            Ok(Keyring::load(decl.name.clone(), sim, decl.policy.clone()).ok().map(|mut ring| {
-                let _ = ring.bootstrap(clock);
-                ring
-            }))
-        }
+    if let Some(injected) = taken {
+        return Ok(Some(load_injected_ring(decl, EngineKeyProvider::injected(injected), clock)?));
     }
+    let Some(name) = decl.provider.as_deref() else {
+        // No `$provider`: the deterministic sim double is the declared backing.
+        return Ok(sim_ring(decl, clock));
+    };
+    let refuse = match fallback {
+        ProviderFallback::SimDefault => false,
+        ProviderFallback::RefuseRegistered => registered,
+        ProviderFallback::RefuseNamed => true,
+    };
+    if refuse {
+        return Err(EngineError::Keyring(format!(
+            "`{}` names `$provider` `{name}`, but no such provider is available to back it; \
+             refusing to self-provision the forgeable sim double (§17.5)",
+            decl.name
+        )));
+    }
+    // A name the application registered nothing for keeps the sim default.
+    Ok(sim_ring(decl, clock))
+}
+
+/// The engine's self-provisioned deterministic sim double for a declaration (the
+/// §17.5 default). A (theoretical) capability shortfall drops the ring, leaving its
+/// selector to fault — the established default, unchanged.
+fn sim_ring(decl: &CompiledKeyring, clock: Timestamp) -> Option<Keyring<EngineKeyProvider>> {
+    let sim = EngineKeyProvider::sim(crate::keyring_view::built_in_provider(&decl.policy));
+    Keyring::load(decl.name.clone(), sim, decl.policy.clone()).ok().map(|mut ring| {
+        let _ = ring.bootstrap(clock);
+        ring
+    })
+}
+
+/// Fold the newly-`provisioned` rings and the engine's `current` keyrings into the
+/// target-ordered live set (§19.10/§20), the infallible move the caller runs AFTER
+/// its commit succeeds. A ring the target still declares carries its preserved live
+/// state; a newly-declared ring takes its freshly-provisioned instance; a dropped
+/// ring is discarded. Every entry is moved (no clone), so no signing material or
+/// version lifecycle is reset.
+fn assemble_keyrings(
+    target: &Compiled,
+    current: Vec<Keyring<EngineKeyProvider>>,
+    mut provisioned: BTreeMap<String, Keyring<EngineKeyProvider>>,
+) -> Vec<Keyring<EngineKeyProvider>> {
+    let mut retained: BTreeMap<String, Keyring<EngineKeyProvider>> =
+        current.into_iter().map(|ring| (ring.name().to_owned(), ring)).collect();
+    target
+        .keyrings
+        .iter()
+        .filter_map(|decl| retained.remove(&decl.name).or_else(|| provisioned.remove(&decl.name)))
+        .collect()
 }
 
 /// Load and bootstrap an injected-provider ring, mapping every failure to a loud
@@ -356,7 +438,7 @@ impl<S: InstanceStore> Engine<S> {
         let mut host = HostBinding::resolve(Registry::new(), &requires, false)?;
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
-        let keyrings = provision_keyrings(&compiled, clock, &mut host)?;
+        let keyrings = provision_keyrings(&compiled, clock, &mut host, ProviderFallback::SimDefault)?;
         let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
@@ -393,7 +475,7 @@ impl<S: InstanceStore> Engine<S> {
             compile_definition(definition, &host.expr_signatures())?;
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
-        let keyrings = provision_keyrings(&compiled, clock, &mut host)?;
+        let keyrings = provision_keyrings(&compiled, clock, &mut host, ProviderFallback::SimDefault)?;
         let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.genesis(definition, data.as_ref(), generator)?;
         Ok(engine)
@@ -417,16 +499,23 @@ impl<S: InstanceStore> Engine<S> {
         definition: &str,
         state: &crate::portable::StateSection,
         cursor: crate::lineage::HistoryCursor,
+        registry: Registry,
+        fallback: ProviderFallback,
         generator: &mut G,
     ) -> Result<Self, EngineError> {
-        // A restore manages no host components (§19.10 rebuilds over a bare
-        // registry), so requirements are deferred and host-call expressions carry
-        // empty signatures — the same as the default load.
+        // A restore reinstalls captured rows verbatim (§19.10) — no host-call
+        // view/default is re-evaluated — so requirements stay deferred and
+        // host-call expressions carry empty signatures, as the default load. The
+        // `registry` supplies only the §17.5 key providers each `$keyring` is
+        // re-provisioned against: [`restore_with_hosts`](Self::restore_with_hosts)
+        // passes the application's providers (and sims an unbacked name, as load),
+        // while the provider-less [`restore`](Self::restore) passes a bare registry
+        // and refuses any `$provider`-named ring rather than silently sim it.
         let Compilation { sources, model, compiled, requires, .. } =
             compile_definition(definition, &HostSignatures::default())?;
-        let mut host = HostBinding::resolve(Registry::new(), &requires, false)?;
+        let mut host = HostBinding::resolve(registry, &requires, false)?;
         let clock = generator.now();
-        let keyrings = provision_keyrings(&compiled, clock, &mut host)?;
+        let keyrings = provision_keyrings(&compiled, clock, &mut host, fallback)?;
         let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         engine.install_state(definition, state)?;
         Ok(engine)
@@ -515,6 +604,12 @@ impl<S: InstanceStore> Engine<S> {
         let Compilation { sources, model, compiled, requires, .. } =
             compile_definition(definition, &HostSignatures::default())?;
         self.host.rebind(&requires)?;
+        // §17.5/§19.8: provision the point definition's newly-declared keyrings
+        // BEFORE staging, on the same live-reconstruction discipline as a migration —
+        // a registered `$provider` the source no longer carries (F1a), or a policy
+        // change on a live ring (F2), refuses the movement with the head and keyrings
+        // intact, never a silent sim downgrade. Folded in after the commit lands.
+        let provisioned_keyrings = self.provision_new_keyrings(&compiled, ProviderFallback::RefuseRegistered)?;
         // §19.5: read the captured rows under the POINT's own schema, not the
         // engine's current one, so a movement across a migration reinstalls the
         // point's shape rather than reinterpreting its bytes under a foreign model.
@@ -541,9 +636,9 @@ impl<S: InstanceStore> Engine<S> {
             CommitOutcome::Unchanged => self.store.head()?,
         };
         self.model = model;
-        self.compiled = compiled;
         self.sources = sources;
-        self.rebuild_keyrings()?;
+        self.keyrings = assemble_keyrings(&compiled, std::mem::take(&mut self.keyrings), provisioned_keyrings);
+        self.compiled = compiled;
         Ok(seq)
     }
 
@@ -606,6 +701,12 @@ impl<S: InstanceStore> Engine<S> {
         // declares its own `$requires`; re-resolve them before staging, so an
         // unmet requirement fails the migration before any effect.
         self.host.rebind(&target.requires)?;
+        // §17.5/§20: provision the target's newly-declared keyrings BEFORE staging,
+        // so a ring whose registered `$provider` the source no longer carries (F1a),
+        // or a policy change on a live ring (F2), refuses the migration with the old
+        // head and keyrings intact — never a silent downgrade to the forgeable sim
+        // double. The provisioned rings are folded in only after the commit lands.
+        let provisioned_keyrings = self.provision_new_keyrings(&target.compiled, ProviderFallback::RefuseRegistered)?;
         let schema = Schema::new(&self.model);
         let mut prospective = Prospective::gather(&self.store, schema)?;
         let live: Vec<RowAddress> = prospective.working().keys().cloned().collect();
@@ -629,9 +730,9 @@ impl<S: InstanceStore> Engine<S> {
             CommitOutcome::Unchanged => self.store.head()?,
         };
         self.model = target.model;
-        self.compiled = target.compiled;
         self.sources = target.sources;
-        self.rebuild_keyrings()?;
+        self.keyrings = assemble_keyrings(&target.compiled, std::mem::take(&mut self.keyrings), provisioned_keyrings);
+        self.compiled = target.compiled;
         Ok(seq)
     }
 
@@ -697,29 +798,60 @@ impl<S: InstanceStore> Engine<S> {
         }
     }
 
-    /// Re-provision the keyrings after a definition change (§19.10 reinstall, §20
-    /// migration). A ring the new definition still declares is *preserved* — its
-    /// live provider and version lifecycle carry across the linear continuation,
+    /// Provision the rings a new definition `target` newly declares (§19.10
+    /// reinstall, §20 migration), *without mutating the engine*, so a ring that
+    /// cannot be soundly carried refuses the operation with the old keyrings intact.
+    /// The caller provisions BEFORE its own commit, then — once committed — folds
+    /// the returned map into the live set with [`assemble_keyrings`] (an infallible
+    /// move), so nothing is lost if the commit itself faults.
+    ///
+    /// A ring the target still declares is *preserved* by [`assemble_keyrings`] —
+    /// its live provider and version lifecycle carry across the linear continuation,
     /// so retained versions, the rotation schedule, and (critically) an injected
-    /// provider's live signing material do not reset and are never silently
-    /// downgraded to the sim double. A ring the new definition drops is discarded;
-    /// a ring it newly adds is provisioned against the live registry — whose
-    /// registered providers the initial load already consumed, so a newly-declared
-    /// ring self-provisions its sim double unless a provider is (re-)registered.
-    fn rebuild_keyrings(&mut self) -> Result<(), EngineError> {
-        let mut retained: BTreeMap<String, Keyring<EngineKeyProvider>> = std::mem::take(&mut self.keyrings)
-            .into_iter()
-            .map(|ring| (ring.name().to_owned(), ring))
-            .collect();
-        let mut rings = Vec::new();
-        for decl in &self.compiled.keyrings {
-            match retained.remove(&decl.name) {
-                Some(existing) => rings.push(existing),
-                None => rings.extend(provision_ring(decl, self.clock, &mut self.host)?),
+    /// provider's live signing material never reset or silently downgrade to the sim
+    /// double. A ring it newly adds is provisioned against the retained registry
+    /// under [`ProviderFallback::RefuseRegistered`]: a `$provider` the application
+    /// registered at initial load re-provisions when still available, else refuses
+    /// loudly (§17.5 — never a silent sim); a name it never registered keeps sim.
+    ///
+    /// A policy change on a *retained* ring (a new `$rotate`/`$retain`/`$algorithm`/
+    /// `$usage`) refuses loudly (F2): the version lifecycle cannot soundly hot-apply
+    /// one — an `$algorithm`/`$usage` change invalidates the ring's existing
+    /// versions and its §17.6 capability contract — so a silent no-op is forbidden.
+    fn provision_new_keyrings(
+        &mut self,
+        target: &Compiled,
+        fallback: ProviderFallback,
+    ) -> Result<BTreeMap<String, Keyring<EngineKeyProvider>>, EngineError> {
+        // F2: refuse a policy change on any ring the target still declares BEFORE
+        // touching provider state, so the engine is untouched on refusal.
+        for ring in &self.keyrings {
+            if let Some(decl) = target.keyrings.iter().find(|decl| decl.name == ring.name())
+                && ring.policy() != &decl.policy
+            {
+                return Err(EngineError::Keyring(format!(
+                    "keyring `{}` changes its policy on a live ring; the version lifecycle cannot \
+                     soundly hot-apply a `$rotate`/`$retain`/`$algorithm`/`$usage` change (§17.6) — \
+                     refusing rather than silently ignoring it",
+                    ring.name()
+                )));
             }
         }
-        self.keyrings = rings;
-        Ok(())
+        // Provision every NEWLY-declared ring into a local map: this consumes
+        // providers, bootstraps, and may refuse (F1a) — self.keyrings stays intact,
+        // so a refusal (or a provider fault) leaves the engine wholly unchanged.
+        let current: BTreeSet<&str> = self.keyrings.iter().map(Keyring::name).collect();
+        let mut provisioned: BTreeMap<String, Keyring<EngineKeyProvider>> = BTreeMap::new();
+        for decl in &target.keyrings {
+            if current.contains(decl.name.as_str()) {
+                continue;
+            }
+            let (taken, registered) = resolve_provider(decl, &mut self.host);
+            if let Some(ring) = provision_ring(decl, self.clock, taken, registered, fallback)? {
+                provisioned.insert(decl.name.clone(), ring);
+            }
+        }
+        Ok(provisioned)
     }
 
     /// A read-time snapshot of every live keyring's version view at the current

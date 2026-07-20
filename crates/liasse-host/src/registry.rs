@@ -127,6 +127,17 @@ impl Registry {
         self.providers.get(name).map(Box::as_ref)
     }
 
+    /// The `$provider` registration name of every registered key provider (§17.5).
+    /// The engine records this set at initial load — *before* it `take`s each
+    /// declared ring's provider out — so a later keyring reconstruction (a §20
+    /// migration, a §19.10 restore) can tell a ring the application genuinely
+    /// backed with a real provider (which must never silently downgrade to the
+    /// forgeable sim double) from a name the application registered nothing for
+    /// (which keeps the compat sim default).
+    pub fn provider_names(&self) -> impl Iterator<Item = &str> {
+        self.providers.keys().map(String::as_str)
+    }
+
     /// A registered provider by name for a lifecycle operation (`generate`,
     /// `bind`, `disable`, `destroy`), which mutate the provider keystore.
     pub fn provider_mut(&mut self, name: &str) -> Option<&mut (dyn KeyProvider + 'static)> {

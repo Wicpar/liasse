@@ -1058,6 +1058,7 @@ version = "0.0.1"
 dependencies = [
  "bigdecimal",
  "criterion",
+ "ed25519-dalek",
  "liasse-artifact",
  "liasse-diag",
  "liasse-expr",
@@ -1070,6 +1071,7 @@ dependencies = [
  "liasse-value",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
 ]
 

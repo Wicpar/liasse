@@ -28,6 +28,7 @@
 use std::collections::BTreeMap;
 
 use liasse_artifact::{Artifact, ArtifactBuilder, ArtifactError};
+use liasse_host::Registry;
 use liasse_ident::HistoryPoint;
 use liasse_store::{AddressStep, InstanceStore, RowAddress};
 use liasse_value::Value;
@@ -251,18 +252,59 @@ impl<S: InstanceStore> Engine<S> {
     /// Restore an activated instance over `store` from a verified artifact
     /// (§19.10). Verification (§19.8) runs first, so a tampered artifact is an
     /// [`ImportError::Artifact`] and nothing is instantiated.
+    ///
+    /// This provider-less form manages no §17.5 key providers, so it REFUSES a
+    /// restore of state that declares a `$provider`-named `$keyring` — a bare
+    /// restore cannot tell an intentional sim from a forgotten registry, and
+    /// silently self-provisioning the forgeable sim double would both break
+    /// verification of pre-export tokens and downgrade future minting to forgeable
+    /// keys. Use [`restore_with_hosts`](Self::restore_with_hosts) to re-provision
+    /// each ring against the application's registered providers.
     pub fn restore<G: crate::generator::Generators>(
         store: S,
         artifact: &[u8],
         generator: &mut G,
     ) -> Result<Self, ImportError> {
+        Self::restore_from(store, artifact, Registry::new(), crate::engine::ProviderFallback::RefuseNamed, generator)
+    }
+
+    /// Restore an activated instance over `store` from a verified artifact against a
+    /// host [`Registry`] (§19.10, §17.5), re-provisioning each declared `$keyring`'s
+    /// `$provider` from the supplied registry exactly as
+    /// [`load_with_hosts`](Self::load_with_hosts) does: a ring the application backs
+    /// with a real provider is restored REAL — so pre-export tokens keep verifying
+    /// and post-restore minting stays non-forgeable — while a ring whose `$provider`
+    /// the registry does not carry keeps the sim default (the same compat behaviour
+    /// as load). Verification (§19.8) runs first.
+    ///
+    /// Build the registry with
+    /// [`register_provider`](liasse_host::Registry::register_provider) for the same
+    /// `$provider` names the exported instance was loaded with, so a disaster-
+    /// recovery restore continues signing/verifying against the production keys.
+    pub fn restore_with_hosts<G: crate::generator::Generators>(
+        store: S,
+        artifact: &[u8],
+        registry: Registry,
+        generator: &mut G,
+    ) -> Result<Self, ImportError> {
+        Self::restore_from(store, artifact, registry, crate::engine::ProviderFallback::SimDefault, generator)
+    }
+
+    /// Shared restore body (§19.10): open+verify the artifact, adopt its selected
+    /// `(lineage, point)` and lineage ancestry so a re-export reproduces the exact
+    /// point and a later classify is lineage-aware, then rebuild over `registry`
+    /// under `fallback` (the §17.5 discipline for an unbacked `$provider` name).
+    fn restore_from<G: crate::generator::Generators>(
+        store: S,
+        artifact: &[u8],
+        registry: Registry,
+        fallback: crate::engine::ProviderFallback,
+        generator: &mut G,
+    ) -> Result<Self, ImportError> {
         let opened = Artifact::open(artifact)?;
         let (definition, state) = decode_sections(&opened)?;
-        // §19.2/§19.10: adopt the artifact's selected `(lineage, point)` and its
-        // recorded lineage ancestry, so a re-export reproduces the exact point and
-        // a later classify is lineage-aware — rather than restarting at genesis.
         let cursor = crate::lineage::HistoryCursor::restored(&opened.manifest().selected, opened.history_index());
-        Self::from_state(store, &definition, &state, cursor, generator).map_err(ImportError::Engine)
+        Self::from_state(store, &definition, &state, cursor, registry, fallback, generator).map_err(ImportError::Engine)
     }
 
     /// Classify an incoming artifact against local retained history (§19.8),

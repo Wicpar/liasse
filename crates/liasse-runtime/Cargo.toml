@@ -40,6 +40,11 @@ liasse-expr = { path = "../liasse-expr" }
 # The real software Ed25519 §17.5 provider, injected into an engine keyring under
 # its `$provider` name to prove native-cose signing over production keys (Task 5).
 liasse-key-ed25519 = { path = "../liasse-key-ed25519" }
+# A deterministic-seeded REAL Ed25519 provider double (keyring_reconstruction test):
+# a fresh instance reproduces the same keys from a secret, so a restored ring keeps
+# verifying pre-export tokens while staying non-forgeable (unlike the sim double).
+ed25519-dalek = { workspace = true }
+sha2 = "0.10"
 serde_json = { version = "1.0", features = ["arbitrary_precision"] }
 criterion = { version = "0.5", default-features = false }
 
