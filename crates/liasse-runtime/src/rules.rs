@@ -655,14 +655,19 @@ fn check_refs(
     fields: &FieldMap,
     address: &RowAddress,
 ) -> Result<(), Rejection> {
-    for field in &collection.fields {
+    // §5.3/§5.6/§22.1: a `$ref` is a legal static-struct member, so reference
+    // validity must hold for a struct-nested ref exactly as for a top-level one.
+    // Walk every reference-bearing field of the row's struct tree (recursively),
+    // not just `collection.fields`, so a dangling struct-nested ref rejects.
+    for site in crate::refwalk::ref_sites(collection) {
+        let field = site.field;
         if let Some(info) = &field.reference {
-            match fields.get(&field.name) {
+            match site.value(fields) {
                 None | Some(Value::None) if info.optional => {}
                 None | Some(Value::None) => {
                     return Err(Rejection::new(
                         RejectionReason::DanglingRef,
-                        format!("required reference `{}` has no target", field.name),
+                        format!("required reference `{}` has no target", site.display_name()),
                     )
                     .at(address.render()));
                 }
@@ -670,7 +675,7 @@ fn check_refs(
                     if !target_present(compiled, prospective, &info.target, reference.key()) {
                         return Err(Rejection::new(
                             RejectionReason::DanglingRef,
-                            format!("reference `{}` does not resolve to a live row", field.name),
+                            format!("reference `{}` does not resolve to a live row", site.display_name()),
                         )
                         .at(address.render()));
                     }
@@ -682,14 +687,17 @@ fn check_refs(
         // resolve to a live row, exactly like a scalar ref field — a dangling
         // member rejects the whole transition (§22.1 reference validity).
         if let Some(info) = &field.element_reference
-            && let Some(Value::Set(members)) = fields.get(&field.name)
+            && let Some(Value::Set(members)) = site.value(fields)
         {
             for member in members {
                 let Some(key) = member_ref_key(member) else { continue };
                 if !target_present(compiled, prospective, &info.target, &key) {
                     return Err(Rejection::new(
                         RejectionReason::DanglingRef,
-                        format!("a member of reference set `{}` does not resolve to a live row", field.name),
+                        format!(
+                            "a member of reference set `{}` does not resolve to a live row",
+                            site.display_name()
+                        ),
                     )
                     .at(address.render()));
                 }

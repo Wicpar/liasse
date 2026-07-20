@@ -18,7 +18,7 @@ use liasse_store::{CollectionPath, KeyValue, RowAddress};
 use liasse_value::{Ref, Struct, Text, Type, Value};
 
 use crate::cascade::{self, PlannedDeletion};
-use crate::compiled::{Compiled, CompiledCollection, CompiledMutation, CompiledStruct};
+use crate::compiled::{Compiled, CompiledCollection, CompiledField, CompiledMutation, CompiledStruct};
 use crate::deletion::{Erasure, Extract, Occurrence, RowRef};
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
@@ -1989,40 +1989,16 @@ pub(crate) fn rewrite_inbound_refs_across(
         let Some(existing) = prospective.get(&address) else { continue };
         let mut fields = existing.clone();
         let mut changed = false;
-        for field in &collection.fields {
-            // A scalar `$ref` field: rewrite its single value to the new key.
-            if let Some(info) = &field.reference
-                && info.target == target
-                && let Some(rewrite) =
-                    rewrite_ref_value(fields.get(&field.name), &names, &old_id, &new_id, &new_ref)
+        // §5.3/§5.4: a `$ref` is a legal static-struct member, so the rewrite MUST
+        // reach a struct-nested inbound ref too — otherwise a rekey leaves it showing
+        // the stale prior key. Walk every ref field of the row's struct tree
+        // (recursively) and rewrite each in place at its located path.
+        for site in crate::refwalk::ref_sites(collection) {
+            if let Some(rewrite) =
+                rewrite_field_value(site.field, site.value(&fields), target, &names, &old_id, &new_id, &new_ref)
             {
-                fields.insert(field.name.clone(), rewrite);
+                set_site_value(&mut fields, &site.container, &site.field.name, rewrite);
                 changed = true;
-            }
-            // §5.5/§5.4: a `$set` of `$ref` holds many inbound references — rewrite
-            // every member that targeted the rekeyed row, preserving the rest of the
-            // membership.
-            if let Some(info) = &field.element_reference
-                && info.target == target
-                && let Some(Value::Set(members)) = fields.get(&field.name)
-            {
-                let mut rebuilt = BTreeSet::new();
-                let mut member_changed = false;
-                for member in members {
-                    match rewrite_ref_value(Some(member), &names, &old_id, &new_id, &new_ref) {
-                        Some(rewrite) => {
-                            rebuilt.insert(rewrite);
-                            member_changed = true;
-                        }
-                        None => {
-                            rebuilt.insert(member.clone());
-                        }
-                    }
-                }
-                if member_changed {
-                    fields.insert(field.name.clone(), Value::Set(rebuilt));
-                    changed = true;
-                }
             }
         }
         if changed {
@@ -2054,6 +2030,85 @@ fn rewrite_ref_value(
         Some(bare) if bare == old => Some(new.clone()),
         _ => None,
     }
+}
+
+/// The rewritten value a single reference field takes when the rekeyed `target`
+/// row moves from application identity `old` to `new` (§5.4), or `None` when the
+/// field does not target the rekeyed row. Handles both a scalar `$ref` and every
+/// member of a `$set` of `$ref`, so one helper serves the top-level and the
+/// struct-nested rewrite alike.
+fn rewrite_field_value(
+    field: &CompiledField,
+    current: Option<&Value>,
+    target: &str,
+    names: &[String],
+    old: &Value,
+    new: &Value,
+    new_ref: &Ref,
+) -> Option<Value> {
+    if let Some(info) = &field.reference
+        && info.target == target
+    {
+        return rewrite_ref_value(current, names, old, new, new_ref);
+    }
+    // §5.5/§5.4: a `$set` of `$ref` holds many inbound references — rewrite every
+    // member that targeted the rekeyed row, preserving the rest of the membership.
+    if let Some(info) = &field.element_reference
+        && info.target == target
+        && let Some(Value::Set(members)) = current
+    {
+        let mut rebuilt = BTreeSet::new();
+        let mut member_changed = false;
+        for member in members {
+            match rewrite_ref_value(Some(member), names, old, new, new_ref) {
+                Some(rewrite) => {
+                    rebuilt.insert(rewrite);
+                    member_changed = true;
+                }
+                None => {
+                    rebuilt.insert(member.clone());
+                }
+            }
+        }
+        return member_changed.then_some(Value::Set(rebuilt));
+    }
+    None
+}
+
+/// Write `value` at the field named `field` reached by descending the static-struct
+/// `container` path inside a row's owned field map (§5.3). A top-level field (empty
+/// `container`) is a direct insert — byte-identical to the prior rewrite. A
+/// struct-nested field rebuilds each struct on the path, because a [`Struct`] is
+/// immutable once built; the descent stops (leaving the row unchanged) if an
+/// intermediate member is absent or is not a struct.
+fn set_site_value(fields: &mut FieldMap, container: &[&str], field: &str, value: Value) {
+    let Some((head, rest)) = container.split_first() else {
+        fields.insert(field.to_owned(), value);
+        return;
+    };
+    let Some(Value::Struct(current)) = fields.get(*head).cloned() else { return };
+    let rebuilt = rebuild_struct(&current, rest, field, value);
+    fields.insert((*head).to_owned(), Value::Struct(rebuilt));
+}
+
+/// A copy of `current` with the field named `field`, reached by descending the
+/// remaining static-struct `rest` path, set to `value` (§5.3). Rebuilds each nested
+/// struct on the way down; an absent or non-struct intermediate member leaves that
+/// branch untouched.
+fn rebuild_struct(current: &Struct, rest: &[&str], field: &str, value: Value) -> Struct {
+    let mut members: std::collections::BTreeMap<Text, Value> =
+        current.fields().map(|(name, member)| (name.clone(), member.clone())).collect();
+    match rest.split_first() {
+        None => {
+            members.insert(Text::new(field), value);
+        }
+        Some((head, tail)) => {
+            if let Some(Value::Struct(inner)) = current.get(head) {
+                members.insert(Text::new(*head), Value::Struct(rebuild_struct(inner, tail, field, value)));
+            }
+        }
+    }
+    Struct::new(members)
 }
 
 /// Re-root a descendant address under `new_ancestor`: keep the new ancestor's

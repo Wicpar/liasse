@@ -164,6 +164,7 @@ mod patch;
 mod portable;
 mod recursion;
 mod refid;
+mod refwalk;
 mod request;
 mod response;
 mod rules;

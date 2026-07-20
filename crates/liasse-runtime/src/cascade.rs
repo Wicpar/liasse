@@ -64,46 +64,61 @@ pub(crate) fn plan(
     for collection in &compiled.collections {
         let path = CollectionPath::top(NameSegment::new(collection.name.clone()));
         let Some(model) = ctx.schema.top_collection(&collection.name) else { continue };
+        // §5.3/§21.1: a `$ref` is a legal static-struct member and carries an
+        // `$on_delete` policy the model gate enforces, so walk every ref field of
+        // the row's struct tree (recursively) — not just `collection.fields` — or a
+        // struct-nested ref escapes deletion planning entirely. The site set is
+        // data-independent, so compute it once per collection and reuse per row.
+        let sites = crate::refwalk::ref_sites(collection);
         for address in prospective.addresses_in(&path) {
             let Some(fields) = prospective.get(&address) else { continue };
             let Some(step) = address.steps().last() else { continue };
             let from = RowRef::new(collection.name.clone(), materialize::key_identity(model, step.key()));
-            for field in &collection.fields {
+            for site in &sites {
+                let field = site.field;
+                let value = site.value(fields);
                 if let Some(info) = &field.reference {
-                    let Some(target_key) = ref_key(fields.get(&field.name)) else { continue };
+                    let Some(target_key) = ref_key(value) else { continue };
                     let to = RowRef::new(info.target.clone(), target_key);
-                    let Some(policy) =
+                    // A struct-nested ref's ROW-LEVEL policy (`restrict` blocks,
+                    // `cascade` deletes the containing row) applies without any nested
+                    // field addressing; a surviving-row FIELD effect fails closed
+                    // (`nested_scalar_policy`).
+                    let policy = if site.container.is_empty() {
                         resolve_policy(compiled, ctx, prospective, &info.on_delete, &from, &to)?
-                    else {
-                        continue;
+                    } else {
+                        Some(nested_scalar_policy(&info.on_delete))
                     };
-                    graph.add_edge(RefEdge { from: from.clone(), field: field.name.clone(), to, policy });
+                    let Some(policy) = policy else { continue };
+                    graph.add_edge(RefEdge { from: from.clone(), field: site.display_name(), to, policy });
                 }
                 // §5.5/§5.6: every member of a `$set` of `$ref` is a governed
                 // inbound ref (§21.1). Build one edge per live member so its
                 // policy decides the member's fate when the target is deleted — a
                 // set member's `cascade` drops the member (not the whole row).
                 if let Some(info) = &field.element_reference
-                    && let Some(Value::Set(members)) = fields.get(&field.name)
+                    && let Some(Value::Set(members)) = value
                 {
                     for member in members {
                         let Some(target_key) = ref_key(Some(member)) else { continue };
                         let to = RowRef::new(info.target.clone(), target_key);
-                        let Some(policy) = resolve_member_policy(
-                            compiled,
-                            ctx,
-                            prospective,
-                            &info.on_delete,
-                            &from,
-                            &to,
-                            member,
-                        )?
-                        else {
-                            continue;
+                        let policy = if site.container.is_empty() {
+                            resolve_member_policy(
+                                compiled,
+                                ctx,
+                                prospective,
+                                &info.on_delete,
+                                &from,
+                                &to,
+                                member,
+                            )?
+                        } else {
+                            Some(nested_member_policy(&info.on_delete))
                         };
+                        let Some(policy) = policy else { continue };
                         graph.add_edge(RefEdge {
                             from: from.clone(),
-                            field: field.name.clone(),
+                            field: site.display_name(),
                             to,
                             policy,
                         });
@@ -169,6 +184,37 @@ fn resolve_member_policy(
     match policy {
         OnDelete::Cascade | OnDelete::Clear => Ok(Some(DeletePolicy::DropMember(member.clone()))),
         _ => resolve_policy(compiled, ctx, prospective, policy, from, to),
+    }
+}
+
+/// The delete policy of a STRUCT-NESTED scalar `$ref` (§5.3/§21.1). The ROW-LEVEL
+/// outcomes — `restrict` (block the delete) and `cascade` (delete the containing
+/// row) — apply correctly regardless of nesting, so they map straight through:
+/// this is what gives a struct-nested `restrict`/`cascade` its §21.1 effect. A
+/// surviving-row FIELD effect (`none`/clear or `= patch`) would need the nested
+/// field addressing the deletion plan does not carry (a documented seam, matching
+/// the model's own struct seams), so it maps to the fail-closed [`DeletePolicy::Undecided`]
+/// backstop: a target deletion that would strand such a ref is REJECTED (§22.1)
+/// rather than mis-applied at the wrong (top-level) field or left dangling. No
+/// patch is evaluated here, so a nested `= patch` never runs against the wrong scope.
+fn nested_scalar_policy(policy: &OnDelete) -> DeletePolicy {
+    match policy {
+        OnDelete::Restrict => DeletePolicy::Restrict,
+        OnDelete::Cascade => DeletePolicy::Cascade,
+        OnDelete::Undecided | OnDelete::Clear | OnDelete::Patch(_) => DeletePolicy::Undecided,
+    }
+}
+
+/// The delete policy of a STRUCT-NESTED `$set`-of-`$ref` member (§5.3/§5.6/§21.1).
+/// Only `restrict` is a row-level block that applies without nested addressing;
+/// every removing/patching member effect (a member `cascade`/`none` drop, a
+/// `= patch`) needs the nested set addressing the plan does not carry, so it fails
+/// closed to [`DeletePolicy::Undecided`] (reject rather than mis-apply) — a
+/// documented seam.
+fn nested_member_policy(policy: &OnDelete) -> DeletePolicy {
+    match policy {
+        OnDelete::Restrict => DeletePolicy::Restrict,
+        _ => DeletePolicy::Undecided,
     }
 }
 
