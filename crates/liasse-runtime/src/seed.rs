@@ -249,7 +249,13 @@ fn decode_row(
 
 /// Decode a supplied static-struct initializer (§5.3) into a `struct` value: each
 /// declared struct field decodes its supplied member against its type; an omitted
-/// member stays absent (its default resolution is a documented seam).
+/// **optional** member is filled with `Value::None` (A.1) so every struct value of
+/// a given shape carries the same member set. The wire decode path already does
+/// this (`liasse_value::decode`), and Annex B.4 ordering depends on it: a present
+/// member must precede an absent one, which the derived `Struct` `Ord` realizes
+/// only when the absent member is materialized as `Value::None` (whose rank is the
+/// maximum, B.2). An omitted **non-optional** member's default resolution remains a
+/// documented seam (left absent here).
 fn decode_struct(
     struct_meta: &crate::compiled::CompiledStruct,
     body: &DocValue,
@@ -262,6 +268,8 @@ fn decode_struct(
         if let Some(member) = members.iter().find(|m| m.name.text == field.name) {
             let value = decode(&field.ty, &doc::to_json(&member.value), &field.name)?;
             entries.push((liasse_value::Text::new(field.name.clone()), value));
+        } else if matches!(field.ty, Type::Optional(_)) {
+            entries.push((liasse_value::Text::new(field.name.clone()), liasse_value::Value::None));
         }
     }
     Ok(liasse_value::Value::Struct(liasse_value::Struct::new(entries)))

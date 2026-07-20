@@ -1323,14 +1323,24 @@ impl<'a> Interp<'a> {
                     _ => Value::None,
                 };
                 fields.insert(field.name.clone(), value);
+            } else if matches!(field.ty, Type::Optional(_)) {
+                // A.1: an omitted optional member with no default carries `none` by
+                // being materialized as `Value::None`, not by staying absent from the
+                // map. This matches the seed and wire decode paths so every struct
+                // value of a given shape has the same member set — Annex B.4 struct
+                // ordering (a present member precedes an absent one) relies on the
+                // absent member comparing as `Value::None` (rank maximum, B.2), which
+                // the derived `Struct` `Ord` cannot express for a missing key.
+                fields.insert(field.name.clone(), Value::None);
             }
         }
         // §5.5/§22.1: complete the struct's declared shape after its explicit member
         // defaults — an omitted non-optional `set`/`map` member starts as the empty
         // container (the "row OR struct" default, the same absent-container fill
         // `apply_defaults` runs for a row's collection fields), recursing into nested
-        // static structs. An omitted optional member stays absent (A.1). Runs before
-        // the struct `$check` so the check sees the completed shape (§5.10).
+        // static structs. An omitted optional member is carried as `Value::None`
+        // above (A.1). Runs before the struct `$check` so the check sees the
+        // completed shape (§5.10).
         rules::complete_struct_containers(&mut fields, &struct_meta.fields);
         // §5.3/§5.10/§8.8: the struct `$check` is NOT enforced here — a struct check
         // reading the containing row via `^` (§6.2) needs the parent scope frame,
