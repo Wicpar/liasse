@@ -1556,9 +1556,18 @@ impl<'a> Interp<'a> {
     /// Apply a planned deletion (§21.1): remove every closured row, then patch
     /// each surviving referencing row (normalizing the written fields, §5.4).
     fn apply_deletion(&mut self, planned: &PlannedDeletion) -> Result<(), Rejection> {
+        // §5.5/§5.4/§21.1: a nested keyed collection is real row state living under
+        // its parent row's identity, so it shares the parent's lifecycle. Removing
+        // only each planned row's OWN address would strand its nested-collection
+        // descendants in committed state; a fresh row later placed at the reused key
+        // would then inherit those orphans, violating §5.5 ("an omitted child set or
+        // keyed collection starts empty"). Remove each closured row together with its
+        // entire descendant subtree, matching the direct nested-delete path
+        // (`remove_subtree`), so no orphan survives the delete or resurrects on key
+        // reuse — live and across restart.
         for row in planned.plan.deletes() {
             if let Some(address) = planned.addresses.get(row) {
-                self.prospective.remove(address);
+                self.remove_subtree(address);
             }
         }
         for (row, patch) in planned.plan.patches() {

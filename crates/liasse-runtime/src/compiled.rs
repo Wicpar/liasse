@@ -605,6 +605,7 @@ fn compile_on_delete(
     row_ty: &ExprType,
     target: &str,
     reference: &liasse_model::Reference,
+    hosts: &HostSignatures,
 ) -> Result<OnDelete, EngineError> {
     let Some(source) = &reference.on_delete else {
         return Ok(OnDelete::Undecided);
@@ -620,9 +621,16 @@ fn compile_on_delete(
                 .receiver_row_type(std::slice::from_ref(&target.to_owned()))
                 .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
             // §21.1: an `$on_delete` patch is a mutation program (a delete-time
-            // transition), so it is a `Mutation` position (§16.5).
+            // transition), so it is a `Mutation` position (§16.5) in which a
+            // `$requires`-registered namespace call is legal. Thread the resolved
+            // host signatures into the patch scope (like the §20.1 migration delta
+            // program, `migrate.rs`) so a pure app-namespace call in the patch
+            // resolves and type-checks instead of failing static validation; a call
+            // in a NON-mutation position keeps its default empty host set and stays
+            // a load-time error (§16.5).
             let scope = RuntimeScope::new(row_ty.clone(), root_ty.clone())
                 .with_structural("target", target_ty)
+                .with_host_ops(hosts.clone())
                 .with_host_position(HostPosition::Mutation);
             let (patch, _) = compile_expr(sources, &scope, "on-delete", body)?;
             Ok(OnDelete::Patch(Box::new(patch)))
@@ -957,7 +965,7 @@ fn compile_field(
         }
         Node::Reference(reference) => {
             let target = reference.target.trim_start_matches('/').to_owned();
-            let on_delete = compile_on_delete(sources, schema, root_ty, row_ty, &target, reference)?;
+            let on_delete = compile_on_delete(sources, schema, root_ty, row_ty, &target, reference, hosts)?;
             CompiledField {
                 name,
                 ty: Type::Ref(liasse_value::RefTarget::for_key(&reference.key_type)),
@@ -999,7 +1007,7 @@ fn compile_field(
                 Some(target) => {
                     let on_delete = match &set.element_ref {
                         Some(reference) => {
-                            compile_on_delete(sources, schema, root_ty, row_ty, &target, reference)?
+                            compile_on_delete(sources, schema, root_ty, row_ty, &target, reference, hosts)?
                         }
                         None => OnDelete::Undecided,
                     };
