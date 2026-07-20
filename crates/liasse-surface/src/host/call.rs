@@ -7,7 +7,7 @@
 //! opens a subscription with a complete initial result at the connection's
 //! frontier (§12.2).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_runtime::{
     CallOutcome, CallRequest, CommitSeq, Rejection, RejectionReason, ScopedReceiver, ScopedResolution,
@@ -493,6 +493,12 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
                 Ok(triple) => triple,
                 Err(denial) => return Ok(Subscription::Denied(denial)),
             };
+        // §12.1: the subscription's argument object is closed against the resolved
+        // view's declared `$params`, applied here — after membership is confirmed,
+        // before any row flows — exactly as the `call` path closes its arguments.
+        if let Err(denial) = self.closed_view_args(&view_name, watch.args()) {
+            return Ok(Subscription::Denied(denial));
+        }
         let frontier = self.connection_frontier(id)?;
         let query = view_query(watch.args().clone(), context.as_ref(), watch.scope());
         self.open_subscription(
@@ -526,6 +532,13 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
                 Ok(triple) => triple,
                 Err(denial) => return Ok(Subscription::Denied(denial)),
             };
+        // §12.1/§12.3: a resume reconstructs the `view` operation, so its argument
+        // object is closed the same way a fresh `watch` closes it — an undeclared or
+        // reserved `$`-prefixed member is malformed and refused before the stream is
+        // rebuilt, keeping the §12.3 dedup identity the decoded declared argument set.
+        if let Err(denial) = self.closed_view_args(&view_name, resume.args()) {
+            return Ok(Subscription::Denied(denial));
+        }
         // The retained `from` is a resume hint; this implementation always
         // reconstructs a fresh init at the connection's current frontier, which
         // covers `from` and yields the current authorized result (§12.2). A resume
@@ -547,6 +560,47 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
             resume.args().clone(),
             &query,
         )
+    }
+
+    /// Close a subscription's argument object against the resolved view's declared
+    /// `$params` (§12.1): the arguments MUST contain only declared parameter names.
+    /// A member the view does not declare — including any reserved `$`-prefixed
+    /// name, which is never a declared `$params` name — makes the request malformed,
+    /// so it is refused (`Err`) rather than silently dropped and served on a
+    /// filtered view. There is no width subtyping over the external argument object,
+    /// and closing it here keeps the §12.3 dedup identity exactly the decoded
+    /// declared argument set ("no ignored-but-present member can silently vary").
+    ///
+    /// This mirrors the `call` path's closed-shape check ([`build_request`] rejects
+    /// a call the same way). It runs only after [`resolve_view`](Self::resolve_view)
+    /// has confirmed the caller's membership, so surfacing `malformed` — rather than
+    /// collapsing to the uniform `Unresolved` — reveals nothing an unauthorized
+    /// caller could exploit (§10.4, the `view` mirror of the item-8 `call` oracle).
+    ///
+    /// The shape is closed only where the view declares a `$params` contract to
+    /// close against. A view the model reports as taking NO parameter has no
+    /// reliable declared shape here, and its address doubles as the blob `fetch`
+    /// descriptor-resolution read (§18.8) — whose row-selector arguments are not
+    /// view `$params` — so a paramless view is left unchecked rather than
+    /// over-rejecting a legitimate fetch. This matches the testkit adapter's wave-3
+    /// closed-shape guard (`open_watch`, `!arg_types.is_empty()`), keeping the real
+    /// surface and the corpus-driving adapter consistent.
+    ///
+    /// [`build_request`]: Self::build_request
+    /// [`resolve_view`]: Self::resolve_view
+    fn closed_view_args(&self, view_name: &str, args: &BTreeMap<String, Value>) -> Result<(), Denial> {
+        let declared: BTreeSet<String> =
+            self.engine.surface_view_params(view_name).into_iter().map(|(name, _)| name).collect();
+        if declared.is_empty() {
+            return Ok(());
+        }
+        match args.keys().find(|name| !declared.contains(name.as_str())) {
+            Some(member) => Err(Denial::new(
+                DenialReason::Malformed,
+                format!("argument `{member}` is not a declared parameter of this view (§12.1)"),
+            )),
+            None => Ok(()),
+        }
     }
 
     /// The current frontier of connection `id`, or the engine head if it is gone.

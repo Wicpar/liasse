@@ -176,5 +176,6 @@ fn denial_code(reason: DenialReason) -> (&'static str, &'static str) {
         DenialReason::CheckFailed => ("check-failed", "the authenticator check failed"),
         DenialReason::SessionInvalid => ("session-invalid", "the session is not valid"),
         DenialReason::ActorUnresolved => ("actor-unresolved", "the actor could not be resolved"),
+        DenialReason::Malformed => ("malformed", "the request carried an undeclared argument member"),
     }
 }

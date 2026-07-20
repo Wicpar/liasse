@@ -164,6 +164,17 @@ pub enum DenialReason {
     SessionInvalid,
     /// `$actor` resolved zero or several rows (§11.3).
     ActorUnresolved,
+    /// The request itself was malformed. The standing case on a subscription is a
+    /// §12.1 closed-argument violation: a `view`/`watch`/`resume` argument object
+    /// carrying a member the target view does not declare as a `$params` parameter
+    /// — including any reserved `$`-prefixed name. The `call` pipeline reports this
+    /// as a `rejected` admission refusal (`RejectionReason::Malformed`); a
+    /// [`Subscription`](crate::Subscription) has no `rejected` arm, so the same
+    /// refusal surfaces on the shared `denied` channel. It fires only after
+    /// `resolve_view` has confirmed the caller's membership, so revealing
+    /// `malformed` (rather than the uniform `Unresolved`) to a confirmed member
+    /// discloses nothing an unauthorized caller could exploit (§10.4, GitHub #39).
+    Malformed,
 }
 
 /// A surface-layer refusal: its reason and a human-readable diagnostic. It never
