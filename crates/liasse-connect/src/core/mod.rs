@@ -86,6 +86,20 @@ impl<S: InstanceStore, P: KeyProvider> ConnectCore<S, P> {
         &self.host
     }
 
+    /// Mutable access to the underlying [`SurfaceHost`], so a driver that owns this
+    /// core by value can still reach the host's `&mut` operations the connector does
+    /// not itself expose: [`SurfaceHost::advance_time`] (the per-request wall-clock
+    /// discipline — §11.7/§14 session expiry and bucket observations) and
+    /// [`SurfaceHost::engine_mut`] (admitting an internal, non-surface `$mut`).
+    /// Intended for a single-threaded owning driver composing internal work and
+    /// per-request time advance around the surface protocol on one thread; it is NOT
+    /// a concurrent handle. Reaching in to mutate the host does not disturb the
+    /// core's live connection/stream registry, which stays consistent because the
+    /// same thread drives both.
+    pub fn host_mut(&mut self) -> &mut SurfaceHost<S, P> {
+        &mut self.host
+    }
+
     /// The frontier position an [`Ft`] names on `conn`, or `None` if it is forged or
     /// belongs to another connection. Lets a caller check the §12 monotonicity of an
     /// SSE `id:` stream without trusting the token's text.

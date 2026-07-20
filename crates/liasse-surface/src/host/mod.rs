@@ -128,6 +128,21 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         &self.engine
     }
 
+    /// Mutable access to the underlying engine, so an owning driver can admit an
+    /// INTERNAL, non-surface `$mut` directly (`engine_mut().call(&req, &mut gens)`)
+    /// — a top-level mutation the frozen package exposes on no `$public`/`$role`
+    /// surface, which the router-scoped `call`/`operator_call` entries therefore
+    /// cannot reach. Intended for a single-threaded driver that owns this host and
+    /// composes background/internal work around the surface protocol; it is NOT a
+    /// concurrent handle and NOT an authenticated surface path — a mutation admitted
+    /// through it bypasses the router, so a driver must only route trusted internal
+    /// targets here, never client input. Live subscriptions do not observe such a
+    /// commit until the driver's next surface sweep (an
+    /// [`advance_time`](Self::advance_time), or a subsequent client `call`).
+    pub fn engine_mut(&mut self) -> &mut Engine<S> {
+        &mut self.engine
+    }
+
     /// Consume the host and hand back the engine, router, and clock it seals
     /// (§22 restart/durability). A restart is a *volatile-state* reset: the
     /// engine (and, with it, the durable store, its committed log, and the
