@@ -211,6 +211,12 @@ impl Shape {
 /// A keyed collection (§5.4): a shape plus a primary key and candidate keys.
 #[derive(Debug, Clone)]
 pub struct Collection {
+    /// The absolute path this collection is declared at (`/tasks`, `/a/b/lines`),
+    /// its target-relation identity (§6.3/§7.4). Two references to the same
+    /// collection share it; distinct collections differ, so a `|`/`&` combinator
+    /// over views of different relations is rejected as not sharing an identity
+    /// domain.
+    pub path: String,
     /// The primary-key field names, in `$key` order.
     pub key: Vec<DeclName>,
     /// The bytes of the `$key` declaration.

@@ -92,6 +92,15 @@ pub struct RowType {
     /// (§14.5). Only a recurring source-backed bucket with a possibly-unbounded
     /// upper bound sets this; a bounded temporal selector clears it.
     unbounded: bool,
+    /// The target relation these rows are natively identified by (§6.3/§7.4): the
+    /// absolute path of the backing keyed collection (`/tasks`). A `$view`, a
+    /// synthetic-`$key` projection, a struct row, or any re-identified stream
+    /// leaves this `None` — it does not name one relation. Two view operands of a
+    /// `|`/`&` combinator that name DIFFERENT relations do not share an identity
+    /// domain (§6.3 "values belonging to different target relations are statically
+    /// incomparable"). Like `structural`/`unbounded`, it never participates in row
+    /// identity, so [`PartialEq`] ignores it.
+    relation: Option<String>,
 }
 
 impl PartialEq for RowType {
@@ -114,6 +123,7 @@ impl RowType {
             key: key.map(Box::new),
             structural: BTreeMap::new(),
             unbounded: false,
+            relation: None,
         }
     }
 
@@ -140,6 +150,15 @@ impl RowType {
     #[must_use]
     pub fn unbounded(mut self, unbounded: bool) -> Self {
         self.unbounded = unbounded;
+        self
+    }
+
+    /// Tag these rows with the target relation that natively identifies them
+    /// (§6.3/§7.4): the absolute path of the backing keyed collection. A view or a
+    /// re-identified stream passes `None`.
+    #[must_use]
+    pub fn with_relation(mut self, relation: Option<String>) -> Self {
+        self.relation = relation;
         self
     }
 
@@ -171,5 +190,13 @@ impl RowType {
     #[must_use]
     pub fn key(&self) -> Option<&ExprType> {
         self.key.as_deref()
+    }
+
+    /// The target relation these rows are natively identified by (§6.3/§7.4), if
+    /// they name one — the absolute path of the backing keyed collection. `None`
+    /// for a view, a synthetic-`$key` projection, or any re-identified stream.
+    #[must_use]
+    pub fn relation(&self) -> Option<&str> {
+        self.relation.as_deref()
     }
 }

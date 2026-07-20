@@ -7,7 +7,7 @@
 //! the binding context a `[:name]` filter or `::` traversal introduces), so a
 //! view result keeps its identity and order for downstream diffing.
 //!
-//! The recursion bound is the AST's 512-deep syntax cap (see [`crate::typed`]).
+//! The recursion bound is the AST's syntax nesting cap (see [`crate::typed`]).
 
 mod aggregate;
 mod blob;

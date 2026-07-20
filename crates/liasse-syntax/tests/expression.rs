@@ -426,12 +426,12 @@ fn deeply_nested_parens_are_rejected_before_the_parser_recurses() -> Check {
     let diags = parse_err(&deep)?;
     let diag = diags.iter().next().ok_or("expected one diagnostic")?;
     assert!(
-        diag.message().contains("512"),
-        "the message must state the 512 limit, got {:?}",
+        diag.message().contains("32"),
+        "the message must state the 32-level limit, got {:?}",
         diag.message()
     );
-    // The caret points at the first paren past the cap: the 513th `(`, byte 512.
-    assert_eq!(diag.primary().span().bytes().start(), 512);
+    // The caret points at the first paren past the cap: the 33rd `(`, byte 32.
+    assert_eq!(diag.primary().span().bytes().start(), 32);
     assert!(
         diag.helps().iter().any(|h| h.contains("nest")),
         "expected a restructuring hint, got {:?}",
@@ -442,22 +442,12 @@ fn deeply_nested_parens_are_rejected_before_the_parser_recurses() -> Check {
 
 #[test]
 fn grouping_just_under_the_cap_is_accepted() -> Check {
-    // Depth 511 nested groups around `1`: below the 512 cap, so the guard passes
+    // Depth 31 nested groups around `1`: below the 32 cap, so the guard passes
     // it and pest parses it (`grouped` unwraps, so the value is the integer 1).
-    //
-    // The expression grammar descends through its whole precedence chain per
-    // parenthesis, so 511 groups amplify to several thousand pest frames — more
-    // than the test harness's small default thread stack. We run the parse on a
-    // generously sized thread so the test measures the *guard threshold* (511 is
-    // accepted), not the harness's stack default. The 512 cap keeps depth
-    // bounded and documented; a caller that parses near it provisions stack to
-    // match.
-    let src = format!("{}1{}", "(".repeat(511), ")".repeat(511));
-    let handle = std::thread::Builder::new()
-        .stack_size(32 * 1024 * 1024)
-        .spawn(move || bare(&src).map(|expr| expr.kind))
-        .map_err(|e| e.to_string())?;
-    let kind = handle.join().map_err(|_| "parser thread panicked".to_owned())??;
+    // The cap is calibrated to clear the checker's and evaluator's stack budget,
+    // so an input at the cap parses on an ordinary thread stack.
+    let src = format!("{}1{}", "(".repeat(31), ")".repeat(31));
+    let kind = bare(&src).map(|expr| expr.kind)?;
     assert_eq!(kind, ExprKind::Int("1".to_owned()));
     Ok(())
 }

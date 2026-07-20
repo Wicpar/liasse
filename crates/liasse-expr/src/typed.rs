@@ -10,9 +10,11 @@
 //! # Recursion bound
 //!
 //! Both the checker (building this tree) and the evaluator (walking it) recurse
-//! structurally on the AST. liasse-syntax caps expression nesting at 512 before
-//! this crate ever sees a tree (`scan::check_nesting_depth`), so that cap is the
-//! recursion bound for the structural walks. The one non-structural recursion —
+//! structurally on the AST. liasse-syntax caps expression nesting before this
+//! crate ever sees a tree (`scan::check_nesting_depth`, `MAX_NESTING_DEPTH`), so
+//! that cap is the recursion bound for the structural walks — and it is
+//! calibrated to clear the checker's and evaluator's stack budget, which
+//! overflows well below `pest`'s. The one non-structural recursion —
 //! the checker's projection-output dependency ordering
 //! (`check::walk::order_outputs`) — recurses on output-name edges and visits
 //! each output at most once, so its depth is bounded by the projection's output

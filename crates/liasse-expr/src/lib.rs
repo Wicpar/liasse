@@ -21,10 +21,11 @@
 //! # Recursion
 //!
 //! Typing and evaluation recurse structurally on the AST; liasse-syntax caps
-//! expression nesting at 512 before this crate sees a tree. The one
-//! non-structural recursion — the checker's projection-output dependency
-//! ordering — is separately bounded by the projection's output count (see
-//! [`typed`]).
+//! expression nesting (`scan::MAX_NESTING_DEPTH`) before this crate sees a tree,
+//! and that cap is calibrated to clear the checker's and evaluator's stack budget
+//! (which overflows well below `pest`'s). The one non-structural recursion — the
+//! checker's projection-output dependency ordering — is separately bounded by the
+//! projection's output count (see [`typed`]).
 //!
 //! # Documented spec-gap choices (SPEC-ISSUES)
 //!

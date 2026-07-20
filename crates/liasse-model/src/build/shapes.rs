@@ -137,11 +137,13 @@ impl<'a> Builder<'a> {
     /// version-metadata rows, so a keyring public selector
     /// (`.$current`/`.$accepted`/`.$public`/`.$versions`) resolves against a view
     /// rather than the opaque `json` a scalar placeholder would give. The node is
-    /// therefore projected as a view; its row is open/empty because §17.2 pins no
-    /// version-metadata member names (SPEC-ISSUES 18). The view's stand-in
-    /// expression `.` is never the ring's value — [`crate::resolve`] takes the
-    /// view row directly — it only keeps the expression checker's well-formedness
-    /// pass satisfied for a synthetic, non-authored view.
+    /// therefore projected as a view whose row carries the §17.2-pinned version
+    /// members ([`keyring_version_row`]) — so an ordinary projection, `$sort`, or
+    /// `$key` group over `algorithm`/`created_at`/… type-checks and loads (§7),
+    /// matching the metadata the runtime's version rows materialize. The view's
+    /// stand-in expression `.` is never the ring's value — [`crate::resolve`]
+    /// takes the view row directly — it only keeps the expression checker's
+    /// well-formedness pass satisfied for a synthetic, non-authored view.
     fn keyring_node(&self, reporter: &mut Reporter, value: &DocValue) -> Node {
         if let Some(keyring) = value.member("$keyring") {
             crate::keyring::check(reporter, &keyring.value);
@@ -160,7 +162,7 @@ impl<'a> Builder<'a> {
                 text: ".".to_owned(),
                 span: value.span,
             },
-            row: liasse_expr::RowType::keyless(std::iter::empty::<(String, liasse_expr::ExprType)>()),
+            row: keyring_version_row(),
         })
     }
 
@@ -382,6 +384,33 @@ impl<'a> Builder<'a> {
             }
         }
     }
+}
+
+/// The §17.2 keyring version-metadata row shape: the members every managed
+/// version exposes through the public keyring view (`.$current`/`.$accepted`/
+/// `.$public`/`.$versions`). The types mirror the rows the runtime materializes
+/// (`liasse-runtime::keyring_view::version_row`): the `int` version ordinal as
+/// the row identity `id`, the `text` `algorithm`, the `bytes` `public_key`
+/// material, the `timestamp` `created_at`, and the `?`-optional lifecycle stamps
+/// (`activated_at`/`retired_at`/`revoked_at`) and `attestation`, each omitted
+/// when absent (§A.9). Private key bytes and provider credentials never appear.
+fn keyring_version_row() -> liasse_expr::RowType {
+    use liasse_expr::ExprType;
+    let ts = || ExprType::scalar(Type::timestamp());
+    let opt_ts = || ExprType::scalar(Type::Optional(Box::new(Type::timestamp())));
+    liasse_expr::RowType::new(
+        [
+            ("id".to_owned(), ExprType::scalar(Type::Int)),
+            ("algorithm".to_owned(), ExprType::scalar(Type::Text)),
+            ("public_key".to_owned(), ExprType::scalar(Type::Bytes)),
+            ("created_at".to_owned(), ts()),
+            ("activated_at".to_owned(), opt_ts()),
+            ("retired_at".to_owned(), opt_ts()),
+            ("revoked_at".to_owned(), opt_ts()),
+            ("attestation".to_owned(), ExprType::scalar(Type::Optional(Box::new(Type::Bytes)))),
+        ],
+        Some(ExprType::scalar(Type::Int)),
+    )
 }
 
 /// Whether an object declares a source-backed bucket (§14.4): a `$bucket` whose

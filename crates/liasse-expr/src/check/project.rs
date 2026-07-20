@@ -2,7 +2,7 @@
 //! cross-references, synthetic `$key` grouping with the aggregate/key-derived
 //! constraint, `$sort`, and `$skip`/`$limit` bounds.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::ByteSpan;
 use liasse_syntax::{parse_expression, BlockMember, BlockMemberKind, Expr, ExprKind, Ident, StmtKind};
@@ -10,7 +10,8 @@ use liasse_value::{StructType, Type};
 
 use crate::check::Checker;
 use crate::check::walk::{
-    list_items, member_self, order_outputs, references_nonkey_field, shorthand_name, RawOutput,
+    list_items, member_self, order_outputs, references_group, references_nonkey_field,
+    shorthand_name, RawOutput,
 };
 use crate::ty::{ExprType, RowType};
 use crate::typed::{Output, Projection, SortKey, TypedExpr, TypedKind};
@@ -126,13 +127,17 @@ impl Checker<'_> {
         // (below) nor overwrites the binding in the frame — a bare reference to
         // such a name always resolves to the row binding, not the output.
         let mut loop_binds: BTreeSet<String> = BTreeSet::new();
-        // §7.2: the source-row bindings (`[:name]`/`::`), separately from the
-        // grouped `group` view binding, so a binding-qualified non-key source
-        // access (`it.amount`) is rejected exactly as its bare form is.
-        let mut row_bind_names: BTreeSet<String> = BTreeSet::new();
+        // §7.2: the source-row bindings (`[:name]`/`::`), each mapped to its OWN
+        // row schema (separately from the grouped `group` view binding), so a
+        // binding-qualified non-key source access is rejected against the row it
+        // actually names — the current source for `it`/`lines`, the ancestor row
+        // for an outer `::` bind (`entries`).
+        let mut row_bind_schemas: BTreeMap<String, RowType> = BTreeMap::new();
         for (name, ty) in binds {
             loop_binds.insert(name.clone());
-            row_bind_names.insert(name.clone());
+            if let ExprType::Row(row) | ExprType::View(row) = &ty {
+                row_bind_schemas.insert(name.clone(), row.clone());
+            }
             self.bind(name, ty);
         }
         if grouped {
@@ -150,7 +155,8 @@ impl Checker<'_> {
         };
 
         let key_set: BTreeSet<&str> = key_fields.iter().map(String::as_str).collect();
-        let row_binds: BTreeSet<&str> = row_bind_names.iter().map(String::as_str).collect();
+        let row_binds: BTreeMap<&str, &RowType> =
+            row_bind_schemas.iter().map(|(name, row)| (name.as_str(), row)).collect();
         let mut outputs: Vec<Output> = Vec::with_capacity(raw_outputs.len());
         let mut field_types: Vec<(String, ExprType)> = Vec::new();
         for index in order {
@@ -168,6 +174,25 @@ impl Checker<'_> {
                     format!(
                         "grouped output `{}` is a non-key source value that is neither \
                          aggregated nor derived from key values (§7.2)",
+                        raw.name
+                    ),
+                );
+            }
+            // §7.1/§7.2: a synthetic `$key` component that reads `group` is a
+            // `key → group → key` cycle — the group is the set of rows sharing the
+            // key, so it cannot exist until the key has partitioned them. The
+            // checker binds `group` for every output (so `count(group)` is legal in
+            // a non-key output), but the evaluator's key-partition frame
+            // (`group_key`) binds no `group`, so a key reading it would fault at
+            // read. Reject it at load instead.
+            if grouped && key_set.contains(raw.name.as_str()) && references_group(&raw.expr) {
+                self.pop_frame();
+                return self.error(
+                    &raw.expr,
+                    format!(
+                        "`$key` component `{}` reads `group`, but the group is formed by the \
+                         key — a `key → group → key` cycle (§7.1/§7.2). Derive the key from \
+                         source key values only; aggregate `group` in a non-key output instead",
                         raw.name
                     ),
                 );

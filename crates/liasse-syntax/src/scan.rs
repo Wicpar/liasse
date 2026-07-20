@@ -15,12 +15,23 @@ use crate::clamp;
 /// The maximum bracket-nesting depth accepted before the grammar runs.
 ///
 /// The Liasse spec pins no nesting limit — Annex C fixes no depth bound — so
-/// this cap is an implementation safeguard, not a spec rule. `pest`'s recursive
-/// descent overflows the stack (SIGABRT) on pathologically nested input; this
-/// prescan rejects such input with a diagnostic before a single grammar rule
-/// fires. 512 clears every real Liasse document and expression by a wide margin
-/// while staying far under the stack budget.
-pub(crate) const MAX_NESTING_DEPTH: usize = 512;
+/// this cap is an implementation safeguard, not a spec rule. It is the *single
+/// effective depth bound* the whole load pipeline respects: this prescan runs at
+/// every parse entry point (document, expression, type-expression), so an input
+/// deeper than the cap is rejected with a diagnostic before a single grammar
+/// rule fires — and therefore before the recursions that walk the same AST depth
+/// with *fatter* frames than `pest`: the `liasse-expr` checker (`check`/
+/// `check_unary`/`check_block`) and evaluator (`eval_not`, projection eval). Each
+/// of those overflows the stack (SIGABRT) far below `pest`'s own limit, so the
+/// cap must clear their budget, not just the grammar's.
+///
+/// Calibration (debug build, measured full load+eval): a 2 MiB thread (the
+/// libtest default) overflows around depth ~70; an 8 MiB main thread around
+/// ~300–400. The deepest real Liasse document in the conformance corpus nests 12
+/// brackets. 32 sits ~2× under the smallest measured overflow while clearing
+/// every real document and expression by a wide margin — a parseable-but-too-deep
+/// input is a clean load rejection here, never a process abort downstream.
+pub(crate) const MAX_NESTING_DEPTH: usize = 32;
 
 /// Which surface's comment lexis the scanner assumes. The two surfaces differ
 /// only in `#`: it opens a line comment in the document form (Hjson), but is the

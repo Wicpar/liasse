@@ -34,6 +34,7 @@ impl<'a> Builder<'a> {
         unique.extend(self.field_unique_keys(reporter, &shape));
         let consumes = value.member("$consumes").is_some();
         Collection {
+            path: super::absolute_path(path),
             key,
             key_span,
             unique,

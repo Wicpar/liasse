@@ -2,7 +2,7 @@
 //! ordering outputs by their acyclic cross-references (§7.1), and the grouped
 //! aggregate/key-derived constraint (§7.2).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_syntax::{Arg, BlockMember, BlockMemberKind, Expr, ExprKind, Selector};
 
@@ -20,7 +20,7 @@ pub(super) struct RawOutput {
 /// The DFS recurses on output-name dependency edges, not AST nesting, so its
 /// bound is its own: the `Visit` marking visits each output at most once,
 /// capping the recursion depth at the projection's output count — independent
-/// of liasse-syntax's 512 expression-nesting cap.
+/// of liasse-syntax's expression-nesting cap.
 ///
 /// `loop_binds` names the in-scope §6.4 row bindings (a `[:name]`/`::` bind, and
 /// the grouped `group` binding). §7.1/§6.4 (pinned): an output member never
@@ -106,19 +106,29 @@ fn collect_refs<'a>(expr: &'a Expr, names: &BTreeSet<&str>, out: &mut BTreeSet<&
 /// Whether a grouped output references a source field outside the key set,
 /// outside any aggregate subtree (§7.2 aggregate/key-derived constraint).
 ///
-/// A source field is reached two equivalent ways, both rejected: as a bare name
-/// (`amount`, resolving to `.amount`), or through a source-row binding
-/// (`it.amount`, `lines.amount`) that §6.4 binds to the current source row — so
-/// `b.f` for a `[:name]`/`::` binding `b` and a source field `f` is the same
-/// per-row source value as bare `f`. `row_binds` names those source-row
-/// bindings. The grouped `group` binding is NOT among them: it names the group
-/// view, whose fields are reached only through an aggregate (`max(group.f)`),
-/// which the exemption below already clears.
+/// A source value is reached two equivalent ways, both rejected: as a bare name
+/// (`amount`, resolving to `.amount` on the current source row), or through a
+/// row binding `b.field` that §6.4 introduced. `row_binds` maps each such
+/// binding name to the row schema it actually denotes:
+/// - the CURRENT source row for the projected collection and any `[:name]` filter
+///   over it (`lines`, an `[:it]` filter) — `b.f` is then the bare `f` in
+///   disguise and rejected identically;
+/// - an OUTER `::` ancestor row for a `.entries::lines` chain (`entries`) — whose
+///   schema is DIFFERENT from the current source. §7.2: a synthetic `$key`
+///   replaces the inherited chain identity, so an ancestor read (`entries.id`,
+///   `entries.opened`) is plain non-key source data and must be aggregated or
+///   key-derived. Resolving `f` against the bind's OWN schema gives those two
+///   reads one verdict; the old current-source-only test split them by an
+///   irrelevant field-name coincidence.
+///
+/// The grouped `group` binding is NOT in the map: it names the group view, whose
+/// fields are reached only through an aggregate (`max(group.f)`), which the
+/// exemption below already clears.
 pub(super) fn references_nonkey_field(
     expr: &Expr,
     source: &RowType,
     key_set: &BTreeSet<&str>,
-    row_binds: &BTreeSet<&str>,
+    row_binds: &BTreeMap<&str, &RowType>,
 ) -> bool {
     if let ExprKind::Call { callee, .. } = &expr.kind
         && let ExprKind::Name(name) = &callee.kind
@@ -132,16 +142,16 @@ pub(super) fn references_nonkey_field(
             return true;
         }
     }
-    // §7.2: a binding-qualified non-key access `b.f` where `b` is a source-row
-    // binding and `f` a non-key source field is the bare `f` in disguise, so it
-    // is rejected identically — closing the leak where `it.amount` slipped past
-    // the bare-name check (`Name("it")` is no source field).
+    // §7.2: a binding-qualified non-key access `b.f` is rejected against `b`'s OWN
+    // row schema, not the current source — so an ancestor `::` bind (`entries.f`)
+    // is tested against the ancestor's fields, and the current-source bind
+    // (`it.f`/`lines.f`) against the source's, identically to the bare `f`.
     if let ExprKind::Field { base, member } = &expr.kind
         && let ExprKind::Name(base_name) = &base.kind
-        && row_binds.contains(base_name.text.as_str())
+        && let Some(bind_schema) = row_binds.get(base_name.text.as_str())
     {
         let field = member.text.as_str();
-        if source.field(field).is_some() && !key_set.contains(field) {
+        if bind_schema.field(field).is_some() && !key_set.contains(field) {
             return true;
         }
     }
@@ -150,6 +160,28 @@ pub(super) fn references_nonkey_field(
 
 fn is_aggregate_name(name: &str) -> bool {
     matches!(name, "count" | "sum" | "avg" | "min" | "max" | "distinct")
+}
+
+/// Whether `expr` reads the grouped `group` binding (§7.2) — as a bare name, a
+/// qualified access `group.field`, or an aggregate `count(group)`.
+///
+/// §7.2: "Rows sharing the synthetic key form one group. `group` is the
+/// source-row view for that output row." The group is DEFINED by the rows that
+/// share the synthetic key, so the key is logically PRIOR to the group: the group
+/// does not exist until the key has partitioned the rows. A `$key` component that
+/// reads `group` is therefore a `key → group → key` cycle — statically ill-formed
+/// under §7.1 ("They MAY refer to one another when their dependency graph is
+/// acyclic") — and must be rejected at load rather than fault at read (the
+/// evaluator's `group_key` frame binds no `group`, so such a key faults). Bare
+/// `count(group)` in a NON-key output stays legal; this guard fires only on a key
+/// component.
+pub(super) fn references_group(expr: &Expr) -> bool {
+    if let ExprKind::Name(name) = &expr.kind
+        && name.text == "group"
+    {
+        return true;
+    }
+    children(expr).any(references_group)
 }
 
 pub(super) fn list_items(value: &Expr) -> Vec<&Expr> {

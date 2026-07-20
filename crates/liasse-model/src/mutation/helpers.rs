@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_expr::ExprType;
 use liasse_syntax::{BinaryOp, Expr, ExprKind, SpannedExpression, Stmt, StmtKind};
-use liasse_value::Type;
+use liasse_value::{RefTarget, Type};
 
 use crate::state::{Node, Shape};
 use crate::walk::child_exprs;
@@ -112,15 +112,46 @@ pub(super) fn record(params: &mut Params, name: &str, ty: ExprType) {
 }
 
 /// Whether two inferred types for one parameter are §8.3-compatible. Two scalar
-/// types are compatible when equal or related by the `int`/`decimal` numeric
-/// widening; a non-scalar (row/view) re-inference is left permissive, as the
-/// CORE model does not compare row identities here.
+/// types are compatible when equal, related by the `int`/`decimal` numeric
+/// widening, or when one is a `ref` and the other is that ref target's key type
+/// (§5.6/§6.3, below); a non-scalar (row/view) re-inference is left permissive,
+/// as the CORE model does not compare row identities here.
 fn compatible(a: &ExprType, b: &ExprType) -> bool {
     match (a.as_scalar(), b.as_scalar()) {
-        (Some(x), Some(y)) => {
-            x == y || matches!((x, y), (Type::Int, Type::Decimal) | (Type::Decimal, Type::Int))
-        }
+        (Some(x), Some(y)) => scalar_compatible(x, y),
         _ => true,
+    }
+}
+
+/// Whether two scalar types unify for one parameter (§8.3 "one compatible type").
+fn scalar_compatible(x: &Type, y: &Type) -> bool {
+    if x == y {
+        return true;
+    }
+    match (x, y) {
+        (Type::Int, Type::Decimal) | (Type::Decimal, Type::Int) => true,
+        // §5.6 (line 515) "A ref exposes the target's key type" / §6.3 (line 721)
+        // "a key of the same declared target compares the current typed key": a
+        // `@param` used as a `/coll[@p]` selector infers the target key type, and
+        // the same `@param` used as a `$ref:/coll` field value infers a `ref` to
+        // that target. Both denote one value domain — the target's key — so they
+        // are one compatible type, not a `text`-vs-`ref` conflict. A genuine
+        // mismatch (a `ref<accounts>` against an unrelated `int` key) still fails
+        // here because the ref's own key type differs.
+        (Type::Ref(target), other) | (other, Type::Ref(target)) => ref_key_compatible(target, other),
+        _ => false,
+    }
+}
+
+/// Whether a scalar type is the key type a `ref` target exposes (§5.6): a
+/// scalar-keyed target against its scalar key, or a composite-keyed target
+/// against the positional composite key type.
+fn ref_key_compatible(target: &RefTarget, key: &Type) -> bool {
+    match target {
+        RefTarget::Scalar(inner) => inner.as_ref() == key,
+        RefTarget::Composite(components) => {
+            matches!(key, Type::Composite(supplied) if supplied == components)
+        }
     }
 }
 

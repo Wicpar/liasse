@@ -192,12 +192,12 @@ fn deeply_nested_input_is_rejected_before_the_parser_recurses() -> Check {
     let diags = parse_err(&deep)?;
     let diag = diags.iter().next().ok_or("expected one diagnostic")?;
     assert!(
-        diag.message().contains("512"),
-        "the message must state the 512 limit, got {:?}",
+        diag.message().contains("32"),
+        "the message must state the 32-level limit, got {:?}",
         diag.message()
     );
-    // The caret points at the first bracket past the cap: the 513th `[`, byte 512.
-    assert_eq!(diag.primary().span().bytes().start(), 512);
+    // The caret points at the first bracket past the cap: the 33rd `[`, byte 32.
+    assert_eq!(diag.primary().span().bytes().start(), 32);
     assert!(
         diag.helps().iter().any(|h| h.contains("nest")),
         "expected a restructuring hint, got {:?}",
@@ -208,9 +208,9 @@ fn deeply_nested_input_is_rejected_before_the_parser_recurses() -> Check {
 
 #[test]
 fn nesting_just_under_the_cap_is_accepted() -> Check {
-    // Depth 511 is below the 512 cap: the guard passes it and pest parses the
-    // full 511-deep array of arrays down to the central `1`.
-    let src = format!("{}1{}", "[".repeat(511), "]".repeat(511));
+    // Depth 31 is below the 32 cap: the guard passes it and pest parses the
+    // full 31-deep array of arrays down to the central `1`.
+    let src = format!("{}1{}", "[".repeat(31), "]".repeat(31));
     let (doc, ..) = parse(&src)?;
     assert!(matches!(doc.root().kind, DocValueKind::Array(_)));
     Ok(())

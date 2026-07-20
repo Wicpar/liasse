@@ -8,6 +8,32 @@ use crate::check::Checker;
 use crate::ty::ExprType;
 use crate::typed::{ArithOp, CmpOp, CombineOp, LogicOp, NumClass, TypedExpr, TypedKind};
 
+/// The target relation a `|`/`&` combinator operand's rows are natively
+/// identified by (§6.3/§7.4), or `None` when the operand names no single relation
+/// — it is re-identified by a synthetic `$key` projection (§7.2/§7.4 "projection
+/// into a common synthetic key can adapt heterogeneous sources"), a `$view`, a
+/// `::` traversal, or a multi-source node, and so combines with any operand.
+///
+/// A plain projection or a filter/selection keeps the source relation's identity;
+/// a synthetic-`$key` projection drops it; a combinator takes its identity from
+/// the left operand (§7.4). At the leaf, a keyed collection reference carries its
+/// backing relation on the row ([`RowType::relation`]); everything else carries
+/// none.
+fn combinator_relation(expr: &TypedExpr) -> Option<&str> {
+    match expr.kind() {
+        TypedKind::Project { source, projection } if projection.key.is_empty() => {
+            combinator_relation(source)
+        }
+        TypedKind::Project { .. } => None,
+        TypedKind::Select { base, .. } => combinator_relation(base),
+        TypedKind::Combine { lhs, .. } => combinator_relation(lhs),
+        _ => match expr.ty() {
+            ExprType::View(row) | ExprType::Row(row) => row.relation(),
+            _ => None,
+        },
+    }
+}
+
 impl Checker<'_> {
     pub(crate) fn check_unary(
         &mut self,
@@ -406,8 +432,25 @@ impl Checker<'_> {
             ExprType::View(row) => row.clone(),
             _ => return self.error(first, "a `|`/`&` combinator operand must be a view"),
         };
+        // §7.4/§6.3: the identity domain is the RELATION, not merely the key TYPE.
+        // Two distinct target relations that only share a scalar key type (`.tasks
+        // | .users`, both `text`-keyed) do NOT share an identity domain — §6.3
+        // "values belonging to different target relations are statically
+        // incomparable". A left-fold takes identity from the left operand (§7.4),
+        // so the whole chain's relation is the first operand's.
+        let left_relation = combinator_relation(&acc).map(str::to_owned);
         for (operand, op) in iter.zip(operators.iter()) {
             let right = self.check(operand)?;
+            if let (Some(left), Some(right)) = (&left_relation, combinator_relation(&right))
+                && left.as_str() != right
+            {
+                return self.error(
+                    operand,
+                    "combined views address different target relations, which do not share an \
+                     identity domain (§7.4/§6.3); project both into a common synthetic `$key` \
+                     first if you mean to combine heterogeneous sources",
+                );
+            }
             let right_unbounded = match right.ty() {
                 ExprType::View(row) if row.key() == acc_row.key() => row.is_unbounded(),
                 ExprType::View(_) => {

@@ -4,7 +4,7 @@
 //! Inference follows §6/§8.3 where the spec pins it and the documented
 //! least-surprising choice elsewhere (arithmetic over an optional operand is a
 //! static type error, SPEC-ISSUES item 3). The checker recurses structurally on
-//! the AST, bounded by liasse-syntax's 512 nesting cap (see [`crate::typed`]) —
+//! the AST, bounded by liasse-syntax's nesting cap (see [`crate::typed`]) —
 //! except the projection-output dependency DFS in [`walk`], which recurses on
 //! output-name edges and carries its own bound: the projection's output count.
 

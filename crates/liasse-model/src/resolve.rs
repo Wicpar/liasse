@@ -109,7 +109,10 @@ impl<'a> Resolver<'a> {
                 .collect::<Vec<_>>();
             row = RowType::new(fields, row.key().cloned());
         }
-        row
+        // §6.3/§7.4: tag the rows with the collection's absolute path — their
+        // target-relation identity — so a `|`/`&` combinator over views of
+        // different relations is rejected as not sharing an identity domain.
+        row.with_relation(Some(collection.path.clone()))
     }
 
     /// The identity type of a collection's primary key (§5.4, A.9): the field
