@@ -287,7 +287,15 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         match outcome {
             Ok(_) => {
                 if let Some(connection) = self.connections.get_mut(id) {
-                    connection.set_context(request.context().to_owned(), request.selection().clone());
+                    // §10.4: retain the role this context authenticated against, so
+                    // the bound context is later read as established authority over
+                    // THIS role alone — never over an unrelated role the caller never
+                    // authenticated to.
+                    connection.set_context(
+                        request.context().to_owned(),
+                        request.role().to_owned(),
+                        request.selection().clone(),
+                    );
                 }
                 Ok(AuthResult::Bound)
             }

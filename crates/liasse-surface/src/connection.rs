@@ -19,6 +19,25 @@ use crate::watch::Watch;
 /// by `connect { authenticate }` and used when a request names no other (§11.8).
 pub const DEFAULT_CONTEXT: &str = "default";
 
+/// One authentication context bound on a connection: the client-supplied
+/// *selection* (authenticator name + credential) together with the role it
+/// authenticated against.
+///
+/// The role scopes §10.4's established-authority exception to the exact role
+/// this context proved authority over. A context bound against role `alpha` is
+/// established authority over `alpha` alone — never over an unrelated role
+/// `beta` the caller never authenticated to. Without the role a bound context
+/// would read as established authority over *every* role, so a denial over
+/// `beta` (which does not accept `alpha`'s authenticator) would leak `beta`'s
+/// precise reason while a nonexistent role denies the uniform `unresolved` —
+/// exactly the role-existence enumeration oracle §10.4 forbids.
+struct BoundContext {
+    /// The role this context authenticated against (§11.4, `authenticate`).
+    role: String,
+    /// The selection the client supplied, re-verified at every request (§11.4).
+    selection: AuthSelection,
+}
+
 /// One logical client connection.
 ///
 /// A connection retains each authentication context as the *selection* the
@@ -28,10 +47,12 @@ pub const DEFAULT_CONTEXT: &str = "default";
 /// outgoing subscription frontier; a revoked or expired session therefore denies
 /// the very next request rather than lingering as a stale grant (§11.7). The
 /// credential is retained only in transport state, never written to application
-/// state (§11.3).
+/// state (§11.3). Each context also retains the role it authenticated against so
+/// a denial can tell whether the caller has established authority over a *given*
+/// target role (§10.4).
 pub struct Connection {
     frontier: CommitSeq,
-    contexts: BTreeMap<String, AuthSelection>,
+    contexts: BTreeMap<String, BoundContext>,
     watches: BTreeMap<String, Watch>,
 }
 
@@ -57,22 +78,41 @@ impl Connection {
         }
     }
 
-    /// Bind authentication selection `name` on this connection (§11.8).
-    pub fn set_context(&mut self, name: impl Into<String>, selection: AuthSelection) {
-        self.contexts.insert(name.into(), selection);
+    /// Bind authentication selection `name`, established against `role`, on this
+    /// connection (§11.8). Retaining `role` scopes §10.4's established-authority
+    /// exception to the exact role this context proved authority over, so a later
+    /// denial over any *other* role stays hidden as the uniform `unresolved`.
+    pub fn set_context(
+        &mut self,
+        name: impl Into<String>,
+        role: impl Into<String>,
+        selection: AuthSelection,
+    ) {
+        self.contexts.insert(name.into(), BoundContext { role: role.into(), selection });
     }
 
     /// The authentication selection named `name`, if bound.
     #[must_use]
     pub fn context(&self, name: &str) -> Option<&AuthSelection> {
-        self.contexts.get(name)
+        self.contexts.get(name).map(|bound| &bound.selection)
     }
 
     /// Resolve the selection a request uses: the named one, or the default when
     /// the request names none.
     #[must_use]
     pub fn select_context(&self, name: Option<&str>) -> Option<&AuthSelection> {
-        self.contexts.get(name.unwrap_or(DEFAULT_CONTEXT))
+        self.contexts.get(name.unwrap_or(DEFAULT_CONTEXT)).map(|bound| &bound.selection)
+    }
+
+    /// The role the selected context established authority over (§10.4), or
+    /// `None` when no such context is bound. A request authorizing from this
+    /// context has established authority over the returned role and no other, so
+    /// the caller reads a role's precise (membership-/existence-specific)
+    /// diagnostics only when it is *this* role — every other role's denial is
+    /// hidden as the uniform unresolvable-name outcome.
+    #[must_use]
+    pub fn context_role(&self, name: Option<&str>) -> Option<&str> {
+        self.contexts.get(name.unwrap_or(DEFAULT_CONTEXT)).map(|bound| bound.role.as_str())
     }
 
     /// The bound context names, for the manifest (§12.1).
