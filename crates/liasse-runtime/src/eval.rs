@@ -216,26 +216,51 @@ impl<'a> EvalCtx<'a> {
         fold_computed(&env, &self.compiled.root_computed, base)
     }
 
-    /// Fold each collection row's computed values (§5.2) into the row as cells,
-    /// so a view, projection, or `return` reads a computed value like a stored
-    /// field. Evaluated against the base root (writable state); a computed value
-    /// reading `.field` sees the row, a computed value reading another computed
-    /// value in the same row is resolved by the per-row fixed point. Views are
-    /// exposed afterwards, so a view may read a computed value.
+    /// Fold each collection row's computed values (§5.2) into the row as cells, so
+    /// a view, projection, or `return` reads a computed value like a stored field.
+    /// Evaluated against the base root (writable state); a computed value reading
+    /// `.field` sees the row, a computed value reading another computed value in the
+    /// same row is resolved by the per-row fixed point. Views are exposed afterwards,
+    /// so a view may read a computed value.
+    ///
+    /// §5.2 makes a computed value participate "like any other value", so a
+    /// collection computed value may read ANOTHER collection's computed value through
+    /// a `/`-selector (`/config["main"].doubled`). Folding a single pass against the
+    /// unfolded base leaves that target absent, so this iterates to a cross-collection
+    /// fixed point: each pass rebuilds the fold env from the progressively-folded root
+    /// and re-folds every collection, so the reader observes the target's FOLDED
+    /// value. The computed dependency graph is acyclic (§5.1), so it converges; the
+    /// number of collections carrying computed values bounds the longest
+    /// cross-collection chain (one pass advances the resolved frontier by one hop).
     fn expose_computed(&self, prospective: &Prospective, base: Row) -> Row {
-        if self.compiled.collections.iter().all(|c| c.computed.is_empty()) {
+        let bound = self.compiled.collections.iter().filter(|c| !c.computed.is_empty()).count();
+        if bound == 0 {
             return base;
         }
         let temporal = self.temporal_index(prospective);
-        let env = self.fold_env(base.clone(), temporal, self.source_horizon(prospective, self.now));
+        let mut base = base;
+        for _ in 0..bound {
+            let env = self.fold_env(base.clone(), temporal.clone(), self.source_horizon(prospective, self.now));
+            let next = self.fold_collection_computed(&env, base.clone());
+            if next == base {
+                break;
+            }
+            base = next;
+        }
+        base
+    }
+
+    /// One pass of the §5.2 collection-computed fold: fold each collection row's
+    /// computed values against `env`, whose root is the current (partially folded)
+    /// package root. Factored out of [`Self::expose_computed`] so its cross-collection
+    /// fixed point can rebuild `env` and re-fold between passes.
+    fn fold_collection_computed(&self, env: &RuntimeEnv<'_>, base: Row) -> Row {
         let cells: Vec<(String, Cell)> = base
             .cells()
             .map(|(name, cell)| match (cell, self.compiled.collection(name)) {
                 (Cell::Collection(rows), Some(collection)) if !collection.computed.is_empty() => {
-                    let folded = rows
-                        .iter()
-                        .map(|row| fold_computed(&env, &collection.computed, row.clone()))
-                        .collect();
+                    let folded =
+                        rows.iter().map(|row| fold_computed(env, &collection.computed, row.clone())).collect();
                     (name.clone(), Cell::Collection(folded))
                 }
                 _ => (name.clone(), cell.clone()),

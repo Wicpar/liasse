@@ -19,11 +19,11 @@
 //! module only binds the structural context each expression reads and assembles
 //! the resulting rows.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::SourceMap;
 use liasse_expr::{Cell, ExprType, Row, RowId, RowType, TypedExpr};
-use liasse_value::{recurring_intervals, Integer, Period, Struct, Text, Timestamp, Value};
+use liasse_value::{recurring_intervals, Integer, Interval, Period, Struct, Text, Timestamp, Value};
 
 use crate::compiled::compile_expr;
 use crate::env::{NamedExtant, RuntimeEnv};
@@ -406,8 +406,17 @@ impl CompiledSourceBucket {
     /// each of these as an error over the enumerable series — a finite series is
     /// generated in full here regardless of the minimal horizon, so an overflow at a
     /// later boundary is caught at admission, not deferred to a temporal read.
+    ///
+    /// A custom `$key` additionally MUST be unique for every generated row (§14.6):
+    /// two generated rows sharing a custom key would collapse to one identity,
+    /// corrupting §12.4 deltas and the §15 meter pool index. This is a runtime
+    /// property of the derived series (two source rows, or two periods of one source,
+    /// may resolve the same key), so it is enforced here at admission — the model
+    /// records only that the invariant exists ([`check_custom_key`]), never the data.
+    ///
     /// Rejects the whole transition on the first offending source row.
     pub(crate) fn validate(&self, inputs: &BucketInputs<'_>) -> Result<(), Rejection> {
+        let mut seen: BTreeSet<RowId> = BTreeSet::new();
         for source_row in self.source_rows(inputs) {
             let Some((from, until, repeat)) = self.bounds(inputs, &source_row) else { continue };
             // A minimal horizon (the start itself): a non-advancing step is caught on
@@ -419,8 +428,64 @@ impl CompiledSourceBucket {
                     format!("source-backed bucket `{}`: {err}", self.name),
                 ));
             }
+            if self.key.is_none() {
+                // The inferred identity is unique by construction (source identity,
+                // extended with `$from` when the bucket recurs), so only a custom key
+                // needs a data-dependent uniqueness pass.
+                continue;
+            }
+            // §14.6 uniqueness: enumerate this source row's generated rows and reject
+            // the transition the moment two rows resolve the same custom key.
+            let horizon = uniqueness_horizon(from, until, repeat.as_ref());
+            let Ok(intervals) = recurring_intervals(from, until, repeat.as_ref(), horizon) else {
+                continue;
+            };
+            for interval in intervals {
+                if !seen.insert(self.generated_identity(inputs, &source_row, interval)) {
+                    return Err(Rejection::new(
+                        RejectionReason::DuplicateKey,
+                        format!(
+                            "source-backed bucket `{}`: custom `$key` is not unique — two \
+                             generated rows resolve the same key (§14.6)",
+                            self.name
+                        ),
+                    ));
+                }
+            }
         }
         Ok(())
+    }
+
+    /// The identity a generated row would take, for the §14.6 custom-key uniqueness
+    /// pass. Mirrors [`Self::build_row`]'s structural env so a custom `$key`
+    /// evaluates against the same `$source`/`$from`/`$until`/`$index` bindings.
+    fn generated_identity(&self, inputs: &BucketInputs<'_>, source_row: &Row, interval: Interval) -> RowId {
+        let structurals = BTreeMap::from([
+            (SOURCE_CELL[1..].to_owned(), Cell::Row(Box::new(source_row.clone()))),
+            (FROM_CELL[1..].to_owned(), Cell::Scalar(Value::Timestamp(interval.from))),
+            (UNTIL_CELL[1..].to_owned(), Cell::Scalar(interval.until.map_or(Value::None, Value::Timestamp))),
+            (INDEX_CELL[1..].to_owned(), Cell::Scalar(Value::Int(Integer::from(interval.index)))),
+        ]);
+        let env = self.env(inputs, structurals);
+        let current = keyless_current();
+        self.identity(&env, &current, source_row, interval.from).0
+    }
+}
+
+/// The generation horizon a §14.6 uniqueness pass enumerates one source row over.
+///
+/// A finite series (bounded `$until`, or a single non-recurring interval) is
+/// generated in full regardless of the horizon, so the start itself suffices. An
+/// unbounded recurring series is infinite, but a custom key that fails to vary per
+/// period repeats within the first two periods; the second boundary is the smallest
+/// horizon that exposes such a collision (a start below it keeps the second
+/// interval). A cross-period-varying key that still collides only across sources at
+/// a wide offset is a documented seam — an unbounded series is only ever read
+/// through a bounded selector (§14.5), so no unbounded materialization exposes it.
+fn uniqueness_horizon(from: Timestamp, until: Option<Timestamp>, repeat: Option<&Period>) -> Timestamp {
+    match repeat {
+        Some(period) if until.is_none() => period.advance_from(from, 2).unwrap_or(from),
+        _ => from,
     }
 }
 
