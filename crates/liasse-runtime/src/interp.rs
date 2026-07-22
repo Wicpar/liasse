@@ -1575,23 +1575,34 @@ impl<'a> Interp<'a> {
             let Some(mut fields) = self.prospective.get(address).cloned() else { continue };
             let decl = std::slice::from_ref(&row.collection);
             let collection = self.collection_at(decl)?;
-            for (field, value) in patch {
-                // §5.6/§21.1/§22.1: an `$on_delete = { ref: key }` patch assigns a
-                // reference field its target's application key; coerce it to the
-                // `Value::Ref` carrier every other ref write produces (the same
-                // `refid::ref_of` construction the `$set`-of-`$ref` operand path
-                // uses), so the finalize reference-validity pass (`check_refs`)
-                // rejects a patch that repoints a ref at a non-existent target
-                // rather than committing a dangling ref. A `none` (optional clear)
-                // and a non-ref field pass through unchanged.
-                let coerced = match collection.field(field).and_then(|f| f.reference.as_ref()) {
+            for (path, value) in patch {
+                // §5.6/§21.1/§22.1: an `$on_delete = { ref: key }` patch on a
+                // TOP-LEVEL reference field assigns it the target's application key;
+                // coerce it to the `Value::Ref` carrier every other ref write
+                // produces (the same `refid::ref_of` construction the
+                // `$set`-of-`$ref` operand path uses), so the finalize
+                // reference-validity pass (`check_refs`) rejects a patch that
+                // repoints a ref at a non-existent target rather than committing a
+                // dangling ref. A `none` (optional clear), a non-ref field, and a
+                // struct-nested leaf (already a fully-formed `none`/set value) pass
+                // through unchanged.
+                let coerced = match (path.container.is_empty())
+                    .then(|| collection.field(&path.field).and_then(|f| f.reference.as_ref()))
+                    .flatten()
+                {
                     Some(info) => self.ref_member(&info.target, value.clone())?,
                     None => value.clone(),
                 };
-                fields.insert(field.clone(), coerced);
+                path.write_into(&mut fields, coerced);
             }
-            for field in patch.keys() {
-                rules::normalize_field(collection, field, &mut fields, self.ctx, self.prospective)?;
+            // §8.8: re-normalize each affected TOP-LEVEL field once (a nested write
+            // normalizes the struct field that owns it).
+            let mut normalized: BTreeSet<&str> = BTreeSet::new();
+            for path in patch.keys() {
+                let top = path.top_field();
+                if normalized.insert(top) {
+                    rules::normalize_field(collection, top, &mut fields, self.ctx, self.prospective)?;
+                }
             }
             self.place(address, decl, fields)?;
         }

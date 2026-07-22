@@ -17,10 +17,10 @@ use std::collections::BTreeMap;
 
 use liasse_ident::NameSegment;
 use liasse_store::{CollectionPath, RowAddress};
-use liasse_value::{RefKey, Struct, Text, Value};
+use liasse_value::{RefKey, Value};
 
 use crate::compiled::{Compiled, OnDelete};
-use crate::deletion::{DeleteError, DeletePolicy, DeletionPlan, Graph, RefEdge, RowRef};
+use crate::deletion::{DeleteError, DeletePolicy, DeletionPlan, FieldPath, Graph, RefEdge, RowRef};
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
 use crate::materialize;
@@ -221,18 +221,15 @@ fn nested_scalar_policy(
 /// Resolve a STRUCT-NESTED `$set`-of-`$ref` member's `$on_delete` policy
 /// (§5.3/§5.6/§21.1), applying its SURVIVING-ROW effect at the nested set. A
 /// `cascade`/`none` member effect drops the deleted target from the nested set —
-/// encoded as a top-level struct patch removing that member; `restrict`, an
-/// undecided ref, and a whole-row `= patch` resolve as for a scalar ref through
+/// encoded as a leaf-addressed patch on that set field; `restrict`, an undecided
+/// ref, and a whole-row `= patch` resolve as for a scalar ref through
 /// [`resolve_policy`].
 ///
-/// Combination granularity note (§21.1 "patches … combine when they touch disjoint
-/// fields or assign the same resulting value"): because interp applies the flat
-/// plan by TOP-LEVEL field name, a nested effect is carried as a whole-struct
-/// assignment, so its combination unit is the top-level struct field — two nested
-/// effects on the SAME struct in ONE transition would collide. That case needs
-/// leaf-granular plan application (an interp/deletion seam outside this crate's
-/// row-materialization scope); a single nested effect per struct — the reported and
-/// overwhelmingly common case — applies correctly.
+/// Combination granularity (§21.1 "patches … combine when they touch disjoint
+/// fields or assign the same resulting value"): the effect is carried at its LEAF
+/// [`FieldPath`], so two `$on_delete` effects on DISJOINT leaves of one struct
+/// combine (each rebuilds its own leaf), while two effects on the SAME leaf
+/// conflict unless they assign the same value.
 #[allow(clippy::too_many_arguments)]
 fn nested_member_policy(
     compiled: &Compiled,
@@ -263,11 +260,14 @@ fn nested_member_policy(
     }
 }
 
-/// Build the top-level struct patch a struct-nested survivor effect induces on the
-/// referencing row `from` (§21.1): read the row's fields, apply `transform` to the
-/// nested leaf `site` addresses, and return a single `(top_field, new_struct)`
-/// assignment — the flat form interp's `apply_deletion` writes back. `None` when
-/// the referencing row or its struct path is not materialized (a live ref always
+/// Build the leaf-addressed patch a struct-nested survivor effect induces on the
+/// referencing row `from` (§21.1): read the current leaf value at `site`, apply
+/// `transform` (clear to `none`, or drop a set member), and return a single
+/// `(leaf FieldPath, new_leaf_value)` assignment — the leaf-granular form interp's
+/// `apply_deletion` writes back through [`FieldPath::write_into`]. Carrying the
+/// nested field ADDRESS (rather than a whole rebuilt struct) is what lets two
+/// effects on DISJOINT leaves of one struct combine at §21.1's leaf granularity.
+/// `None` when the referencing row is not materialized (a live ref always
 /// materializes it, so the edge that produced this call already proved it present).
 fn nested_leaf_patch(
     compiled: &Compiled,
@@ -279,39 +279,20 @@ fn nested_leaf_patch(
     let compiled = compiled.collection(&from.collection)?;
     let address = address_of(prospective, compiled.key.as_slice(), from)?;
     let fields = prospective.get(&address)?;
-    let (top, rest) = site.container.split_first()?;
-    let new_top = rebuild_struct(fields.get(*top)?, rest, &site.field.name, transform)?;
-    Some(DeletePolicy::Patch(vec![((*top).to_owned(), new_top)]))
+    let current = site.value(fields).cloned().unwrap_or(Value::None);
+    let new_leaf = transform(&current);
+    let container: Vec<String> = site.container.iter().map(|name| (*name).to_owned()).collect();
+    Some(DeletePolicy::Patch(vec![(FieldPath::nested(container, site.field.name.clone()), new_leaf)]))
 }
 
-/// Descend the static-struct name `path` into `value` and apply `transform` to
-/// member `leaf`, rebuilding each struct level (§5.3). `None` when a level is not a
-/// struct — the ref cannot live there, so there is nothing to change.
-fn rebuild_struct(
-    value: &Value,
-    path: &[&str],
-    leaf: &str,
-    transform: &dyn Fn(&Value) -> Value,
-) -> Option<Value> {
-    let Value::Struct(existing) = value else { return None };
-    let mut members: Vec<(Text, Value)> = Vec::new();
-    for (name, member) in existing.fields() {
-        let rebuilt = match path.split_first() {
-            Some((head, tail)) if name.as_str() == *head => rebuild_struct(member, tail, leaf, transform)?,
-            None if name.as_str() == leaf => transform(member),
-            _ => member.clone(),
-        };
-        members.push((name.clone(), rebuilt));
-    }
-    Some(Value::Struct(Struct::new(members)))
-}
-
-/// The `(field, value)` assignments a patch object evaluated to (§21.1). A patch
-/// that did not evaluate to a struct contributes nothing.
-fn patch_assignments(cell: &liasse_expr::Cell) -> Vec<(String, Value)> {
+/// The `(FieldPath, value)` assignments a whole-row `= patch` object evaluated to
+/// (§21.1): its keys are top-level fields (the patch binds `.` to the whole row),
+/// so each is a top-level [`FieldPath`]. A patch that did not evaluate to a struct
+/// contributes nothing.
+fn patch_assignments(cell: &liasse_expr::Cell) -> Vec<(FieldPath, Value)> {
     match cell {
         liasse_expr::Cell::Scalar(Value::Struct(fields)) => {
-            fields.fields().map(|(name, value)| (name.as_str().to_owned(), value.clone())).collect()
+            fields.fields().map(|(name, value)| (FieldPath::top(name.as_str()), value.clone())).collect()
         }
         _ => Vec::new(),
     }

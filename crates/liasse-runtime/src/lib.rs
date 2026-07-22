@@ -183,7 +183,8 @@ pub use blobs::{
     PlacementState, Store, StoreId, UploadError,
 };
 pub use deletion::{
-    DeleteError, DeletePolicy, DeletionPlan, Erasure, Extract, Graph, Occurrence, RefEdge, RowRef,
+    DeleteError, DeletePolicy, DeletionPlan, Erasure, Extract, FieldPath, Graph, Occurrence,
+    RefEdge, RowRef,
 };
 pub use engine::{Engine, HydratedFrontier};
 pub use engine_provider::EngineKeyProvider;

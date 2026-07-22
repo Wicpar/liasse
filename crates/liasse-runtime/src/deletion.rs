@@ -22,7 +22,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_host::BlobIntegrity;
-use liasse_value::Value;
+use liasse_value::{Struct, Text, Value};
 
 /// The identity of one row: its collection and key value.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -41,6 +41,87 @@ impl RowRef {
     }
 }
 
+/// The address of a patched field within a surviving row (§21.1): the
+/// static-struct container path from the row down to the leaf's container (empty
+/// for a top-level field) plus the leaf field name. A struct-nested `$on_delete`
+/// effect is carried at its LEAF address so that §21.1 combination is
+/// leaf-granular: two effects on DISJOINT leaves of one struct combine, while two
+/// effects on the SAME leaf conflict unless they assign the same value.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FieldPath {
+    /// The static-struct names from the row down to the leaf's container (empty
+    /// for a top-level field).
+    pub container: Vec<String>,
+    /// The leaf field name.
+    pub field: String,
+}
+
+impl FieldPath {
+    /// A top-level field address (empty container).
+    #[must_use]
+    pub fn top(field: impl Into<String>) -> Self {
+        Self { container: Vec::new(), field: field.into() }
+    }
+
+    /// A struct-nested field address at `container`/`field`.
+    #[must_use]
+    pub fn nested(container: Vec<String>, field: impl Into<String>) -> Self {
+        Self { container, field: field.into() }
+    }
+
+    /// The top-level field this address lives under: the first container name, or
+    /// the leaf itself when the address is top-level. Re-normalizing a patched row
+    /// (§8.8) is a top-level-field operation, so a nested write normalizes the
+    /// struct field that owns it.
+    #[must_use]
+    pub fn top_field(&self) -> &str {
+        self.container.first().map_or(self.field.as_str(), String::as_str)
+    }
+
+    /// A dotted diagnostic rendering: `owner` at the top level, `meta.owner` one
+    /// struct deep (§21.1 conflict message).
+    #[must_use]
+    pub fn render(&self) -> String {
+        if self.container.is_empty() {
+            return self.field.clone();
+        }
+        format!("{}.{}", self.container.join("."), self.field)
+    }
+
+    /// Write `value` at this address inside a row's field map, rebuilding each
+    /// static struct on the container path (§5.3). A top-level address is a direct
+    /// insert; a nested one rebuilds each struct level because a [`Struct`] is
+    /// immutable once built. Descent stops (leaving the row unchanged) if an
+    /// intermediate member is absent or is not a struct — a ref cannot live there.
+    pub fn write_into(&self, fields: &mut BTreeMap<String, Value>, value: Value) {
+        let Some((head, rest)) = self.container.split_first() else {
+            fields.insert(self.field.clone(), value);
+            return;
+        };
+        let Some(Value::Struct(top)) = fields.get(head).cloned() else { return };
+        fields.insert(head.clone(), Value::Struct(rebuild_leaf(&top, rest, &self.field, value)));
+    }
+}
+
+/// A copy of `current` with the field named `leaf`, reached by descending the
+/// remaining static-struct `rest` path, set to `value` (§5.3). An absent or
+/// non-struct intermediate member leaves that branch untouched.
+fn rebuild_leaf(current: &Struct, rest: &[String], leaf: &str, value: Value) -> Struct {
+    let mut members: BTreeMap<Text, Value> =
+        current.fields().map(|(name, member)| (name.clone(), member.clone())).collect();
+    match rest.split_first() {
+        None => {
+            members.insert(Text::new(leaf), value);
+        }
+        Some((head, tail)) => {
+            if let Some(Value::Struct(inner)) = current.get(head) {
+                members.insert(Text::new(head), Value::Struct(rebuild_leaf(inner, tail, leaf, value)));
+            }
+        }
+    }
+    Struct::new(members)
+}
+
 /// A resolved `$on_delete` policy on an inbound reference (§21.1, §5.6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeletePolicy {
@@ -50,8 +131,11 @@ pub enum DeletePolicy {
     Cascade,
     /// Clear this optional ref (assign `none`).
     Clear,
-    /// Patch the referencing row with the given planning-time assignments.
-    Patch(Vec<(String, Value)>),
+    /// Patch the referencing row with the given planning-time assignments, each at
+    /// its leaf [`FieldPath`] (§21.1). A whole-row `= patch` assigns top-level
+    /// fields; a struct-nested survivor effect (`none`-clear, set-member drop)
+    /// assigns its nested leaf, so combination is leaf-granular.
+    Patch(Vec<(FieldPath, Value)>),
     /// Remove this member value from the referencing `$set` field (§5.6/§21.1:
     /// for a set of refs, `cascade` deletes the containing **set member**, not the
     /// whole row). A surviving-row effect — the referencing row is kept and only
@@ -193,14 +277,16 @@ impl Graph {
     fn collect_patches(
         &self,
         deletes: &BTreeSet<RowRef>,
-    ) -> Result<BTreeMap<RowRef, BTreeMap<String, Value>>, DeleteError> {
-        let mut patches: BTreeMap<RowRef, BTreeMap<String, Value>> = BTreeMap::new();
+    ) -> Result<BTreeMap<RowRef, BTreeMap<FieldPath, Value>>, DeleteError> {
+        let mut patches: BTreeMap<RowRef, BTreeMap<FieldPath, Value>> = BTreeMap::new();
         for edge in &self.edges {
             if !deletes.contains(&edge.to) || deletes.contains(&edge.from) {
                 continue;
             }
             let assignments = match &edge.policy {
-                DeletePolicy::Clear => vec![(edge.field.clone(), Value::None)],
+                // A top-level scalar clear assigns `none` to its own field; the
+                // struct-nested clear is already a leaf-addressed `Patch`.
+                DeletePolicy::Clear => vec![(FieldPath::top(edge.field.clone()), Value::None)],
                 DeletePolicy::Patch(assignments) => assignments.clone(),
                 // Row deletions, set-member drops, and undecided backstop edges are
                 // not field assignments (an undecided edge that reaches a live
@@ -213,10 +299,13 @@ impl Graph {
             let row_patch = patches.entry(edge.from.clone()).or_default();
             for (field, value) in assignments {
                 match row_patch.get(&field) {
+                    // §21.1: two effects on the SAME leaf that assign different
+                    // values conflict; disjoint leaves (distinct `FieldPath`s) and
+                    // equal-valued repeats combine.
                     Some(existing) if *existing != value => {
                         return Err(DeleteError::ConflictingPatch {
                             row: Box::new(edge.from.clone()),
-                            field,
+                            field: field.render(),
                         });
                     }
                     _ => {
@@ -263,8 +352,8 @@ impl Graph {
         }
         for (row, patch) in &plan.patches {
             if let Some(fields) = self.rows.get_mut(row) {
-                for (field, value) in patch {
-                    fields.insert(field.clone(), value.clone());
+                for (path, value) in patch {
+                    path.write_into(fields, value.clone());
                 }
             }
         }
@@ -286,7 +375,7 @@ impl Graph {
 #[derive(Debug, Clone)]
 pub struct DeletionPlan {
     deletes: BTreeSet<RowRef>,
-    patches: BTreeMap<RowRef, BTreeMap<String, Value>>,
+    patches: BTreeMap<RowRef, BTreeMap<FieldPath, Value>>,
     member_removals: BTreeMap<RowRef, BTreeMap<String, Vec<Value>>>,
 }
 
@@ -297,9 +386,10 @@ impl DeletionPlan {
         &self.deletes
     }
 
-    /// The surviving-row patches this plan applies.
+    /// The surviving-row patches this plan applies, each assignment at its leaf
+    /// [`FieldPath`] (§21.1).
     #[must_use]
-    pub fn patches(&self) -> &BTreeMap<RowRef, BTreeMap<String, Value>> {
+    pub fn patches(&self) -> &BTreeMap<RowRef, BTreeMap<FieldPath, Value>> {
         &self.patches
     }
 

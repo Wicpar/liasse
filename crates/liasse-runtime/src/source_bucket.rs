@@ -416,8 +416,19 @@ impl CompiledSourceBucket {
     /// A finite series is enumerated in full, so its uniqueness (intra- and
     /// cross-source) is proven directly. An unbounded recurring series is infinite
     /// and cannot be enumerated, so its cross-source uniqueness is instead proven
-    /// structurally: the key must distinguish each source under a common period
-    /// binding, or two sources whose grids align at an offset would collide (§14.5).
+    /// structurally and GRID-AWARE: two sources collide only when they resolve the
+    /// same key under equal `$source`/`$index`/`$until` (they group under one
+    /// [`Self::probe_identity`]) AND their `$from` recurrence grids can actually
+    /// share a boundary. For two fixed-period grids `{φ + k·P}` a shared boundary
+    /// exists iff `(φ1 − φ2)` is a multiple of `gcd(P1, P2)`; a phase offset that is
+    /// not makes the grids DISJOINT, so a `$from`-bearing key stays unique and must
+    /// load ([`GridPhase::provably_disjoint`]). The check is sound-but-conservative:
+    /// it accepts only when it can PROVE no collision (disjoint fixed-period grids
+    /// with a `$from`-identity key component) and otherwise rejects, so a
+    /// calendar-period grid, a key whose `$from` dependence is not a direct
+    /// component, or a genuinely aligned grid all stay rejected. The wave-3 aligned
+    /// collision (offset a multiple of the period) therefore still rejects, while a
+    /// phase-offset-disjoint grid now loads.
     ///
     /// Rejects the whole transition on the first offending source row.
     pub(crate) fn validate(&self, inputs: &BucketInputs<'_>) -> Result<(), Rejection> {
@@ -426,13 +437,16 @@ impl CompiledSourceBucket {
         // series is infinite, so the enumeration below can only cover a bounded
         // prefix and cannot witness a collision that first appears past it (two
         // sources whose grids align at an offset — s1's period 3 against s2's period
-        // 0). A purely period-derived key (`["$from"]`) is identical across such
-        // aligned grids, so require the custom key to distinguish each source under a
-        // COMMON period binding: `probe` holds each unbounded source's key evaluated
-        // with the SAME synthetic `$from`/`$until`/`$index`, so it varies only with
-        // `$source`. Two sources colliding here cannot be told apart by the key at any
-        // period, so an offset alignment would generate two rows with one key.
-        let mut probe: BTreeSet<RowId> = BTreeSet::new();
+        // 0). This is decided GRID-AWARE, not by holding `$from` constant: two
+        // sources collide iff they share the same key under EQUAL `$source`/`$index`/
+        // `$until` (they group under one `probe_identity`) AND their `$from` grids can
+        // actually coincide. For two fixed-period grids `{φ + k·P}` the offset `φ1−φ2`
+        // must be a multiple of `gcd(P1, P2)` for any common `$from` to exist; a
+        // phase-offset that is NOT such a multiple makes the grids DISJOINT, so a
+        // `$from`-bearing key stays unique and the series must load. `grids` collects,
+        // per `probe_identity`, each unbounded source's phase/period so a new source is
+        // rejected only against a prior one whose grid can provably meet it.
+        let mut grids: BTreeMap<RowId, Vec<GridPhase>> = BTreeMap::new();
         for source_row in self.source_rows(inputs) {
             let Some((from, until, repeat)) = self.bounds(inputs, &source_row) else { continue };
             // A minimal horizon (the start itself): a non-advancing step is caught on
@@ -452,25 +466,38 @@ impl CompiledSourceBucket {
             }
             // §14.5/§14.6: an unbounded recurring series is read only through a
             // bounded selector, but its uniqueness invariant is over EVERY generated
-            // row — enumeration cannot prove that, so the custom key must be
-            // source-distinguishing (see `probe` above). A bounded (finite `$until`)
-            // or non-recurring series is generated in full by the enumeration below,
-            // which is complete, so it needs no probe (and a legitimate finite
+            // row — enumeration cannot prove that, so cross-source uniqueness is proven
+            // structurally (see `grids` above). A bounded (finite `$until`) or
+            // non-recurring series is generated in full by the enumeration below, which
+            // is complete, so it needs no grid analysis (and a legitimate finite
             // `["$from"]` grid whose starts never coincide must still load).
-            if repeat.is_some()
-                && until.is_none()
-                && !probe.insert(self.probe_identity(inputs, &source_row))
-            {
-                return Err(Rejection::new(
-                    RejectionReason::DuplicateKey,
-                    format!(
-                        "source-backed bucket `{}`: custom `$key` is not provably unique across an \
-                         unbounded recurring series — two sources resolve the same key independent \
-                         of the period, so their aligned grids generate two rows with one key; add \
-                         a source-distinguishing component such as `$source.<key>` (§14.5/§14.6)",
-                        self.name
-                    ),
-                ));
+            if let (Some(period), None) = (repeat.as_ref(), until) {
+                let phase = GridPhase {
+                    from,
+                    period: period.clone(),
+                    from_identity: self.key_has_from_identity(inputs, &source_row, from),
+                };
+                let probe_id = self.probe_identity(inputs, &source_row);
+                if let Some(prior) = grids.get(&probe_id) {
+                    // Same key under a common period binding: the two sources can only
+                    // be told apart by `$from`, so they collide unless their grids are
+                    // PROVABLY disjoint (a phase offset that no shared boundary can
+                    // bridge). Reject against the first prior grid that can meet this one.
+                    if prior.iter().any(|other| !phase.provably_disjoint(other)) {
+                        return Err(Rejection::new(
+                            RejectionReason::DuplicateKey,
+                            format!(
+                                "source-backed bucket `{}`: custom `$key` is not provably unique \
+                                 across an unbounded recurring series — two sources resolve the same \
+                                 key and their recurrence grids can align at a shared boundary, so \
+                                 they generate two rows with one key; add a source-distinguishing \
+                                 component such as `$source.<key>` (§14.5/§14.6)",
+                                self.name
+                            ),
+                        ));
+                    }
+                }
+                grids.entry(probe_id).or_default().push(phase);
             }
             // §14.6 uniqueness: enumerate this source row's generated rows and reject
             // the transition the moment two rows resolve the same custom key. This is
@@ -498,15 +525,73 @@ impl CompiledSourceBucket {
     }
 
     /// The identity the custom `$key` resolves for `source_row` under a COMMON
-    /// synthetic period binding — the §14.6 cross-source soundness probe on an
-    /// unbounded recurring series ([`Self::validate`]). Fixing `$from`/`$until`/
-    /// `$index` to the same values for every source makes the key depend only on
-    /// `$source`, so two sources that resolve the same identity here are not
-    /// distinguished by the key and their aligned grids would collide. Mirrors
-    /// [`Self::generated_identity`] with a constant interval.
+    /// synthetic period binding — the §14.6 cross-source GROUPING key on an unbounded
+    /// recurring series ([`Self::validate`]). Fixing `$from`/`$until`/`$index` to the
+    /// same values for every source makes the key depend only on `$source`, so two
+    /// sources that resolve the same identity here are told apart by nothing but
+    /// `$from`; whether they actually collide is then decided by their grids
+    /// ([`GridPhase::provably_disjoint`]). Mirrors [`Self::generated_identity`] with a
+    /// constant interval.
     fn probe_identity(&self, inputs: &BucketInputs<'_>, source_row: &Row) -> RowId {
         let common = Interval { index: 0, from: inputs.now, until: None };
         self.generated_identity(inputs, source_row, common)
+    }
+
+    /// Whether the custom `$key` has a component that is the IDENTITY on `$from` —
+    /// its value equals `$from` and is insensitive to `$index`/`$until` (§14.6).
+    ///
+    /// This is the soundness gate for the disjoint-grid accept: only a component
+    /// that IS `$from` (not a coarser function of it, and not `$index`, which would
+    /// still collide across phase-offset grids at equal indices) guarantees that
+    /// disjoint `$from` grids yield disjoint keys. It is decided by evaluation, not
+    /// AST introspection (the typed AST is crate-private): a component is treated as
+    /// `$from`-identity when it evaluates to exactly `$from` at three distinct
+    /// timestamps and is unchanged by varying `$index` and `$until`. A non-identity
+    /// expression coinciding with `$from` at three points is not realizable without
+    /// being `$from`, so this is sound in practice; a false negative merely falls to
+    /// the conservative reject.
+    fn key_has_from_identity(&self, inputs: &BucketInputs<'_>, source_row: &Row, from: Timestamp) -> bool {
+        let Some(components) = &self.key else { return false };
+        let precision = from.precision();
+        let base = from.count();
+        let ts = |offset: i128| Timestamp::new(base.wrapping_add(offset), precision);
+        let (f1, f2, f3, u) = (ts(1), ts(1_000), ts(7_777), ts(123_456));
+        components.iter().any(|component| {
+            let at = |from: Timestamp, until: Option<Timestamp>, index: i64| {
+                self.eval_key_component(inputs, source_row, component, from, until, index)
+            };
+            at(f1, None, 0) == Value::Timestamp(f1)
+                && at(f2, None, 0) == Value::Timestamp(f2)
+                && at(f3, None, 0) == Value::Timestamp(f3)
+                && at(f1, None, 3) == Value::Timestamp(f1)
+                && at(f1, Some(u), 0) == Value::Timestamp(f1)
+        })
+    }
+
+    /// Evaluate one custom-`$key` component against `source_row` under an explicit
+    /// `$from`/`$until`/`$index` binding (§14.4/§14.6). Mirrors
+    /// [`Self::generated_identity`]'s structural env for a single component; a
+    /// component that does not evaluate to a scalar yields `none`.
+    fn eval_key_component(
+        &self,
+        inputs: &BucketInputs<'_>,
+        source_row: &Row,
+        component: &TypedExpr,
+        from: Timestamp,
+        until: Option<Timestamp>,
+        index: i64,
+    ) -> Value {
+        let structurals = BTreeMap::from([
+            (SOURCE_CELL[1..].to_owned(), Cell::Row(Box::new(source_row.clone()))),
+            (FROM_CELL[1..].to_owned(), Cell::Scalar(Value::Timestamp(from))),
+            (UNTIL_CELL[1..].to_owned(), Cell::Scalar(until.map_or(Value::None, Value::Timestamp))),
+            (INDEX_CELL[1..].to_owned(), Cell::Scalar(Value::Int(Integer::from(index)))),
+        ]);
+        let env = self.env(inputs, structurals);
+        match component.evaluate(&env, &keyless_current()) {
+            Ok(Cell::Scalar(value)) => value,
+            _ => Value::None,
+        }
     }
 
     /// The identity a generated row would take, for the §14.6 custom-key uniqueness
@@ -523,6 +608,56 @@ impl CompiledSourceBucket {
         let current = keyless_current();
         self.identity(&env, &current, source_row, interval.from).0
     }
+}
+
+/// The recurrence phase of one unbounded source row: its `$from` start, its
+/// `$repeat` period, and whether the custom key has a `$from`-identity component
+/// (§14.6). Two same-`probe_identity` sources collide unless their grids are
+/// provably disjoint.
+struct GridPhase {
+    from: Timestamp,
+    period: Period,
+    from_identity: bool,
+}
+
+impl GridPhase {
+    /// Whether this grid and `other` PROVABLY never share a `$from` boundary — so a
+    /// `$from`-bearing key stays unique across them (§14.6).
+    ///
+    /// Sound-but-conservative: it proves disjointness only for two FIXED-period grids
+    /// at the same precision whose key carries a `$from`-identity component. Two such
+    /// grids `{φ + k·P}` share a boundary iff the phase offset `(φ1 − φ2)` is a
+    /// multiple of `gcd(P1, P2)`; a non-multiple offset is disjoint. Any other shape
+    /// (a calendar period, a differing precision, or a key without a `$from`-identity
+    /// component — e.g. one keyed on `$index`, which repeats across phase-offset
+    /// grids) is NOT proven disjoint, so the caller conservatively rejects.
+    fn provably_disjoint(&self, other: &GridPhase) -> bool {
+        if !(self.from_identity && other.from_identity) {
+            return false;
+        }
+        let (Period::Fixed(a), Period::Fixed(b)) = (&self.period, &other.period) else {
+            return false;
+        };
+        if self.from.precision() != other.from.precision() {
+            return false;
+        }
+        let per_tick = 1_000_000_000 / self.from.precision().ticks_per_second();
+        let (step_a, step_b) = (a.as_nanos() / per_tick, b.as_nanos() / per_tick);
+        if step_a <= 0 || step_b <= 0 {
+            return false;
+        }
+        let offset = self.from.count() - other.from.count();
+        offset.rem_euclid(gcd(step_a, step_b)) != 0
+    }
+}
+
+/// The greatest common divisor of two positive tick counts (Euclid), for the §14.6
+/// grid-alignment test.
+fn gcd(mut a: i128, mut b: i128) -> i128 {
+    while b != 0 {
+        (a, b) = (b, a.rem_euclid(b));
+    }
+    a
 }
 
 /// The generation horizon a §14.6 uniqueness pass enumerates one source row over.

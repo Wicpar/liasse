@@ -10,9 +10,9 @@
 use std::collections::BTreeMap;
 
 use liasse_runtime::{
-    DeleteError, DeletePolicy, Erasure, Graph, Occurrence, RefEdge, RowRef,
+    DeleteError, DeletePolicy, Erasure, FieldPath, Graph, Occurrence, RefEdge, RowRef,
 };
-use liasse_value::{Text, Value};
+use liasse_value::{Ref, Struct, Text, Value};
 
 fn key(text: &str) -> Value {
     Value::Text(Text::new(text))
@@ -84,7 +84,7 @@ fn none_clears_optional_ref_on_delete() {
 /// §21.1: a `= patch` policy rewrites the surviving referencing row.
 #[test]
 fn patch_on_delete_rewrites_surviving_row() {
-    let mut graph = project_task_graph(DeletePolicy::Patch(vec![("archived".to_owned(), Value::Bool(true))]));
+    let mut graph = project_task_graph(DeletePolicy::Patch(vec![(FieldPath::top("archived"), Value::Bool(true))]));
     let plan = graph.plan(&[project("p1")]).expect("plan");
     graph.apply(&plan);
     assert_eq!(graph.fields(&task("t1")).and_then(|f| f.get("archived")), Some(&Value::Bool(true)));
@@ -102,13 +102,13 @@ fn on_delete_patches_combine_disjoint_fields() {
         from: task("t1"),
         field: "project".to_owned(),
         to: project("p1"),
-        policy: DeletePolicy::Patch(vec![("project_archived".to_owned(), Value::Bool(true))]),
+        policy: DeletePolicy::Patch(vec![(FieldPath::top("project_archived"), Value::Bool(true))]),
     });
     graph.add_edge(RefEdge {
         from: task("t1"),
         field: "owner".to_owned(),
         to: RowRef::new("owners", key("o1")),
-        policy: DeletePolicy::Patch(vec![("owner_cleared".to_owned(), Value::Bool(true))]),
+        policy: DeletePolicy::Patch(vec![(FieldPath::top("owner_cleared"), Value::Bool(true))]),
     });
     // Delete both referenced rows at once; the two disjoint patches combine.
     let plan = graph.plan(&[project("p1"), RowRef::new("owners", key("o1"))]).expect("plan");
@@ -130,17 +130,90 @@ fn conflicting_on_delete_patches_reject() {
         from: task("t1"),
         field: "project".to_owned(),
         to: project("p1"),
-        policy: DeletePolicy::Patch(vec![("status".to_owned(), key("archived"))]),
+        policy: DeletePolicy::Patch(vec![(FieldPath::top("status"), key("archived"))]),
     });
     graph.add_edge(RefEdge {
         from: task("t1"),
         field: "owner".to_owned(),
         to: RowRef::new("owners", key("o1")),
-        policy: DeletePolicy::Patch(vec![("status".to_owned(), key("orphaned"))]),
+        policy: DeletePolicy::Patch(vec![(FieldPath::top("status"), key("orphaned"))]),
     });
     match graph.plan(&[project("p1"), RowRef::new("owners", key("o1"))]) {
         Err(DeleteError::ConflictingPatch { field, .. }) => assert_eq!(field, "status"),
         other => panic!("expected a patch conflict, got {other:?}"),
+    }
+}
+
+fn account(id: &str) -> RowRef {
+    RowRef::new("accounts", key(id))
+}
+
+fn account_ref(id: &str) -> Value {
+    Value::Ref(Ref::scalar(key(id)))
+}
+
+/// §21.1: two `$on_delete` effects on DISJOINT LEAVES of the SAME struct field
+/// combine at leaf granularity — each rebuilds its own leaf into one struct — so
+/// the delete commits with both leaves cleared, not rejected as a `meta` conflict.
+#[test]
+fn on_delete_patches_combine_disjoint_nested_leaves() {
+    let mut graph = Graph::new();
+    graph.add_row(account("a1"), fields(&[("id", key("a1"))]));
+    graph.add_row(account("a2"), fields(&[("id", key("a2"))]));
+    let meta = Value::Struct(Struct::new([
+        (Text::new("owner1"), account_ref("a1")),
+        (Text::new("owner2"), account_ref("a2")),
+    ]));
+    graph.add_row(task("t1"), fields(&[("id", key("t1")), ("meta", meta)]));
+    graph.add_edge(RefEdge {
+        from: task("t1"),
+        field: "meta.owner1".to_owned(),
+        to: account("a1"),
+        policy: DeletePolicy::Patch(vec![(FieldPath::nested(vec!["meta".to_owned()], "owner1"), Value::None)]),
+    });
+    graph.add_edge(RefEdge {
+        from: task("t1"),
+        field: "meta.owner2".to_owned(),
+        to: account("a2"),
+        policy: DeletePolicy::Patch(vec![(FieldPath::nested(vec!["meta".to_owned()], "owner2"), Value::None)]),
+    });
+    let plan = graph.plan(&[account("a1"), account("a2")]).expect("disjoint nested leaves combine");
+    graph.apply(&plan);
+    let task_fields = graph.fields(&task("t1")).expect("task survives");
+    match task_fields.get("meta") {
+        Some(Value::Struct(meta)) => {
+            assert_eq!(meta.get("owner1"), Some(&Value::None), "owner1 leaf cleared");
+            assert_eq!(meta.get("owner2"), Some(&Value::None), "owner2 leaf cleared");
+        }
+        other => panic!("meta is a rebuilt struct, got {other:?}"),
+    }
+}
+
+/// §21.1 (red): two `$on_delete` effects on the SAME nested leaf that assign
+/// different values reject the whole transition; the conflict names the dotted
+/// leaf address.
+#[test]
+fn on_delete_patches_same_nested_leaf_conflict_rejects() {
+    let mut graph = Graph::new();
+    graph.add_row(account("a1"), fields(&[("id", key("a1"))]));
+    graph.add_row(account("a2"), fields(&[("id", key("a2"))]));
+    let meta = Value::Struct(Struct::new([(Text::new("owner"), account_ref("a1"))]));
+    graph.add_row(task("t1"), fields(&[("id", key("t1")), ("meta", meta)]));
+    graph.add_edge(RefEdge {
+        from: task("t1"),
+        field: "meta.owner".to_owned(),
+        to: account("a1"),
+        policy: DeletePolicy::Patch(vec![(FieldPath::nested(vec!["meta".to_owned()], "owner"), key("x"))]),
+    });
+    graph.add_edge(RefEdge {
+        from: task("t1"),
+        field: "meta.owner".to_owned(),
+        to: account("a2"),
+        policy: DeletePolicy::Patch(vec![(FieldPath::nested(vec!["meta".to_owned()], "owner"), key("y"))]),
+    });
+    match graph.plan(&[account("a1"), account("a2")]) {
+        Err(DeleteError::ConflictingPatch { field, .. }) => assert_eq!(field, "meta.owner"),
+        other => panic!("expected a same-leaf conflict, got {other:?}"),
     }
 }
 
@@ -163,7 +236,7 @@ fn patch_to_row_also_deleted_is_ignored() {
         from: task("t1"),
         field: "owner".to_owned(),
         to: RowRef::new("owners", key("o1")),
-        policy: DeletePolicy::Patch(vec![("status".to_owned(), key("orphaned"))]),
+        policy: DeletePolicy::Patch(vec![(FieldPath::top("status"), key("orphaned"))]),
     });
     let plan = graph.plan(&[project("p1"), RowRef::new("owners", key("o1"))]).expect("plan");
     assert!(plan.deletes().contains(&task("t1")));
