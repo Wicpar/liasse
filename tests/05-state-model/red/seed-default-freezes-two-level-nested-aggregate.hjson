@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: seed-default-freezes-two-level-nested-aggregate
+  suite: scenario
+  spec: ["#state-model", "§5.1", "§5.2", "§5.4", "#loading", "§9.1"]
+  tags: ["ordering"]
+  note: '''
+    Multi-level adjacent edge: a parent computed aggregates a NESTED computed that
+    itself aggregates a grandchild collection, and a `$default` freezes the result.
+    `item.part_count: "= count(.parts)"` counts each item's grandchild `parts`;
+    `order.total_parts: "= sum(.items.part_count)"` sums those across items; and
+    `order.total_snapshot: "int = .total_parts"` freezes it at insertion (§5.1).
+
+    §5.2 makes both computed values participate "like any other value" regardless
+    of nesting depth, and §9.1 makes every co-seeded row visible to the seed
+    default. o1 has item a with 2 parts and item b with 1 part, so part_count is 2
+    and 1, total_parts is 3, and the frozen total_snapshot must also be 3 — proving
+    the default resolves the whole cross-level computed tree to a fixed point, not
+    a one-hop-stale or unmaterialized reading.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.st.seedtwolevel@1.0.0"
+    $model: {
+      orders: {
+        $key: "id"
+        id: "text"
+        items: {
+          $key: "sku"
+          sku: "text"
+          parts: {
+            $key: "pid"
+            pid: "text"
+          }
+          part_count: "= count(.parts)"
+        }
+        total_parts: "= sum(.items.part_count)"
+        total_snapshot: "int = .total_parts"
+      }
+      $public: {
+        orders: { $view: ".orders { id, total_parts, total_snapshot }" }
+      }
+    }
+    $data: {
+      orders: {
+        o1: {
+          items: {
+            a: { parts: { p1: {}, p2: {} } }
+            b: { parts: { p3: {} } }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.orders", id: "w1",
+      expect_init: { value: [ { id: "o1", total_parts: "3", total_snapshot: "3" } ] } }
+  ]
+}

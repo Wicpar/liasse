@@ -112,7 +112,10 @@ pub(crate) fn admit(
         // state-derived default still observes the whole seed set (SPEC-ISSUES
         // item 4). §9.1's single atomic seed load does not subdivide those reads.
         let generation = prospective.next_generation();
-        rules::apply_defaults(entry.collection, &mut fields, ctx, prospective, generation)?;
+        // §9.1/§5.4: phase one already staged this row's nested keyed collections
+        // in the prospective state, so passing its address lets a default reading a
+        // computed that aggregates a nested child (`count(.items)`) observe them.
+        rules::apply_defaults(entry.collection, &mut fields, ctx, prospective, generation, Some(&entry.address))?;
         rules::normalize_all(entry.collection, &mut fields, ctx, prospective)?;
         prospective.replace(&entry.address, fields);
         touched.push(entry.address.clone());

@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: seed-default-reads-nested-aggregating-computed
+  suite: scenario
+  spec: ["#state-model", "§5.1", "§5.2", "#loading", "§9.1"]
+  tags: ["ordering"]
+  note: '''
+    A field `$default` may read a computed value: §5.1 puts defaults and computed
+    insertion values in ONE dependency graph, and §5.2 makes a computed value
+    participate "like any other value" with no carve-out for one that aggregates a
+    nested keyed collection (§5.4). §9.1 pins that within the single atomic seed
+    load every seeded row identity and value is visible to every seed default, so
+    the co-seeded nested `items` rows ARE visible when the parent's default fires.
+
+    Here `count_snapshot: "int = .item_count"` reads the computed
+    `item_count: "= count(.items)"`, which aggregates the nested `items`
+    collection. Order o1 is seeded with two items, so `item_count` resolves to 2
+    and the default freezes `count_snapshot` at 2 — the same value the live view's
+    own `item_count` projection reports. A default that instead froze at 0 would
+    disagree with the computed on the same row, contradicting the single dependency
+    graph (§5.1) and §5.2's uniform participation.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.st.seednestedcomputed@1.0.0"
+    $model: {
+      orders: {
+        $key: "id"
+        id: "text"
+        items: {
+          $key: "sku"
+          sku: "text"
+          qty: "int"
+        }
+        item_count: "= count(.items)"
+        count_snapshot: "int = .item_count"
+      }
+      $public: {
+        orders: { $view: ".orders { id, item_count, count_snapshot }" }
+      }
+    }
+    $data: {
+      orders: {
+        o1: {
+          items: {
+            a: { qty: "1" }
+            b: { qty: "2" }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // item_count recomputes on read to 2; count_snapshot was frozen at insertion
+    // from the same computed and must also be 2 (not 0 from an unmaterialized
+    // nested collection).
+    { watch: "public.orders", id: "w1",
+      expect_init: { value: [ { id: "o1", item_count: "2", count_snapshot: "2" } ] } }
+  ]
+}

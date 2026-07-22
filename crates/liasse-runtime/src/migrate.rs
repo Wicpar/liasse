@@ -385,7 +385,11 @@ fn build_migrated<G: crate::generator::Generators>(
             // added field defaulted from `uuid()` is fresh per row (SPEC-ISSUES
             // item 4).
             let generation = prospective.next_generation();
-            rules::apply_defaults(collection, &mut fields, &ctx, &prospective, generation)?;
+            // The migrated row is not yet staged (its address depends on the
+            // possibly-defaulted key resolved just below), so a default resolves
+            // against its own scalar/struct fields only (§5.1) — the same shape the
+            // insert path uses.
+            rules::apply_defaults(collection, &mut fields, &ctx, &prospective, generation, None)?;
             rules::normalize_all(collection, &mut fields, &ctx, &prospective)?;
             let address = key_address(schema, collection, &fields)?;
             if prospective.contains(&address) {

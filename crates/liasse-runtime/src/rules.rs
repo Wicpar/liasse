@@ -30,12 +30,21 @@ use crate::state::Prospective;
 /// generation — stays distinct by generation. A state-derived default
 /// (`count(/coll) + 1`) is unaffected: it still observes the same pre-statement
 /// state every row of one bulk insertion sees (§5.1).
+///
+/// `address` is the row's staged prospective address when one exists (the
+/// genesis-seed phase-two path, where every seeded row — including this row's
+/// nested collections — is already staged before defaults resolve, §9.1), so a
+/// default reading a computed that aggregates a nested keyed collection observes
+/// the materialized nested rows. It is `None` on the `+`/bulk-insert path, whose
+/// nested initializers stage only after the parent's defaults resolve — §5.1's
+/// rows of one statement become selectable only once all resolve.
 pub(crate) fn apply_defaults(
     collection: &CompiledCollection,
     fields: &mut FieldMap,
     ctx: &EvalCtx<'_>,
     prospective: &Prospective,
     generation: Generation,
+    address: Option<&RowAddress>,
 ) -> Result<(), Rejection> {
     for field in &collection.fields {
         if fields.contains_key(&field.name) {
@@ -45,11 +54,13 @@ pub(crate) fn apply_defaults(
             // §5.1: defaults and computed insertion values form one dependency
             // graph, so a default MAY read a computed value (`booked: "int = .tax
             // + 1"` over `tax: "= ..."`). Expose the provisional row with its
-            // computed values folded in (dependency order), exactly as a row/struct
-            // `$check` does, so the default reads `.tax` instead of faulting on a
-            // missing field. `row_cell_of` degenerates to the bare `row_cell` when
-            // the collection has no computed values.
-            let current = ctx.row_cell_of(prospective, collection, fields);
+            // computed values folded in (dependency order) AND its already-staged
+            // nested keyed collections grafted (§5.4), exactly as a row/struct
+            // `$check` does, so the default reads `.tax` — or a computed
+            // aggregating a nested child — instead of faulting on a missing member.
+            // `provisional_row_cell` degenerates to the bare row cell when there is
+            // no staged nested collection to expose.
+            let current = ctx.provisional_row_cell(prospective, collection, address, fields);
             let value = scalar(ctx.eval_generative(prospective, typed, &current, generation)?);
             fields.insert(field.name.clone(), value);
         }

@@ -823,6 +823,89 @@ impl<'a> EvalCtx<'a> {
         Cell::Row(Box::new(fold_computed(&env, &collection.computed, *row)))
     }
 
+    /// The provisional-row cell a §5.1 insertion default evaluates its `.` against.
+    ///
+    /// Like [`Self::row_cell_of`] it exposes the in-progress scalar/struct `fields`
+    /// (so a later default reads an earlier sibling default) with the collection's
+    /// computed values folded (§5.2). It ADDITIONALLY grafts every nested keyed
+    /// collection already staged under `address` and folds the whole computed tree
+    /// to a fixed point, so a default reading a computed that aggregates a nested
+    /// collection (`count_snapshot: "int = .item_count"` over `item_count =
+    /// count(.items)`) observes the materialized aggregate — the same value a row
+    /// `$check` (§8.8) or a read of that computed reports. This matters on the
+    /// genesis-seed and any path where the row's nested collections are already
+    /// staged in the prospective state before its defaults resolve (§9.1: within
+    /// the single atomic seed load every seeded row is visible to every seed
+    /// default). With `address` `None` or no staged row (the `+`/bulk insert path,
+    /// where a nested initializer is staged AFTER the parent's defaults — §5.1's
+    /// rows of one statement become selectable only once all resolve), it
+    /// degenerates to [`Self::row_cell_of`], so that path is unchanged.
+    pub(crate) fn provisional_row_cell(
+        &self,
+        prospective: &Prospective,
+        collection: &CompiledCollection,
+        address: Option<&liasse_store::RowAddress>,
+        fields: &FieldMap,
+    ) -> Cell {
+        // A childless collection carries no nested collection to expose; a row not
+        // yet staged (no `address`, or none staged there) has none to read.
+        let nested = if collection.children.is_empty() {
+            Vec::new()
+        } else {
+            address.and_then(|addr| self.staged_nested_cells(prospective, addr)).unwrap_or_default()
+        };
+        if nested.is_empty() {
+            return self.row_cell_of(prospective, collection, fields);
+        }
+        let Cell::Row(base) = row_cell(collection, fields) else {
+            return self.row_cell_of(prospective, collection, fields);
+        };
+        // Graft the materialized nested keyed collections onto the in-progress row.
+        let mut cells: Vec<(String, Cell)> =
+            base.cells().map(|(name, cell)| (name.clone(), cell.clone())).collect();
+        for (name, cell) in nested {
+            match cells.iter_mut().find(|(existing, _)| existing == &name) {
+                Some(slot) => slot.1 = cell,
+                None => cells.push((name, cell)),
+            }
+        }
+        let row = Row::new(base.id().clone(), base.key().clone(), cells);
+        // Fold the whole computed tree to a fixed point (§5.2) so a computed that
+        // aggregates the grafted nested collection resolves against it.
+        if has_computed_deep(collection) {
+            let env = self.env(prospective);
+            Cell::Row(Box::new(fold_row_computed_fixpoint(&env, collection, row)))
+        } else {
+            Cell::Row(Box::new(row))
+        }
+    }
+
+    /// The nested keyed-collection cells (§5.4) of the row already staged at
+    /// `address`, materialized from the prospective state and active-filtered at
+    /// the request clock, or `None` when no row is staged there. Only the
+    /// `Cell::Collection` members are returned — the scalar/struct members of a
+    /// provisional row come from the in-progress field map the default builder
+    /// holds, which may carry sibling defaults the staged row does not yet reflect.
+    /// The declaration path is recovered from the address's collection-name steps.
+    fn staged_nested_cells(
+        &self,
+        prospective: &Prospective,
+        address: &liasse_store::RowAddress,
+    ) -> Option<Vec<(String, Cell)>> {
+        let decl: Vec<String> = address.steps().map(|step| step.name().as_str().to_owned()).collect();
+        let collection = self.schema.collection_at_path(&decl)?;
+        let keep = |name: &str, fields: &FieldMap| self.active(name, fields);
+        let interval = |name: &str, fields: &FieldMap| self.interval(name, fields);
+        let temporal = Temporal { keep: &keep, interval: &interval };
+        let row = materialize::materialize_row(self.schema, collection, address, prospective.working(), &temporal)?;
+        let nested: Vec<(String, Cell)> = row
+            .cells()
+            .filter(|(_, cell)| matches!(cell, Cell::Collection(_)))
+            .map(|(name, cell)| (name.clone(), cell.clone()))
+            .collect();
+        Some(nested)
+    }
+
     /// Evaluate `typed` with `current` as `.`, `bindings` as locals, and
     /// `structurals` as context bindings (`$target`, …) — the `$on_delete` patch
     /// evaluation path (§21.1).

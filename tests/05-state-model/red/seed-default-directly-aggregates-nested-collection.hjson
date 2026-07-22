@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: seed-default-directly-aggregates-nested-collection
+  suite: scenario
+  spec: ["#state-model", "§5.1", "§5.4", "#loading", "§9.1"]
+  tags: ["ordering"]
+  note: '''
+    Adjacent edge to seed-default-reads-nested-aggregating-computed: a `$default`
+    may aggregate a nested keyed collection DIRECTLY, without a computed value in
+    between. A default is any value expression visible from its declaration scope
+    (§5.1); `.items` is the parent row's own nested collection (§5.4). §9.1 pins
+    that the co-seeded nested `items` rows are visible to the seed default within
+    the single atomic load, so `direct_count: "int = count(.items)"` freezes at 3
+    for o1's three seeded items — not 0 from an unmaterialized nested collection.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.st.seednesteddirect@1.0.0"
+    $model: {
+      orders: {
+        $key: "id"
+        id: "text"
+        items: {
+          $key: "sku"
+          sku: "text"
+        }
+        direct_count: "int = count(.items)"
+      }
+      $public: {
+        orders: { $view: ".orders { id, direct_count }" }
+      }
+    }
+    $data: {
+      orders: {
+        o1: {
+          items: {
+            a: {}
+            b: {}
+            c: {}
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.orders", id: "w1",
+      expect_init: { value: [ { id: "o1", direct_count: "3" } ] } }
+  ]
+}
