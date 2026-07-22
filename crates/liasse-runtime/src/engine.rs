@@ -1305,6 +1305,14 @@ impl<S: InstanceStore> Engine<S> {
         // which types as a single `Row`.
         let changes = prospective.diff();
         let state_changed = !changes.is_empty();
+        // §8.10: the response is evaluated from the FINAL admitted state. The
+        // receiver `.` is already re-read from the resulting prospective
+        // (`current_cell`); re-materialize the request's `$actor`/`$session`
+        // structural cells the same way so a `return $actor { … }` observes the
+        // transition's own writes to the actor row — e.g. the actor disabling its
+        // own `$members` row (§10.3) — instead of the admission-position snapshot.
+        let refreshed = auth_context(&self.compiled, &ctx, &prospective, request);
+        refresh_auth_bindings(&mut ctx.context, refreshed);
         // §21.2: a `return erase(row)` delivers the durable extract the erase
         // produced during the program, in place of a post-commit `return`.
         let response = if let Some(value) = erase_result {
@@ -1847,6 +1855,28 @@ fn bind_context(
     bind("actor", &compiled.actor_collection, actor_key);
     bind("session", &compiled.session_collection, session_key);
     context
+}
+
+/// Replace the request's `$actor`/`$session` structural cells in `context` with
+/// the ones `refreshed` re-materialized from the *final admitted state* (§8.10),
+/// so a `return $actor { … }` observes the transition's own writes to the actor
+/// row — the actor disabling its own membership row (§10.3) — rather than the
+/// admission-position snapshot [`auth_context`] bound before the program ran.
+/// This mirrors the receiver `.`, which [`current_cell`] already re-reads from
+/// the resulting prospective. A binding whose row the transition removed is absent
+/// from `refreshed`, so it is dropped and a read faults unbound — fail closed
+/// (§6.3). Names the request never bound stay absent from `context`, untouched.
+fn refresh_auth_bindings(context: &mut BTreeMap<String, Cell>, mut refreshed: BTreeMap<String, Cell>) {
+    for name in ["actor", "session"] {
+        match refreshed.remove(name) {
+            Some(cell) => {
+                context.insert(name.to_owned(), cell);
+            }
+            None => {
+                context.remove(name);
+            }
+        }
+    }
 }
 
 /// Bind each declared parameter to its supplied argument (§8.3).
