@@ -1,0 +1,53 @@
+{
+  format: 1
+  name: row-mutation-receiver-occurrence-count-boundaries
+  suite: scenario
+  spec: ["#expressions", "§6.3"]
+  tags: ["aliasing"]
+  note: "Guards the §6.3 row-mutation-receiver occurrence count at every boundary, so the exactly-one rule is not reducible to a key-distinctness shortcut. A row-mutation receiver 'MUST receive exactly one occurrence. Zero or several occurrences reject that evaluation'; 'One scalar key contributes zero rows when the key is absent and one row when it exists.' TWO DISTINCT live rows (c1, c2) are two occurrences and reject — the over-reject boundary a naive 'reject only when the keys are equal' check would wrongly admit. Two absent keys (zz, yy) are zero occurrences and reject. Exactly one live plus one miss (c1, zz) is one occurrence and succeeds. Contrast the bulk-write dedup path (patch-duplicate-selector-applies-once), which is not a one-row receiver context."
+
+  package: {
+    $liasse: 1
+    $app: "t.occ@1.0.0"
+    $model: {
+      counters: {
+        $key: "id"
+        id: "text"
+        n: "int"
+        $mut: {
+          bump: ".n = .n + 1"
+        }
+      }
+      $public: {
+        counters: {
+          $view: ".counters { id, n }"
+          $mut: { bump: ".counters[@a, @b].bump" }
+        }
+      }
+    }
+    $data: {
+      counters: {
+        c1: { n: "0" }
+        c2: { n: "0" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.counters", id: "w1",
+      expect_init: { value: { $unordered: [ { id: "c1", n: "0" }, { id: "c2", n: "0" } ] } } }
+    // two DISTINCT live rows: two occurrences, reject (over-reject boundary — a
+    // key-equality shortcut would wrongly admit this)
+    { call: "public.counters.bump", args: { a: "c1", b: "c2" },
+      expect: { outcome: rejected, violates: ["#expressions"] } }
+    { expect_view: { watch: "w1", value: { $unordered: [ { id: "c1", n: "0" }, { id: "c2", n: "0" } ] } } }
+    // two absent keys: zero occurrences, reject
+    { call: "public.counters.bump", args: { a: "zz", b: "yy" },
+      expect: { outcome: rejected, violates: ["#expressions"] } }
+    { expect_view: { watch: "w1", value: { $unordered: [ { id: "c1", n: "0" }, { id: "c2", n: "0" } ] } } }
+    // exactly one live plus one miss: one occurrence, the call succeeds
+    { call: "public.counters.bump", args: { a: "c1", b: "zz" },
+      expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: { $unordered: [ { id: "c1", n: "1" }, { id: "c2", n: "0" } ] } } }
+  ]
+}

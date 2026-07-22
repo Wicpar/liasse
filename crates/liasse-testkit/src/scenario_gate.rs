@@ -339,7 +339,11 @@ pub const SKIP: &[(&str, &str)] = &[
     // --- fail:noview ---
     ("14-buckets/short-form-from-defaults-to-created", "no view value produced (unsupported view/watch path)"),
     // --- fail:outcome ---
-    ("06-expressions/row-mutation-receiver-duplicate-occurrences-reject", "outcome divergence: expected `ok` observed `rejected`"),
+    // (§6.3 duplicate row-mutation-receiver occurrences now reject — the runtime
+    // splits a flat receiver key into its selector operands and counts the ones
+    // naming a live row, rejecting unless exactly one occurrence remains. This
+    // landed `06-expressions/row-mutation-receiver-duplicate-occurrences-reject`,
+    // whose entry was pruned as stale.)
     // (§10.3/§10.5 scoped-role addressing is now wired — the surface host resolves a
     // role held by a specific ROW addressed by (row identity + role name) and, under
     // `$recursive`, a covered DESCENDANT by (role handle + key path); membership is

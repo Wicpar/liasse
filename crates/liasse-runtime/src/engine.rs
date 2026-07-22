@@ -1230,8 +1230,13 @@ impl<S: InstanceStore> Engine<S> {
             modules: None,
         };
 
-        let receiver = match receiver_target(&self.compiled, mutation, request) {
-            Ok(receiver) => receiver,
+        // §6.3: split the request's flat receiver key into the selector's operands
+        // (a single-operand key is one; a multi-operand surface selector
+        // `.c[@a, @b]` yields several). Building the addresses is pure; the
+        // exactly-one-occurrence check needs committed state, so the operands are
+        // resolved to the receiver only after `gather` below.
+        let operands = match receiver_operands(&self.compiled, mutation, request) {
+            Ok(operands) => operands,
             Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
         };
 
@@ -1244,6 +1249,17 @@ impl<S: InstanceStore> Engine<S> {
         // §11.1/§13.1: merge the resolved `$actor`/`$session` into the `$config`
         // the context already carries, so a mutation reads all three.
         ctx.context.extend(auth_context(&self.compiled, &ctx, &prospective, request));
+        // §6.3: a row-mutation receiver MUST receive exactly one occurrence — zero
+        // or several occurrences reject that evaluation. A single-operand key
+        // defers its absent-target rejection to apply time (§8.9); a multi-operand
+        // selector counts the operands naming a live row in committed state and
+        // rejects unless exactly one does, so a receiver naming the same row twice
+        // (`.c[@a, @b]` with `a == b`, two occurrences) rejects here rather than
+        // silently addressing one and dropping the rest.
+        let receiver = match select_receiver(&ctx, &prospective, operands) {
+            Ok(receiver) => receiver,
+            Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+        };
         let mut interp = Interp {
             compiled: &self.compiled,
             ctx: &ctx,
@@ -1913,18 +1929,20 @@ fn is_optional(ty: &liasse_expr::ExprType) -> bool {
     matches!(ty.as_scalar(), Some(liasse_value::Type::Optional(_)))
 }
 
-/// The receiver row of a row mutation from the request key (§8.2), or `None`
-/// for a root/struct mutation. A nested-collection mutation (§5.4) addresses its
-/// receiver through the whole ancestor chain: the receiver key supplies each
-/// level's key components in declaration order, so the address descends
-/// `companies/co/accounts/a1` rather than a spurious top-level `accounts/co:a1`.
-fn receiver_target(
+/// The receiver operands of a row mutation from the request key (§6.3), or an
+/// empty list for a root/struct mutation. A flat receiver key is one selector
+/// operand — a full descent of the receiver path — for an ordinary keyed call;
+/// a multi-operand surface selector (`.c[@a, @b]`) supplies several operands
+/// back to back, each a fresh descent. Every level consumes its collection's key
+/// arity in `$key` order, so a nested receiver descends `companies/co/accounts/a1`
+/// rather than a spurious top-level `accounts/co:a1`.
+fn receiver_operands(
     compiled: &Compiled,
     mutation: &CompiledMutation,
     request: &CallRequest,
-) -> Result<Option<RowTarget>, Rejection> {
+) -> Result<Vec<RowTarget>, Rejection> {
     if mutation.receiver_is_root || mutation.path.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     // §10.5: a scoped-role covered-descendant call addresses a row below the
     // mutation's declared collection (`companies[root].subcompanies[a]` through a
@@ -1934,6 +1952,27 @@ fn receiver_target(
     // none, addressing the receiver at the mutation's own location.
     let path = request.receiver_path_override().unwrap_or(&mutation.path);
     let mut remaining = request.receiver_key();
+    if remaining.is_empty() {
+        return Err(Rejection::new(RejectionReason::Malformed, "a row mutation requires a receiver key"));
+    }
+    let mut operands = Vec::new();
+    while !remaining.is_empty() {
+        let (target, rest) = one_receiver_operand(compiled, path, remaining)?;
+        operands.push(target);
+        remaining = rest;
+    }
+    Ok(operands)
+}
+
+/// Build one receiver operand — a full descent of `path` — from the leading key
+/// components of `remaining`, returning the target and the unconsumed rest. Each
+/// level consumes its collection's key arity in `$key` order (§8.2).
+fn one_receiver_operand<'k>(
+    compiled: &Compiled,
+    path: &[String],
+    remaining: &'k [Value],
+) -> Result<(RowTarget, &'k [Value]), Rejection> {
+    let mut remaining = remaining;
     let mut address: Option<RowAddress> = None;
     let mut prefix: Vec<String> = Vec::with_capacity(path.len());
     for name in path {
@@ -1957,7 +1996,34 @@ fn receiver_target(
     let address = address.ok_or_else(|| {
         Rejection::new(RejectionReason::Malformed, "a row mutation requires a receiver key")
     })?;
-    Ok(Some(RowTarget { address, path: path.to_vec() }))
+    Ok((RowTarget { address, path: path.to_vec() }, remaining))
+}
+
+/// Resolve a row mutation's receiver operands (§6.3) to the single receiver row,
+/// or `None` for a root/struct mutation. A single-operand key is used directly —
+/// its absent-target rejection is deferred to apply time (§8.9). A multi-operand
+/// selector counts the operands naming a live row in committed `prospective`
+/// state (each existing operand is one occurrence, an absent key contributes
+/// none); exactly one occurrence names the receiver, and zero or several
+/// occurrences reject the evaluation.
+fn select_receiver(
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+    operands: Vec<RowTarget>,
+) -> Result<Option<RowTarget>, Rejection> {
+    if operands.len() <= 1 {
+        return Ok(operands.into_iter().next());
+    }
+    let mut present = operands
+        .into_iter()
+        .filter(|op| ctx.materialize_row_cell(prospective, &op.path, &op.address).is_some());
+    match (present.next(), present.next()) {
+        (Some(only), None) => Ok(Some(only)),
+        _ => Err(Rejection::new(
+            RejectionReason::Evaluation,
+            "a row-mutation receiver selected not exactly one occurrence (§6.3)",
+        )),
+    }
 }
 
 fn stage<T: Transition>(txn: &mut T, changes: Vec<Change>) -> Result<(), EngineError> {
