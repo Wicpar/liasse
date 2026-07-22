@@ -47,7 +47,8 @@ use liasse_runtime::{
 };
 use liasse_store::{InstanceStore, MemoryStore, MemoryStoreFactory};
 use liasse_surface::{
-    ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate, VirtualClock as SurfaceClock,
+    Entropy, ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate,
+    VirtualClock as SurfaceClock,
 };
 use liasse_syntax::{parse_expression, Expr, ExprKind, Selector, StmtKind};
 use liasse_value::{Json, Text, Type, Value};
@@ -100,9 +101,16 @@ impl ModuleState {
         let store = MemoryStore::new(InstanceId::new(format!("{instance}#modroot")));
         let mut clock = SurfaceClock::new(EPOCH_MICROS, Precision::Micros);
         let root = Engine::load(store, definition, &mut clock).map_err(|err| err.to_string())?;
+        // §5.1/§8.12: production module admission draws generated `uuid()` seeds from
+        // the OS CSPRNG (unpredictable module tokens). The corpus matches generated
+        // values reproducibly, so the harness pins the SAME injectable seam a real
+        // deployment uses to a DETERMINISTIC CSPRNG source, seeded from the root's
+        // post-genesis counter — reproducible run-to-run while still exercising the
+        // CSPRNG path rather than the predictable clock counter.
+        let seed = clock.seed();
         let host = ModuleHost::new(MemoryStoreFactory::new(), root);
         Ok(Self {
-            deployment: ModuleDeployment::new(host, clock),
+            deployment: ModuleDeployment::new(host, clock).with_entropy(Entropy::seeded(seed)),
             packages: packages.clone(),
             interface_calls: interface_call_bindings(package),
         })

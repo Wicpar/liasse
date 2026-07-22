@@ -5,18 +5,22 @@
 //! ([`ModuleSpace`], e.g. `/companies/acme/modules`), each an independently loaded
 //! engine over a store the host's [`StoreFactory`](liasse_store::StoreFactory)
 //! mints — that is the whole §13.3 isolation model. Its lifecycle operations
-//! already thread a [`Generators`](liasse_runtime) seam for the seeds an install or
-//! update rolls.
+//! thread a [`Generators`](liasse_runtime) seam for the seeds an install or update
+//! rolls and for a child mutation's generated `uuid()`.
 //!
-//! [`ModuleDeployment`] bundles that host with a single owned [`VirtualClock`], so
-//! a driver runs `install`/`enable`/`disable`/`uninstall`/`rename`/`update` and the
-//! interface-addressed reads (`interface_read`/`aggregate`) over a space without
-//! threading a generator, and returns the §13.3 rejections
+//! [`ModuleDeployment`] bundles that host with a single owned [`VirtualClock`] and
+//! an [`Entropy`] source, so a driver runs
+//! `install`/`enable`/`disable`/`uninstall`/`rename`/`update`, the
+//! `child_call`/`interface_call` mutation admissions, and the interface-addressed
+//! reads (`interface_read`/`aggregate`) over a space without threading a generator,
+//! and returns the §13.3 rejections
 //! (`EmptyName`/`DuplicateName`/`Unknown`/`Disabled`/`InvalidSpace`/
 //! `InvalidBinding`) as [`ModuleObservation`]s rather than errors — mirroring how
 //! the surface layer treats every spec refusal as a successful observation,
-//! reserving [`ModuleFault`] for a genuine store/engine fault. The bundled clock is
-//! the children's `now()` source.
+//! reserving [`ModuleFault`] for a genuine store/engine fault. The clock is the
+//! children's request-fixed `now()` source (Annex A.5); the [`Entropy`] source is
+//! the seed behind every module-minted `uuid()` (§5.1/§8.12), CSPRNG in production
+//! so a module token is unpredictable — the clock never seeds a generated value.
 
 use liasse_ident::InstanceId;
 use liasse_runtime::{
@@ -26,6 +30,7 @@ use liasse_runtime::{
 use liasse_store::StoreFactory;
 
 use crate::clock::VirtualClock;
+use crate::entropy::Entropy;
 
 /// The result of a §13.3 lifecycle operation that either applies or is refused by
 /// a module-space invariant. A refusal is a successful observation, not a fault.
@@ -103,16 +108,39 @@ pub struct ModuleFault(ModuleError);
 
 /// A root application together with the module instances installed in its
 /// row-scoped module spaces, driven over a single owned virtual clock (§13).
+///
+/// Every module transition the deployment admits — an install/update genesis or
+/// migration, a §13.11 direct-surface `child_call`, a §13.10 interface-routed
+/// `interface_call` — draws its generated-value seeds from an [`Entropy`] source
+/// (§5.1/§8.12), exactly as the base [`SurfaceHost`](crate::SurfaceHost) does. The
+/// clock stays the request-fixed `now()` source (Annex A.5) and never seeds a
+/// `uuid()`, so a module-minted token is unpredictable. Production defaults to the
+/// OS CSPRNG ([`Entropy::os`]); a conformance harness injects a deterministic source
+/// through [`with_entropy`](Self::with_entropy).
 pub struct ModuleDeployment<F: StoreFactory> {
     host: ModuleHost<F>,
     clock: VirtualClock,
+    entropy: Entropy,
 }
 
 impl<F: StoreFactory> ModuleDeployment<F> {
-    /// Wrap a module `host` driven by `clock`.
+    /// Wrap a module `host` driven by `clock`, seeding every module transition's
+    /// generated values from the OS CSPRNG (§5.1/§8.12: a module-minted `uuid()`
+    /// token is unpredictable by default). A deterministic harness overrides the
+    /// source with [`with_entropy`](Self::with_entropy).
     #[must_use]
     pub fn new(host: ModuleHost<F>, clock: VirtualClock) -> Self {
-        Self { host, clock }
+        Self { host, clock, entropy: Entropy::os() }
+    }
+
+    /// Replace the admission entropy source (§5.1/§8.12) — the injection seam a
+    /// deterministic conformance harness uses to pin module-minted `uuid()` values
+    /// reproducibly, mirroring [`SurfaceHost::with_entropy`](crate::SurfaceHost::with_entropy).
+    /// A production deployment keeps the [`Entropy::os`] default.
+    #[must_use]
+    pub fn with_entropy(mut self, entropy: Entropy) -> Self {
+        self.entropy = entropy;
+        self
     }
 
     /// The virtual clock, for advancing time and reading the instant.
@@ -145,7 +173,9 @@ impl<F: StoreFactory> ModuleDeployment<F> {
         space: &ModuleSpace,
         request: InstallRequest,
     ) -> Result<ModuleObservation, ModuleFault> {
-        match self.host.install(space, request, &mut self.clock) {
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        match self.host.install(space, request, &mut generators) {
             Ok(_incarnation) => Ok(ModuleObservation::Applied),
             Err(error) => ModuleObservation::refusal(error),
         }
@@ -197,7 +227,9 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     /// into an engine fault — surfacing the migration rejection as its own
     /// observation remains a runtime seam).
     pub fn update(&mut self, space: &ModuleSpace, name: &str, target: &str) -> Result<ModuleUpdate, ModuleFault> {
-        match self.host.update(space, name, target, &mut self.clock) {
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        match self.host.update(space, name, target, &mut generators) {
             Ok(report) => Ok(ModuleUpdate::Updated(report)),
             Err(ModuleError::Unknown(name)) => Ok(ModuleUpdate::Unknown(name)),
             Err(ModuleError::Disabled(name)) => Ok(ModuleUpdate::Disabled(name)),
@@ -244,7 +276,9 @@ impl<F: StoreFactory> ModuleDeployment<F> {
         name: &str,
         request: &CallRequest,
     ) -> Result<CallOutcome, ModuleError> {
-        self.host.child_call(space, name, request, &mut self.clock)
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        self.host.child_call(space, name, request, &mut generators)
     }
 
     /// Evaluate a named child view at head — the §13.11 *direct* module surface,
@@ -287,7 +321,9 @@ impl<F: StoreFactory> ModuleDeployment<F> {
         mutation: &str,
         request: &CallRequest,
     ) -> Result<CallOutcome, ModuleError> {
-        self.host.interface_call(space, name, interface, mutation, request, &mut self.clock)
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        self.host.interface_call(space, name, interface, mutation, request, &mut generators)
     }
 
     /// Whether an instance of that name is installed in `space` (enabled or
