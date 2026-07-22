@@ -154,23 +154,23 @@ pub const SKIP: &[(&str, &str)] = &[
     // discrepancy, not an implementation bug (reported, not faked).
     ("20-evolution-migrations/minor-update-narrowing-despite-migration-rejected", "CORPUS SUSPECT: runtime emits `rejected` for the boundary narrowing (Annex E.9, admission-class), the case expects `invalid` (definition-only §9.4 split); both collapse to §9.4 `rejected` — a corpus-vocabulary discrepancy, not an impl bug"),
     // --- `keyring_admin` manual `bind_activate` (§17.4 manual policy) ---
-    // `keyring_admin` now drives the engine's self-provisioned ring through
-    // `Engine::keyring_admin` (adapter/keyrings.rs) — `revoke`/`destroy` on an
-    // automatic (`$rotate`) ring pass. The manual `bind_activate` cases below stay
-    // blocked on two liasse-runtime/liasse-host seams, not a testkit gap: (1) the
-    // runtime bootstraps a no-`$rotate` keyring as *automatic* (it auto-activates
-    // v1), whereas §17.1 (and these cases) read a missing `$rotate` as *manual*
-    // (no active version until an operator binds one); (2) the engine's
-    // self-provisioned `SimKeyProvider` offers a bindable external handle
-    // (`MANUAL_EXTERNAL_KEY`) only for a manual-mode ring, and never the corpus's
-    // named `external_keys` with their declared algorithms — so a manual
-    // `bind_activate` has nothing to bind (a no-`$rotate` ring rejects
-    // `UnknownExternal`), and `bind-algorithm-mismatch` cannot present a
-    // wrong-algorithm external key. Provisioning them needs a `&mut`
-    // add-external-key on `SimKeyProvider` or a no-`$rotate`=manual policy fix.
-    ("17-keyrings/bind-algorithm-mismatch-rejected", "no-`$rotate` ring bootstraps as automatic and its provider carries no bindable external key with the corpus algorithm — a runtime policy / liasse-host provider-provisioning seam"),
-    ("17-keyrings/manual-activation-enables-dependent-surface", "no-`$rotate` ring bootstraps as automatic (auto-activates v1) and its provider offers no bindable external handle, so manual `bind_activate` rejects — a runtime no-`$rotate`=manual / provider-provisioning seam"),
-    ("17-keyrings/manual-second-activation-retires-prior", "no-`$rotate` ring bootstraps as automatic and its provider offers no bindable external handle, so manual `bind_activate` rejects — a runtime no-`$rotate`=manual / provider-provisioning seam"),
+    // `keyring_admin` drives the engine's self-provisioned ring through
+    // `Engine::keyring_admin` (adapter/keyrings.rs). The runtime now reads a
+    // missing `$rotate` as *manual* (§17.1: no active version until an operator
+    // binds one), and the self-provisioned `SimKeyProvider` carries the bindable
+    // `MANUAL_EXTERNAL_KEY` handle for every manual ring — so
+    // `manual-activation-enables-dependent-surface` and
+    // `manual-second-activation-retires-prior` now pass end to end.
+    //
+    // The one residual below stays blocked on a distinct liasse-host provider-
+    // provisioning seam, NOT the policy: `bind-algorithm-mismatch-rejected` binds
+    // a WRONG-algorithm external key (`bad-ed25519` into an `ES256` ring) and
+    // expects the §17.4/§17.6 metadata validation to reject it. The adapter binds
+    // the single `MANUAL_EXTERNAL_KEY` the double provisions in the ring's declared
+    // algorithm, so it cannot present the corpus's named `external_keys` with their
+    // own (mismatched) algorithms. Closing it needs a `&mut` add-external-key on
+    // `SimKeyProvider` plus an adapter that binds the step's named external.
+    ("17-keyrings/bind-algorithm-mismatch-rejected", "adapter binds the double's single declared-algorithm `MANUAL_EXTERNAL_KEY`, so it cannot present the corpus's wrong-algorithm named external key — a liasse-host provider-provisioning seam (add-external-key), not the no-`$rotate`=manual policy (now fixed)"),
     // --- §13 module lifecycle (driven via `ModuleDeployment`, adapter/modules.rs) ---
     // The lifecycle outcomes (name validation, duplicate detection) route end to
     // end; the entries below are blocked on a runtime/surface seam the current

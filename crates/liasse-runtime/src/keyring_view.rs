@@ -166,7 +166,11 @@ pub(crate) fn built_in_provider(policy: &KeyringPolicy) -> SimKeyProvider {
         caps = caps.operation(op);
     }
     let provider = SimKeyProvider::new(caps.build());
-    if matches!(policy.rotate.map(|r| r.mode), Some(RotationMode::Manual)) {
+    // §17.1/§17.4: a manual ring — an explicit `$mode: "manual"` OR an omitted
+    // `$rotate` — is activated by an operator binding an external handle, so the
+    // self-provisioned double must carry one to bind. An automatic ring never
+    // binds, so it needs none.
+    if policy.is_manual() {
         provider.with_external_key(MANUAL_EXTERNAL_KEY, policy.algorithm.clone())
     } else {
         provider

@@ -172,18 +172,36 @@ pub struct KeyringPolicy {
 }
 
 impl KeyringPolicy {
+    /// Whether this ring activates MANUALLY (§17.1). "Omitting `$rotate` disables
+    /// scheduled rotation and leaves activation manual", and an explicit `$rotate`
+    /// object with `$mode: "manual"` is manual too. A manual ring generates
+    /// nothing at bootstrap and performs no scheduled rotation — an operator binds
+    /// and activates each version (§17.3/§17.4). Only an *automatic* `$rotate` (a
+    /// duration shorthand, or an object whose `$mode` is omitted or `automatic`)
+    /// bootstraps and rotates on cadence. A missing `$rotate` is therefore MANUAL,
+    /// never automatic: the wave bug read it as automatic and auto-activated a
+    /// version the operator never provisioned.
+    #[must_use]
+    pub fn is_manual(&self) -> bool {
+        !matches!(self.rotate.map(|r| r.mode), Some(RotationMode::Automatic))
+    }
+
     /// The §17.6 capability demand this policy places on its provider.
     #[must_use]
     pub fn requirement(&self) -> ProviderRequirement {
-        let automatic = matches!(self.rotate.map(|r| r.mode), Some(RotationMode::Automatic) | None);
-        let external_binding = matches!(self.rotate.map(|r| r.mode), Some(RotationMode::Manual));
+        // §17.6 validates the provider's "automatic generation OR external binding
+        // mode". An automatic ring needs generation (and disable, since rotation
+        // retires prior versions at the provider, §17.4 step 6); a manual ring —
+        // including a no-`$rotate` ring (§17.1) — needs external binding instead,
+        // and never auto-rotates, so it demands no disable.
+        let manual = self.is_manual();
         ProviderRequirement {
             algorithm: self.algorithm.clone(),
             operations: self.usage.clone(),
-            automatic,
-            external_binding,
+            automatic: !manual,
+            external_binding: manual,
             protection: self.protection,
-            needs_disable: self.rotate.is_some(),
+            needs_disable: !manual,
             needs_destroy: false,
             needs_attestation: false,
         }
@@ -322,8 +340,11 @@ impl<P: KeyProvider> Keyring<P> {
     /// an operator [`Keyring::bind_activate`]s one, so a dependent surface stays
     /// unavailable.
     pub fn bootstrap(&mut self, now: Timestamp) -> Result<(), KeyringError> {
-        let manual = matches!(self.policy.rotate.map(|r| r.mode), Some(RotationMode::Manual));
-        if manual {
+        // §17.1/§17.3: a manual ring — an explicit `$mode: "manual"` OR an omitted
+        // `$rotate` — activates nothing at bootstrap; an operator binds and
+        // activates the first version, so the dependent surface stays unavailable
+        // until it does. Only an automatic `$rotate` generates and activates here.
+        if self.policy.is_manual() {
             return Ok(());
         }
         let handle = self.provider.generate(&self.policy.spec())?;
