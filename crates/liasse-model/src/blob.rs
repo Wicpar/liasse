@@ -8,6 +8,11 @@
 //! * The `$blob_storage` placement policy grammar (§18.4, C.17): `$in` is a
 //!   required placement and `$serve` an optional store view, where a placement
 //!   is a store-view leaf or one of `{ $all }`, `{ $any }`, `{ $copies, $of }`.
+//!   `$serve` is the §18.8 preferred read order — the order a fetch attempts
+//!   accessible verified holders in — defaulting to the flattened `$in`
+//!   placement order (§18.4) when absent. This layer validates its shape; the
+//!   read-order behaviour it selects is realized by the runtime placement policy
+//!   (`liasse_runtime::PlacementPolicy`, §18.8).
 //!
 //! CORE scope: a blob field's bytes are verified against the connector plan and
 //! a store view is resolved against registered connectors at runtime; connector
@@ -97,6 +102,10 @@ pub(crate) fn check_storage(reporter: &mut Reporter, value: &DocValue) {
                 has_in = true;
                 check_placement(reporter, &member.value);
             }
+            // §18.8: `$serve` is the preferred read order — a store view whose
+            // flattened order the runtime fetch plan uses ahead of the remaining
+            // `$in` placement order. It is optional (defaulting to the flattened
+            // `$in` order) and shape-checked here as a store view.
             "$serve" => check_store_view(reporter, &member.value),
             other => reporter.reject(
                 member.span,

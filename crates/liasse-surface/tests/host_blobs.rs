@@ -30,7 +30,7 @@ fn blob_host() -> BlobHost<SimConnector> {
     engine.register("fs", connector());
     engine.add_store(Store { id: StoreId::new("primary"), connector: "fs".to_owned(), enabled: true });
     let accepted = AcceptedType { max_bytes: 1_000, media: vec![MediaType::new("text/plain")] };
-    BlobHost::new(engine, accepted, Placement::View(vec![StoreId::new("primary")]))
+    BlobHost::new(engine, accepted, Placement::View(vec![StoreId::new("primary")]).into())
 }
 
 /// A blob host with two enabled stores (`primary`, `backup`) on distinct
@@ -43,7 +43,7 @@ fn two_store_host() -> BlobHost<SimConnector> {
     engine.add_store(Store { id: StoreId::new("backup"), connector: "fs-backup".to_owned(), enabled: true });
     let accepted = AcceptedType { max_bytes: 1_000, media: vec![MediaType::new("text/plain")] };
     let placement = Placement::View(vec![StoreId::new("primary"), StoreId::new("backup")]);
-    BlobHost::new(engine, accepted, placement)
+    BlobHost::new(engine, accepted, placement.into())
 }
 
 /// §18.7/§18.8: an accepted upload commits and the exact bytes are fetchable by
@@ -58,7 +58,10 @@ fn put_then_get_round_trips_by_digest() {
     assert_eq!(digest, BlobIntegrity::digest_hex(content));
     assert_eq!(stored, vec![StoreId::new("primary")]);
 
-    assert_eq!(host.get(&digest, true), BlobGetOutcome::Delivered(content.to_vec()));
+    assert_eq!(
+        host.get(&digest, true),
+        BlobGetOutcome::Delivered { bytes: content.to_vec(), holders: vec![StoreId::new("primary")] },
+    );
     assert_eq!(host.stored(&digest), Some(vec![StoreId::new("primary")]));
 }
 
@@ -87,7 +90,10 @@ fn fetch_projected_gates_on_the_projected_value() {
     let projected = host.descriptor_value(&digest).expect("committed descriptor");
     assert_eq!(
         host.fetch_projected(Some(&projected)),
-        BlobGetOutcome::Delivered(b"secret bytes".to_vec()),
+        BlobGetOutcome::Delivered {
+            bytes: b"secret bytes".to_vec(),
+            holders: vec![StoreId::new("primary")],
+        },
     );
 
     // A metadata-only projection yields a non-blob scalar (e.g. `$bytes`): denied.

@@ -180,7 +180,7 @@ mod view;
 
 pub use blobs::{
     AcceptedType, Blob, BlobEngine, CopyState, DeclaredDescriptor, FetchError, Placement,
-    PlacementState, Store, StoreId, UploadError,
+    PlacementPolicy, PlacementState, Store, StoreId, UploadError,
 };
 pub use deletion::{
     DeleteError, DeletePolicy, DeletionPlan, Erasure, Extract, FieldPath, Graph, Occurrence,

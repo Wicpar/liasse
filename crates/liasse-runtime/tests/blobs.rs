@@ -10,7 +10,7 @@ use liasse_host::sim::SimConnector;
 use liasse_host::{BlobIntegrity, Capability, ConnectorCapabilities};
 use liasse_runtime::{
     AcceptedType, Blob, BlobEngine, CopyState, DeclaredDescriptor, FetchError, Placement,
-    PlacementState, Store, StoreId, UploadError,
+    PlacementPolicy, PlacementState, Store, StoreId, UploadError,
 };
 use liasse_value::MediaType;
 
@@ -60,8 +60,8 @@ fn single_store_engine() -> BlobEngine<SimConnector> {
     engine
 }
 
-fn primary() -> Placement {
-    Placement::View(vec![StoreId::new("primary")])
+fn primary() -> PlacementPolicy {
+    Placement::View(vec![StoreId::new("primary")]).into()
 }
 
 /// §18.7: an accepted upload creates a verified copy and returns the committed
@@ -283,10 +283,11 @@ fn any_branch_selects_first_fulfillable() {
     engine.register("fs", connector());
     engine.add_store(store("new", "fs", false));
     engine.add_store(store("old", "fs", true));
-    let placement = Placement::Any(vec![
+    let placement: PlacementPolicy = Placement::Any(vec![
         Placement::View(vec![StoreId::new("new")]),
         Placement::View(vec![StoreId::new("old")]),
-    ]);
+    ])
+    .into();
     let content = b"x";
     let blob = engine
         .upload(&declared(content, "text/plain"), &accepted(10, &["text/plain"]), &placement, content)
@@ -301,7 +302,7 @@ fn copies_fewer_than_n_rejected() {
     let mut engine = BlobEngine::new();
     engine.register("fs", connector());
     engine.add_store(store("a", "fs", true));
-    let placement = Placement::Copies { n: 2, of: vec![StoreId::new("a")] };
+    let placement: PlacementPolicy = Placement::Copies { n: 2, of: vec![StoreId::new("a")] }.into();
     let content = b"x";
     let error = engine
         .upload(&declared(content, "text/plain"), &accepted(10, &["text/plain"]), &placement, content)
@@ -314,7 +315,8 @@ fn copies_fewer_than_n_rejected() {
 #[test]
 fn repeated_store_identity_deduplicated() {
     let mut engine = single_store_engine();
-    let placement = Placement::View(vec![StoreId::new("primary"), StoreId::new("primary")]);
+    let placement: PlacementPolicy =
+        Placement::View(vec![StoreId::new("primary"), StoreId::new("primary")]).into();
     let content = b"x";
     let blob = engine
         .upload(&declared(content, "text/plain"), &accepted(10, &["text/plain"]), &placement, content)
@@ -327,10 +329,11 @@ fn repeated_store_identity_deduplicated() {
 #[test]
 fn all_branch_verifies_every_copy_and_serve_order() {
     let mut engine = two_store_engine();
-    let placement = Placement::All(vec![
+    let placement: PlacementPolicy = Placement::All(vec![
         Placement::View(vec![StoreId::new("primary")]),
         Placement::View(vec![StoreId::new("backup")]),
-    ]);
+    ])
+    .into();
     let content = b"x";
     let blob = engine
         .upload(&declared(content, "text/plain"), &accepted(10, &["text/plain"]), &placement, content)
@@ -338,7 +341,9 @@ fn all_branch_verifies_every_copy_and_serve_order() {
     let mut stored = blob.stored();
     stored.sort();
     assert_eq!(stored, vec![StoreId::new("backup"), StoreId::new("primary")]);
-    // Serve order follows the flattened placement order (primary before backup).
+    // §18.4: with no `$serve`, the serve order is the flattened depth-first
+    // placement order — the `$all` branches in array order, primary then backup.
+    assert_eq!(blob.serve_order(), [StoreId::new("primary"), StoreId::new("backup")]);
     assert_eq!(engine.fetch(&blob, true).expect("fetch"), content);
 }
 
@@ -347,10 +352,11 @@ fn all_branch_verifies_every_copy_and_serve_order() {
 #[test]
 fn corrupt_copy_demoted_and_repaired() {
     let mut engine = two_store_engine();
-    let placement = Placement::All(vec![
+    let placement: PlacementPolicy = Placement::All(vec![
         Placement::View(vec![StoreId::new("primary")]),
         Placement::View(vec![StoreId::new("backup")]),
-    ]);
+    ])
+    .into();
     let content = b"important";
     let mut blob = engine
         .upload(&declared(content, "text/plain"), &accepted(100, &["text/plain"]), &placement, content)
@@ -377,7 +383,7 @@ fn satisfied_placement_reads_stored_and_satisfied() {
     let mut engine = single_store_engine();
     let blob = upload_ok(&mut engine, b"placed once");
     assert_eq!(
-        blob.placement_state(&primary()),
+        blob.placement_state(primary().plan()),
         PlacementState {
             stored: vec![StoreId::new("primary")],
             satisfied: true,
@@ -415,7 +421,8 @@ fn unsatisfied_in_policy_reads_not_satisfied() {
 #[test]
 fn surplus_after_policy_shrinks() {
     let mut engine = two_store_engine();
-    let both = Placement::View(vec![StoreId::new("primary"), StoreId::new("backup")]);
+    let both: PlacementPolicy =
+        Placement::View(vec![StoreId::new("primary"), StoreId::new("backup")]).into();
     let content = b"replicated then orphaned";
     let blob = engine
         .upload(&declared(content, "text/plain"), &accepted(100, &["text/plain"]), &both, content)
@@ -423,7 +430,7 @@ fn surplus_after_policy_shrinks() {
 
     // Before shrink: both required and verified, nothing surplus.
     assert_eq!(
-        blob.placement_state(&both),
+        blob.placement_state(both.plan()),
         PlacementState {
             stored: vec![StoreId::new("backup"), StoreId::new("primary")],
             satisfied: true,

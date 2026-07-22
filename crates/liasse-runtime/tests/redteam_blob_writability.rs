@@ -36,7 +36,8 @@ use liasse_host::{
     UsageObservation,
 };
 use liasse_runtime::{
-    AcceptedType, BlobEngine, DeclaredDescriptor, Placement, Store, StoreId, UploadError,
+    AcceptedType, BlobEngine, DeclaredDescriptor, Placement, PlacementPolicy, Store, StoreId,
+    UploadError,
 };
 use liasse_value::{MediaType, Sha512};
 
@@ -127,7 +128,7 @@ fn upload_accepts_store_whose_connector_lacks_usage_observation() {
         max_bytes: 1_000,
         media: vec![MediaType::new("text/plain")],
     };
-    let placement = Placement::View(vec![StoreId::new("primary")]);
+    let placement: PlacementPolicy = Placement::View(vec![StoreId::new("primary")]).into();
 
     let result = engine.upload(&declared, &accepted, &placement, content);
 

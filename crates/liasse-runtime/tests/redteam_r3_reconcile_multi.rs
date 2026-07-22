@@ -13,7 +13,8 @@
 use liasse_host::sim::SimConnector;
 use liasse_host::{BlobIntegrity, Capability, ConnectorCapabilities};
 use liasse_runtime::{
-    AcceptedType, BlobEngine, CopyState, DeclaredDescriptor, Placement, Store, StoreId,
+    AcceptedType, BlobEngine, CopyState, DeclaredDescriptor, Placement, PlacementPolicy, Store,
+    StoreId,
 };
 use liasse_value::MediaType;
 
@@ -47,7 +48,8 @@ fn three_store_engine(content: &[u8]) -> (BlobEngine<SimConnector>, liasse_runti
     engine.add_store(Store { id: StoreId::new("s1"), connector: "c1".to_owned(), enabled: true });
     engine.add_store(Store { id: StoreId::new("s2"), connector: "c2".to_owned(), enabled: true });
     engine.add_store(Store { id: StoreId::new("s3"), connector: "c3".to_owned(), enabled: true });
-    let all = Placement::View(vec![StoreId::new("s1"), StoreId::new("s2"), StoreId::new("s3")]);
+    let all: PlacementPolicy =
+        Placement::View(vec![StoreId::new("s1"), StoreId::new("s2"), StoreId::new("s3")]).into();
     let blob = engine.upload(&declared(content), &accepted(), &all, content).expect("upload lands 3");
     assert_eq!(blob.stored().len(), 3, "three verified copies to start");
     (engine, blob)
@@ -67,10 +69,11 @@ fn copies_policy_repairs_tampered_while_a_sibling_is_unavailable() {
     engine.connector_mut("c1").expect("c1").corrupt(digest);
     engine.connector_mut("c2").expect("c2").set_available(false);
 
-    let policy = Placement::Copies {
+    let policy: PlacementPolicy = Placement::Copies {
         n: 2,
         of: vec![StoreId::new("s1"), StoreId::new("s2"), StoreId::new("s3")],
-    };
+    }
+    .into();
     engine.reconcile(&mut blob, &policy);
 
     assert_eq!(
@@ -106,11 +109,12 @@ fn all_policy_repairs_tampered_despite_unrelated_outage() {
     engine.connector_mut("c1").expect("c1").corrupt(digest);
     engine.connector_mut("c2").expect("c2").set_available(false);
 
-    let policy = Placement::All(vec![
+    let policy: PlacementPolicy = Placement::All(vec![
         Placement::View(vec![StoreId::new("s1")]),
         Placement::View(vec![StoreId::new("s2")]),
         Placement::View(vec![StoreId::new("s3")]),
-    ]);
+    ])
+    .into();
     engine.reconcile(&mut blob, &policy);
 
     // s1 is corrupt, reachable, writable; s3 holds clean bytes. §18.6 requires the
@@ -135,11 +139,12 @@ fn all_policy_repairs_tampered_when_all_reachable() {
     engine.connector_mut("c1").expect("c1").corrupt(digest);
     // s2 stays reachable this time.
 
-    let policy = Placement::All(vec![
+    let policy: PlacementPolicy = Placement::All(vec![
         Placement::View(vec![StoreId::new("s1")]),
         Placement::View(vec![StoreId::new("s2")]),
         Placement::View(vec![StoreId::new("s3")]),
-    ]);
+    ])
+    .into();
     engine.reconcile(&mut blob, &policy);
 
     assert_eq!(

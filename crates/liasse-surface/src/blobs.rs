@@ -29,8 +29,8 @@ use std::collections::BTreeMap;
 
 use liasse_host::{BlobConnector, BlobIntegrity};
 use liasse_runtime::{
-    AcceptedType, Blob, BlobEngine, DeclaredDescriptor, FetchError, Placement, PlacementState,
-    StoreId, UploadError, Value,
+    AcceptedType, Blob, BlobEngine, DeclaredDescriptor, FetchError, Placement, PlacementPolicy,
+    PlacementState, StoreId, UploadError, Value,
 };
 
 /// The result of a §18.7 upload through [`BlobHost::put`].
@@ -51,8 +51,15 @@ pub enum BlobPutOutcome {
 /// The result of a §18.8/§18.9 fetch through [`BlobHost::get`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlobGetOutcome {
-    /// The exact bytes identified by `$sha512`, verified before delivery.
-    Delivered(Vec<u8>),
+    /// The exact bytes identified by `$sha512`, verified before delivery, and the
+    /// §18.8 fetch plan they were served from — the accessible verified holders
+    /// in `$serve` order (the runtime attempts them in this order, §18.8).
+    Delivered {
+        /// The verified content bytes.
+        bytes: Vec<u8>,
+        /// The fetch plan: verified holders in `$serve` order.
+        holders: Vec<StoreId>,
+    },
     /// The surface grants no blob fetch — a metadata-only projection or a revoked
     /// authorization (§18.8).
     Denied,
@@ -70,17 +77,17 @@ pub enum BlobGetOutcome {
 pub struct BlobHost<C> {
     engine: BlobEngine<C>,
     accepted: AcceptedType,
-    placement: Placement,
+    policy: PlacementPolicy,
     committed: BTreeMap<String, Blob>,
 }
 
 impl<C: BlobConnector> BlobHost<C> {
     /// Build a blob host over a configured `engine` (its connectors and store rows
     /// already registered), for a field with the given `accepted` constraints and
-    /// `placement` policy.
+    /// placement `policy` (`$in` plan plus optional `$serve` read order, §18.4).
     #[must_use]
-    pub fn new(engine: BlobEngine<C>, accepted: AcceptedType, placement: Placement) -> Self {
-        Self { engine, accepted, placement, committed: BTreeMap::new() }
+    pub fn new(engine: BlobEngine<C>, accepted: AcceptedType, policy: PlacementPolicy) -> Self {
+        Self { engine, accepted, policy, committed: BTreeMap::new() }
     }
 
     /// Put `bytes` as media type `media` (§18.7): build the truthful descriptor
@@ -101,7 +108,7 @@ impl<C: BlobConnector> BlobHost<C> {
     /// made, so a lying `$sha512`/`$bytes`/`$media` rejects the upload. On success
     /// the committed blob is retained under its verified digest.
     pub fn put_declared(&mut self, declared: &DeclaredDescriptor, bytes: &[u8]) -> BlobPutOutcome {
-        match self.engine.upload(declared, &self.accepted, &self.placement, bytes) {
+        match self.engine.upload(declared, &self.accepted, &self.policy, bytes) {
             Ok(blob) => {
                 let digest = blob.descriptor().sha512().to_canonical_text();
                 let stored = blob.stored();
@@ -122,7 +129,9 @@ impl<C: BlobConnector> BlobHost<C> {
             return BlobGetOutcome::Unknown;
         };
         match self.engine.fetch(blob, visible) {
-            Ok(bytes) => BlobGetOutcome::Delivered(bytes),
+            // §18.8: the fetch plan the bytes were served from is the blob's
+            // verified holders in `$serve` order.
+            Ok(bytes) => BlobGetOutcome::Delivered { bytes, holders: blob.serve_order().to_vec() },
             Err(FetchError::Denied) => BlobGetOutcome::Denied,
             Err(FetchError::NoCleanHolder) => BlobGetOutcome::NoCleanHolder,
         }
@@ -159,7 +168,7 @@ impl<C: BlobConnector> BlobHost<C> {
     /// `None` if no blob with that digest is retained.
     #[must_use]
     pub fn placement_state(&self, digest: &str) -> Option<PlacementState> {
-        self.placement_state_under(digest, &self.placement)
+        self.placement_state_under(digest, self.policy.plan())
     }
 
     /// The §18.5 placement observations of `digest` evaluated against a
@@ -179,7 +188,7 @@ impl<C: BlobConnector> BlobHost<C> {
         let Some(mut blob) = self.committed.remove(digest) else {
             return false;
         };
-        self.engine.reconcile(&mut blob, &self.placement);
+        self.engine.reconcile(&mut blob, &self.policy);
         self.committed.insert(digest.to_owned(), blob);
         true
     }

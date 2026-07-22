@@ -524,13 +524,25 @@ fn parse_reference(text: &str) -> Option<ReferenceBinding> {
 }
 
 /// The argument names a reference base selects as the receiver row, in `$key`
-/// order: none for a root/struct receiver (`.` / `/` / a bare name), or the key
-/// selector's parameters. A filter selector or a non-parameter key yields `None`.
+/// order: none for a root/struct receiver (`.` / `/` / a bare name), or every key
+/// selector's parameters along the ancestor chain, in path order. A nested
+/// receiver's canonical key is its full ancestor path (§8.2), so
+/// `.a[@x].b[@y]` selects a 2-component receiver key `[x, y]` — the ancestor
+/// selector's params MUST precede this selector's. A filter selector or a
+/// non-parameter key anywhere in the chain yields `None`.
 fn receiver_args(base: &Expr) -> Option<Vec<String>> {
     match &base.kind {
         ExprKind::Current | ExprKind::Root | ExprKind::Name(_) => Some(Vec::new()),
         ExprKind::Field { base, .. } => receiver_args(base),
-        ExprKind::Select { selector: Selector::Keys(keys), .. } => key_params(keys),
+        ExprKind::Select { selector: Selector::Keys(keys), base } => {
+            // Ancestor selector params first (recurse through the base chain),
+            // then this selector's — never just this selector's, which would
+            // drop `@x` from `.a[@x].b[@y]` and reconstruct a short key the
+            // runtime rejects as `Malformed` (§8.2/§10.1).
+            let mut params = receiver_args(base)?;
+            params.extend(key_params(keys)?);
+            Some(params)
+        }
         _ => None,
     }
 }

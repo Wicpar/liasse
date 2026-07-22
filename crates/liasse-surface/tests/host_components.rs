@@ -149,7 +149,7 @@ fn blob_host() -> BlobHost<SimConnector> {
     engine.register("fs", connector());
     engine.add_store(Store { id: StoreId::new("primary"), connector: "fs".to_owned(), enabled: true });
     let accepted = AcceptedType { max_bytes: 32, media: vec![MediaType::new("text/plain")] };
-    BlobHost::new(engine, accepted, Placement::View(vec![StoreId::new("primary")]))
+    BlobHost::new(engine, accepted, Placement::View(vec![StoreId::new("primary")]).into())
 }
 
 /// §18.7/§18.8: a blob put commits and its bytes round-trip by digest through the
@@ -168,7 +168,7 @@ fn blob_put_get_round_trips_by_digest_through_host() {
     assert_eq!(stored, vec![StoreId::new("primary")]);
     assert_eq!(
         host.blob_get("attachment", &digest, true).expect("registered"),
-        BlobGetOutcome::Delivered(content.to_vec()),
+        BlobGetOutcome::Delivered { bytes: content.to_vec(), holders: vec![StoreId::new("primary")] },
     );
     // A metadata-only projection grants no fetch (§18.8).
     assert_eq!(

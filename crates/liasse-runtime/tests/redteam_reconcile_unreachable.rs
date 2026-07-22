@@ -25,7 +25,8 @@ use liasse_host::{
     UsageObservation,
 };
 use liasse_runtime::{
-    AcceptedType, Blob, BlobEngine, CopyState, DeclaredDescriptor, Placement, Store, StoreId,
+    AcceptedType, Blob, BlobEngine, CopyState, DeclaredDescriptor, Placement, PlacementPolicy,
+    Store, StoreId,
 };
 use liasse_value::{MediaType, Sha512};
 
@@ -125,12 +126,12 @@ fn digest() -> Sha512 {
 }
 
 /// One store `s1` on connector `c`, holding a single verified copy.
-fn engine_with_one_copy() -> (BlobEngine<ToggleConnector>, Blob, Placement) {
+fn engine_with_one_copy() -> (BlobEngine<ToggleConnector>, Blob, PlacementPolicy) {
     let mut engine = BlobEngine::new();
     engine.register("c", ToggleConnector::new());
     engine.add_store(Store { id: StoreId::new("s1"), connector: "c".to_owned(), enabled: true });
 
-    let placement = Placement::View(vec![StoreId::new("s1")]);
+    let placement: PlacementPolicy = Placement::View(vec![StoreId::new("s1")]).into();
     let blob = engine
         .upload(&declared(), &accepted(), &placement, CONTENT)
         .expect("upload lands one verified copy in s1");
@@ -189,10 +190,11 @@ fn genuinely_tampered_copy_is_demoted_and_repaired() {
     engine.add_store(Store { id: StoreId::new("s2"), connector: "c2".to_owned(), enabled: true });
 
     // Both stores hold a verified copy (`$all` requires both).
-    let placement = Placement::All(vec![
+    let placement: PlacementPolicy = Placement::All(vec![
         Placement::View(vec![StoreId::new("s1")]),
         Placement::View(vec![StoreId::new("s2")]),
-    ]);
+    ])
+    .into();
     let mut blob = engine
         .upload(&declared(), &accepted(), &placement, CONTENT)
         .expect("upload lands verified copies in s1 and s2");

@@ -11,8 +11,10 @@
 //!   lying descriptor rejects the call before its transition.
 //! - **Placement policy** (§18.4): `$in` is a plan of `view`/`$all`/`$any`/
 //!   `$copies` over stores. A new write chooses the first branch whose complete
-//!   requirements can be fulfilled and rejects when none can; `$serve` is the
-//!   flattened depth-first order with duplicate store identities removed.
+//!   requirements can be fulfilled and rejects when none can. `$serve` controls
+//!   the preferred read order — its declared stores first, then the remaining
+//!   flattened depth-first placement order — and defaults to that flattened
+//!   order (with duplicate store identities removed) when absent.
 //! - **Transactional upload** (§18.7): every required verified copy of one
 //!   complete branch must land — each verified at its destination — or the whole
 //!   upload is rejected with no partial verified copy.
@@ -28,7 +30,7 @@ use liasse_value::{BlobDescriptor, MediaType, Sha512};
 mod placement;
 
 use placement::dedup;
-pub use placement::{CopyState, Placement, PlacementState, Store, StoreId};
+pub use placement::{CopyState, Placement, PlacementPolicy, PlacementState, Store, StoreId};
 
 /// The accepted-blob-type constraints of a `blob` field (§18.2).
 #[derive(Debug, Clone)]
@@ -62,6 +64,15 @@ impl Blob {
             .filter(|(_, state)| **state == CopyState::Verified)
             .map(|(id, _)| id.clone())
             .collect()
+    }
+
+    /// The §18.8 fetch plan: this occurrence's verified holders in `$serve`
+    /// order. This is the order a runtime fetch attempts holders in and the plan
+    /// a client is handed (§18.8) — `$serve`-declared stores first, then the
+    /// remaining flattened placement order, restricted to verified holders.
+    #[must_use]
+    pub fn serve_order(&self) -> &[StoreId] {
+        &self.serve
     }
 
     /// The placement state of one store, if any (`blob.$placement[store]`).
@@ -214,12 +225,12 @@ impl<C: BlobConnector> BlobEngine<C> {
         &mut self,
         declared: &DeclaredDescriptor,
         accepted: &AcceptedType,
-        placement: &Placement,
+        policy: &PlacementPolicy,
         bytes: &[u8],
     ) -> Result<Blob, UploadError> {
         let descriptor = self.verify_descriptor(declared, accepted, bytes)?;
         let plan = self
-            .writable_plan(placement)
+            .writable_plan(policy.plan())
             .ok_or(UploadError::NoWritablePlacement)?;
         let digest = *descriptor.sha512();
         let mut landed = BTreeMap::new();
@@ -227,7 +238,7 @@ impl<C: BlobConnector> BlobEngine<C> {
             self.land_copy(store, &digest, bytes)?;
             landed.insert(store.clone(), CopyState::Verified);
         }
-        let serve = self.serve_order(placement, &landed);
+        let serve = self.serve_order(policy, &landed);
         Ok(Blob { descriptor, placement: landed, serve })
     }
 
@@ -259,16 +270,16 @@ impl<C: BlobConnector> BlobEngine<C> {
     /// Converge `blob`'s placement toward `placement` (§18.6): demote holders
     /// that no longer verify, then copy from a verified source into each
     /// [repair target](Self::repair_targets), verifying each destination.
-    pub fn reconcile(&mut self, blob: &mut Blob, placement: &Placement) {
+    pub fn reconcile(&mut self, blob: &mut Blob, policy: &PlacementPolicy) {
         let digest = *blob.descriptor.sha512();
         self.demote_corrupt(blob, &digest);
         let Some(source) = self.verified_source(blob, &digest) else { return };
-        for store in self.repair_targets(blob, placement) {
+        for store in self.repair_targets(blob, policy.plan()) {
             if self.copy_and_verify(store.clone(), &digest, &source) {
                 blob.placement.insert(store, CopyState::Verified);
             }
         }
-        blob.serve = self.serve_order(placement, &blob.placement);
+        blob.serve = self.serve_order(policy, &blob.placement);
     }
 
     /// The stores this reconcile pass should (re)create and verify, given a
@@ -371,14 +382,17 @@ impl<C: BlobConnector> BlobEngine<C> {
         }
     }
 
-    /// The `$serve` order: the flattened placement order restricted to verified
-    /// holders (§18.4 default).
-    fn serve_order(&self, placement: &Placement, landed: &BTreeMap<StoreId, CopyState>) -> Vec<StoreId> {
-        placement
-            .flattened()
-            .into_iter()
-            .filter(|store| landed.get(store) == Some(&CopyState::Verified))
-            .collect()
+    /// The §18.8 `$serve` fetch order over the just-`landed` copies: the policy's
+    /// `$serve`-declared holders first, then the remaining flattened placement
+    /// order (§18.4), restricted to the verified set. Defaults to the flattened
+    /// order when the policy declares no `$serve`.
+    fn serve_order(&self, policy: &PlacementPolicy, landed: &BTreeMap<StoreId, CopyState>) -> Vec<StoreId> {
+        let verified: BTreeSet<StoreId> = landed
+            .iter()
+            .filter(|(_, state)| **state == CopyState::Verified)
+            .map(|(id, _)| id.clone())
+            .collect();
+        policy.serve_order(&verified)
     }
 
     fn writable(&self, store: &StoreId) -> bool {

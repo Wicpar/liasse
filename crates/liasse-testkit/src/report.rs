@@ -237,7 +237,40 @@ pub fn check_expectation(expect: &Expect, observed: &Observation, env: &mut Bind
             reason: format!("expected completion `{completion}`, observed `{:?}`", observed.completion),
         };
     }
-    check_value(expect, observed, env)
+    let value_verdict = check_value(expect, observed, env);
+    if !value_verdict.is_pass() {
+        return value_verdict;
+    }
+    check_served_fetch(expect, observed)
+}
+
+/// §18.8: a `blob_get` step MAY assert the served `bytes` (the delivered
+/// content) and the fetch-plan `holders` (the verified holders in `$serve`
+/// order). Both sit in [`Expect::extra`] — outside the common value vocabulary,
+/// carried per FORMAT.md as chapter-specific members — so without this check
+/// they would be parsed and then silently ignored, letting a served-content or
+/// serve-order mismatch pass vacuously. When present, each is compared exactly
+/// against the fetch observation's recorded member (`holders` is order-sensitive
+/// by construction). Only these two members are consulted, and only a `blob_get`
+/// fetch records them, so no other step kind is affected.
+fn check_served_fetch(expect: &Expect, observed: &Observation) -> Verdict {
+    for member in ["bytes", "holders"] {
+        let Some(expected) = expect.extra.get(member) else { continue };
+        match observed.extra.get(member) {
+            Some(actual) if actual == expected => {}
+            Some(actual) => {
+                return Verdict::Fail {
+                    reason: format!("blob fetch `{member}` mismatch: expected {expected}, observed {actual}"),
+                };
+            }
+            None => {
+                return Verdict::Fail {
+                    reason: format!("expected blob fetch `{member}` {expected}, none observed"),
+                };
+            }
+        }
+    }
+    Verdict::Pass
 }
 
 fn check_value(expect: &Expect, observed: &Observation, env: &mut Bindings) -> Verdict {

@@ -353,8 +353,13 @@ pub const SKIP: &[(&str, &str)] = &[
     ("11-auth-sessions/login-operation-id-reuse-different-request-rejected", "outcome divergence: expected `ok` observed `rejected`"),
     ("11-auth-sessions/login-token-immediately-usable", "outcome divergence: expected `ok` observed `rejected`"),
     ("12-clients-live-views/parameter-normalization-and-checks", "outcome divergence: expected `ok` observed `denied`"),
-    ("15-meters/hierarchical-level-without-meter-adds-no-constraint", "outcome divergence: expected `ok` observed `rejected`"),
-    ("15-meters/hierarchical-limits-clear-every-level", "outcome divergence: expected `ok` observed `rejected`"),
+    // (§10.1/§8.2 nested-receiver reconstruction is fixed — the harness now
+    // collects every ancestor selector's params, so a depth-≥2 receiver
+    // `.companies[@company].accounts[@account].consume` addresses the account by
+    // its full key `[company, account]` instead of dropping `@company`. This
+    // landed `hierarchical-limits-clear-every-level` and
+    // `hierarchical-level-without-meter-adds-no-constraint`, whose entries were
+    // pruned as stale.)
     ("15-meters/inactive-bucketed-spend-retains-allocation", "outcome divergence: expected `ok` observed `rejected`"),
     ("15-meters/spend-at-pool-until-boundary-excluded", "outcome divergence: expected `ok` observed `rejected`"),
     ("23-host-contract/restart-preserves-identity-values-and-view", "outcome divergence: expected `ok` observed `denied`"),

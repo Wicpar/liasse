@@ -9,7 +9,7 @@ use liasse_host::sim::SimConnector;
 use liasse_host::{BlobIntegrity, Capability, ConnectorCapabilities};
 use liasse_runtime::{
     AcceptedType, BlobEngine, CopyState, DeclaredDescriptor, Erasure, FetchError, Occurrence,
-    Placement, Store, StoreId, Value,
+    Placement, PlacementPolicy, Store, StoreId, Value,
 };
 use liasse_value::{MediaType, Text};
 
@@ -46,7 +46,7 @@ fn tampering_destination_is_not_promoted_after_demote() {
     engine.add_store(Store { id: StoreId::new("s1"), connector: "c1".to_owned(), enabled: true });
     engine.add_store(Store { id: StoreId::new("s2"), connector: "c2".to_owned(), enabled: true });
 
-    let policy = Placement::View(vec![StoreId::new("s1"), StoreId::new("s2")]);
+    let policy: PlacementPolicy = Placement::View(vec![StoreId::new("s1"), StoreId::new("s2")]).into();
     let mut blob = engine.upload(&declared(content), &accepted(), &policy, content).expect("upload");
     let digest = *blob.descriptor().sha512();
 
@@ -81,7 +81,7 @@ fn fetch_falls_through_partial_outage_to_clean_holder() {
     engine.add_store(Store { id: StoreId::new("s1"), connector: "c1".to_owned(), enabled: true });
     engine.add_store(Store { id: StoreId::new("s2"), connector: "c2".to_owned(), enabled: true });
 
-    let policy = Placement::View(vec![StoreId::new("s1"), StoreId::new("s2")]);
+    let policy: PlacementPolicy = Placement::View(vec![StoreId::new("s1"), StoreId::new("s2")]).into();
     let blob = engine.upload(&declared(content), &accepted(), &policy, content).expect("upload");
 
     // s1 (first in serve order) goes dark; s2 is clean.
@@ -102,7 +102,7 @@ fn fetch_under_full_outage_yields_no_result() {
     let mut engine = BlobEngine::new();
     engine.register("c1", connector());
     engine.add_store(Store { id: StoreId::new("s1"), connector: "c1".to_owned(), enabled: true });
-    let policy = Placement::View(vec![StoreId::new("s1")]);
+    let policy: PlacementPolicy = Placement::View(vec![StoreId::new("s1")]).into();
     let blob = engine.upload(&declared(content), &accepted(), &policy, content).expect("upload");
 
     engine.connector_mut("c1").expect("c1").set_available(false);

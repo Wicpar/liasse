@@ -30,8 +30,8 @@ use liasse_host::{BlobIntegrity, Capability, ConnectorCapabilities};
 use liasse_store::InstanceStore;
 use liasse_surface::{
     AcceptedType, AuthSelection, BlobEngine, BlobGetOutcome, BlobHost, BlobPutOutcome,
-    DeclaredDescriptor, Placement, PlacementState, Store, StoreId, Subscription, SurfaceAddress,
-    SurfaceCall, SurfaceWatch, Value, ViewResult,
+    DeclaredDescriptor, Placement, PlacementPolicy, PlacementState, Store, StoreId, Subscription,
+    SurfaceAddress, SurfaceCall, SurfaceWatch, Value, ViewResult,
 };
 use liasse_value::{MediaType, Sha512};
 use serde_json::Value as J;
@@ -176,7 +176,7 @@ pub(super) fn provision(package: &J, hosts: Option<&J>) -> (BlobWiring, BlobHost
         let Some(collection) = collection.as_object() else { continue };
         let Some(storage) = collection.get("$blob_storage") else { continue };
         let policy_source = storage.get("$in").cloned();
-        let placement = placement_of(storage, &stores);
+        let policy = policy_of(storage, &stores);
         for (field_name, field) in collection {
             if field.get("$type").and_then(J::as_str) != Some("blob") {
                 continue;
@@ -194,7 +194,7 @@ pub(super) fn provision(package: &J, hosts: Option<&J>) -> (BlobWiring, BlobHost
             }
             blob_hosts.insert(
                 field_name.clone(),
-                BlobHost::new(engine, accepted_type(field), placement.clone()),
+                BlobHost::new(engine, accepted_type(field), policy.clone()),
             );
             wiring.fields.push(field_name.clone());
             wiring.policy_source.insert(field_name.clone(), policy_source.clone());
@@ -275,12 +275,25 @@ fn accepted_type(field: &J) -> AcceptedType {
     AcceptedType { max_bytes, media }
 }
 
+/// The complete placement policy (§18.4) of a `$blob_storage` block: the `$in`
+/// plan plus the optional `$serve` preferred read order.
+fn policy_of(storage: &J, stores: &[Store]) -> PlacementPolicy {
+    PlacementPolicy::new(placement_of(storage, stores), serve_of(storage, stores))
+}
+
 /// The placement plan (§18.4) of a `$blob_storage` policy's `$in`.
 fn placement_of(storage: &J, stores: &[Store]) -> Placement {
     match storage.get("$in") {
         Some(value) => placement_from_value(value, stores),
         None => Placement::View(stores.iter().map(|s| s.id.clone()).collect()),
     }
+}
+
+/// The `$serve` preferred read order (§18.4/§18.8): the flattened store ids of
+/// the `$serve` store view, or `None` when the block declares no `$serve` (the
+/// serve order then defaults to the flattened `$in` placement order).
+fn serve_of(storage: &J, stores: &[Store]) -> Option<Vec<StoreId>> {
+    storage.get("$serve").map(|value| placement_from_value(value, stores).flattened())
 }
 
 /// A placement leaf (a store-view string) or branch (`$all`/`$any`/`$copies`).
@@ -552,13 +565,23 @@ fn projected_value<'a>(result: &'a ViewResult, field: &str) -> Option<&'a Value>
 
 /// Render a §18.8/§18.9 fetch outcome to a harness observation. A delivered
 /// result reports `ok` carrying the exact fetched bytes as their staged UTF-8
-/// text (so a report shows the content); a denied visibility gate reports
-/// `denied`; a no-clean-holder result is a fetch failure (§18.9).
+/// text (in `value`, so a report shows the content) and, in `extra`, the
+/// `bytes` (same text) and the `holders` — the §18.8 fetch plan the bytes were
+/// served from, the verified holders in `$serve` order — so a case asserting
+/// `bytes`/`holders` is checked against the served content and order, not
+/// ignored. A denied visibility gate reports `denied`; a no-clean-holder result
+/// is a fetch failure (§18.9).
 fn observe_get(outcome: &BlobGetOutcome) -> Observation {
     match outcome {
-        BlobGetOutcome::Delivered(bytes) => {
+        BlobGetOutcome::Delivered { bytes, holders } => {
             let text = String::from_utf8_lossy(bytes).into_owned();
-            Observation::ok(Some(J::String(text)))
+            let mut observation = Observation::ok(Some(J::String(text.clone())));
+            observation.extra.insert("bytes".to_owned(), J::String(text));
+            observation.extra.insert(
+                "holders".to_owned(),
+                J::Array(holders.iter().map(|h| J::String(h.as_str().to_owned())).collect()),
+            );
+            observation
         }
         BlobGetOutcome::Denied | BlobGetOutcome::Unknown => Observation::outcome(Outcome::Denied),
         BlobGetOutcome::NoCleanHolder => Observation::outcome(Outcome::Error),

@@ -53,6 +53,76 @@ pub struct Store {
     pub enabled: bool,
 }
 
+/// A field's complete placement policy (§18.4): the `$in` plan over stores and
+/// the optional `$serve` preferred read order.
+///
+/// The two are distinct concerns — `$in` decides where verified copies live
+/// (the recursive [`Placement`] plan), while `$serve` reorders the fetch plan
+/// (§18.8). `$serve` applies only at the top level of a policy (it is not a
+/// per-branch attribute), so it lives here rather than inside the recursive
+/// [`Placement`]. Absent `$serve` (`serve == None`), the serve order defaults to
+/// the flattened placement order (§18.4).
+#[derive(Debug, Clone)]
+pub struct PlacementPolicy {
+    plan: Placement,
+    serve: Option<Vec<StoreId>>,
+}
+
+impl PlacementPolicy {
+    /// A policy over the `$in` `plan` with an optional `$serve` preferred read
+    /// order (the flattened store ids of the `$serve` store view, in order).
+    #[must_use]
+    pub fn new(plan: Placement, serve: Option<Vec<StoreId>>) -> Self {
+        Self { plan, serve }
+    }
+
+    /// The `$in` placement plan.
+    #[must_use]
+    pub fn plan(&self) -> &Placement {
+        &self.plan
+    }
+
+    /// The declared `$serve` preferred read order, if any (`None` defaults to the
+    /// flattened placement order, §18.4).
+    #[must_use]
+    pub fn serve(&self) -> Option<&[StoreId]> {
+        self.serve.as_deref()
+    }
+
+    /// The §18.8 serve order of this policy, restricted to the `verified`
+    /// holders. §18.8: "The plan contains accessible verified holders in `$serve`
+    /// order." The order is the `$serve`-declared stores first (in `$serve`
+    /// order), then any remaining stores in flattened placement order (§18.4) so
+    /// a placed-but-not-`$serve`d store is still a fallback holder — the whole
+    /// list restricted to the verified set and duplicate-free. Absent `$serve`
+    /// it is exactly the flattened order (§18.4 default).
+    #[must_use]
+    pub fn serve_order(&self, verified: &BTreeSet<StoreId>) -> Vec<StoreId> {
+        let flattened = self.plan.flattened();
+        let ordered = match &self.serve {
+            Some(serve) => {
+                let mut order = dedup(serve);
+                for store in flattened {
+                    if !order.contains(&store) {
+                        order.push(store);
+                    }
+                }
+                order
+            }
+            None => flattened,
+        };
+        ordered.into_iter().filter(|store| verified.contains(store)).collect()
+    }
+}
+
+impl From<Placement> for PlacementPolicy {
+    /// A `$serve`-less policy: the serve order defaults to the flattened
+    /// placement order (§18.4).
+    fn from(plan: Placement) -> Self {
+        Self { plan, serve: None }
+    }
+}
+
 /// A placement policy plan (§18.4). A bare `view` requires every store it
 /// yields; the branch combinators compose those requirements.
 #[derive(Debug, Clone)]
