@@ -189,10 +189,7 @@ impl MutPhase<'_, '_> {
         }
         let mut statements = Vec::new();
         for text in bodies {
-            match self.parse_stmt(text) {
-                Some(pair) => statements.push(pair),
-                None => return None,
-            }
+            statements.push(self.parse_stmt(text)?);
         }
         Some(statements)
     }

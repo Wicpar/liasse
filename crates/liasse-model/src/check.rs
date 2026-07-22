@@ -370,10 +370,11 @@ fn collect_field_refs(expr: &Expr, siblings: &BTreeSet<&str>, out: &mut BTreeSet
         ExprKind::Name(id) if siblings.contains(id.text.as_str()) => {
             out.insert(id.text.clone());
         }
-        ExprKind::Field { base, member } => {
-            if matches!(base.kind, ExprKind::Current) && siblings.contains(member.text.as_str()) {
-                out.insert(member.text.clone());
-            }
+        ExprKind::Field { base, member }
+            if matches!(base.kind, ExprKind::Current)
+                && siblings.contains(member.text.as_str()) =>
+        {
+            out.insert(member.text.clone());
         }
         _ => {}
     }
