@@ -321,8 +321,6 @@ pub const SKIP: &[(&str, &str)] = &[
     ("w-worked-examples/w2-passkey-login-opens-session-and-authenticates", "package does not load yet (upstream compile/model gap)"),
     ("w-worked-examples/w2-revoked-session-denies-future-requests", "package does not load yet (upstream compile/model gap)"),
     ("w-worked-examples/w2-two-logins-create-distinct-sessions", "package does not load yet (upstream compile/model gap)"),
-    // --- seed ---
-    ("15-meters/spend-time-in-gap-between-periods-unfunded", "seed admission gap: seed field `period`: `duration` value `= none` is not a canonical ISO-8601 elapsed dura..."),
     // ========================================================================
     // RUNTIME RESULT DIVERGES FROM THE CORPUS EXPECTATION
     // The package loads and the steps run, but the runtime's observed outcome, value,
@@ -363,11 +361,16 @@ pub const SKIP: &[(&str, &str)] = &[
     // landed `hierarchical-limits-clear-every-level` and
     // `hierarchical-level-without-meter-adds-no-constraint`, whose entries were
     // pruned as stale.)
-    ("15-meters/inactive-bucketed-spend-retains-allocation", "outcome divergence: expected `ok` observed `rejected`"),
-    ("15-meters/spend-at-pool-until-boundary-excluded", "outcome divergence: expected `ok` observed `rejected`"),
     ("23-host-contract/restart-preserves-identity-values-and-view", "outcome divergence: expected `ok` observed `denied`"),
     // --- fail:valdiff ---
     // --- fail:viewdiff ---
+    // §14.1/§A.5 timestamp-arg precision now decodes the `@until` bucket bound at the
+    // package precision, so the metered spend admits and retains its allocation while
+    // bucket-inactive (steps 0–3 pass, §15.2/§14.2). The residual is step 4: after
+    // `purge` DELETES the bucketed spend from `.$all`, §15.2 "deletion releases its
+    // allocation" is not reflected — the balance view does not restore to full pool
+    // capacity, a deletion→meter-release seam distinct from bucket activity.
+    ("15-meters/inactive-bucketed-spend-retains-allocation", "§15.2 deleting a bucketed spend via `.$all` does not release its meter allocation, so the post-purge balance view does not restore to full capacity (a deletion→meter-release seam; the precision fix cleared the prior step-0 rejection)"),
     ("05-state-model/set-of-enum-reads-in-declaration-order", "view result diverges from expectation"),
     ("12-clients-live-views/temporal-observation-advances-live-view", "view result diverges from expectation"),
     ("12-clients-live-views/window-anchor-survives-rekey", "view result diverges from expectation"),

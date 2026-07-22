@@ -21,7 +21,7 @@ use liasse_surface::{
     CallBinding, RouterError, SurfaceBinding, SurfaceRouter, SurfaceRouterBuilder, ViewBinding,
 };
 use liasse_syntax::{parse_expression, BlockMemberKind, Expr, ExprKind, Selector, StmtKind};
-use liasse_value::Type;
+use liasse_value::{Precision, Type};
 use serde_json::Value as J;
 
 use super::auth::AuthPlan;
@@ -171,7 +171,7 @@ pub fn build(
     lift: &SurfaceLift,
 ) -> Result<(SurfaceRouter, Routing), RouterError> {
     let catalog = Catalog {
-        muts: mutation_index(model),
+        muts: mutation_index(model, package_precision(package)),
         views: declared_views(model),
         lift,
         shapes: ViewShapes::derive(model),
@@ -433,17 +433,50 @@ fn param_types(info: &MutInfo) -> BTreeMap<String, Type> {
         .collect()
 }
 
-/// Index every declared mutation by its external name.
-fn mutation_index(model: &Model) -> BTreeMap<String, MutInfo> {
+/// The package's effective timestamp precision (§4.4/§A.5): the declared
+/// `$semantics.timestamp_precision`, or the microsecond default. This governs how
+/// a bare wire count for a `timestamp`-typed argument is interpreted, exactly as
+/// it governs a stored `timestamp` field (`liasse-runtime` `apply_precision`).
+fn package_precision(package: &J) -> Precision {
+    package
+        .get("$semantics")
+        .and_then(|semantics| semantics.get("timestamp_precision"))
+        .and_then(J::as_str)
+        .and_then(Precision::parse)
+        .unwrap_or(Precision::DEFAULT)
+}
+
+/// Resolve the effective precision of a `timestamp` type (bare or optional) to the
+/// package precision. The model keeps the microsecond default on inferred types;
+/// an inferred `timestamp` parameter must decode its wire count at the package
+/// precision (§A.1/§A.5 "precision is a property of the declared type"), the same
+/// resolution the runtime applies to stored field types.
+fn resolve_precision(ty: Type, precision: Precision) -> Type {
+    match ty {
+        Type::Timestamp(_) => Type::Timestamp(precision),
+        Type::Optional(inner) => Type::Optional(Box::new(resolve_precision(*inner, precision))),
+        other => other,
+    }
+}
+
+/// Index every declared mutation by its external name. Each argument's declared
+/// `timestamp` precision is resolved to the package precision so its wire count
+/// decodes at the intended scale (§A.5), matching the seed/field-write path.
+fn mutation_index(model: &Model, precision: Precision) -> BTreeMap<String, MutInfo> {
     let mut index = BTreeMap::new();
     for mutation in model.mutations() {
         let name = mutation.name.as_str().to_owned();
         let params = mutation
             .params
             .iter()
-            .map(|(param, ty)| (param.clone(), ty.as_scalar().cloned()))
+            .map(|(param, ty)| {
+                (param.clone(), ty.as_scalar().cloned().map(|ty| resolve_precision(ty, precision)))
+            })
             .collect();
-        let receiver_types = collection_key_types(model, &mutation.path);
+        let receiver_types = collection_key_types(model, &mutation.path)
+            .into_iter()
+            .map(|ty| resolve_precision(ty, precision))
+            .collect();
         index.insert(name.clone(), MutInfo { name, params, receiver_types });
     }
     index
