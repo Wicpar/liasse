@@ -128,7 +128,12 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// Admit `request` and settle its effect on connection `id`'s frontier and
     /// subscriptions (§12.1 steps 7–8).
     fn execute(&mut self, id: &str, request: &CallRequest) -> Result<SurfaceOutcome, SurfaceError> {
-        match self.engine.call(request, &mut self.clock)? {
+        // §5.1/§8.12: `now()` is the request-fixed virtual-clock instant (A.5),
+        // while the seed `uuid()` derives from is drawn from the CSPRNG entropy —
+        // never the monotone clock — so a surface-minted token is unpredictable.
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        match self.engine.call(request, &mut generators)? {
             CallOutcome::Committed { seq, response } => {
                 let frontier = self.settle_commit(id, seq)?;
                 Ok(SurfaceOutcome::Committed { frontier, commit: seq, response })

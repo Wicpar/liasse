@@ -18,7 +18,7 @@ use liasse_runtime::{CommitSeq, EngineError, ImportError, ImportRelation, Precis
 use liasse_store::InstanceStore;
 use liasse_surface::{
     AuthResult, OperationKey, OperationStatus, SurfaceAddress, SurfaceCall, SurfaceError,
-    SurfaceHost, SurfaceResume, SurfaceWatch, UpdateOutcome,
+    SurfaceResume, SurfaceWatch, UpdateOutcome,
 };
 
 use crate::clock::VirtualClock;
@@ -84,7 +84,7 @@ impl<S: InstanceStore> Runtime<S> {
     }
 
     /// Take the loaded stack out, leaving a sentinel failure — used to move the
-    /// owned host through [`SurfaceHost::into_parts`]. The caller must restore a
+    /// owned host through [`SurfaceHost::into_parts`](liasse_surface::SurfaceHost::into_parts). The caller must restore a
     /// `Loaded` state before returning.
     fn take_loaded(&mut self) -> Result<Loaded<S>, AdapterError> {
         let taken = std::mem::replace(&mut self.state, State::Failed("stack in transit".to_owned()));
@@ -229,7 +229,7 @@ impl<S: InstanceStore> Runtime<S> {
     /// used by the §17.9 `provider_set` fault path (the engine keyring's provider
     /// is reconfigured here). Committed state, connections, and live subscriptions
     /// are preserved: the store and clock are retained across
-    /// [`SurfaceHost::into_parts`], and connections and subscriptions are
+    /// [`SurfaceHost::into_parts`](liasse_surface::SurfaceHost::into_parts), and connections and subscriptions are
     /// re-established over the rebuilt host.
     pub(super) fn rebuild_engine<T>(
         &mut self,
@@ -239,9 +239,18 @@ impl<S: InstanceStore> Runtime<S> {
         let routing = loaded.routing;
         let blobs = loaded.blobs;
         let blob_hosts = loaded.blob_hosts;
+        // §22 volatile restart: carry the admission entropy forward so post-restart
+        // `uuid()` mints continue the same sequence and never re-mint a colliding
+        // key (matches the pre-split behavior where the generator survived restart).
+        let entropy = loaded.host.entropy().clone();
         let (mut engine, router, clock) = loaded.host.into_parts();
         let result = mutate(&mut engine);
-        self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs, blob_hosts });
+        self.reinstate(Loaded {
+            host: liasse_surface::SurfaceHost::new(engine, router, clock).with_entropy(entropy),
+            routing,
+            blobs,
+            blob_hosts,
+        });
         self.reopen_connections()?;
         self.replay_watches();
         Ok(result)
@@ -538,8 +547,17 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         // their staged bytes survive the volatile-state restart (a fresh, empty host
         // would drop content a real §18 store persists).
         let blob_hosts = loaded.blob_hosts;
+        // §22 durability: the admission entropy is volatile-but-continued across the
+        // restart, so a post-restart `uuid()` mint extends the same sequence and
+        // never re-mints a key already committed before the restart.
+        let entropy = loaded.host.entropy().clone();
         let (engine, router, clock) = loaded.host.into_parts();
-        self.reinstate(Loaded { host: SurfaceHost::new(engine, router, clock), routing, blobs, blob_hosts });
+        self.reinstate(Loaded {
+            host: liasse_surface::SurfaceHost::new(engine, router, clock).with_entropy(entropy),
+            routing,
+            blobs,
+            blob_hosts,
+        });
         self.open_connections.clear();
         Ok(Observation::ok(None))
     }

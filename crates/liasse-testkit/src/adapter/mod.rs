@@ -63,8 +63,8 @@ use liasse_ident::InstanceId;
 use liasse_runtime::{ContractRef, Engine, Precision, Registry};
 use liasse_store::{InstanceStore, MemoryStore};
 use liasse_surface::{
-    Authenticate, AuthSelection, Credential, SurfaceHost, Subscription, SurfaceError,
-    Window, VirtualClock as SurfaceClock,
+    Authenticate, AuthSelection, Credential, Entropy, SurfaceHost, SurfaceRouter, Subscription,
+    SurfaceError, Window, VirtualClock as SurfaceClock,
 };
 use liasse_value::{Text, Value};
 
@@ -318,7 +318,7 @@ impl<S: InstanceStore> ScenarioAdapter<S> {
         let (router, mut routing) =
             router::build(engine.model(), package, plan, lift).map_err(|err| err.to_string())?;
         routing.load_view_param_types(&engine);
-        let host = SurfaceHost::new(engine, router, clock);
+        let host = new_surface_host(engine, router, clock);
         // §18: compose a blob host per declared blob field over the case's
         // `hosts.connectors` and `$data` store rows, so a `blob_put`/`blob_get`
         // step drives the real §18 upload/fetch through the surface call path.
@@ -511,6 +511,26 @@ pub(super) fn connection_name(on: Option<&ConnectionId>) -> String {
 /// an unresolved requirement rather than failing it: the §11/§12 host-verifier
 /// namespaces a case requires are reconstructed at the auth layer (adapter/auth.rs),
 /// not registered as engine components, so lenient is the safe path for them.
+/// Build the surface host the conformance harness drives, pinning admission
+/// entropy (§5.1/§8.12) to a DETERMINISTIC sequential source continued from the
+/// clock's post-genesis counter.
+///
+/// Production [`SurfaceHost::new`] defaults to the OS CSPRNG so a real deployment's
+/// surface-minted `uuid()` tokens are UNPREDICTABLE. The file-based corpus, by
+/// contrast, matches generated `uuid()` values positionally and through
+/// `$bind`/`$ref` and was authored against the monotone generator, so the harness
+/// overrides that default through the injectable seam — reading the clock's seed
+/// after genesis load so surface admission continues exactly the sequence the
+/// corpus expects, run-to-run.
+fn new_surface_host<S: InstanceStore>(
+    engine: Engine<S>,
+    router: SurfaceRouter,
+    clock: SurfaceClock,
+) -> SurfaceHost<S> {
+    let seed = clock.seed();
+    SurfaceHost::new(engine, router, clock).with_entropy(Entropy::sequential(seed))
+}
+
 fn load_engine<S: InstanceStore, G: liasse_runtime::Generators>(
     store: S,
     definition: &str,

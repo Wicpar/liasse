@@ -63,6 +63,7 @@ mod blobs;
 mod clock;
 mod connection;
 mod cose;
+mod entropy;
 mod host;
 mod keyring;
 mod modules;
@@ -87,6 +88,7 @@ pub use authn::{
 pub use binding::{CallBinding, SurfaceBinding, ViewBinding};
 pub use clock::VirtualClock;
 pub use connection::{Connection, DEFAULT_CONTEXT};
+pub use entropy::Entropy;
 pub use host::{
     AuthResult, ChooseMap, ChooseSide, ConflictCoordinate, CorrectionError, CorrectionOutcome,
     EraseOutcome, HostComponentError, KeyringErrorOr, Subscription, SurfaceError, SurfaceHost,

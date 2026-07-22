@@ -58,7 +58,12 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
             Ok(pair) => pair,
             Err(rejection) => return Ok(SurfaceOutcome::Rejected(rejection)),
         };
-        match self.engine.call(&request, &mut self.clock)? {
+        // §5.1/§8.12: an operator transition is admitted through the same pipeline
+        // as a client call, so its generated values draw from the CSPRNG entropy
+        // (unpredictable `uuid()`) with `now()` fixed from the virtual clock (A.5).
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        match self.engine.call(&request, &mut generators)? {
             CallOutcome::Committed { seq, response } => {
                 self.sweep_all()?;
                 Ok(SurfaceOutcome::Committed {

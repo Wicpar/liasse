@@ -92,7 +92,12 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         F: FnOnce(&Engine<S>) -> Result<SurfaceRouter, SurfaceError>,
     {
         let before = self.engine.head()?;
-        let report = match self.engine.update(target, &mut self.clock) {
+        // §5.1/§8.12: a migration overlay's generated values draw from the CSPRNG
+        // entropy (unpredictable `uuid()`), with `now()` fixed from the virtual
+        // clock (A.5) — the same seam a client call and an operator transition use.
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        let report = match self.engine.update(target, &mut generators) {
             Ok(report) => report,
             Err(UpdateError::Rejected(rejection)) => return Ok(UpdateOutcome::Rejected(rejection)),
             Err(UpdateError::Incompatible(message)) => {

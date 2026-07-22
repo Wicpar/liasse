@@ -11,7 +11,7 @@
 
 use liasse_runtime::{Engine, ImportRelation, Precision};
 use liasse_store::{InstanceStore, MemoryStore};
-use liasse_surface::{SurfaceHost, VirtualClock as SurfaceClock};
+use liasse_surface::VirtualClock as SurfaceClock;
 
 use crate::contract::Observation;
 use crate::outcome::Outcome;
@@ -337,7 +337,7 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         let (router, mut routing) = router::build(engine.model(), &ctx.package, &plan, &ctx.lift)
             .map_err(|err| AdapterError::Host(format!("sandbox router rebuild failed: {err}")))?;
         routing.load_view_param_types(&engine);
-        let host = SurfaceHost::new(engine, router, clock);
+        let host = super::new_surface_host(engine, router, clock);
         let (blobs, blob_hosts) = super::blobs::provision(&ctx.package, ctx.hosts.as_ref());
         Ok(Some(Loaded { host, routing, blobs, blob_hosts }))
     }
@@ -359,7 +359,7 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
         let (router, mut routing) =
             router::build(engine.model(), &ctx.package, &plan, &ctx.lift).map_err(|err| err.to_string())?;
         routing.load_view_param_types(&engine);
-        let host = SurfaceHost::new(engine, router, clock);
+        let host = super::new_surface_host(engine, router, clock);
         let (blobs, blob_hosts) = super::blobs::provision(&ctx.package, ctx.hosts.as_ref());
         Ok(Loaded { host, routing, blobs, blob_hosts })
     }

@@ -31,6 +31,17 @@ impl VirtualClock {
         Timestamp::new(self.count, self.precision)
     }
 
+    /// The clock's current generated-identifier counter (§8.12). A conformance
+    /// harness that pins surface admission to a deterministic sequential
+    /// [`Entropy`](crate::Entropy) reads this after genesis load to CONTINUE the
+    /// legacy monotone sequence — genesis seeds still advance this counter through
+    /// the engine load, so starting the surface source here reproduces exactly the
+    /// values the corpus was authored against.
+    #[must_use]
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
     /// Move the clock forward by `ticks` of its precision (§11.7 expiry crossing,
     /// §22 clock advance). Saturating, so a test can never overflow it into a
     /// panic.

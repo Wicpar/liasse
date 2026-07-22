@@ -17,6 +17,14 @@ liasse-runtime = { path = "../liasse-runtime" }
 liasse-host = { path = "../liasse-host" }
 liasse-ident = { path = "../liasse-ident" }
 thiserror = "2"
+# §5.1/§8.12 admission entropy: a surface-minted `uuid()` (a signup/email token)
+# MUST be unpredictable, so the per-request generator seed is drawn from a CSPRNG,
+# never a counter. `getrandom` seeds the production `OsRng` from the operating
+# system; `rand_chacha`/`rand_core` provide the ChaCha CSPRNG stream (seedable, so
+# a test injects a deterministic, reproducible source through the same seam).
+getrandom = "0.3"
+rand_chacha = "0.9"
+rand_core = "0.9"
 
 [dev-dependencies]
 # The §12.2 patch applier the surface tests exercise lives once in liasse-wire;

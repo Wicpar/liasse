@@ -1091,6 +1091,7 @@ dependencies = [
 name = "liasse-surface"
 version = "0.0.1"
 dependencies = [
+ "getrandom 0.3.4",
  "liasse-diag",
  "liasse-expr",
  "liasse-host",
@@ -1101,6 +1102,8 @@ dependencies = [
  "liasse-store",
  "liasse-value",
  "liasse-wire",
+ "rand_chacha",
+ "rand_core 0.9.5",
  "thiserror",
 ]
 

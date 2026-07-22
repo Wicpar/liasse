@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use liasse_ident::InstanceId;
 use liasse_store::MemoryStore;
 use liasse_surface::{
-    CallBinding, Claims, Credential, Engine, PatchOp, Precision, Role, RowId, RowSource,
+    CallBinding, Claims, Credential, Engine, Entropy, PatchOp, Precision, Role, RowId, RowSource,
     SessionAuthenticator, SessionSource, SurfaceAddress, SurfaceBinding, SurfaceCall, SurfaceHost,
     SurfaceOutcome, SurfaceRouter, SurfaceRouterBuilder, Timestamp, Value, Verifier, VerifyFailure,
     ViewBinding, ViewDelta, ViewRow, VirtualClock,
@@ -188,7 +188,12 @@ pub fn host() -> SurfaceHost<MemoryStore> {
         Err(error) => panic!("load failed: {error}"),
     };
     let router = router(engine.model());
-    SurfaceHost::new(engine, router, clock)
+    // These fixtures assert on generated `uuid()` values by lookup and by
+    // capture-and-reuse within a single run, so admission must be reproducible.
+    // Production defaults to the OS CSPRNG (§5.1/§8.12); a deterministic seeded
+    // source keeps the fixtures replayable through the same injection seam a real
+    // deployment would use for the clock.
+    SurfaceHost::new(engine, router, clock).with_entropy(Entropy::seeded(0x5EED))
 }
 
 /// Load [`SURFACE_APP`] into a fresh engine (for router-validation tests that

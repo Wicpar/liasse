@@ -36,6 +36,7 @@ use crate::cose::CoseKeyring;
 use crate::authn::AuthContext;
 use crate::clock::VirtualClock;
 use crate::connection::Connection;
+use crate::entropy::Entropy;
 use crate::operation::{OperationKey, OperationLog, OperationStatus};
 use crate::outcome::{Denial, DenialReason};
 use crate::reader::EngineReader;
@@ -93,6 +94,14 @@ pub struct SurfaceHost<S, P = SimKeyProvider> {
     engine: Engine<S>,
     router: SurfaceRouter,
     clock: VirtualClock,
+    /// The CSPRNG behind every surface-admitted generated value (§5.1/§8.12). The
+    /// virtual clock supplies the request-fixed `now()` (Annex A.5); this supplies
+    /// the per-request seed `uuid()` derives from, so a surface-minted token is
+    /// unpredictable rather than counter-derived. Volatile like the connections
+    /// below — a restart ([`into_parts`](Self::into_parts)) drops it and the
+    /// rebuilt host draws a fresh source; committed generated values are unaffected,
+    /// as they are read back from the store verbatim, never re-generated.
+    entropy: Entropy,
     connections: BTreeMap<String, Connection>,
     operations: OperationLog,
     /// The §17 keyrings composed into this host, by keyring name. A driver
@@ -109,17 +118,49 @@ pub struct SurfaceHost<S, P = SimKeyProvider> {
 
 impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// Build a host over `engine`, exposing `router`, driven by `clock`.
+    ///
+    /// The generated-value entropy (§5.1/§8.12) defaults to the operating-system
+    /// CSPRNG ([`Entropy::os`]), so a surface-minted `uuid()` token is unpredictable
+    /// out of the box. A test that needs reproducible admissions injects a
+    /// deterministic source with [`with_entropy`](Self::with_entropy).
     #[must_use]
     pub fn new(engine: Engine<S>, router: SurfaceRouter, clock: VirtualClock) -> Self {
         Self {
             engine,
             router,
             clock,
+            entropy: Entropy::os(),
             connections: BTreeMap::new(),
             operations: OperationLog::new(),
             keyrings: BTreeMap::new(),
             blobs: BTreeMap::new(),
         }
+    }
+
+    /// Replace the generated-value entropy source (§5.1/§8.12), mirroring how the
+    /// virtual clock is supplied to [`new`](Self::new): production keeps the default
+    /// OS CSPRNG, while a test injects [`Entropy::seeded`] so `uuid()` values are
+    /// deterministic and reproducible. `now()` is untouched — it stays the
+    /// request-fixed virtual-clock instant (Annex A.5); only the randomness moves.
+    #[must_use]
+    pub fn with_entropy(mut self, entropy: Entropy) -> Self {
+        self.entropy = entropy;
+        self
+    }
+
+    /// The host's generated-value entropy source (§5.1/§8.12). A driver rebuilding
+    /// this host for a §22 volatile restart clones it before [`into_parts`] and
+    /// re-installs it with [`with_entropy`] on the fresh host, so post-restart
+    /// admissions continue the same sequence instead of re-drawing the pre-restart
+    /// seeds — which, for a deterministic source, would re-mint colliding `uuid()`
+    /// keys. A production `os()` host need not preserve it: a fresh
+    /// [`Entropy::os`] draws independent OS entropy that cannot collide.
+    ///
+    /// [`into_parts`]: Self::into_parts
+    /// [`with_entropy`]: Self::with_entropy
+    #[must_use]
+    pub fn entropy(&self) -> &Entropy {
+        &self.entropy
     }
 
     /// The underlying engine, for reading committed state and views directly.
@@ -147,8 +188,8 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// (§22 restart/durability). A restart is a *volatile-state* reset: the
     /// engine (and, with it, the durable store, its committed log, and the
     /// virtual clock) is retained, while the host's connections, live
-    /// subscriptions, and retained operation records — none of which are durable
-    /// — are dropped when the host is.
+    /// subscriptions, retained operation records, and CSPRNG entropy source — none
+    /// of which are durable — are dropped when the host is.
     ///
     /// A driver restarts by [`into_parts`](Self::into_parts)-ing the running
     /// host and immediately rebuilding a fresh one over the returned engine with
