@@ -337,11 +337,15 @@ fn in_program_no_parameter_call_accepted() {
 }
 
 #[test]
-fn param_used_only_as_call_argument_is_deferred() {
-    // §8.3/§16.4/§8.11: a parameter whose only use is a call argument inherits
-    // its type from the callee's declared signature. The CORE model does not
-    // resolve host namespaces, so such a parameter is deferred, not rejected —
-    // the package loads even though the model cannot pin `@n` here.
+fn param_used_only_as_host_call_argument_is_inferred() {
+    // §8.3/§16.4/§11.5: a parameter whose only use is a host-namespace call
+    // argument (`u.f(@n)`) is a real contract parameter — the login shape
+    // `identity = webauthn.verify(@response)` uses `@response` nowhere else, and it
+    // must bind so the caller passes it explicitly in the §12.1 closed argument
+    // object. Typed from the host function's declared argument signature when the
+    // resolved `$requires` descriptor is available; here the CORE model resolves no
+    // host descriptor, so `@n` takes the permissive top type `json`, whose real
+    // validation is the runtime host-call boundary (§16).
     let built = build(
         r#"{
           "$liasse": 1
@@ -356,11 +360,10 @@ fn param_used_only_as_call_argument_is_deferred() {
         }"#,
     );
     let model = built.expect_ok();
-    // `@id` is still inferred from the insert; `@n` is simply absent (deferred),
-    // never a rejection.
+    // `@id` is inferred concretely from the insert field; `@n` is now inferred (not
+    // deferred) as the permissive `json`, so it is a contract parameter that binds.
     assert_eq!(param_type(model, "compute", "id"), &liasse_value::Type::Text);
-    let compute = model.mutations().iter().find(|m| m.name.as_str() == "compute").expect("compute");
-    assert!(!compute.params.iter().any(|(name, _)| name == "n"), "@n is deferred, not pinned");
+    assert_eq!(param_type(model, "compute", "n"), &liasse_value::Type::Json);
 }
 
 #[test]

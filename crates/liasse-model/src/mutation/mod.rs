@@ -23,6 +23,7 @@ use liasse_value::Type;
 
 use crate::build::RawMut;
 use crate::doc::DocValueExt;
+use crate::host::HostDescriptors;
 use crate::names::DeclName;
 use crate::report::{code, Reporter};
 use crate::resolve::Resolver;
@@ -31,8 +32,9 @@ use crate::state::{Node, Shape};
 use crate::walk::child_exprs;
 
 use helpers::{
-    collect_param_refs, is_program_call, is_scalar_binop, local_binding_name, receiver_shape,
-    record, resolve_node, uses_mutation_operator, wrap, write_path, BindEnv, Params,
+    arg_expr, collect_param_refs, host_call_target, is_program_call, is_scalar_binop,
+    local_binding_name, receiver_shape, record, resolve_node, uses_mutation_operator, wrap,
+    write_path, BindEnv, Params,
 };
 // Re-exported for the surface phase's inline-program check (§10.1), which walks a
 // statement's expressions to reject a public `$actor`/`$session` reference.
@@ -54,6 +56,10 @@ pub struct Mutation {
 }
 
 /// Check every raw mutation, returning the validated set.
+// A phase entry point threading the resolved model context (root, resolver,
+// buckets, `$config`, and the §16.2 host signatures) into one walk; each input is
+// a distinct resolved artifact, not a bundle with its own meaning.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn check_mutations(
     reporter: &mut Reporter,
     sources: &mut SourceMap,
@@ -62,6 +68,7 @@ pub(crate) fn check_mutations(
     raw: &[RawMut],
     source_buckets: &[String],
     config: Option<&ExprType>,
+    hosts: &HostDescriptors,
 ) -> Vec<Mutation> {
     let root_row = ExprType::Row(resolver.shape_row(root));
     raw.iter()
@@ -73,6 +80,7 @@ pub(crate) fn check_mutations(
                 root_row: root_row.clone(),
                 source_buckets,
                 config,
+                hosts,
             };
             phase.check(entry)
         })
@@ -101,6 +109,10 @@ struct MutPhase<'a, 'b> {
     /// A module package's `$config` struct row (§13.1), bound as the `$config`
     /// structural so a module mutation body reads it; `None` outside a module.
     config: Option<&'a ExprType>,
+    /// The resolved `$requires` host-namespace signatures (§16.2), so a `@param`
+    /// used only as a host-namespace call argument (`ns.fn(@p)`) is inferred into
+    /// the contract from the host function's declared argument type (§8.3/§16.4).
+    hosts: &'a HostDescriptors,
 }
 
 impl MutPhase<'_, '_> {
@@ -228,6 +240,47 @@ impl MutPhase<'_, '_> {
                 self.infer_in(expr, receiver, &binds, params);
             }
         }
+        // §8.3/§16.4/§11.5: a *second* pass fills a host-namespace call argument's
+        // parameter — the login shape `identity = webauthn.verify(@response)` uses
+        // `@response` nowhere else, so it must become a real contract parameter that
+        // the caller passes explicitly in the §12.1 closed argument object. Running
+        // it after every prototype/state-anchored use above makes it order
+        // independent and strictly gap-filling: a parameter already pinned by a
+        // prototype or a state use keeps that stronger type, and a mismatch against
+        // the host signature is enforced at the call boundary (§16.2/§16.5), not as
+        // a load conflict here.
+        for (stmt, _) in statements {
+            for expr in stmt_exprs(stmt) {
+                self.infer_host_args(expr, params);
+            }
+        }
+    }
+
+    /// §8.3/§16.4: fill a host-namespace call argument's parameter type when no
+    /// prior use pinned it. A bare `@param` positional argument of a host call
+    /// `ns.fn(…, @p, …)` takes the host function's declared argument type at that
+    /// position when the resolved `$requires` descriptor is available (§16.2);
+    /// otherwise it takes the permissive top type `json`, whose real validation is
+    /// the runtime host-call boundary (§16). Either way the parameter BINDS.
+    fn infer_host_args(&self, expr: &Expr, params: &mut Params) {
+        if let ExprKind::Call { callee, args } = &expr.kind
+            && let Some((namespace, function)) = host_call_target(callee)
+        {
+            let signature = self.hosts.op(namespace, function);
+            for (index, arg) in args.iter().enumerate() {
+                if let ExprKind::Param(id) = &arg_expr(arg).kind
+                    && !params.contains(&id.text)
+                {
+                    let ty = signature
+                        .and_then(|op| op.params().get(index))
+                        .map_or_else(|| ExprType::scalar(Type::Json), |arg_ty| ExprType::scalar(arg_ty.clone()));
+                    record(params, &id.text, ty);
+                }
+            }
+        }
+        for child in child_exprs(expr) {
+            self.infer_host_args(child, params);
+        }
     }
 
     /// §8.3: every referenced `@name` must resolve to one contract type, whether
@@ -346,15 +399,16 @@ impl MutPhase<'_, '_> {
                     && matches!(member.text.as_str(), "at" | "between")
                 {
                     for arg in args {
-                        let value = match arg {
-                            Arg::Positional(value) => value,
-                            Arg::Named { value, .. } => value,
-                        };
-                        if let ExprKind::Param(id) = &value.kind {
+                        if let ExprKind::Param(id) = &arg_expr(arg).kind {
                             record(params, &id.text, ExprType::scalar(Type::timestamp()));
                         }
                     }
                 }
+                // A host-namespace call argument (`ns.fn(@p)`, §16.4) is inferred in
+                // a separate pass ([`Self::infer_host_args`]) that runs after every
+                // state-anchored use, so a prototype- or state-typed parameter keeps
+                // its stronger type and the host signature is enforced at the call
+                // boundary (§16.2/§16.5) rather than becoming a load conflict here.
             }
             _ => {}
         }

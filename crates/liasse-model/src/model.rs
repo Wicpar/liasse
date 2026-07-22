@@ -132,6 +132,7 @@ impl Model {
             &build.raw_muts,
             &build.source_buckets,
             config_binding.as_ref(),
+            hosts,
         );
         let surfaces = check_surfaces(
             &mut reporter,

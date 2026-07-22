@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_expr::ExprType;
-use liasse_syntax::{BinaryOp, Expr, ExprKind, SpannedExpression, Stmt, StmtKind};
+use liasse_syntax::{Arg, BinaryOp, Expr, ExprKind, SpannedExpression, Stmt, StmtKind};
 use liasse_value::{RefTarget, Type};
 
 use crate::state::{Node, Shape};
@@ -284,23 +284,71 @@ fn collect_segments(expr: &Expr, receiver: &[String], segments: &mut Vec<String>
 /// Collect every `@name` parameter reference that must infer a type *here*,
 /// paired with the span of its use, for the §8.3 inferability check.
 ///
-/// A parameter whose only occurrence is a call argument is deliberately not
-/// collected: as a call argument it inherits its type from the callee's declared
-/// signature (§8.3, "inherits ... type"), and the CORE model does not resolve
-/// host namespaces (§16.4) or cross-program mutation contracts (§8.11). Such a
-/// parameter's type is therefore *deferred* to that later resolution rather than
-/// rejected here, so the walk descends into a call's callee but not its
-/// arguments.
+/// A parameter used as a host-namespace call argument (`ns.fn(…, @p, …)`, §16.4)
+/// *is* collected: it is a real contract parameter, inferred from the host
+/// function's declared argument signature (see
+/// [`super::MutPhase::infer_host_args`]), so the caller passes it explicitly in the
+/// §12.1 closed argument object. Collecting it here keeps this inferability check
+/// consistent with that inference — the parameter is inferred *and* found, so a
+/// host-only parameter (`identity = ns.verify(@response)`) is never falsely
+/// rejected as "cannot be inferred".
+///
+/// A parameter whose only occurrence is a *non-host* call argument stays
+/// deliberately uncollected: an in-program mutation-call argument (§8.11) inherits
+/// its type from the callee's contract, a documented cross-program seam the CORE
+/// model does not resolve, so its type is *deferred* rather than rejected here. The
+/// walk therefore descends into a call's callee, into a host call's bare-parameter
+/// arguments, but not into a non-host call's arguments.
 pub(super) fn collect_param_refs<'e>(expr: &'e Expr, out: &mut Vec<(&'e str, liasse_diag::ByteSpan)>) {
     if let ExprKind::Param(id) = &expr.kind {
         out.push((&id.text, id.span));
     }
-    if let ExprKind::Call { callee, .. } = &expr.kind {
+    if let ExprKind::Call { callee, args } = &expr.kind {
         collect_param_refs(callee, out);
+        if host_call_target(callee).is_some() {
+            for arg in args {
+                if let ExprKind::Param(id) = &arg_expr(arg).kind {
+                    out.push((&id.text, id.span));
+                }
+            }
+        }
         return;
     }
     for child in child_exprs(expr) {
         collect_param_refs(child, out);
+    }
+}
+
+/// The value expression a positional or named argument carries.
+pub(super) fn arg_expr(arg: &Arg) -> &Expr {
+    match arg {
+        Arg::Positional(value) | Arg::Named { value, .. } => value,
+    }
+}
+
+/// The `(namespace, function)` a host-namespace-shaped call names (§16.4): a
+/// `Field { base: Name(ns), member }` callee with a non-structural member that is
+/// not a `string.*` builtin. This is the structural shape of an application
+/// host-namespace call — a bare-identifier namespace applied to a positional
+/// argument list — distinct from an in-program mutation call (whose callee bases
+/// on an `#import`, a selector, `.`, or a local row binding, never a bare
+/// `namespace.fn(positional)`) and from a value/view builtin (`size`, `string.*`).
+///
+/// Whether `ns` resolves to a declared `$requires` namespace is confirmed by the
+/// caller against the pinned descriptors; a bare positional `@param` argument is
+/// never a valid mutation-call form (a mutation takes a closed argument object or
+/// nothing, §8.5), so this shape uniquely identifies a host-call argument whose
+/// parameter the contract must carry.
+pub(super) fn host_call_target(callee: &Expr) -> Option<(&str, &str)> {
+    if is_builtin_call(callee) {
+        return None;
+    }
+    match &callee.kind {
+        ExprKind::Field { base, member } if !member.structural => match &base.kind {
+            ExprKind::Name(ns) => Some((ns.text.as_str(), member.text.as_str())),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
