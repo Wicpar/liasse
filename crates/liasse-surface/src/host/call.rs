@@ -45,6 +45,17 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
             Ok(triple) => triple,
             Err(outcome) => return Ok(outcome),
         };
+        // §12.1: the call's argument object is closed against the resolved
+        // mutation's declared parameters — applied here, after membership is
+        // confirmed (so a non-member reads the uniform denial, not a distinguishing
+        // `malformed`, §10.4) and BEFORE the request/dedup model is built (so no
+        // partial effect occurs and the §12.3 dedup identity stays exactly the
+        // decoded declared argument set). An undeclared member — including any
+        // reserved `$`-prefixed name — is malformed, never silently dropped. This is
+        // the `call` mirror of the view path's `closed_view_args`.
+        if let Err(rejection) = self.closed_call_args(&binding, call.args()) {
+            return Ok(SurfaceOutcome::Rejected(rejection));
+        }
         let (request, model) =
             match Self::build_request(&binding, call.args(), context.as_ref(), receiver.as_ref()) {
                 Ok(pair) => pair,
@@ -424,8 +435,59 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         }
     }
 
+    /// Close a call's argument object against the resolved mutation's declared
+    /// parameters (§12.1): the receiver key names plus the mutation parameters. A
+    /// member the mutation does not declare — including any reserved `$`-prefixed
+    /// name, which is never a declared parameter — makes the request malformed, so
+    /// it is rejected (`Err`) rather than silently dropped and admitted on a
+    /// best-effort binding. There is no width subtyping over the external argument
+    /// object.
+    ///
+    /// This is the `call` mirror of [`closed_view_args`](Self::closed_view_args),
+    /// and it is what keeps the §12.3 dedup identity exactly the decoded declared
+    /// argument set: [`build_request`](Self::build_request) records the model from
+    /// the verbatim `args`, so an undeclared member reaching it would silently vary
+    /// the dedup identity ("no ignored-but-present member can silently vary");
+    /// rejecting here first makes that impossible.
+    ///
+    /// It runs only after [`resolve_call`](Self::resolve_call) has confirmed the
+    /// caller's membership, so surfacing `malformed` — rather than collapsing to the
+    /// uniform `Unresolved`/`Denied` — reveals nothing an unauthorized caller could
+    /// exploit (§10.4, the SPEC-ISSUES item-8 oracle). Like the view mirror it
+    /// closes only where the binding declares a non-empty parameter contract: a
+    /// mutation the router reconstructs with no declared parameter (e.g. a
+    /// `reinsert(@extract)` erasure mutation whose `@extract` the model does not
+    /// surface) has no reliable shape to close against, so it is left unchecked
+    /// rather than over-rejecting a legitimate argument — matching the testkit
+    /// adapter's closed-shape guard (`call`, non-empty `call_param_names`).
+    ///
+    /// §18.7: a registered blob-field name is a host-resolved declared parameter —
+    /// [`call_with_blob`](Self::call_with_blob) verifies the streamed bytes and
+    /// binds the descriptor to it — so it is admitted alongside the binding's own
+    /// receiver/params even when the router binding lists only the scalar params.
+    /// It is a host concept, never a free-form client member.
+    fn closed_call_args(&self, binding: &CallBinding, args: &BTreeMap<String, Value>) -> Result<(), Rejection> {
+        let declared: BTreeSet<&str> =
+            binding.receiver().iter().chain(binding.params()).map(String::as_str).collect();
+        if declared.is_empty() {
+            return Ok(());
+        }
+        match args
+            .keys()
+            .find(|name| !declared.contains(name.as_str()) && !self.blobs.contains_key(name.as_str()))
+        {
+            Some(member) => Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!("argument `{member}` is not a declared parameter of this mutation (§12.1)"),
+            )),
+            None => Ok(()),
+        }
+    }
+
     /// Build the runtime [`CallRequest`] (bound receiver + parameters) and the
-    /// §12.3 request model (the full verbatim arguments) for dedup equivalence.
+    /// §12.3 request model (the declared arguments, closed by
+    /// [`closed_call_args`](Self::closed_call_args) before this runs) for dedup
+    /// equivalence.
     pub(super) fn build_request(
         binding: &CallBinding,
         args: &BTreeMap<String, Value>,
@@ -576,8 +638,9 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// and closing it here keeps the §12.3 dedup identity exactly the decoded
     /// declared argument set ("no ignored-but-present member can silently vary").
     ///
-    /// This mirrors the `call` path's closed-shape check ([`build_request`] rejects
-    /// a call the same way). It runs only after [`resolve_view`](Self::resolve_view)
+    /// This mirrors the `call` path's closed-shape check
+    /// ([`closed_call_args`](Self::closed_call_args) rejects a call the same way). It
+    /// runs only after [`resolve_view`](Self::resolve_view)
     /// has confirmed the caller's membership, so surfacing `malformed` — rather than
     /// collapsing to the uniform `Unresolved` — reveals nothing an unauthorized
     /// caller could exploit (§10.4, the `view` mirror of the item-8 `call` oracle).

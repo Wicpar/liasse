@@ -8,11 +8,14 @@
 //! call with no identifier is a new operation every time.
 //!
 //! What counts as "equivalent" is compared over the full resolved request model
-//! — the mutation, its receiver key, and every supplied argument. SPEC-ISSUES
-//! item 6 records that the spec does not pin whether an *unknown* argument member
-//! is ignored, which would make equivalence ambiguous; this layer compares
-//! arguments verbatim, so differing unknown members read as different requests
-//! (the conservative, never-collide choice) rather than silently deduplicating.
+//! — the mutation, its receiver key, and every supplied argument. §12.1 (resolved
+//! by SPEC-ISSUES item 6) pins the argument object as a CLOSED shape, and the
+//! surface host closes both the `call` and `view` paths before this layer sees the
+//! model (`SurfaceHost::closed_call_args`), so an undeclared member is rejected as
+//! malformed and can never reach the model: the arguments compared here are always
+//! exactly the decoded declared set, making "two submissions are equivalent when
+//! those decoded declared argument sets are equal" (§12.3) well-defined. The
+//! verbatim `BTreeMap` comparison then decides equivalence directly.
 
 use std::collections::BTreeMap;
 
