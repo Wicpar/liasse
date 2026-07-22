@@ -12,7 +12,7 @@ use crate::error::Report;
 use crate::expr::ast::{
     BinaryOp, CombinatorOp, Expr, ExprKind, SpannedExpression, Stmt, StmtKind, UnaryOp,
 };
-use crate::scan::{check_nesting_depth, Lexis};
+use crate::scan::{check_nesting_depth, Lexis, MAX_NESTING_DEPTH};
 
 #[derive(Parser)]
 #[grammar = "expr/grammar.pest"]
@@ -40,10 +40,52 @@ pub fn parse_expression(source: SourceId, text: &str) -> Result<SpannedExpressio
             else {
                 return Err(builder.aborted());
             };
-            Ok(SpannedExpression { statement })
+            let tree = SpannedExpression { statement };
+            // The bracket scan above bounds `pest`'s recursion, but a bracket-free
+            // chain (`!!!!x`, `.a.a.a`, `x+x+x`) builds an AST the scan cannot see
+            // yet the recursive checker/evaluator walk one frame per node. Reject a
+            // tree deeper than the cap here, before those recursions run.
+            match check_expr_depth(source, &tree) {
+                Ok(()) => Ok(tree),
+                Err(diagnostics) => {
+                    // A rejected tree can be tens of thousands of nodes deep; its
+                    // derived `Drop` recurses per level and would itself overflow.
+                    // Tear it down iteratively before returning.
+                    tree.drain();
+                    Err(diagnostics)
+                }
+            }
         }
         Err(error) => Err(Report::new(source, text, Lexis::Expression).build(error)),
     }
+}
+
+/// Reject a parsed expression whose node nesting exceeds [`MAX_NESTING_DEPTH`],
+/// pointing at the deepest node. This is the same single effective bound the
+/// pre-parse bracket scan enforces, applied to the *true* AST depth so the
+/// recursive checker and evaluator (which the bracket scan cannot bound for a
+/// bracket-free chain) never overflow the stack.
+fn check_expr_depth(source: SourceId, tree: &SpannedExpression) -> Result<(), Diagnostics> {
+    let (depth, at) = tree.deepest();
+    if depth <= MAX_NESTING_DEPTH {
+        return Ok(());
+    }
+    let mut diagnostics = Diagnostics::new();
+    diagnostics.push(
+        Diagnostic::error(format!(
+            "expression nests more than {MAX_NESTING_DEPTH} levels deep"
+        ))
+        .code("syntax")
+        .primary(
+            Span::new(source, at),
+            "this node exceeds the maximum nesting depth",
+        )
+        .help(format!(
+            "restructure the expression so it nests no more than {MAX_NESTING_DEPTH} levels deep"
+        ))
+        .build(),
+    );
+    Err(diagnostics)
 }
 
 pub(crate) struct Builder<'s> {

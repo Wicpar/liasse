@@ -12,42 +12,67 @@ use liasse_diag::{ByteSpan, Diagnostic, Diagnostics, SourceId, Span};
 
 use crate::clamp;
 
-/// The maximum bracket-nesting depth accepted before the grammar runs.
+/// The maximum nesting depth the load pipeline accepts, in *any* form.
 ///
-/// The Liasse spec pins no nesting limit — Annex C fixes no depth bound — so
-/// this cap is an implementation safeguard, not a spec rule. It is the *single
-/// effective depth bound* the whole load pipeline respects: this prescan runs at
-/// every parse entry point (document, expression, type-expression), so an input
-/// deeper than the cap is rejected with a diagnostic before a single grammar
-/// rule fires — and therefore before the recursions that walk the same AST depth
-/// with *fatter* frames than `pest`: the `liasse-expr` checker (`check`/
-/// `check_unary`/`check_block`) and evaluator (`eval_not`, projection eval). Each
-/// of those overflows the stack (SIGABRT) far below `pest`'s own limit, so the
-/// cap must clear their budget, not just the grammar's.
+/// The Liasse spec pins no nesting limit — Annex C fixes no depth bound — so this
+/// cap is an implementation safeguard, not a spec rule. It is the *single
+/// effective depth bound* the whole load pipeline respects, enforced in two
+/// complementary places because no single check sees every nesting form:
+///
+/// - **This prescan**, at every parse entry point (document, expression,
+///   type-expression), rejects input whose *delimiters* nest past the cap before
+///   a single grammar rule fires — so `pest`'s recursive descent (and, for a
+///   generic type tower `optional<…>`, the model's recursive type lowering) never
+///   overflows. The delimiters that drive that recursion differ by surface: `([{`
+///   everywhere, plus `<`/`>` in a type expression ([`Lexis::Type`]).
+/// - **A post-parse node-depth guard** ([`crate::expr`]) rejects a parsed
+///   *expression* whose true AST depth exceeds the cap. A bracket-free chain
+///   (`!!!!x`, `.a.a.a`, `x+x+x`) carries no delimiter, so the prescan admits it
+///   and `pest` gathers it *iteratively* — but the resulting AST is genuinely
+///   that deep, and the recursive `liasse-expr` checker (`check`/`check_unary`/
+///   `check_binary`) and evaluator walk it one frame per node. The prescan cannot
+///   see that depth; the node-depth guard does.
+///
+/// Both overflow the stack (SIGABRT) far below `pest`'s own limit, so the cap
+/// must clear their budget, not just the grammar's.
 ///
 /// Calibration (debug build, measured full load+eval): a 2 MiB thread (the
 /// libtest default) overflows around depth ~70; an 8 MiB main thread around
 /// ~300–400. The deepest real Liasse document in the conformance corpus nests 12
-/// brackets. 32 sits ~2× under the smallest measured overflow while clearing
-/// every real document and expression by a wide margin — a parseable-but-too-deep
-/// input is a clean load rejection here, never a process abort downstream.
+/// brackets, and the deepest real expression tree nests 12 nodes. 32 sits ~2×
+/// under the smallest measured overflow while clearing every real document and
+/// expression by a wide margin — a parseable-but-too-deep input is a clean load
+/// rejection here, never a process abort downstream.
 pub(crate) const MAX_NESTING_DEPTH: usize = 32;
 
-/// Which surface's comment lexis the scanner assumes. The two surfaces differ
-/// only in `#`: it opens a line comment in the document form (Hjson), but is the
-/// import sigil `#name` in expression source, so scanning an expression with the
-/// document rule would swallow the rest of the line and lose a bracket.
+/// Which surface's lexis the scanner assumes. The surfaces differ in `#` (a
+/// line comment in the Hjson document form, but the import sigil `#name` in
+/// expression and type source) and in whether `<`/`>` nest: they are the
+/// comparison operators `a < b` in an expression but the generic delimiters of
+/// `map<K, V>` / `optional<T>` in a type expression, where — like `([{` — a deep
+/// run of them drives `pest`'s recursive descent (and the model's recursive
+/// type lowering) and so must be depth-bounded.
 #[derive(Clone, Copy)]
 pub(crate) enum Lexis {
-    /// The Hjson document form: `//`, `#`, and `/* */` all begin comments.
+    /// The Hjson document form: `//`, `#`, and `/* */` all begin comments; only
+    /// `([{` nest.
     Document,
-    /// Expression source: only `//` and `/* */` begin comments; `#` is a sigil.
+    /// Expression source: only `//` and `/* */` begin comments; `#` is a sigil;
+    /// only `([{` nest (`<`/`>` are comparison operators).
     Expression,
+    /// Type-expression source (Annex A.2): comments as in [`Self::Expression`],
+    /// but `<`/`>` are the generic delimiters and nest alongside `{`.
+    Type,
 }
 
 impl Lexis {
     fn hash_is_comment(self) -> bool {
         matches!(self, Self::Document)
+    }
+
+    /// Whether `<` / `>` open and close a nesting level in this lexis.
+    fn angle_brackets(self) -> bool {
+        matches!(self, Self::Type)
     }
 }
 
@@ -111,6 +136,8 @@ impl DelimiterScan {
                 },
                 '{' | '[' | '(' => brackets.push((Bracket::Open(c), clamp(i))),
                 '}' | ']' | ')' => brackets.push((Bracket::Close, clamp(i))),
+                '<' if lexis.angle_brackets() => brackets.push((Bracket::Open(c), clamp(i))),
+                '>' if lexis.angle_brackets() => brackets.push((Bracket::Close, clamp(i))),
                 _ => {}
             }
             i += width;

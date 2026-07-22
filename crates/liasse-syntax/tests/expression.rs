@@ -451,3 +451,76 @@ fn grouping_just_under_the_cap_is_accepted() -> Check {
     assert_eq!(kind, ExprKind::Int("1".to_owned()));
     Ok(())
 }
+
+// The bracket scan above only bounds *bracketed* nesting. A bracket-free chain
+// (`!!!!x`, `.a.a.a`, `x+x+x`) carries no `([{`, so the scan admits it however
+// deep, yet the recursive checker/evaluator walk one stack frame per AST node.
+// A post-parse node-depth guard rejects such a tree before those recursions run
+// (SPEC.md §6.1 / AGENTS.md "code must never panic"). These pin that guard for
+// each bracket-free nesting form; the deep cases would previously SIGABRT — once
+// in the checker on the deep AST, and once in the derived `Drop` freeing it.
+
+/// Assert that a deep, bracket-free expression is rejected for exceeding the
+/// node-nesting cap (not for some incidental syntax error), and does not crash.
+fn assert_depth_rejected(src: &str) -> Check {
+    let diags = parse_err(src)?;
+    let diag = diags.iter().next().ok_or("expected one diagnostic")?;
+    assert!(
+        diag.message().contains("nests") && diag.message().contains("32"),
+        "expected a nesting-depth rejection naming the cap, got {:?}",
+        diag.message()
+    );
+    Ok(())
+}
+
+#[test]
+fn bracket_free_unary_chain_rejected_past_the_cap() -> Check {
+    // 40 `!` over `x` nests 41 nodes deep — no bracket in sight. Rejected.
+    assert_depth_rejected(&format!("{}x", "!".repeat(40)))
+}
+
+#[test]
+fn bracket_free_negation_chain_rejected_past_the_cap() -> Check {
+    // The other unary operator (`-`) nests the same way.
+    assert_depth_rejected(&format!("{}x", "-".repeat(40)))
+}
+
+#[test]
+fn bracket_free_field_chain_rejected_past_the_cap() -> Check {
+    // `.a.a.a…` — a field-access chain builds a left-nested `Field` tower.
+    assert_depth_rejected(&format!(".{}", "a.".repeat(40).trim_end_matches('.')))
+}
+
+#[test]
+fn bracket_free_same_name_chain_rejected_past_the_cap() -> Check {
+    // `.a::a::a…` — the same-name traversal (§6.4) nests identically.
+    assert_depth_rejected(&format!(".a{}", "::a".repeat(40)))
+}
+
+#[test]
+fn bracket_free_binary_chain_rejected_past_the_cap() -> Check {
+    // `x+x+x…` — a left-associative additive chain nests one `Binary` per `+`.
+    assert_depth_rejected(&format!("x{}", "+x".repeat(40)))
+}
+
+#[test]
+fn bracket_free_chain_at_pathological_depth_rejects_without_crashing() -> Check {
+    // 50 000 unary ops: pre-fix this SIGABRTed — the checker overflowed on the
+    // deep AST, and even rejecting it overflowed the recursive `Drop` freeing the
+    // tree. The guard must now reject it cleanly and tear the tree down without
+    // recursion. Reaching this assertion at all proves neither overflow occurred.
+    assert_depth_rejected(&format!("{}x", "!".repeat(50_000)))
+}
+
+#[test]
+fn bracket_free_unary_chain_at_the_cap_is_accepted() -> Check {
+    // 31 `!` over `x` nests exactly 32 nodes deep — at the cap, so accepted. This
+    // pins the boundary from below and confirms the guard counts true node depth,
+    // not brackets (there are none here).
+    let kind = bare(&format!("{}x", "!".repeat(31))).map(|expr| expr.kind)?;
+    assert!(
+        matches!(kind, ExprKind::Unary { .. }),
+        "expected a unary chain, got {kind:?}"
+    );
+    Ok(())
+}

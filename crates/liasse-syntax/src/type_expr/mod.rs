@@ -25,9 +25,11 @@ struct TypeGrammar;
 /// `source` is the [`SourceId`] the caller registered `text` under in a
 /// `liasse_diag::SourceMap`; it is used only to locate diagnostics.
 pub fn parse_type_expression(source: SourceId, text: &str) -> Result<SpannedType, Diagnostics> {
-    // A struct type nests braces; guard the recursive descent as the other
-    // grammars do (a type expression's own `#`/comment lexis matches Expression).
-    check_nesting_depth(source, text, Lexis::Expression)?;
+    // A struct type nests braces and generic forms (`map<…>`, `optional<…>`)
+    // nest angle brackets; both drive the recursive descent here and the model's
+    // recursive type lowering, so guard the depth before either runs. The `Type`
+    // lexis counts `<`/`>` alongside `{` for exactly this reason.
+    check_nesting_depth(source, text, Lexis::Type)?;
     match TypeGrammar::parse(Rule::type_program, text) {
         Ok(mut pairs) => {
             let mut builder = TypeBuilder {
@@ -43,7 +45,7 @@ pub fn parse_type_expression(source: SourceId, text: &str) -> Result<SpannedType
                 None => Err(builder.aborted()),
             }
         }
-        Err(error) => Err(Report::new(source, text, Lexis::Expression).build(error)),
+        Err(error) => Err(Report::new(source, text, Lexis::Type).build(error)),
     }
 }
 
