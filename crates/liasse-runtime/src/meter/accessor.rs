@@ -85,7 +85,8 @@ fn meter_cell(
     let mut pool_rows: Vec<Row> = Vec::new();
     for (index, pool) in pools.iter().enumerate() {
         let Some(quantity) = &pool.quantity else { continue };
-        let remaining = quantity - super::admit::allocated(prospective, &level, &pool.source, &pool.key);
+        let remaining =
+            quantity - super::admit::allocated(prospective, &level, &pool.source, &pool.key, &pool.incarnation);
         let remaining = if remaining < zero { zero.clone() } else { remaining };
         balance += remaining.clone();
         pool_rows.push(Row::new(

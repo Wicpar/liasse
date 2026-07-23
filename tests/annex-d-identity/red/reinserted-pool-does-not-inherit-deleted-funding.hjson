@@ -1,0 +1,75 @@
+{
+  format: 1
+  name: reinserted-pool-does-not-inherit-deleted-funding
+  suite: scenario
+  spec: ["#identity", "§D.1", "#meters", "§15.2", "§15.3"]
+  note: '''Annex D.1: "Historical actor, session, meter-pool, deletion, and module
+coordinates include incarnation identity wherever key reuse could otherwise conflate
+occurrences." §5.6/§21.3: deleting and reinserting the same key creates a NEW
+incarnation. So the frozen funding of a DELETED pool incarnation must NOT bind to a
+pool reinserted at the SAME app-chosen key. Spend 40 from pool t1 (100), delete t1
+(funding stays frozen on the spend, §15.2), reinsert t1=100 as a fresh incarnation:
+the balance must show the full 100 (not 60 — the old 40 charged against the deleted
+incarnation) and a fresh 100-spend must admit. A UUID-keyed pool is immune (a
+reinsert cannot reuse a generated key); only reused application keys can conflate.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.identity.poolreinsert@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: { $key: "id", id: "text", amount: "decimal" }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: { $sources: { topup: ".topups { $quantity: .amount }" } }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+          add_topup: ".topups + { id: @id, amount: @amount }"
+          remove_topup: ".topups - @topup"
+        }
+      }
+      $public: {
+        wallet: {
+          $view: ".users { id, balance: .credits.balance }"
+          $mut: {
+            consume: ".users[@user].consume"
+            add_topup: ".users[@user].add_topup"
+            remove_topup: ".users[@user].remove_topup"
+          }
+        }
+      }
+    }
+    $data: { users: { u1: { topups: { t1: { amount: "100" } } } } }
+  }
+
+  steps: [
+    // spend 40 against pool t1 (incarnation A): balance 60
+    { call: "public.wallet.consume", args: { user: "u1", amount: "40" },
+      expect: { outcome: ok, value: { id: "$bind:s1" } } }
+    { watch: "public.wallet", id: "w1", expect_init: { value: [ { id: "u1", balance: "60" } ] } }
+    // delete t1: the spend's 40 stays frozen against incarnation A; balance now 0
+    { call: "public.wallet.remove_topup", args: { user: "u1", topup: "t1" }, expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [ { id: "u1", balance: "0" } ] } }
+    // reinsert t1=100: a NEW incarnation B (§5.6/§21.3, Annex D.1)
+    { call: "public.wallet.add_topup", args: { user: "u1", id: "t1", amount: "100" }, expect: { outcome: ok } }
+    // the deleted incarnation A's 40 does NOT bind to incarnation B — full 100
+    { expect_view: { watch: "w1", value: [ { id: "u1", balance: "100" } ] } }
+    // a fresh 100-spend admits against incarnation B's full capacity
+    { call: "public.wallet.consume", args: { user: "u1", amount: "100" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    { expect_view: { watch: "w1", value: [ { id: "u1", balance: "0" } ] } }
+  ]
+}

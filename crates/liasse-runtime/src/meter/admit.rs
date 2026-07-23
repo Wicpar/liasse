@@ -9,6 +9,7 @@
 
 use bigdecimal::BigDecimal;
 use liasse_expr::{Cell, Row, RowId};
+use liasse_ident::RowIncarnation;
 use liasse_store::{AddressStep, RowAddress};
 use liasse_value::{Decimal, Struct, Text, Timestamp, Value};
 
@@ -21,11 +22,16 @@ use super::resolve::{decimal_of, resolve_pools, SpendContext};
 use super::{CompiledMeter, CompiledMeters, CompiledSpend, SpendConsume, FUNDING_FIELD};
 
 /// One frozen funding allocation (§15.3): the enforcing level it clears, the
-/// source and pool identity it drew from, and the exact amount allocated.
+/// source and pool identity it drew from, and the exact amount allocated. The pool
+/// identity is the pool's application `pool` key AND its durable `incarnation`
+/// (D.1) — the latter kept internal (never in the §15.6 observable funding view) so
+/// a pool reinserted at a reused key does not inherit this deleted incarnation's
+/// allocation (§15.2, Annex D.1).
 struct Entry {
     level: String,
     source: String,
     pool: Value,
+    incarnation: Option<RowIncarnation>,
     amount: BigDecimal,
 }
 
@@ -173,9 +179,9 @@ fn drain(
     let mut planned: Vec<Entry> = Vec::new();
     for pool in pools {
         let Some(quantity) = &pool.quantity else { continue };
-        let mut held = allocated(prospective, level, &pool.source, &pool.key);
+        let mut held = allocated(prospective, level, &pool.source, &pool.key, &pool.incarnation);
         for entry in &planned {
-            if entry.source == pool.source && entry.pool == pool.key {
+            if entry.source == pool.source && entry.pool == pool.key && entry.incarnation == pool.incarnation {
                 held += entry.amount.clone();
             }
         }
@@ -184,7 +190,13 @@ fn drain(
             continue;
         }
         let take = if available < needed { available } else { needed.clone() };
-        planned.push(Entry { level: level.to_owned(), source: pool.source.clone(), pool: pool.key.clone(), amount: take.clone() });
+        planned.push(Entry {
+            level: level.to_owned(),
+            source: pool.source.clone(),
+            pool: pool.key.clone(),
+            incarnation: pool.incarnation.clone(),
+            amount: take.clone(),
+        });
         needed -= take;
         if needed == zero() {
             break;
@@ -232,13 +244,25 @@ fn address_of(steps: impl Iterator<Item = AddressStep>) -> Option<RowAddress> {
     Some(address)
 }
 
-/// The sum of allocations held against `(level, source, pool)` by every extant
-/// spend row (§15.2 "allocations held by extant spend rows").
-pub(crate) fn allocated(prospective: &Prospective, level: &str, source: &str, pool: &Value) -> BigDecimal {
+/// The sum of allocations held against `(level, source, pool, incarnation)` by
+/// every extant spend row (§15.2 "allocations held by extant spend rows"). The
+/// incarnation (D.1) is part of the coordinate so a reinserted pool at a reused key
+/// does not count the deleted incarnation's frozen allocations (§15.2, Annex D.1).
+pub(crate) fn allocated(
+    prospective: &Prospective,
+    level: &str,
+    source: &str,
+    pool: &Value,
+    incarnation: &Option<RowIncarnation>,
+) -> BigDecimal {
     let mut total = zero();
     for fields in prospective.working().values() {
         for entry in decode(fields) {
-            if entry.level == level && entry.source == source && entry.pool == *pool {
+            if entry.level == level
+                && entry.source == source
+                && entry.pool == *pool
+                && entry.incarnation == *incarnation
+            {
                 total += entry.amount;
             }
         }
@@ -315,7 +339,9 @@ fn eval_time(
     }
 }
 
-/// Decode a spend row's frozen funding entries (§15.3).
+/// Decode a spend row's frozen funding entries (§15.3). The `incarnation` member
+/// (D.1) is absent for a pool with no resolvable stored incarnation (a pre-fix
+/// entry, or a derived/ambiguous pool), decoding as `None`.
 fn decode(fields: &FieldMap) -> Vec<Entry> {
     let Some(Value::Set(entries)) = fields.get(FUNDING_FIELD) else { return Vec::new() };
     entries
@@ -326,24 +352,35 @@ fn decode(fields: &FieldMap) -> Vec<Entry> {
             let level = match field("level") { Some(Value::Text(t)) => t.as_str().to_owned(), _ => return None };
             let source = match field("source") { Some(Value::Text(t)) => t.as_str().to_owned(), _ => return None };
             let pool = field("pool").cloned().unwrap_or(Value::None);
+            let incarnation = match field("incarnation") {
+                Some(Value::Text(t)) => Some(RowIncarnation::new(t.as_str().to_owned())),
+                _ => None,
+            };
             let amount = match field("amount") { Some(Value::Decimal(d)) => d.as_big_decimal().clone(), _ => return None };
-            Some(Entry { level, source, pool, amount })
+            Some(Entry { level, source, pool, incarnation, amount })
         })
         .collect()
 }
 
-/// Encode funding entries into the stored `$funding` set value (§15.3).
+/// Encode funding entries into the stored `$funding` set value (§15.3). The
+/// pool's `incarnation` (D.1) is stored as an internal member (like `level`),
+/// kept out of the §15.6 observable funding view; it is omitted when the pool had
+/// no resolvable incarnation.
 fn encode(entries: &[Entry]) -> Value {
     Value::Set(
         entries
             .iter()
             .map(|entry| {
-                Value::Struct(Struct::new([
+                let mut members: Vec<(Text, Value)> = vec![
                     (Text::new("level"), Value::Text(Text::new(entry.level.clone()))),
                     (Text::new("source"), Value::Text(Text::new(entry.source.clone()))),
                     (Text::new("pool"), entry.pool.clone()),
                     (Text::new("amount"), Value::Decimal(Decimal::from_big_decimal(entry.amount.clone()))),
-                ]))
+                ];
+                if let Some(incarnation) = &entry.incarnation {
+                    members.push((Text::new("incarnation"), Value::Text(Text::new(incarnation.as_str().to_owned()))));
+                }
+                Value::Struct(Struct::new(members))
             })
             .collect(),
     )

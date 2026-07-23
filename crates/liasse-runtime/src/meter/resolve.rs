@@ -11,6 +11,7 @@ use std::collections::BTreeMap;
 
 use bigdecimal::BigDecimal;
 use liasse_expr::{Cell, Row, RowId};
+use liasse_ident::RowIncarnation;
 use liasse_value::{Decimal, Timestamp, Value};
 
 use crate::error::{Rejection, RejectionReason};
@@ -19,11 +20,27 @@ use crate::state::Prospective;
 
 use super::{CompiledMeter, CompiledSource};
 
+/// The full funding identity of a pool (§15.2): source label, application key, and
+/// durable incarnation (D.1) — the coalescing key for the §15.2 agree-or-reject.
+type PoolIdentity = (String, Value, Option<RowIncarnation>);
+
+/// The capacity a pool identity agreed on (§15.2): its `$quantity` and `$until`,
+/// compared when a repeated identity contributes again.
+type PoolCapacity = (Option<BigDecimal>, Option<Timestamp>);
+
 /// One resolved capacity pool (§15.2): its funding identity, capacity, active
 /// interval, and the comparison keys `$order` produced.
 pub(crate) struct Pool {
     pub(crate) source: String,
     pub(crate) key: Value,
+    /// The pool row's durable incarnation (D.1), when its stored row is known.
+    /// It joins the `(source, key)` funding coordinate so a pool deleted and
+    /// reinserted at the SAME application key is a DISTINCT funding target from the
+    /// deleted incarnation (§15.2, §5.6, Annex D.1). `None` for a pool with no
+    /// resolvable stored incarnation (a derived source-backed bucket row, or an
+    /// ambiguous `RowId`), which falls back to key-only matching — applied
+    /// identically at freeze and read, so the two stay consistent.
+    pub(crate) incarnation: Option<RowIncarnation>,
     /// `None` for a partitioning (quantity-less) source — it never limits (§14.8).
     pub(crate) quantity: Option<BigDecimal>,
     pub(crate) order_keys: Vec<Value>,
@@ -58,9 +75,14 @@ pub(crate) fn resolve_pools(
     // keeps the derived row's identity, so the same key resolves its interval.
     intervals.extend(ctx.source_bucket_interval_index(prospective, context.time));
     let current = Cell::Row(Box::new(enforcing.clone()));
+    // Annex D.1 / §15.2: the meter-pool coordinate carries the pool row's durable
+    // incarnation, so a pool reinserted at a reused application key does not inherit
+    // the deleted incarnation's frozen funding. The index maps the stable pool
+    // `RowId` to its committed incarnation (`None` for a derived/ambiguous row).
+    let incarnations = prospective.incarnation_index();
 
     let mut pools: Vec<Pool> = Vec::new();
-    let mut seen: BTreeMap<(String, Value), (Option<BigDecimal>, Option<Timestamp>)> = BTreeMap::new();
+    let mut seen: BTreeMap<PoolIdentity, PoolCapacity> = BTreeMap::new();
     for source in &meter.sources {
         for row in source_rows(ctx, prospective, source, &current, context.time)? {
             let interval = intervals.get(row.id()).copied().unwrap_or((None, None));
@@ -74,7 +96,8 @@ pub(crate) fn resolve_pools(
                 continue;
             }
             let key = row.key().clone();
-            let identity = (source.label.clone(), key.clone());
+            let incarnation = incarnations.get(row.id()).cloned();
+            let identity = (source.label.clone(), key.clone(), incarnation.clone());
             // §15.2: a repeated full identity contributes one pool; a disagreement
             // rejects.
             if let Some((prev_qty, prev_until)) = seen.get(&identity) {
@@ -88,7 +111,7 @@ pub(crate) fn resolve_pools(
             }
             seen.insert(identity, (quantity.clone(), interval.1));
             let order_keys = order_keys(ctx, prospective, meter, &pool_row, context.time)?;
-            pools.push(Pool { source: source.label.clone(), key, quantity, order_keys });
+            pools.push(Pool { source: source.label.clone(), key, incarnation, quantity, order_keys });
         }
     }
     sort_pools(&mut pools, &meter.order);
@@ -207,7 +230,8 @@ fn order_keys(
 }
 
 /// Sort pools by `$order` (each key's declared direction, none-last per B.2) with
-/// pool identity as the final deterministic tiebreak (§15.2).
+/// pool identity — source, key, then incarnation — as the final deterministic
+/// tiebreak (§15.2 step 4, "then pool incarnation").
 fn sort_pools(pools: &mut [Pool], order: &[super::OrderKey]) {
     pools.sort_by(|a, b| {
         for (index, key) in order.iter().enumerate() {
@@ -219,7 +243,7 @@ fn sort_pools(pools: &mut [Pool], order: &[super::OrderKey]) {
                 return ordering;
             }
         }
-        (a.source.as_str(), &a.key).cmp(&(b.source.as_str(), &b.key))
+        (a.source.as_str(), &a.key, &a.incarnation).cmp(&(b.source.as_str(), &b.key, &b.incarnation))
     });
 }
 
