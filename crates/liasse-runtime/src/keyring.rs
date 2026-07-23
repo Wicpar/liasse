@@ -465,6 +465,20 @@ impl<P: KeyProvider> Keyring<P> {
             }
             due_at = next_due;
         }
+        // §17.4 step 3 + the identical-result guarantee: a catch-up may land `now`
+        // inside the NEXT cutover's `$overlap` lead window. Expose that cutover's
+        // pending version now — exactly as the not-yet-due branch does — so the
+        // observable `$versions` at `now` is the same whether the clock arrived
+        // here in one jump or in per-cadence steps (a stepping runtime would have
+        // exposed it at the lead instant). Without this, a ring idle across a
+        // cadence boundary that reawakens inside the following overlap window would
+        // hide the pending version a scheduled runtime shows — a divergence §17.4
+        // forbids. On the normal loop exit `now < due_at` holds; the degenerate
+        // non-advancing-cadence `break` leaves `due_at <= now` (no overlap window
+        // to open) and is skipped.
+        if now < due_at {
+            self.expose_pending(now, schedule, due_at);
+        }
         outcome
     }
 

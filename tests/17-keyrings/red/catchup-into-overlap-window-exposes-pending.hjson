@@ -1,0 +1,101 @@
+{
+  format: 1
+  name: catchup-into-overlap-window-exposes-pending
+  suite: scenario
+  tags: ["rotation", "boundary", "overlap"]
+  spec: ["#keyrings", "§17.2", "§17.3", "§17.4"]
+  // §17.4 identical-result guarantee: "A runtime MAY schedule [rotations] or
+  // perform a due rotation before the next operation. THE RESULTING LOGICAL
+  // ORDER AND KEY SELECTION ARE IDENTICAL." Step 3 of automatic rotation
+  // "record[s] and expose[s] a pending public version at the configured
+  // $overlap lead time"; §17.3/§17.2 make that pending version appear in
+  // $versions (but never $accepted) throughout the overlap window.
+  //
+  // Here $every = P30D and $overlap = P2D, so cutovers fall at day 30 and day
+  // 60, and the day-60 cutover's overlap lead window is [day 58, day 60). The
+  // ring is idle from day 0 and reawakens with a SINGLE clock jump to day 59 —
+  // one cadence boundary (day 30) already crossed, and day 59 sitting inside the
+  // day-60 overlap window. A scheduled runtime would have (a) rotated v1 -> v2 at
+  // day 30 and (b) exposed pending v3 at day 58; at day 59 its $versions is
+  // {v1 retired, v2 active, v3 pending}. §17.4 forces the lazy "before next
+  // operation" runtime to the SAME observable state. A catch-up path that
+  // performs the due rotation but skips the following overlap window's pending
+  // exposure hides v3 — a granularity-dependent divergence §17.4 forbids.
+  note: "§17.4 identical-result guarantee + step 3: a single jump across the day-30 cutover into the day-60 overlap window [day 58, day 60) must expose pending v3 in $versions exactly as a per-cadence stepping runtime does. At day 59: $versions = {v1 retired, v2 active, v3 pending}; $accepted = {v1 (still in $retain), v2 active} — the pending v3 is NOT accepted (§17.3)."
+
+  hosts: {
+    namespaces: { cose: "liasse.cose@1" }
+    key_providers: {
+      "test-kp": {
+        algorithms: ["Ed25519"]
+        operations: ["sign"]
+        generate: true
+        bind: false
+        protection: "software"
+      }
+    }
+  }
+
+  package: {
+    $liasse: 1
+    $app: "t.keyrings@1.0.0"
+    $requires: { cose: "liasse.cose@1" }
+    $model: {
+      session_keys: {
+        $keyring: {
+          $provider: "test-kp"
+          $algorithm: "Ed25519"
+          $rotate: { $every: "P30D", $overlap: "P2D" }
+          $retain: "P45D"
+        }
+      }
+      accounts: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      sessions: {
+        $key: "id"
+        id: "uuid = uuid()"
+        account: { $ref: "/accounts" }
+      }
+      $mut: {
+        login: [
+          "session = /sessions + { account: @account }"
+          "token = cose.sign(/session_keys, { auth: 'session', session: session.$key })"
+          "return { token }"
+        ]
+      }
+      $public: {
+        login: { $mut: { login: ".login" } }
+        ring_versions: { $view: "/session_keys.$versions" }
+        ring_accepted: { $view: "/session_keys.$accepted" }
+      }
+    }
+    $data: { accounts: { alice: { name: "Alice" } } }
+  }
+
+  steps: [
+    // Single jump from day 0 across the day-30 cutover to day 59, landing INSIDE
+    // the day-60 cutover's overlap lead window [day 58, day 60).
+    { advance_time: "P59D" }
+    // §17.4 step 3 + identical-result: $versions must show v1 retired (activated
+    // day 0, retired day 30), v2 active (activated day 30, not retired), and the
+    // day-60 cutover's pending v3 (never activated, never retired). Missing v3 is
+    // the divergence — a stepping runtime would show it.
+    { watch: "public.ring_versions", id: "w1",
+      expect_init: { value: { $unordered: [
+        { activated_at: "$any:timestamp", retired_at: "$any:timestamp", "...": true }
+        { activated_at: "$any:timestamp", retired_at: "$absent", "...": true }
+        { activated_at: "$absent", retired_at: "$absent", "...": true }
+      ] } } }
+    // §17.3: the pending v3 is exposed in $versions but is NOT accepted for
+    // verification. $accepted holds exactly v1 (retired day 30, still inside the
+    // P45D window through day 75) and the active v2 — two versions, never three.
+    { watch: "public.ring_accepted", id: "w2",
+      expect_init: { value: { $unordered: [
+        { activated_at: "$any:timestamp", retired_at: "$any:timestamp", "...": true }
+        { activated_at: "$any:timestamp", retired_at: "$absent", "...": true }
+      ] } } }
+  ]
+}
