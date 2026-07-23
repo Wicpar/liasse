@@ -308,6 +308,13 @@ impl<'a> Builder<'a> {
             // its shape and the §20.1 statement constraints are validated by
             // [`crate::migration::check`], which also retains the parsed programs.
             "$migrations" if is_root => {}
+            // §13.7: a `$model` collection MAY be guarded by `$if_module`, naming an
+            // optional `$use` handle. The guard is a runtime-resolved presence
+            // condition — it never changes the compiled schema shape ("application
+            // data cannot change schema shape") — so accept it structurally here; its
+            // grammar (a non-empty handle string) is validated once, and the
+            // composition runtime activates/deactivates the declaration (§13.7/§13.12).
+            "$if_module" => crate::module::check_if_module(reporter, &member.value),
             "$bucket" => self.buckets.push(RawDecl {
                 path: path.to_vec(),
                 span: member.span,

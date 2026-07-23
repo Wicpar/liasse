@@ -1883,6 +1883,19 @@ impl<S: InstanceStore> Engine<S> {
         self.compiled.exposed_views.iter().map(|e| e.interface.as_str())
     }
 
+    /// The `$if_module` guard handle for the `$expose`d interface `interface`
+    /// (§13.7), when it is guarded: the optional `$use` handle whose presence makes
+    /// the exposure active. `None` for an unconditional exposure or an unknown
+    /// interface. The composition host resolves the handle against the child's
+    /// resolved peers to decide whether the boundary occurrence is active.
+    pub(crate) fn exposed_interface_guard(&self, interface: &str) -> Option<&str> {
+        self.compiled
+            .exposed_views
+            .iter()
+            .find(|e| e.interface == interface)
+            .and_then(|e| e.guard.as_deref())
+    }
+
     /// The `(field, type)` pairs the `$expose`d interface `$view` for `interface`
     /// projects across the boundary (§13.8), or `None` when no such interface is
     /// declared. The output field types a parent's `$interfaces` `$view` contract is
@@ -2014,6 +2027,80 @@ impl<S: InstanceStore> Engine<S> {
         exposed_mutation_name(&bound.binding.text)
     }
 
+    /// Admit an inline `$expose` `$mut` program against this instance (§13.8/§13.10).
+    ///
+    /// An interface `$mut` MAY bind a bare private-mutation reference (`.create`,
+    /// routed by [`Engine::exposed_mutation`]) or an inline program
+    /// (`.notes + { id: @id, note: @note }`). This routes the latter: the program is
+    /// compiled once as a synthetic root mutation — its parameters typed from the
+    /// supplied call arguments, which the interface prototype supplies (§13.8) — and
+    /// admitted exactly as a named mutation, so the whole transition is atomic and
+    /// passes ordinary admission, defaults, refs, checks, and meters. The compiled
+    /// synthetic is cached under a reserved `interface::contract` name (which the
+    /// [`DeclName`](liasse_model::names::DeclName) grammar can never produce, so it
+    /// cannot collide with a real mutation) so a repeated dispatch reuses it.
+    pub(crate) fn call_inline_exposed<G: Generators>(
+        &mut self,
+        interface: &str,
+        contract: &str,
+        program_text: &str,
+        request: &CallRequest,
+        generator: &mut G,
+    ) -> Result<CallOutcome, EngineError> {
+        let synthetic = format!("{interface}::{contract}");
+        if self.compiled.mutation(&synthetic).is_none() {
+            let compiled = self.compile_inline_exposed(&synthetic, program_text, request)?;
+            self.compiled.mutations.push(compiled);
+        }
+        self.call(&request.clone().with_mutation(synthetic), generator)
+    }
+
+    /// Compile an inline `$expose` `$mut` program into a synthetic root
+    /// [`CompiledMutation`] (§13.8): the module root is the receiver, and each
+    /// parameter the interface prototype supplies is typed from the matching call
+    /// argument's value. The program body is re-type-checked at admission against
+    /// this scope like any mutation body (§8, [`Interp`]), so a malformed program
+    /// rejects the call rather than corrupting state.
+    fn compile_inline_exposed(
+        &mut self,
+        name: &str,
+        program_text: &str,
+        request: &CallRequest,
+    ) -> Result<CompiledMutation, EngineError> {
+        use liasse_expr::{ExprType, HostPosition};
+        let mut root = Schema::new(&self.model).root_row_type();
+        // §13.1: bind the installed `$config` struct as a root structural so an inline
+        // program reading `$config` resolves, mirroring the child's own compile.
+        if let Some(config) = self.model.config_schema() {
+            root = root.with_structural([("config".to_owned(), ExprType::Row(config.row_type().clone()))]);
+        }
+        let root_ty = ExprType::Row(root);
+        // §13.8/§8.3: the interface prototype supplies the parameters; type each from
+        // the value the caller passed for it.
+        let params: Vec<(String, ExprType)> = request
+            .args()
+            .iter()
+            .filter_map(|(param, value)| scalar_type_of(value).map(|ty| (param.clone(), ExprType::scalar(ty))))
+            .collect();
+        let mut scope = crate::scope::RuntimeScope::new(root_ty.clone(), root_ty)
+            .with_host_position(HostPosition::Mutation);
+        for (param, ty) in &params {
+            scope = scope.with_param(param.clone(), ty.clone());
+        }
+        let src = self.sources.add_label("expose-inline", program_text.to_owned());
+        let parsed = liasse_syntax::parse_expression(src, program_text)
+            .map_err(|diags| EngineError::Invalid(Box::new(diags)))?;
+        Ok(CompiledMutation {
+            name: name.to_owned(),
+            path: Vec::new(),
+            receiver_is_root: true,
+            params,
+            scope,
+            program: vec![crate::compiled::CompiledStmt { stmt: parsed.statement, source: src }],
+            context_structurals: Vec::new(),
+        })
+    }
+
     /// The raw `$expose`d mutation binding text for `interface.mutation` (§13.8),
     /// e.g. `#company.rename({ name: @name })` — the source a §13.4 parent-surface
     /// mutation route parses to reach the parent capability. `None` when the
@@ -2108,6 +2195,26 @@ fn row_at(root: &liasse_expr::Row, steps: &[(String, String)]) -> Option<liasse_
 /// routed by the CORE interface-mutation dispatch; a row-scoped receiver
 /// (`.templates[@t].disable`) or an inline program is a documented seam, so this
 /// returns `None` for anything but a leading-dot bare identifier.
+/// The scalar [`Type`] a concrete argument [`Value`] carries (§A.1), for typing an
+/// inline `$expose` mutation's parameters from the call it was dispatched with
+/// (§13.8). A non-scalar (a set/map/struct/ref/composite/`none`) value contributes
+/// no parameter type — the program simply reads no such `@param` — rather than an
+/// approximate one.
+fn scalar_type_of(value: &Value) -> Option<Type> {
+    Some(match value {
+        Value::Text(_) => Type::Text,
+        Value::Bool(_) => Type::Bool,
+        Value::Int(_) => Type::Int,
+        Value::Decimal(_) => Type::Decimal,
+        Value::Bytes(_) => Type::Bytes,
+        Value::Uuid(_) => Type::Uuid,
+        Value::Date(_) => Type::Date,
+        Value::Timestamp(_) => Type::timestamp(),
+        Value::Duration(_) => Type::Duration,
+        _ => return None,
+    })
+}
+
 fn exposed_mutation_name(binding: &str) -> Option<String> {
     let text = binding.trim();
     let text = text.strip_prefix('=').map_or(text, str::trim);

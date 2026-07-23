@@ -247,8 +247,14 @@ pub const SKIP: &[(&str, &str)] = &[
     // to zero candidates → `PeerUnresolved` → `rejected`); but step 0 installs `t.checkout`,
     // which requires the same unlanded `$deps` provisioning, so the case never reaches step 1.
     ("13-modules/sibling-cannot-address-private-dep-rejected", "§13.6 `$deps` provisioning is unlanded (see private-deps-isolated-per-consumer); step 0 installing the consumer `t.checkout` fails standalone compile, so the sibling-privacy rejection at step 1 is never exercised (the privacy check itself already holds: a private dep is not a `ModuleHost::siblings` candidate)"),
-    // `$if_module` guard (§13.7).
-    ("13-modules/if-module-guarded-state-preserved", "§13.7 `$if_module`-guarded `$expose` declarations are rejected by the model grammar (unlanded), so the child fails to load"),
+    // (§13.7 `$if_module`-guarded declarations now land: the model grammar accepts
+    // `$if_module` on a `$model` collection and an `$expose` interface, the child
+    // compiles, and the composition host gates a guarded interface's boundary
+    // occurrence on its optional `$use` handle being bound to an enabled instance —
+    // disabling the peer withdraws the guarded exposure and re-enabling restores the
+    // preserved rows (§13.7/§13.12). The child's `add` inline `$expose` `$mut` program
+    // dispatches as a synthetic root mutation, so `if-module-guarded-state-preserved`
+    // passes and its entry was pruned as stale.)
     // Update path (§13.14/§13.15): the exposed-surface narrowing recheck and the
     // §13.15 update-report assembly are landed (modules/compat.rs + host.rs), so
     // `minor-update-narrowing-rejected`, `update-narrowing-view-field-rejected`, and

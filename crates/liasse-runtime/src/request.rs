@@ -128,6 +128,14 @@ impl CallRequest {
     pub fn arg_value(&self, name: &str) -> Option<&Value> {
         self.args.get(name)
     }
+
+    /// Every supplied argument, by name (§8.3) — the closed argument object a call
+    /// carries. Used to type the parameters of an inline `$expose` mutation the
+    /// interface prototype supplies (§13.8).
+    #[must_use]
+    pub fn args(&self) -> &BTreeMap<String, Value> {
+        &self.args
+    }
 }
 
 /// The parameter bindings and actor/session identity a view read runs under

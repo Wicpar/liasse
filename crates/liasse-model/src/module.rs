@@ -306,6 +306,22 @@ pub(crate) fn check_expose(reporter: &mut Reporter, value: &DocValue) {
     check_expose_object(reporter, value);
 }
 
+/// Validate an `$if_module` guard value (§13.7): a non-empty string naming one
+/// optional `$use` handle. Whether that handle exists under `$use.$optional` and
+/// is bound to an enabled compatible instance is resolved by the composition
+/// runtime at install/enable/disable time (§13.7), not by this grammar pass.
+pub(crate) fn check_if_module(reporter: &mut Reporter, value: &DocValue) {
+    match value.as_string() {
+        Some(text) if !text.trim().is_empty() => {}
+        _ => reporter.reject_hint(
+            value.span,
+            code::MODULE,
+            "`$if_module` names one optional `$use` handle as a non-empty string",
+            "e.g. `\"$if_module\": \"billing\"` referencing a handle under `$use.$optional`",
+        ),
+    }
+}
+
 fn check_expose_object(reporter: &mut Reporter, value: &DocValue) {
     let Some(interfaces) = value.as_object() else {
         reporter.reject(value.span, code::MODULE, "`$expose` maps interface names to bound surfaces");
@@ -323,10 +339,13 @@ fn check_expose_object(reporter: &mut Reporter, value: &DocValue) {
         for member in members {
             match member.name.text.as_str() {
                 "$view" | "$mut" => {}
+                // §13.7: an exposure MAY be guarded by `$if_module`, naming one
+                // optional `$use` handle whose presence makes the exposure active.
+                "$if_module" => check_if_module(reporter, &member.value),
                 other => reporter.reject(
                     member.span,
                     code::MODULE,
-                    format!("`{other}` is not an `$expose` member; use `$view` and `$mut`"),
+                    format!("`{other}` is not an `$expose` member; use `$view`, `$mut`, and `$if_module`"),
                 ),
             }
         }

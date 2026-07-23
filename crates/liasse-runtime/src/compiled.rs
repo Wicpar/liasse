@@ -276,6 +276,9 @@ impl ViewOrders for ViewOrderResolver<'_> {
 pub(crate) struct CompiledExposed {
     pub(crate) interface: String,
     pub(crate) expr: TypedExpr,
+    /// The `$if_module` guard handle (§13.7), when the exposure is guarded: the
+    /// optional `$use` handle whose presence makes the exposure active.
+    pub(crate) guard: Option<String>,
 }
 
 /// A declared `$modules` space (§13.2): the declaration-name path of the space
@@ -1793,7 +1796,11 @@ fn compile_exposed_views(
     for interface in model.exposed_interfaces() {
         let Some(view) = interface.view.as_ref() else { continue };
         let (expr, _source) = compile_expr(sources, &scope, "expose-view", &view.text)?;
-        out.push(CompiledExposed { interface: interface.name.as_str().to_owned(), expr });
+        out.push(CompiledExposed {
+            interface: interface.name.as_str().to_owned(),
+            expr,
+            guard: interface.guard.clone(),
+        });
     }
     Ok(out)
 }

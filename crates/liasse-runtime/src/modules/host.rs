@@ -313,6 +313,11 @@ impl<F: StoreFactory> ModuleHost<F> {
         interface: &str,
     ) -> Result<Option<ViewResult>, ModuleError> {
         let child = self.enabled_child(space, name)?;
+        // §13.7/§13.12: a guarded interface with an unsatisfied handle exposes no
+        // boundary occurrence, so it reads as an absent interface.
+        if !self.interface_guard_active(child, interface) {
+            return Ok(None);
+        }
         let imports = self.child_imports(space, &child.bindings, &child.resolved_peers)?;
         child.engine.interface_read(interface, &imports).map_err(ModuleError::Engine)
     }
@@ -329,6 +334,11 @@ impl<F: StoreFactory> ModuleHost<F> {
     ) -> Result<Vec<InterfaceRow>, ModuleError> {
         let mut rows = Vec::new();
         for child in self.children.iter().filter(|c| &c.space == space && c.enabled) {
+            // §13.7/§13.12: skip a `$if_module`-guarded interface whose guard handle
+            // is not bound to an enabled instance (no active boundary occurrence).
+            if !self.interface_guard_active(child, interface) {
+                continue;
+            }
             let imports = self.child_imports(&child.space, &child.bindings, &child.resolved_peers)?;
             let Some(result) = child.engine.interface_read(interface, &imports).map_err(ModuleError::Engine)? else {
                 continue;
@@ -401,6 +411,22 @@ impl<F: StoreFactory> ModuleHost<F> {
         // the space is scoped to — admitted against the root engine.
         if let Some(routed) = self.parent_mutation_request(space, name, interface, mutation, request)? {
             return self.root.call(&routed, generator).map_err(ModuleError::Engine);
+        }
+        // §13.8/§13.10: an exposed mutation binding a child-local inline program
+        // (`.notes + { id: @id, note: @note }`) is admitted as a synthetic root
+        // mutation against the child, atomically. Only a `.`-rooted program is routed
+        // here — a bare `.name` reference already resolved above, and a `#handle`
+        // parent/peer import or a `/absolute` parent-surface binding is not a
+        // child-local program.
+        if let Some(binding) = child.engine.exposed_mutation_binding(interface, mutation)
+            && is_inline_child_binding(binding)
+        {
+            let binding = binding.to_owned();
+            let child = self.enabled_child_mut(space, name)?;
+            return child
+                .engine
+                .call_inline_exposed(interface, mutation, &binding, request, generator)
+                .map_err(ModuleError::Engine);
         }
         Err(ModuleError::InterfaceContract(
             interface.to_owned(),
@@ -492,6 +518,11 @@ impl<F: StoreFactory> ModuleHost<F> {
             let names: Vec<String> = child.engine.exposed_interface_names().map(str::to_owned).collect();
             let mut interfaces = Vec::new();
             for interface in names {
+                // §13.7/§13.12: an `$if_module`-guarded interface whose handle is not
+                // bound to an enabled instance contributes no boundary occurrence.
+                if !self.interface_guard_active(child, &interface) {
+                    continue;
+                }
                 if let Some(rows) = child.engine.interface_rows(&interface, &imports).map_err(ModuleError::Engine)? {
                     interfaces.push((interface, rows));
                 }
@@ -716,6 +747,28 @@ impl<F: StoreFactory> ModuleHost<F> {
             .collect()
     }
 
+    /// Whether `child`'s exposed interface `interface` currently contributes a
+    /// boundary occurrence (§13.7). An unguarded interface always does. An
+    /// `$if_module`-guarded one is active only while the named optional `$use` handle
+    /// is bound to an enabled compatible sibling instance (§13.7); disabling that
+    /// sibling withdraws the handle and deactivates the guarded declaration (§13.12),
+    /// so the interface is skipped in aggregation and boundary reads while the guard
+    /// is unsatisfied — the child's private state is untouched and the interface
+    /// reappears when the handle binds an enabled instance again.
+    fn interface_guard_active(&self, child: &Child<F::Store>, interface: &str) -> bool {
+        let Some(handle) = child.engine.exposed_interface_guard(interface) else {
+            return true;
+        };
+        child.resolved_peers.iter().any(|peer| {
+            peer.handle == handle
+                && peer
+                    .instance
+                    .as_deref()
+                    .and_then(|name| self.find(&child.space, name))
+                    .is_some_and(|sibling| sibling.enabled)
+        })
+    }
+
     fn find(&self, space: &ModuleSpace, name: &str) -> Option<&Child<F::Store>> {
         self.children.iter().find(|child| child.is(space, name))
     }
@@ -755,6 +808,17 @@ impl<F: StoreFactory> ModuleHost<F> {
         self.next_incarnation += 1;
         InstanceId::new(token)
     }
+}
+
+/// Whether an `$expose` `$mut` binding is a child-local inline program (§13.8): a
+/// `.`-rooted statement over the module's own state, as opposed to a bare `.name`
+/// mutation reference (already resolved by [`Engine::exposed_mutation`]), a
+/// `#handle` parent/peer import call, or a `/absolute` parent-surface delegation.
+/// A leading `=` expression marker is tolerated.
+fn is_inline_child_binding(binding: &str) -> bool {
+    let text = binding.trim();
+    let text = text.strip_prefix('=').map_or(text, str::trim);
+    text.starts_with('.')
 }
 
 /// The `major.minor.patch` version string of a package model (§13.15 `$from`/`$to`).

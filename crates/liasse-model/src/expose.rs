@@ -41,6 +41,10 @@ pub struct ExposedInterface {
     pub view: Option<ExprSource>,
     /// The callable contracts this interface binds to private mutations (§13.8).
     pub muts: Vec<ExposedMut>,
+    /// The `$if_module` guard handle (§13.7), when declared: the exposure is active
+    /// only while this optional `$use` handle is bound to an enabled compatible
+    /// instance and absent otherwise. `None` for an unconditional exposure.
+    pub guard: Option<String>,
 }
 
 /// One bound interface mutation (§13.8): the contract name a consumer calls and
@@ -97,14 +101,19 @@ impl ExposePhase<'_, '_> {
         let members = interface.value.as_object()?;
         let mut view = None;
         let mut muts = Vec::new();
+        let mut guard = None;
         for member in members {
             match member.name.text.as_str() {
                 "$view" => view = self.view(&member.value),
                 "$mut" => self.muts(&member.value, &mut muts),
+                // §13.7: `$if_module` names the optional `$use` handle this exposure
+                // is guarded by; its grammar is validated by the header phase, so
+                // capture the handle string for the composition runtime here.
+                "$if_module" => guard = member.value.as_string().map(str::to_owned),
                 _ => {} // grammar already reported by the header phase.
             }
         }
-        Some(ExposedInterface { name, view, muts })
+        Some(ExposedInterface { name, view, muts, guard })
     }
 
     /// Type an exposed `$view` against the module root and capture its source. A
