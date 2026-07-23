@@ -10,7 +10,7 @@
 
 use liasse_expr::{ExprType, RowType};
 use liasse_model::{Collection, Model, Node, Shape};
-use liasse_value::{RefTarget, Type};
+use liasse_value::Type;
 
 /// Depth beyond which recursive `$types` expansion yields an opaque `json`,
 /// matching the model resolver's cap (a documented CORE simplification).
@@ -214,9 +214,10 @@ impl<'m> Schema<'m> {
             Node::Collection(collection) => ExprType::View(self.collection_row(collection, depth)),
             Node::Set(set) => ExprType::scalar(Type::Set(Box::new(set.element.clone()))),
             Node::View(view) => ExprType::View(view.row.clone()),
-            Node::Reference(reference) => {
-                ExprType::scalar(Type::Ref(RefTarget::for_key(&reference.key_type)))
-            }
+            // §5.6/§8.3: an optional `$ref` field is `Optional<ref>`, symmetric
+            // with an optional scalar — so the runtime expression checker types
+            // an optional-ref parameter/read as optional, matching the model.
+            Node::Reference(reference) => ExprType::scalar(reference.field_type()),
             Node::Named(name) => match self.model.types().get(name) {
                 Some(target) => self.node_at(target, depth + 1),
                 None => ExprType::scalar(Type::Json),

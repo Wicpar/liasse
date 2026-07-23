@@ -150,6 +150,30 @@ pub struct Reference {
     pub span: ByteSpan,
 }
 
+impl Reference {
+    /// The value [`Type`] a `$ref` FIELD exposes (§5.6): the target's key type as
+    /// a `ref`, wrapped in `Optional` when the field is `$optional` — symmetric
+    /// with an optional scalar field, whose `$optional` is baked into its declared
+    /// type at build (`build/fields.rs`). Baking optionality into the field type
+    /// here (rather than leaving it only on the `optional` flag) is what makes a
+    /// §8.3 parameter inferred from an optional ref field OPTIONAL, matching the
+    /// scalar case, and keeps every consumer of the resolved type (parameter
+    /// inference, view/computed typing, the runtime assignment check) consistent.
+    ///
+    /// A ref used as a `$key` component is always required and takes the bare
+    /// `ref` (A.8: optionals are excluded from row keys), so key derivation keeps
+    /// [`Type::Ref`] directly ([`Node::key_component_type`]) rather than this.
+    #[must_use]
+    pub fn field_type(&self) -> Type {
+        let ref_ty = Type::Ref(RefTarget::for_key(&self.key_type));
+        if self.optional {
+            Type::Optional(Box::new(ref_ty))
+        } else {
+            ref_ty
+        }
+    }
+}
+
 /// A `$view` declaration (§7.1).
 #[derive(Debug, Clone)]
 pub struct ViewDecl {

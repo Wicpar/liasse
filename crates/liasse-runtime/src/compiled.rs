@@ -1078,7 +1078,12 @@ fn compile_field(
             let on_delete = compile_on_delete(sources, schema, root_ty, row_ty, &target, reference, hosts)?;
             CompiledField {
                 name,
-                ty: Type::Ref(liasse_value::RefTarget::for_key(&reference.key_type)),
+                // §5.6/§8.3: an optional `$ref` field is `Optional<ref>`,
+                // symmetric with an optional scalar field — so the static
+                // assignment check accepts an optional-ref parameter and the
+                // field is decodable-absent. Integrity/rekey still key off
+                // `reference` (`RefInfo`), independent of this type.
+                ty: reference.field_type(),
                 reference: Some(RefInfo { target, optional: reference.optional, on_delete }),
                 element_reference: None,
                 default: None,
