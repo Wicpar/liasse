@@ -21,11 +21,15 @@
 //! allocations), `.<meter>.pools`, and `spend.funding`.
 
 use liasse_diag::SourceMap;
-use liasse_expr::{ExprType, RowType, TypedExpr};
+use liasse_expr::{
+    audit_host_position, DbReadPosition, ExprType, HostPosition, RowType, TypedExpr,
+};
+use liasse_syntax::parse_expression;
 use liasse_value::Type;
 
 use crate::compiled::compile_expr as compile_expr_in;
 use crate::error::EngineError;
+use crate::host::HostSignatures;
 use crate::schema::Schema;
 use crate::scope::RuntimeScope;
 
@@ -116,22 +120,31 @@ impl CompiledMeters {
 
 /// Compile every `$limits`/`$consumes` declaration in the model (§15.1), reading
 /// the structured forms from `model_doc`.
+///
+/// `hosts` supplies the resolved `$requires` signatures the §16.5 host-position
+/// audit ([`audit_limits_positions`]/[`audit_consumes_positions`]) checks each
+/// meter sub-expression against: a meter's `$sources`/`$eligible`/`$order` and a
+/// `$consumes` amount/time/metadata are all database-evaluated positions, so a
+/// `$requires`-registered namespace call in one of them is a LOAD-TIME error
+/// (§16.5).
 pub(crate) fn compile(
     sources: &mut SourceMap,
     schema: Schema<'_>,
     root_ty: &ExprType,
     model_doc: &liasse_syntax::DocValue,
+    hosts: &HostSignatures,
 ) -> Result<CompiledMeters, EngineError> {
     let mut out = CompiledMeters { meters: Vec::new(), spends: Vec::new() };
     for member in &schema.model().root().members {
         if let liasse_model::Node::Collection(collection) = &member.node {
             let path = vec![member.name.as_str().to_owned()];
-            compile_at(sources, schema, root_ty, model_doc, &path, collection, &mut out)?;
+            compile_at(sources, schema, root_ty, model_doc, &path, collection, hosts, &mut out)?;
         }
     }
     Ok(out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn compile_at(
     sources: &mut SourceMap,
     schema: Schema<'_>,
@@ -139,14 +152,22 @@ fn compile_at(
     model_doc: &liasse_syntax::DocValue,
     path: &[String],
     collection: &liasse_model::Collection,
+    hosts: &HostSignatures,
     out: &mut CompiledMeters,
 ) -> Result<(), EngineError> {
     let Some(shape) = crate::doc::shape_at(model_doc, path) else {
-        return descend(sources, schema, root_ty, model_doc, path, collection, out);
+        return descend(sources, schema, root_ty, model_doc, path, collection, hosts, out);
     };
     if !collection.shape.meters.is_empty()
         && let Some(limits) = crate::doc::member(shape, "$limits")
     {
+        // §16.5: a meter `$sources`/`$eligible`/`$order` is a database-evaluated
+        // position, so a `$requires`-registered namespace call in it is a LOAD-TIME
+        // error — raised loudly here BEFORE the tolerant `compile_limits` below,
+        // which silently drops a meter that does not re-type for a CORE seam reason
+        // (§15). A §16.5 host-position violation is never such a seam, exactly as
+        // for a surface `$view` or role `$members` (`compiled.rs`).
+        audit_limits_positions(sources, schema, root_ty, path, hosts, limits)?;
         compile_limits(sources, schema, root_ty, path, limits, out);
     }
     // §15: a `$consumes` whose amount/time/metadata does not re-type in the
@@ -155,13 +176,18 @@ fn compile_at(
     // failing the whole package load.
     if collection.consumes
         && let Some(consumes) = crate::doc::member(shape, "$consumes")
-        && let Ok(spend) = compile_consumes(sources, schema, root_ty, path, consumes)
     {
-        out.spends.push(spend);
+        // §16.5: the same audit for a `$consumes` amount/time/metadata expression,
+        // loud before the tolerant `compile_consumes` drop below.
+        audit_consumes_positions(sources, schema, root_ty, path, hosts, consumes)?;
+        if let Ok(spend) = compile_consumes(sources, schema, root_ty, path, consumes) {
+            out.spends.push(spend);
+        }
     }
-    descend(sources, schema, root_ty, model_doc, path, collection, out)
+    descend(sources, schema, root_ty, model_doc, path, collection, hosts, out)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn descend(
     sources: &mut SourceMap,
     schema: Schema<'_>,
@@ -169,16 +195,129 @@ fn descend(
     model_doc: &liasse_syntax::DocValue,
     path: &[String],
     collection: &liasse_model::Collection,
+    hosts: &HostSignatures,
     out: &mut CompiledMeters,
 ) -> Result<(), EngineError> {
     for member in &collection.shape.members {
         if let liasse_model::Node::Collection(nested) = &member.node {
             let mut child = path.to_vec();
             child.push(member.name.as_str().to_owned());
-            compile_at(sources, schema, root_ty, model_doc, &child, nested, out)?;
+            compile_at(sources, schema, root_ty, model_doc, &child, nested, hosts, out)?;
         }
     }
     Ok(())
+}
+
+/// §16.5/§15: audit every `$limits` meter sub-expression (`$sources` pool view,
+/// `$eligible`, `$order`) for the host-position policy. A meter is a
+/// database-evaluated position, so a `$requires`-registered (or non-pure) host
+/// call in it is a load-time error — the *only* diagnostic raised here, through
+/// the tolerant [`audit_host_position`]: every other typing concern (an untyped
+/// pool shape, the `$quantity` projection role) stays the documented CORE seam
+/// the tolerant `compile_limits` owns.
+fn audit_limits_positions(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+    path: &[String],
+    hosts: &HostSignatures,
+    limits: &liasse_syntax::DocValue,
+) -> Result<(), EngineError> {
+    let Some(meters) = crate::doc::object(limits) else { return Ok(()) };
+    let enforcing_ty = schema
+        .receiver_row_type(path)
+        .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
+    // The audit reaches a host call regardless of the pool/spend row shapes (the
+    // §16.5 origin/effect check fires before any argument types), so a loose
+    // `pool`/`spend` binding is enough to walk `$eligible`/`$order` to the call.
+    let scope = RuntimeScope::new(enforcing_ty, bounded_root(root_ty))
+        .with_host_ops(hosts.clone())
+        .with_host_position(HostPosition::DbRead(DbReadPosition::MeterSource))
+        .with_binding("pool", loose_row())
+        .with_binding("spend", loose_row());
+    for meter in meters {
+        let Some(members) = crate::doc::object(&meter.value) else { continue };
+        for member in members {
+            match member.name.text.as_str() {
+                "$sources" => {
+                    for source in crate::doc::object(&member.value).into_iter().flatten() {
+                        if let Some(text) = crate::doc::string(&source.value) {
+                            audit_meter_expr(sources, &scope, text)?;
+                        }
+                    }
+                }
+                "$eligible" => {
+                    if let Some(text) = crate::doc::string(&member.value) {
+                        audit_meter_expr(sources, &scope, text)?;
+                    }
+                }
+                "$order" => {
+                    for item in crate::doc::array(&member.value).into_iter().flatten() {
+                        if let Some(text) = crate::doc::string(item) {
+                            audit_meter_expr(sources, &scope, text.trim_start().trim_start_matches('-'))?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+/// §16.5/§15.1: audit a `$consumes` amount/time/metadata expression for the
+/// host-position policy (a database-evaluated position). A scalar `$consumes`
+/// naming a meter carries no expression (amount/time default to the built-in
+/// `.amount`/`.occurred_at`), so it has nothing to audit.
+fn audit_consumes_positions(
+    sources: &mut SourceMap,
+    schema: Schema<'_>,
+    root_ty: &ExprType,
+    path: &[String],
+    hosts: &HostSignatures,
+    consumes: &liasse_syntax::DocValue,
+) -> Result<(), EngineError> {
+    if crate::doc::string(consumes).is_some() {
+        return Ok(());
+    }
+    let spend_ty = schema
+        .receiver_row_type(path)
+        .unwrap_or_else(|| ExprType::Row(RowType::keyless(std::iter::empty())));
+    let scope = RuntimeScope::new(spend_ty, root_ty.clone())
+        .with_host_ops(hosts.clone())
+        .with_host_position(HostPosition::DbRead(DbReadPosition::MeterSource));
+    for member in crate::doc::object(consumes).into_iter().flatten() {
+        if let Some(text) = crate::doc::string(&member.value) {
+            audit_meter_expr(sources, &scope, text)?;
+        } else if let Some(config) = crate::doc::object(&member.value) {
+            for field in config {
+                if let Some(text) = crate::doc::string(&field.value) {
+                    audit_meter_expr(sources, &scope, text)?;
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Run the §16.5 host-position audit over one meter sub-expression, propagating a
+/// host-position violation as a load error. A parse failure is left to the
+/// tolerant compile / the model's `parse_only` gate (§15) — this audit adds only
+/// the §16.5 enforcement, never a new parse rejection.
+fn audit_meter_expr(
+    sources: &mut SourceMap,
+    scope: &RuntimeScope,
+    text: &str,
+) -> Result<(), EngineError> {
+    let src = sources.add_label("meter", text.to_owned());
+    let Ok(parsed) = parse_expression(src, text) else { return Ok(()) };
+    audit_host_position(scope, src, &parsed).map_err(|d| EngineError::Invalid(Box::new(d)))
+}
+
+/// A loose keyless row for a `pool`/`spend` audit binding — enough to walk an
+/// `$eligible`/`$order` expression to any host call it makes.
+fn loose_row() -> ExprType {
+    ExprType::Row(RowType::keyless(std::iter::empty()))
 }
 
 fn compile_limits(

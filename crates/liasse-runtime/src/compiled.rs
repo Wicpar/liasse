@@ -446,7 +446,7 @@ impl Compiled {
         let surface_views = compile_surface_views(sources, schema, &root_ty, model_doc, &auth, hosts)?;
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc, hosts)?;
         let source_buckets = crate::source_bucket::compile(sources, schema, &root_ty, model_doc)?;
-        let meters = crate::meter::compile(sources, schema, &root_ty, model_doc)?;
+        let meters = crate::meter::compile(sources, schema, &root_ty, model_doc, hosts)?;
         let module_spaces = compile_module_spaces(model_doc, &[]);
         Ok(Self {
             collections,
