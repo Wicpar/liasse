@@ -343,6 +343,55 @@ fn blob_canonical_descriptor_passes_the_wire_boundary() -> Result<(), ValueError
     Ok(())
 }
 
+#[test]
+fn blob_undeclared_member_rejected_at_wire_boundary() {
+    // §18.1: "The blob descriptor is a composite value (Annex A.1)" carrying
+    // exactly `$sha512`, `$bytes`, `$media`, and optional `$name`, and "Only the
+    // canonical form is accepted at the machine wire/request boundary." A composite
+    // value is a closed shape (like a struct, §5.8): a descriptor object carrying a
+    // member the shape does not declare is not the canonical form and is a malformed
+    // descriptor value, rejected exactly as `decode_composite`/`decode_struct` reject
+    // an unexpected member — never silently dropped. Here every declared member is
+    // canonical, so the ONLY reason to reject is the undeclared `$origin`.
+    let wire = serde_json::json!({
+        "$sha512": "ab".repeat(64),
+        "$bytes": "5",
+        "$media": "text/plain",
+        "$origin": "smuggled",
+    });
+    assert!(
+        matches!(
+            Type::Blob.decode_wire(&wire),
+            Err(ValueError::UnexpectedMember(ref member)) if member == "$origin"
+        ),
+        "an undeclared descriptor member must be rejected at the wire boundary, got {:?}",
+        Type::Blob.decode_wire(&wire),
+    );
+}
+
+#[test]
+fn blob_undeclared_member_rejected_at_authoring_boundary() {
+    // The closed-composite shape is not mode-gated: `decode_struct` and
+    // `decode_composite` reject an unexpected member in both the authoring and the
+    // wire decode, and a blob descriptor is the same closed composite (Annex A.1).
+    // An authored descriptor carrying an undeclared member is malformed, not a
+    // leniently normalized value.
+    let wire = serde_json::json!({
+        "$sha512": "ab".repeat(64),
+        "$bytes": "5",
+        "$media": "text/plain",
+        "$origin": "smuggled",
+    });
+    assert!(
+        matches!(
+            Type::Blob.decode(&wire),
+            Err(ValueError::UnexpectedMember(ref member)) if member == "$origin"
+        ),
+        "an undeclared descriptor member must be rejected at the authoring boundary, got {:?}",
+        Type::Blob.decode(&wire),
+    );
+}
+
 // ---- decode rejections Annex A calls out -----------------------------------
 
 #[test]

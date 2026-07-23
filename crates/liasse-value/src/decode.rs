@@ -241,6 +241,18 @@ impl Type {
 
     fn decode_blob(&self, wire: &J, mode: DecodeMode) -> Result<Value, ValueError> {
         let object = self.expect_object(wire)?;
+        // Blobs §18.1: the descriptor is a composite value (Annex A.1) whose members
+        // are exactly `$sha512`, `$bytes`, `$media`, and optional `$name`. A composite
+        // is a closed shape like a struct (§5.8), so a member the descriptor does not
+        // declare is not the canonical form ("Only the canonical form is accepted at
+        // the machine wire/request boundary") and is a malformed descriptor value —
+        // rejected here exactly as `decode_composite`/`decode_struct` reject an
+        // unexpected member, never silently dropped (§12.1).
+        for member in object.keys() {
+            if !matches!(member.as_str(), "$sha512" | "$bytes" | "$media" | "$name") {
+                return Err(ValueError::UnexpectedMember(member.clone()));
+            }
+        }
         let sha = Self::required_str(object, "$sha512")?;
         let bytes_text = Self::required_str(object, "$bytes")?;
         let media = Self::required_str(object, "$media")?;
