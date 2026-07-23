@@ -355,11 +355,23 @@ impl AuthPlan {
         if members.contains('$') {
             return;
         }
-        let Some(collection) = stream_collection(members) else { return };
-        let Some(key) = collection_key(model, collection) else { return };
-
         let members_view = format!("liasse_role_members_{name}");
-        self.synthetic_views.push((members_view.clone(), format!("{members} {{ {key} }}")));
+        // §10.3: `$members` MAY produce actor ROWS or REFS to them, in two shapes:
+        //  - a bare collection stream (`.accounts[:a | a.enabled]`) yields actor
+        //    rows, keyed by that collection's own `$key`;
+        //  - a nested flatten ending in a `.field` navigation
+        //    (`.groups[:g].members[:m].account`) already projects each actor
+        //    key/ref — project that trailing field as a NAMED output rather than
+        //    navigating INTO it (a view over a scalar the checker rejects), keying
+        //    membership on it (mirrors the scoped-role reconstruction).
+        let (view_expr, key) = if let Some((stream, field)) = trailing_field_projection(members) {
+            (format!("{stream} {{ {field} }}"), field.to_owned())
+        } else {
+            let Some(collection) = stream_collection(members) else { return };
+            let Some(key) = collection_key(model, collection) else { return };
+            (format!("{members} {{ {key} }}"), key)
+        };
+        self.synthetic_views.push((members_view.clone(), view_expr));
         self.roles.push(RoleSpec {
             name: name.to_owned(),
             accepts,
@@ -758,6 +770,23 @@ fn stream_collection(expr: &str) -> Option<&str> {
     let end = rest.find(['[', '{', ' ']).unwrap_or(rest.len());
     let name = rest.get(..end)?.trim();
     (!name.is_empty() && is_identifier(name)).then_some(name)
+}
+
+/// A `$members` stream ending in a trailing `.field` navigation after its final
+/// selector — `.groups[:g].members[:m].account` projects each member's `account`
+/// actor-key/ref field (§10.3). Returns `(stream_without_the_field, field)` so the
+/// synthetic members view projects `field` as a NAMED output (`{ account }`) rather
+/// than navigating into a view over a scalar (which the checker rejects). `None`
+/// for a bare collection stream (`.accounts[:a | a.enabled]`, no trailing `.field`).
+fn trailing_field_projection(members: &str) -> Option<(&str, &str)> {
+    let trimmed = members.trim();
+    let after_selector = trimmed.rsplit_once(']')?.1;
+    let field = after_selector.strip_prefix('.')?.trim();
+    if field.is_empty() || !is_identifier(field) {
+        return None;
+    }
+    let stream = trimmed.strip_suffix(after_selector)?;
+    Some((stream, field))
 }
 
 /// Whether `text` is a bare `[A-Za-z_][A-Za-z0-9_]*` identifier.

@@ -383,6 +383,23 @@ pub(super) fn is_program_call(expr: &Expr) -> bool {
     matches!(&expr.kind, ExprKind::Call { callee, .. } if !is_builtin_call(callee))
 }
 
+/// Whether `expr` reads any local name in `deferred` — a local the CORE phase
+/// bound to a value it could not type (a mutation-operator result, §8, or a
+/// host/program-call result, §8.11/§16.4), left UNBOUND rather than mis-typed.
+///
+/// A value expression built over such a local is itself untypeable at this phase
+/// (its type flows from the deferred result), so the §16.2 deferral is transitive:
+/// the phase accepts it structurally rather than rejecting a well-formed reference
+/// with a spurious "unknown name". Its full typing runs under a host-resolved load.
+pub(super) fn references_deferred(expr: &Expr, deferred: &BTreeSet<String>) -> bool {
+    if let ExprKind::Name(id) = &expr.kind
+        && deferred.contains(&id.text)
+    {
+        return true;
+    }
+    child_exprs(expr).into_iter().any(|child| references_deferred(child, deferred))
+}
+
 pub(crate) fn stmt_exprs(stmt: &Stmt) -> Vec<&Expr> {
     match &stmt.kind {
         StmtKind::Return(expr) | StmtKind::Bare(expr) | StmtKind::Clear(expr) => vec![expr],

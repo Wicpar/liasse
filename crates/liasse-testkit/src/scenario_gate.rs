@@ -263,20 +263,27 @@ pub const SKIP: &[(&str, &str)] = &[
     // gap lives in the model/compile/seed layers below the runner.
     // ========================================================================
     // --- load ---
-    ("10-interfaces-roles/duplicate-membership-no-extra-authority", "package does not load yet (upstream compile/model gap)"),
-    // 11-auth session/host-verifier wiring is live (adapter/auth.rs); this
-    // residual case needs a seam the auth wiring does not reach: a scoped-role
-    // inline `$mut` (`/sessions[$session.$key].revoke()`) reading the request-scoped
-    // `$session`, which the surface router does not bind. (The bucket-expiry
-    // reconstruction is now derived from the collection's `$bucket` `$until`, so a
-    // session with an explicit `$from` lower bound activates at its boundary —
+    // (`10-interfaces-roles/duplicate-membership-no-extra-authority` now passes: its
+    // top-level role `$members: ".groups[:g].members[:m].account"` is a nested
+    // flatten ending in a `.field` actor-key projection (§10.3). The auth-plan
+    // reconstruction (adapter/auth.rs `plan_role`) now projects that trailing field
+    // as a NAMED output (`{ account }`) — mirroring the scoped-role path — instead of
+    // navigating into a view over a scalar (which the checker rejects), so the
+    // synthetic membership view compiles and the case runs. Entry pruned as stale.)
+    // 11-auth session/host-verifier wiring is live (adapter/auth.rs); the
+    // `committed-request-final-after-revocation` residual needs a seam the auth
+    // wiring does not reach: a scoped-role inline `$mut`
+    // (`/sessions[$session.$key].revoke()`) reading the request-scoped `$session`,
+    // which the surface router does not bind. (The bucket-expiry reconstruction is
+    // now derived from the collection's `$bucket` `$until`, so a session with an
+    // explicit `$from` lower bound activates at its boundary —
     // `session-not-yet-active-denied` passes and was pruned here.)
     ("11-auth-sessions/committed-request-final-after-revocation", "scoped-role session `revoke()` mutation not bound (denied)"),
     // §14.5 bounded temporal read of an unbounded recurring source-backed bucket
     // now generates the series to the selector's own bound, so `.$at`/`.$between`
     // past the clock resolve; the rollover-at-boundary, future-spanning window, and
     // calendar-monthly-clamp cases pass and were pruned from the ledger.
-    ("14-buckets/dst-fall-back-ambiguous-earlier", "package does not load yet (upstream compile/model gap)"),
+    ("14-buckets/dst-fall-back-ambiguous-earlier", "§14.7 seed rejects: the source-backed bucket's calendar period names IANA zone `Europe/Paris`, which `jiff` cannot resolve — the build configures no time-zone database (`liasse-value` pins jiff `default-features=false`); AND the §14.7 DST `ambiguous`/`missing` resolution policy this case tests is itself unlanded (recur.rs marks those branches unreachable). Needs a deterministic bundled tzdb PLUS the §14.7 ambiguous-policy implementation — a §14.7 feature, not a surgical fix"),
     // §16 registered host namespaces resolve strictly (`Engine::load_with_hosts`,
     // adapter/namespaces.rs). Under the §16.5 mutation-only rule (Phase 7b) a host
     // call in a database-evaluated position is a load error, so these cases were
@@ -341,16 +348,32 @@ pub const SKIP: &[(&str, &str)] = &[
     // admitted — isolated by probe (bind vs. no-bind is the discriminator, not the
     // param key). Not the view-shape seam; distinct §8 bound-patch investigation.
     ("18-blobs/surplus-copy-after-policy-shrinks", "view-shape corpus error fixed (`.docs[@id] { … }` now expects the §6.3/§12.2 one-row array); residual (previously masked) is a §8.4/§8.5 bound-patch seam — `s = .stores[@id] { enabled = @enabled }` binding a patch result to a local is admission-rejected while the direct patch statement is admitted (isolated by probe: bind vs no-bind, not the param key)"),
-    ("annex-d-identity/ref-wire-value-is-current-typed-key", "package does not load yet (upstream compile/model gap)"),
-    ("w-worked-examples/w2-cross-account-session-revoke-has-no-owner-check", "package does not load yet (upstream compile/model gap)"),
-    ("w-worked-examples/w2-disabled-account-fails-actor-check", "package does not load yet (upstream compile/model gap)"),
-    ("w-worked-examples/w2-expired-session-token-replay-denied", "package does not load yet (upstream compile/model gap)"),
-    ("w-worked-examples/w2-login-claims-unlinked-account-rejected", "package does not load yet (upstream compile/model gap)"),
-    ("w-worked-examples/w2-login-subject-confusable-no-match-rejected", "package does not load yet (upstream compile/model gap)"),
-    ("w-worked-examples/w2-one-connection-multiplexes-two-account-sessions", "package does not load yet (upstream compile/model gap)"),
-    ("w-worked-examples/w2-passkey-login-opens-session-and-authenticates", "package does not load yet (upstream compile/model gap)"),
-    ("w-worked-examples/w2-revoked-session-denies-future-requests", "package does not load yet (upstream compile/model gap)"),
-    ("w-worked-examples/w2-two-logins-create-distinct-sessions", "package does not load yet (upstream compile/model gap)"),
+    ("annex-d-identity/ref-wire-value-is-current-typed-key", "load fails: the `$public.posts.$view` reads `p.author.name` — a field THROUGH a ref (`author` is a `ref</users>`). §7.6 pins ref dereference to the SELECTOR form (`/users[p.author]`), not bare field access, so `ref.field` auto-deref is undefined/unlanded (checker: `cannot read field name of a ref`). CORPUS-SUSPECT: the case cites §D.1/§5.4/§6.4, not §7.6's selector-deref rule — a §7.6-vs-field-access tension, not a surgical model bug"),
+    // W2 auth cluster: the packages now LOAD and RUN. The `passkey_login` mutation
+    // binds `identity = webauthn.verify(@response)` (a deferred host-call result) and
+    // then reads `identity.rp`/`login.$key` inside later value expressions (a keyed
+    // `/logins[{…}]` selector). The CORE mutation phase left such deferred locals
+    // UNBOUND and only "accepted a later reference structurally" for the final
+    // (unchecked) `return`; an INTERMEDIATE `local = <fully-typed value>` that read a
+    // deferred local was hard-rejected as `unknown name` (§16.2 deferral not
+    // transitive). liasse-model now propagates the deferral transitively
+    // (mutation/mod.rs `check_statements` + helpers.rs `references_deferred`), so all
+    // nine W2 packages compile. Two whose login is EXPECTED to reject
+    // (`w2-login-claims-unlinked-account-rejected`,
+    // `w2-login-subject-confusable-no-match-rejected`) now PASS end to end and were
+    // pruned from this ledger. The seven below LOAD and run but the login call is
+    // `rejected`: the runtime does not EXECUTE the sim host namespaces
+    // (`webauthn.verify`/`token.sign`/`token.verify`) inside a mutation body under the
+    // harness's lenient load — the SAME registered-namespace-dispatch-into-mutation-
+    // body seam as `16-host-namespaces/verifier-namespace-runs-at-admission`, a
+    // testkit host-execution enablement, NOT a load gap.
+    ("w-worked-examples/w2-cross-account-session-revoke-has-no-owner-check", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
+    ("w-worked-examples/w2-disabled-account-fails-actor-check", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
+    ("w-worked-examples/w2-expired-session-token-replay-denied", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
+    ("w-worked-examples/w2-one-connection-multiplexes-two-account-sessions", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
+    ("w-worked-examples/w2-passkey-login-opens-session-and-authenticates", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
+    ("w-worked-examples/w2-revoked-session-denies-future-requests", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
+    ("w-worked-examples/w2-two-logins-create-distinct-sessions", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
     // ========================================================================
     // RUNTIME RESULT DIVERGES FROM THE CORPUS EXPECTATION
     // The package loads and the steps run, but the runtime's observed outcome, value,

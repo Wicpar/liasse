@@ -33,8 +33,8 @@ use crate::walk::child_exprs;
 
 use helpers::{
     arg_expr, collect_param_refs, host_call_target, is_program_call, is_scalar_binop,
-    local_binding_name, receiver_shape, record, resolve_node, uses_mutation_operator, wrap,
-    write_path, BindEnv, Params,
+    local_binding_name, receiver_shape, record, references_deferred, resolve_node,
+    uses_mutation_operator, wrap, write_path, BindEnv, Params,
 };
 // Re-exported for the surface phase's inline-program check (§10.1), which walks a
 // statement's expressions to reject a public `$actor`/`$session` reference.
@@ -619,6 +619,14 @@ impl MutPhase<'_, '_> {
         // Local bindings introduced by earlier `local = ...` statements are visible
         // to later ones (§8, Annex C.9), so the scope grows as the program is walked.
         let mut scope = scope.clone();
+        // Locals bound to a value the CORE phase cannot type — a mutation-operator
+        // result (insert/replace/delete/patch) or a host/program-call result
+        // (§8.11/§16.4) — are left UNBOUND. A later value expression built over such
+        // a local is itself untypeable here, so the §16.2 deferral is TRANSITIVE:
+        // track the deferred names and accept a reference to one structurally rather
+        // than reject it with a spurious "unknown name" (full typing runs under a
+        // host-resolved load).
+        let mut deferred: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (index, (stmt, source)) in statements.iter().enumerate() {
             self.check_readonly(stmt, &entry.path, *source);
             match &stmt.kind {
@@ -633,10 +641,15 @@ impl MutPhase<'_, '_> {
                         // `local = value_or_mutation_result` (Annex C.9): check the
                         // value, then bind the local for later statements. An
                         // insert/replace or host/program-call result the CORE phase
-                        // cannot type stays a documented seam — left unbound rather
-                        // than mis-typed — so a later reference to it is accepted
-                        // structurally exactly as before.
-                        if let Some(typed) = self.type_value(value, &scope, *source) {
+                        // cannot type — or a value built over an already-deferred
+                        // local — stays a documented seam: left unbound and tracked
+                        // as deferred, so a later reference to it defers too.
+                        if uses_mutation_operator(value)
+                            || is_program_call(value)
+                            || references_deferred(value, &deferred)
+                        {
+                            deferred.insert(local.to_owned());
+                        } else if let Some(typed) = self.type_value(value, &scope, *source) {
                             let ty = typed.ty().clone();
                             scope = scope.with_binding(local.to_owned(), ty);
                         }
