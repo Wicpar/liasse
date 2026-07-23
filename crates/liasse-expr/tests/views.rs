@@ -201,6 +201,62 @@ fn field_access_through_view_flattens_nested_collection_and_keeps_outer_bind() {
 }
 
 #[test]
+fn colon_traversal_of_single_selected_instance_reads_only_that_instance() {
+    // §6.4 + §13.9: `::` may follow a key selection that narrows to one instance —
+    // "the parent MAY select one instance … using ordinary selectors". A single
+    // selected row is a one-row view whose `[:base]` level degenerates to that
+    // row, so `.companies["acme"]::offices` reads exactly Acme's offices, not the
+    // whole-space aggregation `.companies::offices` would flatten. This is the
+    // shape of the §13.4/§13.10/W4 single-instance interface address
+    // `.modules[key]::iface`; the expected single-instance result is deduced from
+    // the spec, independent of the implementation.
+    let office_ty = row_type(
+        vec![("id", scalar(Type::Text)), ("name", scalar(Type::Text))],
+        Some(scalar(Type::Text)),
+    );
+    let company_ty = row_type(
+        vec![("id", scalar(Type::Text)), ("offices", view(office_ty))],
+        Some(scalar(Type::Text)),
+    );
+    let root_ty = row_type(vec![("companies", view(company_ty))], None);
+    let scope = FixedScope::new(ExprType::Row(root_ty));
+
+    let office = |key: &str, name: &str| {
+        keyed_row(key, vtext(key), vec![("id", scell(vtext(key))), ("name", scell(vtext(name)))])
+    };
+    let acme = keyed_row(
+        "acme",
+        vtext("acme"),
+        vec![("id", scell(vtext("acme"))), ("offices", collection(vec![office("hq", "Acme HQ")]))],
+    );
+    let globex = keyed_row(
+        "globex",
+        vtext("globex"),
+        vec![("id", scell(vtext("globex"))), ("offices", collection(vec![office("hq", "Globex HQ")]))],
+    );
+    let root = keyless_row(0, vec![("companies", collection(vec![acme, globex]))]);
+    let dot = Cell::Row(Box::new(root.clone()));
+    let env = FixedEnv::new(root);
+
+    // The `::` traversal of the single selected `acme` row type-checks (it does
+    // not reject with "cannot traverse `::` a row") and yields only Acme's office.
+    let single = eval(
+        &scope,
+        &env,
+        &dot,
+        ".companies[\"acme\"]::offices { company: companies.id, office: offices.id, name: offices.name }",
+    );
+    assert_eq!(
+        rows_fields(&single),
+        vec![vec![
+            ("company".to_owned(), vtext("acme")),
+            ("name".to_owned(), vtext("Acme HQ")),
+            ("office".to_owned(), vtext("hq")),
+        ]]
+    );
+}
+
+#[test]
 fn structured_sort_form_matches_string_form() {
     // §7.3: the structured `{ $by, $dir }` entry expresses the same order as the
     // string form (`-n` / `n`). Both spellings must produce identical row order.

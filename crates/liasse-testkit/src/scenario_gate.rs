@@ -181,11 +181,19 @@ pub const SKIP: &[(&str, &str)] = &[
     // `interface_call`), so the §13.9 aggregation and §13.10 interface mutation
     // reach the installed children. The entries below stay blocked on a distinct
     // seam named per case.
-    ("13-modules/cross-module-atomic-transition", "§13.10 the root package's interface-addressed `$public` surfaces do not compile in a fresh engine, so the deployment cannot be built; cross-module atomic mutation dispatch is unlanded"),
-    ("13-modules/parent-exposed-surface-row-local", "§13.4 `$parent` capability projection and interface-addressed `$public` surfaces are unlanded, so the root package does not compile in a fresh engine"),
-    ("13-modules/rename-instance-stale-name-not-addressable", "the root's interface-addressed `$public` surfaces (`.modules[k]::iface`, `.modules::` aggregation) do not compile in a fresh engine, so the deployment cannot be built"),
-    ("13-modules/uninstall-blocked-by-cross-boundary-restrict-ref", "§13.12 cross-boundary `$on_delete: restrict` blocking plus interface-addressed surfaces are unlanded, so the root package does not compile in a fresh engine"),
-    ("13-modules/uninstall-unbinds-optional-peer", "§13.5/§13.12 optional-peer unbinding plus interface-addressed surfaces are unlanded, so the root package does not compile in a fresh engine"),
+    //
+    // Single-instance interface addressing (`.modules[key]::iface`, §13.4/§13.9/
+    // §13.10/W4) now type-checks and loads: the `::` traversal checker accepts a
+    // single selected-instance row base as well as a whole-space view base
+    // (liasse-expr `check_traverse`/`traverse_view`), so every §13 and w4 ROOT
+    // package now compiles in a fresh engine. The residual per entry below is the
+    // module-runtime feature the deployment still lacks (peer/`$parent` import
+    // resolution at child compile/genesis, cross-module dispatch, contract checks,
+    // update recheck/report), NOT the surface-address compile that used to block.
+    ("13-modules/cross-module-atomic-transition", "§13.10 the interface-addressed `$public` surfaces now compile and the two children install; the residual is cross-module atomic mutation dispatch (the `::iface.mut` interface call at step 4 is `rejected`) — the owner-side metered transition and the caller state change in one atomic cross-module commit are unlanded"),
+    ("13-modules/parent-exposed-surface-row-local", "§13.4 the interface-addressed `$public` surfaces now compile; the residual is `$parent` capability projection — the child `$expose` view reads `#company`/`#org` parent-surface bindings the child install cannot resolve, so its compile fails and install is `invalid`"),
+    ("13-modules/uninstall-blocked-by-cross-boundary-restrict-ref", "§13.12 the interface-addressed `$public` surfaces now compile; the residual is cross-boundary `$on_delete: restrict` — installing the second child that refs across the boundary is `rejected` (its cross-boundary ref binding at install is unlanded), before uninstall-blocking can be exercised"),
+    ("13-modules/uninstall-unbinds-optional-peer", "§13.5/§13.12 the interface-addressed `$public` surfaces now compile; the residual is optional-peer `#billing` import read-through in the child `$expose` view, which the child install cannot resolve (compile fails, install `invalid`), so optional-peer unbinding on uninstall is unreachable"),
     // Interface-contract satisfaction: the child's exposed view/mutation vs the
     // parent's declared `$interfaces` is not checked at install.
     ("13-modules/expose-binding-contract-mismatch-invalid", "§13.8/§13.10 interface-contract satisfaction (the child exposed `$mut`/`$view` binding vs the parent's declared interface) is not checked at install, so the mismatch is admitted"),
@@ -207,7 +215,7 @@ pub const SKIP: &[(&str, &str)] = &[
     ("13-modules/peer-lookup-stays-in-sibling-space-rejected", "§13.5 peer resolution scoping to the sibling space is unlanded; the consumer child fails standalone compile"),
     ("13-modules/required-peer-disabled-candidate-rejected", "§13.5/§13.12 peer resolution that skips disabled candidates is unlanded; the consumer child fails standalone compile"),
     ("13-modules/explicit-peer-binding-cross-space-rejected", "§13.5 peer/`$use` explicit-binding resolution is unlanded; the consumer child fails standalone compile before a cross-space binding can be rejected"),
-    ("13-modules/optional-peer-absent-valid", "§13.5 optional-peer `#handle` read-through is unlanded; the child fails standalone compile / the root interface-addressed surface does not compile"),
+    ("13-modules/optional-peer-absent-valid", "§13.5 the root interface-addressed surface now compiles; the residual is optional-peer `#billing` `#handle` read-through in the child `$expose` view — the child install cannot resolve the optional import, so its compile fails and install is `invalid`"),
     ("13-modules/private-deps-isolated-per-consumer", "§13.6 `$deps` private nested-instance provisioning is unlanded; the consumer child fails standalone compile"),
     ("13-modules/sibling-cannot-address-private-dep-rejected", "§13.6 `$deps` privacy/provisioning is unlanded; the consumer child fails standalone compile"),
     // `$if_module` guard (§13.7).
@@ -224,13 +232,13 @@ pub const SKIP: &[(&str, &str)] = &[
     ("19-history-artifacts/tampered-child-artifact-invalid", "§19 child-module `.liasse` artifact embedding/verification is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
     ("annex-e-compatibility/module-minor-rebinds-interface-implementation-accepted", "§13.15/Annex E the update-report shape is not assembled by the runtime host, so the asserted report value is absent"),
     ("annex-e-compatibility/module-removes-interface-binding-rejected", "§13.14/Annex E the interface-binding-removal narrowing recheck is not enforced by the §20 update the runtime host runs"),
-    ("w-worked-examples/w4-confusable-instance-names-both-install-distinct", "the child module package fails a standalone compile in the current runtime, so install is observed `invalid` rather than `ok` (a §13 child-compile seam)"),
-    ("w-worked-examples/w4-host-imports-exposed-template-across-boundary", "§13.9 the root package's interface-addressed `$public` surfaces do not compile in a fresh engine, so the deployment cannot be built"),
-    ("w-worked-examples/w4-import-disabled-template-across-boundary-rejected", "§13.9/§13.12 the root package's interface-addressed surfaces do not compile in a fresh engine, so the deployment cannot be built"),
-    ("w-worked-examples/w4-install-exposes-enabled-template-to-parent", "§13.8/§13.9 the root package's interface-addressed surfaces do not compile in a fresh engine, so the deployment cannot be built"),
-    ("w-worked-examples/w4-plan-gates-template-disabled-not-exposed", "the child module package fails a standalone compile in the current runtime, so install is observed `invalid` rather than `ok` (a §13 child-compile seam)"),
-    ("w-worked-examples/w4-seed-computed-enabled-reevaluation-unspecified", "the root package's interface-addressed surfaces do not compile in a fresh engine, so the deployment cannot be built (SPEC-ISSUES #23 seed-reevaluation case)"),
-    ("w-worked-examples/w4-uninstall-removes-aggregated-templates", "the child module package fails a standalone compile / §13.9 aggregation is unlanded, so install is observed `invalid` rather than `ok`"),
+    ("w-worked-examples/w4-confusable-instance-names-both-install-distinct", "§13.4 the child module compiles, but install is `rejected` — its `$data` seed computes `enabled` from the `#company` parent-surface binding, unresolved at genesis"),
+    ("w-worked-examples/w4-host-imports-exposed-template-across-boundary", "§13.9 the root interface-addressed `$public` surfaces now compile; the residual is the child install being `rejected` — its `$data` seed computes `enabled: = #company.plan == …` (a §13.4 parent-surface binding) the install cannot resolve at genesis, so the seed is rejected"),
+    ("w-worked-examples/w4-import-disabled-template-across-boundary-rejected", "§13.9/§13.12 the root interface-addressed surfaces now compile; the residual is the child install being `rejected` — its `$data` seed reads the §13.4 `#company` parent-surface binding, unresolved at genesis"),
+    ("w-worked-examples/w4-install-exposes-enabled-template-to-parent", "§13.8/§13.9 the root interface-addressed surfaces now compile; the residual is the child install being `rejected` — its `$data` seed reads the §13.4 `#company` parent-surface binding, unresolved at genesis"),
+    ("w-worked-examples/w4-plan-gates-template-disabled-not-exposed", "§13.4 the child module compiles, but install is `rejected` — its `$data` seed computes `enabled` from the `#company` parent-surface binding, unresolved at genesis"),
+    ("w-worked-examples/w4-seed-computed-enabled-reevaluation-unspecified", "the root interface-addressed surfaces now compile; the residual is the child install being `rejected` — its `$data` seed computes `enabled` from the §13.4 `#company` parent-surface binding, unresolved at genesis (SPEC-ISSUES #23 seed-reevaluation case)"),
+    ("w-worked-examples/w4-uninstall-removes-aggregated-templates", "§13.4 the child module compiles, but install is `rejected` — its `$data` seed computes `enabled` from the `#company` parent-surface binding, unresolved at genesis (so the aggregated-template uninstall is unreachable)"),
     // --- `operator` step ---
     // Root-mutation operator transitions now drive through a synthetic public
     // surface (`SurfaceHost::operator_call`); the entries below remain debt for a

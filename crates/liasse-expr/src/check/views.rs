@@ -135,6 +135,19 @@ impl Checker<'_> {
     }
 
     /// `base::member` (§6.4): flatten `member` across the rows of `base`.
+    ///
+    /// The base is a view (the ordinary `collection::member` aggregation, and the
+    /// §13.9 `.modules::iface` aggregation over every instance) or a single row.
+    /// A single-row base arises when `::` follows a key selection that narrows to
+    /// one instance — §13.9 "the parent MAY select one instance … using ordinary
+    /// selectors" (`.modules[key]::iface`, and the §13.4/§13.10/W4 single-instance
+    /// interface addresses `/companies[k].modules[k]::iface`). Its `[:base]` level
+    /// degenerates to that one row, so `member` is read off it exactly as it is
+    /// off each row of a view. The evaluator already treats a single-row base as a
+    /// one-row view ([`Evaluator::eval_view`]), so only the type side needed the
+    /// row base admitted.
+    ///
+    /// [`Evaluator::eval_view`]: crate::eval::Evaluator::eval_view
     pub(crate) fn check_traverse(
         &mut self,
         expr: &Expr,
@@ -142,19 +155,16 @@ impl Checker<'_> {
         member: &str,
     ) -> Option<TypedExpr> {
         let base = self.check(base)?;
-        if base.ty().as_view().is_none() {
-            return self.error(
-                expr,
-                format!("cannot traverse `::` a {}", base.ty().describe()),
-            );
+        match base.ty() {
+            ExprType::View(_) | ExprType::Row(_) => self.traverse_view(expr, base, member),
+            other => self.error(expr, format!("cannot traverse `::` a {}", other.describe())),
         }
-        self.traverse_view(expr, base, member)
     }
 
     /// Flatten the nested collection `member` across the rows of an already-typed
-    /// view `base` (§6.4). Shared by the `::` traversal and by ordinary
-    /// `view.member` field access — both expand to the same per-row flatten and
-    /// bind the traversed level to its field name.
+    /// view or single row `base` (§6.4). Shared by the `::` traversal and by
+    /// ordinary `view.member` field access — both expand to the same per-row
+    /// flatten and bind the traversed level to its field name.
     pub(crate) fn traverse_view(
         &mut self,
         expr: &Expr,
@@ -162,9 +172,11 @@ impl Checker<'_> {
         member: &str,
     ) -> Option<TypedExpr> {
         let base_row = match base.ty() {
-            ExprType::View(row) => row,
-            // The caller guarantees a view base.
-            _ => return self.error(expr, "expected a view to traverse"),
+            // A view aggregates `member` across its rows; a single row (a key
+            // selection narrowed to one instance, §13.9) reads `member` off itself.
+            ExprType::View(row) | ExprType::Row(row) => row,
+            // The caller guarantees a view or row base.
+            _ => return self.error(expr, "expected a view or row to traverse"),
         };
         let inner = match base_row.field(member) {
             Some(ExprType::View(row)) => row.clone(),
