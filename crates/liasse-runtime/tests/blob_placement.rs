@@ -65,10 +65,17 @@ fn state(stored: &[&str], satisfied: bool, surplus: &[&str]) -> PlacementState {
 }
 
 /// Call the `add` mutation with the fixed descriptor as its `@file` parameter.
+///
+/// §18.5 placement facts are recorded from the blob subsystem's own observation
+/// (`record_blob_placement`), so this admits a descriptor whose bytes a driver
+/// persists OUTSIDE the engine registry — the trusted placement-observation seam.
+/// The ordinary `call` refuses an unbacked blob argument (no committed blob field
+/// without stored bytes), so this test's descriptor-only admission uses
+/// `call_with_external_blobs`.
 fn add(engine: &mut liasse_runtime::Engine<MemoryStore>) -> CallOutcome {
     let mut g = generator();
     engine
-        .call(
+        .call_with_external_blobs(
             &CallRequest::new("add")
                 .arg("id", Value::Text(Text::new("d1")))
                 .arg("file", descriptor()),

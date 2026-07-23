@@ -11,7 +11,7 @@
 use std::collections::BTreeMap;
 
 use liasse_expr::{ExprType, RowType};
-use liasse_value::{RefTarget, Type};
+use liasse_value::Type;
 
 use crate::state::{Collection, Node, Shape};
 
@@ -66,9 +66,10 @@ impl<'a> Resolver<'a> {
             }
             Node::Set(set) => ExprType::scalar(Type::Set(Box::new(set.element.clone()))),
             Node::View(view) => ExprType::View(view.row.clone()),
-            Node::Reference(reference) => {
-                ExprType::scalar(Type::Ref(RefTarget::for_key(&reference.key_type)))
-            }
+            // §5.6/§8.3: a `$ref` field exposes its target key type as a `ref`,
+            // wrapped in `Optional` when `$optional` — symmetric with an optional
+            // scalar field, so a parameter inferred from it is OPTIONAL.
+            Node::Reference(reference) => ExprType::scalar(reference.field_type()),
             Node::Named(name) => match self.types.get(name) {
                 Some(target) => self.node_at(target, depth + 1),
                 None => ExprType::scalar(Type::Json),

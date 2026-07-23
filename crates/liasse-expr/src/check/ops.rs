@@ -316,7 +316,19 @@ impl Checker<'_> {
             needle
         };
         let ok = match haystack.ty() {
-            ExprType::Scalar(Type::Set(elem)) => Some(elem.as_ref()) == needle.ty().as_scalar(),
+            // §optional-membership: an `optional<T>` needle is accepted against a
+            // `set<T>`, exactly as `==` accepts an optional operand (`comparable`) —
+            // peel a leading `optional` before matching the element type. At runtime
+            // an absent (`none`) needle is simply not a member (it never equals a
+            // present element); a present needle is the ordinary membership test. A
+            // bare (required) needle is unaffected.
+            ExprType::Scalar(Type::Set(elem)) => {
+                let needle_ty = match needle.ty().as_scalar() {
+                    Some(Type::Optional(inner)) => Some(inner.as_ref()),
+                    other => other,
+                };
+                needle_ty == Some(elem.as_ref())
+            }
             ExprType::View(_) => true,
             _ => false,
         };

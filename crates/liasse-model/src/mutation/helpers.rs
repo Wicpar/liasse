@@ -284,21 +284,20 @@ fn collect_segments(expr: &Expr, receiver: &[String], segments: &mut Vec<String>
 /// Collect every `@name` parameter reference that must infer a type *here*,
 /// paired with the span of its use, for the §8.3 inferability check.
 ///
-/// A parameter used as a host-namespace call argument (`ns.fn(…, @p, …)`, §16.4)
-/// *is* collected: it is a real contract parameter, inferred from the host
-/// function's declared argument signature (see
-/// [`super::MutPhase::infer_host_args`]), so the caller passes it explicitly in the
-/// §12.1 closed argument object. Collecting it here keeps this inferability check
-/// consistent with that inference — the parameter is inferred *and* found, so a
-/// host-only parameter (`identity = ns.verify(@response)`) is never falsely
-/// rejected as "cannot be inferred".
+/// A parameter used anywhere inside a host-namespace call argument
+/// (`ns.fn({ input: [@p] })`, §16.4) *is* collected: it is a real contract
+/// parameter, inferred from the host function's declared argument signature (see
+/// [`super::host_args::HostArgInference`]), so the caller passes it explicitly in
+/// the §12.1 closed argument object. Collecting it here keeps this inferability
+/// check consistent with that inference — a host-only parameter is inferred and
+/// found, never falsely rejected as "cannot be inferred".
 ///
 /// A parameter whose only occurrence is a *non-host* call argument stays
 /// deliberately uncollected: an in-program mutation-call argument (§8.11) inherits
 /// its type from the callee's contract, a documented cross-program seam the CORE
 /// model does not resolve, so its type is *deferred* rather than rejected here. The
-/// walk therefore descends into a call's callee, into a host call's bare-parameter
-/// arguments, but not into a non-host call's arguments.
+/// walk therefore descends into a call's callee and recursively through every
+/// host-call argument, but not into a non-host call's arguments.
 pub(super) fn collect_param_refs<'e>(expr: &'e Expr, out: &mut Vec<(&'e str, liasse_diag::ByteSpan)>) {
     if let ExprKind::Param(id) = &expr.kind {
         out.push((&id.text, id.span));
@@ -307,9 +306,7 @@ pub(super) fn collect_param_refs<'e>(expr: &'e Expr, out: &mut Vec<(&'e str, lia
         collect_param_refs(callee, out);
         if host_call_target(callee).is_some() {
             for arg in args {
-                if let ExprKind::Param(id) = &arg_expr(arg).kind {
-                    out.push((&id.text, id.span));
-                }
+                collect_param_refs(arg_expr(arg), out);
             }
         }
         return;

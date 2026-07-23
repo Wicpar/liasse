@@ -136,6 +136,30 @@ impl CallRequest {
     pub fn args(&self) -> &BTreeMap<String, Value> {
         &self.args
     }
+
+    /// Whether any argument is bound to a blob descriptor value (§18.7). A blob
+    /// descriptor is committed only with its bytes persisted, so the engine's
+    /// ordinary [`Engine::call`](crate::Engine::call) refuses an unbacked blob
+    /// argument: a host that has persisted the bytes externally routes through
+    /// [`Engine::call_with_external_blobs`](crate::Engine::call_with_external_blobs),
+    /// and the managed path stages a [`BlobIngress`](crate::BlobIngress).
+    #[must_use]
+    pub fn carries_blob_arg(&self) -> bool {
+        self.args
+            .values()
+            .any(|value| matches!(value, Value::Blob(_)))
+    }
+
+    /// The names of arguments bound to a blob descriptor value (§18.7), so the
+    /// engine can require each to carry exactly one matching staged ingress
+    /// before it commits the descriptor (no committed blob field without stored
+    /// bytes).
+    pub(crate) fn blob_arg_names(&self) -> impl Iterator<Item = &str> {
+        self.args
+            .iter()
+            .filter(|(_, value)| matches!(value, Value::Blob(_)))
+            .map(|(name, _)| name.as_str())
+    }
 }
 
 /// The parameter bindings and actor/session identity a view read runs under

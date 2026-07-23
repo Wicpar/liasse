@@ -14,7 +14,7 @@ use liasse_expr::{Cell, Row, RowId};
 use liasse_ident::NameSegment;
 use liasse_model::{Model, Node, Shape};
 use liasse_store::{AddressStep, CollectionPath, KeyValue, RowAddress};
-use liasse_value::{RefTarget, StructType, Text, Type, Value};
+use liasse_value::{StructType, Text, Type, Value};
 
 use crate::materialize::FieldMap;
 
@@ -43,9 +43,10 @@ pub(crate) fn member_type(model: &Model, node: &Node) -> Option<Type> {
         Node::Scalar(field) if field.is_writable() => Some(field.ty.clone()),
         Node::Scalar(_) | Node::Collection(_) | Node::View(_) => None,
         Node::Set(set) => Some(Type::Set(Box::new(set.element.clone()))),
-        Node::Reference(reference) => {
-            Some(Type::Ref(RefTarget::for_key(&reference.key_type)))
-        }
+        // §5.6/§8.3: an optional `$ref` singleton member is `Optional<ref>`,
+        // symmetric with an optional scalar member, so assigning an optional-ref
+        // parameter to it type-checks and an omitted argument leaves it absent.
+        Node::Reference(reference) => Some(reference.field_type()),
         Node::Struct(shape) => Some(Type::Struct(struct_type(model, shape))),
         Node::Named(name) => model.types().get(name).and_then(|node| member_type(model, node)),
     }
