@@ -3,14 +3,17 @@
 
 use std::collections::BTreeMap;
 
+use liasse_expr::{Cell, ExprType};
 use liasse_ident::InstanceId;
 use liasse_store::StoreFactory;
+use liasse_value::{Type, Value};
 
 use crate::engine::Engine;
 use crate::error::EngineError;
 use crate::generator::Generators;
 use crate::imports::ParentImports;
 use crate::modules::install::{AdmittedBindings, InstallRequest, UseSpec};
+use crate::modules::peer::{self, ResolvedPeer, SiblingInterface};
 use crate::modules::{AggregatedInstance, InterfaceRow, ModuleAggregate, ModuleError, ModuleSpace};
 use crate::outcome::CallOutcome;
 use crate::request::{CallRequest, ViewQuery};
@@ -30,6 +33,11 @@ struct Child<S> {
     engine: Engine<S>,
     /// The boundary bindings admitted at install (§13.3 `$resolved`).
     bindings: AdmittedBindings,
+    /// The §13.5 peer handles resolved against the sibling set at install (§13.3
+    /// `$resolved`/`$absent`): each records the concrete sibling instance a handle
+    /// bound to, or its absence for an optional peer. Consulted at every interface
+    /// read so `#handle` evaluates against that sibling's current interface state.
+    resolved_peers: Vec<ResolvedPeer>,
     /// Whether the child's active boundary occurrences are available (§13.3/§13.12
     /// disable/enable). A disabled child keeps its private state and history.
     enabled: bool,
@@ -97,11 +105,18 @@ impl<F: StoreFactory> ModuleHost<F> {
         if self.find(space, &name).is_some() {
             return Err(ModuleError::DuplicateName(name));
         }
-        // §13.4: resolve the parent surfaces this child imports (`company: "$parent"`)
-        // row-local against the space's containing row, BEFORE loading the child, so
-        // its compile types `#company` and its genesis seed evaluates
-        // `enabled = #company.plan == …` against the parent's projected row.
-        let imports = self.child_imports(space, &admitted.bindings)?;
+        // §13.5: resolve every peer `$use` handle against the enabled sibling set in
+        // this space BEFORE loading the child — one candidate auto-binds, several
+        // require an explicit `$use` binding, zero rejects a required binding — so an
+        // unresolvable required peer refuses the install before an incarnation or
+        // store is minted. An optional peer with no candidate resolves as absent.
+        let resolved_peers = peer::resolve(space, &admitted.bindings, &self.siblings(space))?;
+        // §13.4/§13.5: resolve the parent surfaces this child imports (`company:
+        // "$parent"`) row-local against the space's containing row, and bind each
+        // resolved peer handle to its sibling's exposed interface, BEFORE loading the
+        // child — so its compile types `#company`/`#people` and its genesis seed
+        // evaluates against the projected parent row and the bound peer view.
+        let imports = self.child_imports(space, &admitted.bindings, &resolved_peers)?;
         let incarnation = self.mint_incarnation(space, &name);
         let store = self
             .factory
@@ -138,6 +153,7 @@ impl<F: StoreFactory> ModuleHost<F> {
             incarnation: incarnation.clone(),
             engine,
             bindings,
+            resolved_peers,
             enabled: true,
         });
         Ok(incarnation)
@@ -248,7 +264,7 @@ impl<F: StoreFactory> ModuleHost<F> {
         interface: &str,
     ) -> Result<Option<ViewResult>, ModuleError> {
         let child = self.enabled_child(space, name)?;
-        let imports = self.child_imports(space, &child.bindings)?;
+        let imports = self.child_imports(space, &child.bindings, &child.resolved_peers)?;
         child.engine.interface_read(interface, &imports).map_err(ModuleError::Engine)
     }
 
@@ -264,7 +280,7 @@ impl<F: StoreFactory> ModuleHost<F> {
     ) -> Result<Vec<InterfaceRow>, ModuleError> {
         let mut rows = Vec::new();
         for child in self.children.iter().filter(|c| &c.space == space && c.enabled) {
-            let imports = self.child_imports(&child.space, &child.bindings)?;
+            let imports = self.child_imports(&child.space, &child.bindings, &child.resolved_peers)?;
             let Some(result) = child.engine.interface_read(interface, &imports).map_err(ModuleError::Engine)? else {
                 continue;
             };
@@ -420,10 +436,10 @@ impl<F: StoreFactory> ModuleHost<F> {
     fn aggregate_snapshot(&self) -> Result<ModuleAggregate, ModuleError> {
         let mut spaces: BTreeMap<String, Vec<AggregatedInstance>> = BTreeMap::new();
         for child in self.children.iter().filter(|c| c.enabled) {
-            // §13.4: re-resolve this child's parent-surface imports live, so an
-            // `$expose` `$view` reading `#company` reflects the parent's current
-            // state (a prior parent mutation is observed here).
-            let imports = self.child_imports(&child.space, &child.bindings)?;
+            // §13.4/§13.5: re-resolve this child's parent-surface and peer imports
+            // live, so an `$expose` `$view` reading `#company`/`#people` reflects the
+            // parent's current state and each bound peer's current interface rows.
+            let imports = self.child_imports(&child.space, &child.bindings, &child.resolved_peers)?;
             let names: Vec<String> = child.engine.exposed_interface_names().map(str::to_owned).collect();
             let mut interfaces = Vec::new();
             for interface in names {
@@ -500,15 +516,31 @@ impl<F: StoreFactory> ModuleHost<F> {
         }
     }
 
+    /// The evaluation-ready imports a child reads through `#handle`: its §13.4
+    /// parent surfaces plus its §13.5 resolved peers, each bound to its live value
+    /// and type. Recomputed per read so a later parent mutation (§13.4 row-local) or
+    /// a change in a bound peer's interface state is reflected.
+    fn child_imports(
+        &self,
+        space: &ModuleSpace,
+        bindings: &AdmittedBindings,
+        resolved_peers: &[ResolvedPeer],
+    ) -> Result<ParentImports, ModuleError> {
+        let mut imports = self.parent_imports(space, bindings)?;
+        for peer in resolved_peers {
+            self.bind_peer(space, peer, &mut imports)?;
+        }
+        Ok(imports)
+    }
+
     /// Resolve the §13.4 parent surfaces a child imports (`company: "$parent"`,
-    /// `org: "$parent.company"`) into an evaluation-ready [`ParentImports`], each
-    /// handle bound to its parent surface projected row-local against the space's
-    /// containing row from the root engine's current state. A `$use` handle that
-    /// is not a parent capability (a sibling path or peer spec) contributes no
-    /// import; a surface the space does not declare, or a missing containing row,
-    /// binds nothing (the child's `#handle` read then faults, §6.3). Recomputed
-    /// per read so a later parent mutation is reflected (§13.4 row-local, live).
-    fn child_imports(&self, space: &ModuleSpace, bindings: &AdmittedBindings) -> Result<ParentImports, ModuleError> {
+    /// `org: "$parent.company"`) into a [`ParentImports`], each handle bound to its
+    /// parent surface projected row-local against the space's containing row from the
+    /// root engine's current state. A `$use` handle that is not a parent capability
+    /// (a sibling path or peer spec) contributes no import; a surface the space does
+    /// not declare, or a missing containing row, binds nothing (the child's `#handle`
+    /// read then faults, §6.3).
+    fn parent_imports(&self, space: &ModuleSpace, bindings: &AdmittedBindings) -> Result<ParentImports, ModuleError> {
         let mut imports = ParentImports::default();
         let declaration = space.declaration_path();
         let steps = space.containing_row_steps().unwrap_or_default();
@@ -523,6 +555,63 @@ impl<F: StoreFactory> ModuleHost<F> {
             }
         }
         Ok(imports)
+    }
+
+    /// Bind one resolved §13.5 peer handle into `imports`. A required peer binds its
+    /// sibling's exposed interface `$view` — the row-shaped `#people { id, name }`
+    /// contract usage sites define (§13.5) — as a live [`Cell::Collection`] typed
+    /// against the sibling's exposed view type. An optional peer binds a §13.7
+    /// presence value: `true` when the handle is bound to an enabled compatible
+    /// instance and `none` when it is absent, so `has(#billing)` reflects the binding
+    /// rather than the interface's row count (a present-but-empty peer is still
+    /// present). A required peer whose recorded sibling is no longer live binds
+    /// nothing, so its `#handle` read faults (§6.3).
+    fn bind_peer(
+        &self,
+        space: &ModuleSpace,
+        peer: &ResolvedPeer,
+        imports: &mut ParentImports,
+    ) -> Result<(), ModuleError> {
+        let live = peer
+            .instance
+            .as_deref()
+            .and_then(|name| self.find(space, name))
+            .filter(|sibling| sibling.enabled);
+        if peer.optional {
+            let present = live.is_some();
+            let value = if present { Value::Bool(true) } else { Value::None };
+            imports.bind(peer.handle.clone(), ExprType::scalar(Type::Bool), Cell::Scalar(value));
+            return Ok(());
+        }
+        let Some(sibling) = live else {
+            return Ok(());
+        };
+        let sibling_imports = self.parent_imports(&sibling.space, &sibling.bindings)?;
+        let ty = sibling.engine.exposed_view_type(&peer.interface);
+        let value = sibling.engine.interface_collection(&peer.interface, &sibling_imports).map_err(ModuleError::Engine)?;
+        if let (Some(ty), Some(value)) = (ty, value) {
+            imports.bind(peer.handle.clone(), ty, value);
+        }
+        Ok(())
+    }
+
+    /// The enabled sibling instances in `space`, reduced to the interface facts §13.5
+    /// peer resolution matches against (§13.12: a disabled sibling exposes no peer
+    /// availability, so it is omitted). Visited in installation order.
+    fn siblings(&self, space: &ModuleSpace) -> Vec<SiblingInterface> {
+        self.children
+            .iter()
+            .filter(|child| &child.space == space && child.enabled)
+            .map(|child| {
+                let (line, major) = child.engine.package_line_major();
+                SiblingInterface {
+                    name: child.name.clone(),
+                    line: line.to_owned(),
+                    major,
+                    interfaces: child.engine.exposed_interface_names().map(str::to_owned).collect(),
+                }
+            })
+            .collect()
     }
 
     fn find(&self, space: &ModuleSpace, name: &str) -> Option<&Child<F::Store>> {

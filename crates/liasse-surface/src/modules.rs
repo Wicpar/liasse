@@ -55,6 +55,10 @@ pub enum ModuleObservation {
     MissingContainingRow(String),
     /// A `$use`/`$deps` binding spec is malformed (§13.5/§13.6).
     InvalidBinding(String),
+    /// A required peer `$use` handle could not be resolved against the sibling set at
+    /// install (§13.5): zero/several/incompatible/disabled candidates, or an explicit
+    /// binding naming a cross-space instance. An admission refusal, not a fault.
+    PeerUnresolved(String),
 }
 
 impl ModuleObservation {
@@ -78,6 +82,7 @@ impl ModuleObservation {
             ModuleError::InvalidSpace(path) => Ok(Self::InvalidSpace(path)),
             ModuleError::MissingContainingRow(path) => Ok(Self::MissingContainingRow(path)),
             ModuleError::InvalidBinding(spec) => Ok(Self::InvalidBinding(spec)),
+            ModuleError::PeerUnresolved(handle, _reason) => Ok(Self::PeerUnresolved(handle)),
             // §13.8/§13.1: a contract-satisfaction or `$config`-type refusal is a
             // static `invalid` (§13.3 "Loading validates ... before the instance
             // becomes active"), but the `ModuleObservation` vocabulary does not yet

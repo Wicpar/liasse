@@ -352,7 +352,9 @@ fn observe(observation: ModuleObservation) -> Observation {
         | ModuleObservation::Unknown(_)
         | ModuleObservation::Disabled(_)
         | ModuleObservation::InvalidSpace(_)
-        | ModuleObservation::MissingContainingRow(_) => Observation::outcome(Outcome::Rejected),
+        | ModuleObservation::MissingContainingRow(_)
+        // §13.5: an unresolvable required peer binding is an admission-time refusal.
+        | ModuleObservation::PeerUnresolved(_) => Observation::outcome(Outcome::Rejected),
     }
 }
 

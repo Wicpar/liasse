@@ -139,11 +139,16 @@ impl Header {
         if let Some(expose) = root.member("$expose") {
             crate::module::check_expose(reporter, &expose.value);
         }
-        if root.member("$model").is_none() {
+        // §13.1: an application always describes its state, so `$model` is required.
+        // A module owns private state through `$model`, but a pure-consumer module —
+        // one that only re-exposes peer/parent capabilities (§13.4/§13.5) and owns no
+        // state of its own — legitimately declares none, so `$model` is optional for a
+        // module and its absence is an empty state shape (no collections).
+        if kind == Kind::Application && root.member("$model").is_none() {
             reporter.reject_hint(
                 root.span,
                 code::MISSING_MEMBER,
-                "a package definition requires a `$model` object",
+                "an application definition requires a `$model` object",
                 "add a `$model` describing the application state",
             );
         }

@@ -192,7 +192,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // update recheck/report), NOT the surface-address compile that used to block.
     ("13-modules/cross-module-atomic-transition", "§13.10 the interface-addressed `$public` surfaces now compile and the two children install; the residual is cross-module atomic mutation dispatch (the `::iface.mut` interface call at step 4 is `rejected`) — the owner-side metered transition and the caller state change in one atomic cross-module commit are unlanded"),
     ("13-modules/uninstall-blocked-by-cross-boundary-restrict-ref", "§13.12 the interface-addressed `$public` surfaces now compile; the residual is cross-boundary `$on_delete: restrict` — installing the second child that refs across the boundary is `rejected` (its cross-boundary ref binding at install is unlanded), before uninstall-blocking can be exercised"),
-    ("13-modules/uninstall-unbinds-optional-peer", "§13.5/§13.12 the interface-addressed `$public` surfaces now compile; the residual is optional-peer `#billing` import read-through in the child `$expose` view, which the child install cannot resolve (compile fails, install `invalid`), so optional-peer unbinding on uninstall is unreachable"),
     // Interface-contract satisfaction: the child's exposed view/mutation vs the
     // parent's declared `$interfaces` is not checked at install.
     ("13-modules/expose-binding-contract-mismatch-invalid", "§13.8/§13.10 interface-contract satisfaction (the child exposed `$mut`/`$view` binding vs the parent's declared interface) is not checked at install, so the mismatch is admitted"),
@@ -201,18 +200,8 @@ pub const SKIP: &[(&str, &str)] = &[
     // request (adapter/modules.rs), so a fresh-row overlay and its `$check` now run;
     // the three-way *merge* onto an already-seeded row is a runtime seam.
     ("13-modules/install-data-overlay-merge", "§13.3 the installation `$data` overlay's three-way merge onto an existing package-`$data`-seeded row is not landed in the runtime, so the overlay over a seeded row is rejected rather than merged"),
-    // Peer/`$deps` resolution (§13.5/§13.6): the consumer child fails a standalone
-    // compile (an unresolved `#peer` handle, or no `$model`) before peer/dep
-    // binding can run, so a peer-admission `rejected` is observed as a static
-    // `invalid` instead.
-    ("13-modules/peer-zero-candidates-rejected", "§13.5 peer resolution is unlanded; the consumer child (no `$model`, unresolved `#peer`) fails standalone compile, observed `invalid` rather than the peer-admission `rejected`"),
-    ("13-modules/peer-single-candidate-auto-binds", "§13.5 peer auto-binding and `#handle` read-through are unlanded"),
-    ("13-modules/peer-multiple-candidates-need-explicit-binding", "§13.5 peer resolution against the sibling set is unlanded, so the root/child does not build a resolvable deployment"),
-    ("13-modules/peer-incompatible-major-rejected", "§13.5 peer major-compatibility resolution is unlanded; the consumer child fails standalone compile before a candidate can be rejected"),
-    ("13-modules/peer-lookup-stays-in-sibling-space-rejected", "§13.5 peer resolution scoping to the sibling space is unlanded; the consumer child fails standalone compile"),
-    ("13-modules/required-peer-disabled-candidate-rejected", "§13.5/§13.12 peer resolution that skips disabled candidates is unlanded; the consumer child fails standalone compile"),
-    ("13-modules/explicit-peer-binding-cross-space-rejected", "§13.5 peer/`$use` explicit-binding resolution is unlanded; the consumer child fails standalone compile before a cross-space binding can be rejected"),
-    ("13-modules/optional-peer-absent-valid", "§13.5 the root interface-addressed surface now compiles; the residual is optional-peer `#billing` `#handle` read-through in the child `$expose` view — the child install cannot resolve the optional import, so its compile fails and install is `invalid`"),
+    // Private `$deps` resolution (§13.6): the consumer child fails a standalone
+    // compile (an unresolved `#dep` handle) before dep provisioning can run.
     ("13-modules/private-deps-isolated-per-consumer", "§13.6 `$deps` private nested-instance provisioning is unlanded; the consumer child fails standalone compile"),
     ("13-modules/sibling-cannot-address-private-dep-rejected", "§13.6 `$deps` privacy/provisioning is unlanded; the consumer child fails standalone compile"),
     // `$if_module` guard (§13.7).

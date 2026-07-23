@@ -44,6 +44,7 @@ mod host;
 mod install;
 mod merge;
 mod parent;
+mod peer;
 mod space;
 
 pub(crate) use aggregate::{AggregatedInstance, ModuleAggregate};
@@ -85,6 +86,15 @@ pub enum ModuleError {
     /// A `$use`/`$deps` binding spec is malformed (§13.5/§13.6).
     #[error("`{0}` is not a valid module binding spec")]
     InvalidBinding(String),
+    /// A required peer `$use` handle could not be resolved against the sibling
+    /// instance set at install (§13.5 resolution): zero compatible candidates in the
+    /// same module space, several compatible candidates with no explicit `$use`
+    /// binding, an incompatible major, a candidate that is disabled (§13.12 removes
+    /// peer availability), or an explicit binding that names a non-sibling
+    /// (cross-space) instance. An admission refusal, not a static invalidity: the
+    /// package itself is well-formed but no binding satisfies the requirement here.
+    #[error("peer binding `{0}` cannot be resolved: {1}")]
+    PeerUnresolved(String, String),
     /// A child's `$expose` does not structurally satisfy the module space's declared
     /// interface contract (§13.8): a required `$view` field is missing or mistyped,
     /// or the interface is not exposed at all. Rejected before the instance activates

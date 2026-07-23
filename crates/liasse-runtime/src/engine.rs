@@ -80,9 +80,16 @@ pub(crate) fn compile_definition(
     let descriptors = hosts.descriptors();
     let model = Model::build_with_hosts(&mut sources, src, &document, &descriptors)
         .map_err(|d| EngineError::Invalid(Box::new(d)))?;
-    let model_doc = doc::member(document.root(), "$model")
-        .cloned()
-        .ok_or_else(|| EngineError::Internal("definition has no `$model`".to_owned()))?;
+    // §13.1: a pure-consumer module declares no `$model`; compile it against an
+    // empty model shape (no collections). The model layer already accepted the
+    // absence for a module and rejected it for an application, so an empty object
+    // here is the same empty state shape `Model::build` validated.
+    let model_doc = doc::member(document.root(), "$model").cloned().unwrap_or_else(|| {
+        liasse_syntax::DocValue {
+            span: document.root().span,
+            kind: liasse_syntax::DocValueKind::Object(Vec::new()),
+        }
+    });
     // §4.4: the package's declared `timestamp_precision` governs how a bare
     // `timestamp` field decodes its wire count; default microseconds when unset.
     let precision = doc::member(document.root(), "$semantics")
@@ -1859,6 +1866,36 @@ impl<S: InstanceStore> Engine<S> {
                 .filter_map(|(name, ty)| ty.as_scalar().map(|ty| (name.clone(), ty.clone())))
                 .collect(),
         )
+    }
+
+    /// The full type of the `$expose`d interface `$view` for `interface` (§13.8): a
+    /// `View`/`Row` shape a peer consumer types its `#handle` read against at compile
+    /// (§13.5 — "usage sites define the structural contract"). `None` when no
+    /// interface of that name exposes a readable `$view`.
+    pub(crate) fn exposed_view_type(&self, interface: &str) -> Option<liasse_expr::ExprType> {
+        self.compiled.exposed_view(interface).map(|expr| expr.ty().clone())
+    }
+
+    /// The `$expose`d interface `$view` rows read through the boundary as one
+    /// [`Cell::Collection`] (§13.8/§13.5) — the value a peer consumer's bound
+    /// `#handle` evaluates to. `None` when no interface of that name exposes a
+    /// readable `$view`.
+    pub(crate) fn interface_collection(
+        &self,
+        interface: &str,
+        imports: &crate::imports::ParentImports,
+    ) -> Result<Option<Cell>, EngineError> {
+        Ok(self.interface_rows(interface, imports)?.map(Cell::Collection))
+    }
+
+    /// This instance's package compatibility line and major version (§13.5/§13.14):
+    /// the `$module`/`$app` line name and the semantic-version major a peer spec's
+    /// `line@major` matches against. Breaking changes use a new major (§13.14), so a
+    /// candidate is compatible with `@N` only when its major equals `N`.
+    #[must_use]
+    pub(crate) fn package_line_major(&self) -> (&str, u64) {
+        let identity = &self.model.header().identity;
+        (identity.name.as_str(), identity.version.major)
     }
 
     /// The `$interfaces` boundary contracts of the `$modules` space at declaration

@@ -132,7 +132,7 @@ impl<'a> Builder<'a> {
     /// a module package's `$config` struct schema (§13.1) when present.
     pub(crate) fn run(
         reporter: &mut Reporter,
-        model: &'a DocValue,
+        model: Option<&'a DocValue>,
         types_doc: Option<&'a DocValue>,
         config_doc: Option<&'a DocValue>,
     ) -> StateBuild<'a> {
@@ -155,12 +155,17 @@ impl<'a> Builder<'a> {
         if let Some(types_doc) = types_doc {
             builder.build_types(reporter, types_doc);
         }
-        let root = match model.as_object() {
-            Some(members) => builder.build_shape(reporter, members, &[], true),
-            None => {
-                reporter.reject(model.span, code::HEADER, "`$model` must be an object");
-                Shape::default()
-            }
+        // §13.1: a pure-consumer module declares no `$model` — an empty state shape,
+        // no collections. A declared but non-object `$model` is still a header error.
+        let root = match model {
+            None => Shape::default(),
+            Some(model) => match model.as_object() {
+                Some(members) => builder.build_shape(reporter, members, &[], true),
+                None => {
+                    reporter.reject(model.span, code::HEADER, "`$model` must be an object");
+                    Shape::default()
+                }
+            },
         };
         builder.register_recursion_targets(&root);
         // §13.1: a module's `$config` is a static struct of typed installation

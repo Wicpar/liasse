@@ -94,8 +94,8 @@ impl Model {
             types,
             data,
         } = Header::build(&mut reporter, document.root())?;
-        let model = model?;
-
+        // §13.1: a pure-consumer module declares no `$model` (an empty state shape);
+        // an application without `$model` was already rejected in the header phase.
         let build = Builder::run(&mut reporter, model, types, document.root().member("$config").map(|m| &m.value));
         let mut root = build.root;
         refs::resolve(&mut reporter, &mut root);
@@ -153,7 +153,7 @@ impl Model {
         // as a top-level member. Validate its shape wherever it is declared and
         // retain the parsed programs so the runtime can compile them (§20.1).
         let migrations = model
-            .member("$migrations")
+            .and_then(|model| model.member("$migrations"))
             .or_else(|| document.root().member("$migrations"))
             .map(|m| migration::check(&mut reporter, sources, &m.value))
             .unwrap_or_default();
