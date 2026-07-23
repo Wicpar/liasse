@@ -7,7 +7,7 @@ use liasse_value::{RefTarget, StructType, Type};
 
 use crate::check::Checker;
 use crate::env::CallSite;
-use crate::host::{HostOp, HostPosition};
+use crate::host::{HostEffect, HostOp, HostOrigin, HostPosition};
 use crate::ty::ExprType;
 use crate::typed::{AggFunc, BuiltinFn, TypedExpr, TypedKind, TypedSelector};
 
@@ -294,6 +294,17 @@ impl Checker<'_> {
         // `duration` value (the §11.5 `now() + time.duration('P30D')` session TTL).
         if (namespace, function) == ("time", "duration") {
             return self.check_builtin(expr, BuiltinFn::TimeDuration, args, ExprType::scalar(Type::Duration));
+        }
+        // §16.1/§16.5: the core codec namespaces (`base64`/`hex` byte↔text codecs
+        // and the `string` byte codecs) are engine-linked built-ins, resolved here
+        // — before any `$requires` namespace — with a `Core` origin and `Pure`
+        // effect, so they stay legal in EVERY database-evaluated position (a view,
+        // a `$check`, a computed value, a field default, a §20 `$as`/`$back`
+        // transform), not only a mutation body. They are checked through the shared
+        // host-call path so the pinned `[param] -> result` signature and the
+        // position policy apply uniformly (§16.2).
+        if let Some(op) = core_codec_op(namespace, function) {
+            return self.check_host_call(expr, namespace, function, args, &op);
         }
         // §16.2: a declared `$requires` host namespace supplies a pinned signature
         // the call site is type-checked against. An undeclared namespace resolves
@@ -672,6 +683,26 @@ fn core_string_fn(namespace: &str, function: &str) -> Option<BuiltinFn> {
         ("string", "trim") => Some(BuiltinFn::StringTrim),
         _ => None,
     }
+}
+
+/// The pinned op of a core codec built-in (§16.1) a `namespace.function` names, if
+/// any: the `base64`/`hex` byte↔text codecs (`encode(bytes) -> text`,
+/// `decode(text) -> bytes`) and the `string` byte codecs (`bytes(text) -> bytes`,
+/// `from_bytes(bytes) -> text`). Every one is engine-linked, so its origin is
+/// [`HostOrigin::Core`] and its effect [`HostEffect::Pure`] — legal in every
+/// database-evaluated position (§16.5), unlike an app-registered `$requires`
+/// namespace. The `string.bytes`/`from_bytes` entries coexist with the language
+/// `string.lower`/`upper`/`casefold`/`trim` built-ins (resolved by
+/// [`core_string_fn`] before this), which never collide by function name.
+fn core_codec_op(namespace: &str, function: &str) -> Option<HostOp> {
+    let (param, result) = match (namespace, function) {
+        ("base64" | "hex", "encode") => (Type::Bytes, Type::Text),
+        ("base64" | "hex", "decode") => (Type::Text, Type::Bytes),
+        ("string", "bytes") => (Type::Text, Type::Bytes),
+        ("string", "from_bytes") => (Type::Bytes, Type::Text),
+        _ => return None,
+    };
+    Some(HostOp::new([param], result, HostEffect::Pure, HostOrigin::Core))
 }
 
 /// The value expression of a call argument (a host call's arguments carry no

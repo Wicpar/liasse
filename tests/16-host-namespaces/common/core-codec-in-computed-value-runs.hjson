@@ -1,0 +1,71 @@
+{
+  format: 1
+  name: core-codec-in-computed-value-runs
+  suite: scenario
+  spec: ["#host-namespaces", "§16.1", "§16.5", "#expressions", "§6.5"]
+  note: '''
+    §16.1: `base64`, `hex`, and `string` are CORE namespaces, part of the
+    standard core and available without a `$requires` declaration. §16.5: the
+    built-in namespaces (§16.1) are legal in EVERY database-evaluated position —
+    a `$view`, a `$check`, a computed value (§5.2), a field default — not only a
+    §20 migration `$as`/`$back` transform (the only position the spec spells the
+    codecs out for). This case exercises all six core codec functions inside §5.2
+    computed values with no `$requires` and no registered host namespace, then
+    reads them through the database-evaluated view and the mutation return.
+
+    Expected values are hand-derived from the UTF-8 encoding of "liasse":
+    l=0x6c i=0x69 a=0x61 s=0x73 s=0x73 e=0x65 -> bytes 6c 69 61 73 73 65.
+      base64.encode(string.bytes("liasse")) = "bGlhc3Nl"
+        (011011 000110 100101 100001 | 011100 110111 001101 100101
+         = b G l h | c 3 N l)
+      hex.encode(string.bytes("liasse")) = "6c6961737365" (lowercase, §16.1)
+      string.from_bytes(base64.decode(base64.encode(string.bytes("liasse"))))
+        = "liasse" (round trip)
+      string.from_bytes(hex.decode(hex.encode(string.bytes("liasse"))))
+        = "liasse" (round trip)
+    None of these are produced by running the implementation — each follows from
+    the codec definitions in §6.5/§16.1.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.corecodec@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        // §16.1/§16.5: core codecs in §5.2 computed values, each self-contained
+        // over the writable `name`, so no computed-to-computed ordering is relied on.
+        encoded: "= base64.encode(string.bytes(.name))"
+        hexed: "= hex.encode(string.bytes(.name))"
+        restored: "= string.from_bytes(base64.decode(base64.encode(string.bytes(.name))))"
+        unhexed: "= string.from_bytes(hex.decode(hex.encode(string.bytes(.name))))"
+      }
+      listing: { $view: ".notes { id, encoded, hexed, restored, unhexed }" }
+      $mut: {
+        add: [
+          "row = .notes + { id: @id, name: @name }"
+          "return row { id, encoded, hexed, restored, unhexed }"
+        ]
+      }
+      $public: {
+        notes: { $view: ".listing", $mut: { add: ".add" } }
+      }
+    }
+  }
+
+  // deliberately no $requires and no hosts.namespaces: the codecs are core
+  // built-ins the engine links, not registered host components.
+
+  steps: [
+    { call: "public.notes.add", args: { id: "n1", name: "liasse" },
+      expect: { outcome: ok, value: {
+        id: "n1", encoded: "bGlhc3Nl", hexed: "6c6961737365",
+        restored: "liasse", unhexed: "liasse" } } }
+    { watch: "public.notes", id: "w1",
+      expect_init: { value: [ {
+        id: "n1", encoded: "bGlhc3Nl", hexed: "6c6961737365",
+        restored: "liasse", unhexed: "liasse" } ] } }
+  ]
+}

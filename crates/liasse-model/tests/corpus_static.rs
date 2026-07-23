@@ -55,10 +55,6 @@ const SKIP: &[(&str, &str)] = &[
         "host expr-namespace version resolution (§16); registry lacks `util.*`",
     ),
     (
-        "16-host-namespaces/core-namespaces-load-without-requires",
-        "core namespace expr functions beyond the attested subset not in the expr registry (§16.1)",
-    ),
-    (
         "16-host-namespaces/requires-key-aliases-expression-namespace",
         "aliased host expr-namespace resolution (§16.2); registry lacks `codec.*`",
     ),

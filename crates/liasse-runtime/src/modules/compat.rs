@@ -39,12 +39,48 @@ struct ExposedSurface {
     interfaces: BTreeMap<String, ExposedInterface>,
 }
 
-/// One exposed interface's boundary contract (§13.8): the field names its `$view`
+/// One exposed interface's boundary contract (§13.8): the fields its `$view`
 /// projects across the boundary, and each exposed operation mapped to the private
 /// binding text it names (`create` -> `.create_template`).
 struct ExposedInterface {
-    view_fields: BTreeSet<String>,
+    view: ViewSurface,
     operations: BTreeMap<String, String>,
+}
+
+/// The field surface an exposed `$view` projects across the boundary (§13.8/E.2).
+/// A pass-through selector (`.templates`) exposes EVERY field of its source row —
+/// a superset of any projection of that source — while a projection
+/// (`.templates { id, label }`) exposes exactly its named outputs. Keeping the two
+/// apart is what §13.14 needs: a pass-through candidate can never narrow a
+/// projection, so widening a projection to a pass-through is not a narrowing, and
+/// the reverse cannot be classified from the definition text alone (the projection
+/// may or may not list every source field).
+enum ViewSurface {
+    /// A pass-through `$view`: the whole source row, so every source field.
+    All,
+    /// A projection `$view` exposing exactly these output field names.
+    Fields(BTreeSet<String>),
+}
+
+impl ViewSurface {
+    /// The first field `other` exposes that `self` does not, when that is
+    /// definitionally decidable (both projections). A pass-through on either side
+    /// exposes an unbounded / unknowable set, so it yields no nameable dropped field.
+    fn dropped_from(&self, other: &Self) -> Option<String> {
+        match (self, other) {
+            (Self::Fields(mine), Self::Fields(theirs)) => theirs.difference(mine).next().cloned(),
+            _ => None,
+        }
+    }
+
+    /// Whether two surfaces are the identical contract (§13.15 `$unchanged`).
+    fn same(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::All, Self::All) => true,
+            (Self::Fields(a), Self::Fields(b)) => a == b,
+            _ => false,
+        }
+    }
 }
 
 /// How an exposed-surface narrowing is classified for the update outcome
@@ -97,8 +133,12 @@ pub(crate) fn exposed_narrowing(active: &str, candidate: &str) -> Option<Narrowi
         };
         // E.5: an exposed view that projects fewer fields narrows the observable
         // output shape — a definitional self-narrowing regardless of what a parent
-        // requires.
-        if let Some(field) = active_iface.view_fields.difference(&candidate_iface.view_fields).next() {
+        // requires. A pass-through candidate (`.templates`) exposes a superset of
+        // any projection, so widening a projection to a pass-through is NOT a
+        // narrowing; only a projection that definitionally drops a field the active
+        // surface exposed is reported (`dropped_from` yields nothing when either
+        // side is a pass-through).
+        if let Some(field) = candidate_iface.view.dropped_from(&active_iface.view) {
             return Some(Narrowing {
                 reason: format!("exposed interface `{name}` view drops field `{field}`"),
                 class: NarrowingClass::Definitional,
@@ -158,16 +198,17 @@ impl ExposedInterface {
     /// the same contract"), so only the operation names are compared, not their
     /// binding text.
     fn same_contract(&self, other: &Self) -> bool {
-        self.view_fields == other.view_fields && self.operations.keys().eq(other.operations.keys())
+        self.view.same(&other.view) && self.operations.keys().eq(other.operations.keys())
     }
 
-    /// Read one exposed interface's `$view` output fields and `$mut` operation
+    /// Read one exposed interface's `$view` output surface and `$mut` operation
     /// bindings from its `$expose` object.
     fn read(decl: &liasse_syntax::DocValue) -> Self {
-        let view_fields = doc::member(decl, "$view")
+        // A missing `$view` exposes no view surface (an interface may bind only
+        // `$mut`); an empty projection, not a pass-through.
+        let view = doc::member(decl, "$view")
             .and_then(doc::string)
-            .map(view_output_fields)
-            .unwrap_or_default();
+            .map_or_else(|| ViewSurface::Fields(BTreeSet::new()), view_surface);
         let mut operations = BTreeMap::new();
         if let Some(muts) = doc::member(decl, "$mut").and_then(doc::object) {
             for entry in muts {
@@ -178,7 +219,7 @@ impl ExposedInterface {
                 operations.insert(entry.name.text.clone(), binding);
             }
         }
-        Self { view_fields, operations }
+        Self { view, operations }
     }
 }
 
@@ -243,31 +284,35 @@ fn backing_mutation(binding: &str) -> Option<&str> {
     Some(tail)
 }
 
-/// The output field names an exposed `$view` projection declares (§13.8): the
-/// members of its trailing `{ ... }` projection, each named or bare-shorthand
-/// member contributing its output name; a `$`-directive (`$sort`, `$key`, …) is
-/// not an output field. A `$view` that is not a plain projection contributes no
-/// readable fields.
-fn view_output_fields(text: &str) -> BTreeSet<String> {
+/// The field surface an exposed `$view` projects (§13.8/E.2). A trailing `{ ... }`
+/// projection yields [`ViewSurface::Fields`] of its named / bare-shorthand output
+/// names (a `$`-directive such as `$sort`/`$key` is not an output field); a
+/// pass-through selection with no projection (`.templates`) yields
+/// [`ViewSurface::All`] — the whole source row. A `$view` that does not parse is
+/// treated as a pass-through, so it can never be misread as a field *drop* (the
+/// model layer reports the malformed view separately).
+fn view_surface(text: &str) -> ViewSurface {
     let mut sources = SourceMap::new();
     let source = sources.add_label("expose-view", text.to_owned());
     let Ok(parsed) = parse_expression(source, text) else {
-        return BTreeSet::new();
+        return ViewSurface::All;
     };
     let StmtKind::Bare(expr) = &parsed.statement().kind else {
-        return BTreeSet::new();
+        return ViewSurface::All;
     };
     let ExprKind::Block { members, .. } = &expr.kind else {
-        return BTreeSet::new();
+        // A bare selector (`.templates`, `#handle.rows`) projects the whole row.
+        return ViewSurface::All;
     };
-    members
+    let fields = members
         .iter()
         .filter_map(|member| match &member.kind {
             BlockMemberKind::Named { name, .. } => Some(name.text.clone()),
             BlockMemberKind::Shorthand(expr) => shorthand_output_name(expr),
             BlockMemberKind::Directive { .. } | BlockMemberKind::Clear(_) | BlockMemberKind::Assign { .. } => None,
         })
-        .collect()
+        .collect();
+    ViewSurface::Fields(fields)
 }
 
 /// The output field name a bare projection shorthand contributes: the trailing

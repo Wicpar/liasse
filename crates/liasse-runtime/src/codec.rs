@@ -148,18 +148,55 @@ impl HostNamespace for CodecNamespace {
 
     fn invoke(&self, function: &str, args: &[Value]) -> Result<Value, InvocationFailure> {
         let op = self.op(function).ok_or_else(|| InvocationFailure::UnknownFunction(function.to_owned()))?;
-        let [arg] = args else {
-            return Err(InvocationFailure::Arity { function: function.to_owned(), expected: 1, found: args.len() });
-        };
-        match op {
-            Op::Encode(radix) => Ok(Value::Text(Text::new(encode(radix, expect_bytes(function, arg)?)))),
-            Op::Decode(radix) => Ok(Value::Bytes(decode(function, radix, expect_text(function, arg)?)?)),
-            Op::StringBytes => Ok(Value::Bytes(Bytes::new(expect_text(function, arg)?.as_str().as_bytes().to_vec()))),
-            Op::StringFromBytes => {
-                let text = String::from_utf8(expect_bytes(function, arg)?.as_slice().to_vec())
-                    .map_err(|_| verification(function, "bytes are not valid UTF-8"))?;
-                Ok(Value::Text(Text::new(text)))
-            }
+        apply(op, function, args)
+    }
+}
+
+/// The `(namespace, function)` of a core codec built-in (§16.1), if any: the
+/// `base64`/`hex` byte↔text codecs and the `string` byte codecs. This is the
+/// single mapping the checker's origin/effect view mirrors — engine-linked, so
+/// `Core`/`Pure` — and keeps the eval roster and the descriptor roster in step.
+fn core_op(namespace: &str, function: &str) -> Option<Op> {
+    Some(match (namespace, function) {
+        ("base64", "encode") => Op::Encode(Radix::Base64),
+        ("base64", "decode") => Op::Decode(Radix::Base64),
+        ("hex", "encode") => Op::Encode(Radix::Hex),
+        ("hex", "decode") => Op::Decode(Radix::Hex),
+        ("string", "bytes") => Op::StringBytes,
+        ("string", "from_bytes") => Op::StringFromBytes,
+        _ => return None,
+    })
+}
+
+/// Evaluate a core codec built-in `namespace.function` (§16.1) directly, without a
+/// resolved `$requires` binding: the codecs are engine-linked pure functions
+/// available in EVERY database-evaluated position (§16.5), so the runtime dispatch
+/// serves them statelessly rather than requiring a per-instance host component.
+/// Returns `None` when `namespace.function` is not a core codec, so the caller
+/// falls through to the package's own resolved host namespaces.
+pub(crate) fn invoke_core(
+    namespace: &str,
+    function: &str,
+    args: &[Value],
+) -> Option<Result<Value, InvocationFailure>> {
+    core_op(namespace, function).map(|op| apply(op, function, args))
+}
+
+/// Apply one codec `op` to its single argument, reporting an arity or type
+/// mismatch as an [`InvocationFailure`] (the checker has already pinned both, so a
+/// mismatch is a contract breach rather than an ordinary path).
+fn apply(op: Op, function: &str, args: &[Value]) -> Result<Value, InvocationFailure> {
+    let [arg] = args else {
+        return Err(InvocationFailure::Arity { function: function.to_owned(), expected: 1, found: args.len() });
+    };
+    match op {
+        Op::Encode(radix) => Ok(Value::Text(Text::new(encode(radix, expect_bytes(function, arg)?)))),
+        Op::Decode(radix) => Ok(Value::Bytes(decode(function, radix, expect_text(function, arg)?)?)),
+        Op::StringBytes => Ok(Value::Bytes(Bytes::new(expect_text(function, arg)?.as_str().as_bytes().to_vec()))),
+        Op::StringFromBytes => {
+            let text = String::from_utf8(expect_bytes(function, arg)?.as_slice().to_vec())
+                .map_err(|_| verification(function, "bytes are not valid UTF-8"))?;
+            Ok(Value::Text(Text::new(text)))
         }
     }
 }

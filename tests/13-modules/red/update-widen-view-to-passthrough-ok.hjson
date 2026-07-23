@@ -1,0 +1,80 @@
+{
+  format: 1
+  name: update-widen-view-to-passthrough-ok
+  suite: scenario
+  spec: ["#modules", "§13.14"]
+  note: '''
+    §13.14: within one package major, minor and patch releases MUST preserve OR
+    WIDEN the exposed compatibility surface; only a NARROWING is refused. v1.0.0
+    exposes `.templates { id }` — a surface of {id}. v1.1.0 exposes the
+    pass-through `.templates`, whose surface is every field of the templates row,
+    {id, label} — a strict superset of {id}. Widening the exposed view from a
+    projection to a pass-through therefore preserves every promised field and is
+    accepted; the instance moves to 1.1.0. The narrowing recheck must not mistake
+    a pass-through (which exposes the whole row) for a view that drops fields.
+    Expected outcome deduced from §13.14 alone, not from the implementation.
+  '''
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.mod.host@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                templates: { $view: { $key: "id", id: "text" } }
+              }
+            }
+          }
+          catalog: {
+            $view: ".modules::templates { module: modules.$key, id, $sort: [module, id] }"
+          }
+        }
+        $public: {
+          catalog: {
+            $params: { company: "text" }
+            $view: "/companies[@company].catalog"
+          }
+        }
+      }
+      $data: { companies: { acme: { name: "Acme" } } }
+    }
+    tplw1: {
+      $liasse: 1
+      $module: "t.tplw@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+      }
+      $data: { templates: { std: { label: "Standard" } } }
+      $expose: {
+        templates: { $view: ".templates { id }" }
+      }
+    }
+    tplw2: {
+      $liasse: 1
+      $module: "t.tplw@1.1.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+      }
+      $data: { templates: { std: { label: "Standard" } } }
+      $expose: {
+        // widening: a pass-through exposes the whole row {id, label} ⊇ {id}
+        templates: { $view: ".templates" }
+      }
+    }
+  }
+  root: host
+  steps: [
+    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.tplw@1.0.0" } }
+      expect: { outcome: ok } }
+    { module_update: { instance: "/companies/acme/modules/kit", to: "t.tplw@1.1.0" }
+      expect: { outcome: ok } }
+    // the widened instance now runs at 1.1.0 and still serves its row
+    { watch: "public.catalog", args: { company: "acme" }, id: "w1"
+      expect_init: { value: [ { module: "kit", id: "std" } ] } }
+  ]
+}

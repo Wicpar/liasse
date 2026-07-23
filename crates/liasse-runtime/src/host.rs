@@ -371,6 +371,13 @@ impl<'a> HostDispatch<'a> {
         function: &str,
         args: &[Value],
     ) -> Result<Value, Rejection> {
+        // §16.1/§16.5: the core codec namespaces are engine-linked pure built-ins,
+        // served statelessly ahead of any resolved `$requires` binding — a mutation
+        // body may call `base64.encode`/`string.bytes` with no host component wired.
+        if let Some(result) = crate::codec::invoke_core(local, function, args) {
+            return result
+                .map_err(|failure| host_rejection(local, function, &GuardError::Invocation(failure)));
+        }
         let namespace = self.binding.and_then(|b| b.namespace(local)).ok_or_else(|| {
             Rejection::new(RejectionReason::Malformed, format!("unresolved host namespace `{local}`"))
         })?;
@@ -397,6 +404,18 @@ impl<'a> HostDispatch<'a> {
         function: &str,
         args: &[Value],
     ) -> Result<Value, EvalError> {
+        // §16.1/§16.5: the core codec namespaces (`base64`/`hex`/`string` byte
+        // codecs) are engine-linked pure built-ins available in EVERY
+        // database-evaluated position — a view, a `$check`, a computed value, a
+        // field default, a §20 `$as`/`$back` transform — independent of the
+        // package's resolved `$requires`. Serve them statelessly here, ahead of the
+        // per-instance binding, so a position carrying a [`HostDispatch::none`]
+        // (a bare view read, a bucket bound) resolves them too.
+        if let Some(result) = crate::codec::invoke_core(local, function, args) {
+            return result.map_err(|failure| EvalError::HostCall {
+                detail: host_detail(local, function, &GuardError::Invocation(failure)),
+            });
+        }
         let namespace = self
             .binding
             .and_then(|b| b.namespace(local))
