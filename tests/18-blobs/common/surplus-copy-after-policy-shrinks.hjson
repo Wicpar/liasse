@@ -2,7 +2,7 @@
   format: 1
   name: surplus-copy-after-policy-shrinks
   suite: scenario
-  spec: ["#blobs", "§18.4", "§18.5", "#expressions", "§6.3", "#clients", "§12.2"]
+  spec: ["#blobs", "§18.4", "§18.5", "#expressions", "§6.3", "#mutations", "§8.6", "§8.10", "#clients", "§12.2"]
   tags: ["blob", "placement", "surplus", "lifecycle"]
   note: '''
     §18.5: "$stored contains verified stores. $satisfied evaluates the placement
@@ -20,6 +20,14 @@
     (one row for a present scalar key); §12.2 delivers that view result as
     `init(frontier, rows)`, an array — the single selected row is the
     one-element array in each assertion below, not a bare object.
+    §8.6/§8.10: `set_enabled` disables a store with a DIRECT patch statement
+    `.stores[@id] { enabled = @enabled }` (a patch is one mutation statement,
+    not a bindable mutation-result — §8.4 defines a local only for an
+    insert/replace/delete result), then `return .stores[@id] { id, enabled }`
+    re-selects the patched row and projects it. A keyed patch selects exactly
+    one row (§6.3 row-mutation receiver), so the mutation RESPONSE is that one
+    projected row — the bare object asserted on the `set_enabled` call, mirroring
+    the §8.10 `rename` idiom (write, then `return . { … }`).
   '''
 
   package: {
@@ -48,8 +56,8 @@
           "return doc { id }"
         ]
         set_enabled: [
-          "s = .stores[@id] { enabled = @enabled }"
-          "return s { id, enabled }"
+          ".stores[@id] { enabled = @enabled }"
+          "return .stores[@id] { id, enabled }"
         ]
       }
       placement: {

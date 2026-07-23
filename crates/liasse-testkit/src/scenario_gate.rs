@@ -341,14 +341,12 @@ pub const SKIP: &[(&str, &str)] = &[
     // error fixed to the §6.3/§12.2 one-row array, and the §18.7-step-4 descriptor
     // binding now carries the declared `$name`, so the projected `name: .file.$name`
     // member is present in the row. Entry pruned as stale.)
-    // view-shape corpus bug FIXED (array form, §6.3/§12.2); this case's residual,
-    // previously masked by the step-2 view-shape failure, is a §8.4/§8.5 bound-patch
-    // admission seam: the `set_enabled` mutation `s = .stores[@id] { enabled = @enabled }`
-    // BINDS a patch result to a local and is admission-rejected, whereas the direct
-    // patch statement `.stores[@id] { enabled = @enabled }` (no local bind) is
-    // admitted — isolated by probe (bind vs. no-bind is the discriminator, not the
-    // param key). Not the view-shape seam; distinct §8 bound-patch investigation.
-    ("18-blobs/surplus-copy-after-policy-shrinks", "view-shape corpus error fixed (`.docs[@id] { … }` now expects the §6.3/§12.2 one-row array); residual (previously masked) is a §8.4/§8.5 bound-patch seam — `s = .stores[@id] { enabled = @enabled }` binding a patch result to a local is admission-rejected while the direct patch statement is admitted (isolated by probe: bind vs no-bind, not the param key)"),
+    // (`18-blobs/surplus-copy-after-policy-shrinks` now passes: the `set_enabled`
+    // mutation's bound-patch form (`s = .stores[@id] { … }`) is not a spec-defined
+    // binding — §8.4 enumerates insert/insert-from-view/replace/delete results and a
+    // patch is a statement per §8.6/Annex C.9 — so the corpus case was rewritten to
+    // the §8.10 direct form (`.stores[@id] { … }` then `return .stores[@id] { … }`),
+    // yielding the same `{ id, enabled }` row. Entry pruned as stale.)
     ("annex-d-identity/ref-wire-value-is-current-typed-key", "load fails: the `$public.posts.$view` reads `p.author.name` — a field THROUGH a ref (`author` is a `ref</users>`). §7.6 pins ref dereference to the SELECTOR form (`/users[p.author]`), not bare field access, so `ref.field` auto-deref is undefined/unlanded (checker: `cannot read field name of a ref`). CORPUS-SUSPECT: the case cites §D.1/§5.4/§6.4, not §7.6's selector-deref rule — a §7.6-vs-field-access tension, not a surgical model bug"),
     // W2 auth cluster: the packages now LOAD and RUN. The `passkey_login` mutation
     // binds `identity = webauthn.verify(@response)` (a deferred host-call result) and
