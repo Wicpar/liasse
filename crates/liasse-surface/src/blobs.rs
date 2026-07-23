@@ -134,6 +134,7 @@ impl<C: BlobConnector> BlobHost<C> {
             Ok(bytes) => BlobGetOutcome::Delivered { bytes, holders: blob.serve_order().to_vec() },
             Err(FetchError::Denied) => BlobGetOutcome::Denied,
             Err(FetchError::NoCleanHolder) => BlobGetOutcome::NoCleanHolder,
+            Err(FetchError::Unknown) => BlobGetOutcome::Unknown,
         }
     }
 

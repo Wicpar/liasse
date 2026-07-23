@@ -21,9 +21,12 @@ use liasse_syntax::parse_document;
 use liasse_value::{Json, Struct, Text, Timestamp, Type, Value};
 
 use liasse_host::sim::SimKeyProvider;
-use liasse_host::{KeyProvider, Registry};
+use liasse_host::{BlobConnector, KeyProvider, Registry};
 
-use crate::blobs::PlacementState;
+use crate::blobs::{
+    BlobCatalog, BlobFetch, BlobIngress, DeclaredDescriptor, FetchError, PlacementState,
+    UploadError,
+};
 use crate::compiled::{Compiled, CompiledKeyring, CompiledMutation};
 use crate::doc;
 use crate::engine_provider::EngineKeyProvider;
@@ -196,6 +199,10 @@ pub struct Engine<S> {
     /// every evaluation context so a mutation `return` or a `$view` reading a
     /// placement member resolves the fact.
     blob_placements: crate::env::BlobPlacements,
+    /// Blob copies that crossed both the connector verification boundary and the
+    /// application-state commit boundary. Only entries in this catalog are
+    /// serveable; transport staging never grants visibility (§18.7/§18.8).
+    blob_catalog: BlobCatalog,
 }
 
 /// A committed-state hydration at one frontier, built once and shared across
@@ -494,7 +501,7 @@ impl<S: InstanceStore> Engine<S> {
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
         let keyrings = provision_keyrings(&compiled, clock, &mut host, ProviderFallback::SimDefault)?;
-        let engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
+        let engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default(), blob_catalog: BlobCatalog::default() };
         Ok((engine, data))
     }
 
@@ -584,7 +591,7 @@ impl<S: InstanceStore> Engine<S> {
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
         let keyrings = provision_keyrings(&compiled, clock, &mut host, ProviderFallback::SimDefault)?;
-        let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
+        let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default(), blob_catalog: BlobCatalog::default() };
         engine.genesis(definition, data.as_ref(), &crate::imports::EMPTY, generator)?;
         Ok(engine)
     }
@@ -624,7 +631,7 @@ impl<S: InstanceStore> Engine<S> {
         let mut host = HostBinding::resolve(registry, &requires, false)?;
         let clock = generator.now();
         let keyrings = provision_keyrings(&compiled, clock, &mut host, fallback)?;
-        let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
+        let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default(), blob_catalog: BlobCatalog::default() };
         engine.install_state(definition, state)?;
         Ok(engine)
     }
@@ -909,6 +916,78 @@ impl<S: InstanceStore> Engine<S> {
     /// [`blob_placement_state`]: crate::PlacementState
     pub fn record_blob_placement(&mut self, digest: impl Into<String>, state: &PlacementState) {
         self.blob_placements.record(digest, state.facts());
+    }
+
+    /// Parse and verify hostile blob ingress once at the request boundary
+    /// (§18.1/§18.2/§18.7), producing an owned staged value that cannot be
+    /// constructed without a canonical descriptor, exact bytes, accepted media,
+    /// and the field's inclusive size limit.
+    ///
+    /// This stage has no connector or application-state effect. Physical copies
+    /// land only inside [`call_with_blob`](Self::call_with_blob), after the
+    /// mutation's checks have succeeded at its final serial position.
+    pub fn stage_blob(
+        &self,
+        mutation: &str,
+        parameter: &str,
+        declared: &DeclaredDescriptor,
+        bytes: &[u8],
+    ) -> Result<BlobIngress, Rejection> {
+        let mutation = self.compiled.mutation(mutation).ok_or_else(|| {
+            Rejection::new(
+                RejectionReason::Malformed,
+                format!("unknown mutation `{mutation}`"),
+            )
+        })?;
+        let field = self.compiled.blobs.field(&mutation.path, parameter)?;
+        let descriptor = crate::blobs::verify_descriptor(declared, field.accepted(), bytes)
+            .map_err(blob_upload_rejection)?;
+        Ok(BlobIngress {
+            mutation: mutation.name.clone(),
+            parameter: parameter.to_owned(),
+            descriptor,
+            bytes: bytes.to_vec(),
+        })
+    }
+
+    /// The registered connector named by a §18.3 store row, for driver
+    /// observation and health reporting.
+    #[must_use]
+    pub fn blob_connector(&self, name: &str) -> Option<&dyn BlobConnector> {
+        self.host.connector(name)
+    }
+
+    /// Whether the package has an accepted field named `name` under an inherited
+    /// `$blob_storage` declaration.
+    #[must_use]
+    pub fn has_blob_field(&self, name: &str) -> bool {
+        self.compiled.blobs.has_field(name)
+    }
+
+    /// Fetch a committed descriptor from its verified holders in `$serve` order,
+    /// re-verifying SHA-512 before any bytes cross the boundary (§18.8/§18.9).
+    pub fn fetch_blob(
+        &self,
+        descriptor: &liasse_value::BlobDescriptor,
+    ) -> Result<BlobFetch, FetchError> {
+        self.blob_catalog.fetch(&self.host, descriptor)
+    }
+
+    /// Trusted-driver serve lookup by content identity. Authorization belongs to
+    /// the surface projection gate; this primitive only follows the committed
+    /// catalog and verifies bytes.
+    pub fn fetch_blob_by_digest(
+        &self,
+        digest: &liasse_value::Sha512,
+    ) -> Result<BlobFetch, FetchError> {
+        self.blob_catalog.fetch_digest(&self.host, digest)
+    }
+
+    /// Verified stores recorded for committed content, or `None` when the digest
+    /// never crossed the application-state commit boundary.
+    #[must_use]
+    pub fn blob_stored(&self, digest: &liasse_value::Sha512) -> Option<Vec<crate::StoreId>> {
+        self.blob_catalog.stored(digest)
     }
 
     /// Perform any due keyring rotation before the next operation (§17.4): moving
@@ -1217,6 +1296,15 @@ impl<S: InstanceStore> Engine<S> {
         // §15.2: a seeded spend is funded through the same allocation as a mutation.
         crate::meter::admit::enforce(&ctx, &self.compiled.meters, &mut prospective, &touched)
             .map_err(EngineError::Seed)?;
+        if self.host.strict_components() {
+            let stores = self
+                .compiled
+                .blobs
+                .reachable_stores(&ctx, &prospective)
+                .map_err(|rejection| EngineError::Requirement(rejection.message().to_owned()))?;
+            crate::blobs::validate_connectors(&stores, &self.host)
+                .map_err(|rejection| EngineError::Requirement(rejection.message().to_owned()))?;
+        }
 
         let changes = prospective.diff();
         // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
@@ -1304,6 +1392,73 @@ impl<S: InstanceStore> Engine<S> {
     pub fn call<G: Generators>(
         &mut self,
         request: &CallRequest,
+        generator: &mut G,
+    ) -> Result<CallOutcome, EngineError> {
+        self.call_admitting(request, Vec::new(), generator)
+    }
+
+    /// Admit one mutation together with its already-verified staged blob bytes
+    /// (§18.7). The ingress identity is bound to this exact mutation/parameter;
+    /// connector copies land only after all mutation checks succeed, and become
+    /// serveable only after the state-store transaction commits.
+    pub fn call_with_blob<G: Generators>(
+        &mut self,
+        request: &CallRequest,
+        ingress: BlobIngress,
+        generator: &mut G,
+    ) -> Result<CallOutcome, EngineError> {
+        self.call_with_blobs(request, vec![ingress], generator)
+    }
+
+    /// Admit a mutation with every staged blob parameter as one atomic unit.
+    /// Duplicate parameters, an ingress staged for another mutation, or a
+    /// descriptor not bound to its declared argument reject before connector
+    /// access.
+    pub fn call_with_blobs<G: Generators>(
+        &mut self,
+        request: &CallRequest,
+        ingresses: Vec<BlobIngress>,
+        generator: &mut G,
+    ) -> Result<CallOutcome, EngineError> {
+        let mut parameters = BTreeSet::new();
+        for ingress in &ingresses {
+            if ingress.mutation != request.mutation() {
+                return Ok(rejected(
+                    RejectionReason::Malformed,
+                    format!(
+                        "staged blob belongs to mutation `{}`, not `{}`",
+                        ingress.mutation,
+                        request.mutation()
+                    ),
+                ));
+            }
+            if !parameters.insert(ingress.parameter.as_str()) {
+                return Ok(rejected(
+                    RejectionReason::Malformed,
+                    format!("blob parameter `@{}` was staged more than once", ingress.parameter),
+                ));
+            }
+            let bound = matches!(
+                request.arg_value(&ingress.parameter),
+                Some(Value::Blob(descriptor)) if descriptor.as_ref() == &ingress.descriptor
+            );
+            if !bound {
+                return Ok(rejected(
+                    RejectionReason::Malformed,
+                    format!(
+                        "staged blob descriptor is not bound to `@{}`",
+                        ingress.parameter
+                    ),
+                ));
+            }
+        }
+        self.call_admitting(request, ingresses, generator)
+    }
+
+    fn call_admitting<G: Generators>(
+        &mut self,
+        request: &CallRequest,
+        ingresses: Vec<BlobIngress>,
         generator: &mut G,
     ) -> Result<CallOutcome, EngineError> {
         let Some(mutation) = self.compiled.mutation(request.mutation()) else {
@@ -1417,6 +1572,35 @@ impl<S: InstanceStore> Engine<S> {
             return Ok(CallOutcome::Rejected(rejection));
         }
 
+        // §18.3: every placement-reachable store row selects its connector
+        // eagerly at the transition that writes it. An explicit host-registry
+        // activation never admits an unresolved connector into committed state.
+        if self.host.strict_components() {
+            let stores = match self.compiled.blobs.reachable_stores(&ctx, &prospective) {
+                Ok(stores) => stores,
+                Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+            };
+            if let Err(rejection) = crate::blobs::validate_connectors(&stores, &self.host) {
+                return Ok(CallOutcome::Rejected(rejection));
+            }
+        }
+
+        // Resolve the staged parameter's nearest declared placement against the
+        // FINAL prospective state (§18.7 step 5). This is still read-only: no
+        // connector object is touched until the mutation return has also
+        // evaluated successfully below.
+        let mut resolved_ingresses = Vec::with_capacity(ingresses.len());
+        for ingress in &ingresses {
+            let field = match self.compiled.blobs.field(&mutation.path, &ingress.parameter) {
+                Ok(field) => field,
+                Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+            };
+            match field.resolve(&ctx, &prospective) {
+                Ok(resolved) => resolved_ingresses.push(resolved),
+                Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+            }
+        }
+
         // §8.6/§8.10: the `return` is evaluated from the resulting state — the
         // prospective state that will be committed. It is part of the admitted
         // operation, so a genuine evaluation fault (e.g. `.$between`'s empty-range
@@ -1471,20 +1655,58 @@ impl<S: InstanceStore> Engine<S> {
             return Ok(CallOutcome::Unchanged { response });
         }
 
+        // §18.7 step 6: only a mutation that has passed its complete rule and
+        // return evaluation lands physical copies. Each required destination is
+        // verified before state admission. Until the store transaction below
+        // commits, the result remains absent from `blob_catalog` and cannot be
+        // served.
+        let mut staged_blobs = Vec::with_capacity(ingresses.len());
+        for (ingress, resolved) in ingresses.iter().zip(resolved_ingresses) {
+            match BlobCatalog::land(&mut self.host, ingress, resolved) {
+                Ok(staged) => staged_blobs.push(staged),
+                Err(error) => {
+                    for staged in staged_blobs {
+                        staged.rollback(&mut self.host);
+                    }
+                    return Ok(CallOutcome::Rejected(blob_upload_rejection(error)));
+                }
+            }
+        }
+
         // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
         // every row it inserts records this `now` as its `$created` (§14.1).
         let now = self.clock;
         let mut txn = self.store.begin();
         txn.set_now(now);
         stage(&mut txn, changes)?;
-        let seq = match txn.commit()? {
+        let committed = match txn.commit() {
+            Ok(committed) => committed,
+            Err(error) => {
+                for staged in staged_blobs {
+                    staged.rollback(&mut self.host);
+                }
+                return Err(error.into());
+            }
+        };
+        let seq = match committed {
             // §19.2: a state-changing commit takes a fresh point on the active
             // lineage — the identity a later export names and an import classifies.
             CommitOutcome::Committed(seq) => {
+                for staged in staged_blobs {
+                    let digest = staged.digest().to_canonical_text();
+                    let placement = staged.placement_state();
+                    self.blob_placements.record(digest, placement.facts());
+                    self.blob_catalog.commit(staged);
+                }
                 self.cursor.advance();
                 seq
             }
-            CommitOutcome::Unchanged => self.store.head()?,
+            CommitOutcome::Unchanged => {
+                for staged in staged_blobs {
+                    staged.rollback(&mut self.host);
+                }
+                self.store.head()?
+            }
         };
         Ok(CallOutcome::Committed { seq, response })
     }
@@ -2079,6 +2301,20 @@ pub(crate) struct ExposedMutationContract {
 
 fn rejected(reason: RejectionReason, message: impl Into<String>) -> CallOutcome {
     CallOutcome::Rejected(Rejection::new(reason, message))
+}
+
+fn blob_upload_rejection(error: UploadError) -> Rejection {
+    let reason = match error {
+        UploadError::NoWritablePlacement
+        | UploadError::Connector { .. }
+        | UploadError::CopyVerification => RejectionReason::Host,
+        UploadError::MalformedDigest
+        | UploadError::DigestMismatch
+        | UploadError::ByteCountMismatch
+        | UploadError::MediaNotAccepted(_)
+        | UploadError::TooLarge { .. } => RejectionReason::Malformed,
+    };
+    Rejection::new(reason, format!("blob parameter rejected: {error}"))
 }
 
 /// The materialized row addressed by `steps` — a walk of `(collection declaration

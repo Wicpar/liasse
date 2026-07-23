@@ -30,10 +30,11 @@
 use liasse_host::sim::SimConnector;
 use liasse_host::{CoseClaims, CoseToken, KeyProvider};
 use liasse_runtime::{
-    DeclaredDescriptor, KeyringError, Placement, PlacementState, Rejection, RejectionReason,
-    RotationOutcome, StoreId, Timestamp, Value, VersionId,
+    DeclaredDescriptor, FetchError, KeyringError, Placement, PlacementState, Rejection,
+    RejectionReason, RotationOutcome, StoreId, Timestamp, Value, VersionId,
 };
 use liasse_store::InstanceStore;
+use liasse_value::Sha512;
 
 use crate::blobs::{BlobGetOutcome, BlobHost, BlobPutOutcome};
 use crate::cose::{CoseKeyring, CoseVerifyError};
@@ -246,7 +247,27 @@ impl<S: InstanceStore, P: KeyProvider> SurfaceHost<S, P> {
         digest: &str,
         visible: bool,
     ) -> Result<BlobGetOutcome, HostComponentError> {
-        Ok(self.blob(name)?.get(digest, visible))
+        if let Some(blob) = self.blobs.get(name) {
+            return Ok(blob.get(digest, visible));
+        }
+        if !self.engine.has_blob_field(name) {
+            return Err(HostComponentError::NoBlob(name.to_owned()));
+        }
+        if !visible {
+            return Ok(BlobGetOutcome::Denied);
+        }
+        let Ok(digest) = Sha512::parse(digest) else {
+            return Ok(BlobGetOutcome::Unknown);
+        };
+        Ok(match self.engine.fetch_blob_by_digest(&digest) {
+            Ok(fetch) => BlobGetOutcome::Delivered {
+                bytes: fetch.bytes().to_vec(),
+                holders: fetch.holders().to_vec(),
+            },
+            Err(FetchError::Denied) => BlobGetOutcome::Denied,
+            Err(FetchError::NoCleanHolder) => BlobGetOutcome::NoCleanHolder,
+            Err(FetchError::Unknown) => BlobGetOutcome::Unknown,
+        })
     }
 
     /// Fetch from blob host `name` the content its caller's surface projection
@@ -263,7 +284,24 @@ impl<S: InstanceStore, P: KeyProvider> SurfaceHost<S, P> {
         name: &str,
         projected: Option<&Value>,
     ) -> Result<BlobGetOutcome, HostComponentError> {
-        Ok(self.blob(name)?.fetch_projected(projected))
+        if let Some(blob) = self.blobs.get(name) {
+            return Ok(blob.fetch_projected(projected));
+        }
+        if !self.engine.has_blob_field(name) {
+            return Err(HostComponentError::NoBlob(name.to_owned()));
+        }
+        let Some(Value::Blob(descriptor)) = projected else {
+            return Ok(BlobGetOutcome::Denied);
+        };
+        Ok(match self.engine.fetch_blob(descriptor) {
+            Ok(fetch) => BlobGetOutcome::Delivered {
+                bytes: fetch.bytes().to_vec(),
+                holders: fetch.holders().to_vec(),
+            },
+            Err(FetchError::Denied) => BlobGetOutcome::Denied,
+            Err(FetchError::NoCleanHolder) => BlobGetOutcome::NoCleanHolder,
+            Err(FetchError::Unknown) => BlobGetOutcome::Unknown,
+        })
     }
 
     /// The §18.5 placement observations of `digest` in blob host `name`
@@ -296,7 +334,16 @@ impl<S: InstanceStore, P: KeyProvider> SurfaceHost<S, P> {
     /// # Errors
     /// [`HostComponentError::NoBlob`] if unregistered.
     pub fn blob_stored(&self, name: &str, digest: &str) -> Result<Option<Vec<StoreId>>, HostComponentError> {
-        Ok(self.blob(name)?.stored(digest))
+        if let Some(blob) = self.blobs.get(name) {
+            return Ok(blob.stored(digest));
+        }
+        if !self.engine.has_blob_field(name) {
+            return Err(HostComponentError::NoBlob(name.to_owned()));
+        }
+        let Ok(digest) = Sha512::parse(digest) else {
+            return Ok(None);
+        };
+        Ok(self.engine.blob_stored(&digest))
     }
 
     /// Mutable access to blob host `name`'s connector `connector`, for the §18.12
@@ -338,7 +385,33 @@ impl<S: InstanceStore, P: KeyProvider> SurfaceHost<S, P> {
         bytes: &[u8],
         media: &str,
     ) -> Result<SurfaceOutcome, SurfaceError> {
-        let outcome = match self.blob_put(blob_field, bytes, media) {
+        let declared = DeclaredDescriptor {
+            sha512: liasse_host::BlobIntegrity::digest_hex(bytes),
+            bytes: bytes.len() as u64,
+            media: media.to_owned(),
+            name: None,
+        };
+        self.call_with_declared_blob(id, call, blob_field, &declared, bytes)
+    }
+
+    /// [`call_with_blob`](Self::call_with_blob) with the hostile client-declared
+    /// descriptor members retained, including optional `$name`.
+    pub fn call_with_declared_blob(
+        &mut self,
+        id: &str,
+        call: SurfaceCall,
+        blob_field: &str,
+        declared: &DeclaredDescriptor,
+        bytes: &[u8],
+    ) -> Result<SurfaceOutcome, SurfaceError> {
+        // The package-declared path is the production seam: accepted type and
+        // placement come from the compiled definition, connectors from the
+        // engine-owned driver registry. A manually composed host remains an
+        // additive compatibility path for the conformance adapter.
+        if !self.blobs.contains_key(blob_field) {
+            return self.call_with_managed_blob(id, &call, blob_field, declared, bytes);
+        }
+        let outcome = match self.blob_put_declared(blob_field, declared, bytes) {
             Ok(outcome) => outcome,
             Err(error) => {
                 return Ok(SurfaceOutcome::Rejected(Rejection::new(
@@ -367,7 +440,7 @@ impl<S: InstanceStore, P: KeyProvider> SurfaceHost<S, P> {
             Some(value) => call.with_arg(blob_field.to_owned(), value),
             None => call,
         };
-        self.call(id, &call)
+        self.call_with_legacy_blob(id, &call)
     }
 }
 

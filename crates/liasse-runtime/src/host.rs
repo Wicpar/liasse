@@ -28,9 +28,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_expr::{EvalError, ExprType, HostEffect, HostOp, HostOrigin};
 use liasse_host::{
-    cose_descriptor, verify_cose_signature, ConformanceGuard, ContractRef, CoseClaims, CoseToken,
-    EffectClass, GuardError, HostNamespace, InvocationFailure, KeyProvider, NamespaceDescriptor,
-    Registry, ResolutionError, SignatureError,
+    cose_descriptor, verify_cose_signature, BlobConnector, ConformanceGuard, ContractRef,
+    CoseClaims, CoseToken, EffectClass, GuardError, HostNamespace, InvocationFailure, KeyProvider,
+    NamespaceDescriptor, Registry, ResolutionError, SignatureError,
 };
 use liasse_value::{Timestamp, Value};
 
@@ -106,6 +106,11 @@ pub(crate) struct HostBinding {
     /// silently sim — from a name it registered nothing for, which keeps the sim
     /// default (§17.5 honesty rule).
     registered_providers: BTreeSet<String>,
+    /// Whether this binding came from an explicit host-registry activation
+    /// boundary (`load_with_hosts`). Such a boundary enforces §18.3 connector
+    /// reachability eagerly; the legacy component-less load remains lenient and
+    /// fails only if blob ingress is actually attempted.
+    strict_components: bool,
 }
 
 impl HostBinding {
@@ -132,7 +137,7 @@ impl HostBinding {
         // later reconstruction knows which rings the application really backed.
         let registered_providers = registry.provider_names().map(str::to_owned).collect();
         let requires = Self::bind(&registry, requires, strict)?;
-        Ok(Self { registry, requires, registered_providers })
+        Ok(Self { registry, requires, registered_providers, strict_components: strict })
     }
 
     /// A binding that serves only the built-in core codec namespaces (§16.1):
@@ -147,7 +152,12 @@ impl HostBinding {
             registry.register_namespace(namespace);
         }
         let requires = Self::bind(&registry, &crate::codec::requires(), false).unwrap_or_default();
-        Self { registry, requires, registered_providers: BTreeSet::new() }
+        Self {
+            registry,
+            requires,
+            registered_providers: BTreeSet::new(),
+            strict_components: false,
+        }
     }
 
     /// Re-resolve `requires` against the already-registered components (a §20
@@ -270,6 +280,25 @@ impl HostBinding {
     pub(crate) fn resolve_provider(&mut self, name: &str) -> (Option<Box<dyn KeyProvider>>, bool) {
         let registered = self.registered_providers.contains(name);
         (self.registry.take_provider(name), registered)
+    }
+
+    /// Whether activation supplied an explicit registry whose connector
+    /// requirements must be enforced eagerly (§18.3/§18.12).
+    pub(crate) fn strict_components(&self) -> bool {
+        self.strict_components
+    }
+
+    /// Resolve a store row's connector for fetch/existence operations.
+    pub(crate) fn connector(&self, name: &str) -> Option<&dyn BlobConnector> {
+        self.registry.connector(name)
+    }
+
+    /// Resolve a store row's connector for upload/delete operations.
+    pub(crate) fn connector_mut(
+        &mut self,
+        name: &str,
+    ) -> Option<&mut (dyn BlobConnector + 'static)> {
+        self.registry.connector_mut(name)
     }
 }
 
