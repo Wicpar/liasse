@@ -47,7 +47,7 @@ use liasse_runtime::{
 };
 use liasse_store::{InstanceStore, MemoryStore, MemoryStoreFactory};
 use liasse_surface::{
-    Entropy, ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate,
+    Entropy, ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate, ModuleUpdateReport,
     VirtualClock as SurfaceClock,
 };
 use liasse_syntax::{parse_expression, Expr, ExprKind, Selector, StmtKind};
@@ -189,9 +189,15 @@ impl ModuleState {
         }
     }
 
-    /// §13.14 `modules.update`: migrate a single instance to the `to` package line.
+    /// §13.14/§13.15 `modules.update`: migrate a single instance to the `to` package
+    /// line, mapping the deployment's [`ModuleUpdate`] to the harness outcome. A
+    /// successful update carries the assembled §13.15 report value; a §13.14
+    /// exposed-surface narrowing is refused before admission — a definitional
+    /// self-narrowing by package loading (`invalid`) or a withdrawn interface binding
+    /// (`rejected`) — leaving the current release active (E.9).
     pub(super) fn update(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
         let (space, name) = self.instance(target)?;
+        let instance = target.get("instance").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
         let Some(to) = target.get("to").and_then(serde_json::Value::as_str) else {
             return Err(AdapterError::unsupported("`module_update` step names no `to` package line"));
         };
@@ -199,21 +205,18 @@ impl ModuleState {
         let definition =
             serde_json::to_string(&package).map_err(|err| AdapterError::Host(err.to_string()))?;
         match self.deployment.update(&space, &name, &definition) {
-            // §13.15: the update-report shape ($instance/$from/$to/$migrated/
-            // $seeded/$exposed/$imports/$commit) is not assembled by the runtime
-            // host — it returns a §20 migration report — so a successful update
-            // carries no value here (assembling the §13.15 report is a runtime seam).
-            Ok(ModuleUpdate::Updated(_)) => Ok(Observation::ok(None)),
-            Ok(ModuleUpdate::Unknown(_) | ModuleUpdate::Disabled(_)) => {
+            // §13.15: assemble the update-report shape, adding the instance display
+            // path the driver knows.
+            Ok(ModuleUpdate::Updated(report)) => Ok(Observation::ok(Some(update_report_value(&instance, &report)))),
+            // §13.14: a definitional exposed-surface narrowing is refused by package
+            // loading before admission — the FORMAT.md `invalid` (tests/13-modules/NOTES.md).
+            Ok(ModuleUpdate::Narrowed(_)) => Ok(Observation::outcome(Outcome::Invalid)),
+            // §13.14/§13.3: a withdrawn interface binding is an admission recheck
+            // refusal; an unknown/disabled instance likewise refuses the update.
+            Ok(ModuleUpdate::Rejected(_) | ModuleUpdate::Unknown(_) | ModuleUpdate::Disabled(_)) => {
                 Ok(Observation::outcome(Outcome::Rejected))
             }
-            // §13.14: a narrowing/rejected migration is collapsed into an engine
-            // fault by the runtime host; distinguishing the §13.14 refusal from a
-            // genuine store fault (and classifying it `invalid`) is a runtime seam.
-            Err(fault) => Err(AdapterError::unsupported(format!(
-                "`module_update` migration was refused and collapsed into an engine fault by the \
-                 runtime host — surfacing the §13.14/§13.15 outcome is a runtime seam: {fault}"
-            ))),
+            Err(fault) => Err(AdapterError::Host(format!("module update fault: {fault}"))),
         }
     }
 
@@ -356,6 +359,31 @@ fn observe(observation: ModuleObservation) -> Observation {
         // §13.5: an unresolvable required peer binding is an admission-time refusal.
         | ModuleObservation::PeerUnresolved(_) => Observation::outcome(Outcome::Rejected),
     }
+}
+
+/// Assemble the §13.15 update-report value from the runtime [`ModuleUpdateReport`]
+/// and the instance display path the driver knows: `$instance`, `$from`, `$to`,
+/// `$migrated`, `$seeded`, the `$exposed` grouping, the `$imports` grouping, and
+/// `$commit`. Per §13.15 `$migrated`/`$seeded` are per-item lists in canonical path
+/// order and `$exposed`/`$imports` group names in canonical text order.
+fn update_report_value(instance: &str, report: &ModuleUpdateReport) -> serde_json::Value {
+    serde_json::json!({
+        "$instance": instance,
+        "$from": report.from,
+        "$to": report.to,
+        "$migrated": report.migrated,
+        "$seeded": report.seeded,
+        "$exposed": {
+            "$unchanged": report.exposed_unchanged,
+            "$changed": report.exposed_changed,
+            "$removed": report.exposed_removed,
+        },
+        "$imports": {
+            "$rebound": report.imports_rebound,
+            "$broken": report.imports_broken,
+        },
+        "$commit": report.commit.get(),
+    })
 }
 
 /// Split a module instance display path into `(space, name)`: the trailing path

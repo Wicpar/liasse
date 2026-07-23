@@ -223,19 +223,68 @@ impl<F: StoreFactory> ModuleHost<F> {
         Ok(())
     }
 
-    /// Update a single instance to a target definition (§13.14): delegates to the
-    /// §20 migration over the child's own engine, affecting that instance only.
+    /// Update a single instance to a target definition (§13.14/§13.15), affecting
+    /// that instance only.
+    ///
+    /// Before the migration commits, the target's exposed compatibility surface is
+    /// rechecked against the active one (§13.14): a minor/patch update that
+    /// definitionally narrows the module's own `$expose` is refused
+    /// ([`ModuleError::ExposedNarrowed`]), and one that withdraws a previously
+    /// accepted interface binding whose implementation remains is refused
+    /// ([`ModuleError::InterfaceBindingWithdrawn`]) — in both the current release
+    /// stays active (E.9). A preserving/widening update runs the §20 migration over
+    /// the child's own engine and returns the assembled §13.15 report.
     pub fn update<G: Generators>(
         &mut self,
         space: &ModuleSpace,
         name: &str,
         target: &str,
         generator: &mut G,
-    ) -> Result<crate::migrate::UpdateReport, ModuleError> {
+    ) -> Result<crate::modules::ModuleUpdateReport, ModuleError> {
+        // §13.14: read the ACTIVE child definition and version for the exposed-surface
+        // recheck and the §13.15 `$from`, before any migration mutates the child.
+        let child = self.find(space, name).ok_or_else(|| ModuleError::Unknown(name.to_owned()))?;
+        let active_definition = child.engine.definition_source()?.ok_or_else(|| {
+            ModuleError::Engine(EngineError::Internal("active child definition unavailable for update".to_owned()))
+        })?;
+        let from = version_string(child.engine.model());
+        // §13.14: a minor/patch update MUST preserve or widen the module's exposed
+        // compatibility surface. Refuse a narrowing release before admission (E.9),
+        // classifying a definitional self-narrowing as a static refusal and a
+        // withdrawn-but-implemented binding as an admission refusal.
+        if let Some(narrowing) = super::compat::exposed_narrowing(&active_definition, target) {
+            return Err(match narrowing.class {
+                super::compat::NarrowingClass::Definitional => ModuleError::ExposedNarrowed(narrowing.reason),
+                super::compat::NarrowingClass::BindingWithdrawn => {
+                    ModuleError::InterfaceBindingWithdrawn(narrowing.reason)
+                }
+            });
+        }
+        // §13.15 `$exposed`: group each exposed interface by how its contract moved
+        // across this (non-narrowing) update.
+        let grouping = super::compat::exposed_grouping(&active_definition, target);
+        // §13.14: run the §20 migration over the child's own engine.
         let child = self.child_mut(space, name)?;
-        child.engine.update(target, generator).map_err(|error| match error {
+        let report = child.engine.update(target, generator).map_err(|error| match error {
             crate::migrate::UpdateError::Engine(engine) => ModuleError::Engine(engine),
             other => ModuleError::Engine(EngineError::Internal(other.to_string())),
+        })?;
+        let to = version_string(child.engine.model());
+        Ok(crate::modules::ModuleUpdateReport {
+            from,
+            to,
+            commit: report.commit,
+            migrated: report.migrated,
+            seeded: report.seeded,
+            exposed_unchanged: grouping.unchanged,
+            exposed_changed: grouping.changed,
+            exposed_removed: grouping.removed,
+            // §13.15 `$imports`: an import re-bound by the update is `$rebound`, one
+            // whose source is gone is `$broken`. The CORE module cases carry no
+            // `$use` imports, so both are empty; recomputing per bound parent/peer
+            // source under the migrated model is a follow-on.
+            imports_rebound: Vec::new(),
+            imports_broken: Vec::new(),
         })
     }
 
@@ -706,4 +755,10 @@ impl<F: StoreFactory> ModuleHost<F> {
         self.next_incarnation += 1;
         InstanceId::new(token)
     }
+}
+
+/// The `major.minor.patch` version string of a package model (§13.15 `$from`/`$to`).
+fn version_string(model: &liasse_model::Model) -> String {
+    let version = &model.header().identity.version;
+    format!("{}.{}.{}", version.major, version.minor, version.patch)
 }

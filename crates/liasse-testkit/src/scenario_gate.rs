@@ -211,18 +211,15 @@ pub const SKIP: &[(&str, &str)] = &[
     ("13-modules/sibling-cannot-address-private-dep-rejected", "§13.6 `$deps` privacy/provisioning is unlanded; the consumer child fails standalone compile"),
     // `$if_module` guard (§13.7).
     ("13-modules/if-module-guarded-state-preserved", "§13.7 `$if_module`-guarded `$expose` declarations are rejected by the model grammar (unlanded), so the child fails to load"),
-    // Update path (§13.14/§13.15): the §20 migration does not enforce the narrowing
-    // recheck, and the runtime host does not assemble the §13.15 update report.
-    ("13-modules/minor-update-narrowing-rejected", "§13.14 the narrowing recheck (exposed-compatibility-surface preservation) is not enforced by the §20 update the runtime host runs"),
-    ("13-modules/update-narrowing-view-field-rejected", "§13.14 the narrowing recheck (dropping an exposed view field) is not enforced by the §20 update the runtime host runs"),
-    ("13-modules/update-result-report", "§13.15 the update-report shape ($instance/$from/$to/$migrated/$seeded/$exposed/$imports/$commit) is not assembled by the runtime host, which returns a §20 migration report"),
+    // Update path (§13.14/§13.15): the exposed-surface narrowing recheck and the
+    // §13.15 update-report assembly are landed (modules/compat.rs + host.rs), so
+    // `minor-update-narrowing-rejected`, `update-narrowing-view-field-rejected`, and
+    // `update-result-report` now pass and are off the ledger.
     ("13-modules/update-bundle-three-way-merge", "§4.1 `$bundle` is not accepted by the model layer yet (explicit unimplemented rejection) and the §13.13 bundle three-way merge is unwired, so install fails before the merge can run"),
     // --- §13 module lifecycle used by other chapters (same seams) ---
     ("19-history-artifacts/child-export-matches-embedded-artifact", "§19 child-module `.liasse` artifact export/embedding is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
     ("19-history-artifacts/child-module-artifact-embedded-and-extractable", "§19 child-module `.liasse` artifact export/embedding is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
     ("19-history-artifacts/tampered-child-artifact-invalid", "§19 child-module `.liasse` artifact embedding/verification is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
-    ("annex-e-compatibility/module-minor-rebinds-interface-implementation-accepted", "§13.15/Annex E the update-report shape is not assembled by the runtime host, so the asserted report value is absent"),
-    ("annex-e-compatibility/module-removes-interface-binding-rejected", "§13.14/Annex E the interface-binding-removal narrowing recheck is not enforced by the §20 update the runtime host runs"),
     ("w-worked-examples/w4-host-imports-exposed-template-across-boundary", "§13.9 the §13.4 parent surface now resolves so the child installs and its exposed template aggregates; the residual is module-aware root-MUTATION admission — the host `import_template` mutation reads `.modules[@module]::templates[@template]` inside its program, but a root mutation admits with no module aggregate (only root VIEW reads fold it), and the adapter routes the plain root-mutation call and its `.templates` read to the base host (no children) rather than the deployment, so `source` selects zero and the insert rejects (§6.3)"),
     // --- `operator` step ---
     // Root-mutation operator transitions now drive through a synthetic public

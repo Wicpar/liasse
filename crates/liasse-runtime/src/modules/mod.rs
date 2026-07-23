@@ -40,6 +40,7 @@
 //!   (§13.10/§13.11); `$if_module`-guarded declaration activation (§13.7).
 
 mod aggregate;
+mod compat;
 mod host;
 mod install;
 mod merge;
@@ -53,8 +54,45 @@ pub use install::{AdmittedBindings, DepSpec, InstallRequest, UseSpec};
 pub use merge::SeedMerge;
 pub use space::ModuleSpace;
 
+use liasse_store::CommitSeq;
+
 use crate::error::EngineError;
 use crate::view::ViewRow;
+
+/// The observable result of a successful §13.14 single-instance module update,
+/// assembled into the §13.15 update report by the driver.
+///
+/// It carries the version movement and committed result plus the three grouped
+/// boundary reports §13.15 pins: `$migrated`/`$seeded` per-item paths in canonical
+/// path order, the `$exposed` interface grouping (`$unchanged`/`$changed`/
+/// `$removed`), and the `$imports` grouping (`$rebound`/`$broken`). The `$instance`
+/// display path and `$commit` rendering are the driver's to add — the runtime
+/// reports the migration facts, not the addressing of the instance in the host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleUpdateReport {
+    /// The instance's version before the update (`$from`), `major.minor.patch`.
+    pub from: String,
+    /// The target version the update moved to (`$to`), `major.minor.patch`.
+    pub to: String,
+    /// The commit the accepted update took (`$commit`).
+    pub commit: CommitSeq,
+    /// The migrated rows' canonical display paths, in canonical path order
+    /// (`$migrated`).
+    pub migrated: Vec<String>,
+    /// The seed rows inserted where absent, canonical display paths (`$seeded`).
+    pub seeded: Vec<String>,
+    /// Exposed interfaces whose boundary contract is unchanged (`$exposed.$unchanged`).
+    pub exposed_unchanged: Vec<String>,
+    /// Exposed interfaces whose boundary contract compatibly widened
+    /// (`$exposed.$changed`).
+    pub exposed_changed: Vec<String>,
+    /// Exposed interfaces the update no longer exposes (`$exposed.$removed`).
+    pub exposed_removed: Vec<String>,
+    /// Import handles the update re-bound to their sources (`$imports.$rebound`).
+    pub imports_rebound: Vec<String>,
+    /// Import handles the update could no longer bind (`$imports.$broken`).
+    pub imports_broken: Vec<String>,
+}
 
 /// A failure of a module lifecycle operation (§13.3).
 #[derive(Debug, thiserror::Error)]
@@ -106,6 +144,23 @@ pub enum ModuleError {
     /// typed struct (§13.1), or names a field the struct does not declare.
     #[error("installation `$config` does not match the declared struct: {0}")]
     ConfigMismatch(String),
+    /// A minor/patch update definitionally narrows the module's own exposed
+    /// compatibility surface (§13.14): an exposed `$view` drops a field, or an
+    /// exposed operation the module no longer provides (its backing private mutation
+    /// is gone too). A purely definitional comparison of the old and new `$expose`,
+    /// independent of composition state, so it is a static "package loading" refusal
+    /// (`invalid`, tests/13-modules/NOTES.md) refused before the migration commits —
+    /// the current release stays active (E.9).
+    #[error("the update narrows the module's exposed compatibility surface: {0}")]
+    ExposedNarrowed(String),
+    /// A minor/patch update withdraws a previously accepted module-interface binding
+    /// while the private implementation that satisfied it remains (§13.14, E.4). The
+    /// candidate module is well-formed on its own; the defect is the removed boundary
+    /// binding, caught by the §13.14 recheck of module exposures before admission (an
+    /// admission `rejected`, tests/13-modules/NOTES.md) — the current binding stays
+    /// active (E.9).
+    #[error("the update withdraws a previously accepted interface binding: {0}")]
+    InterfaceBindingWithdrawn(String),
     /// Loading or operating the child instance failed.
     #[error(transparent)]
     Engine(#[from] EngineError),

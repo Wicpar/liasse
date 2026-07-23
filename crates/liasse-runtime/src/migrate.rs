@@ -70,6 +70,16 @@ pub struct UpdateReport {
     pub relation: UpdateRelation,
     /// The commit the update took.
     pub commit: CommitSeq,
+    /// The canonical display paths of rows a declared migration transform produced
+    /// (§13.15 `$migrated`), in canonical path order. A §20.1 compatible
+    /// same-identity copy is not a migrated row — only a `$from`/`$as` field mapping
+    /// or a `$migrations` program write is — so a shape-compatible update reports an
+    /// empty list.
+    pub migrated: Vec<String>,
+    /// The canonical display paths of seed rows the §13.13 apply-if-absent pass
+    /// inserted at an address the instance did not already hold (§13.15 `$seeded`),
+    /// in canonical path order.
+    pub seeded: Vec<String>,
 }
 
 impl<S: InstanceStore> Engine<S> {
@@ -166,7 +176,7 @@ impl<S: InstanceStore> Engine<S> {
         // the live source engine now, at head, so `$old.items.doubled` resolves; the
         // raw stored-collection materialization inside `build_migrated` cannot.
         let old_root = self.source_root().map_err(UpdateError::Engine)?;
-        let migrated = build_migrated(
+        let staged = build_migrated(
             self.compiled(),
             self.schema(),
             &old_state,
@@ -178,10 +188,15 @@ impl<S: InstanceStore> Engine<S> {
             self.now(),
         )
         .map_err(UpdateError::Rejected)?;
+        // §13.15: the per-item `$migrated`/`$seeded` paths are captured from the
+        // build in canonical (`BTreeMap`/sorted) path order before the rows are
+        // consumed by the commit.
+        let migrated = staged.migrated.iter().map(RowAddress::render).collect();
+        let seeded = staged.seeded.iter().map(RowAddress::render).collect();
         let commit = self
-            .apply_migration(target, compilation, migrated)
+            .apply_migration(target, compilation, staged.rows)
             .map_err(UpdateError::Engine)?;
-        Ok(UpdateReport { relation: decision.relation, commit })
+        Ok(UpdateReport { relation: decision.relation, commit, migrated, seeded })
     }
 
     /// The first boundary-contract narrowing the `target` release makes relative
@@ -301,6 +316,16 @@ fn identity(id: &PackageId) -> Result<PackageIdentity, EngineError> {
     Ok(PackageIdentity::new(name, version))
 }
 
+/// The staged migrated state plus the §13.15 per-item report facts: the rows to
+/// commit, the rows produced by a declared migration transform (`$migrated`), and
+/// the seed rows inserted where absent (`$seeded`), each address list in canonical
+/// path order.
+struct MigratedState {
+    rows: BTreeMap<RowAddress, FieldMap>,
+    migrated: Vec<RowAddress>,
+    seeded: Vec<RowAddress>,
+}
+
 /// Build the prospective migrated state in the §20.1 order — compatible copy and
 /// local `$from`/`$as` mappings, then the package-level `$migrations` program for
 /// the active source version — verify reversible transforms, and return the
@@ -318,7 +343,7 @@ fn build_migrated<G: crate::generator::Generators>(
     plan: &MigrationPlan,
     generator: &mut G,
     now: Timestamp,
-) -> Result<BTreeMap<RowAddress, FieldMap>, Rejection> {
+) -> Result<MigratedState, Rejection> {
     let schema = Schema::new(&target.model);
     // §16.1/§20.2: the migration transform scope resolves the built-in codec
     // namespaces (`base64`/`hex`/`string.bytes`), so `base64.encode(string.bytes(.))`
@@ -370,11 +395,17 @@ fn build_migrated<G: crate::generator::Generators>(
     let mut sources = SourceMap::new();
     let mut prospective = Prospective::empty();
     let mut touched = Vec::new();
+    // §13.15 `$migrated`: the rows a declared migration transform produced — a
+    // collection with a `$from`/`$as` field mapping, or a `$migrations` program
+    // write. A §20.1 compatible same-identity copy is NOT a migrated row, so a
+    // shape-compatible update accumulates nothing here.
+    let mut migrated_addrs: Vec<RowAddress> = Vec::new();
 
     // §20.1 order (1/2): the compatible same-identity copy and the local `$from`
     // field mappings (with their `$as` transforms), in declaration order.
     for collection in &target.compiled.collections {
         let migration = plan.collections.get(&collection.name);
+        let transformed = migration.is_some_and(|m| !m.fields.is_empty());
         let source_name = migration
             .and_then(|m| m.from.clone())
             .unwrap_or_else(|| collection.name.clone());
@@ -404,6 +435,12 @@ fn build_migrated<G: crate::generator::Generators>(
             if prospective.contains(&address) {
                 return Err(Rejection::new(RejectionReason::DuplicateKey, "migration produced a duplicate key")
                     .at(address.render()));
+            }
+            // §13.15: a row of a collection carrying a declared `$from`/`$as` mapping
+            // went through the migration transform, so it is a `$migrated` item; a
+            // plain compatible copy is not.
+            if transformed {
+                migrated_addrs.push(address.clone());
             }
             prospective.insert(address.clone(), fields);
             touched.push(address);
@@ -472,7 +509,12 @@ fn build_migrated<G: crate::generator::Generators>(
     // to the exact active source version runs (§20.1); a byte-identical replay of a
     // higher version finds no program and leaves the compatible copy in place.
     if let Some(statements) = target.model.migrations().program(active_source) {
-        run_program(&target.compiled, statements, &old_root_ty, &root_ty, &codec_sigs, &ctx, &mut prospective, &mut touched)?;
+        // §13.15: the program's own writes are migration transforms, so capture them
+        // as `$migrated` items distinctly from the compatible copies already touched.
+        let mut program_touched = Vec::new();
+        run_program(&target.compiled, statements, &old_root_ty, &root_ty, &codec_sigs, &ctx, &mut prospective, &mut program_touched)?;
+        migrated_addrs.extend(program_touched.iter().cloned());
+        touched.append(&mut program_touched);
     }
 
     // §20.1 final check: the complete prospective target is checked under ordinary
@@ -500,10 +542,10 @@ fn build_migrated<G: crate::generator::Generators>(
     // source-series / meter passes below check them alongside the rest. The §8.2
     // singleton is carried by the §20.1 copy above, so `ApplyIfAbsent` reconciles
     // only keyed-collection rows.
+    let mut seeded_addrs: Vec<RowAddress> = Vec::new();
     if let Some(data) = &target.data {
-        let mut seeded = Vec::new();
-        crate::seed::admit(&target.compiled, &ctx, &mut prospective, &mut seeded, data, crate::seed::SeedMode::ApplyIfAbsent)?;
-        addresses.extend(seeded);
+        crate::seed::admit(&target.compiled, &ctx, &mut prospective, &mut seeded_addrs, data, crate::seed::SeedMode::ApplyIfAbsent)?;
+        addresses.extend(seeded_addrs.iter().cloned());
     }
     rules::finalize(&target.compiled, &ctx, &prospective, &addresses)?;
     // §20.1: the migrated state runs the SAME eager admission suite an ordinary
@@ -521,10 +563,22 @@ fn build_migrated<G: crate::generator::Generators>(
     // module/interface aggregate enforcement (`EvalCtx.modules` is `None` on this
     // path), remain flagged follow-on holes rather than a subsystem-crossing change.
     crate::meter::admit::enforce(&ctx, &target.compiled.meters, &mut prospective, &addresses)?;
-    Ok(addresses
+    let rows: BTreeMap<RowAddress, FieldMap> = addresses
         .into_iter()
         .filter_map(|address| prospective.get(&address).map(|fields| (address.clone(), fields.clone())))
-        .collect())
+        .collect();
+    // §13.15: report only rows that survived the final admission, in canonical
+    // (`BTreeMap`) path order — a coerced/rekeyed transform address that no longer
+    // resolves is not a committed migrated row.
+    let migrated = report_paths(&migrated_addrs, &rows);
+    let seeded = report_paths(&seeded_addrs, &rows);
+    Ok(MigratedState { rows, migrated, seeded })
+}
+
+/// The subset of `candidates` present in the committed `rows`, deduplicated and
+/// returned in canonical (`BTreeMap`) path order for the §13.15 per-item lists.
+fn report_paths(candidates: &[RowAddress], rows: &BTreeMap<RowAddress, FieldMap>) -> Vec<RowAddress> {
+    rows.keys().filter(|address| candidates.contains(address)).cloned().collect()
 }
 
 /// The `$old` root type a §20.1 delta program reads (`$old`, bound as a plain

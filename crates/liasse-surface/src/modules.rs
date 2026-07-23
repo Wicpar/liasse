@@ -26,7 +26,7 @@
 use liasse_ident::InstanceId;
 use liasse_runtime::{
     AdmittedBindings, CallOutcome, CallRequest, Engine, InstallRequest, InterfaceRow, ModuleError,
-    ModuleHost, ModuleSpace, UpdateReport, ViewQuery, ViewResult,
+    ModuleHost, ModuleSpace, ModuleUpdateReport, ViewQuery, ViewResult,
 };
 use liasse_store::StoreFactory;
 
@@ -90,8 +90,14 @@ impl ModuleObservation {
             // that matches it exhaustively) grows a case, they surface as a
             // [`ModuleFault`]; a driver still classifies that as `invalid`. Giving
             // each its own first-class observation is a surface seam.
+            // The §13.14 update-narrowing refusals never reach this §13.3 lifecycle
+            // mapping — they arise only on the [`ModuleDeployment::update`] path,
+            // classified there — so if one somehow does it is a fault, not a
+            // lifecycle observation.
             fault @ (ModuleError::InterfaceContract(..)
             | ModuleError::ConfigMismatch(_)
+            | ModuleError::ExposedNarrowed(_)
+            | ModuleError::InterfaceBindingWithdrawn(_)
             | ModuleError::Engine(_)) => Err(ModuleFault(fault)),
         }
     }
@@ -100,12 +106,20 @@ impl ModuleObservation {
 /// The result of a §13.14 single-instance update.
 #[derive(Debug)]
 pub enum ModuleUpdate {
-    /// The update migrated and committed, with its Annex E relation and commit.
-    Updated(UpdateReport),
+    /// The update migrated and committed, carrying the assembled §13.15 report.
+    Updated(ModuleUpdateReport),
     /// No installed instance of that name (§13.3).
     Unknown(String),
     /// The addressed instance is disabled (§13.3, §13.12).
     Disabled(String),
+    /// The update definitionally narrows the module's own exposed compatibility
+    /// surface (§13.14) — a static "package loading" refusal (`invalid`): the
+    /// current release stays active (E.9).
+    Narrowed(String),
+    /// The update withdraws a previously accepted interface binding whose private
+    /// implementation remains (§13.14) — an admission refusal (`rejected`): the
+    /// current binding stays active (E.9).
+    Rejected(String),
 }
 
 /// A genuine store/engine fault from a module lifecycle operation — never a spec
@@ -227,15 +241,15 @@ impl<F: StoreFactory> ModuleDeployment<F> {
         ModuleObservation::of(self.host.rename(space, from, to))
     }
 
-    /// Update a single instance in `space` to a `target` definition (§13.14):
-    /// delegates to the §20 migration over the child's own engine, affecting that
-    /// instance only.
+    /// Update a single instance in `space` to a `target` definition (§13.14/§13.15):
+    /// rechecks the target's exposed compatibility surface, then runs the §20
+    /// migration over the child's own engine, affecting that instance only. A
+    /// successful update carries the assembled §13.15 report; a §13.14 narrowing
+    /// refusal is a [`ModuleUpdate`] observation (the current release stays active,
+    /// E.9), not a fault.
     ///
     /// # Errors
-    /// [`ModuleFault`] if the migration was refused by the admission pipeline or an
-    /// engine/store fault occurred (the runtime host collapses a rejected migration
-    /// into an engine fault — surfacing the migration rejection as its own
-    /// observation remains a runtime seam).
+    /// [`ModuleFault`] only for a genuine engine/store fault while migrating.
     pub fn update(&mut self, space: &ModuleSpace, name: &str, target: &str) -> Result<ModuleUpdate, ModuleFault> {
         let now = self.clock.instant();
         let mut generators = self.entropy.generators(now);
@@ -243,6 +257,12 @@ impl<F: StoreFactory> ModuleDeployment<F> {
             Ok(report) => Ok(ModuleUpdate::Updated(report)),
             Err(ModuleError::Unknown(name)) => Ok(ModuleUpdate::Unknown(name)),
             Err(ModuleError::Disabled(name)) => Ok(ModuleUpdate::Disabled(name)),
+            // §13.14: a definitional exposed-surface narrowing is a static
+            // "package loading" refusal (`invalid`); a withdrawn-but-implemented
+            // interface binding is an admission refusal (`rejected`). Both are spec
+            // observations, not faults.
+            Err(ModuleError::ExposedNarrowed(reason)) => Ok(ModuleUpdate::Narrowed(reason)),
+            Err(ModuleError::InterfaceBindingWithdrawn(reason)) => Ok(ModuleUpdate::Rejected(reason)),
             Err(fault) => Err(ModuleFault(fault)),
         }
     }
