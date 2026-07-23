@@ -91,11 +91,14 @@ pub const SKIP: &[(&str, &str)] = &[
     // `.file.$surplus`) now type-check and evaluate in the expression layer, and the
     // driver records the placement facts into the engine before the return/view read
     // (adapter/blobs.rs `stage`+`Engine::record_blob_placement`, §18.5). The cases
-    // that read a placement member in a mutation `return` therefore pass; the two
-    // residuals below stay blocked on a distinct §12.2 view-shape seam, not the
-    // record-placement seam. A `claim` residual keeps its binding note.
-    ("18-blobs/same-content-different-metadata-distinct-descriptors", "a declared `$name` must bind into the mutation call, which the honest blob parameter drops"),
-    ("18-blobs/descriptor-bytes-encoding", "a verifying client-declared descriptor must bind into the mutation call, which the honest-only blob parameter does not expose; the harness's DeclaredDescriptor also erases the $bytes string-vs-number wire spelling (#20)"),
+    // that read a placement member in a mutation `return` therefore pass. The
+    // §18.7-step-4 descriptor binding is CLOSED: `stage` builds the client-declared
+    // descriptor (honest content carrying the declared `$name`, or an explicit
+    // `claim`'s members with the canonical Annex A.1 string-form `$bytes`, #20) and
+    // binds the verified descriptor into the mutation call, so `.file.$name` lands in
+    // committed state and a verifying `claim` commits — un-skipping
+    // `same-content-different-metadata-distinct-descriptors`, `descriptor-bytes-encoding`,
+    // and `descriptor-metadata-readable-in-view`.
     // §18.3 pins eager connector resolution: a store-row write feeding a declared
     // placement is rejected at admission when its connector is unregistered. The
     // runtime `Engine` holds no blob-connector registry (connectors live in the
@@ -334,12 +337,10 @@ pub const SKIP: &[(&str, &str)] = &[
     // below still fail for a DISTINCT, previously-masked seam (not view-shape).
     ("18-blobs/billing-sum-over-stored-descriptors", "§18.11 the billing view `sum(.uploads[:u | /stores['primary'] in u.file.$stored].file.$bytes)` does not type-check — the aggregate-over-projected-member seam (`in`/`sum` over the projected `.file.$stored`/`.file.$bytes` placement member), so the package does not load"),
     ("18-blobs/corrupt-copy-demoted-and-repaired", "the placement view now resolves and steps 0–2 pass; the residual is the `run_reconciler` step (a background reconciler loop over retained lineages that demotes and repairs a corrupt copy), which the single-step `reconcile`/`apply_correction` verbs do not model — the run_reconciler seam"),
-    // view-shape corpus bug FIXED (array form, §6.3/§12.2); this case's residual is
-    // the declared-`$name` descriptor-binding seam (same family as
-    // `same-content-different-metadata-distinct-descriptors`): the honest blob
-    // parameter drops the declared `$name`, so the projected `name: .file.$name`
-    // member is absent from the (now correctly-array) row.
-    ("18-blobs/descriptor-metadata-readable-in-view", "view-shape corpus error fixed (`.docs[@id] { … }` now expects the §6.3/§12.2 one-row array); residual is the declared-`$name` descriptor-binding seam — the honest blob parameter drops `$name`, so `name: .file.$name` is absent from the row (same seam as `same-content-different-metadata-distinct-descriptors`)"),
+    // (`18-blobs/descriptor-metadata-readable-in-view` now passes: view-shape corpus
+    // error fixed to the §6.3/§12.2 one-row array, and the §18.7-step-4 descriptor
+    // binding now carries the declared `$name`, so the projected `name: .file.$name`
+    // member is present in the row. Entry pruned as stale.)
     // view-shape corpus bug FIXED (array form, §6.3/§12.2); this case's residual,
     // previously masked by the step-2 view-shape failure, is a §8.4/§8.5 bound-patch
     // admission seam: the `set_enabled` mutation `s = .stores[@id] { enabled = @enabled }`

@@ -11,17 +11,20 @@
 //! through the §18.8 visibility gate over the caller's surface projection (§18.9
 //! verifying the bytes), and scripting the §18.12 connector fault vocabulary.
 //!
-//! An honest upload is a two-phase [`stage`]-then-[`admit`]: [`stage`] streams the
-//! bytes into the blob host (verifying byte limit, media, count, and SHA-512),
-//! reads the §18.5 placement facts of the just-verified copy, and binds the
-//! verified descriptor as the mutation's blob argument; [`admit`] then admits the
-//! containing mutation. Splitting the two lets the caller record the placement
-//! facts into the engine (`Engine::record_blob_placement`, §18.5) *between* them,
-//! so a mutation `return` reading `.file.$satisfied`/`.file.$stored`/
-//! `.file.$surplus` resolves them rather than faulting on a placement-index miss.
-//! A `claim` models a lying/malformed client: the declared descriptor is verified
-//! by [`BlobHost::put_declared`], which rejects a mismatch before any transition
-//! (§18.1/§18.2).
+//! An upload is a two-phase [`stage`]-then-[`admit`]: [`stage`] builds the
+//! client-declared descriptor (the honest content's truthful descriptor carrying
+//! the declared `$name`, or an explicit `claim`'s members), streams the bytes into
+//! the blob host through [`BlobHost::put_declared`] (verifying byte limit, media,
+//! count, and SHA-512), reads the §18.5 placement facts of the just-verified copy,
+//! and binds the verified descriptor — its canonical members and `$name` — as the
+//! mutation's blob argument (§18.7 step 4); [`admit`] then admits the containing
+//! mutation. Splitting the two lets the caller record the placement facts into the
+//! engine (`Engine::record_blob_placement`, §18.5) *between* them, so a mutation
+//! `return` reading `.file.$satisfied`/`.file.$stored`/`.file.$surplus` resolves
+//! them rather than faulting on a placement-index miss. A `claim` models a
+//! lying/malformed client: [`BlobHost::put_declared`] rejects a mismatched or
+//! malformed descriptor before any transition (§18.1/§18.2), while a *verifying*
+//! declared descriptor commits and binds exactly like an honest upload.
 
 use std::collections::BTreeMap;
 
@@ -355,11 +358,13 @@ pub(super) enum Staged {
 }
 
 /// Stage a `blob_put`'s bytes into the blob host and build the admission call
-/// (§18.7). An honest upload streams its bytes through [`BlobHost::put`], verifying
-/// the byte limit, media, count, and SHA-512, then binds the verified descriptor
-/// as the mutation's blob argument and reads the §18.5 placement facts of the
-/// landed copy; a `claim` declares a descriptor verified before admission (a
-/// lying/malformed client rejects, §18.1/§18.2).
+/// (§18.7). The client-declared descriptor — the honest content's truthful
+/// descriptor carrying the declared `$name`, or an explicit `claim`'s members — is
+/// streamed through [`BlobHost::put_declared`], verifying the byte limit, media,
+/// count, and SHA-512 (§18.2). On success the verified descriptor (its canonical
+/// members and `$name`) binds to the mutation's blob parameter (§18.7 step 4) and
+/// the §18.5 placement facts of the landed copy are read; a lying/malformed
+/// descriptor rejects before any transition (§18.1/§18.2).
 pub(super) fn stage<S: InstanceStore>(
     loaded: &mut Loaded<S>,
     spec: &BlobPutSpec,
@@ -384,12 +389,16 @@ pub(super) fn stage<S: InstanceStore>(
         call = call.with_auth(auth.clone());
     }
 
-    if let Some(claim) = &spec.claim {
-        return stage_declared(loaded, spec, claim);
-    }
+    // §18.7 step 4: the descriptor the client declares. A malformed member — a
+    // negative or non-canonical-wire `$bytes` (§18.1/#20) the composite value
+    // cannot carry — is rejected at the wire boundary before any bytes stream.
+    let declared = match declared_descriptor(spec) {
+        Ok(declared) => declared,
+        Err(DescriptorRejected) => return Ok(Staged::Rejected(Observation::outcome(Outcome::Rejected))),
+    };
 
     let outcome = match loaded.blob_hosts.get_mut(&spec.param) {
-        Some(host) => host.put(&spec.content, &spec.media),
+        Some(host) => host.put_declared(&declared, &spec.content),
         None => {
             return Err(AdapterError::unsupported(
                 "`blob_put` names a blob parameter with no composed blob host",
@@ -402,7 +411,9 @@ pub(super) fn stage<S: InstanceStore>(
         // transition — no admission, no placement.
         BlobPutOutcome::Rejected(_) => return Ok(Staged::Rejected(Observation::outcome(Outcome::Rejected))),
     };
-    // §18.7 step 4: bind the verified descriptor to the mutation's blob parameter.
+    // §18.7 step 4: bind the verified descriptor (its canonical members and the
+    // declared `$name`) to the mutation's blob parameter, so committed state can
+    // read `.file.$name`/`.file.$sha512`.
     if let Some(value) = loaded.blob_hosts.get(&spec.param).and_then(|host| host.descriptor_value(&digest)) {
         call = call.with_arg(spec.param.clone(), value);
     }
@@ -414,46 +425,53 @@ pub(super) fn stage<S: InstanceStore>(
     Ok(Staged::Ready { digest, placement, call })
 }
 
-/// Verify a client-declared descriptor (a `claim`) against the streamed bytes
-/// (§18.1/§18.2). A negative `$bytes` is a malformed descriptor value the
-/// [`DeclaredDescriptor`] type cannot even carry, so it is rejected at the wire
-/// boundary. A verifying descriptor that would still need binding into the
-/// mutation is a precise seam (the surface admits only honest blob parameters).
-fn stage_declared<S: InstanceStore>(
-    loaded: &mut Loaded<S>,
-    spec: &BlobPutSpec,
-    claim: &J,
-) -> Result<Staged, AdapterError> {
-    if let Some(bytes) = claim.get("$bytes").and_then(J::as_i64)
-        && bytes < 0
-    {
-        // §18.1: `$bytes` is a non-negative integer; a negative claim is a
-        // malformed descriptor, rejected before any transition.
-        return Ok(Staged::Rejected(Observation::outcome(Outcome::Rejected)));
-    }
-    let declared = DeclaredDescriptor {
+/// A client-declared descriptor whose wire form the §18.1 boundary rejects: a
+/// negative or non-canonical `$bytes` the composite value cannot carry.
+struct DescriptorRejected;
+
+/// The §18.7 client-declared descriptor of a `blob_put`: the honest content's
+/// truthful descriptor carrying the declared `$name`, or an explicit `claim`'s
+/// members (falling back to the honest content/media/name for any it omits). Both
+/// carry `$name` into the mutation call, so committed state reads `.file.$name`
+/// (§18.1: the complete descriptor is the application value). A malformed `$bytes`
+/// wire form is rejected before any transition.
+fn declared_descriptor(spec: &BlobPutSpec) -> Result<DeclaredDescriptor, DescriptorRejected> {
+    let Some(claim) = &spec.claim else {
+        return Ok(DeclaredDescriptor {
+            sha512: BlobIntegrity::digest_hex(&spec.content),
+            bytes: spec.content.len() as u64,
+            media: spec.media.clone(),
+            name: spec.name.clone(),
+        });
+    };
+    let bytes = match claim.get("$bytes") {
+        None => spec.content.len() as u64,
+        Some(value) => canonical_byte_count(value).ok_or(DescriptorRejected)?,
+    };
+    Ok(DeclaredDescriptor {
         sha512: claim
             .get("$sha512")
             .and_then(J::as_str)
             .map(ToOwned::to_owned)
             .unwrap_or_else(|| BlobIntegrity::digest_hex(&spec.content)),
-        bytes: claim.get("$bytes").and_then(J::as_u64).unwrap_or(spec.content.len() as u64),
+        bytes,
         media: claim.get("$media").and_then(J::as_str).map(ToOwned::to_owned).unwrap_or_else(|| spec.media.clone()),
         name: claim.get("$name").and_then(J::as_str).map(ToOwned::to_owned).or_else(|| spec.name.clone()),
-    };
-    let Some(host) = loaded.blob_hosts.get_mut(&spec.param) else {
-        return Err(AdapterError::unsupported(
-            "`blob_put` names a blob parameter with no composed blob host",
-        ));
-    };
-    match host.put_declared(&declared, &spec.content) {
-        BlobPutOutcome::Rejected(_) => Ok(Staged::Rejected(Observation::outcome(Outcome::Rejected))),
-        BlobPutOutcome::Committed { .. } => Err(AdapterError::unsupported(
-            "a client-declared blob descriptor that verifies must be bound into the mutation call, \
-             but the surface admits only the honest blob parameter (no declared-descriptor call \
-             binding is exposed)",
-        )),
+    })
+}
+
+/// The `$bytes` byte count decoded from its canonical Annex A.1 wire form: a
+/// base-10 JSON *string* with no sign, no leading zeros (bar a lone `"0"`), and no
+/// overflow. A bare JSON number is the non-canonical wire spelling (§18.1/#20), a
+/// negative or otherwise malformed string cannot be a byte count — each yields
+/// `None` (rejected at the boundary, distinct from a count *mismatch* the §18.2
+/// verifier catches against the streamed length).
+fn canonical_byte_count(value: &J) -> Option<u64> {
+    let text = value.as_str()?;
+    if text != "0" && text.starts_with('0') {
+        return None;
     }
+    text.parse::<u64>().ok()
 }
 
 /// Admit a staged upload's mutation (§18.7), the verified descriptor already bound
