@@ -1,0 +1,58 @@
+{
+  // §6.3/§5.6: a `$ref` MUST resolve to a live row; a reference to a nested
+  // collection resolves by the target's FULL identity — every ancestor `$key`
+  // followed by the local `$key` (§D.1/§A.9). Admitting a nested ref must compare
+  // that full identity, so a ref naming an EXISTING ancestor but a NON-EXISTENT
+  // local key (`[acme, ghost]` when only office `hq` exists under `acme`) does not
+  // resolve and rejects as a dangling reference (§22.1). This is the negative of
+  // nested-collection-ref-current-key-on-ancestor-rekey: the resolver must not
+  // over-accept a nested ref merely because its ancestor segment matches a live
+  // row, nor because some unrelated row shares the flattened component list.
+  format: 1
+  name: nested-collection-ref-to-absent-row-rejected
+  suite: scenario
+  spec: ["#state-model", "§5.6", "#expressions", "§6.3", "#annex-d", "§D.1", "#annex-a", "§A.9"]
+  tags: ["identity", "ref", "composite", "nested", "dangling"]
+  note: "A $ref to a nested collection resolves by full ancestor-then-local identity (§D.1/§A.9). A ref whose local key names no live nested row does not resolve and rejects as dangling (§6.3/§22.1), even though its ancestor segment matches a live company row."
+
+  package: {
+    $liasse: 1
+    $app: "t.nestedrefdangling@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        offices: {
+          $key: "id"
+          id: "text"
+        }
+      }
+      links: {
+        $key: "id"
+        id: "text"
+        office: { $ref: "/companies/offices" }
+      }
+      $public: {
+        ops: {
+          $view: ".links { id, office }"
+          $mut: {
+            add_company: ".companies + { id: @id }"
+            add_office: ".companies[@company].offices + { id: @id }"
+            add_link: ".links + { id: @id, office: @office }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.ops.add_company", args: { id: "acme" }, expect: { outcome: ok } }
+    { call: "public.ops.add_office", args: { company: "acme", id: "hq" }, expect: { outcome: ok } }
+    // Ancestor `acme` is live but office `ghost` is not: the full identity resolves
+    // nowhere, so the ref is dangling and the insert rejects (§6.3/§22.1).
+    { call: "public.ops.add_link", args: { id: "l1", office: ["acme", "ghost"] },
+      expect: { outcome: rejected, violates: ["#expressions", "§6.3", "#state-model", "§5.6"] } }
+    // Nothing was committed: the view is empty.
+    { watch: "public.ops", id: "w1", expect_init: { value: [] } }
+  ]
+}

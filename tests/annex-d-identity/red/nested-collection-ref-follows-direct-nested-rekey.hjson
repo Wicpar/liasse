@@ -1,0 +1,62 @@
+{
+  // §5.4 (SPEC.md line 472): "Assigning a new value to any key field performs an
+  // atomic rekey. The runtime MUST update every ref that targets the row ... in the
+  // same transition." §D.1/§5.6 (line 523): "The application-visible value is the
+  // target's current typed key ... atomic rekeying changes the visible key while
+  // preserving the relationship." A `$ref` MAY target a nested collection (§5.6),
+  // carrying the A.9 ancestor-then-local composite key. Here `links.office` targets
+  // `/companies/offices`; rekeying the office's OWN local key (`hq -> hq2`, a
+  // depth-2 rekey) MUST rewrite the inbound ref to `[acme, hq2]`, its current typed
+  // key. Sibling of the ancestor-rekey case: this isolates a DIRECT nested rekey.
+  format: 1
+  name: nested-collection-ref-follows-direct-nested-rekey
+  suite: scenario
+  spec: ["#state-model", "§5.4", "§5.6", "#annex-d", "§D.1", "#annex-a", "§A.9"]
+  tags: ["identity", "ref", "composite", "nested", "rekey"]
+  note: "Rekeying a nested row's own local key (a depth-2 rekey) MUST update every inbound ref that targets it (§5.4), so the ref's visible value becomes the target's current full identity [ancestor, new-local] (§D.1/§5.6/§A.9)."
+
+  package: {
+    $liasse: 1
+    $app: "t.nestedrefdirectrekey@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        offices: {
+          $key: "id"
+          id: "text"
+        }
+      }
+      links: {
+        $key: "id"
+        id: "text"
+        office: { $ref: "/companies/offices" }
+      }
+      $public: {
+        ops: {
+          $view: ".links { id, office }"
+          $mut: {
+            add_company: ".companies + { id: @id }"
+            add_office: ".companies[@company].offices + { id: @id }"
+            add_link: ".links + { id: @id, office: @office }"
+            rekey_office: ".companies[@company].offices[@old].id = @new"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.ops.add_company", args: { id: "acme" }, expect: { outcome: ok } }
+    { call: "public.ops.add_office", args: { company: "acme", id: "hq" }, expect: { outcome: ok } }
+    { call: "public.ops.add_link", args: { id: "l1", office: ["acme", "hq"] },
+      expect: { outcome: ok } }
+    { watch: "public.ops", id: "w1",
+      expect_init: { value: [ { id: "l1", office: ["acme", "hq"] } ] } }
+    // Direct nested rekey of the office's local key.
+    { call: "public.ops.rekey_office", args: { company: "acme", old: "hq", new: "hq2" },
+      expect: { outcome: ok } }
+    // §D.1/§5.6: the ref's visible value is the target's CURRENT full identity.
+    { expect_view: { watch: "w1", value: [ { id: "l1", office: ["acme", "hq2"] } ] } }
+  ]
+}

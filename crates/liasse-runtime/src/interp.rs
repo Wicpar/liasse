@@ -15,7 +15,7 @@ use liasse_expr::{check_expression, Cell, ExprType, Row, RowId};
 use liasse_ident::NameSegment;
 use liasse_syntax::{Arg, BinaryOp, BlockMember, BlockMemberKind, Expr, ExprKind, Selector, Stmt, StmtKind, UnaryOp};
 use liasse_store::{CollectionPath, KeyValue, RowAddress};
-use liasse_value::{Ref, Struct, Text, Type, Value};
+use liasse_value::{Ref, RefKey, Struct, Text, Type, Value};
 
 use crate::cascade::{self, PlannedDeletion};
 use crate::compiled::{Compiled, CompiledCollection, CompiledField, CompiledMutation, CompiledStruct};
@@ -653,6 +653,7 @@ impl<'a> Interp<'a> {
             .filter(|other| other.depth() > old_depth && is_prefix(address, other))
             .cloned()
             .collect();
+        let mut moves: Vec<(RowAddress, RowAddress)> = Vec::new();
         for descendant in descendants {
             let moved = reroot(&new_address, &descendant, old_depth);
             if self.prospective.contains(&moved) {
@@ -662,7 +663,8 @@ impl<'a> Interp<'a> {
             let Some(sub) = self.prospective.get(&descendant).cloned() else { continue };
             self.prospective.remove(&descendant);
             self.prospective.insert(moved.clone(), sub);
-            self.mark(moved);
+            self.mark(moved.clone());
+            moves.push((descendant, moved));
         }
         self.prospective.remove(address);
         self.prospective.insert(new_address.clone(), fields);
@@ -675,8 +677,8 @@ impl<'a> Interp<'a> {
         // the same transition, then leaves each rewritten referencing row in the
         // touched set so its checks and reference integrity are re-validated — a
         // rewritten ref that violates a target row's check or resolves nowhere
-        // rejects the complete transition. Refs target top-level collections, so a
-        // top-level key change is the only one that moves an inbound target.
+        // rejects the complete transition. A top-level key change moves an inbound
+        // target keyed by the collection name and local key.
         if address.depth() == 1
             && let (Some(name), Some(old), Some(new)) =
                 (path.first().cloned(), address.steps().last(), new_address.steps().last())
@@ -685,8 +687,48 @@ impl<'a> Interp<'a> {
             let new_key = new.key().clone();
             self.rewrite_inbound_refs(&name, &old_key, &new_key);
         }
+        // §5.4/§D.1/§A.9: a `$ref` MAY target a nested collection, carrying the
+        // target row's FULL ancestor-then-local identity. This rekey therefore also
+        // updates every ref that targets one of its DESCENDANTS whose full identity
+        // contains the changed key — each re-rooted descendant (and the rekeyed row
+        // itself when it is a nested target) is matched by its full identity, which
+        // moved, so its inbound refs follow it rather than dangling on the old key.
+        moves.push((address.clone(), new_address.clone()));
+        for (old_addr, new_addr) in &moves {
+            if old_addr.depth() >= 2 {
+                self.rewrite_inbound_refs_nested_move(old_addr, new_addr);
+            }
+        }
         self.mark(new_address);
         Ok(())
+    }
+
+    /// Rewrite every inbound reference to a moved NESTED-collection row — one whose
+    /// `$ref` target is the row's `/`-separated declaration path — from its OLD to
+    /// its NEW full ancestor-then-local identity (§5.4/§D.1), marking each rewritten
+    /// row touched for re-validation. Used for a direct nested rekey and for each
+    /// descendant re-rooted by an ancestor rekey.
+    fn rewrite_inbound_refs_nested_move(&mut self, old_addr: &RowAddress, new_addr: &RowAddress) {
+        let target = old_addr
+            .steps()
+            .map(|step| step.name().as_str().to_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        let old_components: Vec<Value> =
+            old_addr.steps().flat_map(|step| step.key().components().cloned()).collect();
+        let new_components: Vec<Value> =
+            new_addr.steps().flat_map(|step| step.key().components().cloned()).collect();
+        let (Ok(old_key), Ok(new_key)) = (
+            liasse_store::key_from_components(old_components),
+            liasse_store::key_from_components(new_components),
+        ) else {
+            return;
+        };
+        for address in
+            rewrite_inbound_refs_across(self.compiled, self.prospective, &target, &old_key, &new_key)
+        {
+            self.mark(address);
+        }
     }
 
     /// Rewrite every inbound reference into top-level collection `target` whose
@@ -2077,6 +2119,13 @@ pub(crate) fn rewrite_inbound_refs_across(
     old: &KeyValue,
     new: &KeyValue,
 ) -> Vec<RowAddress> {
+    // §5.6/§A.9: a ref target is a `/`-separated declaration path. A NESTED target
+    // (`companies/offices`) carries the row's FULL ancestor-then-local identity, so
+    // `old`/`new` are the flattened full keys and matching is positional over the
+    // whole component list — distinct from the top-level, single-key path below.
+    if target.contains('/') {
+        return rewrite_inbound_refs_nested(compiled, prospective, target, old, new);
+    }
     let Some(names) = compiled.collection(target).map(|c| c.key.clone()) else { return Vec::new() };
     let old_id = identity_of(&names, &old.components().cloned().collect::<Vec<_>>());
     let new_components: Vec<Value> = new.components().cloned().collect();
@@ -2108,6 +2157,111 @@ pub(crate) fn rewrite_inbound_refs_across(
         }
     }
     rewritten
+}
+
+/// The nested-target analogue of [`rewrite_inbound_refs_across`] (§5.4/§D.1/§A.9).
+///
+/// A `$ref` to a NESTED collection (`companies/offices`) carries the target row's
+/// FULL ancestor-then-local identity, so a rekey that moves the target — a direct
+/// nested rekey or an ancestor rekey re-rooting the descendant — rewrites every
+/// inbound ref whose positional components equal the target's OLD full identity to
+/// its NEW full identity. Matching is over the whole flattened component list
+/// (ancestor-then-local), never the local key alone; a nested target's key is
+/// always composite, so the rewritten carrier is the positional composite `Ref`.
+fn rewrite_inbound_refs_nested(
+    compiled: &Compiled,
+    prospective: &mut Prospective,
+    target: &str,
+    old: &KeyValue,
+    new: &KeyValue,
+) -> Vec<RowAddress> {
+    let old_components: Vec<Value> = old.components().cloned().collect();
+    let new_components: Vec<Value> = new.components().cloned().collect();
+    let candidates: Vec<RowAddress> = prospective.working().keys().cloned().collect();
+    let mut rewritten = Vec::new();
+    for address in candidates {
+        let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
+        let Some(collection) = compiled.collection_at(&decl) else { continue };
+        let Some(existing) = prospective.get(&address) else { continue };
+        let mut fields = existing.clone();
+        let mut changed = false;
+        for site in crate::refwalk::ref_sites(collection) {
+            if let Some(rewrite) = rewrite_field_value_nested(
+                site.field,
+                site.value(&fields),
+                target,
+                &old_components,
+                &new_components,
+            ) {
+                set_site_value(&mut fields, &site.container, &site.field.name, rewrite);
+                changed = true;
+            }
+        }
+        if changed {
+            prospective.replace(&address, fields);
+            rewritten.push(address);
+        }
+    }
+    rewritten
+}
+
+/// The rewritten value a reference field takes when a NESTED `target` row moves
+/// from full identity `old` to `new` (§5.4), or `None` when the field does not
+/// target the moved row. Handles a scalar `$ref` and every member of a `$set` of
+/// `$ref`, matching by the full positional component list.
+fn rewrite_field_value_nested(
+    field: &CompiledField,
+    current: Option<&Value>,
+    target: &str,
+    old: &[Value],
+    new: &[Value],
+) -> Option<Value> {
+    if let Some(info) = &field.reference
+        && info.target == target
+    {
+        return rewrite_ref_value_nested(current, old, new);
+    }
+    if let Some(info) = &field.element_reference
+        && info.target == target
+        && let Some(Value::Set(members)) = current
+    {
+        let mut rebuilt = BTreeSet::new();
+        let mut member_changed = false;
+        for member in members {
+            match rewrite_ref_value_nested(Some(member), old, new) {
+                Some(rewrite) => {
+                    rebuilt.insert(rewrite);
+                    member_changed = true;
+                }
+                None => {
+                    rebuilt.insert(member.clone());
+                }
+            }
+        }
+        return member_changed.then_some(Value::Set(rebuilt));
+    }
+    None
+}
+
+/// If `value` references the nested target with full identity `old`, its value
+/// after the target moves to `new` (§5.4): the positional composite `Ref` of the
+/// new components. `None` when `value` does not reference `old`.
+fn rewrite_ref_value_nested(value: Option<&Value>, old: &[Value], new: &[Value]) -> Option<Value> {
+    match value {
+        Some(Value::Ref(reference)) if ref_key_matches(reference.key(), old) => {
+            Some(Value::Ref(Ref::composite(new.to_vec())))
+        }
+        _ => None,
+    }
+}
+
+/// Whether a reference key's positional components equal `components` (§A.9): a
+/// scalar ref is one component, a composite ref its ordered component tuple.
+fn ref_key_matches(key: &RefKey, components: &[Value]) -> bool {
+    match key {
+        RefKey::Scalar(value) => components.len() == 1 && components.first() == Some(&**value),
+        RefKey::Composite(cs) => cs.as_slice() == components,
+    }
 }
 
 /// If `value` is an inbound reference to the row whose application identity is

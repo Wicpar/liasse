@@ -755,16 +755,61 @@ fn target_present(
     target: &str,
     key: &RefKey,
 ) -> bool {
-    let Some(collection) = compiled.collection(target) else { return false };
-    let names = collection.key.as_slice();
-    let wanted = ref_identity(names, key);
-    let path = CollectionPath::top(NameSegment::new(target));
-    prospective.addresses_in(&path).iter().any(|address| {
-        address.steps().last().is_some_and(|step| {
-            let components: Vec<Value> = step.key().components().cloned().collect();
-            identity_of(names, &components) == wanted
-        })
-    })
+    // §5.6/§A.9: a ref target is a `/`-separated declaration-name path — a
+    // top-level collection (`companies`) or a nested one (`companies/offices`).
+    match target.split('/').collect::<Vec<_>>().as_slice() {
+        [name] => {
+            let Some(collection) = compiled.collection(name) else { return false };
+            let names = collection.key.as_slice();
+            let wanted = ref_identity(names, key);
+            let path = CollectionPath::top(NameSegment::new(*name));
+            prospective.addresses_in(&path).iter().any(|address| {
+                address.steps().last().is_some_and(|step| {
+                    let components: Vec<Value> = step.key().components().cloned().collect();
+                    identity_of(names, &components) == wanted
+                })
+            })
+        }
+        segments => {
+            // §5.4/§D.1/§A.9: a ref to a NESTED collection carries the target row's
+            // FULL identity — every ancestor `$key` followed by the local `$key`, in
+            // ancestor-then-local order. Resolve the declaration PATH and compare the
+            // ref's positional components against each candidate row's flattened
+            // address key (ancestors-then-local), so a ref to a live nested row
+            // resolves rather than being rejected as dangling.
+            let decl: Vec<String> = segments.iter().map(|s| (*s).to_owned()).collect();
+            if compiled.collection_at(&decl).is_none() {
+                return false;
+            }
+            let wanted = ref_key_components(key);
+            prospective.working().keys().any(|address| {
+                address_declaration(address) == decl
+                    && address_key_components(address) == wanted
+            })
+        }
+    }
+}
+
+/// The positional key components a reference carries, in ancestor-then-local
+/// order (§A.9): a scalar ref is one component, a composite ref its ordered
+/// components. Used to match a ref against a nested target's flattened identity.
+fn ref_key_components(key: &RefKey) -> Vec<Value> {
+    match key {
+        RefKey::Scalar(value) => vec![(**value).clone()],
+        RefKey::Composite(components) => components.clone(),
+    }
+}
+
+/// A row address's declaration-name path (the ordered collection names, root
+/// first): `["companies", "offices"]` for `/companies/acme/offices/hq`.
+fn address_declaration(address: &RowAddress) -> Vec<String> {
+    address.steps().map(|step| step.name().as_str().to_owned()).collect()
+}
+
+/// A row's full identity components in ancestor-then-local order (§D.1): every
+/// ancestor `$key` component followed by the local `$key` components, flattened.
+fn address_key_components(address: &RowAddress) -> Vec<Value> {
+    address.steps().flat_map(|step| step.key().components().cloned()).collect()
 }
 
 fn check_uniqueness(

@@ -1,0 +1,74 @@
+{
+  // §D.1: "A ref's visible wire value is the target's current typed key." §5.6
+  // (SPEC.md line 523): "The application-visible value is the target's current
+  // typed key ... atomic rekeying changes the visible key while preserving the
+  // relationship." §5.4 (line 472): an atomic rekey "MUST update every ref that
+  // targets the row, EVERY REF THAT TARGETS ONE OF ITS DESCENDANTS WHOSE FULL
+  // IDENTITY CONTAINS THAT KEY, and every affected live-view identity in the same
+  // transition." A `$ref` MAY target a nested collection (§5.6, SPEC line 521;
+  // SPEC-ISSUES #26); its key is the A.9 composite array of every ancestor `$key`
+  // followed by the local `$key`, in ancestor-then-local order.
+  //
+  // Here `links.office` targets the nested collection `/companies/offices`, so its
+  // wire value is `[company.id, office.id]`. After a ref to the existing office
+  // `(acme, hq)` is admitted, rekeying the ANCESTOR company `acme -> newco`
+  // re-roots the office to `(newco, hq)` and MUST rewrite the inbound ref to the
+  // descendant to its current key `[newco, hq]`. The office `(acme, hq)` no longer
+  // exists, so a ref left showing `[acme, hq]` both violates D.1 (stale visible
+  // key) and dangles (no live target).
+  format: 1
+  name: nested-collection-ref-current-key-on-ancestor-rekey
+  suite: scenario
+  spec: ["#annex-d", "§D.1", "#state-model", "§5.4", "§5.6", "#annex-a", "§A.9"]
+  tags: ["identity", "ref", "composite", "nested", "rekey"]
+  note: "A $ref to a nested collection carries the A.9 ancestor-then-local composite key (§5.6/§D.1/§A.9). A ref to an existing nested row MUST admit, and an atomic rekey of the ancestor MUST update every ref targeting the descendant whose full identity contains that key (§5.4 line 472), so the ref's visible wire value stays the target's CURRENT typed key (§D.1/§5.6 line 523)."
+
+  package: {
+    $liasse: 1
+    $app: "t.nestedrefrekey@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        offices: {
+          $key: "id"
+          id: "text"
+          label: "text"
+        }
+      }
+      links: {
+        $key: "id"
+        id: "text"
+        office: { $ref: "/companies/offices" }
+      }
+      $public: {
+        ops: {
+          $view: ".links { id, office }"
+          $mut: {
+            add_company: ".companies + { id: @id }"
+            add_office: ".companies[@company].offices + { id: @id, label: @label }"
+            add_link: ".links + { id: @id, office: @office }"
+            rekey_company: ".companies[@old].id = @new"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.ops.add_company", args: { id: "acme" }, expect: { outcome: ok } }
+    { call: "public.ops.add_office", args: { company: "acme", id: "hq", label: "HQ" },
+      expect: { outcome: ok } }
+    // The office (acme, hq) exists; a ref to it MUST admit (A.9 composite array in
+    // ancestor-then-local order).
+    { call: "public.ops.add_link", args: { id: "l1", office: ["acme", "hq"] },
+      expect: { outcome: ok } }
+    { watch: "public.ops", id: "w1",
+      expect_init: { value: [ { id: "l1", office: ["acme", "hq"] } ] } }
+    // §5.4: the ancestor rekey MUST rewrite the inbound ref targeting the descendant.
+    { call: "public.ops.rekey_company", args: { old: "acme", new: "newco" },
+      expect: { outcome: ok } }
+    // §D.1/§5.6: the ref's visible value is the target's CURRENT typed key.
+    { expect_view: { watch: "w1", value: [ { id: "l1", office: ["newco", "hq"] } ] } }
+  ]
+}
