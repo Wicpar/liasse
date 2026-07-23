@@ -53,7 +53,7 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         // decoded declared argument set). An undeclared member — including any
         // reserved `$`-prefixed name — is malformed, never silently dropped. This is
         // the `call` mirror of the view path's `closed_view_args`.
-        if let Err(rejection) = self.closed_call_args(&binding, call.args()) {
+        if let Err(rejection) = Self::closed_call_args(&binding, call.args()) {
             return Ok(SurfaceOutcome::Rejected(rejection));
         }
         let (request, model) =
@@ -461,21 +461,28 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// rather than over-rejecting a legitimate argument — matching the testkit
     /// adapter's closed-shape guard (`call`, non-empty `call_param_names`).
     ///
-    /// §18.7: a registered blob-field name is a host-resolved declared parameter —
-    /// [`call_with_blob`](Self::call_with_blob) verifies the streamed bytes and
-    /// binds the descriptor to it — so it is admitted alongside the binding's own
-    /// receiver/params even when the router binding lists only the scalar params.
-    /// It is a host concept, never a free-form client member.
-    fn closed_call_args(&self, binding: &CallBinding, args: &BTreeMap<String, Value>) -> Result<(), Rejection> {
-        let declared: BTreeSet<&str> =
-            binding.receiver().iter().chain(binding.params()).map(String::as_str).collect();
+    /// §18.7: a declared blob-field name is a host-resolved declared parameter of
+    /// THIS mutation — [`call_with_blob`](Self::call_with_blob) verifies the
+    /// streamed bytes and binds the descriptor to it — so it is admitted alongside
+    /// the binding's own receiver/scalar-params even when the router binding lists
+    /// the blob separately from the scalar params ([`CallBinding::blobs`]). The
+    /// exemption is scoped to the TARGET mutation's OWN declared blob parameters:
+    /// a name registered as some OTHER mutation's blob field is not a declared
+    /// parameter here and stays malformed — the closed argument object admits a
+    /// blob field only for the mutation that declares it, never the host's global
+    /// blob registry. It is a host concept, never a free-form client member.
+    fn closed_call_args(binding: &CallBinding, args: &BTreeMap<String, Value>) -> Result<(), Rejection> {
+        let declared: BTreeSet<&str> = binding
+            .receiver()
+            .iter()
+            .chain(binding.params())
+            .chain(binding.blobs())
+            .map(String::as_str)
+            .collect();
         if declared.is_empty() {
             return Ok(());
         }
-        match args
-            .keys()
-            .find(|name| !declared.contains(name.as_str()) && !self.blobs.contains_key(name.as_str()))
-        {
+        match args.keys().find(|name| !declared.contains(name.as_str())) {
             Some(member) => Err(Rejection::new(
                 RejectionReason::Malformed,
                 format!("argument `{member}` is not a declared parameter of this mutation (§12.1)"),

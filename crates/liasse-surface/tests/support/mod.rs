@@ -220,8 +220,13 @@ fn router(model: &liasse_model::Model) -> SurfaceRouter {
     );
     let session = SurfaceBinding::new()
         .with_call("revoke", CallBinding::root("revoke", ["id".to_owned()]));
-    let intake = SurfaceBinding::new()
-        .with_call("add", CallBinding::root("add", ["title".to_owned()]));
+    // §18.7: `intake.add` declares an `attachment` blob parameter (host-resolved,
+    // bound by `call_with_blob`), separate from its scalar `title`. Declaring it on
+    // the binding scopes §12.1's blob exemption to this mutation.
+    let intake = SurfaceBinding::new().with_call(
+        "add",
+        CallBinding::root("add", ["title".to_owned()]).with_blobs(["attachment".to_owned()]),
+    );
     let member_tasks = SurfaceBinding::new()
         .with_view(ViewBinding::new("index"))
         .with_call("complete", CallBinding::root("rename", ["id".to_owned(), "title".to_owned()]));

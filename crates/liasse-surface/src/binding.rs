@@ -123,24 +123,41 @@ impl ViewBinding {
 /// (§10.1); `receiver` lists the argument names forming that receiver key in
 /// `$key` order, and `params` lists the argument names bound as mutation
 /// parameters. A root mutation has an empty `receiver`.
+///
+/// `blobs` lists the names of THIS mutation's declared §18.7 blob parameters
+/// separately from the scalar `params`. A blob parameter is a declared parameter
+/// of the targeted mutation (§10.1, §12.1 step 5), but its verified descriptor is
+/// bound by the host (`call_with_blob`) after streaming verification rather than
+/// carried inline like a scalar; keeping it on the binding lets §12.1's closed
+/// argument object admit a blob field ONLY for the mutation that declares it —
+/// never any other mutation's blob field, and never a free-form client member.
 #[derive(Debug, Clone)]
 pub struct CallBinding {
     mutation: String,
     receiver: Vec<String>,
     params: Vec<String>,
+    blobs: Vec<String>,
 }
 
 impl CallBinding {
     /// A binding onto the runtime mutation named `mutation`, taking no receiver
     /// key (a root or struct mutation) and the listed argument names as
-    /// parameters.
+    /// parameters. Declares no blob parameter — attach any with
+    /// [`with_blobs`](Self::with_blobs).
     #[must_use]
     pub fn root(mutation: impl Into<String>, params: impl IntoIterator<Item = String>) -> Self {
-        Self { mutation: mutation.into(), receiver: Vec::new(), params: params.into_iter().collect() }
+        Self {
+            mutation: mutation.into(),
+            receiver: Vec::new(),
+            params: params.into_iter().collect(),
+            blobs: Vec::new(),
+        }
     }
 
     /// A binding onto a row mutation, taking `receiver` argument names as the
     /// selected row's key (in `$key` order) and `params` as its parameters.
+    /// Declares no blob parameter — attach any with
+    /// [`with_blobs`](Self::with_blobs).
     #[must_use]
     pub fn row(
         mutation: impl Into<String>,
@@ -151,7 +168,18 @@ impl CallBinding {
             mutation: mutation.into(),
             receiver: receiver.into_iter().collect(),
             params: params.into_iter().collect(),
+            blobs: Vec::new(),
         }
+    }
+
+    /// Declare this mutation's §18.7 blob-parameter names (the accepted blob-field
+    /// names a `call_with_blob` binds a verified descriptor to). Names not already
+    /// listed as a scalar parameter are the mutation's own blob parameters, closed
+    /// against by §12.1 alongside the scalar `params`.
+    #[must_use]
+    pub fn with_blobs(mut self, blobs: impl IntoIterator<Item = String>) -> Self {
+        self.blobs = blobs.into_iter().collect();
+        self
     }
 
     /// The runtime mutation name.
@@ -170,5 +198,11 @@ impl CallBinding {
     #[must_use]
     pub fn params(&self) -> &[String] {
         &self.params
+    }
+
+    /// The names of this mutation's declared §18.7 blob parameters.
+    #[must_use]
+    pub fn blobs(&self) -> &[String] {
+        &self.blobs
     }
 }
