@@ -455,35 +455,88 @@ impl<F: StoreFactory> ModuleHost<F> {
         Ok(ModuleAggregate::new(spaces))
     }
 
-    /// Check the `child` engine's `$expose` structurally satisfies every interface
-    /// contract the module space at `space` declares in the root package (§13.8):
-    /// each contract `$view` field must appear in the child's exposed view output
-    /// with a matching scalar type. A space the root declares no contract for
-    /// (an undeclared space, a documented §13.2 seam) imposes none.
+    /// Check the `child` engine's `$expose` satisfies every interface contract the
+    /// module space at `space` declares in the root package (§13.8/§13.10): the
+    /// exposed `$view` output must carry each declared field with a matching type
+    /// (view satisfaction is structural), and every bound `$mut` must satisfy its
+    /// declared parameter and response contracts — reading only the parameters the
+    /// interface prototype supplies and projecting every `$return` field with the
+    /// declared type. A space the root declares no contract for (an undeclared
+    /// space, a documented §13.2 seam) imposes none.
     fn check_interface_contracts(&self, space: &ModuleSpace, child: &Engine<F::Store>) -> Result<(), ModuleError> {
         let Some(contracts) = self.root.module_space_interfaces(&space.declaration_path()) else {
             return Ok(());
         };
         for contract in contracts {
-            if contract.view_fields.is_empty() {
-                // A mutation-only interface declares no readable `$view`; its
-                // response-contract satisfaction is a documented seam.
-                continue;
-            }
             // §13.9: an instance exposes only the interfaces it implements — the
             // parent reads "every instance exposing an interface". A child that does
             // not expose this one simply does not implement it, so there is nothing
             // to check; only an *exposed* view must satisfy the declared contract.
-            let Some(exposed) = child.exposed_view_fields(&contract.name) else {
+            if let Some(exposed) = child.exposed_view_fields(&contract.name) {
+                for (field, ty) in &contract.view_fields {
+                    let satisfied = exposed.iter().any(|(name, got)| name == field && got == ty);
+                    if !satisfied {
+                        return Err(ModuleError::InterfaceContract(
+                            contract.name.clone(),
+                            format!("the exposed view does not provide field `{field}` with the declared type"),
+                        ));
+                    }
+                }
+            }
+            self.check_interface_muts(contract, child)?;
+        }
+        Ok(())
+    }
+
+    /// Check each `$mut` contract the interface declares is satisfied by the private
+    /// mutation the child binds for it (§13.8/§13.10). For a contract the child
+    /// binds to a resolvable root mutation: every parameter the mutation reads MUST
+    /// be one the interface prototype supplies (the boundary supplies no others), and
+    /// every `$return` field MUST appear in the mutation's response projection with
+    /// the declared type. A contract the child does not bind, or binds through a
+    /// row-scoped/inline program the check cannot resolve, is a documented seam.
+    fn check_interface_muts(
+        &self,
+        contract: &crate::compiled::CompiledInterfaceContract,
+        child: &Engine<F::Store>,
+    ) -> Result<(), ModuleError> {
+        for imut in &contract.muts {
+            let Some(bound) = child.exposed_mutation_contract(&contract.name, &imut.name) else {
                 continue;
             };
-            for (field, ty) in &contract.view_fields {
-                let satisfied = exposed.iter().any(|(name, got)| name == field && got == ty);
-                if !satisfied {
-                    return Err(ModuleError::InterfaceContract(
-                        contract.name.clone(),
-                        format!("the exposed view does not provide field `{field}` with the declared type"),
-                    ));
+            // §13.8 parameter contract: the bound mutation may read only parameters
+            // the interface prototype declares; a parameter the prototype omits is
+            // never supplied across the boundary.
+            if let Some(declared) = &imut.params {
+                for param in &bound.params {
+                    if !declared.iter().any(|name| name == param) {
+                        return Err(ModuleError::InterfaceContract(
+                            contract.name.clone(),
+                            format!(
+                                "the bound mutation `{}` reads parameter `{param}`, which the interface \
+                                 parameter contract does not declare",
+                                imut.name
+                            ),
+                        ));
+                    }
+                }
+            }
+            // §13.8 response contract: every `$return` field must appear in the
+            // bound mutation's response projection with the declared type. An opaque
+            // response (a non-projection return) is left uncompared (a seam).
+            if let (Some(return_fields), Some(response)) = (&imut.return_fields, &bound.response) {
+                for (field, ty) in return_fields {
+                    let satisfied = response.get(field).and_then(ExprType::as_scalar) == Some(ty);
+                    if !satisfied {
+                        return Err(ModuleError::InterfaceContract(
+                            contract.name.clone(),
+                            format!(
+                                "the bound mutation `{}` response does not provide field `{field}` with \
+                                 the declared type",
+                                imut.name
+                            ),
+                        ));
+                    }
                 }
             }
         }

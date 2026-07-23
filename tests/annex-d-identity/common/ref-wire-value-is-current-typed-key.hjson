@@ -2,7 +2,7 @@
   format: 1
   name: ref-wire-value-is-current-typed-key
   suite: scenario
-  spec: ["§D.1", "§5.4", "§6.4"]
+  spec: ["#state-model", "§5.4", "#views", "§7.6", "#annex-d", "§D.1"]
   tags: ["identity"]
   note: '''§D.1: "A ref's visible wire value is the target's current typed key. Its
 durable relationship binds the declared target relation and target incarnation."
@@ -10,7 +10,12 @@ So a projected ref shows whatever key the target currently has: at first the
 original key, and after an atomic rekey of the target (§5.4 preserves the target
 incarnation) the SAME ref shows the new key without the relationship breaking.
 The wire value tracks the current key; the underlying binding tracks the
-incarnation.'''
+incarnation. A field of the target is read through the §7.6 selector-form
+dereference (`/users[p.author].name`), never bare `ref.field` — §7.6 pins ref
+dereference to the normal selector, and A.9 makes a ref a target KEY, not a
+struct to navigate into. After rekey the selector `/users[p.author]` (whose ref
+key is now the new key) resolves the SAME preserved incarnation, so the
+dereferenced name is unchanged.'''
 
   package: {
     $liasse: 1
@@ -28,7 +33,7 @@ incarnation.'''
       }
       $public: {
         posts: {
-          $view: ".posts[:p] { id: p.id, author: p.author, author_name: p.author.name, $sort: [id] }"
+          $view: ".posts[:p] { id: p.id, author: p.author, author_name: /users[p.author].name, $sort: [id] }"
           $mut: {
             add_user: ".users + { id: @id, name: @name }"
             add_post: ".posts + { id: @id, author: .users[@author] }"

@@ -315,15 +315,44 @@ pub(crate) struct CompiledParentSurface {
 }
 
 /// One `$interfaces` boundary contract of a module space (§13.8): the interface
-/// name and the `$view` fields it requires an exposing child to project. A child
-/// whose exposed `$view` omits a required field, or projects one the contract does
-/// not declare, does not structurally satisfy the interface.
+/// name, the `$view` fields it requires an exposing child to project, and the
+/// callable `$mut` contracts it declares. A child whose exposed `$view` omits a
+/// required field, or projects one the contract does not declare, does not
+/// structurally satisfy the interface; a bound `$mut` that reads an undeclared
+/// parameter or fails to promise a `$return` field violates the mutation contract.
 pub(crate) struct CompiledInterfaceContract {
     /// The interface name a parent addresses (`::templates`).
     pub(crate) name: String,
     /// The `(field, type)` pairs the interface `$view` declares (§13.8). Empty when
     /// the interface declares no `$view` (a mutation-only interface).
     pub(crate) view_fields: Vec<(String, Type)>,
+    /// The callable `$mut` contracts the interface declares (§13.8), each carrying
+    /// its parameter prototype and `$return` response shape — the boundary a
+    /// child's bound `$mut` must satisfy at install. Empty when the interface
+    /// declares no `$mut`.
+    pub(crate) muts: Vec<CompiledInterfaceMut>,
+}
+
+/// One declared interface `$mut` contract of a module space (§13.8): the contract
+/// name a consumer calls, the parameter names the boundary supplies (its explicit
+/// parameter prototype), and the `$return` response shape the boundary promises.
+/// A child's bound private mutation MUST read only the declared parameters and
+/// MUST project every `$return` field (§13.8 "Mutation bindings MUST satisfy their
+/// declared parameter and response contracts").
+pub(crate) struct CompiledInterfaceMut {
+    /// The contract name a consumer calls (`create`).
+    pub(crate) name: String,
+    /// The parameter names the interface prototype declares (§13.8). `None` when the
+    /// contract name carries no explicit prototype, leaving the parameter contract
+    /// undeclared (nothing to check). A bound private mutation may read only these —
+    /// reading a parameter absent from a declared prototype is a contract violation,
+    /// since the boundary never supplies it.
+    pub(crate) params: Option<Vec<String>>,
+    /// The `(field, type)` pairs of a struct/row `$return` shape (§13.8) — the
+    /// response members a bound mutation MUST project with a matching scalar type.
+    /// `None` for a response-free (empty), scalar, or ref `$return`, whose
+    /// satisfaction is a documented seam left uncompared here.
+    pub(crate) return_fields: Option<Vec<(String, Type)>>,
 }
 
 /// One declared `$params` entry of a surface view (§10.1): its name, its
@@ -1602,8 +1631,85 @@ fn compile_interface_contracts(space_node: &liasse_syntax::DocValue) -> Vec<Comp
         .map(|iface| CompiledInterfaceContract {
             name: iface.name.text.clone(),
             view_fields: doc::member(&iface.value, "$view").map(interface_view_fields).unwrap_or_default(),
+            muts: interface_mut_contracts(&iface.value),
         })
         .collect()
+}
+
+/// The declared `$mut` contracts of an interface (§13.8): each contract name, the
+/// parameter names its explicit prototype supplies, and its `$return` response
+/// shape. The model header phase already validated each contract name and
+/// `$return` grammar (§13.8), so a well-formed contract yields its parsed
+/// prototype and return here; a name without an explicit prototype leaves the
+/// parameter contract undeclared (`None`).
+fn interface_mut_contracts(interface: &liasse_syntax::DocValue) -> Vec<CompiledInterfaceMut> {
+    let Some(muts) = doc::member(interface, "$mut").and_then(doc::object) else {
+        return Vec::new();
+    };
+    muts.iter()
+        .map(|entry| {
+            let (name, params) = parse_interface_contract_name(&entry.name.text);
+            let return_fields = doc::member(&entry.value, "$return").and_then(interface_return_fields);
+            CompiledInterfaceMut { name, params, return_fields }
+        })
+        .collect()
+}
+
+/// Parse an interface `$mut` contract name into its base name and the parameter
+/// names of its explicit prototype (§13.8): `create({ id: text, label: text })` →
+/// `("create", Some(["id", "label"]))`. A name without a `(...)` prototype yields
+/// `("create", None)` — no declared parameter contract to check. A prototype the
+/// A.2 struct grammar cannot read yields `None` params rather than panicking (the
+/// header phase already reported the malformed prototype).
+fn parse_interface_contract_name(raw: &str) -> (String, Option<Vec<String>>) {
+    let Some((base, rest)) = raw.split_once('(') else {
+        return (raw.trim().to_owned(), None);
+    };
+    let base = base.trim().to_owned();
+    let Some(inner) = rest.trim_end().strip_suffix(')') else {
+        return (base, None);
+    };
+    let inner = inner.trim();
+    if inner.is_empty() {
+        return (base, Some(Vec::new()));
+    }
+    (base, prototype_param_names(inner))
+}
+
+/// The parameter names of a §8.3/§13.8 prototype object (`{ id: text, label: text }`),
+/// parsed through the shared A.2 struct-type grammar. `None` when the spelling is
+/// not a struct type expression the parser accepts.
+fn prototype_param_names(inner: &str) -> Option<Vec<String>> {
+    use liasse_syntax::{parse_type_expression, TypeExprKind};
+    let mut sources = SourceMap::new();
+    let id = sources.add_label("iface-prototype", inner.to_owned());
+    let spanned = parse_type_expression(id, inner).ok()?;
+    let TypeExprKind::Struct(fields) = &spanned.kind else {
+        return None;
+    };
+    Some(fields.iter().map(|field| field.name.clone()).collect())
+}
+
+/// The `(field, type)` pairs a struct/row interface `$return` shape declares
+/// (§13.8): each non-`$` member mapping a field name to its scalar type. A `$ref`
+/// response, a scalar-type-string response, or a response-free (empty) `$return`
+/// carries no comparable struct shape and yields `None`, so the response contract
+/// for such a mutation is a documented seam rather than an over-rejection.
+fn interface_return_fields(ret: &liasse_syntax::DocValue) -> Option<Vec<(String, Type)>> {
+    let members = doc::object(ret)?;
+    // A `{ $ref: target }` ref response is compared by relation, not member shape.
+    if members.iter().any(|m| m.name.text == "$ref") {
+        return None;
+    }
+    let fields: Vec<(String, Type)> = members
+        .iter()
+        .filter(|m| !m.name.text.starts_with('$'))
+        .filter_map(|m| {
+            let text = doc::string(&m.value)?;
+            lower_scalar_type(text.trim()).map(|ty| (m.name.text.clone(), ty))
+        })
+        .collect();
+    (!fields.is_empty()).then_some(fields)
 }
 
 /// The `(field, type)` pairs an interface `$view` shape declares (§13.8): each

@@ -1994,6 +1994,23 @@ impl<S: InstanceStore> Engine<S> {
         iface.muts.iter().find(|m| m.name.as_str() == mutation).map(|m| m.binding.text.as_str())
     }
 
+    /// The typed contract of the private mutation an `$expose`d interface binds for
+    /// `interface.contract` (§13.8): the parameter names the bound mutation reads
+    /// (its §8.3 inferred parameters) and the response members it projects — the
+    /// child side a parent's declared interface `$mut` contract is checked against
+    /// at install (§13.8/§13.10). `None` when the interface binds no mutation of that
+    /// contract name, or the binding is a row-scoped/inline program that does not
+    /// resolve to a single private mutation (a documented seam — the CORE check only
+    /// verifies a bare root-mutation binding).
+    pub(crate) fn exposed_mutation_contract(&self, interface: &str, contract: &str) -> Option<ExposedMutationContract> {
+        let name = self.exposed_mutation(interface, contract)?;
+        let mutation = self.compiled.mutation(&name)?;
+        Some(ExposedMutationContract {
+            params: mutation.params.iter().map(|(name, _)| name.clone()).collect(),
+            response: crate::contract::response_shape(mutation),
+        })
+    }
+
     /// The dotted addresses of every compiled `$public`/role surface `$view`
     /// (`public.<name>`, `<role>.<name>`, §10.1) — the names [`Engine::view_with`]
     /// serves. Lets the surface layer discover which of its declared surfaces the
@@ -2014,6 +2031,21 @@ impl<S: InstanceStore> Engine<S> {
             .filter_map(|param| param.ty.as_scalar().map(|ty| (param.name.clone(), ty.clone())))
             .collect()
     }
+}
+
+/// The child side of an `$expose`d interface `$mut` contract (§13.8), resolved
+/// from a bound private mutation: the parameter names it reads and the response
+/// members it projects — what a parent's declared interface `$mut` contract is
+/// checked against at install ([`Engine::exposed_mutation_contract`]).
+pub(crate) struct ExposedMutationContract {
+    /// The §8.3 inferred parameter names the bound mutation reads (`@id`, `@label`).
+    /// The interface contract's parameter prototype must declare every one of
+    /// these (§13.8); a parameter absent from the prototype is never supplied.
+    pub(crate) params: Vec<String>,
+    /// The response members the bound mutation projects, typed like a view output
+    /// (§13.8/§13.10). `None` when its `return` is not a plain projection the check
+    /// can type — an opaque response left uncompared rather than mis-flagged.
+    pub(crate) response: Option<BTreeMap<String, liasse_expr::ExprType>>,
 }
 
 fn rejected(reason: RejectionReason, message: impl Into<String>) -> CallOutcome {

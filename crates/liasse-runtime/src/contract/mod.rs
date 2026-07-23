@@ -410,7 +410,11 @@ fn bound_mutation_name(binding: &str) -> Option<String> {
 /// a `return . { … }` over the receiver. `None` when the trailing `return` is not
 /// a plain projection or does not type, so an opaque response is never mistaken
 /// for a narrowing (the documented seam).
-fn response_shape(mutation: &CompiledMutation) -> Option<BTreeMap<String, ExprType>> {
+///
+/// Shared with the §13.8 module install-time interface-contract check
+/// ([`Engine::exposed_mutation_contract`](crate::Engine)), which compares a child's
+/// bound mutation response against a parent's declared interface `$return`.
+pub(crate) fn response_shape(mutation: &CompiledMutation) -> Option<BTreeMap<String, ExprType>> {
     let mut scope = mutation.scope.clone();
     let mut response = None;
     for stmt in &mutation.program {

@@ -192,10 +192,15 @@ pub const SKIP: &[(&str, &str)] = &[
     // update recheck/report), NOT the surface-address compile that used to block.
     ("13-modules/cross-module-atomic-transition", "§13.10 the interface-addressed `$public` surfaces now compile and the two children install; the residual is cross-module atomic mutation dispatch (the `::iface.mut` interface call at step 4 is `rejected`) — the owner-side metered transition and the caller state change in one atomic cross-module commit are unlanded"),
     ("13-modules/uninstall-blocked-by-cross-boundary-restrict-ref", "§13.12 the interface-addressed `$public` surfaces now compile; the residual is cross-boundary `$on_delete: restrict` — installing the second child that refs across the boundary is `rejected` (its cross-boundary ref binding at install is unlanded), before uninstall-blocking can be exercised"),
-    // Interface-contract satisfaction: the child's exposed view/mutation vs the
-    // parent's declared `$interfaces` is not checked at install.
-    ("13-modules/expose-binding-contract-mismatch-invalid", "§13.8/§13.10 interface-contract satisfaction (the child exposed `$mut`/`$view` binding vs the parent's declared interface) is not checked at install, so the mismatch is admitted"),
-    ("13-modules/interface-mutation-param-contract-mismatch-invalid", "§13.10 interface mutation parameter-contract satisfaction is not checked at install"),
+    // (§13.8/§13.10 interface-contract satisfaction now runs at install: the module
+    // host checks each declared interface `$mut` contract against the private
+    // mutation the child binds — the bound mutation may read only the parameters the
+    // interface prototype supplies (parameter contract) and MUST project every
+    // `$return` field with the declared type (response contract), rejecting a
+    // mismatch as `ModuleError::InterfaceContract` → `invalid`. This landed
+    // `expose-binding-contract-mismatch-invalid` (response direction) and
+    // `interface-mutation-param-contract-mismatch-invalid` (parameter direction);
+    // their entries were pruned as stale.)
     // Installation `$data` overlay (§13.3): the overlay is recorded on the install
     // request (adapter/modules.rs), so a fresh-row overlay and its `$check` now run;
     // the three-way *merge* onto an already-seeded row is a runtime seam.
@@ -322,7 +327,14 @@ pub const SKIP: &[(&str, &str)] = &[
     // patch is a statement per §8.6/Annex C.9 — so the corpus case was rewritten to
     // the §8.10 direct form (`.stores[@id] { … }` then `return .stores[@id] { … }`),
     // yielding the same `{ id, enabled }` row. Entry pruned as stale.)
-    ("annex-d-identity/ref-wire-value-is-current-typed-key", "load fails: the `$public.posts.$view` reads `p.author.name` — a field THROUGH a ref (`author` is a `ref</users>`). §7.6 pins ref dereference to the SELECTOR form (`/users[p.author]`), not bare field access, so `ref.field` auto-deref is undefined/unlanded (checker: `cannot read field name of a ref`). CORPUS-SUSPECT: the case cites §D.1/§5.4/§6.4, not §7.6's selector-deref rule — a §7.6-vs-field-access tension, not a surgical model bug"),
+    // (`annex-d-identity/ref-wire-value-is-current-typed-key` now passes: the case
+    // was mis-authored — it read `p.author.name`, a bare `ref.field` access, which
+    // §7.6 does not define (a ref value is a target KEY, A.9; dereference uses the
+    // normal SELECTOR, §7.6 `/accounts[.owner]`). Corrected to the selector form
+    // `/users[p.author].name` (the same §7.6 deref `07-views/
+    // ref-dereference-yields-target-row` exercises); the §D.1 wire-value-tracks-
+    // current-key-across-rekey intent and every asserted value are unchanged. Entry
+    // pruned as CORPUS-FIX.)
     // (W2 auth cluster now PASSES end to end. The testkit executes the simulated
     // `$requires` host namespaces INSIDE the §11.5 login mutation body (§16.5):
     // adapter/authsim.rs synthesizes executable namespaces for the case's declared
