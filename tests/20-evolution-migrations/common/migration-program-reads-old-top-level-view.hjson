@@ -1,0 +1,76 @@
+{
+  format: 1
+  name: migration-program-reads-old-top-level-view
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#views", "§7", "#loading", "§9.4"]
+  note: '''
+    §20.1: "`$old` is the complete read-only state under the delta's source
+    model … it MAY read any `$old` view." A declared top-level `$view` (§7) is
+    the canonical view, so a delta MUST be able to read AND project it.
+
+    The 1.0.0 model declares `big` as `.items[:i | i.qty > 5] { id, qty }`. The
+    2.0.0 delta `.kept = $old.big { id, qty }` reads that source view and
+    projects its rows. Seed: i1 (qty 5) is excluded by the view filter, i2
+    (qty 7) and i3 (qty 9) are kept — so `kept` holds exactly i2 and i3, proving
+    the delta reads the FILTERED, PROJECTED view rows (not the raw `items`).
+
+    Regression: the model's `ViewDecl.row` is an empty placeholder for an
+    ordinary `$view`, so a migration binding `$old` as a plain row typed
+    `$old.big` with no fields and rejected `$old.big { id, qty }` as an unknown
+    name — even though the view VALUE was materialized. The `$old` type now
+    carries each source view's compiled projected row.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.oldview@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        qty: "int"
+      }
+      big: { $view: ".items[:i | i.qty > 5] { id, qty }" }
+      $public: {
+        items: { $view: ".items { id, qty }" }
+      }
+    }
+    $data: {
+      items: {
+        i1: { qty: "5" }
+        i2: { qty: "7" }
+        i3: { qty: "9" }
+      }
+    }
+  }
+
+  steps: [
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.oldview@2.0.0"
+          $model: {
+            kept: {
+              $key: "id"
+              id: "text"
+              qty: "int"
+            }
+            $migrations: {
+              "1.0.0": [
+                ".kept = $old.big { id, qty }"
+              ]
+            }
+            $public: {
+              kept: { $view: ".kept { id, qty, $sort: [id] }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.kept", id: "wk",
+      expect_init: { value: [
+        { id: "i2", qty: "7" }
+        { id: "i3", qty: "9" }
+      ] } }
+  ]
+}

@@ -266,6 +266,45 @@ fn migrations_program_does_not_refire_on_identical_replay() {
     assert_eq!(people.rows()[0].field("display_name"), Some(&text("Ann")), "value unchanged by the replay");
 }
 
+/// §20.1: a delta program "MAY read any `$old` view". A declared top-level `$view`
+/// (§7) that filters and projects is the canonical view; the delta reads and
+/// projects it. `big` keeps only items with `qty > 5`, so the migrated `kept`
+/// holds exactly those, proving the delta reads the FILTERED, PROJECTED view rows.
+const OLDVIEW_V1: &str = r#"{
+  "$liasse": 1
+  "$app": "t.oldview@1.0.0"
+  "$model": {
+    "items": { "$key": "id", "id": "text", "qty": "int" }
+    "big": { "$view": ".items[:i | i.qty > 5] { id, qty }" }
+    "items_view": { "$view": ".items { id, qty }" }
+  }
+  "$data": { "items": { "i1": { "qty": "5" }, "i2": { "qty": "7" }, "i3": { "qty": "9" } } }
+}"#;
+
+const OLDVIEW_V2: &str = r#"{
+  "$liasse": 1
+  "$app": "t.oldview@2.0.0"
+  "$model": {
+    "kept": { "$key": "id", "id": "text", "qty": "int" }
+    "$migrations": { "1.0.0": [ ".kept = $old.big { id, qty }" ] }
+    "kept_view": { "$view": ".kept { id, qty, $sort: [id] }" }
+  }
+}"#;
+
+#[test]
+fn migration_program_reads_and_projects_an_old_top_level_view() {
+    let mut engine = load("oldview", OLDVIEW_V1);
+    let mut generator = generator();
+    engine.update(OLDVIEW_V2, &mut generator).expect("reading a top-level $old view migrates");
+    let kept = engine.view_at_head("kept_view").expect("view").expect("declared");
+    // i1 (qty 5) is filtered out by the `big` view (`qty > 5`); i2 and i3 survive.
+    assert_eq!(kept.len(), 2, "only items with qty > 5 flow through the source view");
+    assert_eq!(kept.rows()[0].field("id"), Some(&text("i2")));
+    assert_eq!(kept.rows()[0].field("qty"), Some(&int(7)));
+    assert_eq!(kept.rows()[1].field("id"), Some(&text("i3")));
+    assert_eq!(kept.rows()[1].field("qty"), Some(&int(9)));
+}
+
 /// §20.1 final refs check: a program that sets every player's `team` to a literal
 /// key present in no `teams` row builds a dangling ref, so the prospective target
 /// fails the refs check and the update is rejected (§5.6).

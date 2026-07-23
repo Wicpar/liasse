@@ -25,7 +25,7 @@ use std::collections::BTreeMap;
 
 use liasse_artifact::{CompatibilityDecision, PackageIdentity, PackageName, UpdateRelation, Version};
 use liasse_diag::SourceMap;
-use liasse_expr::{check_statement, Cell, DbReadPosition, ExprType, HostPosition, Row, TypedExpr};
+use liasse_expr::{check_statement, Cell, DbReadPosition, ExprType, HostPosition, Row, RowType, TypedExpr};
 use liasse_model::{nondeterministic_call, Model, PackageId};
 use liasse_store::{CommitSeq, InstanceStore, RowAddress};
 use liasse_syntax::{parse_document, parse_expression};
@@ -335,7 +335,14 @@ fn build_migrated<G: crate::generator::Generators>(
     let old_working = old_state
         .working(old_schema)
         .map_err(|error| Rejection::new(RejectionReason::Malformed, format!("source state: {error}")))?;
-    let old_root_ty = ExprType::Row(old_schema.root_row_type());
+    // §20.1: `$old` is bound as a plain row so a delta may dot into any source
+    // member — including a declared `$view` (§7), which the delta "MAY read". The
+    // model's `ViewDecl.row` is an empty placeholder for an ordinary view, so the
+    // raw `root_row_type` would type `$old.<view>` with no fields and a projection
+    // (`$old.<view> { id, … }`) fails to type-check as "unknown name"; overlay the
+    // source's compiled view types (whose VALUES `source_root` already folds onto
+    // `$old`) so the view members type as their real projected row.
+    let old_root_ty = old_root_type(old_schema, old_compiled);
     // Migration builds the target's rows; neither a keyring selector nor a blob
     // placement member participates in a state transform (§20.1), so the
     // migrated-state context owns an empty keyring and placement index.
@@ -516,6 +523,40 @@ fn build_migrated<G: crate::generator::Generators>(
         .into_iter()
         .filter_map(|address| prospective.get(&address).map(|fields| (address.clone(), fields.clone())))
         .collect())
+}
+
+/// The `$old` root type a §20.1 delta program reads (`$old`, bound as a plain
+/// row so the program may dot into any source member).
+///
+/// [`Schema::root_row_type`] types every declared `$view` (§7) member with an
+/// EMPTY row: the model's `ViewDecl.row` is a placeholder that is only populated
+/// for the keyring / source-bucket / module views (by their deferred typing pass),
+/// never for an ordinary `$view`. That empty row is invisible on the ordinary read
+/// path — a view resolves through its own compiled program there — but a migration
+/// binds `$old` as a plain row and lets the delta dot into a view member. Reading
+/// the view whole (`$old.<view>`) then types as a fieldless view and PROJECTING it
+/// (`$old.<view> { id, … }`) fails to type-check as "unknown name", even though
+/// §20.1 says a delta "MAY read any `$old` view".
+///
+/// The source engine already typed each top-level `$view` into `Compiled::views`
+/// (its `expr` carries the real projected row type), and [`Engine::source_root`]
+/// folds those same views' VALUES onto `$old`. Overlay the compiled view types
+/// onto the root row type so each `$old` view member types as its real projected
+/// row, matching the materialized value. Non-view members (collections, root
+/// computed scalars) and the already-populated keyring/bucket/module view members
+/// keep their `root_row_type` type — none appear in `Compiled::views`.
+fn old_root_type(old_schema: Schema<'_>, old_compiled: &Compiled) -> ExprType {
+    let base = old_schema.root_row_type();
+    let view_types: BTreeMap<&str, &ExprType> =
+        old_compiled.views.iter().map(|view| (view.name.as_str(), view.expr.ty())).collect();
+    let fields: Vec<(String, ExprType)> = base
+        .fields()
+        .map(|(name, ty)| {
+            let ty = view_types.get(name.as_str()).map_or_else(|| ty.clone(), |view_ty| (*view_ty).clone());
+            (name.clone(), ty)
+        })
+        .collect();
+    ExprType::Row(RowType::new(fields, base.key().cloned()))
 }
 
 /// Run the package-level `$migrations` program (§20.1) as a root mutation over the
