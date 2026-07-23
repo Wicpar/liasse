@@ -180,8 +180,8 @@ mod state;
 mod view;
 
 pub use blobs::{
-    AcceptedType, Blob, BlobEngine, CopyState, DeclaredDescriptor, FetchError, Placement,
-    PlacementPolicy, PlacementState, Store, StoreId, UploadError,
+    AcceptedType, Blob, BlobEngine, BlobFetch, BlobIngress, CopyState, DeclaredDescriptor,
+    FetchError, Placement, PlacementPolicy, PlacementState, Store, StoreId, UploadError,
 };
 pub use deletion::{
     DeleteError, DeletePolicy, DeletionPlan, Erasure, Extract, FieldPath, Graph, Occurrence,
@@ -196,8 +196,8 @@ pub use host::CoseVerifyError;
 /// resolves `$requires` against ([`Engine::load_with_hosts`]) and drives the
 /// keyring/provider fault-injection vocabulary (§16.2, §17).
 pub use liasse_host::{
-    ConformanceGuard, ContractName, ContractRef, CoseClaims, CoseToken, EffectClass, HostNamespace,
-    InterfaceHash, KeyProvider, NamespaceDescriptor, OpSignature, Registry, Version,
+    BlobConnector, ConformanceGuard, ContractName, ContractRef, CoseClaims, CoseToken, EffectClass,
+    HostNamespace, InterfaceHash, KeyProvider, NamespaceDescriptor, OpSignature, Registry, Version,
 };
 pub use generator::{derive_uuid, FixedGenerators, Generation, Generators};
 pub use history::{

@@ -7,11 +7,12 @@
 //! opens a subscription with a complete initial result at the connection's
 //! frontier (§12.2).
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_runtime::{
-    CallOutcome, CallRequest, CommitSeq, Rejection, RejectionReason, ScopedReceiver, ScopedResolution,
-    Value, ViewQuery,
+    BlobIngress, CallOutcome, CallRequest, CommitSeq, DeclaredDescriptor, Rejection,
+    RejectionReason, ScopedReceiver, ScopedResolution, Value, ViewQuery,
 };
 use liasse_store::InstanceStore;
 
@@ -38,6 +39,46 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     /// admission or the barrier sweep. Every §10/§11/§12 refusal is an outcome,
     /// not an error.
     pub fn call(&mut self, id: &str, call: &SurfaceCall) -> Result<SurfaceOutcome, SurfaceError> {
+        self.call_admitting(id, call, BlobAdmission::None)
+    }
+
+    /// Package-declared §18.7 ingress. Kept crate-internal so the public façade in
+    /// `components` owns the stable driver API and the compatibility fallback.
+    pub(super) fn call_with_managed_blob(
+        &mut self,
+        id: &str,
+        call: &SurfaceCall,
+        parameter: &str,
+        declared: &DeclaredDescriptor,
+        bytes: &[u8],
+    ) -> Result<SurfaceOutcome, SurfaceError> {
+        self.call_admitting(
+            id,
+            call,
+            BlobAdmission::Managed {
+                parameter,
+                declared,
+                bytes,
+            },
+        )
+    }
+
+    /// Compatibility path for a manually composed legacy [`BlobHost`]. The
+    /// package-declared path uses [`call_with_managed_blob`](Self::call_with_managed_blob).
+    pub(super) fn call_with_legacy_blob(
+        &mut self,
+        id: &str,
+        call: &SurfaceCall,
+    ) -> Result<SurfaceOutcome, SurfaceError> {
+        self.call_admitting(id, call, BlobAdmission::Legacy)
+    }
+
+    fn call_admitting(
+        &mut self,
+        id: &str,
+        call: &SurfaceCall,
+        admission: BlobAdmission<'_>,
+    ) -> Result<SurfaceOutcome, SurfaceError> {
         if !self.connections.contains_key(id) {
             return Err(SurfaceError::NoConnection(id.to_owned()));
         }
@@ -45,6 +86,46 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
             Ok(triple) => triple,
             Err(outcome) => return Ok(outcome),
         };
+        let (call, ingress, allows_prebound_blob) = match admission {
+            BlobAdmission::Managed {
+                parameter,
+                declared,
+                bytes,
+            } => {
+                if !binding.blobs().iter().any(|name| name == parameter) {
+                    return Ok(SurfaceOutcome::Rejected(Rejection::new(
+                        RejectionReason::Malformed,
+                        format!("`{parameter}` is not a declared blob parameter of this mutation"),
+                    )));
+                }
+                let ingress =
+                    match self
+                        .engine
+                        .stage_blob(binding.mutation(), parameter, declared, bytes)
+                    {
+                        Ok(ingress) => ingress,
+                        Err(rejection) => return Ok(SurfaceOutcome::Rejected(rejection)),
+                    };
+                let prepared = call.clone().with_arg(
+                    parameter.to_owned(),
+                    Value::Blob(Box::new(ingress.descriptor().clone())),
+                );
+                (Cow::Owned(prepared), Some(ingress), true)
+            }
+            BlobAdmission::Legacy => (Cow::Borrowed(call), None, true),
+            BlobAdmission::None => (Cow::Borrowed(call), None, false),
+        };
+        if !allows_prebound_blob
+            && binding
+                .blobs()
+                .iter()
+                .any(|name| call.args().contains_key(name))
+        {
+            return Ok(SurfaceOutcome::Rejected(Rejection::new(
+                RejectionReason::Malformed,
+                "a blob descriptor must arrive through the blob ingress operation",
+            )));
+        }
         // §12.1: the call's argument object is closed against the resolved
         // mutation's declared parameters — applied here, after membership is
         // confirmed (so a non-member reads the uniform denial, not a distinguishing
@@ -86,7 +167,10 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
             }
         }
 
-        let outcome = self.execute(id, &request)?;
+        let outcome = match ingress {
+            Some(ingress) => self.execute_blob(id, &request, ingress)?,
+            None => self.execute(id, &request)?,
+        };
         if let Some(key) = op_key {
             self.operations.record(key, model, outcome.clone());
         }
@@ -144,7 +228,38 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         // never the monotone clock — so a surface-minted token is unpredictable.
         let now = self.clock.instant();
         let mut generators = self.entropy.generators(now);
-        match self.engine.call(request, &mut generators)? {
+        // §18.7: a descriptor prebound on a non-managed call (a manually composed
+        // legacy `BlobHost`, or the conformance adapter) is backed by bytes that
+        // host has already persisted and serves, not by the engine registry — so it
+        // is admitted through the external-persistence seam. The engine's ordinary
+        // `call` refuses an unbacked blob argument, so a bare `None`-admission call
+        // never commits a descriptor whose bytes are stored nowhere (finding 1).
+        let outcome = if request.carries_blob_arg() {
+            self.engine.call_with_external_blobs(request, &mut generators)?
+        } else {
+            self.engine.call(request, &mut generators)?
+        };
+        self.finish_execution(id, outcome)
+    }
+
+    fn execute_blob(
+        &mut self,
+        id: &str,
+        request: &CallRequest,
+        ingress: BlobIngress,
+    ) -> Result<SurfaceOutcome, SurfaceError> {
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        let outcome = self.engine.call_with_blob(request, ingress, &mut generators)?;
+        self.finish_execution(id, outcome)
+    }
+
+    fn finish_execution(
+        &mut self,
+        id: &str,
+        outcome: CallOutcome,
+    ) -> Result<SurfaceOutcome, SurfaceError> {
+        match outcome {
             CallOutcome::Committed { seq, response } => {
                 let frontier = self.settle_commit(id, seq)?;
                 Ok(SurfaceOutcome::Committed { frontier, commit: seq, response })
@@ -543,7 +658,7 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         // omitted required one (`collect_params`). Enforcing presence at the
         // surface would wrongly deny a call that clears an optional field by
         // omission, so pass omitted parameters through untouched.
-        for name in binding.params() {
+        for name in binding.params().iter().chain(binding.blobs()) {
             if let Some(value) = args.get(name) {
                 request = request.arg(name.clone(), value.clone());
             }
@@ -895,6 +1010,16 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
     pub fn authorize_view(&self, id: &str, watch: &SurfaceWatch) -> Result<(), Denial> {
         self.resolve_view(id, watch.address(), watch.context(), watch.auth(), watch.scope()).map(|_| ())
     }
+}
+
+enum BlobAdmission<'a> {
+    None,
+    Managed {
+        parameter: &'a str,
+        declared: &'a DeclaredDescriptor,
+        bytes: &'a [u8],
+    },
+    Legacy,
 }
 
 /// Build the runtime [`ViewQuery`] a subscription evaluates its `$view` under: the

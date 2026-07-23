@@ -29,6 +29,10 @@ use crate::recursion::{CompiledRecursive, CompiledScope};
 use crate::schema::Schema;
 use crate::scope::RuntimeScope;
 
+mod blob;
+
+pub(crate) use blob::{CompiledBlobs, ResolvedBlobPolicy};
+
 /// A compiled boolean check: its condition and diagnostic message (§8.8).
 pub(crate) struct CompiledCheck {
     pub(crate) condition: TypedExpr,
@@ -449,6 +453,11 @@ pub(crate) struct Compiled {
     /// Declared keyrings (§17.1): the rings the engine bootstraps a live version
     /// lifecycle for and materializes a version view under.
     pub(crate) keyrings: Vec<CompiledKeyring>,
+    /// Every accepted blob field reached by an inherited `$blob_storage`
+    /// declaration (§18.2/§18.4), compiled into typed store-view expressions.
+    /// Unlike the model's validation-only `RawDecl`, this semantic table is kept
+    /// through admission so the package declaration drives connector routing.
+    pub(crate) blobs: CompiledBlobs,
     /// The declaration-name path of the collection an authenticator selects as
     /// `$actor` (§11.3), so an authenticated admission re-materializes that row by
     /// key. `None` when no `$auth` declares a resolvable `$actor` collection.
@@ -515,6 +524,7 @@ impl Compiled {
         let root_singleton_normalizes = compile_root_singleton_normalizes(sources, schema, &root_ty, hosts)?;
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth, hosts)?;
         let keyrings = compile_keyrings(schema, model_doc);
+        let blobs = CompiledBlobs::compile(sources, schema, &root_ty, model_doc)?;
         let views = compile_views(sources, schema, &root_ty, &keyrings, model_doc, hosts)?;
         let exposed_views = compile_exposed_views(sources, &root_ty, model, hosts, import_types)?;
         let surface_views = compile_surface_views(sources, schema, &root_ty, model_doc, &auth, hosts)?;
@@ -536,6 +546,7 @@ impl Compiled {
             source_buckets,
             meters,
             keyrings,
+            blobs,
             actor_collection: auth.actor.map(|(path, _)| path),
             session_collection: auth.session.map(|(path, _)| path),
             module_spaces,

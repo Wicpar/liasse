@@ -27,8 +27,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use liasse_host::{BlobConnector, BlobIntegrity, VerifiedFetchError};
 use liasse_value::{BlobDescriptor, MediaType, Sha512};
 
+mod ingress;
 mod placement;
 
+pub(crate) use ingress::{BlobCatalog, validate_connectors};
+pub use ingress::{BlobFetch, BlobIngress};
 use placement::dedup;
 pub use placement::{CopyState, Placement, PlacementPolicy, PlacementState, Store, StoreId};
 
@@ -175,6 +178,9 @@ pub enum FetchError {
     /// No verified holder could deliver bytes matching `$sha512` (§18.9).
     #[error("no holder delivered content matching the descriptor")]
     NoCleanHolder,
+    /// No committed blob placement is known for that content identity.
+    #[error("no committed blob is known for that descriptor")]
+    Unknown,
 }
 
 /// The blob engine (§18.3): registered connectors and store rows, over which
@@ -228,9 +234,10 @@ impl<C: BlobConnector> BlobEngine<C> {
         policy: &PlacementPolicy,
         bytes: &[u8],
     ) -> Result<Blob, UploadError> {
-        let descriptor = self.verify_descriptor(declared, accepted, bytes)?;
+        let descriptor = verify_descriptor(declared, accepted, bytes)?;
         let plan = self
             .writable_plan(policy.plan())
+            .filter(|plan| !plan.is_empty())
             .ok_or(UploadError::NoWritablePlacement)?;
         let digest = *descriptor.sha512();
         let mut landed = BTreeMap::new();
@@ -320,41 +327,6 @@ impl<C: BlobConnector> BlobEngine<C> {
         targets
     }
 
-    // ---- descriptor verification (§18.1/§18.2) ---------------------------
-
-    fn verify_descriptor(
-        &self,
-        declared: &DeclaredDescriptor,
-        accepted: &AcceptedType,
-        bytes: &[u8],
-    ) -> Result<BlobDescriptor, UploadError> {
-        let digest = Sha512::parse(&declared.sha512).map_err(|_| UploadError::MalformedDigest)?;
-        // §18.1: the declared hex must be canonical lowercase, and it must match
-        // the streamed bytes.
-        if declared.sha512 != digest.to_canonical_text() {
-            return Err(UploadError::MalformedDigest);
-        }
-        if BlobIntegrity::digest_hex(bytes) != digest.to_canonical_text() {
-            return Err(UploadError::DigestMismatch);
-        }
-        let actual = bytes.len() as u64;
-        if declared.bytes != actual {
-            return Err(UploadError::ByteCountMismatch);
-        }
-        if actual > accepted.max_bytes {
-            return Err(UploadError::TooLarge { actual, limit: accepted.max_bytes });
-        }
-        if !media_accepted(&accepted.media, &declared.media) {
-            return Err(UploadError::MediaNotAccepted(declared.media.clone()));
-        }
-        Ok(BlobDescriptor::new(
-            digest,
-            declared.bytes,
-            MediaType::new(declared.media.clone()),
-            declared.name.clone(),
-        ))
-    }
-
     // ---- placement (§18.4) -----------------------------------------------
 
     /// The store set required for a new write: the first fulfillable `$any`
@@ -364,7 +336,9 @@ impl<C: BlobConnector> BlobEngine<C> {
         match placement {
             Placement::View(stores) => {
                 let dedup = dedup(stores);
-                dedup.iter().all(|s| self.writable(s)).then_some(dedup)
+                // §18.4: an empty store view verifies no copy, so it is not a
+                // fulfillable write branch — a containing `$any` skips it (finding 2).
+                (!dedup.is_empty() && dedup.iter().all(|s| self.writable(s))).then_some(dedup)
             }
             Placement::All(branches) => {
                 let mut required = Vec::new();
@@ -373,7 +347,9 @@ impl<C: BlobConnector> BlobEngine<C> {
                 }
                 Some(dedup(&required))
             }
-            Placement::Any(branches) => branches.iter().find_map(|b| self.writable_plan(b)),
+            Placement::Any(branches) => branches
+                .iter()
+                .find_map(|b| self.writable_plan(b).filter(|plan| !plan.is_empty())),
             Placement::Copies { n, of } => {
                 let writable: Vec<StoreId> =
                     dedup(of).into_iter().filter(|s| self.writable(s)).collect();
@@ -502,6 +478,39 @@ impl<C: BlobConnector> BlobEngine<C> {
     fn connector_name(&self, store: &StoreId) -> Option<String> {
         self.stores.iter().find(|s| &s.id == store).map(|s| s.connector.clone())
     }
+}
+
+/// Turn hostile descriptor members plus staged bytes into the semantic
+/// descriptor that proves §18.1/§18.2 acceptance. Shared by the standalone
+/// [`BlobEngine`] and engine-integrated ingress.
+pub(crate) fn verify_descriptor(
+    declared: &DeclaredDescriptor,
+    accepted: &AcceptedType,
+    bytes: &[u8],
+) -> Result<BlobDescriptor, UploadError> {
+    let digest = Sha512::parse(&declared.sha512).map_err(|_| UploadError::MalformedDigest)?;
+    if declared.sha512 != digest.to_canonical_text() {
+        return Err(UploadError::MalformedDigest);
+    }
+    if BlobIntegrity::digest_hex(bytes) != digest.to_canonical_text() {
+        return Err(UploadError::DigestMismatch);
+    }
+    let actual = bytes.len() as u64;
+    if declared.bytes != actual {
+        return Err(UploadError::ByteCountMismatch);
+    }
+    if actual > accepted.max_bytes {
+        return Err(UploadError::TooLarge { actual, limit: accepted.max_bytes });
+    }
+    if !media_accepted(&accepted.media, &declared.media) {
+        return Err(UploadError::MediaNotAccepted(declared.media.clone()));
+    }
+    Ok(BlobDescriptor::new(
+        digest,
+        declared.bytes,
+        MediaType::new(declared.media.clone()),
+        declared.name.clone(),
+    ))
 }
 
 /// §18.2 media acceptance. Type and subtype are compared case-insensitively
