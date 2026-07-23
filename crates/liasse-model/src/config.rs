@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use liasse_expr::{ExprType, RowType};
 
-use crate::state::ExprSource;
+use crate::state::FieldDefault;
 
 /// The validated `$config` struct schema of a module package (§13.1): the typed
 /// members an installation supplies values for and a child's expressions read
@@ -36,12 +36,12 @@ pub struct ConfigSchema {
     /// Each member that declares a default, by name (§13.1: "defaults use the
     /// ordinary field rules"). A member with a default MAY be omitted by an
     /// installation; a member absent from this map is required.
-    defaults: BTreeMap<String, ExprSource>,
+    defaults: BTreeMap<String, FieldDefault>,
 }
 
 impl ConfigSchema {
     /// Assemble a schema from its resolved struct row and per-member defaults.
-    pub(crate) fn new(row: RowType, defaults: BTreeMap<String, ExprSource>) -> Self {
+    pub(crate) fn new(row: RowType, defaults: BTreeMap<String, FieldDefault>) -> Self {
         Self { row, defaults }
     }
 
@@ -70,12 +70,12 @@ impl ConfigSchema {
         self.row.fields()
     }
 
-    /// The default expression a member declares, when it has one (§13.1). An
-    /// installation that omits the member evaluates this default to obtain its
-    /// value; a member with no default is required. `None` also for an unknown
-    /// member.
+    /// The default a member declares, when it has one (§13.1): a literal or an
+    /// expression. An installation that omits the member resolves this default to
+    /// obtain its value; a member with no default is required. `None` also for an
+    /// unknown member.
     #[must_use]
-    pub fn default(&self, name: &str) -> Option<&ExprSource> {
+    pub fn default(&self, name: &str) -> Option<&FieldDefault> {
         self.defaults.get(name)
     }
 }

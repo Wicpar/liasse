@@ -12,7 +12,7 @@ use liasse_ident::NameSegment;
 use liasse_store::{CollectionPath, RowAddress};
 use liasse_value::{Precision, RefKey, Struct, StructType, Text, Value};
 
-use crate::compiled::{Compiled, CompiledCollection, CompiledField, CompiledStruct};
+use crate::compiled::{Compiled, CompiledCollection, CompiledDefault, CompiledField, CompiledStruct};
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::EvalCtx;
 use crate::generator::Generation;
@@ -50,18 +50,26 @@ pub(crate) fn apply_defaults(
         if fields.contains_key(&field.name) {
             continue;
         }
-        if let Some((typed, _)) = &field.default {
-            // §5.1: defaults and computed insertion values form one dependency
-            // graph, so a default MAY read a computed value (`booked: "int = .tax
-            // + 1"` over `tax: "= ..."`). Expose the provisional row with its
-            // computed values folded in (dependency order) AND its already-staged
-            // nested keyed collections grafted (§5.4), exactly as a row/struct
-            // `$check` does, so the default reads `.tax` — or a computed
-            // aggregating a nested child — instead of faulting on a missing member.
-            // `provisional_row_cell` degenerates to the bare row cell when there is
-            // no staged nested collection to expose.
-            let current = ctx.provisional_row_cell(prospective, collection, address, fields);
-            let value = scalar(ctx.eval_generative(prospective, typed, &current, generation)?);
+        if let Some(default) = &field.default {
+            let value = match default {
+                // §4.2/§C.4: a literal default was decoded against the field type at
+                // compile, so it is applied verbatim — already a positioned
+                // `Value::Enum` for an enum field (§5.9), a canonical scalar otherwise.
+                CompiledDefault::Literal(value) => value.clone(),
+                // §5.1: defaults and computed insertion values form one dependency
+                // graph, so a default MAY read a computed value (`booked: "int = .tax
+                // + 1"` over `tax: "= ..."`). Expose the provisional row with its
+                // computed values folded in (dependency order) AND its already-staged
+                // nested keyed collections grafted (§5.4), exactly as a row/struct
+                // `$check` does, so the default reads `.tax` — or a computed
+                // aggregating a nested child — instead of faulting on a missing member.
+                // `provisional_row_cell` degenerates to the bare row cell when there is
+                // no staged nested collection to expose.
+                CompiledDefault::Expr(typed) => {
+                    let current = ctx.provisional_row_cell(prospective, collection, address, fields);
+                    scalar(ctx.eval_generative(prospective, typed, &current, generation)?)
+                }
+            };
             fields.insert(field.name.clone(), value);
         }
     }

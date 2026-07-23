@@ -24,7 +24,7 @@ use crate::mutation::{check_mutations, Mutation};
 use crate::refs;
 use crate::report::Reporter;
 use crate::resolve::Resolver;
-use crate::state::{ExprSource, Node, Shape};
+use crate::state::{FieldDefault, Node, Shape};
 use crate::surface::{check_surfaces, Surface};
 use crate::{auth, blob, bucket, check, delete, expose, infer, meter, migration, module, seed};
 
@@ -258,7 +258,7 @@ impl Model {
 
 /// Each `$config` member's default expression, by member name (§13.1). A member
 /// with a default MAY be omitted by an installation; one without is required.
-fn config_defaults(config: Option<&Shape>) -> BTreeMap<String, ExprSource> {
+fn config_defaults(config: Option<&Shape>) -> BTreeMap<String, FieldDefault> {
     let Some(shape) = config else {
         return BTreeMap::new();
     };

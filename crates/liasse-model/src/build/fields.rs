@@ -10,7 +10,7 @@ use liasse_value::{EnumType, Precision, Type};
 
 use crate::doc::DocValueExt;
 use crate::report::{code, Reporter};
-use crate::state::{Check, ExprSource, Node, ScalarField};
+use crate::state::{Check, ExprSource, FieldDefault, Node, ScalarField};
 use crate::types::TypeParser;
 
 use super::{default_source, expr_source, placeholder, Builder};
@@ -38,13 +38,15 @@ impl<'a> Builder<'a> {
                 span,
             });
         }
+        // §C.3: the `T = default` shorthand's right-hand side is always an
+        // expression (`bool = true`, `timestamp = now()`), never a literal.
         let (type_str, default) = match text.split_once('=') {
             Some((lhs, rhs)) => (
                 lhs.trim(),
-                Some(ExprSource {
+                Some(FieldDefault::Expr(ExprSource {
                     text: rhs.trim().to_owned(),
                     span,
-                }),
+                })),
             ),
             None => (text.trim(), None),
         };
@@ -165,6 +167,16 @@ impl<'a> Builder<'a> {
         for member in value.as_object().unwrap_or(&[]) {
             match member.name.text.as_str() {
                 "$type" => base_ty = self.base_type(reporter, &member.value),
+                // §5.9/§5.1: a field-level inline enum MAY carry the expanded-field
+                // refinements ($default/$optional/$normalize/$check/$unique), so an
+                // `{ $enum: [...], $default: ... }` field routes here (from
+                // `object_node`) with the `$enum` array supplying the base type.
+                "$enum" => {
+                    base_ty = match self.enum_node(reporter, member) {
+                        Node::Scalar(field) => field.ty,
+                        _ => Type::Json,
+                    }
+                }
                 "$optional" => optional = member.value.as_bool() == Some(true),
                 "$default" => field.default = Some(default_source(&member.value)),
                 "$normalize" => field.normalize = Some(expr_source(&member.value)),

@@ -140,7 +140,9 @@ fn expression_body(value: &DocValue) -> Option<&str> {
 }
 
 /// Convert a spanned document value to a strict-JSON wire value for decoding.
-fn to_json(value: &DocValue) -> J {
+/// Shared with the field-default builder, whose literal `$default` (§4.2/§C.4) is
+/// decoded against the field type through the same wire form as a `$data` seed.
+pub(crate) fn to_json(value: &DocValue) -> J {
     match &value.kind {
         DocValueKind::Null => J::Null,
         DocValueKind::Bool(b) => J::Bool(*b),

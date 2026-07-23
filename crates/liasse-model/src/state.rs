@@ -26,6 +26,54 @@ pub struct ExprSource {
     pub span: ByteSpan,
 }
 
+/// A field's insertion default (§5.1). The expanded `$default` is a
+/// literal-or-expression position (§4.2/§C.4): a `= expr` value is an
+/// expression, and any other value is a **literal** decoded against the field
+/// type exactly like a `$data` seed literal (§9.1). The `T = expr` shorthand is
+/// always an expression. Keeping the two apart lets a literal be decoded (and an
+/// out-of-domain enum label or a type mismatch rejected) at load, while an
+/// expression is type-checked and assigned to the field type.
+#[derive(Debug, Clone)]
+pub enum FieldDefault {
+    /// A literal value: decoded against the field type at check and compile.
+    Literal(LiteralDefault),
+    /// An expression: a `= expr` `$default` or a `T = expr` shorthand.
+    Expr(ExprSource),
+}
+
+/// A literal insertion default (§4.2/§C.4): the value's strict-JSON wire form
+/// (§A.1) and the source bytes it covers. A later phase decodes the wire form
+/// against the field type — a successful decode is proof the literal conforms.
+#[derive(Debug, Clone)]
+pub struct LiteralDefault {
+    /// The literal's strict-JSON wire value (§A.1).
+    pub wire: serde_json::Value,
+    /// The bytes the literal covers in the definition source.
+    pub span: ByteSpan,
+}
+
+impl FieldDefault {
+    /// The default's declaration span, for diagnostics.
+    #[must_use]
+    pub fn span(&self) -> ByteSpan {
+        match self {
+            Self::Literal(literal) => literal.span,
+            Self::Expr(source) => source.span,
+        }
+    }
+
+    /// The default's expression source, or `None` when it is a literal. A literal
+    /// has no field references, so the §5.1 default/computed dependency graph
+    /// reasons only over the expression form.
+    #[must_use]
+    pub fn as_expr(&self) -> Option<&ExprSource> {
+        match self {
+            Self::Expr(source) => Some(source),
+            Self::Literal(_) => None,
+        }
+    }
+}
+
 /// A reusable diagnostic message coupled to a condition expression (§8.8).
 #[derive(Debug, Clone)]
 pub struct Check {
@@ -43,8 +91,8 @@ pub struct ScalarField {
     pub ty: Type,
     /// The computing expression, when this is a read-only computed value.
     pub computed: Option<ExprSource>,
-    /// The insertion default, when declared.
-    pub default: Option<ExprSource>,
+    /// The insertion default, when declared (§5.1): a literal or an expression.
+    pub default: Option<FieldDefault>,
     /// The `$normalize` expression, when declared.
     pub normalize: Option<ExprSource>,
     /// Field-level `$check`s.

@@ -1,0 +1,41 @@
+{
+  format: 1
+  name: enum-field-literal-default-seeded
+  suite: scenario
+  spec: ["#state-model", "§5.1", "§5.9", "#loading", "§9.1", "#package-structure", "§4.2"]
+  note: '''§9.1: a `$data` seed row "passes through the same defaults, normalization, checks,
+key, ref, uniqueness rules as mutation inserts". A seed row that omits an enum field with
+a bare-literal `$default` (a literal-or-expression position, §4.2) therefore receives the
+declared label (§5.1/§5.9), exactly as a mutation insert would; a seeded row that supplies
+the enum value keeps it. This pins the seed path in parallel with the insert path.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.enumlitseed@1.0.0"
+    $types: { State: { $enum: ["open", "closed"] } }
+    $model: {
+      things: {
+        $key: "id"
+        id: "text"
+        status: { $type: "State", $default: "open" }
+      }
+      $public: { things: { $view: ".things { id, status }" } }
+    }
+    $data: {
+      things: {
+        // omits status -> takes the default label "open"
+        "t1": { id: "t1" }
+        // supplies status -> kept
+        "t2": { id: "t2", status: "closed" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.things", id: "w1",
+      expect_init: { value: [
+        { id: "t1", status: "open" }
+        { id: "t2", status: "closed" }
+      ] } }
+  ]
+}

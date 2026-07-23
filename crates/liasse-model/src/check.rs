@@ -18,7 +18,7 @@ use crate::host::HostDescriptors;
 use crate::report::{code, Reporter};
 use crate::resolve::Resolver;
 use crate::scope::ModelScope;
-use crate::state::{Check, ExprSource, Node, ScalarField, Shape};
+use crate::state::{Check, ExprSource, FieldDefault, LiteralDefault, Node, ScalarField, Shape};
 use crate::walk::child_exprs;
 
 /// Type-check every expression in the state tree.
@@ -106,15 +106,23 @@ impl TreeChecker<'_, '_> {
             .with_host_ops(self.hosts.clone())
             .with_optional_structural("config", self.config.as_ref());
 
-        if let Some(default) = &field.default {
-            // §5.1/§8.8/§16.5: a field default is built-in-only for NAMESPACE calls
-            // (an app-registered namespace call moves into the mutation body), but
-            // the language generated functions `now()`/`uuid()` stay legal here —
-            // they are language calls that never reach the host-call checker.
-            let default_scope = row_scope.clone().with_host_position(HostPosition::Default);
-            if let Some(typed) = self.check_value(&default_scope, default) {
-                self.expect_assignable(&typed, &field.ty, default);
+        match &field.default {
+            // §4.2/§C.4: a literal `$default` is decoded against the field type,
+            // exactly like a `$data` seed literal — a bad literal (an out-of-domain
+            // enum label, a type mismatch) rejects at load.
+            Some(FieldDefault::Literal(literal)) => self.check_literal_default(literal, &field.ty),
+            // §5.1/§8.8/§16.5: an expression default is built-in-only for NAMESPACE
+            // calls (an app-registered namespace call moves into the mutation body),
+            // but the language generated functions `now()`/`uuid()` stay legal here —
+            // they are language calls that never reach the host-call checker. Its
+            // result must be assignable to the field type.
+            Some(FieldDefault::Expr(source)) => {
+                let default_scope = row_scope.clone().with_host_position(HostPosition::Default);
+                if let Some(typed) = self.check_value(&default_scope, source) {
+                    self.expect_assignable(&typed, &field.ty, source);
+                }
             }
+            None => {}
         }
         if let Some(computed) = &field.computed {
             // §5.2/§16.5: a computed value is database-evaluated, built-in-only.
@@ -244,6 +252,23 @@ impl TreeChecker<'_, '_> {
         }
     }
 
+    /// Type-check a literal `$default` (§4.2/§C.4) by decoding its strict-JSON
+    /// wire form against the field type, exactly as a `$data` seed literal is
+    /// decoded (§9.1). A successful decode proves the literal conforms; a failure
+    /// — an out-of-domain enum label (§5.9), a scalar that does not match the
+    /// declared type — is a static load error, so a bad default rejects at load
+    /// rather than at first insertion.
+    fn check_literal_default(&mut self, literal: &LiteralDefault, target: &Type) {
+        if let Err(error) = target.decode(&literal.wire) {
+            self.reporter.reject_hint(
+                literal.span,
+                code::EXPR,
+                format!("this default value does not conform to `{}`: {error}", target.name()),
+                "provide a literal of the declared field type, or an `= expression`",
+            );
+        }
+    }
+
     /// §5.1: the default/computed dependency graph of a shape's fields must be
     /// acyclic.
     fn detect_cycles(&mut self, shape: &Shape) {
@@ -252,7 +277,10 @@ impl TreeChecker<'_, '_> {
         for member in &shape.members {
             if let Node::Scalar(field) = &member.node {
                 let mut deps = BTreeSet::new();
-                for src in field.default.iter().chain(field.computed.iter()) {
+                // A literal default reads no field, so only the default's expression
+                // form (and the computed expression) contributes dependency edges.
+                let default_expr = field.default.as_ref().and_then(FieldDefault::as_expr);
+                for src in default_expr.into_iter().chain(field.computed.iter()) {
                     if let Ok(parsed) = parse_expression(self.sources.add_label("dep", src.text.clone()), &src.text) {
                         collect_field_refs(statement_expr(&parsed), &names, &mut deps);
                     }

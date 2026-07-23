@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: enum-literal-default-invalid-label-rejected
+  suite: static
+  spec: ["#state-model", "§5.9", "§5.1", "#package-structure", "§4.2"]
+  tags: ["boundary"]
+  note: '''Attack: smuggle an out-of-domain enum label into committed state through a
+literal `$default`. §4.2/Annex C.4 make an expanded `$default` a literal-or-expression
+position, so `$default: "archived"` is the literal label "archived". §5.1 requires a
+default's value to be assignable to the field type, and §5.9 makes the enum a CLOSED set
+of declared labels. "archived" is not declared, so the default is not assignable and the
+package MUST fail static validation — rejecting at LOAD (as a bad `$data` seed label does),
+never admitting the undeclared label at first insertion.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.enumbaddef@1.0.0"
+    $types: { State: { $enum: ["open", "closed"] } }
+    $model: {
+      things: {
+        $key: "id"
+        id: "text"
+        status: { $type: "State", $default: "archived" }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["§5.9"]
+    detail: "the literal `$default` \"archived\" is not a declared label of the enum { open, closed }"
+  }
+}

@@ -16,11 +16,11 @@ use liasse_expr::{
     RowType, Scope, SortOrder, TypedExpr, ViewOrders,
 };
 use liasse_host::KeyOperation;
-use liasse_model::{Collection, Model, Node, Shape};
+use liasse_model::{Collection, FieldDefault, LiteralDefault, Model, Node, Shape};
 use liasse_syntax::{
     parse_expression, Arg, BlockMember, BlockMemberKind, Expr, ExprKind, Selector, Stmt, StmtKind,
 };
-use liasse_value::{StructType, Type};
+use liasse_value::{StructType, Type, Value};
 
 use crate::doc;
 use crate::error::EngineError;
@@ -76,7 +76,7 @@ pub(crate) struct CompiledField {
     /// here — the set analogue of [`Self::reference`] for member-level integrity
     /// and atomic-rekey rewrite (§5.4).
     pub(crate) element_reference: Option<RefInfo>,
-    pub(crate) default: Option<(TypedExpr, SourceId)>,
+    pub(crate) default: Option<CompiledDefault>,
     pub(crate) normalize: Option<(TypedExpr, SourceId)>,
     pub(crate) checks: Vec<CompiledCheck>,
     /// The field-level `$precision` override (§4.4), carried from the model. When
@@ -85,6 +85,19 @@ pub(crate) struct CompiledField {
     /// field is honored (not silently forced to the package precision). `None`
     /// inherits the package `timestamp_precision`.
     pub(crate) precision_override: Option<liasse_value::Precision>,
+}
+
+/// A compiled insertion default (§5.1). §4.2/§C.4 make `$default` a
+/// literal-or-expression position: a literal is decoded against the field type at
+/// compile, so admission inserts an already-canonical value (a positioned
+/// `Value::Enum`, a canonical scalar) with no per-row evaluation; an expression is
+/// evaluated over the provisional row at admission (a `now()`/`uuid()` default, a
+/// state-derived default).
+pub(crate) enum CompiledDefault {
+    /// A literal default value, decoded against the field type at compile.
+    Literal(Value),
+    /// An expression default, evaluated at admission over the provisional row.
+    Expr(TypedExpr),
 }
 
 /// A compiled read-only computed value of a collection row (§5.2): its name and
@@ -103,7 +116,7 @@ pub(crate) struct CompiledComputed {
 /// default.
 pub(crate) struct CompiledSingletonDefault {
     pub(crate) name: String,
-    pub(crate) default: TypedExpr,
+    pub(crate) default: CompiledDefault,
 }
 
 /// A writable singleton root field's normalizer (§8.2/§8.8): its name and the
@@ -620,6 +633,31 @@ pub(crate) fn compile_expr(
     Ok((typed, src))
 }
 
+/// Compile a field's insertion default (§5.1). §4.2/§C.4: a literal is decoded
+/// against the field type — the same authoring-boundary decode the model checker
+/// already proved succeeds (§9.1), so a failure here is an engine invariant, not a
+/// user error — and an expression is compiled over `scope`. The literal is
+/// decoded once at load and applied verbatim on every insert.
+fn compile_default(
+    sources: &mut SourceMap,
+    scope: &dyn Scope,
+    field_ty: &Type,
+    default: &FieldDefault,
+) -> Result<CompiledDefault, EngineError> {
+    match default {
+        FieldDefault::Literal(LiteralDefault { wire, .. }) => {
+            let value = field_ty.decode(wire).map_err(|error| {
+                EngineError::Internal(format!("literal `$default` failed to decode at compile: {error}"))
+            })?;
+            Ok(CompiledDefault::Literal(value))
+        }
+        FieldDefault::Expr(source) => {
+            let (typed, _src) = compile_expr(sources, scope, "default", &source.text)?;
+            Ok(CompiledDefault::Expr(typed))
+        }
+    }
+}
+
 fn compile_checks(
     sources: &mut SourceMap,
     scope: &dyn Scope,
@@ -982,9 +1020,9 @@ fn compile_field(
             // already carries the resolved host signatures; opt this one into the
             // `Default` policy.
             let default = match &scalar.default {
-                Some(source) => {
+                Some(default) => {
                     let default_scope = row_scope.clone().with_host_position(HostPosition::Default);
-                    Some(compile_expr(sources, &default_scope, "default", &source.text)?)
+                    Some(compile_default(sources, &default_scope, &scalar.ty, default)?)
                 }
                 None => None,
             };
@@ -1418,7 +1456,7 @@ fn compile_root_singleton_defaults(
             && scalar.is_writable()
             && let Some(source) = &scalar.default
         {
-            let (default, _src) = compile_expr(sources, &scope, "default", &source.text)?;
+            let default = compile_default(sources, &scope, &scalar.ty, source)?;
             out.push(CompiledSingletonDefault { name: member.name.as_str().to_owned(), default });
         }
     }

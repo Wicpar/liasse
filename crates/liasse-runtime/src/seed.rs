@@ -11,7 +11,7 @@ use liasse_syntax::DocValue;
 use liasse_store::{CollectionPath, KeyValue, RowAddress};
 use liasse_value::Type;
 
-use crate::compiled::{Compiled, CompiledCollection};
+use crate::compiled::{Compiled, CompiledCollection, CompiledDefault};
 use crate::doc;
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::EvalCtx;
@@ -327,8 +327,14 @@ pub(crate) fn apply_singleton_defaults(
         if prospective.get(&root_address).is_some_and(|f| f.contains_key(&def.name)) {
             continue;
         }
-        let root = liasse_expr::Cell::Row(Box::new(ctx.root(prospective)));
-        let value = default_scalar(ctx.eval(prospective, &def.default, &root)?)?;
+        let value = match &def.default {
+            // §4.2/§C.4: a literal singleton default is decoded at compile.
+            CompiledDefault::Literal(value) => value.clone(),
+            CompiledDefault::Expr(typed) => {
+                let root = liasse_expr::Cell::Row(Box::new(ctx.root(prospective)));
+                default_scalar(ctx.eval(prospective, typed, &root)?)?
+            }
+        };
         let mut fields = prospective.get(&root_address).cloned().unwrap_or_else(FieldMap::new);
         fields.insert(def.name.clone(), value);
         prospective.insert(root_address.clone(), fields);

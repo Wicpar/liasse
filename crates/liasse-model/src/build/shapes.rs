@@ -86,6 +86,15 @@ impl<'a> Builder<'a> {
             return self.ref_node(reporter, value);
         }
         if let Some(en) = value.member("$enum") {
+            // §5.1/§5.9: a field-level inline enum that also carries an
+            // expanded-field refinement ($default/$optional/$normalize/$check/
+            // $unique/$precision) is an expanded field whose base type is the
+            // inline enum; a bare `{ $enum: [...] }` keeps the fast enum-node path.
+            const REFINEMENTS: &[&str] =
+                &["$default", "$optional", "$normalize", "$check", "$unique", "$precision"];
+            if REFINEMENTS.iter().any(|m| value.member(m).is_some()) {
+                return self.expanded_field(reporter, value);
+            }
             return self.enum_node(reporter, en);
         }
         if value.member("$like").is_some() {

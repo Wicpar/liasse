@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 
 use liasse_expr::{Cell, ExprType, Row, RowId};
 use liasse_diag::SourceMap;
-use liasse_model::ConfigSchema;
+use liasse_model::{ConfigSchema, FieldDefault, LiteralDefault};
 use liasse_value::Value;
 
 use crate::compiled::compile_expr;
@@ -104,7 +104,7 @@ pub(crate) fn resolve(
         let Some(default) = schema.default(name) else {
             return Err(ConfigError::MissingRequired(name.clone()));
         };
-        let value = eval_default(name, schema, &default.text, &resolved, ctx, prospective)?;
+        let value = resolve_default(name, schema, default, &resolved, ctx, prospective)?;
         resolved.insert(name.clone(), value);
     }
     Ok(resolved)
@@ -133,6 +133,36 @@ fn typecheck(name: &str, member_ty: &ExprType, value: &Value) -> Result<Value, C
         member: name.to_owned(),
         detail: error.to_string(),
     })
+}
+
+/// Resolve an omitted member's default (§13.1: "defaults use the ordinary field
+/// rules"). §4.2/§C.4: a literal default is decoded against the member type, and
+/// an expression default is evaluated against the child state.
+fn resolve_default(
+    name: &str,
+    schema: &ConfigSchema,
+    default: &FieldDefault,
+    resolved: &BTreeMap<String, Value>,
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+) -> Result<Value, ConfigError> {
+    match default {
+        FieldDefault::Literal(LiteralDefault { wire, .. }) => {
+            match schema.member_type(name).and_then(ExprType::as_scalar) {
+                Some(ty) => ty.decode(wire).map_err(|error| ConfigError::DefaultFailed {
+                    member: name.to_owned(),
+                    detail: error.to_string(),
+                }),
+                None => Err(ConfigError::DefaultFailed {
+                    member: name.to_owned(),
+                    detail: "member is not an installation value".to_owned(),
+                }),
+            }
+        }
+        FieldDefault::Expr(source) => {
+            eval_default(name, schema, &source.text, resolved, ctx, prospective)
+        }
+    }
 }
 
 /// Evaluate an omitted member's default expression against the child state, with

@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: enum-field-literal-default-applies
+  suite: scenario
+  spec: ["#state-model", "§5.1", "§5.9", "#package-structure", "§4.2", "#annex-c", "§C.4"]
+  note: '''An expanded `$default` is a literal-or-expression position (§4.2, Annex C.4): a
+string not beginning with `=` is a LITERAL. On an enum field (§5.9) the literal is the
+declared label, so `$default: "open"` supplies the label "open" when the field is
+omitted (§5.1). A supplied value takes precedence, so an explicit "closed" is kept. Two
+field spellings of the same enum default — the expanded `{ $type, $default }` and the
+inline `{ $enum, $default }` — must behave identically.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.enumlitdef@1.0.0"
+    $types: { State: { $enum: ["open", "closed"] } }
+    $model: {
+      things: {
+        $key: "id"
+        id: "text"
+        // expanded form: a named enum type refined with a bare-literal default
+        expanded: { $type: "State", $default: "open" }
+        // inline form: an inline enum refined with a bare-literal default
+        inline: { $enum: ["open", "closed"], $default: "open" }
+      }
+      $public: {
+        things: {
+          $view: ".things { id, expanded, inline }"
+          $mut: {
+            add: ".things + { id: @id }"
+            add_explicit: ".things + { id: @id, expanded: @expanded, inline: @inline }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    // omitted on both fields -> the literal default "open" applies to each
+    { call: "public.things.add", args: { id: "t1" }, expect: { outcome: ok } }
+    // supplied values take precedence over the default (§5.1)
+    { call: "public.things.add_explicit", args: { id: "t2", expanded: "closed", inline: "closed" },
+      expect: { outcome: ok } }
+    { watch: "public.things", id: "w1",
+      expect_init: { value: [
+        { id: "t1", expanded: "open", inline: "open" }
+        { id: "t2", expanded: "closed", inline: "closed" }
+      ] } }
+  ]
+}

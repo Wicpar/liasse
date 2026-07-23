@@ -27,7 +27,7 @@ use liasse_value::Type;
 use crate::doc::DocValueExt;
 use crate::names::{is_reserved, DeclName};
 use crate::report::{code, Reporter};
-use crate::state::{ExprSource, Member, Node, ScalarField, Shape};
+use crate::state::{ExprSource, FieldDefault, LiteralDefault, Member, Node, ScalarField, Shape};
 use crate::types::NamedTypes;
 
 /// A `$mut` declaration awaiting expression validation, with its receiver path.
@@ -506,17 +506,33 @@ fn expr_source(value: &DocValue) -> ExprSource {
     }
 }
 
-/// An expanded `$default` (a literal-or-expression position, SPEC.md §4.2): a
-/// string beginning with `=` is an expression, so the marker is stripped before
-/// the expression is parsed. Strings without the marker are left verbatim (the
-/// bare-expression / `T = default` shorthand already carries no marker).
-fn default_source(value: &DocValue) -> ExprSource {
-    let raw = value.as_string().unwrap_or_default();
-    match raw.trim_start().strip_prefix('=') {
-        Some(rest) => ExprSource {
-            text: rest.trim().to_owned(),
+/// An expanded `$default` in a literal-or-expression position (SPEC.md §4.2,
+/// Annex C.4): a string beginning with `=` is an expression, so the marker is
+/// stripped before it is parsed; any other value is a **literal** decoded against
+/// the field type by later phases, exactly like a `$data` seed literal. A leading
+/// `'` escape makes a literal read verbatim (`'= x` → the literal text `= x`,
+/// `'x` → `x`), so a literal that would otherwise read as the `=` marker or the
+/// escape itself can still be written.
+fn default_source(value: &DocValue) -> FieldDefault {
+    if let Some(text) = value.as_string() {
+        if let Some(rest) = text.trim_start().strip_prefix('=') {
+            return FieldDefault::Expr(ExprSource {
+                text: rest.trim().to_owned(),
+                span: value.span,
+            });
+        }
+        // §C.4: a leading `'` escapes the literal (one `'` removed); a bare string
+        // is the literal itself. The literal's wire form is that JSON string.
+        let literal = text.strip_prefix('\'').unwrap_or(text).to_owned();
+        return FieldDefault::Literal(LiteralDefault {
+            wire: serde_json::Value::String(literal),
             span: value.span,
-        },
-        None => expr_source(value),
+        });
     }
+    // A non-string literal (`true`, a number, an object/array) is decoded against
+    // the field type through its strict-JSON wire form, like a `$data` seed value.
+    FieldDefault::Literal(LiteralDefault {
+        wire: crate::seed::to_json(value),
+        span: value.span,
+    })
 }

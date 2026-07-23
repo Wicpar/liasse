@@ -18,7 +18,9 @@ use liasse_store::{CollectionPath, KeyValue, RowAddress};
 use liasse_value::{Ref, RefKey, Struct, Text, Type, Value};
 
 use crate::cascade::{self, PlannedDeletion};
-use crate::compiled::{Compiled, CompiledCollection, CompiledField, CompiledMutation, CompiledStruct};
+use crate::compiled::{
+    Compiled, CompiledCollection, CompiledDefault, CompiledField, CompiledMutation, CompiledStruct,
+};
 use crate::deletion::{Erasure, Extract, Occurrence, RowRef};
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::{row_cell, EvalCtx};
@@ -1406,11 +1408,18 @@ impl<'a> Interp<'a> {
             if fields.contains_key(&field.name) {
                 continue;
             }
-            if let Some((typed, _)) = &field.default {
-                let struct_cell = struct_row_cell(struct_meta, &fields);
-                let value = match self.ctx.eval(self.prospective, typed, &struct_cell)? {
-                    Cell::Scalar(value) => value,
-                    _ => Value::None,
+            if let Some(default) = &field.default {
+                let value = match default {
+                    // §4.2/§C.4: a literal struct-member default is decoded against
+                    // the member type at compile and applied verbatim.
+                    CompiledDefault::Literal(value) => value.clone(),
+                    CompiledDefault::Expr(typed) => {
+                        let struct_cell = struct_row_cell(struct_meta, &fields);
+                        match self.ctx.eval(self.prospective, typed, &struct_cell)? {
+                            Cell::Scalar(value) => value,
+                            _ => Value::None,
+                        }
+                    }
                 };
                 fields.insert(field.name.clone(), value);
             } else if matches!(field.ty, Type::Optional(_)) {

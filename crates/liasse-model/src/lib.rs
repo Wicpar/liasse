@@ -91,6 +91,7 @@ pub use mutation::Mutation;
 pub use names::{DeclName, PackageId, PackageName, Version};
 pub use report::code;
 pub use state::{
-    Check, Collection, ExprSource, Member, Node, Reference, ScalarField, SetField, Shape, ViewDecl,
+    Check, Collection, ExprSource, FieldDefault, LiteralDefault, Member, Node, Reference,
+    ScalarField, SetField, Shape, ViewDecl,
 };
 pub use surface::Surface;
