@@ -364,17 +364,19 @@ pub const SKIP: &[(&str, &str)] = &[
     ("23-host-contract/restart-preserves-identity-values-and-view", "outcome divergence: expected `ok` observed `denied`"),
     // --- fail:valdiff ---
     // --- fail:viewdiff ---
-    // §14.1/§A.5 timestamp-arg precision now decodes the `@until` bucket bound at the
-    // package precision, so the metered spend admits and retains its allocation while
-    // bucket-inactive (steps 0–3 pass, §15.2/§14.2). The residual is step 4: after
-    // `purge` DELETES the bucketed spend from `.$all`, §15.2 "deletion releases its
-    // allocation" is not reflected — the balance view does not restore to full pool
-    // capacity, a deletion→meter-release seam distinct from bucket activity.
-    ("15-meters/inactive-bucketed-spend-retains-allocation", "§15.2 deleting a bucketed spend via `.$all` does not release its meter allocation, so the post-purge balance view does not restore to full capacity (a deletion→meter-release seam; the precision fix cleared the prior step-0 rejection)"),
+    // (§14.2/§8 `-.coll.$all[:x | pred]` deletion now RESOLVES its target: the
+    // `-selection` delete path peels the `.$all` temporal selector and outer
+    // `[selector]` to find the collection, and removes a nested collection's row by
+    // its full address (`interp.rs::exec_delete_selection`/`selection_collection`).
+    // Before, `collection_ref` could not resolve the `.spends.$all` base, so every
+    // `-.coll.$all[…]` delete silently no-opped — the row survived. This landed
+    // `15-meters/inactive-bucketed-spend-retains-allocation` (the deleted spend's
+    // §15.2 allocation now releases, restoring the pool balance) and
+    // `14-buckets/expiration-preserves-row-in-all` (the top-level `.$all` purge now
+    // removes the extant row), whose entries were pruned as stale.)
     ("05-state-model/set-of-enum-reads-in-declaration-order", "view result diverges from expectation"),
     ("12-clients-live-views/temporal-observation-advances-live-view", "view result diverges from expectation"),
     ("12-clients-live-views/window-anchor-survives-rekey", "view result diverges from expectation"),
-    ("14-buckets/expiration-preserves-row-in-all", "view result diverges from expectation"),
     ("22-runtime-semantics/concurrent-appends-either-order-both-atomic", "view result diverges from expectation"),
     ("annex-c-grammar/patch-block-is-one-statement", "view result diverges from expectation"),
     // ========================================================================

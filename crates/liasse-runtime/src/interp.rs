@@ -1452,15 +1452,17 @@ impl<'a> Interp<'a> {
     }
 
     /// `-selection` (§8): delete every row a selector picks. The operand is a
-    /// collection selection (`.coll[:x | pred]`, `.coll[keys]`); it is evaluated
-    /// to its row set and each selected row is deleted by key through the §21.1
-    /// planner. A non-collection operand (a scalar negation) stages nothing.
+    /// collection selection (`.coll[:x | pred]`, `.coll[keys]`, or a `.coll.$all`
+    /// bucket-inactive scan, §14.2); it is evaluated to its row set and each
+    /// selected row is deleted by key. A non-collection operand (a scalar negation)
+    /// stages nothing.
     fn exec_delete_selection(&mut self, operand: &Expr, source: SourceId) -> Result<(), Rejection> {
-        let base = match &operand.kind {
-            ExprKind::Select { base, .. } => base.as_ref(),
-            _ => operand,
-        };
-        let Some(loc) = self.collection_ref(base, source)? else {
+        // §14.2/§8: resolve the collection the selection targets, seeing through the
+        // outer `[selector]` and any `.$all` temporal selector, so a bucketed spend
+        // addressed by `-.spends.$all[:s | pred]` resolves to `.spends` rather than
+        // no-opping on the unresolved `.spends.$all` base (which would leave the
+        // spend — and its §15.2 meter allocation — extant).
+        let Some(loc) = self.collection_ref(selection_collection(operand), source)? else {
             return Ok(());
         };
         let name = loc.decl.last().cloned().unwrap_or_default();
@@ -1470,6 +1472,18 @@ impl<'a> Interp<'a> {
             Cell::Row(row) => vec![row.key().clone()],
             Cell::Scalar(_) => return Ok(()),
         };
+        // §5.4/§21.1: the cascade planner operates over the top-level graph; a
+        // nested collection's row (a meter spend/pool, §15) has no inbound refs in
+        // CORE scope, so it is removed directly with its descendant subtree —
+        // addressing it by its leaf key alone (as the top-level RowRef path does)
+        // would miss the row and silently no-op. Mirrors the sibling keyed-delete
+        // path (`exec_delete`).
+        if loc.decl.len() > 1 {
+            for key in keys {
+                self.remove_subtree(&loc.store_path.row(materialize::key_value_of(&key)));
+            }
+            return Ok(());
+        }
         let initial: Vec<RowRef> = keys.into_iter().map(|key| RowRef::new(name.clone(), key)).collect();
         self.delete_rows(initial)
     }
@@ -1976,6 +1990,24 @@ fn struct_row_cell(struct_meta: &CompiledStruct, fields: &FieldMap) -> Cell {
         (field.name.clone(), Cell::Scalar(fields.get(&field.name).cloned().unwrap_or(Value::None)))
     });
     Cell::Row(Box::new(Row::new(RowId::leaf(0), Value::None, cells)))
+}
+
+/// Peel a `-selection` delete operand down to the collection it selects from,
+/// seeing through the outer `[selector]` and any `.$all` temporal selector
+/// (§14.2). A bucketed `-.spends.$all[:s | pred]` therefore resolves its target
+/// to `.spends`, not the intermediate `.spends.$all` (which `collection_ref`
+/// cannot resolve, and which would leave the selected rows extant).
+fn selection_collection(operand: &Expr) -> &Expr {
+    let mut base = operand;
+    loop {
+        match &base.kind {
+            ExprKind::Select { base: inner, .. } => base = inner,
+            ExprKind::Field { base: inner, member } if member.structural && member.text == "all" => {
+                base = inner;
+            }
+            _ => return base,
+        }
+    }
 }
 
 /// Whether `prefix`'s steps are the leading steps of `address` (an ancestor
