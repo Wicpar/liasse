@@ -2135,6 +2135,10 @@ The consumer invokes the bound operation through its imported interface:
 
 The owner performs the meter allocation against its private state. The caller's state changes and the owner mutation participate in the same atomic cross-module transition. Installation location grants only the views and mutations declared by the boundary contract.
 
+A mutation MAY reach across several module instances within one transition. It changes its own state and invokes bound mutations on the instances it addresses, and each addressed instance MAY reach further in turn. Every engine instance the transition touches stages its changes together and commits them as one atomic transition: every touched instance advances on that transition, or the transition is rejected and every touched instance retains its prior committed state. A `$return` from a bound mutation is available to the calling program within that transition.
+
+A host-privileged builtin mutation MAY carry a module instance through its lifecycle within such a transition. It decodes a package definition from a blob descriptor and installs a new instance, updates an existing instance to that definition, or removes an existing instance, applying the ordinary mount, migration, seed, and bundle rules (§13.3, §13.13, §20) as part of the same transition. The instance it mounts, migrates, or removes is one of the engines the transition touches, so its lifecycle change commits together with every other touched instance as one atomic transition, or the transition is rejected and every instance retains its prior committed state. The decoded package identity becomes a fact of that commit (§5.1), reproduced on replay and in audit.
+
 ### 13.11 Authentication scopes
 
 Each module MAY declare its own `$auth`, `$public`, and `$roles`.
