@@ -118,10 +118,12 @@ impl<S: InstanceStore> Engine<S> {
             return Err(UpdateError::Rejected(Rejection::new(
                 RejectionReason::Compatibility,
                 format!(
-                    "no connected §20.1 delta path from the active `{}.{}.{}` to the target \
-                     `{}.{}.{}`: the active version is off the target's declared migration \
-                     lineage and the runtime never synthesizes an undeclared intermediate \
-                     (§20.3, Annex E.9)",
+                    "no connected single-hop §20.1 delta path from the active `{}.{}.{}` to the \
+                     target `{}.{}.{}`: either the active version is off the target's declared \
+                     migration lineage, or a declared migration key lies strictly between the two \
+                     versions so the route is a multi-step chain — and the runtime never \
+                     synthesizes an undeclared intermediate nor commits a single hop as if it \
+                     reached the target (§20.1, §20.3, Annex E.9)",
                     active.major, active.minor, active.patch, want.major, want.minor, want.patch,
                 ),
             )));
@@ -218,39 +220,50 @@ impl<S: InstanceStore> Engine<S> {
         active.narrowing(&candidate)
     }
 
-    /// Whether a connected §20.1 delta path exists from the active version to the
-    /// `target_model`'s version (§20.3, Annex E.9), reading declared `$migrations`
-    /// keys from the `target` definition text.
+    /// Whether a connected SINGLE-HOP §20.1 delta path — one this runtime can
+    /// EXECUTE — exists from the active version to the `target_model`'s version
+    /// (§20.3, Annex E.9), reading declared `$migrations` keys from the `target`
+    /// definition text.
     ///
-    /// A path exists exactly when either:
-    /// - the target declares a delta keyed to the EXACT active source version
-    ///   (`$migrations["<active>"]`) — a declared one-hop delta from the active
-    ///   version; or
-    /// - the single implicit structural-diff delta between the active and target
-    ///   versions is available, which requires that NO declared `$migrations` key
-    ///   lies strictly between them (both endpoint models are held on this path).
-    ///   This covers the adjacent compatible minor/patch, the shape-compatible
-    ///   downgrade, and the same-version republish (an empty strictly-between
-    ///   range).
+    /// §20.1 fixes each declared key's delta to bridge that version to the *next
+    /// declared key*, and the greatest key's delta to the package's own version.
+    /// So a declared `$migrations["<active>"]` reaches the target in ONE hop only
+    /// when no declared key sits strictly between the active and target versions;
+    /// a strictly-between key means the active source's delta stops at that
+    /// intermediate and the remaining keys' deltas must COMPOSE to reach the
+    /// target — a multi-step chain. Multi-step chain walking is unbuilt
+    /// (SPEC-ISSUES #22), so this runtime cannot run such a route, and §20.1 bars
+    /// synthesizing the missing composition. The empty strictly-between range is
+    /// therefore the connectivity condition for BOTH the declared active-source
+    /// delta and the single implicit structural-diff delta (which likewise applies
+    /// only across an empty strictly-between range, both endpoint models held).
     ///
-    /// It does NOT exist when a declared key lies strictly between the two
-    /// versions with no delta from the active version — the active version is off
-    /// the target's declared lineage, so the implicit direct delta is blocked and
-    /// no declared delta reaches it. Applying an undeclared intermediate is
-    /// forbidden (§20.1), so the in-place update is refused.
+    /// A path thus exists exactly when NO declared `$migrations` key lies strictly
+    /// between the active and target versions:
+    /// - with the active source itself declared, the one-hop delta reaches the
+    ///   target (including a single key spanning several majors, e.g. a lone
+    ///   `"1.0.0"` in a `3.0.0` package);
+    /// - otherwise, the single implicit structural-diff delta connects the two
+    ///   held-model endpoints (the adjacent compatible minor/patch, the
+    ///   shape-compatible downgrade, the same-version republish).
+    ///
+    /// It does NOT exist when a declared key sits strictly between — whether the
+    /// active version is off the target's declared lineage (no delta from it) or a
+    /// genuine multi-hop route (a delta from it that stops at the intermediate).
+    /// Either way the in-place update is refused fail-closed (§9.4, Annex E.9), so
+    /// the runtime never commits a single hop as if it reached the target — which
+    /// would land an undeclared intermediate composition stamped as the target
+    /// version, silently losing every later declared hop.
     fn connected_delta_path(&self, target: &str, target_model: &Model) -> bool {
         let active = &self.model().header().identity.version;
-        let active_source = format!("{}.{}.{}", active.major, active.minor, active.patch);
-        // A declared one-hop delta from the exact active source version.
-        if target_model.migrations().program(&active_source).is_some() {
-            return true;
-        }
         let active = (active.major, active.minor, active.patch);
         let want = &target_model.header().identity.version;
         let want = (want.major, want.minor, want.patch);
         let (lo, hi) = (active.min(want), active.max(want));
-        // The implicit structural-diff delta is available only when no declared
-        // `$migrations` key sits strictly between the two endpoints (§20.1).
+        // §20.1: a connected single-hop route requires NO declared `$migrations`
+        // key strictly between the two versions. A key in that open range makes the
+        // route multi-step (unbuilt) or the active version off-lineage; both are
+        // refused so no partial migration is committed.
         !declared_migration_sources(target)
             .into_iter()
             .any(|key| lo < key && key < hi)
