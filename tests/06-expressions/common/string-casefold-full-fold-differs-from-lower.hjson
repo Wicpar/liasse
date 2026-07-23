@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: string-casefold-full-fold-differs-from-lower
+  suite: scenario
+  spec: ["#expressions", "§6.5", "#annex-a", "§A.1"]
+  tags: ["unicode"]
+  note: '''
+    §6.5: `string.casefold` "applies the corresponding Unicode default ...
+    casefold operation" — the full (C+F) Unicode default case fold — while
+    `string.lower` applies the Unicode default lowercase mapping. The two are
+    NOT the same operation, and this case pins values where they diverge, so a
+    tautology is impossible and folding-as-lowercasing would be caught:
+
+      - LATIN SMALL LETTER SHARP S (ß, U+00DF): default case fold maps it to
+        the two scalars "ss" (CaseFolding.txt `00DF; F; 0073 0073`), whereas
+        default lowercase leaves ß unchanged. So casefold("Maße") = "masse"
+        but lower("Maße") = "maße".
+      - GREEK SMALL LETTER FINAL SIGMA (ς, U+03C2): default case fold maps it
+        to GREEK SMALL LETTER SIGMA (σ, U+03C3) (CaseFolding.txt `03C2; C;
+        03C3`), whereas default lowercase leaves the already-lowercase final
+        sigma unchanged. So casefold("ὈΔΥΣΣΕΎΣ" tail) diverges; here
+        casefold("ΟΔΟΣ") = "οδοσ" while lower("ΟΔΟΣ") = "οδος" (capital sigma
+        lowercases to non-final σ, but a pre-existing final ς only folds).
+
+    `string.casefold` is a core built-in string utility (§16.1 `string`
+    namespace), usable in the database-evaluated computed-value position
+    (§16.5). Both computed fields are read from a public view; the folded and
+    lowered forms are asserted exactly.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.casefold@1.0.0"
+    $model: {
+      names: {
+        $key: "id"
+        id: "text"
+        name: "text"
+        folded: "= string.casefold(.name)"
+        lowered: "= string.lower(.name)"
+      }
+      $public: {
+        by_id: { $view: ".names { id, name, folded, lowered, $sort: [id] }" }
+      }
+    }
+    $data: {
+      names: {
+        r1: { name: "Maße" }
+        r2: { name: "ΟΔΟΣ" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_id", id: "w1",
+      expect_init: { value: [
+        { id: "r1", name: "Maße", folded: "masse", lowered: "maße" }
+        { id: "r2", name: "ΟΔΟΣ", folded: "οδοσ", lowered: "οδος" }
+      ] } }
+  ]
+}

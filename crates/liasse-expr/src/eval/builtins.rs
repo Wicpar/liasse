@@ -3,6 +3,10 @@
 //! `string.trim` uses Rust's Unicode `White_Space` trimming; whether a
 //! non-ASCII-whitespace-only string normalizes to empty is unpinned
 //! (SPEC-ISSUES item 5), and this crate takes the Unicode-aware reading.
+//! `string.lower`/`string.upper` are Rust's Unicode default case mappings;
+//! `string.casefold` is the Unicode *default full* case fold (`caseless`,
+//! CaseFolding.txt C+F), which §6.5 names and B.1 uses for its case-insensitive
+//! `$sort` key — a different operation from lowercasing.
 
 use liasse_value::{Integer, Text, Value};
 
@@ -23,6 +27,13 @@ impl Evaluator<'_> {
             BuiltinFn::Assert => self.eval_assert(args),
             BuiltinFn::StringLower => self.eval_string(args, str::to_lowercase),
             BuiltinFn::StringUpper => self.eval_string(args, str::to_uppercase),
+            // §6.5: `string.casefold` applies the Unicode *default* case fold —
+            // the full (C+F) mapping of CaseFolding.txt, distinct from default
+            // lowercasing (ß → "ss", final ς → σ, Kelvin K → k). It supplies the
+            // B.1 canonical case-insensitive sort key `string.casefold(name)`.
+            BuiltinFn::StringCasefold => {
+                self.eval_string(args, caseless::default_case_fold_str)
+            }
             BuiltinFn::StringTrim => self.eval_string(args, |text| text.trim().to_owned()),
             BuiltinFn::TimeDuration => self.eval_time_duration(args),
         }

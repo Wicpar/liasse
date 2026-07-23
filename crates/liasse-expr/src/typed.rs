@@ -494,6 +494,8 @@ pub(crate) enum BuiltinFn {
     StringLower,
     /// `string.upper(text)`.
     StringUpper,
+    /// `string.casefold(text)` — Unicode default (full, C+F) case fold (§6.5).
+    StringCasefold,
     /// `string.trim(text)`.
     StringTrim,
     /// `time.duration(text)` — parse an ISO-8601 duration literal (§16.1).

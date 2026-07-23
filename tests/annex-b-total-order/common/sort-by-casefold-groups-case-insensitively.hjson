@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: sort-by-casefold-groups-case-insensitively
+  suite: scenario
+  spec: ["#annex-b", "§B.1", "#expressions", "§6.5"]
+  tags: ["ordering", "unicode"]
+  note: '''
+    §B.1 gives the canonical explicit sort key for case-insensitive ordering
+    verbatim: `"$sort": ["string.casefold(name)", "name"]`. This case runs that
+    exact example. The primary key `string.casefold(name)` (a §6.5 core string
+    utility, Unicode default full case fold) groups rows case-insensitively;
+    the secondary raw `name` (§B.1 text: Unicode scalar-value order) breaks ties
+    inside a group.
+
+    Derived order (all values external, from CaseFolding.txt):
+      - casefold("Apple") = casefold("apple") = "apple";
+      - casefold("STRASSE") = casefold("Straße") = "strasse"
+        (ß, U+00DF, folds to "ss": `00DF; F; 0073 0073`).
+      Primary groups ascending: "apple" < "strasse".
+      Within "apple": secondary raw text "Apple" (A=U+0041) < "apple"
+        (a=U+0061), so Apple precedes apple.
+      Within "strasse": "STRASSE" vs "Straße" diverge at index 1 —
+        T (U+0054) < t (U+0074) — so STRASSE precedes Straße.
+    Final order: Apple, apple, STRASSE, Straße.
+
+    This differs from a plain `$sort: [name]` (which, by raw scalar order,
+    would give Apple, STRASSE, Straße, apple), so the ordering is not a
+    tautology and cannot be produced without a working case fold.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.casefold@1.0.0"
+    $model: {
+      names: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        by_fold: { $view: ".names { id, name, $sort: [\"string.casefold(name)\", \"name\"] }" }
+      }
+    }
+    $data: {
+      names: {
+        r1: { name: "STRASSE" }
+        r2: { name: "Straße" }
+        r3: { name: "apple" }
+        r4: { name: "Apple" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.by_fold", id: "w1",
+      expect_init: { value: [
+        { id: "r4", name: "Apple" }
+        { id: "r3", name: "apple" }
+        { id: "r1", name: "STRASSE" }
+        { id: "r2", name: "Straße" }
+      ] } }
+  ]
+}

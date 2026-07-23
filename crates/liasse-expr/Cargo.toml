@@ -18,6 +18,11 @@ liasse-value = { path = "../liasse-value" }
 # (§12.4) is its group key rendered through the one shared D.2 codec, never a
 # hand-rolled spelling.
 liasse-ident = { path = "../liasse-ident" }
+# §6.5 `string.casefold`: the Unicode *default full* (C+F) case fold that B.1's
+# canonical case-insensitive `$sort` key relies on. `str::to_lowercase` is a
+# different operation (e.g. ß stays ß, final ς stays ς), so the fold needs the
+# Unicode CaseFolding.txt data this crate carries.
+caseless = "0.2"
 # The `eval-wire` codec (§7.3/§7.4 of `liasse-pg/DESIGN-pure-pg.md`): an internal,
 # version-locked postcard wire over feature-gated serde derives on the checked
 # typed tree. `serde_json` (arbitrary-precision) round-trips a `json`-typed literal

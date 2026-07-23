@@ -668,6 +668,7 @@ fn core_string_fn(namespace: &str, function: &str) -> Option<BuiltinFn> {
     match (namespace, function) {
         ("string", "lower") => Some(BuiltinFn::StringLower),
         ("string", "upper") => Some(BuiltinFn::StringUpper),
+        ("string", "casefold") => Some(BuiltinFn::StringCasefold),
         ("string", "trim") => Some(BuiltinFn::StringTrim),
         _ => None,
     }
