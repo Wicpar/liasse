@@ -1518,6 +1518,26 @@ impl<'a> Interp<'a> {
         self.delete_rows(initial)
     }
 
+    /// Every row address the removal of `root` scrubs (§21.2 step 2 / §5.5): the row
+    /// itself plus its whole nested descendant subtree, exactly the set
+    /// [`remove_subtree`](Self::remove_subtree) takes out of live state. An erasure
+    /// captures this set — not just `root` — so the reintegration bundle's coverage
+    /// equals the removal's scope and a nested row is relocated into the extract
+    /// rather than destroyed (§21.2 "relocation, not destruction"). Enumerated from
+    /// the pre-removal working state, so the caller must capture before applying.
+    fn subtree_addresses(&self, root: &RowAddress) -> Vec<RowAddress> {
+        let depth = root.depth();
+        let mut addresses = vec![root.clone()];
+        addresses.extend(
+            self.prospective
+                .working()
+                .keys()
+                .filter(|other| other.depth() > depth && is_prefix(root, other))
+                .cloned(),
+        );
+        addresses
+    }
+
     /// Remove the row at `address` and every descendant row beneath it (§5.4), a
     /// direct nested-collection deletion.
     fn remove_subtree(&mut self, address: &RowAddress) {
@@ -1620,21 +1640,30 @@ impl<'a> Interp<'a> {
         // from the pre-erase state.
         let initial: Vec<RowRef> = keys.into_iter().map(|key| RowRef::new(name.clone(), key)).collect();
         let planned = cascade::plan(self.compiled, self.ctx, self.prospective, &initial)?;
-        // §21.2 step 2: capture the retained payload of EVERY row in the delete-closure
-        // (not just the direct targets) into the reintegration bundle, under a stable
-        // occurrence identity. Erasure differs from deletion only in history: a
-        // cascade-deleted row is scrubbed on the same footing as the direct target,
-        // so its payload MUST be exported too, before the removal is applied. A
-        // surviving-but-patched row is NOT in the closure and keeps its history.
+        // §21.2 step 2: capture the retained payload of EVERY row the removal scrubs
+        // into the reintegration bundle, under a stable occurrence identity, before
+        // the removal is applied. This is every row in the delete-closure (not just
+        // the direct targets — a cascade-deleted row is scrubbed on the same footing)
+        // AND, for each such row, its whole nested descendant subtree: a nested keyed
+        // collection is real row state living under its parent's identity (§5.5/§5.4),
+        // so the parent's removal takes the subtree out of live state (`remove_subtree`)
+        // and its bytes ARE scrubbed. The bundle's coverage MUST equal the removal's
+        // scope, or a scrubbed nested row would be destroyed rather than relocated,
+        // breaking §21.2's fail-closed guarantee that nothing scrubbed is left
+        // unrecoverable. A surviving-but-patched row is NOT in the closure and keeps
+        // its history. Each removed row — top-level or nested — is its own occurrence
+        // under its full row-address identity.
         let mut history = Erasure::new();
         let mut occurrences = Vec::new();
         for row_ref in planned.plan.deletes() {
             let Some(address) = planned.addresses.get(row_ref) else { continue };
-            let Some(fields) = self.prospective.get(address) else { continue };
-            let payload = materialize::struct_of(fields);
-            let occurrence = Occurrence::new(occurrence_id(row_ref, &payload));
-            history.record(occurrence.clone(), payload);
-            occurrences.push(occurrence);
+            for captured in self.subtree_addresses(address) {
+                let Some(fields) = self.prospective.get(&captured) else { continue };
+                let payload = materialize::struct_of(fields);
+                let occurrence = Occurrence::new(occurrence_id(&captured, &payload));
+                history.record(occurrence.clone(), payload);
+                occurrences.push(occurrence);
+            }
         }
         // §21.2 step 1 (apply): the planned §21.1 live removal, atomically.
         self.apply_deletion(&planned)?;
@@ -2023,18 +2052,15 @@ fn is_erase(callee: &Expr) -> bool {
     matches!(&callee.kind, ExprKind::Name(id) if id.text == "erase")
 }
 
-/// A stable occurrence identity for one scrubbed closure row (§21.2 step 2): its
-/// collection and key identity, plus its payload's canonical wire form. Keying on
-/// the row identity — not the payload alone — keeps two distinct closure rows that
-/// happen to project equal payloads separate occurrences, so the reintegration
-/// bundle covers the whole delete-closure without collision.
-fn occurrence_id(row: &RowRef, payload: &Value) -> String {
-    format!(
-        "{}\u{1f}{}\u{1f}{}",
-        row.collection,
-        row.key.to_canonical_json_string(),
-        payload.to_canonical_json_string()
-    )
+/// A stable occurrence identity for one scrubbed row (§21.2 step 2 / §D.7): its
+/// full row-address identity (the ordered ancestor-collection/key steps down to the
+/// row's own collection/key), plus its payload's canonical wire form. Keying on the
+/// ADDRESS — not the payload alone, and covering nested depth — keeps every scrubbed
+/// row a distinct occurrence: two closure rows that project equal payloads, and a
+/// nested descendant sharing a key with a sibling under another parent, never
+/// collide, so the reintegration bundle covers the whole removed subtree.
+fn occurrence_id(address: &RowAddress, payload: &Value) -> String {
+    format!("{}\u{1f}{}", address.render(), payload.to_canonical_json_string())
 }
 
 /// The response value an `erase(row)` returns (§21.2 step 6): the extract's
