@@ -12,8 +12,8 @@ use std::collections::BTreeSet;
 
 use liasse_diag::{Diagnostic, Diagnostics, SourceId, SourceMap, Span};
 use liasse_expr::{
-    audit_host_position, check_statement, DbReadPosition, ExprType, HostPosition, RowType, Scope,
-    SortOrder, TypedExpr, ViewOrders,
+    audit_host_position, check_statement, DbReadPosition, DivisionRounding, ExprType, HostPosition,
+    RowType, Scope, SortOrder, TypedExpr, ViewOrders,
 };
 use liasse_host::KeyOperation;
 use liasse_model::{Collection, Model, Node, Shape};
@@ -396,6 +396,13 @@ pub(crate) struct Compiled {
     /// `.modules::iface` read (§13.9) and check `$expose` satisfaction at install
     /// (§13.8). Empty when the package declares no module space.
     pub(crate) module_spaces: Vec<CompiledModuleSpace>,
+    /// The package's declared decimal-division rounding mode (§4.4, Annex A.6),
+    /// resolved from `$semantics.decimal_division.rounding` at load. Carried into
+    /// every [`RuntimeEnv`](crate::env::RuntimeEnv) an admission or view read
+    /// builds, so decimal `/` and `avg` round their quotient under the declared
+    /// mode. Defaults to A.6's `half_away_from_zero` when the package declares
+    /// none.
+    pub(crate) division_rounding: DivisionRounding,
 }
 
 impl Compiled {
@@ -405,6 +412,7 @@ impl Compiled {
         model: &Model,
         model_doc: &liasse_syntax::DocValue,
         precision: liasse_value::Precision,
+        division_rounding: DivisionRounding,
         hosts: &HostSignatures,
     ) -> Result<Self, EngineError> {
         let schema = Schema::new(model);
@@ -465,6 +473,7 @@ impl Compiled {
             actor_collection: auth.actor.map(|(path, _)| path),
             session_collection: auth.session.map(|(path, _)| path),
             module_spaces,
+            division_rounding,
         })
     }
 

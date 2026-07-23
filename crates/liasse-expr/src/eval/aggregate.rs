@@ -9,6 +9,7 @@ use liasse_value::{Decimal, Integer, Type, Value};
 use crate::env::Cell;
 use crate::error::EvalError;
 use crate::eval::Evaluator;
+use crate::semantics::DivisionRounding;
 use crate::ty::ExprType;
 use crate::typed::{AggFunc, TypedExpr};
 
@@ -33,16 +34,28 @@ impl Evaluator<'_> {
                 Some(_) => return Err(EvalError::ShapeMismatch { expected: "a scalar field" }),
             }
         }
-        Ok(Cell::Scalar(combine(func, values, expr.ty())?))
+        // §7.5/A.6: `avg` divides under the package's declared division rounding
+        // mode, which the environment resolves.
+        Ok(Cell::Scalar(combine(
+            func,
+            values,
+            expr.ty(),
+            self.env.decimal_division(),
+        )?))
     }
 }
 
 /// Combine collected field values under an aggregate (§7.5).
-fn combine(func: AggFunc, values: Vec<Value>, result_ty: &ExprType) -> Result<Value, EvalError> {
+fn combine(
+    func: AggFunc,
+    values: Vec<Value>,
+    result_ty: &ExprType,
+    rounding: DivisionRounding,
+) -> Result<Value, EvalError> {
     match func {
         AggFunc::Count => Ok(Value::Int(Integer::from(values.len() as i64))),
         AggFunc::Sum => Ok(sum(values, result_ty)),
-        AggFunc::Avg => average(values),
+        AggFunc::Avg => average(values, rounding),
         AggFunc::Min => Ok(values.into_iter().min_by(|a, b| a.cmp(b)).unwrap_or(Value::None)),
         AggFunc::Max => Ok(values.into_iter().max_by(|a, b| a.cmp(b)).unwrap_or(Value::None)),
         AggFunc::Distinct => Ok(Value::Set(values.into_iter().collect())),
@@ -79,7 +92,7 @@ fn sum(values: Vec<Value>, result_ty: &ExprType) -> Value {
 /// §7.5: `avg` converts every input exactly to decimal and divides under the
 /// package decimal semantics; the quotient renders in minimal-scale canonical
 /// form (A.1/SPEC-ISSUES item 1); empty input yields `none`.
-fn average(values: Vec<Value>) -> Result<Value, EvalError> {
+fn average(values: Vec<Value>, rounding: DivisionRounding) -> Result<Value, EvalError> {
     if values.is_empty() {
         return Ok(Value::None);
     }
@@ -89,7 +102,7 @@ fn average(values: Vec<Value>) -> Result<Value, EvalError> {
         .map(to_decimal)
         .fold(BigDecimal::from(0), |acc, next| acc + next);
     let divisor = BigDecimal::from(BigInt::from(count as i64));
-    let mean = crate::eval::decimal::divide(&total, &divisor)?;
+    let mean = crate::eval::decimal::divide(&total, &divisor, rounding)?;
     Ok(Value::Decimal(Decimal::from_big_decimal(mean)))
 }
 

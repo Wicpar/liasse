@@ -1,0 +1,49 @@
+{
+  // Boundary probe on §4.4 / Annex A.6. A package selecting `away_from_zero`
+  // division rounding must round the last kept digit UP whenever any nonzero
+  // tail is dropped — even a tail far below one half. The A.6 default
+  // (half_away_from_zero) rounds a sub-half tail DOWN, so the two diverge here.
+  format: 1
+  name: division-rounding-away-from-zero-applied
+  suite: scenario
+  spec: ["#package-structure", "§4.4", "§A.6"]
+  tags: ["decimal", "boundary", "semantics"]
+  note: '''
+    §4.4/A.6: `away_from_zero` always rounds a nonzero dropped tail away from
+    zero, regardless of whether the tail is above or below one half. 1 / 3 =
+    0.3333333333333333… ; the seventeenth fractional digit is 3 (a tail below one
+    half). Under the A.6 default that tail rounds DOWN, leaving
+    0.3333333333333333, but `away_from_zero` rounds it UP to
+    "0.3333333333333334". The differing last digit proves the declared mode is
+    applied, not the default.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.divaway0@1.0.0"
+    $semantics: { decimal_division: { rounding: "away_from_zero" } }
+    $model: {
+      a: "decimal"
+      b: "decimal"
+      $mut: {
+        read: "return .a / .b"
+      }
+      $public: {
+        math: {
+          $mut: { read: ".read" }
+        }
+      }
+    }
+    $data: {
+      a: "1"
+      b: "3"
+    }
+  }
+
+  steps: [
+    // 1 / 3 = 0.3333333333333333…; away_from_zero rounds the nonzero tail up ->
+    // 0.3333333333333334.
+    { call: "public.math.read", args: {},
+      expect: { outcome: ok, value: "0.3333333333333334" } }
+  ]
+}

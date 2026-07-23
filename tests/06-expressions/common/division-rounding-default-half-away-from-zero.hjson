@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: division-rounding-default-half-away-from-zero
+  suite: scenario
+  spec: ["#expressions", "§A.6", "§A.1"]
+  tags: ["decimal", "boundary"]
+  note: '''
+    §A.6 default: a package that declares no `$semantics.decimal_division`
+    rounding resolves a halfway (and here, above-halfway) division tail AWAY FROM
+    ZERO, matching PostgreSQL `numeric`. 2 / 3 = 0.6666666666666666… ; the
+    seventeenth fractional digit is 6 (above one half), so the sixteen-place
+    quotient rounds up to "0.6666666666666667" (minimal-scale, A.1). This pins
+    that threading a selectable rounding mode does NOT disturb the default when a
+    package selects none — the counterpart to the non-default red cases.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.divdefault@1.0.0"
+    $model: {
+      a: "decimal"
+      b: "decimal"
+      $mut: {
+        read: "return .a / .b"
+      }
+      $public: {
+        math: {
+          $mut: { read: ".read" }
+        }
+      }
+    }
+    $data: {
+      a: "2"
+      b: "3"
+    }
+  }
+
+  steps: [
+    // No declared rounding: 2 / 3 rounds half-away-from-zero (default) ->
+    // 0.6666666666666667.
+    { call: "public.math.read", args: {},
+      expect: { outcome: ok, value: "0.6666666666666667" } }
+  ]
+}

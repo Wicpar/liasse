@@ -1,0 +1,47 @@
+{
+  // Boundary probe on §4.4 / Annex A.6. A package selecting `toward_zero`
+  // division rounding must TRUNCATE the non-terminating quotient at its A.6
+  // scale, never round the dropped tail up. If the declared mode is ignored, the
+  // engine rounds half-away-from-zero and inflates the last digit.
+  format: 1
+  name: division-rounding-toward-zero-applied
+  suite: scenario
+  spec: ["#package-structure", "§4.4", "§A.6"]
+  tags: ["decimal", "boundary", "semantics"]
+  note: '''
+    §4.4/A.6: with `toward_zero` selected, a division truncates the quotient at
+    its sixteen-significant-fractional-digit scale. 2 / 3 = 0.6666666666666666…
+    (a magnitude in [1/10, 1), rounded at sixteen fractional places). The dropped
+    tail is 0.0000000000000000666…; truncating toward zero keeps the sixteen
+    sixes unchanged -> "0.6666666666666666". The A.6 default would round up to
+    0.6666666666666667, so the declared mode changes the observable value.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.divtoward0@1.0.0"
+    $semantics: { decimal_division: { rounding: "toward_zero" } }
+    $model: {
+      a: "decimal"
+      b: "decimal"
+      $mut: {
+        read: "return .a / .b"
+      }
+      $public: {
+        math: {
+          $mut: { read: ".read" }
+        }
+      }
+    }
+    $data: {
+      a: "2"
+      b: "3"
+    }
+  }
+
+  steps: [
+    // 2 / 3 truncated at sixteen fractional places -> 0.6666666666666666.
+    { call: "public.math.read", args: {},
+      expect: { outcome: ok, value: "0.6666666666666666" } }
+  ]
+}

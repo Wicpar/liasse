@@ -1,0 +1,53 @@
+{
+  // Boundary probe on §4.4 / Annex A.6. A package selecting the `half_even`
+  // division rounding mode must round an EXACT halfway quotient to the nearest
+  // even last digit, NOT away from zero (the A.6 default). If the declared
+  // `$semantics.decimal_division.rounding` is ignored at evaluation, the engine
+  // rounds half-away-from-zero and the result diverges — this case pins that the
+  // declared mode is threaded into the division op.
+  format: 1
+  name: division-rounding-half-even-applied
+  suite: scenario
+  spec: ["#package-structure", "§4.4", "§A.6"]
+  tags: ["decimal", "boundary", "semantics"]
+  note: '''
+    §4.4 lets a package select a decimal-division rounding mode; A.6 enumerates
+    `half_even` and pins that a division rounds its quotient at an internal scale
+    of at least sixteen significant fractional digits. 0.2000000000000001 / 2 =
+    0.10000000000000005 exactly — a value whose seventeenth fractional digit is 5
+    with nothing after, i.e. an EXACT halfway at the sixteen-place rounding
+    boundary. The sixteenth fractional digit is 0 (even), so `half_even` resolves
+    the tie DOWN, keeping 0.1000000000000000, which renders minimal-scale (A.1)
+    as "0.1". The A.6 default (half_away_from_zero) would instead round up to
+    0.1000000000000001, so the declared mode is externally observable.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.divhalfeven@1.0.0"
+    $semantics: { decimal_division: { rounding: "half_even" } }
+    $model: {
+      a: "decimal"
+      b: "decimal"
+      $mut: {
+        read: "return .a / .b"
+      }
+      $public: {
+        math: {
+          $mut: { read: ".read" }
+        }
+      }
+    }
+    $data: {
+      a: "0.2000000000000001"
+      b: "2"
+    }
+  }
+
+  steps: [
+    // 0.2000000000000001 / 2 = 0.10000000000000005; half_even rounds the exact
+    // half at the sixteenth place to the even digit (down) -> 0.1 (minimal-scale).
+    { call: "public.math.read", args: {},
+      expect: { outcome: ok, value: "0.1" } }
+  ]
+}

@@ -11,7 +11,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::SourceMap;
-use liasse_expr::{check_expression, Cell, SortOrder};
+use liasse_expr::{check_expression, Cell, DivisionRounding, SortOrder};
 use liasse_ident::NameSegment;
 use liasse_model::Model;
 use liasse_store::{
@@ -89,7 +89,17 @@ pub(crate) fn compile_definition(
         .and_then(doc::string)
         .and_then(liasse_value::Precision::parse)
         .unwrap_or(liasse_value::Precision::DEFAULT);
-    let mut compiled = Compiled::build(&mut sources, &model, &model_doc, precision, hosts)?;
+    // §4.4/A.6: the package's declared decimal-division rounding mode governs how
+    // `/` and `avg` round a quotient at its A.6 scale; default half-away-from-zero
+    // when unset. The model layer has already validated the spelling.
+    let division_rounding = doc::member(document.root(), "$semantics")
+        .and_then(|semantics| doc::member(semantics, "decimal_division"))
+        .and_then(|division| doc::member(division, "rounding"))
+        .and_then(doc::string)
+        .and_then(DivisionRounding::parse)
+        .unwrap_or_default();
+    let mut compiled =
+        Compiled::build(&mut sources, &model, &model_doc, precision, division_rounding, hosts)?;
     // §17.1 / §9.2 step 5: infer or enforce each keyring's `$usage` against the
     // protected operations its call sites perform, rejecting a declared `$usage`
     // that excludes a required operation (`$usage: []` on a signed ring).

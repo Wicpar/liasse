@@ -1,0 +1,51 @@
+{
+  // §7.5 states `avg` "performs decimal division under the package semantics."
+  // This probes that the SELECTED division rounding mode reaches the aggregate
+  // path, not only the binary `/` operator: an `avg` whose exact mean is a
+  // non-terminating quotient must round under the declared mode.
+  format: 1
+  name: avg-honors-package-division-rounding
+  suite: scenario
+  spec: ["#views", "§7.5", "§A.6"]
+  tags: ["decimal", "boundary", "semantics"]
+  note: '''
+    §7.5: `avg` converts inputs to decimal and divides under the package
+    semantics; §4.4/A.6 let the package select the division rounding mode. With
+    `toward_zero` selected, avg over int amounts { 1, 2, 2 } is 5 / 3 =
+    1.6666666666666666… ; truncating at the sixteen-fractional-digit A.6 scale
+    keeps the sixteen sixes -> "1.6666666666666666". The A.6 default would round
+    up to 1.6666666666666667, so the aggregate result shows the declared mode is
+    threaded into `avg`, not just `/`.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.avground@1.0.0"
+    $semantics: { decimal_division: { rounding: "toward_zero" } }
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        amount: "int"
+      }
+      av: "= avg(.items.amount)"
+      $public: {
+        stat: { $view: ". { av }" }
+      }
+    }
+    $data: {
+      items: {
+        a: { amount: "1" }
+        b: { amount: "2" }
+        c: { amount: "2" }
+      }
+    }
+  }
+
+  steps: [
+    // avg({1,2,2}) = 5/3 = 1.6666666666666666… ; toward_zero truncates ->
+    // 1.6666666666666666.
+    { watch: "public.stat", id: "w1",
+      expect_init: { value: { av: "1.6666666666666666" } } }
+  ]
+}

@@ -3,29 +3,36 @@
 //! digits, following PostgreSQL `numeric`. "Significant" counts from the
 //! quotient's first nonzero fractional digit, so a quotient with leading
 //! fractional zeros (e.g. `1/700000 = 0.00000142857…`) gets extra precision
-//! rather than losing it. The value is rounded half-away-from-zero and then
-//! normalized to its minimal-scale canonical spelling (A.1/SPEC-ISSUES item 1),
-//! which subsumes any operand-display-scale floor — a terminating quotient such
-//! as `10 / 4` is `2.5`, never zero-padded.
+//! rather than losing it. The value is rounded at that scale under the package's
+//! declared rounding mode ([`DivisionRounding`], §4.4/A.6 — `half_away_from_zero`
+//! by default) and then normalized to its minimal-scale canonical spelling
+//! (A.1/SPEC-ISSUES item 1), which subsumes any operand-display-scale floor — a
+//! terminating quotient such as `10 / 4` is `2.5`, never zero-padded.
 
-use liasse_value::bigdecimal::{BigDecimal, RoundingMode, Zero};
+use liasse_value::bigdecimal::{BigDecimal, Zero};
 use liasse_value::Decimal;
 
 use crate::error::EvalError;
+use crate::semantics::DivisionRounding;
 
 /// The count of significant fractional digits A.6 requires of a quotient.
 const SIGNIFICANT_FRACTIONAL_DIGITS: i64 = 16;
 
-/// Divide `a` by `b` under the package decimal semantics (A.6). Callers reject
-/// division by zero before calling; a zero `b` here is a caller bug and yields
+/// Divide `a` by `b` under the package decimal semantics (A.6), rounding the
+/// quotient at its A.6 scale under `rounding` (§4.4). Callers reject division by
+/// zero before calling; a zero `b` here is a caller bug and yields
 /// [`EvalError::DivisionByZero`] rather than panicking.
-pub(crate) fn divide(a: &BigDecimal, b: &BigDecimal) -> Result<BigDecimal, EvalError> {
+pub(crate) fn divide(
+    a: &BigDecimal,
+    b: &BigDecimal,
+    rounding: DivisionRounding,
+) -> Result<BigDecimal, EvalError> {
     if b.is_zero() {
         return Err(EvalError::DivisionByZero);
     }
     let raw = a / b;
     let scale = division_scale(&raw);
-    Ok(raw.with_scale_round(scale, RoundingMode::HalfUp).normalized())
+    Ok(raw.with_scale_round(scale, rounding.mode()).normalized())
 }
 
 /// The A.6 internal rounding precision for a quotient: enough fractional places

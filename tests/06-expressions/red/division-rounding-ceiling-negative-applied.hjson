@@ -1,0 +1,47 @@
+{
+  // Boundary probe on §4.4 / Annex A.6, exercising the SIGN-sensitive `ceiling`
+  // mode on a NEGATIVE quotient. `ceiling` rounds toward +∞, so a negative
+  // quotient's magnitude SHRINKS; the A.6 default and `away_from_zero` grow it.
+  // A negative dividend separates `ceiling` from `away_from_zero`.
+  format: 1
+  name: division-rounding-ceiling-negative-applied
+  suite: scenario
+  spec: ["#package-structure", "§4.4", "§A.6"]
+  tags: ["decimal", "boundary", "semantics", "sign"]
+  note: '''
+    §4.4/A.6: `ceiling` rounds toward +∞. -2 / 3 = -0.6666666666666666… ; the
+    seventeenth fractional digit is 6 (a tail above one half). Rounding toward
+    +∞ moves the value to the less-negative neighbor, TRUNCATING the magnitude to
+    "-0.6666666666666666". The A.6 default (half_away_from_zero) would instead
+    round to -0.6666666666666667, so the declared `ceiling` mode is observable.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.divceiling@1.0.0"
+    $semantics: { decimal_division: { rounding: "ceiling" } }
+    $model: {
+      a: "decimal"
+      b: "decimal"
+      $mut: {
+        read: "return .a / .b"
+      }
+      $public: {
+        math: {
+          $mut: { read: ".read" }
+        }
+      }
+    }
+    $data: {
+      a: "-2"
+      b: "3"
+    }
+  }
+
+  steps: [
+    // -2 / 3 = -0.6666666666666666…; ceiling rounds toward +∞ ->
+    // -0.6666666666666666.
+    { call: "public.math.read", args: {},
+      expect: { outcome: ok, value: "-0.6666666666666666" } }
+  ]
+}

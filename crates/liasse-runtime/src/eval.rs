@@ -101,6 +101,10 @@ impl<'a> EvalCtx<'a> {
             self.placements.clone(),
             self.hosts,
         )
+        // §4.4/A.6: package expression evaluation (mutations, checks, computed
+        // values, views, projections, defaults, meter accessors) rounds decimal
+        // `/` and `avg` under the compiled package's declared division mode.
+        .with_division_rounding(self.compiled.division_rounding)
     }
 
     /// The evaluation environment for one admitted row's default resolution
@@ -124,6 +128,10 @@ impl<'a> EvalCtx<'a> {
             self.placements.clone(),
             self.hosts,
         )
+        // §4.4/A.6: package expression evaluation (mutations, checks, computed
+        // values, views, projections, defaults, meter accessors) rounds decimal
+        // `/` and `avg` under the compiled package's declared division mode.
+        .with_division_rounding(self.compiled.division_rounding)
     }
 
     /// The evaluation environment that folds each computed value, nested view, or
@@ -153,6 +161,10 @@ impl<'a> EvalCtx<'a> {
             self.placements.clone(),
             self.hosts,
         )
+        // §4.4/A.6: package expression evaluation (mutations, checks, computed
+        // values, views, projections, defaults, meter accessors) rounds decimal
+        // `/` and `avg` under the compiled package's declared division mode.
+        .with_division_rounding(self.compiled.division_rounding)
     }
 
     /// Merge the request-scoped context bindings (`$actor`/`$session`, §11.1) with
@@ -594,6 +606,10 @@ impl<'a> EvalCtx<'a> {
             self.placements.clone(),
             self.hosts,
         )
+        // §4.4/A.6: package expression evaluation (mutations, checks, computed
+        // values, views, projections, defaults, meter accessors) rounds decimal
+        // `/` and `avg` under the compiled package's declared division mode.
+        .with_division_rounding(self.compiled.division_rounding)
     }
 
     /// The full extant rows of every STORED bucketed collection (§14.2) at `now`.

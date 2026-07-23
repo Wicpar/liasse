@@ -1,0 +1,48 @@
+{
+  // Boundary probe on §4.4 / Annex A.6, exercising the SIGN-sensitive `floor`
+  // mode on a NEGATIVE quotient. `floor` rounds toward −∞, so a negative
+  // quotient's magnitude grows; `toward_zero` and the A.6 default both keep the
+  // smaller magnitude here. Distinguishing them requires a negative dividend.
+  format: 1
+  name: division-rounding-floor-negative-applied
+  suite: scenario
+  spec: ["#package-structure", "§4.4", "§A.6"]
+  tags: ["decimal", "boundary", "semantics", "sign"]
+  note: '''
+    §4.4/A.6: `floor` rounds toward −∞. -1 / 3 = -0.3333333333333333… ; the
+    dropped tail is below one half. Rounding toward −∞ pushes the value to the
+    more-negative neighbor, so the sixteenth fractional digit increments in
+    magnitude -> "-0.3333333333333334". The A.6 default (half_away_from_zero) and
+    `toward_zero` both keep -0.3333333333333333, so this negative case isolates
+    `floor` specifically.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.divfloor@1.0.0"
+    $semantics: { decimal_division: { rounding: "floor" } }
+    $model: {
+      a: "decimal"
+      b: "decimal"
+      $mut: {
+        read: "return .a / .b"
+      }
+      $public: {
+        math: {
+          $mut: { read: ".read" }
+        }
+      }
+    }
+    $data: {
+      a: "-1"
+      b: "3"
+    }
+  }
+
+  steps: [
+    // -1 / 3 = -0.3333333333333333…; floor rounds toward −∞ ->
+    // -0.3333333333333334.
+    { call: "public.math.read", args: {},
+      expect: { outcome: ok, value: "-0.3333333333333334" } }
+  ]
+}

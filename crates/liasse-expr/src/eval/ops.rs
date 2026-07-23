@@ -12,6 +12,7 @@ use liasse_value::{Decimal, Integer, RefKey, Text, Value};
 use crate::env::Cell;
 use crate::error::EvalError;
 use crate::eval::Evaluator;
+use crate::semantics::DivisionRounding;
 use crate::typed::{ArithOp, CmpOp, LogicOp, NumClass, TypedExpr};
 
 impl Evaluator<'_> {
@@ -34,7 +35,9 @@ impl Evaluator<'_> {
         let value = match class {
             NumClass::TextConcat => Value::Text(concat(&left, &right)?),
             NumClass::Int => int_arith(op, &left, &right)?,
-            NumClass::Decimal => decimal_arith(op, &left, &right)?,
+            // §4.4/A.6: decimal `/` rounds its quotient under the package's
+            // declared division rounding mode, which the environment resolves.
+            NumClass::Decimal => decimal_arith(op, &left, &right, self.env.decimal_division())?,
         };
         Ok(Cell::Scalar(value))
     }
@@ -198,7 +201,12 @@ fn int_arith(op: ArithOp, left: &Value, right: &Value) -> Result<Value, EvalErro
     Ok(Value::Int(Integer::from(result)))
 }
 
-fn decimal_arith(op: ArithOp, left: &Value, right: &Value) -> Result<Value, EvalError> {
+fn decimal_arith(
+    op: ArithOp,
+    left: &Value,
+    right: &Value,
+    rounding: DivisionRounding,
+) -> Result<Value, EvalError> {
     let a = to_big_decimal(left)?;
     let b = to_big_decimal(right)?;
     let result = match op {
@@ -209,7 +217,7 @@ fn decimal_arith(op: ArithOp, left: &Value, right: &Value) -> Result<Value, Eval
             if b.is_zero() {
                 return Err(EvalError::DivisionByZero);
             }
-            crate::eval::decimal::divide(&a, &b)?
+            crate::eval::decimal::divide(&a, &b, rounding)?
         }
         // SPEC-ISSUES item 3: remainder carries the dividend's sign (truncated
         // toward zero), consistent with the integer choice and A.6 division —

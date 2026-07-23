@@ -11,8 +11,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_expr::{
-    BlobPlacement, CallSite, Cell, Environment, EvalError, KeyringSelector, Row, RowId,
-    TemporalQuery,
+    BlobPlacement, CallSite, Cell, DivisionRounding, Environment, EvalError, KeyringSelector, Row,
+    RowId, TemporalQuery,
 };
 use liasse_value::{BlobDescriptor, Timestamp, Uuid, Value};
 
@@ -120,6 +120,11 @@ pub(crate) struct RuntimeEnv<'a> {
     /// faults as a contract breach; only a mutation admission, a genesis seed, and
     /// a view read carry a live dispatch.
     hosts: HostDispatch<'a>,
+    /// The package's declared decimal-division rounding mode (§4.4, Annex A.6),
+    /// answered to the evaluator by [`Environment::decimal_division`] so `/` and
+    /// `avg` round their quotient under it. Defaults to A.6's `half_away_from_zero`
+    /// until [`Self::with_division_rounding`] sets the compiled package's mode.
+    rounding: DivisionRounding,
 }
 
 impl<'a> RuntimeEnv<'a> {
@@ -156,7 +161,19 @@ impl<'a> RuntimeEnv<'a> {
             keyrings,
             placements,
             hosts,
+            rounding: DivisionRounding::default(),
         }
+    }
+
+    /// Set the package's declared decimal-division rounding mode (§4.4, A.6) on
+    /// this environment, so `/` and `avg` round under it. The admission/view
+    /// evaluation contexts apply the compiled package's mode; a bucket-bound or
+    /// derived-key environment (a pure `timestamp`/identity expression, never a
+    /// package `/`/`avg`) keeps the [`DivisionRounding::default`] the constructor
+    /// set.
+    pub(crate) fn with_division_rounding(mut self, rounding: DivisionRounding) -> Self {
+        self.rounding = rounding;
+        self
     }
 
     /// The generation horizon a temporal selector drives (§14.5): the EXCLUSIVE upper
@@ -281,6 +298,12 @@ impl Environment for RuntimeEnv<'_> {
         // seed and this environment's single generation, so the source is what
         // keeps their otherwise-identical local spans apart.
         derive_uuid(self.seed, site.source(), site.span(), self.generation)
+    }
+
+    fn decimal_division(&self) -> DivisionRounding {
+        // §4.4/A.6: the package's declared division rounding mode, resolved at
+        // load and threaded through the compiled model.
+        self.rounding
     }
 
     /// Resolve a temporal selector over a bucketed base view (§14.1). Each row's

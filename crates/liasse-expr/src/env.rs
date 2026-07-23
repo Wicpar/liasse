@@ -26,6 +26,7 @@ use liasse_diag::{ByteSpan, SourceId, Span};
 use liasse_value::{BlobDescriptor, Text, Timestamp, Uuid, Value};
 
 use crate::error::EvalError;
+use crate::semantics::DivisionRounding;
 
 /// One segment of a [`RowId`]: an identity component along the source-row chain
 /// (§7.2, Annex D.1).
@@ -418,6 +419,16 @@ pub trait Environment: Send + Sync {
     /// A generated UUID for the `uuid()` call at `site` (§8.12, SPEC-ISSUES
     /// item 4). The environment decides whether call sites share a value.
     fn uuid(&self, site: CallSite) -> Uuid;
+
+    /// The package's declared decimal-division rounding policy (§4.4, Annex A.6).
+    /// Decimal `/` and `avg` round their quotient at its A.6 significant-digit
+    /// scale under this mode. The default is A.6's `half_away_from_zero`; a
+    /// package overrides it through `$semantics.decimal_division.rounding`, which
+    /// the runtime environment resolves and answers here, so the observable
+    /// division result honors the declared mode rather than a fixed default.
+    fn decimal_division(&self) -> DivisionRounding {
+        DivisionRounding::default()
+    }
 
     /// Resolve a temporal selector (§14.1) over a bucketed base view. `base` is
     /// the evaluated base collection's rows; `base_name` names the collection the
