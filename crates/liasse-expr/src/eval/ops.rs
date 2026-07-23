@@ -7,7 +7,7 @@ use std::cmp::Ordering;
 
 use liasse_value::bigdecimal::{BigDecimal, Zero};
 use liasse_value::num_bigint::BigInt;
-use liasse_value::{Decimal, Integer, RefKey, Text, Value};
+use liasse_value::{Decimal, Integer, RefKey, Text, Timestamp, Value};
 
 use crate::env::Cell;
 use crate::error::EvalError;
@@ -38,6 +38,7 @@ impl Evaluator<'_> {
             // §4.4/A.6: decimal `/` rounds its quotient under the package's
             // declared division rounding mode, which the environment resolves.
             NumClass::Decimal => decimal_arith(op, &left, &right, self.env.decimal_division())?,
+            NumClass::TimeShift => time_shift(op, &left, &right)?,
         };
         Ok(Cell::Scalar(value))
     }
@@ -122,8 +123,7 @@ impl Evaluator<'_> {
             // `select_by_keys` does — so `task.owner in .people` is the §6.3 identity
             // comparison rather than a never-equal `ref`-vs-key mismatch.
             Cell::Collection(rows) => {
-                let key = super::ref_key_value(&value);
-                rows.iter().any(|row| row.key() == key.as_ref())
+                rows.iter().any(|row| super::key_matches(row.key(), &value))
             }
             _ => return Err(EvalError::ShapeMismatch { expected: "a set or view" }),
         };
@@ -171,6 +171,22 @@ fn concat(left: &Value, right: &Value) -> Result<Text, EvalError> {
         }
         _ => Err(EvalError::ShapeMismatch { expected: "two text operands" }),
     }
+}
+
+/// §11.5/A.5: shift a timestamp by a duration, preserving the timestamp's declared
+/// precision. The duration's nanoseconds convert to the timestamp's tick unit
+/// (`nanos / (1e9 / ticks_per_second)`); `+` shifts forward, `-` back, and
+/// `duration + timestamp` is the commuted forward shift.
+fn time_shift(op: ArithOp, left: &Value, right: &Value) -> Result<Value, EvalError> {
+    let (timestamp, duration, sign) = match (left, right, op) {
+        (Value::Timestamp(ts), Value::Duration(d), ArithOp::Add) => (*ts, *d, 1i128),
+        (Value::Timestamp(ts), Value::Duration(d), ArithOp::Sub) => (*ts, *d, -1i128),
+        (Value::Duration(d), Value::Timestamp(ts), ArithOp::Add) => (*ts, *d, 1i128),
+        _ => return Err(EvalError::ShapeMismatch { expected: "timestamp and duration operands" }),
+    };
+    let nanos_per_tick = 1_000_000_000i128 / timestamp.precision().ticks_per_second();
+    let ticks = duration.as_nanos() / nanos_per_tick;
+    Ok(Value::Timestamp(Timestamp::new(timestamp.count() + sign * ticks, timestamp.precision())))
 }
 
 fn int_arith(op: ArithOp, left: &Value, right: &Value) -> Result<Value, EvalError> {

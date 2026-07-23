@@ -83,6 +83,7 @@ struct HostVerifier {
     auth: String,
     tokens: BTreeMap<String, HostProof>,
     split: bool,
+    session_ty: Type,
     account_ty: Type,
 }
 
@@ -95,6 +96,18 @@ impl Verifier for HostVerifier {
             let auth = proof.auth.clone().unwrap_or_else(|| self.auth.clone());
             return Ok(Claims::new(auth, proof.session.clone(), proof.account.clone()));
         }
+        // §11.5/§11.3: a token minted at runtime by the mutation-body `token.sign`
+        // (adapter/authsim.rs) is not in the case's static `tokens` table. It is
+        // self-describing — the verifier decodes its claims here, exactly as the
+        // built-in `cose.verify` it stands in for would recover its signed claims —
+        // and binds `$proof.auth`/`$proof.session`/`$proof.account` (§11.3), each
+        // key decoded to its collection's type so it matches by value.
+        if let Some(claims) = crate::adapter::authsim::decode_token(text.as_str()) {
+            let auth = claims.get("auth").and_then(J::as_str).map_or_else(|| self.auth.clone(), ToOwned::to_owned);
+            let session = claims.get("session").map(|wire| decode_key(wire, &self.session_ty));
+            let account = claims.get("account").map(|wire| decode_key(wire, &self.account_ty));
+            return Ok(Claims::new(auth, session, account));
+        }
         if self.split
             && let Some((auth, account)) = text.as_str().split_once(':')
         {
@@ -102,6 +115,29 @@ impl Verifier for HostVerifier {
             return Ok(Claims::new(auth, None, Some(account)));
         }
         Err(VerifyFailure::new("no proof matches the credential"))
+    }
+}
+
+/// A `$verify: "$credential"` authenticator whose `$session` selects the row keyed
+/// by the WHOLE proof (`/sessions[$proof]`, §11.3): the presented credential IS the
+/// session key (the native token a §11.5 login minted). The verified claims carry
+/// it as the session claim, decoded to the session collection's key type, with no
+/// account claim — `$actor` then resolves from the selected session row.
+struct LiteralSessionVerifier {
+    auth: String,
+    session_ty: Type,
+}
+
+impl Verifier for LiteralSessionVerifier {
+    fn verify(&self, credential: &Credential) -> Result<Claims, VerifyFailure> {
+        match credential.value() {
+            Value::Text(text) => Ok(Claims::new(
+                &self.auth,
+                Some(decode_key(&J::String(text.as_str().to_owned()), &self.session_ty)),
+                None,
+            )),
+            _ => Err(VerifyFailure::new("credential is not a text token")),
+        }
     }
 }
 
@@ -131,11 +167,15 @@ impl Verifier for CoseVerifier {
 
 /// Which verifier a planned authenticator uses.
 enum VerifierSpec {
-    /// `$verify: "$credential"` — the proof is the credential.
+    /// `$verify: "$credential"` — the proof is the credential (a stateless
+    /// authenticator resolving `$actor` straight from it).
     Literal,
+    /// `$verify: "$credential"` with a `$session` keyed by the whole proof
+    /// (`/sessions[$proof]`, §11.5): the credential IS the session key.
+    LiteralSession { session_ty: Type },
     /// A host verifier namespace: its declared credential → proof table, whether
-    /// a colon-split behavioral fallback applies, and the account key type.
-    Host { tokens: BTreeMap<String, HostProof>, split: bool, account_ty: Type },
+    /// a colon-split behavioral fallback applies, and the session/account key types.
+    Host { tokens: BTreeMap<String, HostProof>, split: bool, session_ty: Type, account_ty: Type },
     /// `$verify: "cose.verify(/ring, $credential)"` — the credential is a cose
     /// token gated through [`Engine::cose_verify`](liasse_runtime::Engine::cose_verify)
     /// at the adapter's auth layer before it reaches [`CoseVerifier`].
@@ -281,10 +321,11 @@ impl AuthPlan {
         let is_literal = verify == "$credential";
         let cose_ring = cose_verify_ring(verify);
 
-        // `$session` wiring. A `$verify: "$credential"` proof carries no session
-        // claim, so a `$session` with the literal verifier stays unwired.
+        // `$session` wiring. A `$verify: "$credential"` proof carrying a `$session`
+        // keyed by the whole proof (`/sessions[$proof]`, §11.5) is the native-token
+        // authenticator a login mints against — its session claim IS the credential;
+        // it is wired below through `LiteralSession`.
         let session = match definition.get("$session").and_then(J::as_str) {
-            Some(_) if is_literal => return,
             Some(expr) => {
                 let Some(collection) = selection_collection(expr) else { return };
                 let Some(fields) = session_fields(model, collection, actor) else { return };
@@ -293,20 +334,25 @@ impl AuthPlan {
             None => None,
         };
 
+        let session_ty = session
+            .as_ref()
+            .map_or(Type::Text, |(collection, _)| collection_key_type(model, collection));
+
         let verifier = if is_literal {
-            VerifierSpec::Literal
+            match &session {
+                Some(_) => VerifierSpec::LiteralSession { session_ty: session_ty.clone() },
+                None => VerifierSpec::Literal,
+            }
         } else if let Some(ring) = &cose_ring {
             // §17.7: the token is gated through `Engine::cose_verify` at the auth
             // layer; record the ring so that gating targets the right keyring.
             self.cose_rings.push((name.to_owned(), ring.clone()));
             VerifierSpec::Cose
         } else {
-            let session_ty = session
-                .as_ref()
-                .map_or(Type::Text, |(collection, _)| collection_key_type(model, collection));
             VerifierSpec::Host {
                 tokens: host_proofs(hosts, &session_ty, &account_ty),
                 split: hosts_have_behavioral_verifier(hosts),
+                session_ty: session_ty.clone(),
                 account_ty: account_ty.clone(),
             }
         };
@@ -438,10 +484,15 @@ impl AuthPlan {
             .map(|spec| {
                 let verifier: Box<dyn Verifier> = match &spec.verifier {
                     VerifierSpec::Literal => Box::new(LiteralVerifier { auth: spec.name.clone() }),
-                    VerifierSpec::Host { tokens, split, account_ty } => Box::new(HostVerifier {
+                    VerifierSpec::LiteralSession { session_ty } => Box::new(LiteralSessionVerifier {
+                        auth: spec.name.clone(),
+                        session_ty: session_ty.clone(),
+                    }),
+                    VerifierSpec::Host { tokens, split, session_ty, account_ty } => Box::new(HostVerifier {
                         auth: spec.name.clone(),
                         tokens: tokens.clone(),
                         split: *split,
+                        session_ty: session_ty.clone(),
                         account_ty: account_ty.clone(),
                     }),
                     VerifierSpec::Cose => Box::new(CoseVerifier),

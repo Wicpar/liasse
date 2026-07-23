@@ -297,15 +297,13 @@ pub const SKIP: &[(&str, &str)] = &[
     // the descriptor runs live before the swap).
     ("16-host-namespaces/pinned-descriptor-drift-fails-reopen", "reopen does not re-validate the recorded pinned descriptor against a drifted interface hash on the replaced host context (§9.2 open-time validation seam); the recast package loads and runs util.double live before the swap"),
     ("16-host-namespaces/required-namespace-removed-fails-reopen", "reopen does not re-validate a removed required namespace against the replaced (empty) host context (§9.2 open-time validation seam); the recast package loads and runs util.double live before the swap"),
-    // Phase 7b §16.5 recast: an app verifier can no longer sit in `$verify`; the
-    // case re-models onto a §11.5 login mutation invoking `authns.check` in its
-    // body. Fully DRIVING it needs the testkit to carry a registered verifier's
-    // declared `accepts` table onto the registered-namespace dispatch path used
-    // inside a mutation body (adapter/namespaces.rs `read_function` wires `accepts`
-    // only into the auth-layer `$verify` verifier, not the mutation dispatch), a
-    // testkit enablement outside Phase 7b's scope. The recast package is
-    // spec-correct and loads; the login step is acknowledged debt until that lands.
-    ("16-host-namespaces/verifier-namespace-runs-at-admission", "recast onto the §11.5 auth-mutation pattern; the app verifier `authns.check` invoked in the mutation body needs the testkit to carry the verifier `accepts` table onto the registered-namespace dispatch path (currently wired only into the auth-layer `$verify` verifier) — a testkit enablement outside Phase 7b's scope"),
+    // (§16.5 verifier-namespace-runs-at-admission now PASSES: the testkit carries a
+    // registered verifier's `accepts` table onto the registered-namespace dispatch
+    // path used inside a mutation body (adapter/namespaces.rs seeds the sim
+    // namespace's `accept` table) and wires a `$verify: "$credential"` + whole-proof
+    // `$session` literal-session authenticator (adapter/auth.rs), so `authns.check`
+    // executes in the login mutation and the minted session id authenticates. Entry
+    // pruned as stale.)
     // Phase 7b §16.5: the case's premise — an app pure function recomputed in a
     // database-evaluated `$view` across replay, yielding an unspecified post-restart
     // value — is superseded: an app-registered call in a view is now a load error
@@ -346,31 +344,21 @@ pub const SKIP: &[(&str, &str)] = &[
     // the §8.10 direct form (`.stores[@id] { … }` then `return .stores[@id] { … }`),
     // yielding the same `{ id, enabled }` row. Entry pruned as stale.)
     ("annex-d-identity/ref-wire-value-is-current-typed-key", "load fails: the `$public.posts.$view` reads `p.author.name` — a field THROUGH a ref (`author` is a `ref</users>`). §7.6 pins ref dereference to the SELECTOR form (`/users[p.author]`), not bare field access, so `ref.field` auto-deref is undefined/unlanded (checker: `cannot read field name of a ref`). CORPUS-SUSPECT: the case cites §D.1/§5.4/§6.4, not §7.6's selector-deref rule — a §7.6-vs-field-access tension, not a surgical model bug"),
-    // W2 auth cluster: the packages now LOAD and RUN. The `passkey_login` mutation
-    // binds `identity = webauthn.verify(@response)` (a deferred host-call result) and
-    // then reads `identity.rp`/`login.$key` inside later value expressions (a keyed
-    // `/logins[{…}]` selector). The CORE mutation phase left such deferred locals
-    // UNBOUND and only "accepted a later reference structurally" for the final
-    // (unchecked) `return`; an INTERMEDIATE `local = <fully-typed value>` that read a
-    // deferred local was hard-rejected as `unknown name` (§16.2 deferral not
-    // transitive). liasse-model now propagates the deferral transitively
-    // (mutation/mod.rs `check_statements` + helpers.rs `references_deferred`), so all
-    // nine W2 packages compile. Two whose login is EXPECTED to reject
-    // (`w2-login-claims-unlinked-account-rejected`,
-    // `w2-login-subject-confusable-no-match-rejected`) now PASS end to end and were
-    // pruned from this ledger. The seven below LOAD and run but the login call is
-    // `rejected`: the runtime does not EXECUTE the sim host namespaces
-    // (`webauthn.verify`/`token.sign`/`token.verify`) inside a mutation body under the
-    // harness's lenient load — the SAME registered-namespace-dispatch-into-mutation-
-    // body seam as `16-host-namespaces/verifier-namespace-runs-at-admission`, a
-    // testkit host-execution enablement, NOT a load gap.
-    ("w-worked-examples/w2-cross-account-session-revoke-has-no-owner-check", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
-    ("w-worked-examples/w2-disabled-account-fails-actor-check", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
-    ("w-worked-examples/w2-expired-session-token-replay-denied", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
-    ("w-worked-examples/w2-one-connection-multiplexes-two-account-sessions", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
-    ("w-worked-examples/w2-passkey-login-opens-session-and-authenticates", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
-    ("w-worked-examples/w2-revoked-session-denies-future-requests", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
-    ("w-worked-examples/w2-two-logins-create-distinct-sessions", "loads+runs; login `rejected` — the runtime does not execute the sim host namespaces (`webauthn.verify`/`token.sign`) in the mutation body (registered-namespace-dispatch seam, cf. verifier-namespace-runs-at-admission), not a load gap"),
+    // (W2 auth cluster now PASSES end to end. The testkit executes the simulated
+    // `$requires` host namespaces INSIDE the §11.5 login mutation body (§16.5):
+    // adapter/authsim.rs synthesizes executable namespaces for the case's declared
+    // response/token tables (`webauthn.verify` → the responses lookup, `token.sign` →
+    // a self-describing minted token) and `Engine::load_with_dispatch` (lenient
+    // checker + live registry) dispatches them; adapter/auth.rs then decodes that
+    // self-describing token in the `token.verify` `$verify` seam. Landing the login
+    // additionally required closing five core-language gaps the flow is the first to
+    // exercise (all spec-correct, all shared by the now-passing `login-*` cases):
+    // struct-field read on a host result (`identity.rp`, §5.8), composite-key→`ref`
+    // key coercion + identity-form key comparison (`login.$key` into a `ref` key
+    // component, §6.3/§D.1), the `time.duration` core builtin and `timestamp +
+    // duration` arithmetic (§16.1/§11.5), and `$from`/`$until` interval structurals
+    // on a lifecycle-bucketed row (`session.$until`, §14.4). All nine w2 cases were
+    // pruned from this ledger as stale.)
     // ========================================================================
     // RUNTIME RESULT DIVERGES FROM THE CORPUS EXPECTATION
     // The package loads and the steps run, but the runtime's observed outcome, value,
@@ -400,9 +388,11 @@ pub const SKIP: &[(&str, &str)] = &[
     // whose entries were pruned as stale.)
     ("10-interfaces-roles/fixed-call-argument-not-overridable", "outcome divergence: expected `ok` observed `denied`"),
     ("10-interfaces-roles/row-mutation-receiver-exactly-one", "outcome divergence: expected `rejected` observed `denied`"),
-    ("11-auth-sessions/login-operation-id-replay-at-most-once", "outcome divergence: expected `ok` observed `rejected`"),
-    ("11-auth-sessions/login-operation-id-reuse-different-request-rejected", "outcome divergence: expected `ok` observed `rejected`"),
-    ("11-auth-sessions/login-token-immediately-usable", "outcome divergence: expected `ok` observed `rejected`"),
+    // (§11.5 `login-token-immediately-usable`, `login-operation-id-replay-at-most-once`,
+    // and `login-operation-id-reuse-different-request-rejected` now PASS: their login
+    // mutations call `token.sign` in the body, which the testkit now executes
+    // (adapter/authsim.rs) and whose minted token the auth layer decodes — the same
+    // §16.5 host-execution seam the w2 cluster uses. Entries pruned as stale.)
     ("12-clients-live-views/parameter-normalization-and-checks", "outcome divergence: expected `ok` observed `denied`"),
     // (§10.1/§8.2 nested-receiver reconstruction is fixed — the harness now
     // collects every ancestor selector's params, so a depth-≥2 receiver

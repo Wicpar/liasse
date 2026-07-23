@@ -423,6 +423,9 @@ pub(crate) enum NumClass {
     Decimal,
     /// `+` on `text` — string concatenation.
     TextConcat,
+    /// `timestamp ± duration` (or `duration + timestamp`) — a temporal shift
+    /// yielding a `timestamp` (§11.5 `now() + time.duration('P30D')`).
+    TimeShift,
 }
 
 /// A resolved arithmetic operator.
@@ -493,4 +496,6 @@ pub(crate) enum BuiltinFn {
     StringUpper,
     /// `string.trim(text)`.
     StringTrim,
+    /// `time.duration(text)` — parse an ISO-8601 duration literal (§16.1).
+    TimeDuration,
 }

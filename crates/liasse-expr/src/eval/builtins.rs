@@ -24,7 +24,22 @@ impl Evaluator<'_> {
             BuiltinFn::StringLower => self.eval_string(args, str::to_lowercase),
             BuiltinFn::StringUpper => self.eval_string(args, str::to_uppercase),
             BuiltinFn::StringTrim => self.eval_string(args, |text| text.trim().to_owned()),
+            BuiltinFn::TimeDuration => self.eval_time_duration(args),
         }
+    }
+
+    /// `time.duration(text)` (§16.1): parse an ISO-8601 duration literal (`P30D`) to
+    /// a `duration` value. A non-text argument or an unparseable literal is a shape
+    /// mismatch — the same class the other core builtins report for bad input.
+    fn eval_time_duration(&mut self, args: &[TypedExpr]) -> Result<Cell, EvalError> {
+        let text = match self.first(args)? {
+            Cell::Scalar(Value::Text(text)) => text.as_str().to_owned(),
+            Cell::Scalar(Value::Json(liasse_value::Json::String(text))) => text,
+            _ => return Err(EvalError::ShapeMismatch { expected: "a text argument" }),
+        };
+        liasse_value::Duration::parse(&text)
+            .map(|duration| Cell::Scalar(Value::Duration(duration)))
+            .map_err(|_| EvalError::ShapeMismatch { expected: "a valid ISO-8601 duration" })
     }
 
     fn first(&mut self, args: &[TypedExpr]) -> Result<Cell, EvalError> {

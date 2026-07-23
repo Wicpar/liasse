@@ -20,7 +20,7 @@ use liasse_host::sim::{Behavior, SimNamespace};
 use liasse_host::{
     ContractName, EffectClass, InterfaceHash, NamespaceType, OpSignature, Registry, Version,
 };
-use liasse_value::{StructType, Type};
+use liasse_value::{Struct, StructType, Text, Type, Value};
 use serde_json::Value as J;
 
 use crate::hosts::{HostKind, HostsConfig};
@@ -68,6 +68,17 @@ fn build_namespace(label: &str, config: &J) -> Option<SimNamespace> {
     for (function, spec) in functions {
         let Some((signature, effect, behavior)) = read_function(spec) else { continue };
         builder = builder.function(function.clone(), signature, effect, behavior);
+        // §16.3 verifier: a `verifier` function's declared `accepts` table maps each
+        // credential to the typed proof it returns (tests/16-host-namespaces/NOTES.md
+        // `accept`). The auth-layer `$verify` seam reads this same table
+        // (adapter/auth.rs), but a §16.5 mutation-body call (`authns.check(...)`)
+        // dispatches through this registered namespace, so its `Accept` behaviour
+        // needs the table seeded here too.
+        if let Some(accepts) = spec.get("accepts").and_then(J::as_object) {
+            for (credential, proof) in accepts {
+                builder = builder.accepts(credential.clone(), proof_value(proof));
+            }
+        }
     }
     if let Some(types) = config.get("types").and_then(J::as_object) {
         for (name, spec) in types {
@@ -88,6 +99,21 @@ fn read_function(spec: &J) -> Option<(OpSignature, EffectClass, Behavior)> {
     let effect = parse_effect(spec.get("effect").and_then(J::as_str)?)?;
     let behavior = parse_behavior(spec.get("op").and_then(J::as_str)?)?;
     Some((signature, effect, behavior))
+}
+
+/// A declared `accepts` proof as a typed [`Value`]: a JSON object becomes a
+/// struct proof (`{ account: "a1" }`), a scalar its text/bool value. The struct's
+/// member types match the `verifier`'s declared result struct, so the returned
+/// proof conforms (§16.2 [`liasse_host::ConformanceGuard`]).
+fn proof_value(proof: &J) -> Value {
+    match proof {
+        J::Object(fields) => Value::Struct(Struct::new(
+            fields.iter().map(|(name, value)| (Text::new(name), proof_value(value))),
+        )),
+        J::Bool(flag) => Value::Bool(*flag),
+        J::String(text) => Value::Text(Text::new(text)),
+        other => Value::Text(Text::new(other.to_string())),
+    }
 }
 
 /// A namespace-defined named value type (`{ codec, key_eligible }`, §16.4).

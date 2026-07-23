@@ -3,7 +3,7 @@
 
 use liasse_diag::{Diagnostic, Span};
 use liasse_syntax::{Arg, BlockMember, BlockMemberKind, Expr, ExprKind, Selector};
-use liasse_value::{StructType, Type};
+use liasse_value::{RefTarget, StructType, Type};
 
 use crate::check::Checker;
 use crate::env::CallSite;
@@ -289,6 +289,11 @@ impl Checker<'_> {
         // §16.1: the core `string` utilities resolve before any host namespace.
         if let Some(func) = core_string_fn(namespace, function) {
             return self.check_builtin(expr, func, args, ExprType::scalar(Type::Text));
+        }
+        // §16.1: `time.duration(text)` parses an ISO-8601 duration literal to a
+        // `duration` value (the §11.5 `now() + time.duration('P30D')` session TTL).
+        if (namespace, function) == ("time", "duration") {
+            return self.check_builtin(expr, BuiltinFn::TimeDuration, args, ExprType::scalar(Type::Duration));
         }
         // §16.2: a declared `$requires` host namespace supplies a pinned signature
         // the call site is type-checked against. An undeclared namespace resolves
@@ -596,6 +601,24 @@ impl Checker<'_> {
     }
 }
 
+/// Whether a supplied component value type satisfies a declared composite-key
+/// component. Beyond exact equality, a `ref` component (§D.1/A.9) is satisfied by a
+/// value of the row-key type it targets: a `ref</logins>` component whose target has
+/// a composite key accepts that composite key (`login.$key`), and a scalar-key ref
+/// accepts its scalar key — the referenced row's identity IS that key.
+fn component_matches(supplied: &Type, declared: &Type) -> bool {
+    if supplied == declared {
+        return true;
+    }
+    match declared {
+        Type::Ref(RefTarget::Composite(components)) => {
+            *supplied == Type::Composite(components.clone())
+        }
+        Type::Ref(RefTarget::Scalar(inner)) => supplied == inner.as_ref(),
+        _ => false,
+    }
+}
+
 /// Whether an authoring object operand (`struct_ty`) is a key of a composite-keyed
 /// target whose `$key` components are `components` (§6.3, A.9): it names every
 /// component with the declared component type and carries no extra field. `Err`
@@ -606,7 +629,7 @@ fn composite_key_conforms(
 ) -> Result<(), String> {
     for (name, ty) in components {
         match struct_ty.field(name) {
-            Some(supplied) if supplied == ty => {}
+            Some(supplied) if component_matches(supplied, ty) => {}
             Some(supplied) => {
                 return Err(format!(
                     "composite key component `{name}` is `{}`, but the target key declares `{}` \

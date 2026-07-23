@@ -155,6 +155,10 @@ impl Checker<'_> {
         }
         let class = match (op, lt, rt) {
             (ArithOp::Add, Some(Type::Text), Some(Type::Text)) => NumClass::TextConcat,
+            // §11.5/A.5: a timestamp shifted by a duration (either operand order for
+            // `+`, timestamp-first for `-`) yields a timestamp.
+            (ArithOp::Add | ArithOp::Sub, Some(Type::Timestamp(_)), Some(Type::Duration))
+            | (ArithOp::Add, Some(Type::Duration), Some(Type::Timestamp(_))) => NumClass::TimeShift,
             (_, Some(Type::Int), Some(Type::Int)) => NumClass::Int,
             (_, Some(Type::Decimal), Some(Type::Decimal))
             | (_, Some(Type::Int), Some(Type::Decimal))
@@ -174,6 +178,11 @@ impl Checker<'_> {
             NumClass::Int => Type::Int,
             NumClass::Decimal => Type::Decimal,
             NumClass::TextConcat => Type::Text,
+            // The shift preserves the timestamp operand's declared precision (A.5).
+            NumClass::TimeShift => match (lt, rt) {
+                (Some(Type::Timestamp(p)), _) | (_, Some(Type::Timestamp(p))) => Type::Timestamp(*p),
+                _ => Type::timestamp(),
+            },
         };
         Some(TypedExpr::new(
             expr.span,

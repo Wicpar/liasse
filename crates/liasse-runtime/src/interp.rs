@@ -66,6 +66,23 @@ pub(crate) enum LocalBind {
 /// row binding reads its current fields (§8.1 read-your-writes; §8.10 committed
 /// state for the response). Shared by the interpreter (mid-program) and the
 /// engine's `return` evaluation (post-commit).
+/// Expose the `$from`/`$until` interval-bound structurals on a bucketed
+/// collection's row type (§14.4). A lifecycle-bucketed collection's row carries
+/// its active interval as structural cells at materialization; teaching the type
+/// about them lets `row.$until`/`row.$from` type-check (`session.$until`, §11.5).
+/// Non-bucketed rows and non-`Row` types are returned unchanged.
+fn bucket_bound_structurals(ctx: &EvalCtx<'_>, path: &[String], ty: ExprType) -> ExprType {
+    let Some(name) = path.last() else { return ty };
+    if ctx.compiled.bucket(name).is_none() {
+        return ty;
+    }
+    let ExprType::Row(row) = ty else { return ty };
+    ExprType::Row(row.with_structural([
+        ("from".to_owned(), ExprType::scalar(Type::timestamp())),
+        ("until".to_owned(), ExprType::scalar(Type::Optional(Box::new(Type::timestamp())))),
+    ]))
+}
+
 pub(crate) fn local_bindings(
     locals: &BTreeMap<String, LocalBind>,
     ctx: &EvalCtx<'_>,
@@ -79,6 +96,12 @@ pub(crate) fn local_bindings(
                 let Some(ty) = ctx.schema.receiver_row_type(&target.path) else {
                     continue;
                 };
+                // §14.4: a bucketed collection's inserted row exposes its interval
+                // bounds `$from`/`$until`. The row CELL already carries them
+                // (`materialize_row` folds the interval cells), so this only teaches
+                // the row TYPE about them, letting a `return`/value read of the row
+                // (`session.$until` in the §11.5 login) type-check.
+                let ty = bucket_bound_structurals(ctx, &target.path, ty);
                 let Some(cell) = ctx.materialize_row_cell(prospective, &target.path, &target.address) else {
                     continue;
                 };

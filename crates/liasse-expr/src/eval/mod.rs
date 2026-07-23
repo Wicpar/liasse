@@ -18,10 +18,9 @@ mod ops;
 mod temporal;
 mod views;
 
-use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-use liasse_value::{RefKey, Text, Value};
+use liasse_value::{Text, Value};
 
 use crate::env::{Cell, Environment, Row, RowId};
 use crate::error::EvalError;
@@ -345,16 +344,16 @@ impl Evaluator<'_> {
             match wanted {
                 Value::Set(members) => {
                     for member in &members {
-                        let wanted_key = ref_key_value(member);
+                        let wanted_key = member.identity_value();
                         selected.extend(
-                            rows.iter().filter(|row| row.key() == wanted_key.as_ref()).cloned(),
+                            rows.iter().filter(|row| key_matches(row.key(), &wanted_key)).cloned(),
                         );
                     }
                 }
                 scalar => {
-                    let wanted_key = ref_key_value(&scalar);
+                    let wanted_key = scalar.identity_value();
                     selected.extend(
-                        rows.iter().filter(|row| row.key() == wanted_key.as_ref()).cloned(),
+                        rows.iter().filter(|row| key_matches(row.key(), &wanted_key)).cloned(),
                     );
                 }
             }
@@ -437,12 +436,12 @@ impl Evaluator<'_> {
 /// [`Value::Composite`] tuple of its components — the same value a composite
 /// row's `key()` carries, so `.owner in .regions` / `.regions[.owner]` match by
 /// value. Any non-ref value compares as itself.
-fn ref_key_value(value: &Value) -> Cow<'_, Value> {
-    match value {
-        Value::Ref(reference) => match reference.key() {
-            RefKey::Scalar(inner) => Cow::Borrowed(inner),
-            RefKey::Composite(components) => Cow::Owned(Value::Composite(components.clone())),
-        },
-        other => Cow::Borrowed(other),
-    }
+/// §D.1/§6.3: whether a stored row key matches a selector key by IDENTITY — a `ref`
+/// at any composite depth flattens to its target key, so a composite key whose
+/// stored components are `ref`s (an `account_logins` `[account, login]` row) matches
+/// a selector key built from the bare component values (`{ account: @account,
+/// login: login.$key }`). Comparing identity forms normalizes both sides, where the
+/// former top-level-only `ref_key_value` left a nested `ref` component unflattened.
+fn key_matches(row_key: &Value, wanted: &Value) -> bool {
+    row_key.identity_value() == wanted.identity_value()
 }

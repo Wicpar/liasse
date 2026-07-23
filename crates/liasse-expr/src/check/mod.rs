@@ -492,6 +492,21 @@ impl<'a> Checker<'a> {
             // the view's rows, exactly as `view::member` does — the dotted and
             // `::` spellings expand to the same traversal.
             ExprType::View(_) => return self.traverse_view(expr, base, member),
+            // §5.8/§11.5: member access on a struct value — a host-namespace call
+            // result (`identity.rp` on `webauthn.verify(@response)`), a static
+            // struct. The runtime's `eval_field` already reads a `Value::Struct`
+            // member; the checker types it against the struct's declared fields.
+            ExprType::Scalar(Type::Struct(struct_ty)) => {
+                let field_ty = struct_ty.field(member).cloned();
+                return match field_ty {
+                    Some(ty) => Some(TypedExpr::new(
+                        expr.span,
+                        ExprType::scalar(ty),
+                        TypedKind::Field { base: Box::new(base), name: member.to_owned() },
+                    )),
+                    None => self.error(expr, format!("no member `{member}` on this struct")),
+                };
+            }
             other => {
                 return self.error(
                     expr,

@@ -458,14 +458,57 @@ impl<S: InstanceStore> Engine<S> {
         definition: &str,
         generator: &mut G,
     ) -> Result<(Self, Option<liasse_syntax::DocValue>), EngineError> {
+        Self::assemble_with(store, definition, generator, Registry::new())
+    }
+
+    /// [`assemble`](Self::assemble), but with `registry` available for RUNTIME
+    /// host-namespace dispatch (§16.5) while the CHECKER still sees no host
+    /// signatures (`HostSignatures::default()`). The package's `$requires` are
+    /// resolved *leniently* against `registry`: a requirement that resolves binds,
+    /// so a mutation-body `ns.fn(...)` dispatches to the registered component; one
+    /// that does not is deferred exactly as the default load. Because the checker
+    /// is fed no signatures, a host call in a database-evaluated position (a
+    /// `$verify`, a view) stays a deferred seam rather than a §16.5 load error —
+    /// the position a conformance case models with a registered stand-in for a
+    /// built-in (a `token.verify` standing in for `cose.verify`). Powers
+    /// [`Engine::load_with_dispatch`].
+    fn assemble_with<G: Generators>(
+        store: S,
+        definition: &str,
+        generator: &mut G,
+        registry: Registry,
+    ) -> Result<(Self, Option<liasse_syntax::DocValue>), EngineError> {
         let Compilation { sources, model, compiled, data, requires } =
             compile_definition(definition, &HostSignatures::default())?;
-        let mut host = HostBinding::resolve(Registry::new(), &requires, false)?;
+        let mut host = HostBinding::resolve(registry, &requires, false)?;
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
         let keyrings = provision_keyrings(&compiled, clock, &mut host, ProviderFallback::SimDefault)?;
         let engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
         Ok((engine, data))
+    }
+
+    /// Load `definition` into `store` with the LENIENT checker of [`Engine::load`]
+    /// but with `registry` supplied for RUNTIME host-namespace dispatch (§16.5).
+    ///
+    /// A package whose `$requires` names simulated namespaces uses this to execute
+    /// those namespaces inside its mutation bodies — `webauthn.verify(@response)`,
+    /// `token.sign(claims)` — without the checker strictly type-checking a
+    /// registered call that stands in for a built-in in a database-evaluated
+    /// position (§16.5). Unlike [`Engine::load_with_hosts`], no host signatures
+    /// reach the checker, so `$requires` resolution never fails the load and a
+    /// `$verify`/view host call stays a deferred seam; unlike [`Engine::load`],
+    /// the registered components are present so the interpreter dispatches a
+    /// mutation-body call rather than faulting it as an unknown function.
+    pub fn load_with_dispatch<G: Generators>(
+        store: S,
+        definition: &str,
+        generator: &mut G,
+        registry: Registry,
+    ) -> Result<Self, EngineError> {
+        let (mut engine, data) = Self::assemble_with(store, definition, generator, registry)?;
+        engine.genesis(definition, data.as_ref(), generator)?;
+        Ok(engine)
     }
 
     /// Load a child module instance, binding its installation `$config` (§13.1)

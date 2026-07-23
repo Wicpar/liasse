@@ -44,6 +44,7 @@
 
 mod artifacts;
 mod auth;
+mod authsim;
 mod blobs;
 mod correction;
 mod error;
@@ -538,12 +539,26 @@ fn load_engine<S: InstanceStore, G: liasse_runtime::Generators>(
     package: &serde_json::Value,
     hosts: Option<&serde_json::Value>,
 ) -> Result<Engine<S>, liasse_runtime::EngineError> {
-    let namespaces = namespaces::sim_namespaces(hosts);
-    if !namespaces.is_empty() {
-        let registry = namespaces::registry(namespaces);
+    let descriptor_ns = namespaces::sim_namespaces(hosts);
+    // §16.2 strict resolution when the descriptor-form namespaces fully satisfy
+    // `$requires` (a host call type-checks against the pinned descriptor).
+    if !descriptor_ns.is_empty() {
+        let registry = namespaces::registry(descriptor_ns);
         if requires_resolve_against(package, &registry) {
             return Engine::load_with_hosts(store, definition, generator, registry);
         }
+        // The descriptor namespaces do not resolve every requirement; fall through
+        // and rebuild them below alongside the synthesized table-form namespaces.
+    }
+    // §16.5 dispatch path: a `$mut` body calls a `$requires` namespace declared only
+    // by a behaviour table (a §11.5 auth mutation — `webauthn.verify`, `token.sign`).
+    // Synthesize executable namespaces from the case's tables and load with a lenient
+    // checker (so a registered stand-in in a database-evaluated `$verify` stays a
+    // deferred seam, §16.5) but a live registry the interpreter dispatches against.
+    if authsim::has_mutation_host_call(package) {
+        let synthesized = authsim::synthesize(package, hosts);
+        let registry = authsim::registry(synthesized, namespaces::sim_namespaces(hosts));
+        return Engine::load_with_dispatch(store, definition, generator, registry);
     }
     if requires_only_builtin_cose(package) {
         Engine::load_with_hosts(store, definition, generator, Registry::new())

@@ -241,7 +241,16 @@ pub(crate) fn materialize_row<'m>(
     // descends its nested keyed collections active-filtered exactly like the
     // top-level bare read — the caller's `temporal.keep` decides activity, so a
     // nested bucketed collection exposes only its rows active at the read instant.
-    Some(build_row(schema, collection, fields, key, id, address, working, temporal, true))
+    let row = build_row(schema, collection, fields, key, id, address, working, temporal, true);
+    // §14.4: a bucketed row carries its active `$from`/`$until` interval cells, so a
+    // single-row read (`session.$until` in a §11.5 login return) reads them exactly
+    // as a collection-stream row does.
+    let name = collection.path.rsplit('/').next().unwrap_or(collection.path.as_str());
+    let row = match (temporal.interval)(name, fields) {
+        Some(interval) => with_interval_cells(row, interval),
+        None => row,
+    };
+    Some(row)
 }
 
 /// The full extant row set of one bucketed collection (§14.2), ignoring current
