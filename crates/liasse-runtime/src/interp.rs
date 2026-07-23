@@ -398,7 +398,13 @@ impl<'a> Interp<'a> {
         // every selected row, so coerce/validate once, then write each row (§8.6).
         let scalar = if let Some(field_meta) = collection.field(&field) {
             if crate::rules::is_enum_field(&field_meta.ty) {
-                crate::rules::coerce_value(&field_meta.ty, &scalar, &field, &where_path)?
+                crate::rules::coerce_value(
+                    &field_meta.ty,
+                    &scalar,
+                    &field,
+                    &where_path,
+                    self.ctx.compiled.division_rounding,
+                )?
             } else {
                 if let Some(from) = typed.ty().as_scalar()
                     && !crate::schema::assignable(from, &field_meta.ty)
@@ -455,7 +461,7 @@ impl<'a> Interp<'a> {
         let address = crate::singleton::address();
         let where_path = format!("{}/{}", address.render(), field);
         let scalar = if crate::rules::is_enum_field(ty) {
-            crate::rules::coerce_value(ty, &scalar, field, &where_path)?
+            crate::rules::coerce_value(ty, &scalar, field, &where_path, self.ctx.compiled.division_rounding)?
         } else {
             if let Some(from) = typed.ty().as_scalar()
                 && !crate::schema::assignable(from, ty)
@@ -542,13 +548,14 @@ impl<'a> Interp<'a> {
         let collection = self.collection_at(decl)?;
         let key_fields = collection.key.clone();
         let name = decl.last().cloned().unwrap_or_default();
+        let rounding = self.ctx.compiled.division_rounding;
         // §5.9/§5.4/§8.5: normalize the operand to the positional key identity, then
         // coerce an enum key component from its authoring `text` label to the
         // positioned `Value::Enum` the row is keyed under (as `exec_delete` does),
         // so a `return del { … }` addresses and captures the live row.
         let normalize = |value: Value| {
             materialize::normalize_key_operand(&key_fields, value)
-                .map(|key| rules::coerce_key_operand(collection, key, &name))
+                .map(|key| rules::coerce_key_operand(collection, key, &name, rounding))
         };
         Ok(match self.scalar_value(keys, source, &current)? {
             Value::Set(members) => members.into_iter().map(normalize).collect::<Result<_, _>>()?,
@@ -1021,7 +1028,7 @@ impl<'a> Interp<'a> {
             let generation = self.prospective.next_generation();
             rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective, generation, None)?;
             rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
-            rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."))?;
+            rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."), self.ctx.compiled.division_rounding)?;
             let address = self.key_address(&loc.store_path, &loc.decl, &fields)?;
             staged.push((address, fields));
         }
@@ -1081,7 +1088,7 @@ impl<'a> Interp<'a> {
             let generation = self.prospective.next_generation();
             rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective, generation, None)?;
             rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
-            rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."))?;
+            rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."), self.ctx.compiled.division_rounding)?;
             let address = self.key_address(&loc.store_path, &loc.decl, &fields)?;
             staged.push((address, fields));
         }
@@ -1278,7 +1285,7 @@ impl<'a> Interp<'a> {
         let generation = self.prospective.next_generation();
         rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective, generation, None)?;
         rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
-        rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."))?;
+        rules::coerce_fields(compiled, &mut fields, &loc.decl.join("."), self.ctx.compiled.division_rounding)?;
         let address = self.key_address(&loc.store_path, &loc.decl, &fields)?;
         if self.prospective.contains(&address) {
             return Err(Rejection::new(RejectionReason::DuplicateKey, "a row with this key already exists")
@@ -1333,7 +1340,7 @@ impl<'a> Interp<'a> {
             let generation = self.prospective.next_generation();
             rules::apply_defaults(compiled, &mut fields, self.ctx, self.prospective, generation, None)?;
             rules::normalize_all(compiled, &mut fields, self.ctx, self.prospective)?;
-            rules::coerce_fields(compiled, &mut fields, &decl.join("."))?;
+            rules::coerce_fields(compiled, &mut fields, &decl.join("."), self.ctx.compiled.division_rounding)?;
             let address = self.key_address(&store_path, &decl, &fields)?;
             if self.prospective.contains(&address) {
                 return Err(Rejection::new(RejectionReason::DuplicateKey, "a row with this key already exists")
@@ -1463,8 +1470,9 @@ impl<'a> Interp<'a> {
         // delete addresses the live row rather than no-opping on a `text`↔`enum`
         // mismatch. A non-enum key passes through unchanged.
         let collection = self.collection_at(&loc.decl)?;
+        let rounding = self.ctx.compiled.division_rounding;
         let targets: Vec<Value> =
-            targets.into_iter().map(|key| rules::coerce_key_operand(collection, key, &name)).collect();
+            targets.into_iter().map(|key| rules::coerce_key_operand(collection, key, &name, rounding)).collect();
         // §5.4/§21.1: the cascade planner operates over the top-level graph; a
         // nested collection's row (a meter spend/pool, §15) has no inbound refs in
         // CORE scope, so it is removed directly with its descendant subtree.

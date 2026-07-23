@@ -7,10 +7,10 @@
 //! Every rejection leaves the prospective state to be discarded whole, so the
 //! prior committed state is never touched.
 
-use liasse_expr::Cell;
+use liasse_expr::{Cell, DivisionRounding};
 use liasse_ident::NameSegment;
 use liasse_store::{CollectionPath, RowAddress};
-use liasse_value::{Precision, RefKey, Struct, StructType, Text, Timestamp, Value};
+use liasse_value::{Precision, RefKey, Struct, StructType, Text, Value};
 
 use crate::compiled::{Compiled, CompiledCollection, CompiledField, CompiledStruct};
 use crate::error::{Rejection, RejectionReason};
@@ -176,13 +176,14 @@ pub(crate) fn coerce_fields(
     collection: &CompiledCollection,
     fields: &mut FieldMap,
     where_path: &str,
+    rounding: DivisionRounding,
 ) -> Result<(), Rejection> {
     for field in &collection.fields {
         if enum_of(&field.ty).is_none() && timestamp_precision(&field.ty).is_none() {
             continue;
         }
         let Some(value) = fields.get(&field.name) else { continue };
-        let coerced = coerce_value(&field.ty, value, &field.name, where_path)?;
+        let coerced = coerce_value(&field.ty, value, &field.name, where_path, rounding)?;
         fields.insert(field.name.clone(), coerced);
     }
     Ok(())
@@ -205,15 +206,20 @@ pub(crate) fn coerce_fields(
 /// [`coerce_value`]'s descent). A component whose label the current enum does not
 /// declare is left unchanged — it can match no live row, so the operation no-ops
 /// exactly as removing an absent row does (§8.5), rather than rejecting.
-pub(crate) fn coerce_key_operand(collection: &CompiledCollection, key: Value, where_path: &str) -> Value {
+pub(crate) fn coerce_key_operand(
+    collection: &CompiledCollection,
+    key: Value,
+    where_path: &str,
+    rounding: DivisionRounding,
+) -> Value {
     match collection.key.as_slice() {
-        [name] => coerce_key_component(collection, name, key, where_path),
+        [name] => coerce_key_component(collection, name, key, where_path, rounding),
         names => match key {
             Value::Composite(components) if components.len() == names.len() => Value::Composite(
                 names
                     .iter()
                     .zip(components)
-                    .map(|(name, component)| coerce_key_component(collection, name, component, where_path))
+                    .map(|(name, component)| coerce_key_component(collection, name, component, where_path, rounding))
                     .collect(),
             ),
             other => other,
@@ -224,10 +230,16 @@ pub(crate) fn coerce_key_operand(collection: &CompiledCollection, key: Value, wh
 /// Coerce one key component against the declared type of key field `name` — a
 /// top-level field or a static-struct key member — leaving it unchanged when the
 /// type carries no enum or the label is not currently declared (a no-op lookup).
-fn coerce_key_component(collection: &CompiledCollection, name: &str, value: Value, where_path: &str) -> Value {
+fn coerce_key_component(
+    collection: &CompiledCollection,
+    name: &str,
+    value: Value,
+    where_path: &str,
+    rounding: DivisionRounding,
+) -> Value {
     let ty = collection.field(name).map(|field| field.ty.clone()).or_else(|| collection.struct_type(name));
     match ty {
-        Some(ty) if contains_enum(&ty) => coerce_value(&ty, &value, name, where_path).unwrap_or(value),
+        Some(ty) if contains_enum(&ty) => coerce_value(&ty, &value, name, where_path, rounding).unwrap_or(value),
         _ => value,
     }
 }
@@ -259,25 +271,27 @@ pub(crate) fn coerce_value(
     value: &Value,
     field_name: &str,
     where_path: &str,
+    rounding: DivisionRounding,
 ) -> Result<Value, Rejection> {
     use liasse_value::{Struct, Type};
     match ty {
         Type::Enum(enum_ty) => coerce_enum_leaf(enum_ty, value, field_name, where_path),
         // §22.5/§A.5: convert a written `timestamp` value to the field's declared
-        // precision. A `none` (absent optional) is untouched; any non-timestamp
-        // value is left to the ordinary assignability check.
-        Type::Timestamp(target) => Ok(rescale_timestamp(value, *target)),
+        // precision, rounding a coarser conversion under the package-selected mode
+        // (§4.4). A `none` (absent optional) is untouched; any non-timestamp value
+        // is left to the ordinary assignability check.
+        Type::Timestamp(target) => Ok(rescale_timestamp(value, *target, rounding)),
         // An `optional` around an enum leaf: `none` is absence (untouched); a
         // present value re-validates against the inner type.
         Type::Optional(inner) => match value {
             Value::None => Ok(Value::None),
-            _ => coerce_value(inner, value, field_name, where_path),
+            _ => coerce_value(inner, value, field_name, where_path, rounding),
         },
         Type::Set(inner) if contains_enum(inner) => {
             let Value::Set(members) = value else { return Ok(value.clone()) };
             members
                 .iter()
-                .map(|member| coerce_value(inner, member, field_name, where_path))
+                .map(|member| coerce_value(inner, member, field_name, where_path, rounding))
                 .collect::<Result<std::collections::BTreeSet<_>, _>>()
                 .map(Value::Set)
         }
@@ -286,7 +300,7 @@ pub(crate) fn coerce_value(
             let mut rebuilt = Vec::new();
             for (name, member) in existing.fields() {
                 let coerced = match struct_ty.field(name.as_str()) {
-                    Some(member_ty) => coerce_value(member_ty, member, name.as_str(), where_path)?,
+                    Some(member_ty) => coerce_value(member_ty, member, name.as_str(), where_path, rounding)?,
                     None => member.clone(),
                 };
                 rebuilt.push((name.clone(), coerced));
@@ -299,8 +313,8 @@ pub(crate) fn coerce_value(
                 .iter()
                 .map(|(key, val)| {
                     Ok::<_, Rejection>((
-                        coerce_value(key_ty, key, field_name, where_path)?,
-                        coerce_value(val_ty, val, field_name, where_path)?,
+                        coerce_value(key_ty, key, field_name, where_path, rounding)?,
+                        coerce_value(val_ty, val, field_name, where_path, rounding)?,
                     ))
                 })
                 .collect::<Result<std::collections::BTreeMap<_, _>, _>>()
@@ -314,7 +328,7 @@ pub(crate) fn coerce_value(
             components
                 .iter()
                 .zip(values)
-                .map(|((name, comp_ty), comp)| coerce_value(comp_ty, comp, name, where_path))
+                .map(|((name, comp_ty), comp)| coerce_value(comp_ty, comp, name, where_path, rounding))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Composite)
         }
@@ -386,36 +400,18 @@ fn timestamp_precision(ty: &liasse_value::Type) -> Option<Precision> {
 
 /// Rescale a written timestamp `value` to a field's declared `target` precision
 /// (§22.5/§A.5). A non-timestamp value or one already at `target` is returned
-/// unchanged; otherwise it is converted through [`to_precision`].
-fn rescale_timestamp(value: &Value, target: Precision) -> Value {
+/// unchanged; otherwise it is converted through [`liasse_value::Timestamp::to_precision`],
+/// rounding a coarser conversion under the package-selected mode (§4.4/§A.5 —
+/// half-away-from-zero by default). The engine hands the resolved `rounding`
+/// down the field-write boundary so `$semantics.decimal_division.rounding`
+/// governs this conversion exactly as it governs decimal `/` and `avg`.
+fn rescale_timestamp(value: &Value, target: Precision, rounding: DivisionRounding) -> Value {
     match value {
         Value::Timestamp(timestamp) if timestamp.precision() != target => {
-            Value::Timestamp(to_precision(*timestamp, target))
+            Value::Timestamp(timestamp.to_precision(target, rounding.mode()))
         }
         _ => value.clone(),
     }
-}
-
-/// Convert `timestamp` to `target` precision (§22.5/§A.5). The precisions are
-/// exact powers of ten, so scaling to a finer (or equal) precision multiplies the
-/// count exactly; scaling to a coarser precision divides by the exact ratio,
-/// rounding a halfway value away from zero (`…600.500000 s` → `…601 s`), matching
-/// the decimal default of §A.6 and the PostgreSQL integer-timestamp rule.
-/// Saturates rather than overflowing, so no conversion can panic.
-fn to_precision(timestamp: Timestamp, target: Precision) -> Timestamp {
-    let from = timestamp.precision().ticks_per_second();
-    let to = target.ticks_per_second();
-    let count = timestamp.count();
-    let new_count = if to >= from {
-        count.saturating_mul(to / from)
-    } else {
-        let ratio = (from / to).unsigned_abs();
-        let magnitude = count.unsigned_abs();
-        let rounded = magnitude.saturating_add(ratio / 2) / ratio;
-        let rounded = i128::try_from(rounded).unwrap_or(i128::MAX);
-        if count < 0 { -rounded } else { rounded }
-    };
-    Timestamp::new(new_count, target)
 }
 
 /// Whether a declared type carries an enum anywhere — a bare enum, or one nested

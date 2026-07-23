@@ -1,0 +1,79 @@
+{
+  // §4.4 lets a package select a division rounding mode via
+  // $semantics.decimal_division.rounding, and §A.5 pins that the SAME selector
+  // governs coarser timestamp precision conversion: "Conversion to a coarser
+  // fractional-second precision rounds a halfway value away from zero ...; a
+  // package MAY select another rounding mode through the same $semantics
+  // rounding values A.6 defines." This is the sibling of
+  // common/field-precision-override-applied-on-commit (which fixes the DEFAULT
+  // half-away-from-zero rounding); here the package selects `toward_zero`, so a
+  // halfway coarsening must TRUNCATE, not round away. If the engine hardcodes
+  // half-away-from-zero for the timestamp field-write boundary, it silently
+  // ignores the selected observable semantics (§4.4: "Every engine MUST preserve
+  // the selected observable semantics") and this case fails.
+  format: 1
+  name: timestamp-coarsening-honors-package-rounding
+  suite: scenario
+  spec: ["#package-structure", "§4.4", "#runtime", "§22.5", "§A.5", "§A.6"]
+  tags: ["time", "boundary", "semantics"]
+  note: '''
+    Genesis virtual clock is 2026-01-01T00:00:00Z = 1767225600 s. The package
+    keeps the default micro-second precision (timestamp_precision "us"), so the
+    clock and now() are at micro-seconds. Advancing by exactly half a second
+    (PT0.5S) makes now() = 1767225600500000 us — i.e. 1767225600.500000 s, an
+    exact half at whole-second precision.
+
+    The field `at_s` overrides to whole-second precision (§4.4 $precision). The
+    package selects rounding "toward_zero" (§4.4 / A.6). Under §A.5 the coarser
+    conversion uses that mode, so the halfway value TRUNCATES toward zero:
+    1767225600.5 s -> 1767225600 s. (The A.6 default half-away-from-zero would
+    give 1767225601; that is exactly what this case rules out.) The sibling field
+    `at_us`, with no override, keeps the raw micro-second count. Both values are
+    externally deducible from SPEC.md text alone.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.ts_round@1.0.0"
+    $semantics: {
+      timestamp_precision: "us"
+      decimal_division: { rounding: "toward_zero" }
+    }
+    $model: {
+      events: {
+        $key: "id"
+        id: "text"
+        // §4.4 field-level override to whole-second precision; the coarsening
+        // must honor the package-selected `toward_zero` mode (§A.5).
+        at_s: { $type: "timestamp", $precision: "s", $default: "= now()" }
+        // No override: inherits the package micro-second precision.
+        at_us: { $type: "timestamp", $default: "= now()" }
+      }
+      $mut: {
+        mark: ".events + { id: @id }"
+      }
+      $public: {
+        events: {
+          $view: ".events { id, at_s, at_us }"
+          $mut: { mark: ".mark" }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { advance_time: "PT0.5S" }
+    {
+      // now() = 1767225600.500000 s exactly. On commit `at_s` rescales to whole
+      // seconds under `toward_zero` -> 1767225600 (NOT 1767225601). `at_us`
+      // keeps the raw micro-second count 1767225600500000.
+      call: "public.events.mark"
+      args: { id: "e" }
+      on: "c1"
+      expect: { outcome: ok }
+    }
+    { watch: "public.events", id: "w1", on: "c1",
+      expect_init: { value: [ { id: "e", at_s: "1767225600", at_us: "1767225600500000" } ] } }
+  ]
+}

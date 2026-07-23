@@ -47,10 +47,12 @@ impl DivisionRounding {
         })
     }
 
-    /// The `bigdecimal` rounding mode this policy applies when the quotient is
-    /// rounded at its A.6 significant-digit scale. `half_away_from_zero` is
-    /// `bigdecimal`'s `HalfUp` (round half away from zero, the A.6 default).
-    pub(crate) fn mode(self) -> RoundingMode {
+    /// The `bigdecimal` rounding mode this policy applies when a value is rounded
+    /// at its A.6 scale — a decimal quotient's significant-digit scale, or the
+    /// coarser-precision timestamp field-write boundary (§A.5, which the same
+    /// selector governs). `half_away_from_zero` is `bigdecimal`'s `HalfUp` (round
+    /// half away from zero, the A.6 default).
+    pub fn mode(self) -> RoundingMode {
         match self {
             Self::HalfAwayFromZero => RoundingMode::HalfUp,
             Self::HalfEven => RoundingMode::HalfEven,

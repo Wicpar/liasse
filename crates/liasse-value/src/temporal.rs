@@ -3,6 +3,7 @@
 use core::cmp::Ordering;
 use core::str::FromStr;
 
+use bigdecimal::RoundingMode;
 use jiff::civil::Date as CivilDate;
 
 use crate::error::ValueError;
@@ -108,6 +109,28 @@ impl Timestamp {
         self.count.to_string()
     }
 
+    /// Convert to `target` precision (§A.5). Scaling to a finer or equal precision
+    /// multiplies the count by the exact power-of-ten ratio; scaling to a coarser
+    /// precision divides by that ratio, rounding a count that does not divide
+    /// evenly under `mode`. §A.5 fixes the default to half-away-from-zero
+    /// ([`RoundingMode::HalfUp`]) — so `…600.500000 s` at second precision is
+    /// `…601 s` — but a package MAY select any A.6 mode through
+    /// `$semantics.decimal_division.rounding`, and that same selector governs this
+    /// coarser timestamp conversion (§4.4/§A.5). Saturates rather than
+    /// overflowing, so no conversion can panic.
+    #[must_use]
+    pub fn to_precision(self, target: Precision, mode: RoundingMode) -> Self {
+        let from = self.precision.ticks_per_second();
+        let to = target.ticks_per_second();
+        let count = if to >= from {
+            // Finer or equal precision: an exact power-of-ten upscale.
+            self.count.saturating_mul(to / from)
+        } else {
+            round_div(self.count, from / to, mode)
+        };
+        Self { count, precision: target }
+    }
+
     /// Decompose into whole seconds and a sub-second nanosecond remainder,
     /// each within `i128` range regardless of precision, so comparison never
     /// overflows and negatives use floor semantics (correct signed order).
@@ -117,6 +140,60 @@ impl Timestamp {
         let sub_ticks = self.count.rem_euclid(ticks);
         let sub_nanos = sub_ticks * (1_000_000_000 / ticks);
         (seconds, sub_nanos)
+    }
+}
+
+/// Divide `count` by a positive `ratio`, rounding a non-exact quotient under
+/// `mode` — the six A.6 rounding modes plus `HalfDown`, resolved exactly the way
+/// `bigdecimal` resolves a discarded fraction. `ratio` is a power-of-ten
+/// precision ratio (at most `10^9`), so twice the remainder magnitude cannot
+/// overflow; the one-unit adjustment of the truncated quotient saturates.
+fn round_div(count: i128, ratio: i128, mode: RoundingMode) -> i128 {
+    let quotient = count / ratio; // truncated toward zero (ratio > 0)
+    let remainder = count % ratio; // shares the dividend's sign
+    if remainder == 0 {
+        return quotient;
+    }
+    // One step further from zero than the truncated quotient.
+    let away = if count < 0 { quotient.saturating_sub(1) } else { quotient.saturating_add(1) };
+    // Position the discarded fraction |remainder|/ratio against one half.
+    let half = remainder.unsigned_abs().saturating_mul(2).cmp(&ratio.unsigned_abs());
+    match mode {
+        RoundingMode::Down => quotient,
+        RoundingMode::Up => away,
+        RoundingMode::Floor => {
+            if count < 0 {
+                away
+            } else {
+                quotient
+            }
+        }
+        RoundingMode::Ceiling => {
+            if count < 0 {
+                quotient
+            } else {
+                away
+            }
+        }
+        RoundingMode::HalfUp => match half {
+            Ordering::Less => quotient,
+            Ordering::Equal | Ordering::Greater => away,
+        },
+        RoundingMode::HalfDown => match half {
+            Ordering::Greater => away,
+            Ordering::Equal | Ordering::Less => quotient,
+        },
+        RoundingMode::HalfEven => match half {
+            Ordering::Less => quotient,
+            Ordering::Greater => away,
+            Ordering::Equal => {
+                if quotient % 2 == 0 {
+                    quotient
+                } else {
+                    away
+                }
+            }
+        },
     }
 }
 
