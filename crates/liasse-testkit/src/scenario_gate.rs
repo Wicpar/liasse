@@ -201,14 +201,33 @@ pub const SKIP: &[(&str, &str)] = &[
     // `expose-binding-contract-mismatch-invalid` (response direction) and
     // `interface-mutation-param-contract-mismatch-invalid` (parameter direction);
     // their entries were pruned as stale.)
-    // Installation `$data` overlay (§13.3): the overlay is recorded on the install
-    // request (adapter/modules.rs), so a fresh-row overlay and its `$check` now run;
-    // the three-way *merge* onto an already-seeded row is a runtime seam.
-    ("13-modules/install-data-overlay-merge", "§13.3 the installation `$data` overlay's three-way merge onto an existing package-`$data`-seeded row is not landed in the runtime, so the overlay over a seeded row is rejected rather than merged"),
-    // Private `$deps` resolution (§13.6): the consumer child fails a standalone
-    // compile (an unresolved `#dep` handle) before dep provisioning can run.
-    ("13-modules/private-deps-isolated-per-consumer", "§13.6 `$deps` private nested-instance provisioning is unlanded; the consumer child fails standalone compile"),
-    ("13-modules/sibling-cannot-address-private-dep-rejected", "§13.6 `$deps` privacy/provisioning is unlanded; the consumer child fails standalone compile"),
+    // (§13.3 installation `$data` overlay now performs the full three-way merge onto
+    // an already-seeded row — `SeedMode::Overlay` in `seed.rs`: writable scalar/struct
+    // fields replace, `$set` fields union, omitted fields are retained, and nested
+    // keyed child collections merge by key. `install-data-overlay-merge` passes and
+    // its ledger entry was pruned as stale.)
+    // Private `$deps` provisioning (§13.6): the consumer child (`t.checkout`) declares
+    // `$deps: { tax: "t.tax@1" }` and its `$expose` addresses `#tax.rates` / `#tax.rates.set`.
+    // The install returns `invalid` because the consumer fails a standalone compile: `$deps`
+    // handles are validated (`liasse-model` `check_deps`) but never registered as import
+    // bindings, so `#tax` is an unknown `#import` (liasse-expr `env::import`/`scope::import`),
+    // AND the `#tax.rates` shape is a NEW import kind — a module-INSTANCE handle whose
+    // `.interface` field selects the dep's exposed-interface collection and whose
+    // `.interface.mut` names an exposed mutation — distinct from the §13.5 peer binding
+    // (`ModuleHost::bind_peer`), which binds `#handle` directly to ONE interface collection.
+    // Closing it needs: (1) a package-line resolver so `ModuleHost::install` can turn a
+    // `DepSpec { line, major }` into the dep definition (the adapter holds the packages map,
+    // the host holds none); (2) per-consumer nested dep-engine provisioning owned by the
+    // child (isolation is then structural, as for siblings); (3) the module-instance import
+    // type + `#tax.rates(.set)` typing/eval in liasse-expr; (4) dep-routed interface-mutation
+    // dispatch (`ModuleHost::interface_call` routing `taxes.set` → `#tax.rates.set` → the dep's
+    // exposed `rates.set` → `.set_rate`). A multi-crate §13.6 feature, not a surgical fix.
+    ("13-modules/private-deps-isolated-per-consumer", "§13.6 `$deps` private nested-instance provisioning is unlanded: the consumer fails standalone compile because `$deps` handles are never registered as `#import` bindings and the `#tax.rates` module-instance import kind + per-consumer dep-engine provisioning + dep-routed mutation dispatch do not exist (multi-crate: liasse-model/liasse-expr/liasse-runtime)"),
+    // §13.6 sibling privacy would itself fall out once deps are provisioned (a private dep is
+    // not in `ModuleHost::siblings`, so `spy`'s required peer `t.tax/rates@1` already resolves
+    // to zero candidates → `PeerUnresolved` → `rejected`); but step 0 installs `t.checkout`,
+    // which requires the same unlanded `$deps` provisioning, so the case never reaches step 1.
+    ("13-modules/sibling-cannot-address-private-dep-rejected", "§13.6 `$deps` provisioning is unlanded (see private-deps-isolated-per-consumer); step 0 installing the consumer `t.checkout` fails standalone compile, so the sibling-privacy rejection at step 1 is never exercised (the privacy check itself already holds: a private dep is not a `ModuleHost::siblings` candidate)"),
     // `$if_module` guard (§13.7).
     ("13-modules/if-module-guarded-state-preserved", "§13.7 `$if_module`-guarded `$expose` declarations are rejected by the model grammar (unlanded), so the child fails to load"),
     // Update path (§13.14/§13.15): the exposed-surface narrowing recheck and the

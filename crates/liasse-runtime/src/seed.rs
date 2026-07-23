@@ -9,7 +9,7 @@
 use liasse_ident::{KeyText, NameSegment};
 use liasse_syntax::DocValue;
 use liasse_store::{CollectionPath, KeyValue, RowAddress};
-use liasse_value::Type;
+use liasse_value::{Type, Value};
 
 use crate::compiled::{Compiled, CompiledCollection, CompiledDefault};
 use crate::doc;
@@ -40,6 +40,14 @@ pub(crate) enum SeedMode {
     /// with that carry (a documented seam); only keyed-collection rows reconcile
     /// here.
     ApplyIfAbsent,
+    /// Installation `$data` overlay (§13.3): applied onto an instance the package
+    /// `$data` seed already loaded. An ABSENT address is inserted like a fresh
+    /// genesis row; an OCCUPIED one is a three-way MERGE onto the seeded row —
+    /// writable scalar and struct fields overlay, `$set` fields union, and nested
+    /// keyed child collections merge by key (the recursion carries this mode down).
+    /// Every resulting row is re-staged so it passes ordinary insertion and load
+    /// validation (§13.3), unlike the retain-only [`ApplyIfAbsent`](Self::ApplyIfAbsent).
+    Overlay,
 }
 
 /// Admit every `$data` row into the prospective state, recording touched
@@ -155,12 +163,12 @@ fn stage_rows<'a>(
         ));
     };
     for entry in entries {
-        let fields = decode_row(ctx, prospective, collection, &entry.name.text, &entry.value)?;
+        let decoded = decode_row(ctx, prospective, collection, &entry.name.text, &entry.value)?;
         // A seed row's key fields come from the map key (§9.1), so the address is
         // known before any default resolves.
-        let key = row_key(collection, &fields)?;
+        let key = row_key(collection, &decoded)?;
         let address = store_path.row(key);
-        if prospective.contains(&address) {
+        let fields = if prospective.contains(&address) {
             match mode {
                 // §9.1: two seed rows at one key is a duplicate-key fault.
                 SeedMode::Genesis => {
@@ -171,8 +179,21 @@ fn stage_rows<'a>(
                 // current value — the seed neither overwrites it nor re-stages it,
                 // and its nested initializers are left to the retained row.
                 SeedMode::ApplyIfAbsent => continue,
+                // §13.3 overlay: an occupied address is a three-way merge — the
+                // overlay's writable scalar/struct fields replace the seeded ones,
+                // `$set` fields union, and fields the overlay omits are retained. The
+                // merged row is re-staged so phase two re-resolves its defaults and
+                // normalization and `finalize` re-checks it (ordinary insertion
+                // validation); its nested child collections merge below under this
+                // same mode.
+                SeedMode::Overlay => {
+                    let existing = prospective.get(&address).cloned().unwrap_or_else(FieldMap::new);
+                    overlay_fields(collection, existing, decoded)
+                }
             }
-        }
+        } else {
+            decoded
+        };
         prospective.insert(address.clone(), fields);
         staged.push(Staged { collection, address: address.clone() });
         // §5.5: a seed row may carry nested-collection initializers, staged under
@@ -189,6 +210,33 @@ fn stage_rows<'a>(
         }
     }
     Ok(())
+}
+
+/// Merge a §13.3 installation-`$data` overlay row (`overlay`) onto the row already
+/// seeded at the same key (`existing`). Each field the overlay supplies replaces
+/// the seeded value, except a `$set` field, which unions its members onto the
+/// current set (§13.3 "unions sets"); a field the overlay omits is retained. Key
+/// fields agree by construction (the two rows share an address), so replacing them
+/// is a no-op. Nested keyed child collections are not folded here — the caller's
+/// recursion merges each under this row's address through the same
+/// [`SeedMode::Overlay`] pipeline (§13.3 "merges keyed child collections by key").
+fn overlay_fields(collection: &CompiledCollection, mut existing: FieldMap, overlay: FieldMap) -> FieldMap {
+    for (name, value) in overlay {
+        let is_set = collection.fields.iter().any(|field| field.name == name && matches!(field.ty, Type::Set(_)));
+        let merged = match (is_set, existing.get(&name)) {
+            (true, Some(Value::Set(current))) => match value {
+                Value::Set(incoming) => {
+                    let mut union = current.clone();
+                    union.extend(incoming);
+                    Value::Set(union)
+                }
+                other => other,
+            },
+            _ => value,
+        };
+        existing.insert(name, merged);
+    }
+    existing
 }
 
 /// Decode a seed row's declared fields against their types, supplying each key

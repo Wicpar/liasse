@@ -1215,11 +1215,12 @@ impl<S: InstanceStore> Engine<S> {
     /// seeded genesis: `data_text` is the JSON text of the `$data` object, admitted
     /// through the ordinary insertion pipeline (defaults, normalizers, checks, meter
     /// funding) as one commit over current state — so every resulting value passes
-    /// load validation. This inserts the installation rows the module composition
-    /// seeds a child with. Merging supplied scalar/struct fields into an existing
-    /// package-`$data` row and unioning sets (the full §13.3/§13.13 overlay) is a
-    /// documented seam: a row colliding with a package-`$data` key is rejected as a
-    /// duplicate rather than field-merged.
+    /// load validation. This seeds the installation rows the module composition
+    /// gives a child. A row whose key is fresh is inserted; a row colliding with a
+    /// package-`$data` key is a three-way MERGE onto the seeded row (§13.3 via
+    /// [`SeedMode::Overlay`](crate::seed::SeedMode::Overlay)) — supplied writable
+    /// scalar/struct fields replace, `$set` fields union, omitted fields are
+    /// retained, and nested keyed child collections merge by key.
     pub(crate) fn overlay_install_data<G: Generators>(
         &mut self,
         data_text: &str,
@@ -1256,7 +1257,7 @@ impl<S: InstanceStore> Engine<S> {
         };
         let mut prospective = Prospective::gather(&self.store, schema)?;
         let mut touched = Vec::new();
-        crate::seed::admit(&self.compiled, &ctx, &mut prospective, &mut touched, data, crate::seed::SeedMode::Genesis)
+        crate::seed::admit(&self.compiled, &ctx, &mut prospective, &mut touched, data, crate::seed::SeedMode::Overlay)
             .map_err(EngineError::Seed)?;
         crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched).map_err(EngineError::Seed)?;
         ctx.validate_source_series(&prospective).map_err(EngineError::Seed)?;
