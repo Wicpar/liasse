@@ -236,7 +236,15 @@ pub(crate) fn materialize_row<'m>(
     let fields = working.get(address)?;
     let step = address.steps().last()?;
     let key = key_identity(collection, step.key());
-    let id = RowId::keyed_value(key.identity_value());
+    // §7.2 / Annex D.1: a row's stable identity is the key-derived chain of EVERY
+    // address step, top to bottom — the same identity `rows_at` builds on a tree walk
+    // and `row_id_of` derives for the incarnation index. A nested enforcing row
+    // (`companies[co].accounts[a1]`) MUST carry `co.a1`, not the leaf-only `a1`:
+    // truncating to the last step drops the ancestor prefix, so a meter's nested pool
+    // rows (built as children of this id) never match the full-chain `incarnation_index`
+    // and a reinserted §15.4 hierarchical pool would conflate with a deleted
+    // incarnation's frozen funding (Annex D.1, §15.2).
+    let id = row_id_of(address)?;
     // §14.1: a single-row bare read (a `return`/receiver read, a meter spend row)
     // descends its nested keyed collections active-filtered exactly like the
     // top-level bare read — the caller's `temporal.keep` decides activity, so a
