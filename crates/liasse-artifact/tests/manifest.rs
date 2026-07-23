@@ -16,6 +16,7 @@ const VALID: &str = r#"{
   "definition": { "identity": "sha256:0000000000000000000000000000000000000000000000000000000000000000", "path": "liasse.json" },
   "state": { "path": "state/current.cbor.zst", "sha256": "sha256:1111111111111111111111111111111111111111111111111111111111111111" },
   "history": { "path": "history/index.json", "sha256": "sha256:2222222222222222222222222222222222222222222222222222222222222222" },
+  "coverage": { "included": { "lin-1": { "base": "p1", "tip": "p1" } }, "fully_restorable": true },
   "modules": {},
   "included_modules": {},
   "entries": {
@@ -93,6 +94,7 @@ fn canonical_bytes_are_unicode_sorted() -> Fallible {
     let manifest = Manifest::parse(VALID.as_bytes())?;
     let text = String::from_utf8(manifest.to_canonical_bytes())?;
     let order = [
+        "\"coverage\"",
         "\"definition\"",
         "\"entries\"",
         "\"format\"",

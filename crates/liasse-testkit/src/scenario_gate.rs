@@ -126,15 +126,12 @@ pub const SKIP: &[(&str, &str)] = &[
     // tamper and extract ops) now drive end to end (adapter/ops.rs, artifacts.rs,
     // correction.rs). The residual entries are genuine runtime/artifact seams, not
     // adapter driving gaps. ---
-    // §19.7 state-section-vs-selected-point coherence is not verified at restore, so
-    // a spliced or mismatched selection is accepted rather than rejected.
-    ("19-history-artifacts/manifest-included-range-stated-in-coverage", "§19.5 the `coverage` member (included range + restorability) is not yet emitted by the exporter or carried by the manifest struct"),
-    ("19-history-artifacts/manifest-index-selection-mismatch-invalid", "§19.7 state/index selection coherence is not verified at restore, so a mismatched selection is accepted"),
-    ("19-history-artifacts/spliced-state-selection-mismatch-invalid", "§19.7 state-vs-selected-point coherence is not verified at restore (the copy_entry_from splice is accepted)"),
-    // §19.9 the runtime merge does not re-validate the combined composition under
-    // ordinary rules, so an individually-clean union that breaks uniqueness is
-    // reported clean instead of conflicting.
-    ("19-history-artifacts/merge-combined-uniqueness-violation-conflict", "§19.9 the runtime merge does not re-validate the combined composition under uniqueness, so the invalid union is reported clean (applied true)"),
+    // §19.5 `coverage` (included range + restorability) is now emitted by the
+    // exporter and carried/parsed by the closed manifest, and §19.5/§19.7 manifest-
+    // vs-history-index selection coherence is now verified at restore (those two
+    // cases were pruned). The residual coherence case below is the STATE-section
+    // splice, which needs the state section to carry its own Annex D.5 selection.
+    ("19-history-artifacts/spliced-state-selection-mismatch-invalid","§19.7 state-vs-selected-point coherence is not verified at restore (the copy_entry_from splice is accepted): the portable state section carries no Annex D.5 header (its own `selected`/`definition`), so a spliced state entry has no embedded selection to disagree with the manifest — needs the D.5 state-section header, a §19.6/Annex D.5 format seam, not a surgical check"),
     // Tamper ops needing machinery beyond archive byte/JSON surgery.
     ("19-history-artifacts/forged-state-consistent-checksums-accepted", "the `edit_cbor` tamper needs schema-owned resolution of a keyed-collection logical pointer into the state section, beyond byte surgery"),
     ("19-history-artifacts/history-index-overlapping-ranges-invalid", "the runtime emits an empty history-index `ranges` object (CORE), so `duplicate_json_member` has nothing to duplicate and §19.6 range verification is unlanded"),

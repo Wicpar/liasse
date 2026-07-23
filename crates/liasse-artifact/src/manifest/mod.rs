@@ -15,7 +15,7 @@ mod parse;
 
 use std::collections::BTreeMap;
 
-use liasse_ident::{DefinitionId, Digest, HistoryPoint, InstanceId};
+use liasse_ident::{DefinitionId, Digest, HistoryPoint, InstanceId, LineageId, PointId};
 
 use crate::canon::Json;
 
@@ -64,6 +64,28 @@ pub struct MountRef {
     pub selected: HistoryPoint,
 }
 
+/// One retained lineage's contiguous `[base, tip]` point range carried by an
+/// artifact (§19.5 `coverage.included`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PointRange {
+    /// The earliest represented point of the lineage in this artifact.
+    pub base: PointId,
+    /// The latest represented point of the lineage in this artifact (its head).
+    pub tip: PointId,
+}
+
+/// The export's included history range and restorability (§19.5, §19.7). `included`
+/// maps each retained lineage to the contiguous `[base, tip]` point range the
+/// artifact carries; `fully_restorable` states whether every represented point is
+/// restorable from the included entries.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Coverage {
+    /// Each retained lineage's carried point range, by lineage id.
+    pub included: BTreeMap<LineageId, PointRange>,
+    /// Whether every represented point is fully restorable from the entries.
+    pub fully_restorable: bool,
+}
+
 /// A direct child artifact required by the export (§19.5 `included_modules`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IncludedModule {
@@ -86,6 +108,8 @@ pub struct Manifest {
     pub state: EntryRef,
     /// The history index entry.
     pub history: EntryRef,
+    /// The included history range and restorability (§19.5, §19.7).
+    pub coverage: Coverage,
     /// Selected direct mounts by mount name.
     pub modules: BTreeMap<String, MountRef>,
     /// Every direct child artifact required, by child incarnation.
@@ -107,6 +131,7 @@ const TOP_MEMBERS: &[&str] = &[
     "definition",
     "state",
     "history",
+    "coverage",
     "modules",
     "included_modules",
     "entries",
@@ -138,6 +163,7 @@ impl Manifest {
             ),
             ("state".to_owned(), entry_ref_json(&self.state)),
             ("history".to_owned(), entry_ref_json(&self.history)),
+            ("coverage".to_owned(), coverage_json(&self.coverage)),
             (
                 "modules".to_owned(),
                 Json::object(self.modules.iter().map(|(name, mount)| {
@@ -177,6 +203,24 @@ impl Manifest {
             ),
         ])
     }
+}
+
+fn coverage_json(coverage: &Coverage) -> Json {
+    Json::object([
+        (
+            "included".to_owned(),
+            Json::object(coverage.included.iter().map(|(lineage, range)| {
+                (
+                    lineage.as_str().to_owned(),
+                    Json::object([
+                        ("base".to_owned(), Json::str(range.base.as_str())),
+                        ("tip".to_owned(), Json::str(range.tip.as_str())),
+                    ]),
+                )
+            })),
+        ),
+        ("fully_restorable".to_owned(), Json::Bool(coverage.fully_restorable)),
+    ])
 }
 
 fn point_json(point: &HistoryPoint) -> Json {

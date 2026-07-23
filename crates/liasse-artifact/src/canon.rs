@@ -21,6 +21,8 @@ pub enum Json {
     Str(String),
     /// A non-negative JSON integer (the manifest's only number is `format: 1`).
     Int(u64),
+    /// A JSON boolean (the manifest's `coverage.fully_restorable`).
+    Bool(bool),
     /// A JSON object, always encoded in Unicode-scalar key order.
     Object(BTreeMap<String, Json>),
 }
@@ -52,6 +54,7 @@ impl Json {
         match self {
             Self::Str(text) => Self::write_string(text, out),
             Self::Int(n) => out.push_str(&n.to_string()),
+            Self::Bool(b) => out.push_str(if *b { "true" } else { "false" }),
             Self::Object(members) => {
                 out.push('{');
                 for (i, (key, value)) in members.iter().enumerate() {

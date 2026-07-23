@@ -27,7 +27,7 @@
 
 use std::collections::BTreeMap;
 
-use liasse_artifact::{Artifact, ArtifactBuilder, ArtifactError};
+use liasse_artifact::{Artifact, ArtifactBuilder, ArtifactError, Coverage, PointRange};
 use liasse_host::Registry;
 use liasse_ident::HistoryPoint;
 use liasse_store::{AddressStep, InstanceStore, RowAddress};
@@ -89,6 +89,12 @@ pub enum ConflictKind {
     DeleteVsModify,
     /// Both sides inserted a different row at the same new key.
     CompetingInsert,
+    /// The individually-clean union fails ordinary Liasse validation because two
+    /// merged rows collide on a `$unique` field or group (§19.9: the merge reports
+    /// conflicts for "any combined result that fails ordinary Liasse validation",
+    /// and Liasse re-validates the prospective composition "under the ordinary
+    /// type, ref, deletion, uniqueness ... rules").
+    Uniqueness,
 }
 
 /// The §D.3 application address a §19.9 merge conflict is reported at, so a host
@@ -221,6 +227,31 @@ fn history_index_bytes(selected: &HistoryPoint, lineages: &[LineageEntry]) -> Ve
     serde_json::to_vec(&J::Object(index)).unwrap_or_default()
 }
 
+/// Build the §19.5/§19.7 `coverage` for an export: `included` maps each retained
+/// lineage to the `[base, tip]` point range the artifact **carries as restorable
+/// state**, and `fully_restorable` states whether every point in that range is
+/// restorable from the included entries.
+///
+/// A CORE export carries one section — `state/current.cbor.zst` at the selected
+/// point — and a history index with empty segment ranges (no reversible-compaction
+/// deltas, a §19.4/§19.6 seam). The only point whose state the artifact can restore
+/// is therefore the selected one, so `included` states exactly the single-point
+/// range `[selected, selected]` on the selected lineage. Over-claiming an ancestor
+/// range the artifact holds no segment for would be a dishonest coverage. Every
+/// point in that stated range (the one selected point) IS restorable, so
+/// `fully_restorable` is `true`.
+fn coverage_of(selected: &HistoryPoint) -> Coverage {
+    let mut included = BTreeMap::new();
+    included.insert(
+        selected.lineage().clone(),
+        PointRange {
+            base: selected.point().clone(),
+            tip: selected.point().clone(),
+        },
+    );
+    Coverage { included, fully_restorable: true }
+}
+
 impl<S: InstanceStore> Engine<S> {
     /// Export the current committed boundary as a verified `.liasse` artifact
     /// (§19.5, §19.7): the active definition, the selected state, and a minimal
@@ -238,6 +269,8 @@ impl<S: InstanceStore> Engine<S> {
         // `(lineage, point)` and a continuation advances past it.
         let selected = self.cursor().point();
         let index = history_index_bytes(&selected, &self.cursor().lineages());
+        // §19.5/§19.7: state the included range and restorability in `coverage`.
+        let coverage = coverage_of(&selected);
         ArtifactBuilder::new(
             self.instance().clone(),
             selected,
@@ -245,6 +278,7 @@ impl<S: InstanceStore> Engine<S> {
             state.to_bytes(),
             index,
         )
+        .with_coverage(coverage)
         .build()
         .map_err(|error| EngineError::Internal(format!("artifact build failed: {error}")))
     }
@@ -302,6 +336,14 @@ impl<S: InstanceStore> Engine<S> {
         generator: &mut G,
     ) -> Result<Self, ImportError> {
         let opened = Artifact::open(artifact)?;
+        // §19.5/§19.7 cross-section coherence: the `selected` point the manifest
+        // names and the `selected` point recorded inside `history/index.json` MUST
+        // agree — two entries naming different selections cannot describe one
+        // committed boundary. The artifact layer verifies byte integrity but
+        // deliberately leaves this cross-section check to the runtime (it must parse
+        // the history index), so a spliced or repointed selection is caught here,
+        // before anything is instantiated.
+        verify_selection_coherence(&opened)?;
         let (definition, state) = decode_sections(&opened)?;
         let cursor = crate::lineage::HistoryCursor::restored(&opened.manifest().selected, opened.history_index());
         Self::from_state(store, &definition, &state, cursor, registry, fallback, generator).map_err(ImportError::Engine)
@@ -369,7 +411,44 @@ impl<S: InstanceStore> Engine<S> {
             .working(schema)
             .map_err(ImportError::Engine)?;
         let incoming = incoming.working(schema).map_err(ImportError::Engine)?;
-        Ok(ThreeWayMerge { base, local, incoming, schema }.resolve())
+        // §19.9: re-validating the combined composition needs the ordinary
+        // uniqueness constraints, so carry each top-level collection's `$unique`
+        // groups (a single `$unique` scalar is a one-member group) into the merge.
+        let unique: Vec<(String, Vec<Vec<String>>)> = self
+            .compiled()
+            .collections
+            .iter()
+            .filter(|collection| !collection.unique.is_empty())
+            .map(|collection| (collection.name.clone(), collection.unique.clone()))
+            .collect();
+        Ok(ThreeWayMerge { base, local, incoming, schema, unique }.resolve())
+    }
+}
+
+/// §19.5/§19.7 cross-section coherence: the manifest's `selected` point and the
+/// `selected` point recorded inside `history/index.json` MUST name the same
+/// committed boundary. A tampered manifest that repoints `selected`, or a spliced
+/// index, leaves the two disagreeing; verification (Annex D.5) established byte
+/// integrity but not this semantic agreement, so reject it as an artifact that
+/// cannot describe one boundary.
+fn verify_selection_coherence(opened: &Artifact) -> Result<(), ImportError> {
+    let index: J = serde_json::from_slice(opened.history_index())
+        .map_err(|error| ImportError::Corrupt(format!("history index is not JSON: {error}")))?;
+    let indexed = index.get("selected").and_then(|selected| {
+        let object = selected.as_object()?;
+        let lineage = object.get("lineage")?.as_str()?;
+        let point = object.get("point")?.as_str()?;
+        Some((lineage.to_owned(), point.to_owned()))
+    });
+    let manifest = &opened.manifest().selected;
+    let expected = (manifest.lineage().as_str().to_owned(), manifest.point().as_str().to_owned());
+    match indexed {
+        Some(indexed) if indexed == expected => Ok(()),
+        _ => Err(ImportError::Corrupt(
+            "manifest selected point differs from the history-index selection (§19.5/§19.7): the \
+             artifact's sections do not describe one committed boundary"
+                .to_owned(),
+        )),
     }
 }
 
@@ -392,6 +471,10 @@ struct ThreeWayMerge<'a> {
     local: BTreeMap<RowAddress, FieldMap>,
     incoming: BTreeMap<RowAddress, FieldMap>,
     schema: Schema<'a>,
+    /// Each top-level collection carrying `$unique` constraints, paired with its
+    /// unique groups (a single `$unique` scalar is a one-member group), for the
+    /// §19.9 combined-composition re-validation.
+    unique: Vec<(String, Vec<Vec<String>>)>,
 }
 
 impl ThreeWayMerge<'_> {
@@ -443,7 +526,51 @@ impl ThreeWayMerge<'_> {
         for address in addresses {
             self.resolve_row(address, &mut merged, &mut conflicts);
         }
+        // §19.9: the per-coordinate resolution above accepts compatible changes to
+        // separate coordinates, but the resulting union must still pass ordinary
+        // Liasse validation. Re-check uniqueness over the combined rows so an
+        // individually-clean union that collides two rows on a `$unique` field is a
+        // reported conflict, not a silent accept.
+        self.check_combined_uniqueness(&merged, &mut conflicts);
         MergeOutcome { merged, conflicts }
+    }
+
+    /// Re-validate the combined merge result under ordinary uniqueness (§19.9). For
+    /// each top-level collection carrying `$unique` constraints, a group value that
+    /// appears on two distinct merged rows is a conflict — reported at the second
+    /// colliding row's §D.3 coordinate (the field for a single-column group, the
+    /// whole row for a composite group), so a host correction can resolve it.
+    fn check_combined_uniqueness(
+        &self,
+        merged: &BTreeMap<RowAddress, FieldMap>,
+        conflicts: &mut Vec<MergeConflict>,
+    ) {
+        for (name, groups) in &self.unique {
+            for group in groups {
+                let mut seen: Vec<Vec<Value>> = Vec::new();
+                for (address, fields) in merged {
+                    // The merge carries only top-level rows (nested-collection merge
+                    // is a seam), so a merged row of this collection is a depth-1
+                    // address whose sole step names it.
+                    if address.depth() != 1 || last_step(address).map(|step| step.name().as_str()) != Some(name) {
+                        continue;
+                    }
+                    let Some(tuple) = unique_tuple(group, fields) else { continue };
+                    if seen.contains(&tuple) {
+                        let field = match group.as_slice() {
+                            [single] => Some(single.clone()),
+                            _ => None,
+                        };
+                        conflicts.push(MergeConflict {
+                            coordinate: self.coordinate(address, field),
+                            kind: ConflictKind::Uniqueness,
+                        });
+                    } else {
+                        seen.push(tuple);
+                    }
+                }
+            }
+        }
     }
 
     fn resolve_row(
@@ -550,4 +677,16 @@ impl ThreeWayMerge<'_> {
 /// address; the `Option` keeps the coordinate builder total without a panic.
 fn last_step(address: &RowAddress) -> Option<&AddressStep> {
     address.steps().last()
+}
+
+/// The candidate-key tuple of a row for a unique `group`, or `None` when any
+/// component is absent (an optional-`none` component never conflicts, §5.7).
+fn unique_tuple(group: &[String], fields: &FieldMap) -> Option<Vec<Value>> {
+    group
+        .iter()
+        .map(|name| match fields.get(name) {
+            Some(Value::None) | None => None,
+            Some(value) => Some(value.clone()),
+        })
+        .collect()
 }

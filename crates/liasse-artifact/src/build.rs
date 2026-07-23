@@ -29,8 +29,8 @@ use liasse_ident::{DefinitionId, Digest, HistoryPoint, InstanceId};
 use crate::archive::ArchiveBuilder;
 use crate::error::{ArtifactError, MIMETYPE};
 use crate::manifest::{
-    DefinitionRef, EntryChecksum, EntryRef, IncludedModule, Manifest, MountRef, HISTORY_INDEX_PATH,
-    LIASSE_JSON_PATH, STATE_PATH,
+    Coverage, DefinitionRef, EntryChecksum, EntryRef, IncludedModule, Manifest, MountRef,
+    HISTORY_INDEX_PATH, LIASSE_JSON_PATH, STATE_PATH,
 };
 
 /// Media type recorded for the `mimetype` entry.
@@ -70,6 +70,7 @@ pub struct ArtifactBuilder {
     definition: Vec<u8>,
     state: Vec<u8>,
     history_index: Vec<u8>,
+    coverage: Coverage,
     sections: Vec<Section>,
     children: Vec<ChildModule>,
 }
@@ -91,9 +92,22 @@ impl ArtifactBuilder {
             definition,
             state,
             history_index,
+            // §19.5: a leaf export with no separately-stated retained lineage range
+            // defaults to an empty `included` and a fully-restorable claim; the
+            // runtime exporter overrides it with the real per-lineage ranges via
+            // [`Self::with_coverage`].
+            coverage: Coverage { included: BTreeMap::new(), fully_restorable: true },
             sections: Vec::new(),
             children: Vec::new(),
         }
+    }
+
+    /// Set the §19.5 `coverage` — the included per-lineage point ranges and the
+    /// restorability claim — replacing the fully-restorable/empty-range default.
+    #[must_use]
+    pub fn with_coverage(mut self, coverage: Coverage) -> Self {
+        self.coverage = coverage;
+        self
     }
 
     /// Add a path-addressed extra section (a resource under `resources/`, a
@@ -203,6 +217,7 @@ impl ArtifactBuilder {
                 path: HISTORY_INDEX_PATH.to_owned(),
                 sha256: Digest::of_bytes(&self.history_index),
             },
+            coverage: self.coverage.clone(),
             modules,
             included_modules,
             entries,

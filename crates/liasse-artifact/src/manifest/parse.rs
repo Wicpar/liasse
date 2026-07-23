@@ -15,7 +15,8 @@ use serde_json::{Map, Value};
 use crate::error::ArtifactError;
 
 use super::{
-    DefinitionRef, EntryChecksum, EntryRef, IncludedModule, Manifest, MountRef, TOP_MEMBERS,
+    Coverage, DefinitionRef, EntryChecksum, EntryRef, IncludedModule, Manifest, MountRef,
+    PointRange, TOP_MEMBERS,
 };
 
 impl Manifest {
@@ -34,6 +35,7 @@ impl Manifest {
         let definition = read_definition(&root.object_member("definition")?)?;
         let state = read_entry_ref(&root.object_member("state")?)?;
         let history = read_entry_ref(&root.object_member("history")?)?;
+        let coverage = read_coverage(&root.object_member("coverage")?)?;
         let modules = read_modules(root.optional_object("modules")?)?;
         let included_modules = read_included(root.optional_object("included_modules")?)?;
         let entries = read_entries(&root.object_member("entries")?)?;
@@ -44,6 +46,7 @@ impl Manifest {
             definition,
             state,
             history,
+            coverage,
             modules,
             included_modules,
             entries,
@@ -120,6 +123,14 @@ impl<'a> Obj<'a> {
         })
     }
 
+    fn bool_member(&self, name: &'static str) -> Result<bool, ArtifactError> {
+        let value = self.require(name)?;
+        value.as_bool().ok_or_else(|| ArtifactError::ManifestBadValue {
+            member: self.child_path(name),
+            detail: "expected a boolean".to_owned(),
+        })
+    }
+
     fn object_member(&self, name: &'static str) -> Result<Obj<'a>, ArtifactError> {
         let value = self.require(name)?;
         Obj::of(value, self.child_path(name), name)
@@ -168,6 +179,27 @@ fn read_entry_ref(obj: &Obj<'_>) -> Result<EntryRef, ArtifactError> {
     Ok(EntryRef {
         path: obj.str_member("path")?.to_owned(),
         sha256: obj.digest_member("sha256")?,
+    })
+}
+
+fn read_coverage(obj: &Obj<'_>) -> Result<Coverage, ArtifactError> {
+    obj.reject_unknown(&["included", "fully_restorable"])?;
+    let included_obj = obj.object_member("included")?;
+    let mut included = BTreeMap::new();
+    for lineage in included_obj.map.keys() {
+        let range = included_obj.object_member_dynamic(lineage)?;
+        range.reject_unknown(&["base", "tip"])?;
+        included.insert(
+            LineageId::new(lineage.as_str()),
+            PointRange {
+                base: PointId::new(range.str_member("base")?),
+                tip: PointId::new(range.str_member("tip")?),
+            },
+        );
+    }
+    Ok(Coverage {
+        included,
+        fully_restorable: obj.bool_member("fully_restorable")?,
     })
 }
 

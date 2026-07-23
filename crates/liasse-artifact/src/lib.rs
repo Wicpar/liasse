@@ -54,7 +54,7 @@ pub use build::ArtifactBuilder;
 pub use compat::{CompatibilityDecision, ContractRule, UpdateRelation};
 pub use error::{ArtifactError, MIMETYPE};
 pub use manifest::{
-    DefinitionRef, EntryChecksum, EntryRef, IncludedModule, Manifest, MountRef, HISTORY_INDEX_PATH,
-    LIASSE_JSON_PATH, STATE_PATH,
+    Coverage, DefinitionRef, EntryChecksum, EntryRef, IncludedModule, Manifest, MountRef,
+    PointRange, HISTORY_INDEX_PATH, LIASSE_JSON_PATH, STATE_PATH,
 };
 pub use version::{PackageIdentity, PackageName, Version};
