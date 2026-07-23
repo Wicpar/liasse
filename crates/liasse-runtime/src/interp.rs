@@ -119,6 +119,23 @@ pub(crate) fn local_bindings(
     (types, cells)
 }
 
+/// The root local name of a field-write target (`t.label`, `t.a.b`, `t[k].f`) — the
+/// `Name` at the base of a `Field`/`Select` chain, or `None` when the target is not a
+/// write through a local (a bare `name` binding, a `.field` receiver write, a root
+/// singleton, or a collection). Distinguishes a local written as a live row handle
+/// from one only read (§8.1/§8.6).
+fn field_write_root(target: &Expr) -> Option<&str> {
+    let ExprKind::Field { .. } = &target.kind else { return None };
+    let mut cursor = target;
+    loop {
+        match &cursor.kind {
+            ExprKind::Name(id) => return Some(&id.text),
+            ExprKind::Field { base, .. } | ExprKind::Select { base, .. } => cursor = base,
+            _ => return None,
+        }
+    }
+}
+
 /// The internal-call nesting bound (§8.11): a program calling another mutation
 /// recurses this interpreter, so a cyclic mutation graph is capped rather than
 /// overflowing the stack. Real packages nest only a handful of levels.
@@ -544,6 +561,23 @@ impl<'a> Interp<'a> {
         {
             let keys = self.selection_key_values(operand, source)?;
             return self.bind_deleted(name, loc.decl, keys);
+        }
+        // §8.1/§8.6: `name = .coll[key]` where a later `name.field = …` writes through
+        // the binding is a LIVE row target, tracked by address so the write lands on
+        // the row and `return name { … }` reads its updated fields (§8.10
+        // read-your-writes). A binding the program only READS (`removed = .cells[@k]`
+        // then `return removed`) stays a value snapshot below, so it survives a
+        // subsequent delete of the row (§8.4). A single-key selector of a row that does
+        // not currently exist also falls through (an absent read; §8.9 rejects a write
+        // to it at apply time).
+        if let ExprKind::Select { selector: Selector::Keys(keys), .. } = &value.kind
+            && keys.len() == 1
+            && self.local_is_written(&name)
+            && let Some(target) = self.row_target(value, source)?
+            && self.prospective.get(&target.address).is_some()
+        {
+            self.locals.insert(name, LocalBind::Row(target));
+            return Ok(());
         }
         let current = self.current()?;
         let typed = check_expression(&self.scope(), source, value)
@@ -1955,9 +1989,27 @@ impl<'a> Interp<'a> {
     /// A keyed selector over a collection (top-level or nested) locates one row;
     /// `.` is the receiver. The row need not exist — a stale ancestor address is
     /// still resolvable but reads/patches against it reject (§6.3).
+    /// Whether the program writes a field of the local named `name` (`name.field =
+    /// …` or clears it), i.e. treats it as a live row handle rather than a read-only
+    /// snapshot (§8.1/§8.6). Only such a local binds as a live [`LocalBind::Row`].
+    fn local_is_written(&self, name: &str) -> bool {
+        self.mutation.program.iter().any(|compiled| match &compiled.stmt.kind {
+            StmtKind::Assign { target, .. } | StmtKind::Clear(target) => field_write_root(target) == Some(name),
+            _ => false,
+        })
+    }
+
     fn row_target(&self, expr: &Expr, source: SourceId) -> Result<Option<RowTarget>, Rejection> {
         match &expr.kind {
             ExprKind::Current => Ok(self.receiver.clone()),
+            // §8.1/§8.6: a local bound to a row (`t = .templates[@id]`) is a live
+            // write target, so `t.field = value` stages the field on the row `t`
+            // addresses (read-your-writes, §8.10). A local bound to a value is not a
+            // row source, so it stages nothing.
+            ExprKind::Name(id) => Ok(match self.locals.get(&id.text) {
+                Some(LocalBind::Row(target)) => Some(target.clone()),
+                _ => None,
+            }),
             ExprKind::Select { base, selector: Selector::Keys(keys) } => {
                 let Some(loc) = self.collection_ref(base, source)? else {
                     return Ok(None);

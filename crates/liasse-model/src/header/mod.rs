@@ -50,6 +50,10 @@ pub(crate) struct Parsed<'a> {
     pub model: Option<&'a DocValue>,
     pub types: Option<&'a DocValue>,
     pub data: Option<&'a DocValue>,
+    /// The §4.1 `$bundle` (package-authoritative, three-way-merged data) object,
+    /// when declared — validated as ordinary insert data (§13.13) and applied at
+    /// genesis / reconciled on update by the runtime.
+    pub bundle: Option<&'a DocValue>,
 }
 
 /// The members Annex C.1 permits at the top level, by package kind.
@@ -65,6 +69,7 @@ fn allowed_members(kind: Kind) -> &'static [&'static str] {
             "$model",
             "$data",
             "$seed",
+            "$bundle",
             "$history",
             "$migrations",
         ],
@@ -79,6 +84,7 @@ fn allowed_members(kind: Kind) -> &'static [&'static str] {
             "$model",
             "$data",
             "$seed",
+            "$bundle",
             "$history",
             "$use",
             "$deps",
@@ -172,6 +178,7 @@ impl Header {
             model: root.member("$model").map(|m| &m.value),
             types: root.member("$types").map(|m| &m.value),
             data,
+            bundle: root.member("$bundle").map(|m| &m.value),
         })
     }
 }
@@ -264,18 +271,6 @@ fn read_identity(reporter: &mut Reporter, members: &[DocMember], kind: Kind) -> 
 fn classify_member(reporter: &mut Reporter, member: &DocMember, allowed: &[&str]) {
     let name = member.name.text.as_str();
     if allowed.contains(&name) {
-        return;
-    }
-    // §4.1 `$bundle` (package-authoritative, three-way-merged data) is specified
-    // but not yet built here; reject it loudly rather than accept and silently
-    // drop it — an honest follow-on hole, not a grammar violation.
-    if name == "$bundle" {
-        reporter.reject_hint(
-            member.span,
-            code::UNKNOWN_MEMBER,
-            "`$bundle` (§4.1 package-authoritative data) is not supported by this implementation yet",
-            "use `$seed` for apply-if-absent starting data until bundle support lands",
-        );
         return;
     }
     if name.starts_with('$') {

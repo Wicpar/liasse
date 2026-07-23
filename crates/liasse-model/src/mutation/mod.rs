@@ -221,17 +221,32 @@ impl MutPhase<'_, '_> {
         receiver: &ExprType,
         params: &mut Params,
     ) {
-        let binds = BindEnv::new();
+        let mut binds = BindEnv::new();
         for (stmt, _) in statements {
-            // A scalar assignment `field = @p` constrains `@p` to the target
-            // field's type (§8.3); the general expression walk below does not
-            // relate the assignment's two sides, so it is inferred here.
-            if let StmtKind::Assign { target, value } = &stmt.kind
-                && let ExprKind::Param(id) = &value.kind
-                && let Some(ty) = self.resolve(target, receiver, &binds)
-                && ty.as_scalar().is_some()
-            {
-                record(params, &id.text, ty);
+            if let StmtKind::Assign { target, value } = &stmt.kind {
+                if let Some(local) = local_binding_name(target) {
+                    // §8/Annex C.9: a local binding `local = value` is visible to
+                    // later statements, so track its type here — a subsequent
+                    // `local.field = @p` (below) then resolves the local's row and
+                    // infers `@p` from the field. A value the CORE phase cannot type
+                    // (a mutation-operator or host/program-call result) resolves to
+                    // `None` and stays unbound, exactly as the full check phase defers
+                    // it; the param uses on such a value are inferred by the `infer_in`
+                    // walk instead.
+                    if let Some(ty) = self.resolve(value, receiver, &binds) {
+                        binds.insert(local.to_owned(), ty);
+                    }
+                } else if let ExprKind::Param(id) = &value.kind
+                    && let Some(ty) = self.resolve(target, receiver, &binds)
+                    && ty.as_scalar().is_some()
+                {
+                    // A scalar assignment `field = @p` constrains `@p` to the target
+                    // field's type (§8.3) — including a field of a local binding
+                    // (`t.label = @p`), resolved through `binds` above. The general
+                    // expression walk below does not relate the assignment's two
+                    // sides, so it is inferred here.
+                    record(params, &id.text, ty);
+                }
             }
             for expr in stmt_exprs(stmt) {
                 self.infer_in(expr, receiver, &binds, params);

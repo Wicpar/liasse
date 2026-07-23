@@ -49,10 +49,23 @@ pub(crate) struct Compilation {
     pub(crate) model: Model,
     pub(crate) compiled: Compiled,
     pub(crate) data: Option<liasse_syntax::DocValue>,
+    /// The package's §4.1 `$bundle` (package-authoritative data) object, when
+    /// declared — applied as ordinary inserts at genesis and three-way merged on
+    /// update (§13.13).
+    pub(crate) bundle: Option<liasse_syntax::DocValue>,
     /// The package's `$requires` declarations (§16.2), as `(local namespace,
     /// "name@major")` pairs in declaration order — resolved against the host
     /// registry at load, before activation.
     pub(crate) requires: Vec<(String, String)>,
+}
+
+/// The insert data a genesis applies (§9.1/§13.13): the apply-if-absent `$seed`
+/// (`$data` alias) and the package-authoritative `$bundle`, each a validated
+/// authoring object. Kept together so [`Engine::genesis`] applies both as inserts,
+/// and §4.1 has already ensured their addresses are disjoint.
+struct Genesis {
+    data: Option<liasse_syntax::DocValue>,
+    bundle: Option<liasse_syntax::DocValue>,
 }
 
 /// Parse a definition text and compile its model, statements, views, and buckets
@@ -122,8 +135,12 @@ pub(crate) fn compile_definition(
     let data = doc::member(document.root(), "$data")
         .or_else(|| doc::member(document.root(), "$seed"))
         .cloned();
+    // §4.1/§13.13: `$bundle` is package-authoritative data, applied as inserts at
+    // genesis and three-way merged on update. The model layer validated its shape
+    // and its disjointness from `$seed`.
+    let bundle = doc::member(document.root(), "$bundle").cloned();
     let requires = read_requires(document.root());
-    Ok(Compilation { sources, model, compiled, data, requires })
+    Ok(Compilation { sources, model, compiled, data, bundle, requires })
 }
 
 /// Parse a definition's `$requires` declarations (§16.2) without building its
@@ -447,8 +464,8 @@ impl<S: InstanceStore> Engine<S> {
         definition: &str,
         generator: &mut G,
     ) -> Result<Self, EngineError> {
-        let (mut engine, data) = Self::assemble(store, definition, crate::imports::EMPTY.types(), generator)?;
-        engine.genesis(definition, data.as_ref(), &crate::imports::EMPTY, generator)?;
+        let (mut engine, genesis) = Self::assemble(store, definition, crate::imports::EMPTY.types(), generator)?;
+        engine.genesis(definition, &genesis, &crate::imports::EMPTY, generator)?;
         Ok(engine)
     }
 
@@ -466,7 +483,7 @@ impl<S: InstanceStore> Engine<S> {
         definition: &str,
         import_types: &BTreeMap<String, liasse_expr::ExprType>,
         generator: &mut G,
-    ) -> Result<(Self, Option<liasse_syntax::DocValue>), EngineError> {
+    ) -> Result<(Self, Genesis), EngineError> {
         Self::assemble_with(store, definition, import_types, generator, Registry::new())
     }
 
@@ -487,15 +504,15 @@ impl<S: InstanceStore> Engine<S> {
         import_types: &BTreeMap<String, liasse_expr::ExprType>,
         generator: &mut G,
         registry: Registry,
-    ) -> Result<(Self, Option<liasse_syntax::DocValue>), EngineError> {
-        let Compilation { sources, model, compiled, data, requires } =
+    ) -> Result<(Self, Genesis), EngineError> {
+        let Compilation { sources, model, compiled, data, bundle, requires } =
             compile_definition(definition, &HostSignatures::default(), import_types)?;
         let mut host = HostBinding::resolve(registry, &requires, false)?;
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
         let keyrings = provision_keyrings(&compiled, clock, &mut host, ProviderFallback::SimDefault)?;
         let engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
-        Ok((engine, data))
+        Ok((engine, Genesis { data, bundle }))
     }
 
     /// Load `definition` into `store` with the LENIENT checker of [`Engine::load`]
@@ -516,9 +533,9 @@ impl<S: InstanceStore> Engine<S> {
         generator: &mut G,
         registry: Registry,
     ) -> Result<Self, EngineError> {
-        let (mut engine, data) =
+        let (mut engine, genesis) =
             Self::assemble_with(store, definition, crate::imports::EMPTY.types(), generator, registry)?;
-        engine.genesis(definition, data.as_ref(), &crate::imports::EMPTY, generator)?;
+        engine.genesis(definition, &genesis, &crate::imports::EMPTY, generator)?;
         Ok(engine)
     }
 
@@ -543,11 +560,11 @@ impl<S: InstanceStore> Engine<S> {
         use crate::config::ConfigBindError;
         // §13.4: the child's `$expose` `$view` may read a parent surface — type its
         // `#handle` reads against the resolved projection at compile.
-        let (mut engine, data) = Self::assemble(store, definition, imports.types(), generator)
+        let (mut engine, genesis) = Self::assemble(store, definition, imports.types(), generator)
             .map_err(ConfigBindError::Engine)?;
         engine.bind_config(config, generator)?;
         engine
-            .genesis(definition, data.as_ref(), imports, generator)
+            .genesis(definition, &genesis, imports, generator)
             .map_err(ConfigBindError::Engine)?;
         Ok(engine)
     }
@@ -579,13 +596,13 @@ impl<S: InstanceStore> Engine<S> {
         // supplied to the checker.
         let requires = requires_of(definition)?;
         let mut host = HostBinding::resolve(registry, &requires, true)?;
-        let Compilation { sources, model, compiled, data, .. } =
+        let Compilation { sources, model, compiled, data, bundle, .. } =
             compile_definition(definition, &host.expr_signatures(), crate::imports::EMPTY.types())?;
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
         let keyrings = provision_keyrings(&compiled, clock, &mut host, ProviderFallback::SimDefault)?;
         let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
-        engine.genesis(definition, data.as_ref(), &crate::imports::EMPTY, generator)?;
+        engine.genesis(definition, &Genesis { data, bundle }, &crate::imports::EMPTY, generator)?;
         Ok(engine)
     }
 
@@ -1163,10 +1180,12 @@ impl<S: InstanceStore> Engine<S> {
     fn genesis<G: Generators>(
         &mut self,
         definition: &str,
-        data: Option<&liasse_syntax::DocValue>,
+        genesis: &Genesis,
         imports: &crate::imports::ParentImports,
         generator: &mut G,
     ) -> Result<(), EngineError> {
+        let data = genesis.data.as_ref();
+        let bundle = genesis.bundle.as_ref();
         let schema = Schema::new(&self.model);
         let snapshots = self.keyring_snapshots();
         // §13.1/§9.1: a genesis `$seed`/`$data` field default may read the
@@ -1199,12 +1218,20 @@ impl<S: InstanceStore> Engine<S> {
         };
         let mut prospective = Prospective::empty();
         let mut touched = Vec::new();
-        if let Some(data) = data {
-            crate::seed::admit(&self.compiled, &ctx, &mut prospective, &mut touched, data, crate::seed::SeedMode::Genesis)
+        // §13.13: on first installation, `$seed` (`$data` alias) and `$bundle` BOTH
+        // apply as ordinary inserts; §4.1 guarantees their addresses are disjoint, so
+        // admitting them in turn never collides. Each Genesis admit also resolves the
+        // §8.2 singleton defaults, so a seed/bundle present covers them.
+        let mut seeded = false;
+        for source in [data, bundle].into_iter().flatten() {
+            crate::seed::admit(&self.compiled, &ctx, &mut prospective, &mut touched, source, crate::seed::SeedMode::Genesis)
                 .map_err(EngineError::Seed)?;
-        } else {
-            // §8.2: even with no `$data`, a writable singleton root field declared
-            // `= default` takes its default at genesis, then normalizes it (§8.8).
+            seeded = true;
+        }
+        if !seeded {
+            // §8.2: even with no `$seed`/`$bundle`, a writable singleton root field
+            // declared `= default` takes its default at genesis, then normalizes it
+            // (§8.8).
             crate::seed::apply_singleton_defaults(&self.compiled, &ctx, &mut prospective)
                 .map_err(EngineError::Seed)?;
             crate::seed::apply_singleton_normalizes(&self.compiled, &ctx, &mut prospective)

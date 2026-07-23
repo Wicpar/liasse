@@ -178,6 +178,12 @@ impl<S: InstanceStore> Engine<S> {
         // the live source engine now, at head, so `$old.items.doubled` resolves; the
         // raw stored-collection materialization inside `build_migrated` cannot.
         let old_root = self.source_root().map_err(UpdateError::Engine)?;
+        // §4.1/§13.13: the OLD package `$bundle` is the base of the three-way merge —
+        // the release currently in force, read from the active definition. A store
+        // fault or an unparseable active definition leaves it `None`, so the merge
+        // treats every bundled address as newly authored (insert/replace-if-absent),
+        // never mis-deleting a locally retained row.
+        let old_bundle = self.definition_source().ok().flatten().and_then(|def| bundle_document(&def));
         let staged = build_migrated(
             self.compiled(),
             self.schema(),
@@ -186,6 +192,7 @@ impl<S: InstanceStore> Engine<S> {
             &active_source,
             &compilation,
             &plan,
+            old_bundle.as_ref(),
             generator,
             self.now(),
         )
@@ -306,6 +313,16 @@ fn model_document(definition: &str) -> Option<liasse_syntax::DocValue> {
     doc::member(document.root(), "$model").cloned()
 }
 
+/// Re-parse a definition text and return its §4.1 `$bundle` object, or `None` when
+/// it does not parse or declares no `$bundle` — the old-bundle base for the §13.13
+/// three-way merge.
+fn bundle_document(definition: &str) -> Option<liasse_syntax::DocValue> {
+    let mut sources = SourceMap::new();
+    let src = sources.add_file("liasse.json", definition.to_owned());
+    let document = parse_document(src, definition).ok()?;
+    doc::member(document.root(), "$bundle").cloned()
+}
+
 /// Classify the update from the active package to the target (Annex E, §20.3).
 fn compatibility(active: &Model, target: &Model) -> Result<CompatibilityDecision, UpdateError> {
     let active = identity(&active.header().identity).map_err(UpdateError::Engine)?;
@@ -354,6 +371,7 @@ fn build_migrated<G: crate::generator::Generators>(
     active_source: &str,
     target: &Compilation,
     plan: &MigrationPlan,
+    old_bundle: Option<&liasse_syntax::DocValue>,
     generator: &mut G,
     now: Timestamp,
 ) -> Result<MigratedState, Rejection> {
@@ -559,6 +577,20 @@ fn build_migrated<G: crate::generator::Generators>(
     if let Some(data) = &target.data {
         crate::seed::admit(&target.compiled, &ctx, &mut prospective, &mut seeded_addrs, data, crate::seed::SeedMode::ApplyIfAbsent)?;
         addresses.extend(seeded_addrs.iter().cloned());
+    }
+    // §4.1/§13.13: `$bundle` is package-authoritative — three-way merged among the
+    // old package bundle, the new package bundle, and the migrated state. It inserts
+    // newly bundled rows, replaces a bundled field only where the current value still
+    // equals the old bundle value (a local edit is retained), and drops a removed
+    // bundled row only when its subtree still matches the old bundle. Its touched
+    // addresses are checked by the ordinary pipeline below alongside the migrated
+    // rows; a removed row leaves `prospective`, so the final `rows` (and the
+    // whole-state migration commit) no longer carries it.
+    if let Some(new_bundle) = &target.bundle {
+        crate::seed::merge_bundle(&target.compiled, &ctx, &mut prospective, &mut seeded_addrs, old_bundle, new_bundle)?;
+        // A bundle merge inserts, replaces, or removes rows, so the finalize/commit
+        // set is exactly the prospective state after it.
+        addresses = prospective.working().keys().cloned().collect();
     }
     rules::finalize(&target.compiled, &ctx, &prospective, &addresses)?;
     // §20.1: the migrated state runs the SAME eager admission suite an ordinary

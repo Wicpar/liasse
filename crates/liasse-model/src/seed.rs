@@ -37,6 +37,48 @@ pub(crate) fn check_seed(reporter: &mut Reporter, root: &Shape, data: &DocValue)
     }
 }
 
+/// §4.1: an address supplied by BOTH `$seed` (or its `$data` alias) and `$bundle`
+/// is a static load error — the two carry distinct ownership, so a value must be
+/// owned by exactly one. This checks the observable top-level addresses: a shared
+/// singleton field name, or a shared row key within a shared collection. Deeper
+/// nested-collection and set-member overlap is a documented seam no address in CORE
+/// reaches (§13.13), so it is not walked here.
+pub(crate) fn check_seed_bundle_disjoint(reporter: &mut Reporter, seed: Option<&DocValue>, bundle: &DocValue) {
+    let (Some(seed_members), Some(bundle_members)) =
+        (seed.and_then(DocValueExt::as_object), bundle.as_object())
+    else {
+        return;
+    };
+    for bundle_member in bundle_members {
+        let Some(seed_member) = seed_members.iter().find(|m| m.name.text == bundle_member.name.text) else {
+            continue;
+        };
+        // A shared top-level member: for a collection or struct the overlap is at
+        // the row key / struct field (an inner-member name present in both); a shared
+        // scalar member is a whole-address overlap. Comparing inner object members
+        // covers both a collection's keyed rows and a struct's fields.
+        match (seed_member.value.as_object(), bundle_member.value.as_object()) {
+            (Some(seed_inner), Some(bundle_inner)) => {
+                for inner in bundle_inner {
+                    if seed_inner.iter().any(|s| s.name.text == inner.name.text) {
+                        reject_shared(reporter, inner.span, &format!("{}.{}", bundle_member.name.text, inner.name.text));
+                    }
+                }
+            }
+            _ => reject_shared(reporter, bundle_member.span, &bundle_member.name.text),
+        }
+    }
+}
+
+fn reject_shared(reporter: &mut Reporter, span: liasse_diag::ByteSpan, address: &str) {
+    reporter.reject_hint(
+        span,
+        code::SEED,
+        format!("`{address}` is supplied by both `$seed`/`$data` and `$bundle` (§4.1)"),
+        "an address is owned by exactly one of apply-if-absent `$seed` and package-authoritative `$bundle`",
+    );
+}
+
 fn check_node(reporter: &mut Reporter, node: &Node, value: &DocValue) {
     if let Some(body) = expression_body(value) {
         // §4.2/C.4 (SPEC-ISSUES 25): a `= expr` seed is evaluated, not decoded —

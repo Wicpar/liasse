@@ -259,7 +259,14 @@ pub const SKIP: &[(&str, &str)] = &[
     // §13.15 update-report assembly are landed (modules/compat.rs + host.rs), so
     // `minor-update-narrowing-rejected`, `update-narrowing-view-field-rejected`, and
     // `update-result-report` now pass and are off the ledger.
-    ("13-modules/update-bundle-three-way-merge", "§4.1 `$bundle` is not accepted by the model layer yet (explicit unimplemented rejection) and the §13.13 bundle three-way merge is unwired, so install fails before the merge can run"),
+    // (§4.1/§13.13 `$bundle` now lands: the model accepts `$bundle` and validates it
+    // as insert data disjoint from `$seed`; genesis applies it as ordinary inserts;
+    // and update runs the three-way merge among old bundle, new bundle, and migrated
+    // state (insert-new / replace-if-current-equals-old / retain-local-on-removal).
+    // Landing it also closed a §8.3 model gap — a param assigned to a local-binding
+    // field (`t.label = @label`) is now inferred — and its runtime analogue — a local
+    // bound to a keyed row is a live write target. `update-bundle-three-way-merge`
+    // passes and its entry was pruned as stale.)
     // --- §13 module lifecycle used by other chapters (same seams) ---
     ("19-history-artifacts/child-export-matches-embedded-artifact", "§19 child-module `.liasse` artifact export/embedding is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
     ("19-history-artifacts/child-module-artifact-embedded-and-extractable", "§19 child-module `.liasse` artifact export/embedding is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),

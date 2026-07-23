@@ -6,6 +6,8 @@
 //! a seed row (§5.4/§5.5), which a meter's pool/spend arrangement (§15) seeds
 //! under an ancestor row. Composite seed keys remain a documented seam.
 
+use std::collections::BTreeMap;
+
 use liasse_ident::{KeyText, NameSegment};
 use liasse_syntax::DocValue;
 use liasse_store::{CollectionPath, KeyValue, RowAddress};
@@ -140,6 +142,101 @@ pub(crate) fn admit(
         touched.push(entry.address.clone());
     }
     Ok(())
+}
+
+/// §13.13: reconcile the target package's `$bundle` against the migrated instance
+/// state as a three-way merge among the OLD package bundle, the NEW package bundle,
+/// and the current state. A row newly present in the new bundle is inserted; a
+/// bundled field whose current value still equals the old bundle value takes the new
+/// bundle value, otherwise the current (locally modified) value is retained; a row
+/// removed from the new bundle is deleted only when its current subtree still equals
+/// the old bundled subtree, otherwise it is retained as local data.
+///
+/// CORE scope is top-level keyed collections with scalar/struct fields, which the
+/// same [`decode_row`] and [`admit`] machinery already covers. Nested keyed
+/// collections and set-membership reconciliation apply the same rule recursively
+/// (§13.13); they are a documented seam no CORE bundle address reaches.
+pub(crate) fn merge_bundle(
+    compiled: &Compiled,
+    ctx: &EvalCtx<'_>,
+    prospective: &mut Prospective,
+    touched: &mut Vec<RowAddress>,
+    old_bundle: Option<&DocValue>,
+    new_bundle: &DocValue,
+) -> Result<(), Rejection> {
+    // A row newly present in the new bundle is inserted; a row already present is
+    // left in place here and reconciled field-by-field below (never overwritten
+    // wholesale, so a locally modified row keeps its edits).
+    admit(compiled, ctx, prospective, touched, new_bundle, SeedMode::ApplyIfAbsent)?;
+    let Some(new_cols) = doc::object(new_bundle) else { return Ok(()) };
+    for member in new_cols {
+        let Some(collection) = compiled.collection(&member.name.text) else { continue };
+        let store_path = CollectionPath::top(NameSegment::new(member.name.text.clone()));
+        let new_rows = decode_bundle_rows(ctx, prospective, collection, &store_path, &member.value)?;
+        let old_rows = match old_bundle_collection(old_bundle, &member.name.text) {
+            Some(rows) => decode_bundle_rows(ctx, prospective, collection, &store_path, rows)?,
+            None => BTreeMap::new(),
+        };
+        // §13.13: replace each present row's bundled fields under the three-way rule.
+        for (address, new_fields) in &new_rows {
+            let Some(current) = prospective.get(address) else { continue };
+            let merged = merge_row_fields(current, old_rows.get(address), new_fields);
+            prospective.replace(address, merged);
+            touched.push(address.clone());
+        }
+        // §13.13: a row the new bundle dropped is deleted only when its current
+        // subtree still equals the old bundled subtree; a locally modified row (or one
+        // the new bundle still carries) is retained.
+        for (address, old_fields) in &old_rows {
+            if !new_rows.contains_key(address) && prospective.get(address) == Some(old_fields) {
+                prospective.remove(address);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// §13.13 per-field rule: the new bundle value applies where the current value still
+/// equals the old bundle value; otherwise the current (locally modified) value is
+/// retained. Fields the new bundle does not mention are kept as-is.
+fn merge_row_fields(current: &FieldMap, old: Option<&FieldMap>, new: &FieldMap) -> FieldMap {
+    let mut merged = current.clone();
+    for (field, new_value) in new {
+        if current.get(field) == old.and_then(|fields| fields.get(field)) {
+            merged.insert(field.clone(), new_value.clone());
+        }
+    }
+    merged
+}
+
+/// Decode a bundle collection's rows into their addresses and supplied field maps
+/// (the same decode a seed row uses), for the §13.13 three-way comparison.
+fn decode_bundle_rows(
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+    collection: &CompiledCollection,
+    store_path: &CollectionPath,
+    rows: &DocValue,
+) -> Result<BTreeMap<RowAddress, FieldMap>, Rejection> {
+    let Some(entries) = doc::object(rows) else {
+        return Err(Rejection::new(
+            RejectionReason::Malformed,
+            format!("`$bundle.{}` must map keys to rows", collection.name),
+        ));
+    };
+    let mut out = BTreeMap::new();
+    for entry in entries {
+        let fields = decode_row(ctx, prospective, collection, &entry.name.text, &entry.value)?;
+        let key = row_key(collection, &fields)?;
+        out.insert(store_path.row(key), fields);
+    }
+    Ok(out)
+}
+
+/// The old package bundle's rows object for the collection named `name`, when the
+/// prior release bundled it.
+fn old_bundle_collection<'a>(old_bundle: Option<&'a DocValue>, name: &str) -> Option<&'a DocValue> {
+    doc::object(old_bundle?)?.iter().find(|member| member.name.text == name).map(|member| &member.value)
 }
 
 /// Stage every seed row of the collection at `store_path` (top-level or nested,

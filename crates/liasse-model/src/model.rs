@@ -93,6 +93,7 @@ impl Model {
             model,
             types,
             data,
+            bundle,
         } = Header::build(&mut reporter, document.root())?;
         // §13.1: a pure-consumer module declares no `$model` (an empty state shape);
         // an application without `$model` was already rejected in the header phase.
@@ -172,6 +173,14 @@ impl Model {
         );
         if let Some(data) = data {
             seed::check_seed(&mut reporter, &root, data);
+        }
+        // §4.1/§13.13: `$bundle` is package-authoritative data applied as ordinary
+        // inserts at genesis and three-way merged on update. It conforms to the same
+        // model shape as `$seed`, so validate it the same way; §4.1 additionally
+        // rejects an address supplied by BOTH `$seed`/`$data` and `$bundle`.
+        if let Some(bundle) = bundle {
+            seed::check_seed(&mut reporter, &root, bundle);
+            seed::check_seed_bundle_disjoint(&mut reporter, data, bundle);
         }
         // §13.1: retain the resolved `$config` struct row and its per-member
         // defaults as the schema the runtime type-checks install values against.
