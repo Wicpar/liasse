@@ -117,6 +117,17 @@ pub(crate) fn admit(
         // computed that aggregates a nested child (`count(.items)`) observe them.
         rules::apply_defaults(entry.collection, &mut fields, ctx, prospective, generation, Some(&entry.address))?;
         rules::normalize_all(entry.collection, &mut fields, ctx, prospective)?;
+        // §9.1: a seed row "passes through the same defaults, normalization, checks,
+        // key, ref, uniqueness, bucket, and meter rules as mutation inserts", so it
+        // shares the mutation insert's final field-write boundary (§5.9/§22.5/§A.5):
+        // every enum leaf re-validates to a positioned `Value::Enum` and every
+        // `timestamp` field value rescales to the field's declared precision under
+        // the package rounding (§4.4). A supplied literal already decodes canonical,
+        // making this a no-op for it; a defaulted enum/`now()` value — produced by
+        // `apply_defaults` at the clock/text form — is coerced here exactly as the
+        // `+`/bulk-insert path coerces it, so a seeded row never stores a raw enum
+        // label or a finer-precision timestamp than a mutation-inserted one would.
+        rules::coerce_fields(entry.collection, &mut fields, &entry.collection.name, compiled.division_rounding)?;
         prospective.replace(&entry.address, fields);
         touched.push(entry.address.clone());
     }

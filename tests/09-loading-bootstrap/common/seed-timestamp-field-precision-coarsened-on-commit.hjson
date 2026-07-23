@@ -1,0 +1,81 @@
+{
+  // §9.1: "Seed rows pass through the SAME defaults, normalization, checks, key,
+  // ref, uniqueness, bucket, and meter rules as mutation inserts." The mutation
+  // insert's final rule is the field-write boundary (§22.5/§A.5, §4.4): a timestamp
+  // written to a field whose declared precision is coarser than the value is
+  // rescaled to the field's precision on commit. So a `$data` seed of a
+  // timestamp[s] field defaulting to now() MUST store the SAME coarsened value a
+  // mutation insert would — not the raw finer-precision clock count.
+  //
+  // This is the SEED-path sibling of common/field-precision-override-applied-on-
+  // commit (which drives the identical boundary through a mutation call). The
+  // genesis virtual clock is the epoch 2026-01-01T00:00:00Z = 1767225600 s =
+  // 1767225600000000 us, exactly on a second boundary, so the micro->second
+  // coarsening is exact and every value is externally deducible from SPEC.md.
+  //
+  // Three facets in one case: (1) a TOP-LEVEL seeded row's at_s coarsens to whole
+  // seconds; (2) the sibling at_us, whose declared precision already matches the
+  // package micro-second precision, keeps the raw count (the coercion is a per-field
+  // no-op where precision already matches); (3) a NESTED keyed-collection (§5.4)
+  // seed row coarsens identically, since seed rows resolve their defaults and this
+  // boundary in one phase regardless of nesting depth.
+  format: 1
+  name: seed-timestamp-field-precision-coarsened-on-commit
+  suite: scenario
+  spec: ["#loading", "§9.1", "#package-structure", "§4.4", "#runtime", "§22.5", "§A.5"]
+  tags: ["time", "boundary", "seed"]
+  note: '''
+    Genesis virtual clock is 2026-01-01T00:00:00Z = 1767225600 s =
+    1767225600000000 us (FORMAT.md determinism), exactly on a second boundary.
+    The package keeps the default micro-second precision (timestamp_precision
+    "us"), so the clock and now() are at micro-seconds. Fields declared
+    timestamp[s] (at_s, opened_s) rescale their seeded now() default to whole
+    seconds on commit -> 1767225600. The sibling at_us has no override and keeps
+    the raw micro-second count 1767225600000000. The nested-office opened_s (§5.4)
+    coarsens exactly as the top-level at_s does. Every value follows from SPEC.md
+    text alone (§9.1 seed==insert equivalence + §4.4/§22.5/§A.5 field-write rescale).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.seed_ts_coarsen@1.0.0"
+    $semantics: { timestamp_precision: "us" }
+    $model: {
+      events: {
+        $key: "id"
+        id: "text"
+        // §4.4 field-level override to whole-second precision; a seeded now()
+        // default must be coarsened to it exactly as a mutation insert is.
+        at_s: { $type: "timestamp", $precision: "s", $default: "= now()" }
+        // No override: inherits the package micro-second precision (no-op coercion).
+        at_us: { $type: "timestamp", $default: "= now()" }
+      }
+      companies: {
+        $key: "id"
+        id: "text"
+        // §5.4 nested keyed collection: its seeded rows coarsen identically.
+        offices: {
+          $key: "id"
+          id: "text"
+          opened_s: { $type: "timestamp", $precision: "s", $default: "= now()" }
+        }
+      }
+      $public: {
+        events: { $view: ".events { id, at_s, at_us }" }
+        offices: { $view: ".companies.offices { id, opened_s }" }
+      }
+    }
+    // Both timestamp fields are omitted, so their now() defaults fire and coarsen.
+    $data: {
+      events: { e: {} }
+      companies: { acme: { offices: { paris: {} } } }
+    }
+  }
+
+  steps: [
+    { watch: "public.events", id: "w1",
+      expect_init: { value: [ { id: "e", at_s: "1767225600", at_us: "1767225600000000" } ] } }
+    { watch: "public.offices", id: "w2",
+      expect_init: { value: [ { id: "paris", opened_s: "1767225600" } ] } }
+  ]
+}

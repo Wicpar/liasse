@@ -1,0 +1,85 @@
+{
+  // §9.1: seed rows pass through the SAME rules as mutation inserts — including the
+  // §22.5/§A.5 timestamp field-write rescale, and §4.4/§A.6 which pin that a
+  // package MAY select the rounding mode governing a coarser conversion through
+  // `$semantics`. §13.13/§4.1: on UPDATE, `$seed`/`$data` applies APPLY-IF-ABSENT,
+  // inserting a seed row whose address is absent after migration through that same
+  // pipeline.
+  //
+  // ATTACK: an engine that coerces the seed timestamp but HARDCODES the A.6 default
+  // (half-away-from-zero) silently ignores the package-selected observable semantics
+  // (§4.4: "Every engine MUST preserve the selected observable semantics"). The
+  // package selects `toward_zero`, so an exact-half now() at second precision must
+  // TRUNCATE, not round away. A seed path that skips coercion entirely fails even
+  // harder (it would store the raw micro-second count). Both are ruled out here.
+  //
+  // The clock is advanced by exactly half a second AFTER genesis, so the update's
+  // now() is off a second boundary: 1767225600500000 us = 1767225600.500000 s. The
+  // update ADDS an `events` collection (absent in the prior state), so its `$data`
+  // seed row inserts; its at_s coarsens to whole seconds under `toward_zero` ->
+  // 1767225600 (NOT the half-away-from-zero 1767225601). The sibling at_us keeps the
+  // raw count. Genesis (2026-01-01T00:00:00Z) itself lands on a second boundary, so
+  // the OFF-boundary case only exists on this post-advance update seed path.
+  format: 1
+  name: update-seed-timestamp-coarsening-honors-rounding
+  suite: scenario
+  spec: ["#loading", "§9.1", "#modules", "§13.13", "#package-structure", "§4.4", "#runtime", "§22.5", "§A.5", "§A.6"]
+  tags: ["time", "boundary", "semantics", "seed", "evolution"]
+  note: '''
+    Genesis clock is 2026-01-01T00:00:00Z = 1767225600 s. advance_time PT0.5S moves
+    it to 1767225600500000 us = 1767225600.500000 s, an exact half at whole-second
+    precision. A compatible host_load then ADDS an `events` collection (absent in the
+    prior state) and seeds row `e` via `$data`; §13.13/§4.1 apply-if-absent inserts
+    it through the ordinary seed pipeline at the current (advanced) clock. The field
+    at_s overrides to whole-second precision; the package selects rounding
+    "toward_zero" (§4.4/§A.6), so the halfway conversion TRUNCATES -> 1767225600 (the
+    A.6 default half-away-from-zero would give 1767225601, which this case rules out).
+    The sibling at_us, no override, keeps the raw micro-second count 1767225600500000.
+    Both are externally deducible from SPEC.md alone. The `$semantics` are held
+    identical across the genesis package and the update, so the update is a compatible
+    change that only ADDS state, isolating the assertion to the seed field-write mode.
+  '''
+
+  // Genesis package: only a marker collection, no timestamp state yet.
+  package: {
+    $liasse: 1
+    $app: "t.upd_seed_round@1.0.0"
+    $semantics: { timestamp_precision: "us", decimal_division: { rounding: "toward_zero" } }
+    $model: {
+      seedmarker: { $key: "id", id: "text" }
+      $public: { seedmarker: { $view: ".seedmarker { id }" } }
+    }
+  }
+
+  steps: [
+    // Move now() off the second boundary before the update seeds the new row.
+    { advance_time: "PT0.5S" }
+    // §9.2/§22 update: a minor version bump adds the `events` collection (a
+    // compatible additive change) and apply-if-absent seeds row `e`.
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.upd_seed_round@1.1.0"
+          $semantics: { timestamp_precision: "us", decimal_division: { rounding: "toward_zero" } }
+          $model: {
+            seedmarker: { $key: "id", id: "text" }
+            events: {
+              $key: "id"
+              id: "text"
+              at_s: { $type: "timestamp", $precision: "s", $default: "= now()" }
+              at_us: { $type: "timestamp", $default: "= now()" }
+            }
+            $public: {
+              seedmarker: { $view: ".seedmarker { id }" }
+              events: { $view: ".events { id, at_s, at_us }" }
+            }
+          }
+          $data: { events: { e: {} } }
+        }
+      }
+      expect: { outcome: ok } }
+    // The seeded row coarsens at_s under the package `toward_zero` rounding.
+    { watch: "public.events", id: "w1",
+      expect_init: { value: [ { id: "e", at_s: "1767225600", at_us: "1767225600500000" } ] } }
+  ]
+}
