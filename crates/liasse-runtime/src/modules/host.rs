@@ -9,7 +9,8 @@ use liasse_store::StoreFactory;
 use crate::engine::Engine;
 use crate::error::EngineError;
 use crate::generator::Generators;
-use crate::modules::install::{AdmittedBindings, InstallRequest};
+use crate::imports::ParentImports;
+use crate::modules::install::{AdmittedBindings, InstallRequest, UseSpec};
 use crate::modules::{AggregatedInstance, InterfaceRow, ModuleAggregate, ModuleError, ModuleSpace};
 use crate::outcome::CallOutcome;
 use crate::request::{CallRequest, ViewQuery};
@@ -96,6 +97,11 @@ impl<F: StoreFactory> ModuleHost<F> {
         if self.find(space, &name).is_some() {
             return Err(ModuleError::DuplicateName(name));
         }
+        // §13.4: resolve the parent surfaces this child imports (`company: "$parent"`)
+        // row-local against the space's containing row, BEFORE loading the child, so
+        // its compile types `#company` and its genesis seed evaluates
+        // `enabled = #company.plan == …` against the parent's projected row.
+        let imports = self.child_imports(space, &admitted.bindings)?;
         let incarnation = self.mint_incarnation(space, &name);
         let store = self
             .factory
@@ -110,7 +116,7 @@ impl<F: StoreFactory> ModuleHost<F> {
         // insert does on the installed, config-bound instance). The subsequent
         // installation `$data` overlay likewise reads the bound `$config`.
         let mut engine =
-            Engine::install_load(store, &admitted.definition, &admitted.bindings.config, generator)
+            Engine::install_load(store, &admitted.definition, &admitted.bindings.config, &imports, generator)
                 .map_err(|error| match error {
                     crate::config::ConfigBindError::Mismatch(mismatch) => ModuleError::ConfigMismatch(mismatch.to_string()),
                     crate::config::ConfigBindError::Engine(engine) => ModuleError::Engine(engine),
@@ -123,7 +129,7 @@ impl<F: StoreFactory> ModuleHost<F> {
         // §13.3: package `$data` was applied by the load; the installation `$data`
         // now overlays onto the child genesis, passing ordinary insertion validation.
         if let Some(data) = &admitted.data {
-            engine.overlay_install_data(data, generator)?;
+            engine.overlay_install_data(data, &imports, generator)?;
         }
         let bindings = admitted.bindings;
         self.children.push(Child {
@@ -242,7 +248,8 @@ impl<F: StoreFactory> ModuleHost<F> {
         interface: &str,
     ) -> Result<Option<ViewResult>, ModuleError> {
         let child = self.enabled_child(space, name)?;
-        child.engine.interface_read(interface).map_err(ModuleError::Engine)
+        let imports = self.child_imports(space, &child.bindings)?;
+        child.engine.interface_read(interface, &imports).map_err(ModuleError::Engine)
     }
 
     /// Aggregate one exposed interface across every enabled instance in `space`
@@ -257,7 +264,8 @@ impl<F: StoreFactory> ModuleHost<F> {
     ) -> Result<Vec<InterfaceRow>, ModuleError> {
         let mut rows = Vec::new();
         for child in self.children.iter().filter(|c| &c.space == space && c.enabled) {
-            let Some(result) = child.engine.interface_read(interface).map_err(ModuleError::Engine)? else {
+            let imports = self.child_imports(&child.space, &child.bindings)?;
+            let Some(result) = child.engine.interface_read(interface, &imports).map_err(ModuleError::Engine)? else {
                 continue;
             };
             for row in result.rows() {
@@ -316,15 +324,92 @@ impl<F: StoreFactory> ModuleHost<F> {
         generator: &mut G,
     ) -> Result<CallOutcome, ModuleError> {
         let child = self.enabled_child(space, name)?;
-        let Some(child_mutation) = child.engine.exposed_mutation(interface, mutation) else {
-            return Err(ModuleError::InterfaceContract(
-                interface.to_owned(),
-                format!("interface binds no routable mutation `{mutation}`"),
-            ));
+        // §13.8: an exposed mutation binding a private child mutation (`.create`)
+        // routes to the child engine.
+        if let Some(child_mutation) = child.engine.exposed_mutation(interface, mutation) {
+            let routed = request.clone().with_mutation(child_mutation);
+            let child = self.enabled_child_mut(space, name)?;
+            return child.engine.call(&routed, generator).map_err(ModuleError::Engine);
+        }
+        // §13.4: an exposed mutation binding a parent surface (`#company.rename(…)`)
+        // delegates to the parent capability, whose effect lands on the parent row
+        // the space is scoped to — admitted against the root engine.
+        if let Some(routed) = self.parent_mutation_request(space, name, interface, mutation, request)? {
+            return self.root.call(&routed, generator).map_err(ModuleError::Engine);
+        }
+        Err(ModuleError::InterfaceContract(
+            interface.to_owned(),
+            format!("interface binds no routable mutation `{mutation}`"),
+        ))
+    }
+
+    /// Build the root [`CallRequest`] a §13.4 parent-surface-delegating exposed
+    /// mutation routes to (`#company.rename({ name: @name })`): resolve the imported
+    /// handle to its parent surface, map the parent mutation contract to the
+    /// containing-row mutation it binds (`.rename`), address the space's containing
+    /// row as the receiver, and feed each parent parameter from the child call's
+    /// arguments. `None` when the exposed mutation is not a parent-surface
+    /// delegation, its handle resolves to no parent surface, or its argument form is
+    /// outside the CORE route.
+    fn parent_mutation_request(
+        &self,
+        space: &ModuleSpace,
+        name: &str,
+        interface: &str,
+        mutation: &str,
+        request: &CallRequest,
+    ) -> Result<Option<CallRequest>, ModuleError> {
+        use crate::modules::parent::{ArgSource, ParentMutationBinding};
+        let child = self.enabled_child(space, name)?;
+        let Some(binding) = child.engine.exposed_mutation_binding(interface, mutation) else {
+            return Ok(None);
         };
-        let routed = request.clone().with_mutation(child_mutation);
-        let child = self.enabled_child_mut(space, name)?;
-        child.engine.call(&routed, generator).map_err(ModuleError::Engine)
+        let Some(parsed) = ParentMutationBinding::parse(binding) else {
+            return Ok(None);
+        };
+        // Resolve the imported handle (`company`) to the parent surface it names.
+        let surface = child.bindings.uses.iter().find_map(|(handle, spec, _)| {
+            if handle != &parsed.handle {
+                return None;
+            }
+            match spec {
+                UseSpec::Parent => Some(handle.as_str()),
+                UseSpec::ParentSurface(surface) => Some(surface.as_str()),
+                UseSpec::Path(_) | UseSpec::Peer { .. } => None,
+            }
+        });
+        let Some(surface) = surface else {
+            return Ok(None);
+        };
+        let declaration = space.declaration_path();
+        let steps = space.containing_row_steps().unwrap_or_default();
+        let Some(resolved) = self.root.parent_surface_projection(&declaration, &steps, surface)? else {
+            return Ok(None);
+        };
+        // §13.4: the parent surface `$mut` maps the contract (`rename`) to the
+        // containing-row mutation it binds (`.rename` → the `rename` mutation).
+        let Some(root_mutation) = resolved
+            .muts
+            .iter()
+            .find(|(contract, _)| contract == &parsed.mutation)
+            .and_then(|(_, binding)| binding.strip_prefix('.'))
+            .map(|m| m.strip_suffix("()").unwrap_or(m).to_owned())
+        else {
+            return Ok(None);
+        };
+        // The receiver is the space's containing row (`/companies/globex`).
+        let mut routed = CallRequest::new(root_mutation);
+        for (_, key) in &steps {
+            routed = routed.receiver(liasse_value::Value::Text(liasse_value::Text::new(key.clone())));
+        }
+        // Feed each parent parameter from the child call's arguments (§13.4).
+        for (param, source) in &parsed.args {
+            let ArgSource::Param(child_arg) = source;
+            if let Some(value) = request.arg_value(child_arg) {
+                routed = routed.arg(param.clone(), value.clone());
+            }
+        }
+        Ok(Some(routed))
     }
 
     /// Aggregate every enabled child's exposed interface rows into the snapshot the
@@ -335,10 +420,14 @@ impl<F: StoreFactory> ModuleHost<F> {
     fn aggregate_snapshot(&self) -> Result<ModuleAggregate, ModuleError> {
         let mut spaces: BTreeMap<String, Vec<AggregatedInstance>> = BTreeMap::new();
         for child in self.children.iter().filter(|c| c.enabled) {
+            // §13.4: re-resolve this child's parent-surface imports live, so an
+            // `$expose` `$view` reading `#company` reflects the parent's current
+            // state (a prior parent mutation is observed here).
+            let imports = self.child_imports(&child.space, &child.bindings)?;
             let names: Vec<String> = child.engine.exposed_interface_names().map(str::to_owned).collect();
             let mut interfaces = Vec::new();
             for interface in names {
-                if let Some(rows) = child.engine.interface_rows(&interface).map_err(ModuleError::Engine)? {
+                if let Some(rows) = child.engine.interface_rows(&interface, &imports).map_err(ModuleError::Engine)? {
                     interfaces.push((interface, rows));
                 }
             }
@@ -409,6 +498,31 @@ impl<F: StoreFactory> ModuleHost<F> {
         } else {
             Err(ModuleError::MissingContainingRow(space.as_str().to_owned()))
         }
+    }
+
+    /// Resolve the §13.4 parent surfaces a child imports (`company: "$parent"`,
+    /// `org: "$parent.company"`) into an evaluation-ready [`ParentImports`], each
+    /// handle bound to its parent surface projected row-local against the space's
+    /// containing row from the root engine's current state. A `$use` handle that
+    /// is not a parent capability (a sibling path or peer spec) contributes no
+    /// import; a surface the space does not declare, or a missing containing row,
+    /// binds nothing (the child's `#handle` read then faults, §6.3). Recomputed
+    /// per read so a later parent mutation is reflected (§13.4 row-local, live).
+    fn child_imports(&self, space: &ModuleSpace, bindings: &AdmittedBindings) -> Result<ParentImports, ModuleError> {
+        let mut imports = ParentImports::default();
+        let declaration = space.declaration_path();
+        let steps = space.containing_row_steps().unwrap_or_default();
+        for (handle, spec, _optional) in &bindings.uses {
+            let surface = match spec {
+                UseSpec::Parent => handle.as_str(),
+                UseSpec::ParentSurface(name) => name.as_str(),
+                UseSpec::Path(_) | UseSpec::Peer { .. } => continue,
+            };
+            if let Some(resolved) = self.root.parent_surface_projection(&declaration, &steps, surface)? {
+                imports.bind(handle.clone(), resolved.ty, resolved.value);
+            }
+        }
+        Ok(imports)
     }
 
     fn find(&self, space: &ModuleSpace, name: &str) -> Option<&Child<F::Store>> {

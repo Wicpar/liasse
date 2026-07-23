@@ -125,6 +125,11 @@ pub(crate) struct RuntimeEnv<'a> {
     /// `avg` round their quotient under it. Defaults to A.6's `half_away_from_zero`
     /// until [`Self::with_division_rounding`] sets the compiled package's mode.
     rounding: DivisionRounding,
+    /// The §13.4 parent-surface imports `#name` this environment answers a read
+    /// from, keyed by handle (`#company` → the projected containing row). Empty
+    /// outside a module child's genesis / interface read, so a stray `#name` there
+    /// faults as an unbound import (§6.3 fail-closed).
+    imports: BTreeMap<String, Cell>,
 }
 
 impl<'a> RuntimeEnv<'a> {
@@ -162,7 +167,17 @@ impl<'a> RuntimeEnv<'a> {
             placements,
             hosts,
             rounding: DivisionRounding::default(),
+            imports: BTreeMap::new(),
         }
+    }
+
+    /// Bind the §13.4 parent-surface imports `#name` this environment answers a
+    /// read from (`#company` → the projected containing row). Set on a module
+    /// child's genesis and interface read; empty everywhere else, so a `#name`
+    /// read outside a module child faults as an unbound import.
+    pub(crate) fn with_imports(mut self, imports: BTreeMap<String, Cell>) -> Self {
+        self.imports = imports;
+        self
     }
 
     /// Set the package's declared decimal-division rounding mode (§4.4, A.6) on
@@ -284,8 +299,8 @@ impl Environment for RuntimeEnv<'_> {
         self.structurals.get(name).cloned()
     }
 
-    fn import(&self, _name: &str) -> Option<Cell> {
-        None
+    fn import(&self, name: &str) -> Option<Cell> {
+        self.imports.get(name).cloned()
     }
 
     fn now(&self) -> Timestamp {

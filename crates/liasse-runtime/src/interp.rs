@@ -884,6 +884,10 @@ impl<'a> Interp<'a> {
             context: self.ctx.context.clone(),
             hosts: self.ctx.hosts,
             modules: self.ctx.modules,
+            // §13.4: a nested internal call in a module child's transition keeps the
+            // same parent-surface imports the enclosing program resolves `#company`
+            // against.
+            imports: self.ctx.imports,
         };
         let mut child = Interp {
             compiled: self.compiled,

@@ -47,6 +47,25 @@ impl SpannedExpression {
         best
     }
 
+    /// Whether any node of this tree is an import reference `#name` (§6.2). Walked
+    /// with the same explicit work stack as [`deepest`](Self::deepest), never
+    /// recursion. A caller that cannot type an import in isolation — a module
+    /// package's `$expose` `$view` reads a parent-provided `#company` the standalone
+    /// model lacks (§13.4) — uses this to DEFER type-checking to the composition
+    /// runtime, which binds the resolved projection.
+    #[must_use]
+    pub fn references_import(&self) -> bool {
+        let mut stack: Vec<Pending<'_>> = Vec::new();
+        self.statement.push_roots(&mut stack);
+        while let Some((expr, depth)) = stack.pop() {
+            if matches!(expr.kind, ExprKind::Import(_)) {
+                return true;
+            }
+            expr.push_children(depth, &mut stack);
+        }
+        false
+    }
+
     /// Free a tree of arbitrary depth without recursion. The derived `Drop` of a
     /// `Box<Expr>` chain recurses one frame per level, so dropping a rejected
     /// pathologically deep tree (thousands of `!`/`.`/`+` nodes) overflows the

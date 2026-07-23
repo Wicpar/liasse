@@ -8,7 +8,7 @@
 //! program with its parameter scope, and each view into a typed expression. The
 //! result is an owned [`Compiled`] the engine holds beside the model and store.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::{Diagnostic, Diagnostics, SourceId, SourceMap, Span};
 use liasse_expr::{
@@ -276,6 +276,29 @@ pub(crate) struct CompiledModuleSpace {
     /// The interface contracts the space declares (`$interfaces`), each the boundary
     /// a child exposing that interface must satisfy structurally (§13.8).
     pub(crate) interfaces: Vec<CompiledInterfaceContract>,
+    /// The parent-surface projections the space declares (`$expose`, §13.4), each a
+    /// capability a child imports as `#handle` — its `$view` compiled over the
+    /// space's containing row so the projection is evaluated row-local.
+    pub(crate) exposes: Vec<CompiledParentSurface>,
+}
+
+/// A `$modules` `$expose` parent-surface projection (§13.4): a capability the
+/// space projects to its children under `name`, a child importing it as
+/// `#name` through `$use: { name: "$parent" }` (or a renamed handle). The
+/// `$view` is compiled over the space's **containing row** (`companies.…`), so
+/// evaluating it against one live row yields that row's row-local projection
+/// (Acme under Acme's space, Globex under Globex's).
+pub(crate) struct CompiledParentSurface {
+    /// The child-visible surface name (`company`).
+    pub(crate) name: String,
+    /// The `$view` projection compiled over the containing row — its type is the
+    /// row shape a child types `#company.plan` against, and evaluating it against
+    /// one containing row yields the value `#company` reads.
+    pub(crate) view: TypedExpr,
+    /// The `$mut` bindings the surface projects (§13.4): `(contract, binding)`
+    /// pairs like `("rename", ".rename")`, each naming the containing-row mutation
+    /// a child's `#company.rename(...)` routes to.
+    pub(crate) muts: Vec<(String, String)>,
 }
 
 /// One `$interfaces` boundary contract of a module space (§13.8): the interface
@@ -414,6 +437,7 @@ impl Compiled {
         precision: liasse_value::Precision,
         division_rounding: DivisionRounding,
         hosts: &HostSignatures,
+        import_types: &BTreeMap<String, ExprType>,
     ) -> Result<Self, EngineError> {
         let schema = Schema::new(model);
         // §13.1: a module package binds `$config` in every authored expression. The
@@ -450,12 +474,12 @@ impl Compiled {
         let mutations = compile_mutations(sources, schema, &root_ty, model_doc, &auth, hosts)?;
         let keyrings = compile_keyrings(schema, model_doc);
         let views = compile_views(sources, schema, &root_ty, &keyrings, model_doc, hosts)?;
-        let exposed_views = compile_exposed_views(sources, &root_ty, model, hosts)?;
+        let exposed_views = compile_exposed_views(sources, &root_ty, model, hosts, import_types)?;
         let surface_views = compile_surface_views(sources, schema, &root_ty, model_doc, &auth, hosts)?;
         let buckets = compile_buckets(sources, schema, &root_ty, model_doc, hosts)?;
         let source_buckets = crate::source_bucket::compile(sources, schema, &root_ty, model_doc)?;
         let meters = crate::meter::compile(sources, schema, &root_ty, model_doc, hosts)?;
-        let module_spaces = compile_module_spaces(model_doc, &[]);
+        let module_spaces = compile_module_spaces(sources, &root_ty, hosts, model_doc, &[])?;
         Ok(Self {
             collections,
             root_singleton,
@@ -538,6 +562,16 @@ impl Compiled {
     /// check a child's `$expose` structurally satisfies the space's contract.
     pub(crate) fn module_space_interfaces(&self, path: &[String]) -> Option<&[CompiledInterfaceContract]> {
         self.module_spaces.iter().find(|space| space.path == path).map(|space| space.interfaces.as_slice())
+    }
+
+    /// The parent-surface projection named `surface` declared by the `$modules`
+    /// space at declaration path `path` (§13.4), if any — the compiled `$view` and
+    /// `$mut` bindings a child importing `#surface` resolves through.
+    pub(crate) fn parent_surface(&self, path: &[String], surface: &str) -> Option<&CompiledParentSurface> {
+        self.module_spaces
+            .iter()
+            .find(|space| space.path == path)
+            .and_then(|space| space.exposes.iter().find(|e| e.name == surface))
     }
 
     /// The compiled bucket bounding collection `name`, if it is bucketed.
@@ -1423,10 +1457,16 @@ fn compile_root_singleton_normalizes(
 /// a keyed collection is descended so a row-scoped space
 /// (`companies.…​.modules`) is found. Reads the document directly because the model
 /// projects a `$modules` node as an opaque placeholder view.
-fn compile_module_spaces(model_doc: &liasse_syntax::DocValue, prefix: &[String]) -> Vec<CompiledModuleSpace> {
+fn compile_module_spaces(
+    sources: &mut SourceMap,
+    root_ty: &ExprType,
+    hosts: &HostSignatures,
+    model_doc: &liasse_syntax::DocValue,
+    prefix: &[String],
+) -> Result<Vec<CompiledModuleSpace>, EngineError> {
     let mut out = Vec::new();
     let Some(members) = doc::object(model_doc) else {
-        return out;
+        return Ok(out);
     };
     for member in members {
         // `$mut`/`$types`/other reserved model members are never module spaces or
@@ -1437,12 +1477,78 @@ fn compile_module_spaces(model_doc: &liasse_syntax::DocValue, prefix: &[String])
         let mut path = prefix.to_vec();
         path.push(member.name.text.clone());
         if doc::member(&member.value, "$modules").is_some() {
-            out.push(CompiledModuleSpace { path, interfaces: compile_interface_contracts(&member.value) });
+            // §13.4: the parent-surface `$view` is compiled over the space's
+            // CONTAINING row (`path` minus its trailing `$modules` name), so the
+            // projection is row-local.
+            let containing = path.split_last().map_or(&[][..], |(_, rest)| rest);
+            let exposes = compile_parent_surfaces(sources, root_ty, hosts, &member.value, containing)?;
+            out.push(CompiledModuleSpace {
+                path,
+                interfaces: compile_interface_contracts(&member.value),
+                exposes,
+            });
         } else if doc::member(&member.value, "$key").is_some() {
-            out.extend(compile_module_spaces(&member.value, &path));
+            out.extend(compile_module_spaces(sources, root_ty, hosts, &member.value, &path)?);
         }
     }
-    out
+    Ok(out)
+}
+
+/// Compile the `$modules` `$expose` parent-surface projections of a space node
+/// (§13.4). Each surface's `$view` is compiled against the row type of the
+/// space's CONTAINING row (`containing_path`, e.g. `["companies"]`), so the
+/// projection reads that row's own fields (`. { id, name, plan }`) and, evaluated
+/// against one live row, yields its row-local capability. A space with no
+/// `$expose` block, or whose containing row type cannot be navigated, projects no
+/// parent surface.
+fn compile_parent_surfaces(
+    sources: &mut SourceMap,
+    root_ty: &ExprType,
+    hosts: &HostSignatures,
+    space_node: &liasse_syntax::DocValue,
+    containing_path: &[String],
+) -> Result<Vec<CompiledParentSurface>, EngineError> {
+    let Some(expose) =
+        doc::member(space_node, "$modules").and_then(|m| doc::member(m, "$expose")).and_then(doc::object)
+    else {
+        return Ok(Vec::new());
+    };
+    let Some(containing) = navigate_row_type(root_ty, containing_path) else {
+        return Ok(Vec::new());
+    };
+    let scope = RuntimeScope::new(ExprType::Row(containing.clone()), root_ty.clone()).with_host_ops(hosts.clone());
+    let mut out = Vec::new();
+    for surface in expose {
+        let Some(view_text) = doc::member(&surface.value, "$view").and_then(doc::string) else {
+            continue;
+        };
+        let (view, _source) = compile_expr(sources, &scope, "parent-surface", view_text)?;
+        let muts = doc::member(&surface.value, "$mut")
+            .and_then(doc::object)
+            .map(|members| {
+                members
+                    .iter()
+                    .filter_map(|m| doc::string(&m.value).map(|b| (m.name.text.clone(), b.trim().to_owned())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push(CompiledParentSurface { name: surface.name.text.clone(), view, muts });
+    }
+    Ok(out)
+}
+
+/// Navigate `root_ty` down a declaration path of nested collections to the row
+/// type at its end (§5.4): each step reads the field's row type (a keyed
+/// collection is a `View`, a single row a `Row`). An empty path is the package
+/// root row itself (a top-level `$modules` space's container). `None` when a step
+/// names no navigable row field.
+fn navigate_row_type<'a>(root_ty: &'a ExprType, path: &[String]) -> Option<&'a RowType> {
+    let mut current = root_ty.as_row().or_else(|| root_ty.as_view())?;
+    for name in path {
+        let field = current.field(name)?;
+        current = field.as_view().or_else(|| field.as_row())?;
+    }
+    Some(current)
 }
 
 /// The `$interfaces` boundary contracts of a `$modules` space node (§13.8): each
@@ -1531,8 +1637,14 @@ fn compile_exposed_views(
     root_ty: &ExprType,
     model: &Model,
     hosts: &HostSignatures,
+    import_types: &BTreeMap<String, ExprType>,
 ) -> Result<Vec<CompiledExposed>, EngineError> {
-    let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone()).with_host_ops(hosts.clone());
+    // §13.4: a module child's `$expose` `$view` may read a parent surface
+    // (`company: #company.name`); its handle is typed against the parent-provided
+    // projection resolved at install. Empty for a standalone load.
+    let scope = RuntimeScope::new(root_ty.clone(), root_ty.clone())
+        .with_host_ops(hosts.clone())
+        .with_imports(import_types.clone());
     let mut out = Vec::new();
     for interface in model.exposed_interfaces() {
         let Some(view) = interface.view.as_ref() else { continue };

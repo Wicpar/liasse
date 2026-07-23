@@ -118,7 +118,15 @@ impl ExposePhase<'_, '_> {
         let sub = self.sources.add_label("expose-view", text.clone());
         match parse_expression(sub, &text) {
             Ok(parsed) => {
-                if let Err(diags) = liasse_expr::check_statement(&scope, sub, &parsed) {
+                // §13.4: an `$expose` `$view` MAY read a parent-provided surface
+                // (`company: #company.name`) the standalone model cannot type — the
+                // projection is resolved only when the module is installed. Defer
+                // such a view's type-check to the composition runtime
+                // (`compile_exposed_views`), which binds the resolved import types;
+                // an import-free view is still typed here so its errors surface early.
+                if !parsed.references_import()
+                    && let Err(diags) = liasse_expr::check_statement(&scope, sub, &parsed)
+                {
                     self.reporter.emit_all(diags);
                 }
             }

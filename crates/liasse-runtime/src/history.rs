@@ -378,8 +378,8 @@ fn decode_sections(opened: &Artifact) -> Result<(String, StateSection), ImportEr
     let definition = std::str::from_utf8(opened.liasse_json())
         .map_err(|_| ImportError::Corrupt("definition is not UTF-8".to_owned()))?
         .to_owned();
-    let compilation =
-        compile_definition(&definition, &crate::host::HostSignatures::default()).map_err(ImportError::Engine)?;
+    let compilation = compile_definition(&definition, &crate::host::HostSignatures::default(), crate::imports::EMPTY.types())
+        .map_err(ImportError::Engine)?;
     let state = StateSection::from_bytes(opened.state_section(), &compilation.compiled, &compilation.model)
         .map_err(ImportError::Engine)?;
     Ok((definition, state))

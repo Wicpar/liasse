@@ -58,6 +58,13 @@ pub(crate) struct EvalCtx<'a> {
     /// a plain view, a child interface read); the [`ModuleHost`](crate::ModuleHost)
     /// supplies it only when reading a root view over its installed children.
     pub(crate) modules: Option<&'a crate::modules::ModuleAggregate>,
+    /// The §13.4 parent-surface imports `#name` a module child's `$data` seed
+    /// (genesis) and `$expose` interface read resolve against, carrying both the
+    /// row value the env answers and the row type the seed-check scope types. The
+    /// shared empty [`ParentImports`](crate::imports::ParentImports) for every
+    /// evaluation that imports no parent surface (a root read, a standalone load,
+    /// a migration).
+    pub(crate) imports: &'a crate::imports::ParentImports,
 }
 
 impl<'a> EvalCtx<'a> {
@@ -105,6 +112,9 @@ impl<'a> EvalCtx<'a> {
         // values, views, projections, defaults, meter accessors) rounds decimal
         // `/` and `avg` under the compiled package's declared division mode.
         .with_division_rounding(self.compiled.division_rounding)
+        // §13.4: a module child's genesis/interface read answers `#company` from
+        // the resolved parent-surface projection; empty everywhere else.
+        .with_imports(self.imports.values().clone())
     }
 
     /// The evaluation environment for one admitted row's default resolution
@@ -132,6 +142,9 @@ impl<'a> EvalCtx<'a> {
         // values, views, projections, defaults, meter accessors) rounds decimal
         // `/` and `avg` under the compiled package's declared division mode.
         .with_division_rounding(self.compiled.division_rounding)
+        // §13.4: a per-row default in a module child's genesis resolves `#company`
+        // against the resolved parent-surface projection; empty elsewhere.
+        .with_imports(self.imports.values().clone())
     }
 
     /// The evaluation environment that folds each computed value, nested view, or
@@ -165,6 +178,10 @@ impl<'a> EvalCtx<'a> {
         // values, views, projections, defaults, meter accessors) rounds decimal
         // `/` and `avg` under the compiled package's declared division mode.
         .with_division_rounding(self.compiled.division_rounding)
+        // §13.4: a folded computed value / nested view in a module child's
+        // interface read resolves `#company` against the parent-surface
+        // projection; empty elsewhere.
+        .with_imports(self.imports.values().clone())
     }
 
     /// Merge the request-scoped context bindings (`$actor`/`$session`, §11.1) with
@@ -610,6 +627,8 @@ impl<'a> EvalCtx<'a> {
         // values, views, projections, defaults, meter accessors) rounds decimal
         // `/` and `avg` under the compiled package's declared division mode.
         .with_division_rounding(self.compiled.division_rounding)
+        // §13.4: parent-surface imports; empty outside a module child.
+        .with_imports(self.imports.values().clone())
     }
 
     /// The full extant rows of every STORED bucketed collection (§14.2) at `now`.

@@ -48,7 +48,10 @@ pub(crate) fn materialize(
     prospective: &Prospective,
 ) -> Result<Value, Rejection> {
     let row_ty = ExprType::Row(collection_row_type(collection));
-    let scope = RuntimeScope::new(row_ty, ExprType::Row(ctx.schema.root_row_type()));
+    let scope = RuntimeScope::new(row_ty, ExprType::Row(ctx.schema.root_row_type()))
+        // §13.4: a module child's keyed-collection seed value may read a parent
+        // surface (`enabled = #company.plan == …`), typed against its row shape.
+        .with_imports(ctx.imports.types().clone());
     let current = row_cell(collection, fields);
     materialize_typed(ty, name, value, &scope, &current, ctx, prospective)
 }
@@ -71,7 +74,8 @@ pub(crate) fn materialize_singleton(
                 return Err(Rejection::new(RejectionReason::Malformed, format!("`{name}` is not seedable state")));
             };
             let root_ty = ExprType::Row(ctx.schema.root_row_type());
-            let scope = RuntimeScope::new(root_ty.clone(), root_ty);
+            let scope = RuntimeScope::new(root_ty.clone(), root_ty)
+                .with_imports(ctx.imports.types().clone());
             materialize_typed(&ty, name, value, &scope, &empty_row(), ctx, prospective)
         }
     }
@@ -92,7 +96,8 @@ fn materialize_struct(
     let members = doc::object(value)
         .ok_or_else(|| Rejection::new(RejectionReason::Malformed, format!("struct `{name}` must be an object")))?;
     let root_ty = ExprType::Row(ctx.schema.root_row_type());
-    let scope = RuntimeScope::new(root_ty.clone(), root_ty);
+    let scope = RuntimeScope::new(root_ty.clone(), root_ty)
+        .with_imports(ctx.imports.types().clone());
     let mut entries = Vec::new();
     for member in &shape.members {
         let Some(supplied) = members.iter().find(|m| m.name.text == member.name.as_str()) else { continue };

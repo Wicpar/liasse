@@ -151,6 +151,7 @@ mod eval;
 mod generator;
 mod history;
 mod host;
+mod imports;
 mod interp;
 mod keyring;
 mod keyring_view;

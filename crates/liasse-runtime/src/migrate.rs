@@ -88,8 +88,8 @@ impl<S: InstanceStore> Engine<S> {
         // against the live registry here — a target whose views call an unregistered
         // namespace fails to compile as an unknown function, which is the correct
         // load rejection (a resolvable host-call view under migration is a seam).
-        let compilation =
-            compile_definition(target, &crate::host::HostSignatures::default()).map_err(UpdateError::Engine)?;
+        let compilation = compile_definition(target, &crate::host::HostSignatures::default(), crate::imports::EMPTY.types())
+            .map_err(UpdateError::Engine)?;
         let decision = compatibility(self.model(), &compilation.model)?;
         // §20.1/§20.3/Annex E.9: an in-place update is compatible only when a
         // CONNECTED §20.1 delta path exists between the active version and the
@@ -363,6 +363,8 @@ fn build_migrated<G: crate::generator::Generators>(
         // A migration builds the target instance's own rows; no installed-module
         // aggregate participates in a state transform.
         modules: None,
+        // §13.4: a migration transform imports no parent surface.
+        imports: &crate::imports::EMPTY,
     };
     let root_ty = ExprType::Row(schema.root_row_type());
     let mut sources = SourceMap::new();

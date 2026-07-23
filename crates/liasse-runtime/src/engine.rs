@@ -67,6 +67,7 @@ pub(crate) struct Compilation {
 pub(crate) fn compile_definition(
     definition: &str,
     hosts: &HostSignatures,
+    import_types: &std::collections::BTreeMap<String, liasse_expr::ExprType>,
 ) -> Result<Compilation, EngineError> {
     let mut sources = SourceMap::new();
     let src = sources.add_file("liasse.json", definition.to_owned());
@@ -99,7 +100,7 @@ pub(crate) fn compile_definition(
         .and_then(DivisionRounding::parse)
         .unwrap_or_default();
     let mut compiled =
-        Compiled::build(&mut sources, &model, &model_doc, precision, division_rounding, hosts)?;
+        Compiled::build(&mut sources, &model, &model_doc, precision, division_rounding, hosts, import_types)?;
     // §17.1 / §9.2 step 5: infer or enforce each keyring's `$usage` against the
     // protected operations its call sites perform, rejecting a declared `$usage`
     // that excludes a required operation (`$usage: []` on a signed ring).
@@ -439,8 +440,8 @@ impl<S: InstanceStore> Engine<S> {
         definition: &str,
         generator: &mut G,
     ) -> Result<Self, EngineError> {
-        let (mut engine, data) = Self::assemble(store, definition, generator)?;
-        engine.genesis(definition, data.as_ref(), generator)?;
+        let (mut engine, data) = Self::assemble(store, definition, crate::imports::EMPTY.types(), generator)?;
+        engine.genesis(definition, data.as_ref(), &crate::imports::EMPTY, generator)?;
         Ok(engine)
     }
 
@@ -456,9 +457,10 @@ impl<S: InstanceStore> Engine<S> {
     fn assemble<G: Generators>(
         store: S,
         definition: &str,
+        import_types: &BTreeMap<String, liasse_expr::ExprType>,
         generator: &mut G,
     ) -> Result<(Self, Option<liasse_syntax::DocValue>), EngineError> {
-        Self::assemble_with(store, definition, generator, Registry::new())
+        Self::assemble_with(store, definition, import_types, generator, Registry::new())
     }
 
     /// [`assemble`](Self::assemble), but with `registry` available for RUNTIME
@@ -475,11 +477,12 @@ impl<S: InstanceStore> Engine<S> {
     fn assemble_with<G: Generators>(
         store: S,
         definition: &str,
+        import_types: &BTreeMap<String, liasse_expr::ExprType>,
         generator: &mut G,
         registry: Registry,
     ) -> Result<(Self, Option<liasse_syntax::DocValue>), EngineError> {
         let Compilation { sources, model, compiled, data, requires } =
-            compile_definition(definition, &HostSignatures::default())?;
+            compile_definition(definition, &HostSignatures::default(), import_types)?;
         let mut host = HostBinding::resolve(registry, &requires, false)?;
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
@@ -506,8 +509,9 @@ impl<S: InstanceStore> Engine<S> {
         generator: &mut G,
         registry: Registry,
     ) -> Result<Self, EngineError> {
-        let (mut engine, data) = Self::assemble_with(store, definition, generator, registry)?;
-        engine.genesis(definition, data.as_ref(), generator)?;
+        let (mut engine, data) =
+            Self::assemble_with(store, definition, crate::imports::EMPTY.types(), generator, registry)?;
+        engine.genesis(definition, data.as_ref(), &crate::imports::EMPTY, generator)?;
         Ok(engine)
     }
 
@@ -526,13 +530,18 @@ impl<S: InstanceStore> Engine<S> {
         store: S,
         definition: &str,
         config: &BTreeMap<String, liasse_value::Value>,
+        imports: &crate::imports::ParentImports,
         generator: &mut G,
     ) -> Result<Self, crate::config::ConfigBindError> {
         use crate::config::ConfigBindError;
-        let (mut engine, data) =
-            Self::assemble(store, definition, generator).map_err(ConfigBindError::Engine)?;
+        // §13.4: the child's `$expose` `$view` may read a parent surface — type its
+        // `#handle` reads against the resolved projection at compile.
+        let (mut engine, data) = Self::assemble(store, definition, imports.types(), generator)
+            .map_err(ConfigBindError::Engine)?;
         engine.bind_config(config, generator)?;
-        engine.genesis(definition, data.as_ref(), generator).map_err(ConfigBindError::Engine)?;
+        engine
+            .genesis(definition, data.as_ref(), imports, generator)
+            .map_err(ConfigBindError::Engine)?;
         Ok(engine)
     }
 
@@ -564,12 +573,12 @@ impl<S: InstanceStore> Engine<S> {
         let requires = requires_of(definition)?;
         let mut host = HostBinding::resolve(registry, &requires, true)?;
         let Compilation { sources, model, compiled, data, .. } =
-            compile_definition(definition, &host.expr_signatures())?;
+            compile_definition(definition, &host.expr_signatures(), crate::imports::EMPTY.types())?;
         let clock = generator.now();
         let cursor = crate::lineage::HistoryCursor::genesis(store.instance());
         let keyrings = provision_keyrings(&compiled, clock, &mut host, ProviderFallback::SimDefault)?;
         let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default() };
-        engine.genesis(definition, data.as_ref(), generator)?;
+        engine.genesis(definition, data.as_ref(), &crate::imports::EMPTY, generator)?;
         Ok(engine)
     }
 
@@ -604,7 +613,7 @@ impl<S: InstanceStore> Engine<S> {
         // while the provider-less [`restore`](Self::restore) passes a bare registry
         // and refuses any `$provider`-named ring rather than silently sim it.
         let Compilation { sources, model, compiled, requires, .. } =
-            compile_definition(definition, &HostSignatures::default())?;
+            compile_definition(definition, &HostSignatures::default(), crate::imports::EMPTY.types())?;
         let mut host = HostBinding::resolve(registry, &requires, false)?;
         let clock = generator.now();
         let keyrings = provision_keyrings(&compiled, clock, &mut host, fallback)?;
@@ -694,7 +703,7 @@ impl<S: InstanceStore> Engine<S> {
         // §16.2/§20: re-resolve the point definition's `$requires` against the live
         // registry before activation, strictly, exactly as a migration does.
         let Compilation { sources, model, compiled, requires, .. } =
-            compile_definition(definition, &HostSignatures::default())?;
+            compile_definition(definition, &HostSignatures::default(), crate::imports::EMPTY.types())?;
         self.host.rebind(&requires)?;
         // §17.5/§19.8: provision the point definition's newly-declared keyrings
         // BEFORE staging, on the same live-reconstruction discipline as a migration —
@@ -1009,6 +1018,8 @@ impl<S: InstanceStore> Engine<S> {
             context: BTreeMap::new(),
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
             modules: None,
+            // §13.4: `$config` resolution reads no parent surface.
+            imports: &crate::imports::EMPTY,
         };
         let prospective = Prospective::gather(&self.store, engine_schema)
             .map_err(|error| crate::config::ConfigBindError::Engine(EngineError::Store(error)))?;
@@ -1130,6 +1141,7 @@ impl<S: InstanceStore> Engine<S> {
         &mut self,
         definition: &str,
         data: Option<&liasse_syntax::DocValue>,
+        imports: &crate::imports::ParentImports,
         generator: &mut G,
     ) -> Result<(), EngineError> {
         let schema = Schema::new(&self.model);
@@ -1156,6 +1168,11 @@ impl<S: InstanceStore> Engine<S> {
             // Genesis seeds the instance's own state; a `.modules::iface` read is a
             // parent-engine concern, so no installed-module aggregate crosses here.
             modules: None,
+            // §13.4/§13.13/§9.1: a module child's `$data` seed computes a value
+            // from a parent surface (`enabled = #company.plan == …`), resolved
+            // row-local against the containing row at insertion; empty for a
+            // standalone load.
+            imports,
         };
         let mut prospective = Prospective::empty();
         let mut touched = Vec::new();
@@ -1199,6 +1216,7 @@ impl<S: InstanceStore> Engine<S> {
     pub(crate) fn overlay_install_data<G: Generators>(
         &mut self,
         data_text: &str,
+        imports: &crate::imports::ParentImports,
         generator: &mut G,
     ) -> Result<(), EngineError> {
         // Wrap the `$data` object as a one-member document so the existing document
@@ -1225,6 +1243,9 @@ impl<S: InstanceStore> Engine<S> {
             context: self.base_context(),
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
             modules: None,
+            // §13.4: the installation `$data` overlay resolves the same parent
+            // surfaces the package `$data` seed did (bound by the caller below).
+            imports,
         };
         let mut prospective = Prospective::gather(&self.store, schema)?;
         let mut touched = Vec::new();
@@ -1281,6 +1302,11 @@ impl<S: InstanceStore> Engine<S> {
             // cross-module dispatch is routed by the parent host (§13.10), not folded
             // into this engine's evaluation.
             modules: None,
+            // §13.4: a child's own mutation resolves no parent-surface import here —
+            // the host injects a `#company` binding only into the child's genesis
+            // seed and its interface read; a child mutation body reading `#company`
+            // is a documented seam no CORE case exercises.
+            imports: &crate::imports::EMPTY,
         };
 
         // §6.3: split the request's flat receiver key into the selector's operands
@@ -1522,6 +1548,8 @@ impl<S: InstanceStore> Engine<S> {
             // The source read resolves against this instance's own state; a migration
             // folds in no installed-module aggregate (§20.1).
             modules: None,
+            // §13.4: a source read imports no parent surface (its own state only).
+            imports: &crate::imports::EMPTY,
         };
         Ok(ctx.root(prospective))
     }
@@ -1595,6 +1623,9 @@ impl<S: InstanceStore> Engine<S> {
             // §13.9: the installed children a `.modules::iface` read aggregates,
             // supplied only on the parent-host module-aware read path.
             modules,
+            // §13.4: a plain/root `$view` imports no parent surface; a module
+            // child's *interface* read (which does) is served by `interface_cell`.
+            imports: &crate::imports::EMPTY,
         };
         // §10.1: bind each supplied argument, then fill an omitted declared
         // parameter with its declared default (§8.3), so a `$view` reading `@name`
@@ -1673,6 +1704,8 @@ impl<S: InstanceStore> Engine<S> {
             context: self.base_context(),
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
             modules: None,
+            // §13.4: receiver-scope resolution imports no parent surface.
+            imports: &crate::imports::EMPTY,
         };
         // §11.1/§10.3: bind `$actor` so a `$where`/`$except` predicate reading it
         // resolves the actor row at this frontier, exactly as the coverage read does.
@@ -1731,8 +1764,12 @@ impl<S: InstanceStore> Engine<S> {
     /// actor identity cross the boundary — the projection reads only the child's
     /// own committed state. Returns `None` when no interface of that name exposes a
     /// readable `$view` (an absent or mutation-only interface).
-    pub fn interface_read(&self, interface: &str) -> Result<Option<ViewResult>, EngineError> {
-        let Some(cell) = self.interface_cell(interface)? else { return Ok(None) };
+    pub(crate) fn interface_read(
+        &self,
+        interface: &str,
+        imports: &crate::imports::ParentImports,
+    ) -> Result<Option<ViewResult>, EngineError> {
+        let Some(cell) = self.interface_cell(interface, imports)? else { return Ok(None) };
         let order = self
             .compiled
             .exposed_view(interface)
@@ -1746,8 +1783,12 @@ impl<S: InstanceStore> Engine<S> {
     /// name exposes a readable `$view`. This is the key-preserving form the parent
     /// [`ModuleHost`](crate::ModuleHost) folds into a `.modules::iface` read; the
     /// public [`Engine::interface_read`] drops row identity to scalar output fields.
-    pub(crate) fn interface_rows(&self, interface: &str) -> Result<Option<Vec<liasse_expr::Row>>, EngineError> {
-        Ok(self.interface_cell(interface)?.map(|cell| match cell {
+    pub(crate) fn interface_rows(
+        &self,
+        interface: &str,
+        imports: &crate::imports::ParentImports,
+    ) -> Result<Option<Vec<liasse_expr::Row>>, EngineError> {
+        Ok(self.interface_cell(interface, imports)?.map(|cell| match cell {
             Cell::Collection(rows) => rows,
             Cell::Row(row) => vec![*row],
             Cell::Scalar(_) => Vec::new(),
@@ -1759,7 +1800,11 @@ impl<S: InstanceStore> Engine<S> {
     /// exposes a readable `$view`. The boundary grants access only to the fields the
     /// exposed projection selects, so a private field never appears in the result
     /// (§13.8 isolation); no parameters and no actor cross the boundary.
-    fn interface_cell(&self, interface: &str) -> Result<Option<Cell>, EngineError> {
+    fn interface_cell(
+        &self,
+        interface: &str,
+        imports: &crate::imports::ParentImports,
+    ) -> Result<Option<Cell>, EngineError> {
         let Some(expr) = self.compiled.exposed_view(interface) else {
             return Ok(None);
         };
@@ -1782,6 +1827,10 @@ impl<S: InstanceStore> Engine<S> {
             // A child interface read resolves against the child's own state; it
             // exposes no further module spaces of its own here.
             modules: None,
+            // §13.4: an `$expose` `$view` that reads a parent surface (`#company`)
+            // resolves it against the projection the host re-derives live from the
+            // parent's current state, so a later parent mutation is observed here.
+            imports,
         };
         let current = Cell::Row(Box::new(ctx.root(prospective)));
         let env = ctx.env(prospective);
@@ -1832,25 +1881,59 @@ impl<S: InstanceStore> Engine<S> {
     /// consults to reject an install into a module space whose containing row does
     /// not exist (§13.3).
     pub(crate) fn contains_row(&self, steps: &[(String, String)]) -> Result<bool, EngineError> {
-        let mut current = self.source_root()?;
-        for (collection, key) in steps {
-            let found = {
-                let Some(rows) = current.cell(collection).and_then(Cell::as_collection) else {
-                    return Ok(false);
-                };
-                rows.iter()
-                    .find(|row| {
-                        liasse_ident::KeyText::from_key_values(std::slice::from_ref(row.key()))
-                            .is_ok_and(|text| text.as_str() == key)
-                    })
-                    .cloned()
-            };
-            match found {
-                Some(row) => current = row,
-                None => return Ok(false),
-            }
-        }
-        Ok(true)
+        Ok(row_at(&self.source_root()?, steps).is_some())
+    }
+
+    /// Resolve the §13.4 parent surface named `surface` for the `$modules` space at
+    /// declaration path `declaration_path`, row-local against the space's
+    /// containing row (`containing_steps`, e.g. `[("companies", "acme")]`). The
+    /// compiled `$expose` `$view` is evaluated with `.` bound to that live row, so
+    /// under Acme's space it projects Acme and under Globex's, Globex. `None` when
+    /// the space declares no such surface, or its containing row is not live. The
+    /// host resolves this at install (to seed a child `#company` read) and freshly
+    /// at each interface read (so a later parent mutation is observed).
+    pub(crate) fn parent_surface_projection(
+        &self,
+        declaration_path: &[String],
+        containing_steps: &[(String, String)],
+        surface: &str,
+    ) -> Result<Option<crate::imports::ResolvedParentSurface>, EngineError> {
+        let Some(compiled) = self.compiled.parent_surface(declaration_path, surface) else {
+            return Ok(None);
+        };
+        let hydrated = self.hydrate(self.store.head()?)?;
+        let prospective = &hydrated.prospective;
+        let schema = Schema::new(&self.model);
+        let keyrings = self.keyring_snapshots();
+        let ctx = EvalCtx {
+            schema,
+            compiled: &self.compiled,
+            params: BTreeMap::new(),
+            now: self.clock,
+            seed: 0,
+            keyrings: &keyrings,
+            placements: &self.blob_placements,
+            // §13.4: the projection may read the parent instance `$config`; it
+            // imports no surface of its own.
+            context: self.base_context(),
+            hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
+            modules: None,
+            imports: &crate::imports::EMPTY,
+        };
+        let Some(containing) = row_at(&ctx.root(prospective), containing_steps) else {
+            return Ok(None);
+        };
+        let current = Cell::Row(Box::new(containing));
+        let env = ctx.env(prospective);
+        let value = compiled
+            .view
+            .evaluate(&env, &current)
+            .map_err(|error| EngineError::Internal(error.message()))?;
+        Ok(Some(crate::imports::ResolvedParentSurface {
+            ty: compiled.view.ty().clone(),
+            value,
+            muts: compiled.muts.clone(),
+        }))
     }
 
     /// Resolve an `$expose`d interface mutation to the private root mutation it
@@ -1863,6 +1946,15 @@ impl<S: InstanceStore> Engine<S> {
         let iface = self.model.exposed_interfaces().iter().find(|i| i.name.as_str() == interface)?;
         let bound = iface.muts.iter().find(|m| m.name.as_str() == mutation)?;
         exposed_mutation_name(&bound.binding.text)
+    }
+
+    /// The raw `$expose`d mutation binding text for `interface.mutation` (§13.8),
+    /// e.g. `#company.rename({ name: @name })` — the source a §13.4 parent-surface
+    /// mutation route parses to reach the parent capability. `None` when the
+    /// interface binds no such mutation.
+    pub(crate) fn exposed_mutation_binding(&self, interface: &str, mutation: &str) -> Option<&str> {
+        let iface = self.model.exposed_interfaces().iter().find(|i| i.name.as_str() == interface)?;
+        iface.muts.iter().find(|m| m.name.as_str() == mutation).map(|m| m.binding.text.as_str())
     }
 
     /// The dotted addresses of every compiled `$public`/role surface `$view`
@@ -1889,6 +1981,28 @@ impl<S: InstanceStore> Engine<S> {
 
 fn rejected(reason: RejectionReason, message: impl Into<String>) -> CallOutcome {
     CallOutcome::Rejected(Rejection::new(reason, message))
+}
+
+/// The materialized row addressed by `steps` — a walk of `(collection declaration
+/// name, key display text)` pairs from a package-root `Row` (§13.2 module-space
+/// containing row). An empty `steps` is the root row itself. Each step descends
+/// into the named collection cell and matches the row whose §D.2 key text equals
+/// the step key; `None` when a collection is missing or the key unmatched.
+fn row_at(root: &liasse_expr::Row, steps: &[(String, String)]) -> Option<liasse_expr::Row> {
+    let mut current = root.clone();
+    for (collection, key) in steps {
+        let next = {
+            let rows = current.cell(collection).and_then(Cell::as_collection)?;
+            rows.iter()
+                .find(|row| {
+                    liasse_ident::KeyText::from_key_values(std::slice::from_ref(row.key()))
+                        .is_ok_and(|text| text.as_str() == key.as_str())
+                })
+                .cloned()?
+        };
+        current = next;
+    }
+    Some(current)
 }
 
 /// The child root-mutation name a simple `$expose` `$mut` binding names (§13.8):

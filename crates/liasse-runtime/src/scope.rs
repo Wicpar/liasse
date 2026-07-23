@@ -19,6 +19,10 @@ pub(crate) struct RuntimeScope {
     params: BTreeMap<String, ExprType>,
     structurals: BTreeMap<String, ExprType>,
     bindings: BTreeMap<String, ExprType>,
+    /// The §13.4 parent-surface imports `#name` this position types a read
+    /// against, keyed by handle. Empty outside a module child's compile / seed
+    /// check, so a stray `#name` there is an unknown import.
+    imports: BTreeMap<String, ExprType>,
     /// The resolved `$requires` namespaces' pinned signatures (§16.2). Empty for a
     /// scope in a package with no host requirements, so a host call there faults
     /// as an unknown function.
@@ -47,6 +51,7 @@ impl RuntimeScope {
             params: BTreeMap::new(),
             structurals: BTreeMap::new(),
             bindings: BTreeMap::new(),
+            imports: BTreeMap::new(),
             hosts: HostSignatures::default(),
             host_position: HostPosition::DbRead(DbReadPosition::ViewProjection),
         }
@@ -56,6 +61,15 @@ impl RuntimeScope {
     /// against (§16.2), so `namespace.function(...)` resolves its pinned contract.
     pub(crate) fn with_host_ops(mut self, hosts: HostSignatures) -> Self {
         self.hosts = hosts;
+        self
+    }
+
+    /// Bind the §13.4 parent-surface imports `#name` this position types a read
+    /// against (`#company.plan`), each handle carrying the row type of the
+    /// parent's `$expose` `$view`. Set on a module child's compile and its `$data`
+    /// seed check; empty everywhere else.
+    pub(crate) fn with_imports(mut self, imports: BTreeMap<String, ExprType>) -> Self {
+        self.imports = imports;
         self
     }
 
@@ -123,8 +137,8 @@ impl Scope for RuntimeScope {
         }
     }
 
-    fn import(&self, _name: &str) -> Option<ExprType> {
-        None
+    fn import(&self, name: &str) -> Option<ExprType> {
+        self.imports.get(name).cloned()
     }
 
     fn binding(&self, name: &str) -> Option<ExprType> {

@@ -43,6 +43,7 @@ mod aggregate;
 mod host;
 mod install;
 mod merge;
+mod parent;
 mod space;
 
 pub(crate) use aggregate::{AggregatedInstance, ModuleAggregate};
