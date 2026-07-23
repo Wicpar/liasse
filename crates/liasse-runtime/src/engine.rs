@@ -939,7 +939,7 @@ impl<S: InstanceStore> Engine<S> {
                 format!("unknown mutation `{mutation}`"),
             )
         })?;
-        let field = self.compiled.blobs.field(&mutation.path, parameter)?;
+        let field = self.compiled.blobs.field(mutation, parameter)?;
         let descriptor = crate::blobs::verify_descriptor(declared, field.accepted(), bytes)
             .map_err(blob_upload_rejection)?;
         Ok(BlobIngress {
@@ -1394,7 +1394,24 @@ impl<S: InstanceStore> Engine<S> {
         request: &CallRequest,
         generator: &mut G,
     ) -> Result<CallOutcome, EngineError> {
-        self.call_admitting(request, Vec::new(), generator)
+        self.call_admitting(request, Vec::new(), BlobBacking::Ingress, generator)
+    }
+
+    /// Admit a mutation whose blob-valued arguments are backed by bytes persisted
+    /// OUTSIDE the engine's connector registry — a composed legacy blob host owns
+    /// the physical copies and serves them (§18.7 compatibility path). Unlike
+    /// [`call`](Self::call), which refuses an unbacked blob argument so a
+    /// committed blob field can never lack stored bytes, this trusts the caller's
+    /// external persistence and lands no engine-registry copy; unlike
+    /// [`call_with_blobs`](Self::call_with_blobs) it stages no engine ingress. It
+    /// is the seam the surface's manually composed [`BlobHost`] and the conformance
+    /// adapter admit an already-persisted descriptor through.
+    pub fn call_with_external_blobs<G: Generators>(
+        &mut self,
+        request: &CallRequest,
+        generator: &mut G,
+    ) -> Result<CallOutcome, EngineError> {
+        self.call_admitting(request, Vec::new(), BlobBacking::External, generator)
     }
 
     /// Admit one mutation together with its already-verified staged blob bytes
@@ -1452,18 +1469,42 @@ impl<S: InstanceStore> Engine<S> {
                 ));
             }
         }
-        self.call_admitting(request, ingresses, generator)
+        self.call_admitting(request, ingresses, BlobBacking::Ingress, generator)
     }
 
     fn call_admitting<G: Generators>(
         &mut self,
         request: &CallRequest,
         ingresses: Vec<BlobIngress>,
+        backing: BlobBacking,
         generator: &mut G,
     ) -> Result<CallOutcome, EngineError> {
         let Some(mutation) = self.compiled.mutation(request.mutation()) else {
             return Ok(rejected(RejectionReason::Malformed, format!("unknown mutation `{}`", request.mutation())));
         };
+        // §18.2/§18.7 (no committed blob field without stored bytes): a blob
+        // descriptor may be admitted only with its bytes persisted. Under
+        // `Ingress` every blob-valued argument MUST carry exactly one owned
+        // `BlobIngress` staged for this mutation, so the engine lands and verifies
+        // the copies through the resolved `$in` connector before commit. A blob
+        // argument passed through the ordinary `call` (empty ingress list) is
+        // refused HERE, before any state change — never committed as an unbacked,
+        // unfetchable descriptor. `External` is the trusted seam whose bytes a
+        // composed legacy blob host already persists and serves.
+        if let BlobBacking::Ingress = backing {
+            for name in request.blob_arg_names() {
+                if ingresses.iter().filter(|ingress| ingress.parameter == name).count() != 1 {
+                    return Ok(rejected(
+                        RejectionReason::Malformed,
+                        format!(
+                            "blob argument `@{name}` must be admitted with its verified bytes: \
+                             stage it with `stage_blob` and pass the owned ingress to \
+                             `call_with_blob`, never as a bare `call` argument (§18.7)"
+                        ),
+                    ));
+                }
+            }
+        }
         let params = match collect_params(mutation, request) {
             Ok(params) => params,
             Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
@@ -1591,7 +1632,7 @@ impl<S: InstanceStore> Engine<S> {
         // evaluated successfully below.
         let mut resolved_ingresses = Vec::with_capacity(ingresses.len());
         for ingress in &ingresses {
-            let field = match self.compiled.blobs.field(&mutation.path, &ingress.parameter) {
+            let field = match self.compiled.blobs.field(mutation, &ingress.parameter) {
                 Ok(field) => field,
                 Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
             };
@@ -2301,6 +2342,21 @@ pub(crate) struct ExposedMutationContract {
 
 fn rejected(reason: RejectionReason, message: impl Into<String>) -> CallOutcome {
     CallOutcome::Rejected(Rejection::new(reason, message))
+}
+
+/// How a call's blob-valued arguments are backed (§18.7). A blob descriptor is
+/// committed only with its bytes stored, so admission requires each blob
+/// argument to name its persistence explicitly rather than defaulting to a
+/// zero-copy commit.
+enum BlobBacking {
+    /// Each blob-valued argument must carry exactly one owned [`BlobIngress`]
+    /// staged for this mutation; the engine lands the verified copies through the
+    /// resolved connector before commit (`call`/`call_with_blobs`).
+    Ingress,
+    /// The descriptors' bytes are persisted outside the engine registry by a
+    /// composed legacy blob host that also serves them; the engine admits the
+    /// descriptor without landing an engine-registry copy (`call_with_external_blobs`).
+    External,
 }
 
 fn blob_upload_rejection(error: UploadError) -> Rejection {

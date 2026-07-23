@@ -9,9 +9,12 @@ use std::collections::BTreeMap;
 
 use liasse_diag::SourceMap;
 use liasse_expr::{Cell, ExprType, TypedExpr};
-use liasse_syntax::DocValue;
+use liasse_syntax::{
+    BlockMember, BlockMemberKind, DocValue, Expr, ExprKind, Selector, Stmt, StmtKind,
+};
 use liasse_value::Value;
 
+use super::{CompiledMutation, CompiledStmt};
 use crate::blobs::{AcceptedType, Placement, PlacementPolicy, Store, StoreId};
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::eval::EvalCtx;
@@ -39,37 +42,48 @@ impl CompiledBlobs {
         })
     }
 
-    /// Resolve a mutation blob parameter to the semantic field it feeds. A field
-    /// on the mutation receiver wins; otherwise a package-wide unique field name
-    /// is accepted. Ambiguity is refused rather than choosing an arbitrary
-    /// placement.
+    /// Resolve a mutation blob parameter to the semantic field it feeds. The
+    /// parameter is routed by the field name(s) the mutation program assigns it to
+    /// (§18.7): a package's blob parameter need not share its destination field's
+    /// spelling (`.docs + { file: @payload }`, finding 3), so `@payload` resolves
+    /// the `file` field, while a parameter spelled like its field (or an `@p`
+    /// shorthand) resolves the same field. A field on the mutation receiver wins;
+    /// otherwise a package-wide unique field is accepted. Ambiguity — several
+    /// destination fields, or several like-named fields — is refused rather than
+    /// choosing an arbitrary placement.
     pub(crate) fn field(
         &self,
-        mutation_path: &[String],
+        mutation: &CompiledMutation,
         parameter: &str,
     ) -> Result<&CompiledBlobField, Rejection> {
-        let named: Vec<&CompiledBlobField> = self
+        // The field name(s) the program routes the parameter into. A parameter no
+        // assignment routes (e.g. one read only as metadata) falls back to the
+        // field spelled like it, preserving name-matched resolution.
+        let mut names = dest_field_names(&mutation.program, parameter);
+        if names.is_empty() {
+            names.push(parameter.to_owned());
+        }
+        let matches =
+            |field: &CompiledBlobField| names.iter().any(|name| name.as_str() == field.name());
+        let receiver: Vec<&CompiledBlobField> = self
             .fields
             .iter()
-            .filter(|field| field.name() == parameter)
-            .collect();
-        let receiver: Vec<&CompiledBlobField> = named
-            .iter()
-            .copied()
-            .filter(|field| field.parent_path() == mutation_path)
+            .filter(|field| matches(field) && field.parent_path() == mutation.path.as_slice())
             .collect();
         match receiver.as_slice() {
+            [field] => return Ok(*field),
+            [] => {}
+            _ => return Err(ambiguous(parameter)),
+        }
+        let named: Vec<&CompiledBlobField> = self.fields.iter().filter(|f| matches(f)).collect();
+        match named.as_slice() {
             [field] => Ok(*field),
-            [] => match named.as_slice() {
-                [field] => Ok(*field),
-                [] => Err(Rejection::new(
-                    RejectionReason::Malformed,
-                    format!(
-                        "blob parameter `@{parameter}` has no accepted field under a `$blob_storage` declaration"
-                    ),
-                )),
-                _ => Err(ambiguous(parameter)),
-            },
+            [] => Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!(
+                    "blob parameter `@{parameter}` has no accepted field under a `$blob_storage` declaration"
+                ),
+            )),
             _ => Err(ambiguous(parameter)),
         }
     }
@@ -100,6 +114,140 @@ fn ambiguous(parameter: &str) -> Rejection {
             "blob parameter `@{parameter}` matches several accepted fields; declare it on the mutation receiver"
         ),
     )
+}
+
+/// The names of the fields a mutation program routes the blob parameter
+/// `@parameter` into (§18.7): a `{ field: @p }` / `field = @p` insert-or-patch
+/// member, a `.field = @p` statement, or the `@p` shorthand (which assigns the
+/// like-named field, §8.6). A blob parameter feeds one accepted field, so these
+/// destination names let an aliased parameter resolve to its field by binding
+/// rather than by spelling (finding 3).
+fn dest_field_names(program: &[CompiledStmt], parameter: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for statement in program {
+        stmt_dests(&statement.stmt, parameter, &mut names);
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn stmt_dests(stmt: &Stmt, parameter: &str, names: &mut Vec<String>) {
+    match &stmt.kind {
+        StmtKind::Assign { target, value } => {
+            // `.field = @p` patches `field` on the receiver (§8.6).
+            if is_param(value, parameter)
+                && let ExprKind::Field { member, .. } = &target.kind
+                && !member.structural
+            {
+                names.push(member.text.clone());
+            }
+            expr_dests(target, parameter, names);
+            expr_dests(value, parameter, names);
+        }
+        StmtKind::Return(expr) | StmtKind::Clear(expr) | StmtKind::Bare(expr) => {
+            expr_dests(expr, parameter, names);
+        }
+    }
+}
+
+fn expr_dests(expr: &Expr, parameter: &str, names: &mut Vec<String>) {
+    match &expr.kind {
+        ExprKind::Object(members) => {
+            members
+                .iter()
+                .for_each(|member| member_dests(member, parameter, names));
+        }
+        ExprKind::Block { base, members } => {
+            expr_dests(base, parameter, names);
+            members
+                .iter()
+                .for_each(|member| member_dests(member, parameter, names));
+        }
+        ExprKind::List(items)
+        | ExprKind::Combination {
+            operands: items, ..
+        } => {
+            items
+                .iter()
+                .for_each(|item| expr_dests(item, parameter, names));
+        }
+        ExprKind::Field { base, .. } | ExprKind::SameName { base, .. } => {
+            expr_dests(base, parameter, names);
+        }
+        ExprKind::Select { base, selector } => {
+            expr_dests(base, parameter, names);
+            match selector {
+                Selector::Keys(keys) => keys
+                    .iter()
+                    .for_each(|key| expr_dests(key, parameter, names)),
+                Selector::Bind {
+                    condition: Some(condition),
+                    ..
+                } => {
+                    expr_dests(condition, parameter, names);
+                }
+                Selector::Bind {
+                    condition: None, ..
+                } => {}
+            }
+        }
+        ExprKind::Call { callee, args } => {
+            expr_dests(callee, parameter, names);
+            args.iter()
+                .for_each(|arg| expr_dests(super::arg_value(arg), parameter, names));
+        }
+        ExprKind::Unary { operand, .. } => expr_dests(operand, parameter, names),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            expr_dests(lhs, parameter, names);
+            expr_dests(rhs, parameter, names);
+        }
+        ExprKind::Ternary {
+            cond,
+            then,
+            otherwise,
+        } => {
+            expr_dests(cond, parameter, names);
+            expr_dests(then, parameter, names);
+            expr_dests(otherwise, parameter, names);
+        }
+        _ => {}
+    }
+}
+
+fn member_dests(member: &BlockMember, parameter: &str, names: &mut Vec<String>) {
+    match &member.kind {
+        // `field: @p` — `@p` feeds the named field.
+        BlockMemberKind::Named {
+            name,
+            value: Some(value),
+        } => {
+            if is_param(value, parameter) {
+                names.push(name.text.clone());
+            }
+            expr_dests(value, parameter, names);
+        }
+        // `field = @p` — a patch assignment feeds the named field.
+        BlockMemberKind::Assign { target, value } => {
+            if is_param(value, parameter) {
+                names.push(target.text.clone());
+            }
+            expr_dests(value, parameter, names);
+        }
+        // `@p` shorthand assigns the like-named field (`p = @p`, §8.6).
+        BlockMemberKind::Shorthand(value) => {
+            if is_param(value, parameter) {
+                names.push(parameter.to_owned());
+            }
+            expr_dests(value, parameter, names);
+        }
+        BlockMemberKind::Directive { value, .. } => expr_dests(value, parameter, names),
+        BlockMemberKind::Named { value: None, .. } | BlockMemberKind::Clear(_) => {}
+    }
+}
+
+fn is_param(expr: &Expr, parameter: &str) -> bool {
+    matches!(&expr.kind, ExprKind::Param(id) if id.text == parameter)
 }
 
 /// One accepted blob field and the nearest inherited placement declaration.

@@ -228,7 +228,17 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         // never the monotone clock — so a surface-minted token is unpredictable.
         let now = self.clock.instant();
         let mut generators = self.entropy.generators(now);
-        let outcome = self.engine.call(request, &mut generators)?;
+        // §18.7: a descriptor prebound on a non-managed call (a manually composed
+        // legacy `BlobHost`, or the conformance adapter) is backed by bytes that
+        // host has already persisted and serves, not by the engine registry — so it
+        // is admitted through the external-persistence seam. The engine's ordinary
+        // `call` refuses an unbacked blob argument, so a bare `None`-admission call
+        // never commits a descriptor whose bytes are stored nowhere (finding 1).
+        let outcome = if request.carries_blob_arg() {
+            self.engine.call_with_external_blobs(request, &mut generators)?
+        } else {
+            self.engine.call(request, &mut generators)?
+        };
         self.finish_execution(id, outcome)
     }
 

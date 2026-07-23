@@ -110,6 +110,7 @@ impl BlobCatalog {
     ) -> Result<StagedBlob, UploadError> {
         let digest = *ingress.descriptor.sha512();
         let plan = writable_plan(resolved.policy.plan(), &resolved.stores, host, &digest)
+            .filter(|plan| !plan.is_empty())
             .ok_or(UploadError::NoWritablePlacement)?;
         let mut placement = BTreeMap::new();
         let mut connectors = BTreeMap::new();
@@ -255,9 +256,14 @@ fn writable_plan(
     match placement {
         Placement::View(ids) => {
             let ids = dedup(ids);
-            ids.iter()
-                .all(|store| writable(store, stores, host, digest))
-                .then_some(ids)
+            // §18.4: an empty resolved store view is not a fulfillable write branch
+            // — landing it would verify no copy, committing a zero-copy blob. It is
+            // not writable (finding 2); a containing `$any` skips it below.
+            (!ids.is_empty()
+                && ids
+                    .iter()
+                    .all(|store| writable(store, stores, host, digest)))
+            .then_some(ids)
         }
         Placement::All(branches) => {
             let mut required = Vec::new();
@@ -268,7 +274,12 @@ fn writable_plan(
         }
         Placement::Any(branches) => branches
             .iter()
-            .find_map(|branch| writable_plan(branch, stores, host, digest)),
+            // §18.4: choose the first branch with a non-empty complete write plan,
+            // so an empty (unfulfillable) alternative falls through to a later
+            // fulfillable one rather than committing a zero-copy blob (finding 2).
+            .find_map(|branch| {
+                writable_plan(branch, stores, host, digest).filter(|plan| !plan.is_empty())
+            }),
         Placement::Copies { n, of } => {
             let writable: Vec<StoreId> = dedup(of)
                 .into_iter()

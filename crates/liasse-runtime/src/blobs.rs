@@ -237,6 +237,7 @@ impl<C: BlobConnector> BlobEngine<C> {
         let descriptor = verify_descriptor(declared, accepted, bytes)?;
         let plan = self
             .writable_plan(policy.plan())
+            .filter(|plan| !plan.is_empty())
             .ok_or(UploadError::NoWritablePlacement)?;
         let digest = *descriptor.sha512();
         let mut landed = BTreeMap::new();
@@ -335,7 +336,9 @@ impl<C: BlobConnector> BlobEngine<C> {
         match placement {
             Placement::View(stores) => {
                 let dedup = dedup(stores);
-                dedup.iter().all(|s| self.writable(s)).then_some(dedup)
+                // §18.4: an empty store view verifies no copy, so it is not a
+                // fulfillable write branch — a containing `$any` skips it (finding 2).
+                (!dedup.is_empty() && dedup.iter().all(|s| self.writable(s))).then_some(dedup)
             }
             Placement::All(branches) => {
                 let mut required = Vec::new();
@@ -344,7 +347,9 @@ impl<C: BlobConnector> BlobEngine<C> {
                 }
                 Some(dedup(&required))
             }
-            Placement::Any(branches) => branches.iter().find_map(|b| self.writable_plan(b)),
+            Placement::Any(branches) => branches
+                .iter()
+                .find_map(|b| self.writable_plan(b).filter(|plan| !plan.is_empty())),
             Placement::Copies { n, of } => {
                 let writable: Vec<StoreId> =
                     dedup(of).into_iter().filter(|s| self.writable(s)).collect();

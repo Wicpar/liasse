@@ -73,10 +73,14 @@ fn registry() -> Registry {
 }
 
 fn engine(instance: &str) -> TestResult<Engine<MemoryStore>> {
+    engine_from(instance, PACKAGE)
+}
+
+fn engine_from(instance: &str, package: &str) -> TestResult<Engine<MemoryStore>> {
     let store = MemoryStore::new(InstanceId::new(instance));
     Ok(Engine::load_with_hosts(
         store,
-        PACKAGE,
+        package,
         &mut generator(),
         registry(),
     )?)
@@ -205,4 +209,236 @@ fn rejected_mutation_does_not_commit_or_serve_staged_blob() -> TestResult {
     assert_eq!(usage.object_count, 0);
     assert_eq!(engine.fetch_blob(&descriptor), Err(FetchError::Unknown));
     Ok(())
+}
+
+/// Finding 1: a bare `Engine::call` carrying a blob descriptor argument WITHOUT a
+/// staged ingress must be refused loudly before any state change — never
+/// committed as an unbacked, unfetchable blob field. Persist-or-refuse holds at
+/// the lowest admission entry point.
+#[test]
+fn bare_call_with_unbacked_blob_descriptor_is_refused() -> TestResult {
+    let mut engine = engine("blob-unbacked")?;
+    let bytes = b"descriptor without managed admission";
+    // Stage to obtain the verified descriptor, then DISCARD the owned ingress.
+    let descriptor = engine
+        .stage_blob("add", "file", &declared(bytes, "orphan.bin"), bytes)
+        .map_err(|rejection| std::io::Error::other(rejection.message().to_owned()))?
+        .descriptor()
+        .clone();
+    let head_before = engine.head()?;
+
+    let request = CallRequest::new("add")
+        .arg("id", Value::Text(Text::new("d1")))
+        .arg("file", Value::Blob(Box::new(descriptor.clone())));
+    let outcome = engine.call(&request, &mut generator())?;
+
+    let CallOutcome::Rejected(rejection) = outcome else {
+        return Err(
+            std::io::Error::other("unbacked blob descriptor was admitted through `call`").into(),
+        );
+    };
+    assert_eq!(rejection.reason(), RejectionReason::Malformed);
+    assert_eq!(
+        engine.head()?,
+        head_before,
+        "no commit for a refused blob admission"
+    );
+    let usage = engine
+        .blob_connector("memory")
+        .ok_or_else(|| std::io::Error::other("connector missing"))?
+        .observe_usage()?;
+    assert_eq!(
+        usage.object_count, 0,
+        "no physical object for a refused admission"
+    );
+    assert_eq!(engine.fetch_blob(&descriptor), Err(FetchError::Unknown));
+    Ok(())
+}
+
+const ANY_PACKAGE: &str = r#"{
+  "$liasse": 1
+  "$app": "t.blob.any@1.0.0"
+  "$model": {
+    "stores": {
+      "$key": "id"
+      "id": "text"
+      "connector": "text"
+      "enabled": "bool = true"
+    }
+    "docs": {
+      "$key": "id"
+      "$blob_storage": {
+        "$in": { "$any": ["/stores[:s | s.id == 'missing']", "/stores['primary']"] }
+      }
+      "id": "text"
+      "file": {
+        "$type": "blob"
+        "$max_bytes": "1024"
+        "$media": ["application/octet-stream"]
+      }
+    }
+    "$mut": {
+      "add": ".docs + { id: @id, file: @file }"
+    }
+  }
+  "$data": {
+    "stores": {
+      "primary": { "connector": "memory" }
+    }
+  }
+}"#;
+
+/// Finding 2: an empty `$any` alternative is not a fulfillable zero-copy write
+/// plan. The runtime must skip the empty first branch and land the copy in the
+/// later fulfillable `primary` branch — never report success with no landed copy.
+#[test]
+fn empty_any_branch_is_skipped_and_bytes_land() -> TestResult {
+    let mut engine = engine_from("blob-empty-any", ANY_PACKAGE)?;
+    let bytes = b"must land somewhere";
+    let ingress = engine
+        .stage_blob("add", "file", &declared(bytes, "doc.bin"), bytes)
+        .map_err(|rejection| std::io::Error::other(rejection.message().to_owned()))?;
+    let descriptor = ingress.descriptor().clone();
+    let request = CallRequest::new("add")
+        .arg("id", Value::Text(Text::new("d1")))
+        .arg("file", Value::Blob(Box::new(descriptor.clone())));
+    let outcome = engine.call_with_blob(&request, ingress, &mut generator())?;
+    assert!(
+        matches!(outcome, CallOutcome::Committed { .. }),
+        "expected a committed write, got {outcome:?}"
+    );
+
+    let usage = engine
+        .blob_connector("memory")
+        .ok_or_else(|| std::io::Error::other("connector missing"))?
+        .observe_usage()?;
+    assert_eq!(usage.object_count, 1, "exactly one landed copy (not zero)");
+    let fetched = engine.fetch_blob(&descriptor)?;
+    assert_eq!(fetched.bytes(), bytes);
+    assert_eq!(
+        fetched
+            .holders()
+            .first()
+            .map(liasse_runtime::StoreId::as_str),
+        Some("primary"),
+        "the copy landed in the later fulfillable branch"
+    );
+    Ok(())
+}
+
+const ALIAS_PACKAGE: &str = r#"{
+  "$liasse": 1
+  "$app": "t.blob.alias@1.0.0"
+  "$model": {
+    "stores": {
+      "$key": "id"
+      "id": "text"
+      "connector": "text"
+      "enabled": "bool = true"
+    }
+    "docs": {
+      "$key": "id"
+      "$blob_storage": {
+        "$in": "/stores['primary']"
+        "$serve": "/stores['primary']"
+      }
+      "id": "text"
+      "file": {
+        "$type": "blob"
+        "$max_bytes": "1024"
+        "$media": ["application/octet-stream"]
+      }
+    }
+    "$mut": {
+      "add": ".docs + { id: @id, file: @payload }"
+    }
+  }
+  "$data": {
+    "stores": {
+      "primary": { "connector": "memory" }
+    }
+  }
+}"#;
+
+/// Finding 3: a blob parameter need not share its destination field's spelling.
+/// `@payload` feeds the `file` field, so staging under the parameter name must
+/// use `file`'s accepted type and placement — and the aliased upload round-trips.
+#[test]
+fn aliased_blob_parameter_routes_to_its_field() -> TestResult {
+    let mut engine = engine_from("blob-alias", ALIAS_PACKAGE)?;
+    let bytes = b"aliased parameter";
+    let ingress = engine
+        .stage_blob("add", "payload", &declared(bytes, "doc.bin"), bytes)
+        .map_err(|rejection| std::io::Error::other(rejection.message().to_owned()))?;
+    let descriptor = ingress.descriptor().clone();
+    let request = CallRequest::new("add")
+        .arg("id", Value::Text(Text::new("d1")))
+        .arg("payload", Value::Blob(Box::new(descriptor.clone())));
+    let outcome = engine.call_with_blob(&request, ingress, &mut generator())?;
+    assert!(
+        matches!(outcome, CallOutcome::Committed { .. }),
+        "aliased blob upload committed"
+    );
+
+    let fetched = engine.fetch_blob(&descriptor)?;
+    assert_eq!(fetched.bytes(), bytes);
+    Ok(())
+}
+
+const RELATIVE_PACKAGE: &str = r#"{
+  "$liasse": 1
+  "$app": "t.blob.relative@1.0.0"
+  "$model": {
+    "owners": {
+      "$key": "id"
+      "id": "text"
+      "stores": {
+        "$key": "id"
+        "id": "text"
+        "connector": "text"
+        "enabled": "bool = true"
+      }
+      "docs": {
+        "$key": "id"
+        "$blob_storage": { "$in": "^.stores['primary']" }
+        "id": "text"
+        "file": {
+          "$type": "blob"
+          "$max_bytes": "1024"
+          "$media": ["application/octet-stream"]
+        }
+      }
+    }
+  }
+  "$data": {
+    "owners": {
+      "o1": { "stores": { "primary": { "connector": "memory" } } }
+    }
+  }
+}"#;
+
+/// Finding 4: occurrence-relative placement views are an unsupported §18.4 subset.
+/// They must be refused LOUDLY at load (an honest `EngineError::Unsupported`
+/// naming the view), never silently mis-resolved — documented as loud-deferred.
+#[test]
+fn relative_placement_view_is_loudly_unsupported() -> TestResult {
+    let store = MemoryStore::new(InstanceId::new("blob-relative"));
+    let result = Engine::load_with_hosts(store, RELATIVE_PACKAGE, &mut generator(), registry());
+    match result {
+        Err(EngineError::Unsupported(message)) => {
+            assert!(
+                message.contains("^.stores['primary']"),
+                "the unsupported diagnostic names the relative view: {message}"
+            );
+            Ok(())
+        }
+        Err(other) => Err(std::io::Error::other(format!(
+            "expected a loud Unsupported refusal, got {other}"
+        ))
+        .into()),
+        Ok(_) => Err(std::io::Error::other(
+            "a relative placement view loaded instead of a loud unsupported refusal",
+        )
+        .into()),
+    }
 }
