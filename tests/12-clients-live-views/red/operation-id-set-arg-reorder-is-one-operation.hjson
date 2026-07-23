@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: operation-id-set-arg-reorder-is-one-operation
+  suite: scenario
+  spec: ["#clients", "§12.3", "§12.1"]
+  tags: ["dedup", "identity", "ordering"]
+  note: '''
+    §12.3: "a request's identity for this deduplication is its fully-decoded
+    set of declared arguments: two submissions of one operation identifier are
+    equivalent exactly when those decoded argument sets are equal." A `set<T>`
+    argument is an unordered value (Annex A), so sending the SAME set members
+    in a different wire order is the SAME decoded argument. The two submissions
+    therefore form ONE operation: the retry is accepted (not rejected as a
+    metadata conflict) and does NOT execute again. The `version` counter proves
+    at-most-once: it is bumped exactly once across both submissions.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.dedupset@1.0.0"
+    $model: {
+      docs: {
+        $key: "id"
+        id: "text"
+        tags: "set<text>"
+        version: "int = 0"
+      }
+      $mut: {
+        settags: [
+          ".docs[@id].tags = @tags"
+          ".docs[@id].version = .docs[@id].version + 1"
+        ]
+      }
+      docs_view: { $view: ".docs { id, version, $sort: [id] }" }
+      $public: {
+        docs: {
+          $view: ".docs_view"
+          $mut: { settags: ".settags" }
+        }
+      }
+    }
+    $data: { docs: { d1: { version: "0" } } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.docs", on: "c1", id: "w1", expect_init: { value: [ { id: "d1", version: "0" } ] } }
+    {
+      call: "public.docs.settags"
+      args: { id: "d1", tags: [ "a", "b", "c" ] }
+      on: "c1"
+      operation_id: "op-set-3af90b1e77c2"
+      expect: { outcome: ok, completion: committed }
+    }
+    { expect_view: { watch: "w1", value: [ { id: "d1", version: "1" } ] } }
+    // Same operation id; the SAME set, reordered on the wire. §12.3: one
+    // operation. Accepted (not a metadata conflict) and not re-executed.
+    {
+      call: "public.docs.settags"
+      args: { id: "d1", tags: [ "c", "b", "a" ] }
+      on: "c1"
+      operation_id: "op-set-3af90b1e77c2"
+      expect: { outcome: ok }
+    }
+    // version is still 1: the reordered retry did not execute a second time.
+    { expect_view: { watch: "w1", value: [ { id: "d1", version: "1" } ] } }
+  ]
+}

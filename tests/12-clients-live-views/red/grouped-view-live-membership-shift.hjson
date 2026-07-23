@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: grouped-view-live-membership-shift
+  suite: scenario
+  spec: ["#clients", "§12.2", "#views", "§7.2", "§7.5"]
+  note: "Live §7.2 grouped view; one atomic commit reassigns two lines so group b and c empty out, group d appears, and group a's aggregate changes: a single ViewDelta that REMOVES, ADDS, and CHANGES rows at once."
+
+  package: {
+    $liasse: 1
+    $app: "t.grouplive@1.0.0"
+    $model: {
+      lines: {
+        $key: "id"
+        id: "text"
+        account: "text"
+        debit: "int"
+      }
+      $mut: {
+        reshuffle: [
+          ".lines[@f1].account = @t1"
+          ".lines[@f2].account = @t2"
+        ]
+      }
+      $public: {
+        totals: {
+          $view: ".lines { $key: account, account, total: sum(group.debit) }"
+          $mut: { reshuffle: ".reshuffle" }
+        }
+      }
+    }
+    $data: {
+      lines: {
+        l1: { account: "a", debit: "10" }
+        l2: { account: "a", debit: "5" }
+        l3: { account: "b", debit: "3" }
+        l4: { account: "c", debit: "7" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.totals", on: "c1", id: "w1", expect_init: { value: [
+      { account: "a", total: "15" }
+      { account: "b", total: "3" }
+      { account: "c", total: "7" }
+    ] } }
+    { call: "public.totals.reshuffle", args: { f1: "l3", t1: "a", f2: "l4", t2: "d" }, on: "c1",
+      expect: { outcome: ok } }
+    // l3: b->a, l4: c->d. Group a = 10+5+3 = 18; b and c empty (removed); d = 7.
+    { expect_view: { watch: "w1", value: [
+      { account: "a", total: "18" }
+      { account: "d", total: "7" }
+    ] } }
+  ]
+}

@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: nested-subcollection-live-child-change
+  suite: scenario
+  spec: ["#clients", "§12.2", "#views", "§7.1"]
+  note: "Live view with a nested sub-collection projection member `kids`. A child add / relabel / drop must re-materialize the parent row's nested member coherently."
+
+  package: {
+    $liasse: 1
+    $app: "t.nestlive@1.0.0"
+    $model: {
+      parents: {
+        $key: "id"
+        id: "text"
+        children: { $key: "id", id: "text", label: "text" }
+      }
+      $mut: {
+        add_child: ".parents[@p].children + { id: @c, label: @l }"
+        relabel: ".parents[@p].children[@c].label = @l"
+        drop_child: ".parents[@p].children - @c"
+      }
+      $public: {
+        tree: {
+          $view: ".parents { id, kids: .children { id, label } }"
+          $mut: { add_child: ".add_child", relabel: ".relabel", drop_child: ".drop_child" }
+        }
+      }
+    }
+    $data: { parents: { p1: { children: { c1: { label: "x" } } } } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.tree", on: "c1", id: "w1", expect_init: { value: [
+      { id: "p1", kids: [ { id: "c1", label: "x" } ] }
+    ] } }
+    { call: "public.tree.add_child", args: { p: "p1", c: "c2", l: "y" }, on: "c1", expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [
+      { id: "p1", kids: [ { id: "c1", label: "x" }, { id: "c2", label: "y" } ] }
+    ] } }
+    { call: "public.tree.relabel", args: { p: "p1", c: "c1", l: "z" }, on: "c1", expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [
+      { id: "p1", kids: [ { id: "c1", label: "z" }, { id: "c2", label: "y" } ] }
+    ] } }
+    { call: "public.tree.drop_child", args: { p: "p1", c: "c2" }, on: "c1", expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [
+      { id: "p1", kids: [ { id: "c1", label: "z" } ] }
+    ] } }
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  format: 1
+  name: cascade-delete-advances-live-view
+  suite: scenario
+  spec: ["#clients", "§12.2", "#deletion", "§21.1", "#state-model", "§5.6"]
+  note: "Live view over contacts; deleting a company cascades (§on_delete cascade) to delete its contacts, so ONE commit removes multiple rows from the live result."
+
+  package: {
+    $liasse: 1
+    $app: "t.cascadelive@1.0.0"
+    $model: {
+      companies: { $key: "id", id: "text" }
+      contacts: {
+        $key: "id"
+        id: "text"
+        company: { $ref: "/companies", $on_delete: "cascade" }
+      }
+      $mut: {
+        del_company: ".companies - @id"
+      }
+      $public: {
+        contacts: {
+          $view: ".contacts { id, company, $sort: [id] }"
+          $mut: { del_company: ".del_company" }
+        }
+      }
+    }
+    $data: {
+      companies: { acme: {}, globex: {} }
+      contacts: {
+        c1: { company: "acme" }
+        c2: { company: "acme" }
+        c3: { company: "globex" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.contacts", on: "c1", id: "w1", expect_init: { value: [
+      { id: "c1", company: "acme" }
+      { id: "c2", company: "acme" }
+      { id: "c3", company: "globex" }
+    ] } }
+    { call: "public.contacts.del_company", args: { id: "acme" }, on: "c1", expect: { outcome: ok } }
+    // cascade removes c1 and c2 in one commit; only c3 remains.
+    { expect_view: { watch: "w1", value: [ { id: "c3", company: "globex" } ] } }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: computed-recompute-advances-live-view
+  suite: scenario
+  spec: ["#clients", "§12.2", "#state-model", "§5.2"]
+  note: "A §5.2 computed field `doubled = base + base`. Changing the base must recompute the computed field and advance the live view that projects it."
+
+  package: {
+    $liasse: 1
+    $app: "t.computedlive@1.0.0"
+    $model: {
+      items: {
+        $key: "id"
+        id: "text"
+        base: "int"
+        doubled: "= .base + .base"
+      }
+      $mut: {
+        add: ".items + { id: @id, base: @base }"
+        setbase: ".items[@id].base = @base"
+      }
+      $public: {
+        items: {
+          $view: ".items { id, doubled, $sort: [id] }"
+          $mut: { add: ".add", setbase: ".setbase" }
+        }
+      }
+    }
+    $data: { items: { x: { base: "1" } } }
+  }
+
+  steps: [
+    { connect: "c1" }
+    { watch: "public.items", on: "c1", id: "w1", expect_init: { value: [ { id: "x", doubled: "2" } ] } }
+    { call: "public.items.setbase", args: { id: "x", base: "5" }, on: "c1", expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [ { id: "x", doubled: "10" } ] } }
+  ]
+}

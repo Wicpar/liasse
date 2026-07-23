@@ -1,0 +1,43 @@
+{
+  format: 1
+  name: window-tracks-temporal-eviction
+  suite: scenario
+  spec: ["#clients", "§12.2", "#buckets", "§14.1", "§22.6"]
+  note: "A bounded first(2) window over a temporally-bucketed view. Advancing the clock across bucket boundaries evicts expired rows with no commit; the window must slide to the next live rows. Timestamps in micros form (the ISO-arg path is separate §14 debt)."
+
+  package: {
+    $liasse: 1
+    $app: "t.offerswin@1.0.0"
+    $model: {
+      offers: {
+        $key: "id"
+        $bucket: ".expires_at"
+        id: "text"
+        expires_at: "timestamp"
+      }
+      $mut: {
+        add: ".offers + { id: @id, expires_at: @expires_at }"
+      }
+      active: { $view: ".offers { id, $sort: [id] }" }
+      $public: {
+        offers: { $view: ".active", $mut: { add: ".add" } }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // o1 exp 01:00, o2 exp 02:00, o3 exp 03:00, o4 exp 04:00 (micros).
+    { call: "public.offers.add", args: { id: "o1", expires_at: "1767229200000000" }, on: "c1", expect: { outcome: ok } }
+    { call: "public.offers.add", args: { id: "o2", expires_at: "1767232800000000" }, on: "c1", expect: { outcome: ok } }
+    { call: "public.offers.add", args: { id: "o3", expires_at: "1767236400000000" }, on: "c1", expect: { outcome: ok } }
+    { call: "public.offers.add", args: { id: "o4", expires_at: "1767240000000000" }, on: "c1", expect: { outcome: ok } }
+    { watch: "public.offers", on: "c1", id: "w1", window: { $size: 2 }, expect_init: { value: [ { id: "o1" }, { id: "o2" } ] } }
+    // Advance to 01:30: o1 (expires 01:00, half-open) is inactive; window slides to o2,o3.
+    { advance_time: "PT1H30M" }
+    { expect_view: { watch: "w1", value: [ { id: "o2" }, { id: "o3" } ] } }
+    // Advance to 02:30: o2 also inactive; window slides to o3,o4.
+    { advance_time: "PT1H" }
+    { expect_view: { watch: "w1", value: [ { id: "o3" }, { id: "o4" } ] } }
+  ]
+}
