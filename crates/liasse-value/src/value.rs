@@ -136,6 +136,33 @@ pub enum Value {
 }
 
 impl Value {
+    /// The identity form of a key value (Annex D.1/D.2): a `ref` flattens to its
+    /// target key value (a scalar ref to that scalar, a composite ref to the
+    /// positional component tuple), and a composite key recurses component-wise.
+    ///
+    /// A key value's identity is therefore independent of whether a `ref`
+    /// component is carried as a `Value::Ref` or as its already-dereferenced bare
+    /// scalar key (§6.3 ref/key equality) — the value-level analogue of the D.2
+    /// key-text flattening (`liasse_ident::KeyText`), so a row identity built from
+    /// the stored key and one built from an equal application key agree. Ordering
+    /// the identity form matches the underlying key's value order (a `ref` orders
+    /// by target key, B.1); every non-ref value is its own identity.
+    #[must_use]
+    pub fn identity_value(&self) -> Value {
+        match self {
+            Value::Ref(reference) => match reference.key() {
+                RefKey::Scalar(inner) => inner.identity_value(),
+                RefKey::Composite(components) => {
+                    Value::Composite(components.iter().map(Value::identity_value).collect())
+                }
+            },
+            Value::Composite(components) => {
+                Value::Composite(components.iter().map(Value::identity_value).collect())
+            }
+            other => other.clone(),
+        }
+    }
+
     /// Cross-variant rank.
     ///
     /// Annex B defines a total order *within* each type and the null/none

@@ -757,15 +757,13 @@ pub(super) fn build_window(spec: &serde_json::Value) -> Option<Window> {
 }
 
 /// The stable [`RowId`] a concrete window anchor names. A top-level view row is
-/// keyed by its source row's canonical key text (Annex D.2); the anchor carries
-/// that key in wire form, so its [`KeyText`] over a `text` value reproduces the
-/// same identity the view materializer assigns.
+/// keyed by its source row's typed key VALUE (§7.2, Annex D.1); a `text`-keyed
+/// view carries that key as its raw text, so wrapping the anchor as a `text` key
+/// value reproduces the same identity the view materializer assigns
+/// (`RowId::keyed` carries a string identity as `Value::Text`, matching
+/// `keyed_value(Value::Text(..))`).
 fn anchor_row_id(anchor: &str) -> liasse_expr::RowId {
-    let value = Value::Text(Text::new(anchor.to_owned()));
-    let text = liasse_ident::KeyText::from_key_values(std::slice::from_ref(&value))
-        .map(|key| key.as_str().to_owned())
-        .unwrap_or_else(|_| anchor.to_owned());
-    liasse_expr::RowId::keyed(text)
+    liasse_expr::RowId::keyed(anchor.to_owned())
 }
 
 /// Render a call outcome to a harness observation, projecting the response value

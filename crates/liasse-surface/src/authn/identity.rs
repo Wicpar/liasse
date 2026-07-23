@@ -47,19 +47,20 @@ fn composite_identity(value: &Value) -> Option<Value> {
 }
 
 /// The canonical row identity (Annex D.1/D.2) a view row over `key`'s collection
-/// carries: `key`'s components flattened to canonical key text in `$key` order,
-/// wrapped as the same [`RowId`] the runtime's `row_id_text`
-/// (`crates/liasse-runtime/src/materialize.rs`) derives for a materialized row.
-/// It reuses [`KeyText::from_key_values`] — the shared primitive both layers build
-/// key text from — rather than re-deriving composite component ordering, so a
-/// composite `$actor`/`$session`/member identity matches the stored row by exactly
-/// the identity the engine re-materializes it under. `None` for a value D.2 gives
-/// no key text (never a valid key), which the caller treats as no match — fail
-/// closed (§6.3).
+/// carries: the typed key VALUE in its ref-flattened identity form
+/// ([`Value::identity_value`]), wrapped as the same [`RowId`] the runtime's
+/// materialization (`crates/liasse-runtime/src/materialize.rs`,
+/// `RowId::keyed_value(key.identity_value())`) derives for a materialized row. Both
+/// layers flatten a ref component to its target key, so a composite
+/// `$actor`/`$session`/member identity matches the stored row by exactly the
+/// identity the engine re-materializes it under — whether a ref key component is
+/// carried as a `Value::Ref` or as its bare scalar key (§6.3). `KeyText` still
+/// validates that `key` has a canonical D.2 rendering (never a non-key value),
+/// failing closed to no match otherwise (§6.3).
 fn row_identity(key: &Value) -> Option<RowId> {
     KeyText::from_key_values(std::slice::from_ref(key))
         .ok()
-        .map(|text| RowId::keyed(text.as_str()))
+        .map(|_| RowId::keyed_value(key.identity_value()))
 }
 
 /// The application row an authenticator selected as `$actor` (§11.3). Identity is

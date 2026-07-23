@@ -503,14 +503,12 @@ fn synthetic_key_value(components: &[Value]) -> Value {
     }
 }
 
-/// The stable identity of a synthetic-`$key` group (§7.2, §12.4): its group key
-/// rendered to canonical key text (Annex D.2). The scalar or composite group key
-/// flattens through the one shared D.2 codec; a group key value that D.2 gives no
-/// key text (a non-key-eligible type the checker still admits, SPEC-ISSUES item
-/// 16) falls back to its canonical wire JSON so identity stays total and pure.
+/// The stable identity of a synthetic-`$key` group (§7.2, §12.4): its typed group
+/// key VALUE. The scalar or composite group key carries its own Annex B value
+/// order (B.1/B.4), so a grouped view's B.5 identity tiebreak — when a `$sort`
+/// aggregate ties between groups — orders the groups by their key value, matching
+/// the ungrouped key-ascending order, rather than by the D.2 text (which would put
+/// synthetic key `10` before `2`).
 fn group_row_id(identity: &Value) -> RowId {
-    let text = liasse_ident::KeyText::from_key_values(std::slice::from_ref(identity))
-        .map(|key| key.as_str().to_owned())
-        .unwrap_or_else(|_| identity.to_canonical_json_string());
-    RowId::keyed(text)
+    RowId::keyed_value(identity.identity_value())
 }

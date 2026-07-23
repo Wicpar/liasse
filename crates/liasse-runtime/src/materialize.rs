@@ -85,11 +85,32 @@ pub(crate) fn row_key(collection: &Collection, fields: &FieldMap) -> Option<KeyV
 /// The application-visible key value of a row (§5.4): the lone component for a
 /// single-field key, or the positional [`Value::Composite`] tuple in `$key` order
 /// for a composite key, matching how a selector compares `row.key()`.
-pub(crate) fn key_identity(collection: &Collection, key: &KeyValue) -> Value {
+pub(crate) fn key_identity(_collection: &Collection, key: &KeyValue) -> Value {
+    // The arity is carried by the [`KeyValue`] itself (built with exactly the
+    // collection's `$key` components), so the identity is a pure function of the
+    // key — the same value [`key_value_identity`] derives where no collection is at
+    // hand (`row_id_of`). Keeping one derivation means a row's `row.key()` and its
+    // `RowId` value can never disagree.
+    key_value_identity(key)
+}
+
+/// The application-visible key identity value from a [`KeyValue`] alone (§5.4,
+/// B.4): the lone component for a single-field key, else the positional
+/// [`Value::Composite`] tuple in `$key` order. This is the value a row's [`RowId`]
+/// key part carries, so a sorted view's B.5 identity tiebreak orders by the key's
+/// value order (B.1/B.4) rather than its D.2 text.
+pub(crate) fn key_value_identity(key: &KeyValue) -> Value {
     let mut components = key.components();
-    match collection.key.as_slice() {
-        [_] => components.next().cloned().unwrap_or(Value::None),
-        _ => Value::Composite(components.cloned().collect()),
+    let first = components.next().cloned().unwrap_or(Value::None);
+    match components.next() {
+        None => first,
+        Some(second) => {
+            let mut all = Vec::with_capacity(2 + key.components().count());
+            all.push(first);
+            all.push(second.clone());
+            all.extend(components.cloned());
+            Value::Composite(all)
+        }
     }
 }
 
@@ -215,7 +236,7 @@ pub(crate) fn materialize_row<'m>(
     let fields = working.get(address)?;
     let step = address.steps().last()?;
     let key = key_identity(collection, step.key());
-    let id = RowId::keyed(row_id_text(step.key()));
+    let id = RowId::keyed_value(key.identity_value());
     // §14.1: a single-row bare read (a `return`/receiver read, a meter spend row)
     // descends its nested keyed collections active-filtered exactly like the
     // top-level bare read — the caller's `temporal.keep` decides activity, so a
@@ -276,11 +297,12 @@ fn rows_at<'m>(
             let step = address.steps().last()?;
             let key = key_identity(collection, step.key());
             // §12.4 / Annex D.1: a view row's identity derives from its key, not
-            // its materialized position, so it survives sibling deletions.
-            let key_text = row_id_text(step.key());
+            // its materialized position, so it survives sibling deletions. The
+            // typed key value carries the identity so a sorted view's B.5 tiebreak
+            // orders by key value (B.1/B.4), not the D.2 text.
             let id = match parent_id {
-                None => RowId::keyed(key_text),
-                Some(parent) => parent.child_keyed(key_text),
+                None => RowId::keyed_value(key.identity_value()),
+                Some(parent) => parent.child_keyed_value(key.identity_value()),
             };
             let mut row = build_row(schema, collection, fields, key, id, address, working, temporal, filter_active);
             if let Some(interval) = (temporal.interval)(name, fields) {
@@ -333,27 +355,11 @@ fn bound_cell(row: &Row, name: &str) -> Option<Timestamp> {
 pub(crate) fn row_id_of(address: &RowAddress) -> Option<RowId> {
     let mut steps = address.steps();
     let first = steps.next()?;
-    let mut id = RowId::keyed(row_id_text(first.key()));
+    let mut id = RowId::keyed_value(key_value_identity(first.key()).identity_value());
     for step in steps {
-        id = id.child_keyed(row_id_text(step.key()));
+        id = id.child_keyed_value(key_value_identity(step.key()).identity_value());
     }
     Some(id)
-}
-
-/// The canonical D.2 key text of a row's key — its stable identity component
-/// (Annex D.1). Key fields are validated key-eligible at build, so the D.2
-/// rendering succeeds; the join fallback keeps this total for the impossible
-/// non-key-eligible case rather than panicking.
-fn row_id_text(key: &KeyValue) -> String {
-    let components: Vec<Value> = key.components().cloned().collect();
-    match liasse_ident::KeyText::from_key_values(&components) {
-        Ok(text) => text.as_str().to_owned(),
-        Err(_) => components
-            .iter()
-            .map(Value::to_canonical_json_string)
-            .collect::<Vec<_>>()
-            .join(":"),
-    }
 }
 
 /// One collection row as a logical [`Row`]: its key, and a cell per declared

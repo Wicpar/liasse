@@ -29,18 +29,45 @@ use crate::error::EvalError;
 
 /// One segment of a [`RowId`]: an identity component along the source-row chain
 /// (§7.2, Annex D.1).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum RowIdPart {
-    /// Identity derived from a keyed row's key: its canonical key text (Annex
-    /// D.2). A source-collection row uses its collection key; a synthetic-`$key`
-    /// group uses its group key rendered canonically. Stable across sibling
-    /// insertions and deletions — the property a positional index lacks and the
-    /// §12.4 view delta depends on.
-    Key(String),
+    /// Identity derived from a keyed row's key: the typed key VALUE. A
+    /// source-collection row uses its collection key; a synthetic-`$key` group
+    /// uses its group key. Stable across sibling insertions and deletions — the
+    /// property a positional index lacks and the §12.4 view delta depends on.
+    ///
+    /// Ordered by the key's Annex B VALUE order (B.1/B.4), *not* its canonical
+    /// D.2 text: so a sorted view's identity tiebreak (B.5 "then inherited or
+    /// synthetic row identity") follows the same value order the default
+    /// key-ascending order does — mathematical for `int`, numeric for `decimal`,
+    /// component-wise for a composite key — rather than the lexicographic text
+    /// order of the D.2 rendering (which puts `"10"` before `"2"`). A string
+    /// identity that is not a collection key (a module name, a blob id) is carried
+    /// as a `Value::Text`, whose value order is exactly text order. The canonical
+    /// D.2 text is derived on demand via [`RowIdPart::render`].
+    Key(#[cfg_attr(feature = "eval-wire", serde(with = "crate::wire::value_serde"))] Value),
     /// An occurrence-order component: the Annex B.5 final tiebreaker, used when a
     /// row has no key identity (a keyless projection or scope root).
     Occurrence(u64),
+}
+
+impl RowIdPart {
+    /// The stable text of one identity component: a key value's canonical D.2 key
+    /// text (§ Annex D.2), or an occurrence index. Order is carried by the typed
+    /// [`Value`] (B.1/B.4); this rendering is only for consumers that need a
+    /// stable *string* form of the identity path (the § right-to-erasure extract
+    /// key). The non-key-eligible key value the checker cannot admit falls back to
+    /// canonical wire JSON so the rendering stays total.
+    #[must_use]
+    pub fn render(&self) -> String {
+        match self {
+            Self::Key(value) => liasse_ident::KeyText::from_key_values(std::slice::from_ref(value))
+                .map(|key| key.as_str().to_owned())
+                .unwrap_or_else(|_| value.to_canonical_json_string()),
+            Self::Occurrence(segment) => segment.to_string(),
+        }
+    }
 }
 
 /// The stable identity of one row occurrence within an evaluation, ordered so it
@@ -49,10 +76,11 @@ pub enum RowIdPart {
 ///
 /// It is a path of [`RowIdPart`]s along the source-row chain: a top-level row is
 /// one segment; a row reached by descending into a nested collection extends its
-/// parent's path (§7.2, Annex D.1). Ordering is lexicographic over the path.
-/// Identity derives from the row's *key*, never its materialized position, so a
-/// row keeps its identity when earlier rows disappear.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// parent's path (§7.2, Annex D.1). Ordering is lexicographic over the path, each
+/// key part by its typed [`Value`] order (B.1/B.4). Identity derives from the
+/// row's *key*, never its materialized position, so a row keeps its identity when
+/// earlier rows disappear.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub struct RowId(Vec<RowIdPart>);
 
@@ -63,10 +91,21 @@ impl RowId {
         Self(vec![RowIdPart::Occurrence(segment)])
     }
 
-    /// A top-level key-derived identity: the row's canonical key text (D.2).
+    /// A top-level key-derived identity from a non-collection-key STRING (a module
+    /// name, blob id, keyring handle): carried as a `Value::Text`, whose value
+    /// order is text order. A real collection/synthetic key uses
+    /// [`RowId::keyed_value`] so its identity orders by the typed key value.
     #[must_use]
     pub fn keyed(text: impl Into<String>) -> Self {
-        Self(vec![RowIdPart::Key(text.into())])
+        Self::keyed_value(Value::Text(Text::new(text.into())))
+    }
+
+    /// A top-level key-derived identity from the typed key VALUE (§5.4, B.4): the
+    /// value order carrier for a collection row's or synthetic group's identity, so
+    /// a sorted view's B.5 identity tiebreak follows the key's value order.
+    #[must_use]
+    pub fn keyed_value(value: Value) -> Self {
+        Self(vec![RowIdPart::Key(value)])
     }
 
     /// The identity of a child occurrence one level deeper (keyless tiebreak).
@@ -75,10 +114,20 @@ impl RowId {
         self.extend(RowIdPart::Occurrence(segment))
     }
 
-    /// The identity of a keyed child one level deeper (its canonical key text).
+    /// The identity of a keyed child one level deeper from a non-collection-key
+    /// STRING (carried as `Value::Text`). A real nested collection key uses
+    /// [`RowId::child_keyed_value`].
     #[must_use]
     pub fn child_keyed(&self, text: impl Into<String>) -> Self {
-        self.extend(RowIdPart::Key(text.into()))
+        self.child_keyed_value(Value::Text(Text::new(text.into())))
+    }
+
+    /// The identity of a keyed child one level deeper from its typed key VALUE
+    /// (§5.4, B.4) — extending the ancestor path so `.a::b` inherits
+    /// `a.$key + b.$key` in value order (§7.2, Annex D.1).
+    #[must_use]
+    pub fn child_keyed_value(&self, value: Value) -> Self {
+        self.extend(RowIdPart::Key(value))
     }
 
     /// The identity components along the source-row chain.

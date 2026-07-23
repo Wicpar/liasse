@@ -77,7 +77,7 @@ impl CandidateDescriptor {
     /// Build the candidate [`Row`] — the value tree a face evaluates against.
     #[must_use]
     pub fn build_row(&self, value: &Value, key: &KeyValue, subtree: &CandidateSubtree) -> Row {
-        let id = RowId::keyed(row_id_text(key));
+        let id = RowId::keyed_value(self.key_identity(key).identity_value());
         self.build_at(value, key, &id, &[], subtree)
     }
 
@@ -129,7 +129,7 @@ impl CandidateDescriptor {
         children
             .into_iter()
             .map(|child| {
-                let child_id = parent_id.child_keyed(row_id_text(child.key));
+                let child_id = parent_id.child_keyed_value(self.key_identity(child.key).identity_value());
                 self.build_at(child.value, child.key, &child_id, child.path, subtree)
             })
             .collect()
@@ -156,17 +156,6 @@ fn fields_of(value: &Value) -> std::collections::BTreeMap<String, Value> {
     }
 }
 
-/// The canonical D.2 key text of a row's key — its stable identity component
-/// (Annex D.1), exactly as `materialize::row_id_text` computes it.
-fn row_id_text(key: &KeyValue) -> String {
-    let components: Vec<Value> = key.components().cloned().collect();
-    match liasse_ident::KeyText::from_key_values(&components) {
-        Ok(text) => text.as_str().to_owned(),
-        Err(_) => {
-            components.iter().map(Value::to_canonical_json_string).collect::<Vec<_>>().join(":")
-        }
-    }
-}
 
 /// A keyless static-struct value (§5.3) reconstructed from a projected keyless row,
 /// used by the flat projection's field-value extraction.

@@ -192,9 +192,11 @@ fn composite_key_row_identity() {
     assert_eq!(subs.len(), 1);
     assert_eq!(subs.first().unwrap().key(), &Value::Composite(vec![text("eng"), int(3)]));
 
-    // Identity chain uses the D.2 key text of the whole composite key.
-    let root_id = RowId::keyed(kt(&root_key));
-    let child_id = root_id.child_keyed(kt(&child_key));
+    // Identity chain uses the typed composite key VALUE (§5.4/B.4/D.1): the
+    // positional `Value::Composite` tuple, ordered component-wise by value (int
+    // second component by §B.1), not the D.2 text join.
+    let root_id = RowId::keyed_value(Value::Composite(vec![text("acme"), int(7)]));
+    let child_id = root_id.child_keyed_value(Value::Composite(vec![text("eng"), int(3)]));
     assert_eq!(built.id(), &root_id);
     assert_eq!(subs.first().unwrap().id(), &child_id);
 }

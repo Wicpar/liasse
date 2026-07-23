@@ -1,0 +1,61 @@
+{
+  format: 1
+  name: grouped-sort-tiebreak-synthetic-int-key
+  suite: scenario
+  spec: ["#views", "§7.2", "§7.3", "§7.5", "§B.5", "§B.1"]
+  tags: ["ordering"]
+  note: '''
+    §7.2: a projection MAY declare a synthetic `$key` for grouping; "Rows
+    sharing the synthetic key form one group." §7.3/§B.5: a view follows its
+    declared $sort, then its synthetic row identity. §B.1 int: mathematical
+    order.
+
+    Each account groups exactly one line, so every group's `total`
+    (sum(group.amt)) is 5 — a full TIE on the declared `$sort: [total]`. The
+    tiebreak is the synthetic `$key` (`acct`, an int) VALUE order ascending:
+    2 < 3 < 10. Attack: order the synthetic identity by its canonical D.2 key
+    TEXT, which would give "10" < "2" < "3" (10, 2, 3) — wrong. The distinct
+    text `tag` (carried through min(group.tag), a single-row group so it equals
+    the row's tag) makes the order observable unambiguously: two, three, ten.
+    This is the REVERSE of the text misreading, so the sort is load-bearing.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.viewgrptie@1.0.0"
+    $model: {
+      lines: {
+        $key: "id"
+        id: "text"
+        acct: "int"
+        amt: "int"
+        tag: "text"
+      }
+      $public: {
+        totals: { $view: '''.lines {
+          $key: acct
+          acct
+          total: sum(group.amt)
+          tag: min(group.tag)
+          $sort: ["total"]
+        }''' }
+      }
+    }
+    $data: {
+      lines: {
+        l1: { acct: "2",  amt: "5", tag: "two" }
+        l2: { acct: "10", amt: "5", tag: "ten" }
+        l3: { acct: "3",  amt: "5", tag: "three" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.totals", id: "w1",
+      expect_init: { value: [
+        { total: "5", tag: "two",   "...": true }
+        { total: "5", tag: "three", "...": true }
+        { total: "5", tag: "ten",   "...": true }
+      ] } }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: composite-int-component-tiebreak-in-sorted-view
+  suite: scenario
+  spec: ["#annex-b", "§B.5", "§B.4", "§B.1", "§7.3"]
+  tags: ["ordering"]
+  note: '''
+    §B.5 tiebreak (after a tied declared $sort): the row identity, ordered by
+    the $key VALUE order. §B.4 composite key: "lexicographic components in $key
+    order", each component in its own type order (§B.1). Here $key is
+    [region, seq] with seq an int. Attack: a runtime whose declared-$sort
+    tiebreak orders the composite identity by its joined canonical TEXT
+    ("eu:10" / "eu:2" / "eu:3" -> 10, 2, 3) instead of component-wise value
+    order. Within region "eu" the value order is 2 < 3 < 10.
+
+    Every row ties on grp = "x", so the declared key is equal and the order is
+    fixed entirely by the composite identity: eu/2, eu/3, eu/10. Asserted on the
+    distinct text `tag` fields (two, three, ten), the REVERSE of the text-join
+    misreading. Seed member names use the ':'-joined canonical key text (D.2).
+    The companion default-order case (composite-key-second-component-uses-int-order)
+    covers the UNsorted path; this one covers the sorted-view tiebreak.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.annexb.tiecomp@1.0.0"
+    $model: {
+      slots: {
+        $key: ["region", "seq"]
+        region: "text"
+        seq: "int"
+        grp: "text"
+        tag: "text"
+      }
+      $public: {
+        bygrp: { $view: ".slots { tag, grp, $sort: [grp] }" }
+      }
+    }
+    $data: {
+      slots: {
+        "eu:2":  { grp: "x", tag: "two" }
+        "eu:10": { grp: "x", tag: "ten" }
+        "eu:3":  { grp: "x", tag: "three" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.bygrp", id: "w1",
+      expect_init: { value: [
+        { tag: "two",   grp: "x" }
+        { tag: "three", grp: "x" }
+        { tag: "ten",   grp: "x" }
+      ] } }
+  ]
+}

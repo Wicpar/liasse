@@ -65,11 +65,15 @@ fn grouped_identity_is_group_key_not_position() {
     assert_eq!(row_ids(&fewer), vec![RowId::keyed("b"), RowId::keyed("c")]);
 }
 
-/// Annex D.2: a composite synthetic key joins its components with `:` in `$key`
-/// order, and a `:` inside a component is escaped `%3A` before the join, so the
-/// join separator is unambiguous.
+/// §7.2 / §B.4: a composite synthetic key's identity is its typed group-key
+/// VALUE — the positional `Value::Composite` tuple in `$key` order — so distinct
+/// composite keys stay distinct structurally (a `:` inside a component cannot be
+/// confused with the join separator the way a naive text-join could), and the
+/// identity orders component-wise by value (B.4). The canonical D.2 text join
+/// (with `%3A` escaping) remains the wire/erasure rendering of that value
+/// ([`RowIdPart::render`]), not the internal identity carrier.
 #[test]
-fn composite_group_identity_is_canonical_key_text() {
+fn composite_group_identity_is_group_key_value() {
     let ty = row_type(
         vec![
             ("account", scalar(Type::Text)),
@@ -90,8 +94,12 @@ fn composite_group_identity_is_canonical_key_text() {
     let (scope, env, dot) = scope_over("entries", ty, rows);
     let src = ".entries { $key: [account, kind], account, kind, total: sum(group.debit) }";
     let result = eval(&scope, &env, &dot, src);
-    // account "a:b" escapes to "a%3Ab", joined with kind "x" by ":".
-    assert_eq!(row_ids(&result), vec![RowId::keyed("a%3Ab:x")]);
+    // The composite group key ["a:b", "x"] is the row's identity value.
+    let identity = RowId::keyed_value(Value::Composite(vec![vtext("a:b"), vtext("x")]));
+    assert_eq!(row_ids(&result), vec![identity.clone()]);
+    // …and it still renders to the escaped, `:`-joined D.2 key text.
+    let part = identity.parts().first().expect("one key part");
+    assert_eq!(part.render(), "a%3Ab:x");
 }
 
 /// §6.3: "Equality between a row or ref and a key of the same declared target

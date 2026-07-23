@@ -186,16 +186,14 @@ fn extract_of(
 fn occurrence_id(id: &RowId) -> String {
     let mut text = String::new();
     for part in id.parts() {
+        // A key part carries its typed key VALUE; render its canonical D.2 key
+        // text (occurrence parts render their index) so the extract key stays a
+        // stable, injective string per identity path.
         match part {
-            RowIdPart::Key(key) => {
-                text.push('k');
-                text.push_str(key);
-            }
-            RowIdPart::Occurrence(segment) => {
-                text.push('o');
-                text.push_str(&segment.to_string());
-            }
+            RowIdPart::Key(_) => text.push('k'),
+            RowIdPart::Occurrence(_) => text.push('o'),
         }
+        text.push_str(&part.render());
         text.push('\u{1e}');
     }
     text
