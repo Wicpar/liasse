@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 use data_encoding::HEXLOWER;
 use liasse_ident::{HistoryPoint, InstanceId, RowIncarnation, TransactionId};
-use liasse_value::Sha512;
+use liasse_value::{Sha512, Timestamp};
 use sha2::{Digest as _, Sha512 as Sha512Hasher};
 
 use crate::commit::{CommitOutcome, CommitSeq, CommittedRowOp, CommittedTransition};
@@ -84,6 +84,7 @@ impl MemoryStore {
     pub(crate) fn commit_transition(
         &mut self,
         ops: Vec<CommittedRowOp>,
+        created: Timestamp,
         transaction: Option<TransactionId>,
         definition: Option<DefinitionText>,
         composition: Option<Composition>,
@@ -93,7 +94,7 @@ impl MemoryStore {
         }
         let seq = self.head.next();
         for op in &ops {
-            self.apply_current(op);
+            self.apply_current(op, created);
         }
         if let Some(definition) = definition {
             self.definition = Some(definition);
@@ -101,27 +102,36 @@ impl MemoryStore {
         if let Some(composition) = composition {
             self.composition = Some(composition);
         }
-        self.log.push(CommittedTransition::new(seq, ops, transaction));
+        self.log.push(CommittedTransition::new(seq, ops, created, transaction));
         self.head = seq;
         Ok(CommitOutcome::Committed(seq))
     }
 
     /// Apply one already-validated op to the current map. Staging established
-    /// occupancy, so this never needs the replay corruption checks.
-    fn apply_current(&mut self, op: &CommittedRowOp) {
+    /// occupancy, so this never needs the replay corruption checks. `created` is the
+    /// commit's fixed instant (§22.5): a fresh insert records it as the row's
+    /// `$created`, while an update or rekey PRESERVES the row's existing `$created`
+    /// (§22.6) — the same fold the log replay ([`Snapshot::apply`]) performs, so the
+    /// current map and a frontier replay agree row-for-row.
+    fn apply_current(&mut self, op: &CommittedRowOp, created: Timestamp) {
         match op {
-            CommittedRowOp::Insert { address, incarnation, value }
-            | CommittedRowOp::Update { address, incarnation, value } => {
+            CommittedRowOp::Insert { address, incarnation, value } => {
                 self.current
-                    .insert(address.clone(), StoredRow::new(incarnation.clone(), value.clone()));
+                    .insert(address.clone(), StoredRow::new(incarnation.clone(), created, value.clone()));
+            }
+            CommittedRowOp::Update { address, incarnation, value } => {
+                let preserved = self.current.get(address).map_or(created, StoredRow::created);
+                self.current
+                    .insert(address.clone(), StoredRow::new(incarnation.clone(), preserved, value.clone()));
             }
             CommittedRowOp::Delete { address, .. } => {
                 self.current.remove(address);
             }
             CommittedRowOp::Rekey { from, to, incarnation, value } => {
+                let preserved = self.current.get(from).map_or(created, StoredRow::created);
                 self.current.remove(from);
                 self.current
-                    .insert(to.clone(), StoredRow::new(incarnation.clone(), value.clone()));
+                    .insert(to.clone(), StoredRow::new(incarnation.clone(), preserved, value.clone()));
             }
         }
     }

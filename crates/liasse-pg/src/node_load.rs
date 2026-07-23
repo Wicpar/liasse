@@ -83,7 +83,8 @@ pub(crate) fn materialize_head<C: GenericClient>(
     for row in client
         .query(
             &format!(
-                "SELECT id, parent_id, step_name, key_wire, incarnation, value FROM {schema}.nodes"
+                "SELECT id, parent_id, step_name, key_wire, incarnation, value, created \
+                 FROM {schema}.nodes"
             ),
             &[],
         )
@@ -96,16 +97,24 @@ pub(crate) fn materialize_head<C: GenericClient>(
         let parent = cell::<i64>(&row, "nodes", "parent_id")?;
         let name = cell::<String>(&row, "nodes", "step_name")?;
         let key = decode_key_wire(&jsonb_text::from_jsonb(&cell::<J>(&row, "nodes", "key_wire")?))?;
-        // A live row has both `value` and `incarnation`; a tombstone has neither (the
-        // schema's `CHECK` keeps them co-NULL). Decode a row, or record a tombstone
-        // that still carries its address level for the walk.
+        // A live row has both `value` and `incarnation` (and a `created` admission
+        // instant); a tombstone has neither (the schema's `CHECK` keeps value and
+        // incarnation co-NULL, and a tombstone's `created` is NULL too). Decode a row,
+        // or record a tombstone that still carries its address level for the walk.
         let value = cell::<Option<J>>(&row, "nodes", "value")?;
         let incarnation = cell::<Option<String>>(&row, "nodes", "incarnation")?;
         let node = match (value, incarnation) {
-            (Some(value), Some(incarnation)) => Some(StoredRow::new(
-                RowIncarnation::new(incarnation),
-                value_codec::decode(&jsonb_text::from_jsonb(&value))?,
-            )),
+            (Some(value), Some(incarnation)) => {
+                let created = match cell::<Option<J>>(&row, "nodes", "created")? {
+                    Some(wire) => value_codec::decode_created(&jsonb_text::from_jsonb(&wire))?,
+                    None => return Err(corrupt("live node is missing its `created` admission instant")),
+                };
+                Some(StoredRow::new(
+                    RowIncarnation::new(incarnation),
+                    created,
+                    value_codec::decode(&jsonb_text::from_jsonb(&value))?,
+                ))
+            }
             (None, None) => None,
             _ => return Err(corrupt("node has exactly one of value/incarnation set")),
         };

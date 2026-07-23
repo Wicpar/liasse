@@ -108,7 +108,7 @@ pub(crate) fn row<C: GenericClient>(
     address: &RowAddress,
 ) -> Result<Option<StoredRow>, StoreError> {
     let steps: Vec<&AddressStep> = address.steps().collect();
-    let (sql, binds) = point_lookup(schema, &steps, "incarnation, value", true)?;
+    let (sql, binds) = point_lookup(schema, &steps, "incarnation, value, created", true)?;
     let found = client.query_opt(&sql, &bind_refs(&binds)).map_err(backend)?;
     found.map(|row| stored_row(&row)).transpose()
 }
@@ -130,7 +130,7 @@ pub(crate) fn scan<C: GenericClient>(
     let chain = parent_chain(schema, &ancestor_refs, &mut binds);
     let name = push(&mut binds, collection.name().as_str().to_owned());
     let sql = format!(
-        "SELECT key_wire, incarnation, value FROM {schema}.nodes \
+        "SELECT key_wire, incarnation, value, created FROM {schema}.nodes \
          WHERE parent_id = {chain} AND step_name = ${name} AND value IS NOT NULL ORDER BY key_enc"
     );
     client
@@ -194,18 +194,18 @@ pub(crate) fn scan_subtree<C: GenericClient>(
     let depth_param = push(&mut binds, MAX_SUBTREE_DEPTH);
     let sql = format!(
         "WITH RECURSIVE sub AS ( \
-           SELECT n.id, '[]'::jsonb AS rel_path, 0::bigint AS depth, n.incarnation, n.value \
+           SELECT n.id, '[]'::jsonb AS rel_path, 0::bigint AS depth, n.incarnation, n.value, n.created \
            FROM {schema}.nodes n \
            WHERE n.parent_id = {chain} AND n.step_name = ${root_name} AND n.key_enc = ${root_key} \
          UNION ALL \
            SELECT c.id, \
                   p.rel_path || jsonb_build_array(jsonb_build_array(to_jsonb(c.step_name), c.key_wire)), \
-                  p.depth + 1, c.incarnation, c.value \
+                  p.depth + 1, c.incarnation, c.value, c.created \
            FROM sub p \
            JOIN {schema}.nodes c ON c.parent_id = p.id AND c.step_name = ANY(${steps_param}) \
            WHERE p.depth < ${depth_param} \
          ) \
-         SELECT rel_path, depth, incarnation, value FROM sub WHERE depth > 0 AND value IS NOT NULL"
+         SELECT rel_path, depth, incarnation, value, created FROM sub WHERE depth > 0 AND value IS NOT NULL"
     );
     let rows = client.query(&sql, &bind_refs(&binds)).map_err(backend)?;
     let mut out = Vec::with_capacity(rows.len());
@@ -261,12 +261,18 @@ pub(crate) fn resolve_id<C: GenericClient>(
     }
 }
 
-/// Decode a live node row's `(incarnation, value)` columns into a [`StoredRow`]
-/// with the same NUL-safe codecs the write path used.
+/// Decode a live node row's `(incarnation, value, created)` columns into a
+/// [`StoredRow`] with the same NUL-safe codecs the write path used. A live row
+/// always carries a non-NULL `created` (§14.1/§22.6); a NULL there is a durable
+/// corruption (a live row missing its recorded admission instant).
 fn stored_row(row: &Row) -> Result<StoredRow, StoreError> {
     let incarnation = cell::<String>(row, "nodes", "incarnation")?;
     let value = value_codec::decode(&jsonb_text::from_jsonb(&cell::<J>(row, "nodes", "value")?))?;
-    Ok(StoredRow::new(RowIncarnation::new(incarnation), value))
+    let created = match cell::<Option<J>>(row, "nodes", "created")? {
+        Some(wire) => value_codec::decode_created(&jsonb_text::from_jsonb(&wire))?,
+        None => return Err(corrupt("live node is missing its `created` admission instant")),
+    };
+    Ok(StoredRow::new(RowIncarnation::new(incarnation), created, value))
 }
 
 /// The *k−1* ancestor address steps of `collection` — the parent levels the scan

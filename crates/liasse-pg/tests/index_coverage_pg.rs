@@ -229,8 +229,9 @@ fn populate(client: &mut Client, schema: &Schema) -> i64 {
                SELECT 0, 'noise', int8send(g::int8), '{{}}'::jsonb, 'row-' || g, \
                       jsonb_build_object('s', g::text) \
                FROM generate_series(1, {pop}) AS g;\n\
-             INSERT INTO {s}.commit_log (seq, transaction_id, ops) \
-               SELECT g, NULL, '[]'::jsonb FROM generate_series(1, {pop}) AS g;\n\
+             INSERT INTO {s}.commit_log (seq, transaction_id, ops, created) \
+               SELECT g, NULL, '[]'::jsonb, '{{\"ts\": [\"0\", \"us\"]}}'::jsonb \
+               FROM generate_series(1, {pop}) AS g;\n\
              INSERT INTO {s}.history_points (lineage, point, seq) \
                SELECT 'lin-' || (g % 50), 'pt-' || g, g FROM generate_series(1, {pop}) AS g;\n\
              INSERT INTO {s}.blobs (digest, bytes) \
@@ -310,7 +311,7 @@ fn every_query_pattern_is_index_served() {
     let plan = explain(
         &mut client,
         &format!(
-            "SELECT incarnation, value FROM {s}.nodes \
+            "SELECT incarnation, value, created FROM {s}.nodes \
              WHERE parent_id = {chain} AND step_name = $5 AND key_enc = $6 AND value IS NOT NULL"
         ),
         &[&"orgs", &key_enc(1), &teams, &key_enc(1), &members, &member],
@@ -325,7 +326,7 @@ fn every_query_pattern_is_index_served() {
     let plan = explain(
         &mut client,
         &format!(
-            "SELECT key_wire, incarnation, value FROM {s}.nodes \
+            "SELECT key_wire, incarnation, value, created FROM {s}.nodes \
              WHERE parent_id = {chain} AND step_name = $5 AND value IS NOT NULL ORDER BY key_enc"
         ),
         &[&"orgs", &key_enc(1), &teams, &key_enc(1), &members],
@@ -347,18 +348,18 @@ fn every_query_pattern_is_index_served() {
         &mut client,
         &format!(
             "WITH RECURSIVE sub AS ( \
-               SELECT n.id, '[]'::jsonb AS rel_path, 0::bigint AS depth, n.incarnation, n.value \
+               SELECT n.id, '[]'::jsonb AS rel_path, 0::bigint AS depth, n.incarnation, n.value, n.created \
                FROM {s}.nodes n \
                WHERE n.parent_id = 0 AND n.step_name = $1 AND n.key_enc = $2 \
              UNION ALL \
                SELECT c.id, \
                       p.rel_path || jsonb_build_array(jsonb_build_array(to_jsonb(c.step_name), c.key_wire)), \
-                      p.depth + 1, c.incarnation, c.value \
+                      p.depth + 1, c.incarnation, c.value, c.created \
                FROM sub p \
                JOIN {s}.nodes c ON c.parent_id = p.id AND c.step_name = ANY($3) \
                WHERE p.depth < $4 \
              ) \
-             SELECT rel_path, depth, incarnation, value FROM sub WHERE depth > 0 AND value IS NOT NULL"
+             SELECT rel_path, depth, incarnation, value, created FROM sub WHERE depth > 0 AND value IS NOT NULL"
         ),
         &[&"orgs", &key_enc(1), &steps, &depth_cap],
     );
@@ -388,7 +389,9 @@ fn every_query_pattern_is_index_served() {
     let from: i64 = POP - 10;
     let plan = explain(
         &mut client,
-        &format!("SELECT seq, transaction_id, ops FROM {s}.commit_log WHERE seq >= $1 ORDER BY seq"),
+        &format!(
+            "SELECT seq, transaction_id, ops, created FROM {s}.commit_log WHERE seq >= $1 ORDER BY seq"
+        ),
         &[&from],
     );
     assert_index_ordered(&plan, "commit_log read from a seq");
@@ -508,7 +511,9 @@ fn head_fast_path_is_single_full_scan_exempt() {
     // The EXACT statement `node_load::materialize_head` issues (kept in sync there).
     let plan = explain(
         &mut client,
-        &format!("SELECT id, parent_id, step_name, key_wire, incarnation, value FROM {s}.nodes"),
+        &format!(
+            "SELECT id, parent_id, step_name, key_wire, incarnation, value, created FROM {s}.nodes"
+        ),
         &[],
     );
 

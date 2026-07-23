@@ -33,12 +33,33 @@ pub(crate) type Interval = (Option<Timestamp>, Option<Timestamp>);
 /// interval ([`interval`](Temporal::interval), `None` for a non-bucketed
 /// collection). The two are supplied together so a bucketed row is materialized
 /// once, carrying its interval as `$from`/`$until` cells for temporal selectors.
+///
+/// Both take the row's recorded admission instant ([`created`](Temporal::created)
+/// looked up by address, §14.1 `$created`) so a `$created`-defaulted `$from`
+/// resolves to the instant the row was admitted rather than an unbounded lower
+/// bound — otherwise a back-dated `.$at(t)` before a row's creation would wrongly
+/// report it active (§22.6).
 pub(crate) struct Temporal<'a> {
-    /// Whether collection `name`'s row is active at the clock (bare-read filter).
-    pub(crate) keep: &'a dyn Fn(&str, &FieldMap) -> bool,
-    /// Collection `name`'s row interval, or `None` when it is not bucketed.
-    pub(crate) interval: &'a dyn Fn(&str, &FieldMap) -> Option<Interval>,
+    /// Whether collection `name`'s row (recorded at `created`) is active at the
+    /// clock (bare-read filter).
+    pub(crate) keep: &'a KeepFn<'a>,
+    /// Collection `name`'s row interval (lower bound defaulting to `created`), or
+    /// `None` when it is not bucketed.
+    pub(crate) interval: &'a IntervalFn<'a>,
+    /// The recorded admission instant (§14.1 `$created`, §22.6) of each committed
+    /// row, keyed by address; a not-yet-committed row is absent and falls back to
+    /// the evaluation `now`.
+    pub(crate) created: &'a BTreeMap<RowAddress, Timestamp>,
 }
+
+/// The bare-read activity filter a [`Temporal`] carries: whether collection `name`'s
+/// row `fields`, recorded at `created` (§14.1 `$created`), is active at the clock.
+pub(crate) type KeepFn<'a> = dyn Fn(&str, &FieldMap, Option<Timestamp>) -> bool + 'a;
+
+/// The interval accessor a [`Temporal`] carries: collection `name`'s row `[from,
+/// until)` interval (with a `$created`-defaulted `$from` filled from `created`), or
+/// `None` when it is not bucketed.
+pub(crate) type IntervalFn<'a> = dyn Fn(&str, &FieldMap, Option<Timestamp>) -> Option<Interval> + 'a;
 
 /// The structural cell name of a bucketed row's interval start (§14.4).
 const FROM_CELL: &str = "$from";
@@ -254,7 +275,8 @@ pub(crate) fn materialize_row<'m>(
     // single-row read (`session.$until` in a §11.5 login return) reads them exactly
     // as a collection-stream row does.
     let name = collection.path.rsplit('/').next().unwrap_or(collection.path.as_str());
-    let row = match (temporal.interval)(name, fields) {
+    let created = temporal.created.get(address).copied();
+    let row = match (temporal.interval)(name, fields, created) {
         Some(interval) => with_interval_cells(row, interval),
         None => row,
     };
@@ -309,7 +331,9 @@ fn rows_at<'m>(
     working
         .iter()
         .filter(|(address, _)| path.contains(address))
-        .filter(|(_, fields)| !filter_active || (temporal.keep)(name, fields))
+        .filter(|(address, fields)| {
+            !filter_active || (temporal.keep)(name, fields, temporal.created.get(*address).copied())
+        })
         .filter_map(|(address, fields)| {
             let step = address.steps().last()?;
             let key = key_identity(collection, step.key());
@@ -322,7 +346,10 @@ fn rows_at<'m>(
                 Some(parent) => parent.child_keyed_value(key.identity_value()),
             };
             let mut row = build_row(schema, collection, fields, key, id, address, working, temporal, filter_active);
-            if let Some(interval) = (temporal.interval)(name, fields) {
+            // §14.1: a bucketed row's `$from` lower bound defaults to its recorded
+            // admission instant (`$created`); an uncommitted row falls back to `now`.
+            let created = temporal.created.get(address).copied();
+            if let Some(interval) = (temporal.interval)(name, fields, created) {
                 row = with_interval_cells(row, interval);
             }
             Some(row)

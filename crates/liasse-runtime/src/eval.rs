@@ -389,9 +389,9 @@ impl<'a> EvalCtx<'a> {
     }
 
     fn base_root(&self, prospective: &Prospective) -> Row {
-        let keep = |name: &str, fields: &FieldMap| self.active(name, fields);
-        let interval = |name: &str, fields: &FieldMap| self.interval(name, fields);
-        let temporal = Temporal { keep: &keep, interval: &interval };
+        let keep = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.active(name, fields, created);
+        let interval = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.interval(name, fields, created);
+        let temporal = Temporal { keep: &keep, interval: &interval, created: prospective.created() };
         materialize::materialize_root_filtered(self.schema, prospective.working(), &temporal)
     }
 
@@ -528,30 +528,47 @@ impl<'a> EvalCtx<'a> {
     }
 
     /// Whether collection `name`'s row `fields` is currently readable: always for
-    /// a non-bucketed collection, else its bucket activity at [`Self::now`].
-    fn active(&self, name: &str, fields: &FieldMap) -> bool {
-        self.active_at(name, fields, self.now)
+    /// a non-bucketed collection, else its bucket activity at [`Self::now`]. `created`
+    /// is the row's recorded admission instant (§14.1 `$created`), the lower bound a
+    /// `$created`-defaulted `$from` uses.
+    fn active(&self, name: &str, fields: &FieldMap, created: Option<Timestamp>) -> bool {
+        self.active_at(name, fields, created, self.now)
     }
 
     /// [`Self::active`] at an explicit instant — the meter pool resolution reads a
     /// bucketed source in the temporal context of the spend (§15.1).
-    pub(crate) fn active_at(&self, name: &str, fields: &FieldMap, now: Timestamp) -> bool {
+    pub(crate) fn active_at(
+        &self,
+        name: &str,
+        fields: &FieldMap,
+        created: Option<Timestamp>,
+        now: Timestamp,
+    ) -> bool {
         match (self.compiled.bucket(name), self.compiled.find_collection(name)) {
-            (Some(bucket), Some(collection)) => bucket::is_active(bucket, collection, fields, now),
+            (Some(bucket), Some(collection)) => bucket::is_active(bucket, collection, fields, created, now),
             _ => true,
         }
     }
 
     /// Collection `name`'s row interval `[from, until)` at [`Self::now`], or
-    /// `None` when it is not bucketed (§14.1).
-    fn interval(&self, name: &str, fields: &FieldMap) -> Option<Interval> {
-        self.interval_at(name, fields, self.now)
+    /// `None` when it is not bucketed (§14.1). `created` supplies the `$created`
+    /// lower bound of a defaulted `$from`.
+    fn interval(&self, name: &str, fields: &FieldMap, created: Option<Timestamp>) -> Option<Interval> {
+        self.interval_at(name, fields, created, self.now)
     }
 
     /// [`Self::interval`] at an explicit instant (§15.1 spend-time pool context).
-    pub(crate) fn interval_at(&self, name: &str, fields: &FieldMap, now: Timestamp) -> Option<Interval> {
+    pub(crate) fn interval_at(
+        &self,
+        name: &str,
+        fields: &FieldMap,
+        created: Option<Timestamp>,
+        now: Timestamp,
+    ) -> Option<Interval> {
         match (self.compiled.bucket(name), self.compiled.find_collection(name)) {
-            (Some(bucket), Some(collection)) => Some(bucket::interval_bounds(bucket, collection, fields, now)),
+            (Some(bucket), Some(collection)) => {
+                Some(bucket::interval_bounds(bucket, collection, fields, created, now))
+            }
             _ => None,
         }
     }
@@ -569,9 +586,9 @@ impl<'a> EvalCtx<'a> {
         now: Timestamp,
     ) -> Option<Row> {
         let collection = self.schema.collection_at_path(decl_path)?;
-        let keep = |name: &str, fields: &FieldMap| self.active_at(name, fields, now);
-        let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
-        let temporal = Temporal { keep: &keep, interval: &interval };
+        let keep = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.active_at(name, fields, created, now);
+        let interval = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.interval_at(name, fields, created, now);
+        let temporal = Temporal { keep: &keep, interval: &interval, created: prospective.created() };
         let row = materialize::materialize_row(self.schema, collection, address, prospective.working(), &temporal)?;
         match self.compiled.collection_at(decl_path) {
             // §5.2/§5.4: fold this spend/enforcing row's computed values and every
@@ -599,9 +616,9 @@ impl<'a> EvalCtx<'a> {
         bindings: BTreeMap<String, Cell>,
         structurals: BTreeMap<String, Cell>,
     ) -> RuntimeEnv<'a> {
-        let keep = |name: &str, fields: &FieldMap| self.active_at(name, fields, now);
-        let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
-        let temporal = Temporal { keep: &keep, interval: &interval };
+        let keep = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.active_at(name, fields, created, now);
+        let interval = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.interval_at(name, fields, created, now);
+        let temporal = Temporal { keep: &keep, interval: &interval, created: prospective.created() };
         let root = materialize::materialize_root_filtered(self.schema, prospective.working(), &temporal);
         // §15.1: a meter source reads a bucketed pool in the temporal context of the
         // spend, so the derived source-bucket collections are materialized (and
@@ -637,9 +654,9 @@ impl<'a> EvalCtx<'a> {
     /// drives (§14.5), so a future `.$at`/`.$between` still generates the periods
     /// covering it rather than stopping at `now`.
     fn temporal_index_at(&self, prospective: &Prospective, now: Timestamp) -> Vec<NamedExtant> {
-        let keep = |name: &str, fields: &FieldMap| self.active_at(name, fields, now);
-        let interval = |name: &str, fields: &FieldMap| self.interval_at(name, fields, now);
-        let temporal = Temporal { keep: &keep, interval: &interval };
+        let keep = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.active_at(name, fields, created, now);
+        let interval = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.interval_at(name, fields, created, now);
+        let temporal = Temporal { keep: &keep, interval: &interval, created: prospective.created() };
         let mut index = Vec::new();
         for member in &self.schema.model().root().members {
             if let Node::Collection(collection) = &member.node {
@@ -678,8 +695,8 @@ impl<'a> EvalCtx<'a> {
         }
         // Materialize the FULL root (every row kept) so each nested bucketed cell
         // holds its whole extant, then walk it for the nested bucket instances.
-        let keep_all = |_: &str, _: &FieldMap| true;
-        let full = Temporal { keep: &keep_all, interval: temporal.interval };
+        let keep_all = |_: &str, _: &FieldMap, _: Option<Timestamp>| true;
+        let full = Temporal { keep: &keep_all, interval: temporal.interval, created: temporal.created };
         let root = materialize::materialize_root_filtered(self.schema, prospective.working(), &full);
         for collection in &self.compiled.collections {
             if let Some(Cell::Collection(rows)) = root.cell(&collection.name) {
@@ -817,9 +834,9 @@ impl<'a> EvalCtx<'a> {
         address: &liasse_store::RowAddress,
     ) -> Option<Cell> {
         let collection = self.schema.collection_at_path(decl_path)?;
-        let keep = |name: &str, fields: &FieldMap| self.active(name, fields);
-        let interval = |name: &str, fields: &FieldMap| self.interval(name, fields);
-        let temporal = Temporal { keep: &keep, interval: &interval };
+        let keep = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.active(name, fields, created);
+        let interval = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.interval(name, fields, created);
+        let temporal = Temporal { keep: &keep, interval: &interval, created: prospective.created() };
         let row = materialize::materialize_row(self.schema, collection, address, prospective.working(), &temporal)?;
         let compiled = self.compiled.collection_at(decl_path);
         let row = match compiled {
@@ -929,9 +946,9 @@ impl<'a> EvalCtx<'a> {
     ) -> Option<Vec<(String, Cell)>> {
         let decl: Vec<String> = address.steps().map(|step| step.name().as_str().to_owned()).collect();
         let collection = self.schema.collection_at_path(&decl)?;
-        let keep = |name: &str, fields: &FieldMap| self.active(name, fields);
-        let interval = |name: &str, fields: &FieldMap| self.interval(name, fields);
-        let temporal = Temporal { keep: &keep, interval: &interval };
+        let keep = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.active(name, fields, created);
+        let interval = |name: &str, fields: &FieldMap, created: Option<Timestamp>| self.interval(name, fields, created);
+        let temporal = Temporal { keep: &keep, interval: &interval, created: prospective.created() };
         let row = materialize::materialize_row(self.schema, collection, address, prospective.working(), &temporal)?;
         let nested: Vec<(String, Cell)> = row
             .cells()

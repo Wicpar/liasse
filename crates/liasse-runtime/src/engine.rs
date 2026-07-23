@@ -681,7 +681,11 @@ impl<S: InstanceStore> Engine<S> {
             prospective.insert(address, fields);
         }
         let changes = prospective.diff();
+        // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
+        // every row it inserts records this `now` as its `$created` (§14.1).
+        let now = self.clock;
         let mut txn = self.store.begin();
+        txn.set_now(now);
         stage(&mut txn, changes)?;
         txn.set_definition(DefinitionText::new(definition.to_owned()));
         txn.commit()?;
@@ -734,7 +738,11 @@ impl<S: InstanceStore> Engine<S> {
             prospective.insert(address, fields);
         }
         let changes = prospective.diff();
+        // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
+        // every row it inserts records this `now` as its `$created` (§14.1).
+        let now = self.clock;
         let mut txn = self.store.begin();
+        txn.set_now(now);
         stage(&mut txn, changes)?;
         // §19.8/§19.10: record the point's definition on the same commit so a
         // restart reproduces it, then adopt it as the active definition below.
@@ -782,7 +790,11 @@ impl<S: InstanceStore> Engine<S> {
             prospective.insert(address.clone(), fields.clone());
         }
         let changes = prospective.diff();
+        // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
+        // every row it inserts records this `now` as its `$created` (§14.1).
+        let now = self.clock;
         let mut txn = self.store.begin();
+        txn.set_now(now);
         stage(&mut txn, changes)?;
         let seq = match txn.commit()? {
             CommitOutcome::Committed(seq) => seq,
@@ -825,7 +837,11 @@ impl<S: InstanceStore> Engine<S> {
             prospective.insert(address, fields);
         }
         let changes = prospective.diff();
+        // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
+        // every row it inserts records this `now` as its `$created` (§14.1).
+        let now = self.clock;
         let mut txn = self.store.begin();
+        txn.set_now(now);
         stage(&mut txn, changes)?;
         txn.set_definition(DefinitionText::new(definition.to_owned()));
         let seq = match txn.commit()? {
@@ -1203,7 +1219,11 @@ impl<S: InstanceStore> Engine<S> {
             .map_err(EngineError::Seed)?;
 
         let changes = prospective.diff();
+        // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
+        // every row it inserts records this `now` as its `$created` (§14.1).
+        let now = self.clock;
         let mut txn = self.store.begin();
+        txn.set_now(now);
         stage(&mut txn, changes)?;
         // §9.3: a definition load creates a commit even when state is unchanged.
         txn.set_definition(DefinitionText::new(definition.to_owned()));
@@ -1264,7 +1284,11 @@ impl<S: InstanceStore> Engine<S> {
         crate::meter::admit::enforce(&ctx, &self.compiled.meters, &mut prospective, &touched)
             .map_err(EngineError::Seed)?;
         let changes = prospective.diff();
+        // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
+        // every row it inserts records this `now` as its `$created` (§14.1).
+        let now = self.clock;
         let mut txn = self.store.begin();
+        txn.set_now(now);
         stage(&mut txn, changes)?;
         // §13.3/§19.2: an installation `$data` overlay that changes state takes a
         // fresh point on the active lineage.
@@ -1447,7 +1471,11 @@ impl<S: InstanceStore> Engine<S> {
             return Ok(CallOutcome::Unchanged { response });
         }
 
+        // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
+        // every row it inserts records this `now` as its `$created` (§14.1).
+        let now = self.clock;
         let mut txn = self.store.begin();
+        txn.set_now(now);
         stage(&mut txn, changes)?;
         let seq = match txn.commit()? {
             // §19.2: a state-changing commit takes a fresh point on the active

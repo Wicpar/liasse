@@ -35,8 +35,11 @@
 /// 4 when `nodes.value`/`nodes.incarnation` became NULLABLE to carry *tombstones* —
 /// a deleted non-leaf ancestor kept as a structural-only position so its retained
 /// descendants (logical orphans, §5.4) stay addressable, replacing the earlier
-/// subtree cascade.
-pub const SCHEMA_VERSION: i32 = 4;
+/// subtree cascade; to 5 when a `created` column was added to `nodes` (per-row
+/// recorded admission instant, §14.1 `$created`/§22.6) and to `commit_log` (the
+/// commit's fixed `now()`, §22.5), so a lifecycle bucket's `$created`-defaulted
+/// `$from` reads the instant a row was admitted.
+pub const SCHEMA_VERSION: i32 = 5;
 
 /// A per-instance schema namespace: a validated PostgreSQL identifier.
 #[derive(Debug, Clone)]
@@ -221,6 +224,13 @@ impl Schema {
     /// same node (`ON CONFLICT DO UPDATE`), re-parenting its retained descendants
     /// under the live row again. `key_enc` is the order-preserving lookup/scan key;
     /// `key_wire` is the canonical, decodable key a load reconstructs the address from.
+    /// `created` (JSONB, a self-describing timestamp) is the row's recorded admission
+    /// instant (§14.1 `$created`, §22.6): non-NULL for a live row, NULL for a
+    /// tombstone and the root sentinel. An insert stamps it with the commit's `now`;
+    /// an update leaves it; a rekey carries the source's — so it is recorded once and
+    /// preserved, matching the reference store. `commit_log.created` records the same
+    /// per-commit `now` (§22.5) so a log-fold replay reconstructs each inserted row's
+    /// `$created` identically to the head-state read.
     #[must_use]
     pub fn tables(&self) -> [TableSpec; 6] {
         [
@@ -248,11 +258,13 @@ impl Schema {
                           key_wire JSONB NOT NULL, \
                           incarnation TEXT, \
                           value JSONB, \
+                          created JSONB, \
                           CHECK ((value IS NULL) = (incarnation IS NULL))",
             },
             TableSpec {
                 name: "commit_log",
-                columns: "seq BIGINT PRIMARY KEY, transaction_id TEXT, ops JSONB NOT NULL",
+                columns: "seq BIGINT PRIMARY KEY, transaction_id TEXT, ops JSONB NOT NULL, \
+                          created JSONB NOT NULL",
             },
             TableSpec {
                 name: "history_points",

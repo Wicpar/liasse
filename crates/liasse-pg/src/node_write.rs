@@ -62,7 +62,7 @@ use std::collections::BTreeMap;
 
 use liasse_ident::RowIncarnation;
 use liasse_store::{AddressStep, CommittedRowOp, KeyValue, RowAddress, StoreError};
-use liasse_value::Value;
+use liasse_value::{Timestamp, Value};
 use postgres::Transaction;
 use serde_json::Value as J;
 
@@ -82,6 +82,10 @@ const ROOT_SENTINEL_ID: i64 = 0;
 pub(crate) struct NodeWriter<'a> {
     /// The quoted schema name, e.g. `"liasse_…"`.
     schema: &'a str,
+    /// The commit's fixed admission instant (§22.5): the `$created` a fresh insert
+    /// stamps on its row (§14.1, §22.6). An update leaves the row's `created`; a
+    /// rekey carries the source's — so it is recorded once, matching the reference.
+    now: Timestamp,
     /// Per-transaction id memo: addresses inserted, rekeyed-into, or resolved during
     /// THIS transaction, and their surrogate ids. Consulted before the SQL point
     /// lookup so a nested child sees its just-inserted parent without a re-query.
@@ -89,10 +93,11 @@ pub(crate) struct NodeWriter<'a> {
 }
 
 impl<'a> NodeWriter<'a> {
-    /// Open a writer for one admission transaction. Node identity is resolved from
-    /// the `nodes` table in that same transaction — there is no committed side map.
-    pub(crate) fn new(schema: &'a str) -> Self {
-        Self { schema, staged: BTreeMap::new() }
+    /// Open a writer for one admission transaction at commit instant `now`. Node
+    /// identity is resolved from the `nodes` table in that same transaction — there
+    /// is no committed side map.
+    pub(crate) fn new(schema: &'a str, now: Timestamp) -> Self {
+        Self { schema, now, staged: BTreeMap::new() }
     }
 
     /// Mirror one committed op into the node tree.
@@ -103,9 +108,12 @@ impl<'a> NodeWriter<'a> {
     ) -> Result<(), StoreError> {
         match op {
             CommittedRowOp::Insert { address, incarnation, value } => {
-                self.place(txn, address, incarnation, value)?;
+                // §14.1/§22.6: a fresh insert stamps the commit's `now` as `$created`.
+                self.place(txn, address, incarnation, self.now, value)?;
             }
             CommittedRowOp::Update { address, incarnation, value } => {
+                // §22.6: an update rewrites value/incarnation but leaves `created`, so
+                // the row keeps its first-recorded `$created`.
                 let id = self.resolve_id(txn, address)?;
                 txn.execute(
                     &format!(
@@ -133,13 +141,36 @@ impl<'a> NodeWriter<'a> {
                 // leaves those descendants where they are. The op carries the
                 // source's preserved incarnation, so the target reads back the same
                 // incarnation the reference store keeps across a rekey.
+                //
+                // §22.6: a rekey keeps identity, so the target carries the source's
+                // recorded `$created` (read before the source is tombstoned), never a
+                // fresh `now` — matching the reference store's rekey.
                 let from_id = self.resolve_id(txn, from)?;
-                self.place(txn, to, incarnation, value)?;
+                let created = self.node_created(txn, from_id)?.unwrap_or(self.now);
+                self.place(txn, to, incarnation, created, value)?;
                 self.tombstone(txn, from_id)?;
                 self.staged.remove(from);
             }
         }
         Ok(())
+    }
+
+    /// The recorded `$created` of the live node `id`, if it carries one — the
+    /// source instant a rekey preserves onto its target (§22.6). `None` for a
+    /// tombstone (a rekey source is always a live row, so the caller falls back to
+    /// the commit `now` only defensively).
+    fn node_created(
+        &self,
+        txn: &mut Transaction<'_>,
+        id: i64,
+    ) -> Result<Option<Timestamp>, StoreError> {
+        let row = txn
+            .query_one(&format!("SELECT created FROM {}.nodes WHERE id = $1", self.schema), &[&id])
+            .map_err(backend)?;
+        match cell::<Option<J>>(&row, "nodes", "created")? {
+            Some(wire) => Ok(Some(value_codec::decode_created(&jsonb_text::from_jsonb(&wire))?)),
+            None => Ok(None),
+        }
     }
 
     /// Place `value`/`incarnation` at `address` — reviving a tombstone there or
@@ -154,6 +185,7 @@ impl<'a> NodeWriter<'a> {
         txn: &mut Transaction<'_>,
         address: &RowAddress,
         incarnation: &RowIncarnation,
+        created: Timestamp,
         value: &Value,
     ) -> Result<i64, StoreError> {
         let parent = self.resolve_parent(txn, address)?;
@@ -162,10 +194,11 @@ impl<'a> NodeWriter<'a> {
             .query_one(
                 &format!(
                     "INSERT INTO {}.nodes \
-                     (parent_id, step_name, key_enc, key_wire, incarnation, value) \
-                     VALUES ($1, $2, $3, $4, $5, $6) \
+                     (parent_id, step_name, key_enc, key_wire, incarnation, value, created) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7) \
                      ON CONFLICT (parent_id, step_name, key_enc) \
-                     DO UPDATE SET incarnation = EXCLUDED.incarnation, value = EXCLUDED.value \
+                     DO UPDATE SET incarnation = EXCLUDED.incarnation, value = EXCLUDED.value, \
+                     created = EXCLUDED.created \
                      RETURNING id",
                     self.schema
                 ),
@@ -176,6 +209,7 @@ impl<'a> NodeWriter<'a> {
                     &jsonb_text::to_jsonb(&encode_key_wire(step.key())),
                     &incarnation.as_str(),
                     &jsonb_text::to_jsonb(&value_codec::encode(value)),
+                    &jsonb_text::to_jsonb(&value_codec::encode_created(created)),
                 ],
             )
             .map_err(backend)?;
@@ -192,7 +226,10 @@ impl<'a> NodeWriter<'a> {
     /// opportunity; retaining it is correctness-neutral.
     fn tombstone(&self, txn: &mut Transaction<'_>, id: i64) -> Result<(), StoreError> {
         txn.execute(
-            &format!("UPDATE {}.nodes SET value = NULL, incarnation = NULL WHERE id = $1", self.schema),
+            &format!(
+                "UPDATE {}.nodes SET value = NULL, incarnation = NULL, created = NULL WHERE id = $1",
+                self.schema
+            ),
             &[&id],
         )
         .map_err(backend)?;

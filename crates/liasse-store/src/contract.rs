@@ -9,7 +9,7 @@
 //! staged [`Transition`] takes exclusive access for its lifetime.
 
 use liasse_ident::{HistoryPoint, InstanceId, RowIncarnation, TransactionId};
-use liasse_value::{Sha512, Value};
+use liasse_value::{Sha512, Timestamp, Value};
 
 use crate::commit::{CommitOutcome, CommitSeq, CommittedTransition};
 use crate::error::StoreError;
@@ -169,6 +169,14 @@ pub trait Transition {
     /// Tag this transition with a shared cross-instance transaction identity so
     /// each affected instance records the same atomic grouping (§19.1).
     fn set_transaction(&mut self, transaction: TransactionId);
+
+    /// Fix this transition's admission instant — the request's transaction-timestamp
+    /// `now()` (§22.5) — so every row it inserts records it as the row's `$created`
+    /// (§14.1, §22.6), the default `$from` lower bound of a lifecycle bucket. A
+    /// transition never given a `now` records rows at a store default instant, which
+    /// suffices for the semantics-free store battery (no bucket temporal read); the
+    /// runtime always sets it to the engine clock before staging.
+    fn set_now(&mut self, now: Timestamp);
 
     /// Whether nothing has been staged — a commit of an empty transition is
     /// [`CommitOutcome::Unchanged`] (§22.2).

@@ -1,7 +1,7 @@
 //! Serial positions and the durable commit-log record (§22.3, §19.2).
 
 use liasse_ident::{RowIncarnation, TransactionId};
-use liasse_value::Value;
+use liasse_value::{Timestamp, Value};
 
 use crate::key::RowAddress;
 
@@ -91,6 +91,11 @@ pub enum CommittedRowOp {
 pub struct CommittedTransition {
     seq: CommitSeq,
     ops: Vec<CommittedRowOp>,
+    /// The commit's fixed admission instant (§22.5 transaction-timestamp `now()`):
+    /// the single recorded observation (§22.1/§22.6) every row this transition
+    /// inserts records as its `$created` (§14.1). Replay reads it to reconstruct
+    /// each inserted row's creation instant.
+    created: Timestamp,
     transaction: Option<TransactionId>,
 }
 
@@ -100,15 +105,23 @@ impl CommittedTransition {
     pub fn new(
         seq: CommitSeq,
         ops: Vec<CommittedRowOp>,
+        created: Timestamp,
         transaction: Option<TransactionId>,
     ) -> Self {
-        Self { seq, ops, transaction }
+        Self { seq, ops, created, transaction }
     }
 
     /// The serial position this transition occupies.
     #[must_use]
     pub fn seq(&self) -> CommitSeq {
         self.seq
+    }
+
+    /// The commit's fixed admission instant (§22.5): the `$created` every row this
+    /// transition inserts records (§14.1, §22.6).
+    #[must_use]
+    pub fn created(&self) -> Timestamp {
+        self.created
     }
 
     /// The row operations admitted together, in application order.

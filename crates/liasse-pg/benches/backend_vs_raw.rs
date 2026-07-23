@@ -385,7 +385,10 @@ fn raw_commit(client: &mut Client, raw_s: &str, seq: i64) {
     txn.execute(&format!("SELECT head FROM {raw_s}.instance_meta WHERE id = 1 FOR UPDATE"), &[])
         .expect("lock head");
     txn.execute(
-        &format!("INSERT INTO {raw_s}.commit_log (seq, transaction_id, ops) VALUES ($1, NULL, '[]'::jsonb)"),
+        &format!(
+            "INSERT INTO {raw_s}.commit_log (seq, transaction_id, ops, created) \
+             VALUES ($1, NULL, '[]'::jsonb, '{{\"ts\": [\"0\", \"us\"]}}'::jsonb)"
+        ),
         &[&seq],
     )
     .expect("append log");

@@ -13,27 +13,32 @@ use liasse_expr::RowId;
 use liasse_ident::{NameSegment, RowIncarnation};
 use liasse_model::Collection;
 use liasse_store::{CollectionPath, InstanceStore, RowAddress, Snapshot, StoreError};
-use liasse_value::Value;
+use liasse_value::{Timestamp, Value};
 
 use crate::generator::Generation;
 use crate::materialize::{self, FieldMap};
 use crate::schema::Schema;
 
+/// One committed row as a [`Prospective`] gathers it: its address, durable
+/// [`RowIncarnation`] (D.1), recorded admission instant (§14.1 `$created`), and
+/// payload [`Value`].
+type ScannedRow = (RowAddress, RowIncarnation, Timestamp, Value);
+
 /// Scans a collection path for its direct committed rows: the primitive a
 /// [`Prospective`] gathers each top-level collection's rows from, backed by either
 /// the live store or a frontier [`Snapshot`]. Each row carries its durable
 /// [`RowIncarnation`] (D.1) so meter-pool funding can bind to a pool's incarnation,
-/// not merely its reused application key (§15.2, Annex D.1).
-type Scan<'a> =
-    dyn Fn(&CollectionPath) -> Result<Vec<(RowAddress, RowIncarnation, Value)>, StoreError> + 'a;
+/// not merely its reused application key (§15.2, Annex D.1), and its recorded
+/// `$created` so a lifecycle bucket's defaulted `$from` reads the row's admission
+/// instant (§14.1, §22.6).
+type Scan<'a> = dyn Fn(&CollectionPath) -> Result<Vec<ScannedRow>, StoreError> + 'a;
 
 /// Gathers the whole committed subtree under one row, reached through the given
 /// declared nested-collection step names, in Annex B address order — the
 /// shape-directed `scan_subtree` (§7.6) that replaces the former per-row,
 /// per-nested-collection scan storm. Backed by either the live store or a frontier
 /// [`Snapshot`], each of which serves it index-first / in one range.
-type SubtreeScan<'a> =
-    dyn Fn(&RowAddress, &[String]) -> Result<Vec<(RowAddress, RowIncarnation, Value)>, StoreError> + 'a;
+type SubtreeScan<'a> = dyn Fn(&RowAddress, &[String]) -> Result<Vec<ScannedRow>, StoreError> + 'a;
 
 /// One resolved change between the committed base and the admitted working
 /// state, ready to stage into a store transition.
@@ -59,6 +64,12 @@ pub(crate) struct Prospective {
     /// target from the deleted incarnation (§15.2, §5.6, Annex D.1), instead of
     /// conflating the two occurrences by their shared key.
     incarnations: BTreeMap<RowAddress, RowIncarnation>,
+    /// The recorded admission instant (§14.1 `$created`, §22.6) of each COMMITTED
+    /// row, keyed by address. A freshly-staged row (not yet admitted) has no entry —
+    /// its `$created` is the request's own `now` at admission. A lifecycle bucket
+    /// whose `$from` defaults to `$created` reads this so a back-dated `.$at(t)` with
+    /// `t` before a row's admission correctly excludes it.
+    created: BTreeMap<RowAddress, Timestamp>,
     /// A monotonic per-admission ordinal handed to each row's default resolution
     /// so a `uuid()` field default shared across the several rows of one request
     /// yields a distinct value per row (SPEC-ISSUES item 4, §5.1/§8.12). It is
@@ -81,14 +92,14 @@ impl Prospective {
                 Ok(store
                     .scan(path)?
                     .into_iter()
-                    .map(|(a, r)| (a, r.incarnation().clone(), r.value().clone()))
+                    .map(|(a, r)| (a, r.incarnation().clone(), r.created(), r.value().clone()))
                     .collect())
             },
             &|root, steps| {
                 Ok(store
                     .scan_subtree(root, steps)?
                     .into_iter()
-                    .map(|(a, r)| (a, r.incarnation().clone(), r.value().clone()))
+                    .map(|(a, r)| (a, r.incarnation().clone(), r.created(), r.value().clone()))
                     .collect())
             },
             schema,
@@ -104,14 +115,14 @@ impl Prospective {
                 Ok(snapshot
                     .scan(path)
                     .into_iter()
-                    .map(|(a, r)| (a, r.incarnation().clone(), r.value().clone()))
+                    .map(|(a, r)| (a, r.incarnation().clone(), r.created(), r.value().clone()))
                     .collect())
             },
             &|root, steps| {
                 Ok(snapshot
                     .scan_subtree(root, steps)
                     .into_iter()
-                    .map(|(a, r)| (a, r.incarnation().clone(), r.value().clone()))
+                    .map(|(a, r)| (a, r.incarnation().clone(), r.created(), r.value().clone()))
                     .collect())
             },
             schema,
@@ -127,6 +138,7 @@ impl Prospective {
         let mut committed = BTreeMap::new();
         let mut working = BTreeMap::new();
         let mut incarnations = BTreeMap::new();
+        let mut created = BTreeMap::new();
         for member in &schema.model().root().members {
             // §5.8: a top-level member naming a keyed shape (`companies: "company"`)
             // resolves to that collection, so its stored rows are gathered like any
@@ -142,16 +154,18 @@ impl Prospective {
                     &mut committed,
                     &mut working,
                     &mut incarnations,
+                    &mut created,
                 )?;
             }
         }
         // §8.2: the package root's singleton fields live in one reserved row.
-        for (address, incarnation, value) in scan(&crate::singleton::path())? {
+        for (address, incarnation, admitted, value) in scan(&crate::singleton::path())? {
             working.insert(address.clone(), materialize::fields_of(&value));
             incarnations.insert(address.clone(), incarnation);
+            created.insert(address.clone(), admitted);
             committed.insert(address, value);
         }
-        Ok(Self { committed, working, incarnations, next_generation: 0 })
+        Ok(Self { committed, working, incarnations, created, next_generation: 0 })
     }
 
     /// An empty prospective state (genesis, before any seed).
@@ -160,6 +174,7 @@ impl Prospective {
             committed: BTreeMap::new(),
             working: BTreeMap::new(),
             incarnations: BTreeMap::new(),
+            created: BTreeMap::new(),
             next_generation: 0,
         }
     }
@@ -179,6 +194,15 @@ impl Prospective {
     /// materialization through [`crate::eval::EvalCtx::root`].
     pub(crate) fn working(&self) -> &BTreeMap<RowAddress, FieldMap> {
         &self.working
+    }
+
+    /// The recorded admission instant (§14.1 `$created`, §22.6) of each committed
+    /// row, keyed by address — the lower bound a `$created`-defaulted lifecycle
+    /// bucket materializes as its row's `$from` cell. A freshly-staged (not-yet-
+    /// committed) row has no entry; the bucket evaluator then falls back to the
+    /// evaluation `now`, which is exactly the row's admission instant.
+    pub(crate) fn created(&self) -> &BTreeMap<RowAddress, Timestamp> {
+        &self.created
     }
 
     /// The durable incarnation (D.1) of every committed row, indexed by the stable
@@ -288,15 +312,20 @@ fn gather_tree<'m>(
     committed: &mut BTreeMap<RowAddress, Value>,
     working: &mut BTreeMap<RowAddress, FieldMap>,
     incarnations: &mut BTreeMap<RowAddress, RowIncarnation>,
+    created: &mut BTreeMap<RowAddress, Timestamp>,
 ) -> Result<(), StoreError> {
     let steps = nested_step_names(schema, collection);
-    for (address, incarnation, value) in scan(path)? {
+    for (address, incarnation, admitted, value) in scan(path)? {
         working.insert(address.clone(), materialize::fields_of(&value));
         incarnations.insert(address.clone(), incarnation);
+        created.insert(address.clone(), admitted);
         if !steps.is_empty() {
-            for (nested_address, nested_incarnation, nested_value) in subtree(&address, &steps)? {
+            for (nested_address, nested_incarnation, nested_admitted, nested_value) in
+                subtree(&address, &steps)?
+            {
                 working.insert(nested_address.clone(), materialize::fields_of(&nested_value));
                 incarnations.insert(nested_address.clone(), nested_incarnation);
+                created.insert(nested_address.clone(), nested_admitted);
                 committed.insert(nested_address, nested_value);
             }
         }

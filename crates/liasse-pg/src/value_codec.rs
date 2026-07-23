@@ -362,6 +362,24 @@ fn decode_seq(payload: &J) -> Result<Vec<Value>, StoreError> {
     as_array(payload)?.iter().map(decode).collect()
 }
 
+/// Encode a row's recorded admission instant (§14.1 `$created`, §22.6) into the
+/// `nodes.created`/`commit_log.created` JSONB — the exact, precision-preserving
+/// `ts` wire form [`encode`] gives a `timestamp`, so a decode round-trips the
+/// engine clock's instant byte-for-byte and the two backends record it identically.
+#[must_use]
+pub fn encode_created(created: Timestamp) -> J {
+    encode(&Value::Timestamp(created))
+}
+
+/// Decode a `created` column produced by [`encode_created`] back into a
+/// [`Timestamp`]. A column carrying any other tagged value is a durable corruption.
+pub fn decode_created(wire: &J) -> Result<Timestamp, StoreError> {
+    match decode(wire)? {
+        Value::Timestamp(ts) => Ok(ts),
+        _ => Err(corrupt("created column is not a timestamp")),
+    }
+}
+
 fn tag(name: &str, payload: J) -> J {
     let mut obj = Map::new();
     obj.insert(name.to_owned(), payload);

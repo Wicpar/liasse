@@ -525,7 +525,11 @@ pub(crate) fn finalize(
         check_refs(compiled, prospective, collection, fields, address)?;
         check_uniqueness(prospective, collection, fields, address)?;
         if let Some(bucket) = compiled.bucket(&name) {
-            crate::bucket::check_interval(bucket, collection, fields, ctx.now, &address.render())?;
+            // §14.1/§22.6: an update to a committed bucketed row checks its lifetime
+            // against the row's ORIGINAL recorded `$created`; a fresh insert (absent
+            // here) checks against the admission `now` (`check_interval`'s fallback).
+            let created = prospective.created().get(address).copied();
+            crate::bucket::check_interval(bucket, collection, fields, created, ctx.now, &address.render())?;
         }
     }
     Ok(())

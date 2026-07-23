@@ -14,9 +14,17 @@ use liasse_store::{
     CollectionPath, CommitOutcome, CommittedRowOp, Composition, DefinitionText, InstanceStore,
     RowAddress, StoreError, StoredRow, Transition,
 };
-use liasse_value::Value;
+use liasse_value::{Precision, Timestamp, Value};
 
 use crate::store::PgStore;
+
+/// The admission instant a transition given no explicit `set_now` records rows at
+/// (§22.5): the Unix epoch at the package default precision — the identical default
+/// the reference [`MemoryTransition`] uses, so the two backends agree on the
+/// `$created` of a store-battery row that never sets a clock.
+///
+/// [`MemoryTransition`]: liasse_store::MemoryStore
+const DEFAULT_NOW: Timestamp = Timestamp::new(0, Precision::DEFAULT);
 
 /// A staged transition borrowing its store exclusively.
 #[derive(Debug)]
@@ -25,6 +33,9 @@ pub struct PgTransition<'s> {
     /// Per-address staged change: `Some(row)` is a put, `None` is a delete.
     overlay: BTreeMap<RowAddress, Option<StoredRow>>,
     ops: Vec<CommittedRowOp>,
+    /// This transition's fixed admission instant (§22.5): the `$created` every
+    /// inserted row records (§14.1, §22.6). [`DEFAULT_NOW`] until `set_now`.
+    now: Timestamp,
     definition: Option<DefinitionText>,
     composition: Option<Composition>,
     transaction: Option<TransactionId>,
@@ -36,6 +47,7 @@ impl<'s> PgTransition<'s> {
             store,
             overlay: BTreeMap::new(),
             ops: Vec::new(),
+            now: DEFAULT_NOW,
             definition: None,
             composition: None,
             transaction: None,
@@ -89,19 +101,21 @@ impl Transition for PgTransition<'_> {
             return Err(StoreError::Conflict { address: address.render(), context: "insert" });
         }
         let incarnation = self.store.alloc_incarnation()?;
+        // §14.1/§22.6: a fresh row records this transition's `now` as its `$created`.
         self.overlay
-            .insert(address.clone(), Some(StoredRow::new(incarnation.clone(), value.clone())));
+            .insert(address.clone(), Some(StoredRow::new(incarnation.clone(), self.now, value.clone())));
         self.ops.push(CommittedRowOp::Insert { address, incarnation: incarnation.clone(), value });
         Ok(incarnation)
     }
 
     fn update(&mut self, address: &RowAddress, value: Value) -> Result<(), StoreError> {
-        let incarnation = match self.resolve(address)? {
-            Some(row) => row.incarnation().clone(),
+        // §22.6: an update preserves the row's already-recorded `$created`.
+        let (incarnation, created) = match self.resolve(address)? {
+            Some(row) => (row.incarnation().clone(), row.created()),
             None => return Err(StoreError::NotFound { address: address.render(), context: "update" }),
         };
         self.overlay
-            .insert(address.clone(), Some(StoredRow::new(incarnation.clone(), value.clone())));
+            .insert(address.clone(), Some(StoredRow::new(incarnation.clone(), created, value.clone())));
         self.ops.push(CommittedRowOp::Update { address: address.clone(), incarnation, value });
         Ok(())
     }
@@ -117,8 +131,10 @@ impl Transition for PgTransition<'_> {
     }
 
     fn rekey(&mut self, from: &RowAddress, to: RowAddress, value: Value) -> Result<(), StoreError> {
-        let incarnation = match self.resolve(from)? {
-            Some(row) => row.incarnation().clone(),
+        // §5.4/§22.6: a rekey keeps the row's identity, so it carries the source's
+        // recorded `$created` to the target address unchanged.
+        let (incarnation, created) = match self.resolve(from)? {
+            Some(row) => (row.incarnation().clone(), row.created()),
             None => {
                 return Err(StoreError::NotFound { address: from.render(), context: "rekey source" });
             }
@@ -128,7 +144,7 @@ impl Transition for PgTransition<'_> {
         }
         self.overlay.insert(from.clone(), None);
         self.overlay
-            .insert(to.clone(), Some(StoredRow::new(incarnation.clone(), value.clone())));
+            .insert(to.clone(), Some(StoredRow::new(incarnation.clone(), created, value.clone())));
         self.ops.push(CommittedRowOp::Rekey { from: from.clone(), to, incarnation, value });
         Ok(())
     }
@@ -145,13 +161,17 @@ impl Transition for PgTransition<'_> {
         self.transaction = Some(transaction);
     }
 
+    fn set_now(&mut self, now: Timestamp) {
+        self.now = now;
+    }
+
     fn is_empty(&self) -> bool {
         self.ops.is_empty() && self.definition.is_none() && self.composition.is_none()
     }
 
     fn commit(self) -> Result<CommitOutcome, StoreError> {
-        let Self { store, ops, definition, composition, transaction, overlay: _ } = self;
-        store.commit_transition(ops, transaction, definition, composition)
+        let Self { store, ops, now, definition, composition, transaction, overlay: _ } = self;
+        store.commit_transition(ops, now, transaction, definition, composition)
     }
 
     fn abort(self) {

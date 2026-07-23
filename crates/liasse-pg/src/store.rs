@@ -29,7 +29,7 @@ use liasse_store::{
     CollectionPath, CommitOutcome, CommitSeq, CommittedRowOp, CommittedTransition, Composition,
     DefinitionText, InstanceStore, RowAddress, Snapshot, StoreError, StoredRow,
 };
-use liasse_value::Sha512;
+use liasse_value::{Sha512, Timestamp};
 use postgres::{Client, NoTls};
 use r2d2::Pool;
 use r2d2_postgres::PostgresConnectionManager;
@@ -141,6 +141,7 @@ impl PgStore {
     pub(crate) fn commit_transition(
         &mut self,
         ops: Vec<CommittedRowOp>,
+        created: Timestamp,
         transaction: Option<TransactionId>,
         definition: Option<DefinitionText>,
         composition: Option<Composition>,
@@ -154,6 +155,9 @@ impl PgStore {
         // may carry; NUL-safe-encode every string leaf before it reaches a column.
         let transaction_id = transaction.as_ref().map(|t| jsonb_text::encode_text(t.as_str()));
         let ops_wire = jsonb_text::to_jsonb(&J::Array(ops.iter().map(encode_op).collect()));
+        // §22.5/§22.6: the commit's fixed `now` — the `$created` every inserted row
+        // records — persisted so a log-fold replay reconstructs it (§14.1).
+        let created_wire = jsonb_text::to_jsonb(&crate::value_codec::encode_created(created));
         let definition_source = definition.as_ref().map(|d| jsonb_text::encode_text(d.source()));
         let definition_id = definition.as_ref().map(|d| d.identity().to_canonical_text());
         let composition_wire =
@@ -171,16 +175,19 @@ impl PgStore {
         let seq = seq_from(durable_head, "instance_meta.head")?.next();
         let seq_num = i64::try_from(seq.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
         txn.execute(
-            &format!("INSERT INTO {s}.commit_log (seq, transaction_id, ops) VALUES ($1, $2, $3)"),
-            &[&seq_num, &transaction_id, &ops_wire],
+            &format!(
+                "INSERT INTO {s}.commit_log (seq, transaction_id, ops, created) VALUES ($1, $2, $3, $4)"
+            ),
+            &[&seq_num, &transaction_id, &ops_wire, &created_wire],
         )
         .map_err(backend)?;
         // Every op lands in the `nodes` adjacency tree — the sole durable row
         // representation — in this one admission transaction. `NodeWriter` resolves
         // each address to its surrogate id by an in-transaction SQL point lookup
         // (§6.1), so nodes inserted earlier in this same admission are visible; there
-        // is no `by_id` projection to advance afterward.
-        let mut node_writer = NodeWriter::new(&s);
+        // is no `by_id` projection to advance afterward. It carries the commit's
+        // `now` so a fresh insert stamps the row's `$created` (§14.1, §22.6).
+        let mut node_writer = NodeWriter::new(&s, created);
         for op in &ops {
             node_writer.apply(&mut txn, op)?;
         }
@@ -304,7 +311,7 @@ impl InstanceStore for PgStore {
         let log = conn
             .query(
                 &format!(
-                    "SELECT seq, transaction_id, ops FROM {s}.commit_log \
+                    "SELECT seq, transaction_id, ops, created FROM {s}.commit_log \
                      WHERE seq <= $1 ORDER BY seq"
                 ),
                 &[&frontier_num],
@@ -325,7 +332,7 @@ impl InstanceStore for PgStore {
         let mut conn = self.reads.get().map_err(pool)?;
         conn.query(
             &format!(
-                "SELECT seq, transaction_id, ops FROM {s}.commit_log WHERE seq >= $1 ORDER BY seq"
+                "SELECT seq, transaction_id, ops, created FROM {s}.commit_log WHERE seq >= $1 ORDER BY seq"
             ),
             &[&from],
         )

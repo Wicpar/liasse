@@ -9,6 +9,8 @@
 
 use std::collections::BTreeMap;
 
+use liasse_value::Timestamp;
+
 use crate::commit::{CommitSeq, CommittedRowOp, CommittedTransition};
 use crate::error::StoreError;
 use crate::key::{CollectionPath, RowAddress};
@@ -65,7 +67,7 @@ impl Snapshot {
                 continue;
             }
             for op in transition.ops() {
-                Self::apply(&mut rows, op)?;
+                Self::apply(&mut rows, op, transition.created())?;
             }
         }
         Ok(Self { frontier, rows })
@@ -129,9 +131,17 @@ impl Snapshot {
         self.rows.is_empty()
     }
 
+    /// Fold one op into the row set. `created` is the enclosing transition's fixed
+    /// admission instant (§22.5): a fresh insert records it as the row's `$created`
+    /// (§14.1, §22.6), while an update or rekey PRESERVES the row's existing
+    /// `$created` — the instant it was first inserted is recorded once and never
+    /// changes (§22.6). This mirrors the physical stores' write paths (a PG update
+    /// leaves the `created` column untouched; a rekey carries the source's), so the
+    /// log fold and the head-state read agree row-for-row.
     fn apply(
         rows: &mut BTreeMap<RowAddress, StoredRow>,
         op: &CommittedRowOp,
+        created: Timestamp,
     ) -> Result<(), StoreError> {
         match op {
             CommittedRowOp::Insert { address, incarnation, value } => {
@@ -140,15 +150,16 @@ impl Snapshot {
                         detail: format!("replayed insert over live row at `{}`", address.render()),
                     });
                 }
-                rows.insert(address.clone(), StoredRow::new(incarnation.clone(), value.clone()));
+                rows.insert(address.clone(), StoredRow::new(incarnation.clone(), created, value.clone()));
             }
             CommittedRowOp::Update { address, incarnation, value } => {
-                if !rows.contains_key(address) {
+                let Some(prior) = rows.get(address) else {
                     return Err(StoreError::Corruption {
                         detail: format!("replayed update on absent row at `{}`", address.render()),
                     });
-                }
-                rows.insert(address.clone(), StoredRow::new(incarnation.clone(), value.clone()));
+                };
+                let preserved = prior.created();
+                rows.insert(address.clone(), StoredRow::new(incarnation.clone(), preserved, value.clone()));
             }
             CommittedRowOp::Delete { address, .. } => {
                 if rows.remove(address).is_none() {
@@ -158,17 +169,18 @@ impl Snapshot {
                 }
             }
             CommittedRowOp::Rekey { from, to, incarnation, value } => {
-                if rows.remove(from).is_none() {
+                let Some(source) = rows.remove(from) else {
                     return Err(StoreError::Corruption {
                         detail: format!("replayed rekey from absent row at `{}`", from.render()),
                     });
-                }
+                };
                 if rows.contains_key(to) {
                     return Err(StoreError::Corruption {
                         detail: format!("replayed rekey onto live row at `{}`", to.render()),
                     });
                 }
-                rows.insert(to.clone(), StoredRow::new(incarnation.clone(), value.clone()));
+                let preserved = source.created();
+                rows.insert(to.clone(), StoredRow::new(incarnation.clone(), preserved, value.clone()));
             }
         }
         Ok(())

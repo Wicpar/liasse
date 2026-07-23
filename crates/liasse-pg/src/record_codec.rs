@@ -153,9 +153,11 @@ fn corrupt(detail: impl Into<String>) -> StoreError {
     StoreError::Corruption { detail: detail.into() }
 }
 
-/// Decode one `commit_log` row (`seq`, `transaction_id`, `ops`) into a
+/// Decode one `commit_log` row (`seq`, `transaction_id`, `ops`, `created`) into a
 /// [`CommittedTransition`]. Shared by `snapshot`'s frontier log fold (§4.3) and the
-/// leaf `log_from` read (§4.4), so both decode a stored transition identically.
+/// leaf `log_from` read (§4.4), so both decode a stored transition identically. The
+/// `created` instant (§22.5) is what a fold uses to reconstruct each inserted row's
+/// `$created` (§14.1/§22.6).
 pub(crate) fn decode_log_row(row: &Row) -> Result<CommittedTransition, StoreError> {
     let seq = seq_from(cell::<i64>(row, "commit_log", "seq")?, "commit_log.seq")?;
     let transaction = cell::<Option<String>>(row, "commit_log", "transaction_id")?
@@ -167,7 +169,9 @@ pub(crate) fn decode_log_row(row: &Row) -> Result<CommittedTransition, StoreErro
         .iter()
         .map(decode_op)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(CommittedTransition::new(seq, ops, transaction))
+    let created =
+        value_codec::decode_created(&jsonb_text::from_jsonb(&cell::<J>(row, "commit_log", "created")?))?;
+    Ok(CommittedTransition::new(seq, ops, created, transaction))
 }
 
 /// Encode a composition into the `instance_meta.composition` JSONB.

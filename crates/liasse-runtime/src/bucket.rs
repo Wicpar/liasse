@@ -13,11 +13,14 @@
 //! form (`"$bucket": ".expires_at"`, meaning `$until` with `$from` = the row's
 //! admission) and the explicit `{ $from, $until }` object whose bounds are
 //! `timestamp`/`timestamp?` expressions over the collection row. An omitted or
-//! `$created`-defaulted `$from` is treated as "active from creation": a committed
-//! row was admitted in the past and the clock only advances, so its lower bound
-//! is always satisfied without depending on per-row admission-time storage (a
-//! documented seam, since the store records serial positions, not wall-clock
-//! creation instants).
+//! `$created`-defaulted `$from` binds the row's RECORDED admission instant (§14.1
+//! `$created`, §22.6): the store fixes it at the row's insert to the request `now`
+//! ([`StoredRow::created`](liasse_store::StoredRow::created)) and the runtime
+//! threads it here, so a back-dated `.$at(t)`/`.$between(a, b)` with `t` before a
+//! row's admission correctly excludes it — the row is not active one instant before
+//! it was created. A not-yet-committed row carries no recorded instant, so its
+//! `$created` defaults to the evaluation `now`, which is exactly its admission
+//! instant during the transition that inserts it.
 //!
 //! # Temporal selectors (§14.1–§14.2)
 //!
@@ -59,9 +62,10 @@ pub(crate) fn is_active(
     bucket: &CompiledBucket,
     collection: &CompiledCollection,
     fields: &FieldMap,
+    created: Option<Timestamp>,
     now: Timestamp,
 ) -> bool {
-    match bounds(bucket, collection, fields, now) {
+    match bounds(bucket, collection, fields, created, now) {
         Ok((from, until)) => {
             let started = from.is_none_or(|from| now >= from);
             let ended = until.is_some_and(|until| now >= until);
@@ -83,28 +87,32 @@ pub(crate) fn interval_bounds(
     bucket: &CompiledBucket,
     collection: &CompiledCollection,
     fields: &FieldMap,
+    created: Option<Timestamp>,
     now: Timestamp,
 ) -> (Option<Timestamp>, Option<Timestamp>) {
-    bounds(bucket, collection, fields, now).unwrap_or((None, None))
+    bounds(bucket, collection, fields, created, now).unwrap_or((None, None))
 }
 
 /// Reject a transition that produced an invalid finite interval (§14.2): a
 /// present, finite `$until` MUST be strictly after a present, finite `$from`.
 ///
 /// A `$created`-defaulted (or omitted) `$from` carries no stored lower-bound
-/// expression, yet at admission the row's creation instant is the request's
-/// fixed `now()` (§A.5). The lower bound the new row will carry is therefore
-/// `now`, so a `$until` at or before `now` yields the empty interval `[now, now)`
-/// and MUST reject — this is the minimum-lifetime boundary (§14.2): a session
-/// whose `expires_at` equals its own admission instant is never active.
+/// expression, so its lower bound is the row's recorded admission instant
+/// (§14.1 `$created`): `created` for a row already committed (an update to an
+/// existing bucketed row checks against its ORIGINAL admission), or the request's
+/// fixed `now()` for the row this transition is inserting (§22.5) — the instant it
+/// is being admitted at. A `$until` at or before that lower bound yields the empty
+/// interval and MUST reject — the minimum-lifetime boundary (§14.2): a session
+/// whose `expires_at` equals its own `$from` is never active.
 pub(crate) fn check_interval(
     bucket: &CompiledBucket,
     collection: &CompiledCollection,
     fields: &FieldMap,
+    created: Option<Timestamp>,
     now: Timestamp,
     where_path: &str,
 ) -> Result<(), Rejection> {
-    let (from, until) = bounds(bucket, collection, fields, now).map_err(Rejection::from)?;
+    let (from, until) = bounds(bucket, collection, fields, created, now).map_err(Rejection::from)?;
     let from = from.unwrap_or(now);
     if let Some(until) = until
         && until <= from
@@ -120,16 +128,22 @@ pub(crate) fn check_interval(
 
 /// Evaluate the interval bounds of a bucketed row against `now`. Each bound is a
 /// `timestamp`/`timestamp?` expression over the collection row; an absent bound
-/// or a `none` result is [`None`] (unconstrained / unbounded).
+/// or a `none` result is [`None`] (unconstrained / unbounded). A `$created`-defaulted
+/// (or omitted) `$from` — one with no stored lower-bound expression — binds the row's
+/// recorded admission instant (§14.1 `$created`, §22.6): `created` when the row is
+/// committed, else the evaluation `now` (the instant the transition inserting it is
+/// admitted at). A lifecycle bucket therefore always carries a present lower bound,
+/// so a `.$at(t)` before that instant excludes the row.
 fn bounds(
     bucket: &CompiledBucket,
     collection: &CompiledCollection,
     fields: &FieldMap,
+    created: Option<Timestamp>,
     now: Timestamp,
 ) -> Result<(Option<Timestamp>, Option<Timestamp>), EvalError> {
     let from = match &bucket.from {
         Some(expr) => eval_bound(expr, collection, fields, now)?,
-        None => None,
+        None => Some(created.unwrap_or(now)),
     };
     let until = match &bucket.until {
         Some(expr) => eval_bound(expr, collection, fields, now)?,

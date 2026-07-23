@@ -398,8 +398,15 @@ pub const SKIP: &[(&str, &str)] = &[
     ("annex-c-grammar/mutation-name-explicit-prototype-parses", "no value produced (unsupported call path)"),
     ("annex-c-grammar/noparam-call-paren-equals-empty-args", "no value produced (unsupported call path)"),
     ("annex-c-grammar/set-field-form-add-and-remove-members", "no value produced (unsupported call path)"),
-    // --- fail:noview ---
-    ("14-buckets/short-form-from-defaults-to-created", "no view value produced (unsupported view/watch path)"),
+    // (§14.1/§22.6 `14-buckets/short-form-from-defaults-to-created` now PASSES: the
+    // ledger reason ("no view value produced") was STALE — the watch WAS driven; its
+    // value was wrong. A short-form `$bucket: ".expires_at"` defaults `$from` to
+    // `$created`, the row's RECORDED admission instant, which the runtime never
+    // stored — so a back-dated `.$at(t)` before the row's creation wrongly reported it
+    // active. The store now records `now()` per committed row (`StoredRow::created`,
+    // `CommittedTransition::created`) in BOTH backends and the materializer binds it as
+    // the `$from` cell, so `.$at(T0-1us)` correctly excludes a row admitted at T0.
+    // Entry removed as passing.)
     // --- fail:outcome ---
     // (§6.3 duplicate row-mutation-receiver occurrences now reject — the runtime
     // splits a flat receiver key into its selector operands and counts the ones
