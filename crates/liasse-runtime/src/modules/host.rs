@@ -86,6 +86,13 @@ impl<F: StoreFactory> ModuleHost<F> {
     ) -> Result<InstanceId, ModuleError> {
         let admitted = request.admit()?;
         let name = admitted.name;
+        // §13.2/§13.3: an install creates an instance "inside an existing module
+        // space", and a `$modules` space exists only at the location of its
+        // containing row. Reject an install whose containing row is not live in root
+        // state (a ghost-row space like `/companies/ghost/modules`) before minting an
+        // incarnation or a store — nothing may be installed into a space that does
+        // not exist.
+        self.check_containing_row(space)?;
         if self.find(space, &name).is_some() {
             return Err(ModuleError::DuplicateName(name));
         }
@@ -376,6 +383,32 @@ impl<F: StoreFactory> ModuleHost<F> {
             }
         }
         Ok(())
+    }
+
+    /// §13.2/§13.3: a `$modules` space exists only where its containing row is live
+    /// in root state, so an install targets an existing space only when that row is
+    /// present. When the root package declares the `$modules` space at this space's
+    /// declaration path (`companies.…​.modules`), the containing row (`/companies/acme`)
+    /// MUST be a live root row; a ghost-row space (`/companies/ghost/modules`) has no
+    /// space to install into and is rejected with [`ModuleError::MissingContainingRow`].
+    /// A space the root package declares no `$modules` mount for imposes no
+    /// containing-row requirement — the same documented §13.2 undeclared-space seam
+    /// [`check_interface_contracts`](Self::check_interface_contracts) already tolerates
+    /// (an interface-less space contributes no contract either), so a host wrapping a
+    /// root that does not model this mount is unaffected.
+    fn check_containing_row(&self, space: &ModuleSpace) -> Result<(), ModuleError> {
+        if self.root.module_space_interfaces(&space.declaration_path()).is_none() {
+            return Ok(());
+        }
+        let present = match space.containing_row_steps() {
+            Some(steps) => self.root.contains_row(&steps)?,
+            None => false,
+        };
+        if present {
+            Ok(())
+        } else {
+            Err(ModuleError::MissingContainingRow(space.as_str().to_owned()))
+        }
     }
 
     fn find(&self, space: &ModuleSpace, name: &str) -> Option<&Child<F::Store>> {

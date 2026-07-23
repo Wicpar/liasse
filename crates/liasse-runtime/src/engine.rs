@@ -1779,6 +1779,37 @@ impl<S: InstanceStore> Engine<S> {
         self.compiled.module_space_interfaces(path)
     }
 
+    /// Whether the row addressed by `steps` — a walk of `(collection declaration
+    /// name, key display text)` pairs from the package root — is live in committed
+    /// state at head (§13.2 module-space containing row). An empty `steps` is the
+    /// package root itself, which is always live. Each step descends into the named
+    /// collection cell of the current row and matches a row whose §D.2 key text
+    /// equals the step key; a missing collection or unmatched key means the row is
+    /// absent. This is the root-state accessor a [`ModuleHost`](crate::ModuleHost)
+    /// consults to reject an install into a module space whose containing row does
+    /// not exist (§13.3).
+    pub(crate) fn contains_row(&self, steps: &[(String, String)]) -> Result<bool, EngineError> {
+        let mut current = self.source_root()?;
+        for (collection, key) in steps {
+            let found = {
+                let Some(rows) = current.cell(collection).and_then(Cell::as_collection) else {
+                    return Ok(false);
+                };
+                rows.iter()
+                    .find(|row| {
+                        liasse_ident::KeyText::from_key_values(std::slice::from_ref(row.key()))
+                            .is_ok_and(|text| text.as_str() == key)
+                    })
+                    .cloned()
+            };
+            match found {
+                Some(row) => current = row,
+                None => return Ok(false),
+            }
+        }
+        Ok(true)
+    }
+
     /// Resolve an `$expose`d interface mutation to the private root mutation it
     /// binds (§13.8): the interface handle `interface` and the contract name
     /// `mutation` map to a bound reference like `.create_template`, whose child

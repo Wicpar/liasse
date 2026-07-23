@@ -15,7 +15,8 @@
 //! reads (`interface_read`/`aggregate`) over a space without threading a generator,
 //! and returns the §13.3 rejections
 //! (`EmptyName`/`DuplicateName`/`Unknown`/`Disabled`/`InvalidSpace`/
-//! `InvalidBinding`) as [`ModuleObservation`]s rather than errors — mirroring how
+//! `MissingContainingRow`/`InvalidBinding`) as [`ModuleObservation`]s rather than
+//! errors — mirroring how
 //! the surface layer treats every spec refusal as a successful observation,
 //! reserving [`ModuleFault`] for a genuine store/engine fault. The clock is the
 //! children's request-fixed `now()` source (Annex A.5); the [`Entropy`] source is
@@ -49,6 +50,9 @@ pub enum ModuleObservation {
     Disabled(String),
     /// The mount path is not a well-formed module-space location (§13.2).
     InvalidSpace(String),
+    /// The module space's containing row is not live in root state, so the space
+    /// does not exist and there is nothing to install into (§13.2/§13.3).
+    MissingContainingRow(String),
     /// A `$use`/`$deps` binding spec is malformed (§13.5/§13.6).
     InvalidBinding(String),
 }
@@ -72,6 +76,7 @@ impl ModuleObservation {
             ModuleError::Unknown(name) => Ok(Self::Unknown(name)),
             ModuleError::Disabled(name) => Ok(Self::Disabled(name)),
             ModuleError::InvalidSpace(path) => Ok(Self::InvalidSpace(path)),
+            ModuleError::MissingContainingRow(path) => Ok(Self::MissingContainingRow(path)),
             ModuleError::InvalidBinding(spec) => Ok(Self::InvalidBinding(spec)),
             // §13.8/§13.1: a contract-satisfaction or `$config`-type refusal is a
             // static `invalid` (§13.3 "Loading validates ... before the instance

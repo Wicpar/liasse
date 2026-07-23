@@ -11,10 +11,12 @@ use crate::modules::ModuleError;
 /// A space is the containing-row identity together with the module-space
 /// declaration path; with the instance name it forms the local part of instance
 /// identity (§13.3: "the containing row identity, module-space declaration path,
-/// and instance name"). This type carries the canonical mount path; matching a
-/// space against the root package's declared `$modules` mount points and checking
-/// the containing row exists is a documented seam (it needs a root-model accessor
-/// this crate cannot add).
+/// and instance name"). This type carries the canonical mount path and derives both
+/// the [`declaration_path`](Self::declaration_path) (keyed against the root
+/// package's compiled `$modules` declarations) and the
+/// [`containing_row_steps`](Self::containing_row_steps) an install checks against
+/// live root state (§13.2); the host consults a root-model accessor
+/// (`Engine::contains_row`) to reject a ghost-row install into a declared space.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ModuleSpace {
     path: String,
@@ -59,5 +61,34 @@ impl ModuleSpace {
     #[must_use]
     pub fn declaration_path(&self) -> Vec<String> {
         self.components.iter().step_by(2).cloned().collect()
+    }
+
+    /// The `(collection declaration name, key display text)` steps of this space's
+    /// **containing row** (§13.2/§13.3: "the containing row identity"): the space
+    /// path minus its trailing `$modules` declaration name, read as the alternating
+    /// collection/key pairs that address the row the `$modules` node hangs off.
+    /// `/companies/acme/modules` → `[("companies", "acme")]`; a nested
+    /// `/companies/acme/divisions/eu/modules` →
+    /// `[("companies", "acme"), ("divisions", "eu")]`. A top-level `$modules` space
+    /// (`/modules`) has **no** containing row — its container is the package root,
+    /// which is always live — so the residual path is empty and this yields
+    /// `Some(vec![])`. `None` when the residual path is not a well-formed sequence of
+    /// collection/key pairs (an odd component count, so no single row is addressed);
+    /// such a space names no containing row and cannot resolve one.
+    #[must_use]
+    pub fn containing_row_steps(&self) -> Option<Vec<(String, String)>> {
+        let (_declaration, containing) = self.components.split_last()?;
+        if containing.len() % 2 != 0 {
+            return None;
+        }
+        Some(
+            containing
+                .chunks_exact(2)
+                .filter_map(|pair| match pair {
+                    [collection, key] => Some((collection.clone(), key.clone())),
+                    _ => None,
+                })
+                .collect(),
+        )
     }
 }

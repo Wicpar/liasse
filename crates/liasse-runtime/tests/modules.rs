@@ -5,7 +5,10 @@
 //! child field is unreachable across the boundary (isolation); an interface
 //! aggregates across two installed instances with inherited identity; a disabled
 //! instance retains its private state and is removed from the aggregation; enable
-//! restores it; and the §13.13 seed three-way merge follows its rule.
+//! restores it; the §13.13 seed three-way merge follows its rule; and an install
+//! into a **declared** module space is admitted only when its containing row is live
+//! in root state (§13.2/§13.3) — a live company row's space accepts, a ghost row is
+//! refused, and a top-level space (contained by the always-live root) accepts.
 
 mod support;
 
@@ -58,6 +61,26 @@ const FILTERED: &str = r#"{
   "$expose": {
     "templates": { "$view": ".templates[:t | t.enabled] { id, label }" }
   }
+}"#;
+
+/// A root that **declares** `$modules` spaces, so §13.2/§13.3 requires a live
+/// containing row before an install is admitted — unlike [`TASKS`], which declares
+/// no space and leaves the undeclared-space seam untouched. `companies` seeds one
+/// live row (`acme`); the top-level `hub` space is contained by the always-live
+/// package root.
+const DECLARED_ROOT: &str = r#"{
+  "$liasse": 1
+  "$app": "example.spaces@1.0.0"
+  "$model": {
+    "companies": {
+      "$key": "id"
+      "id": "text"
+      "name": "text"
+      "modules": { "$modules": {} }
+    }
+    "hub": { "$modules": {} }
+  }
+  "$data": { "companies": { "acme": { "name": "Acme" } } }
 }"#;
 
 fn text(value: &str) -> Value {
@@ -153,6 +176,52 @@ fn install_is_isolated_per_instance_and_per_space() {
     assert_eq!(host.aggregate(&acme, "templates").expect("acme").len(), 1);
     assert_eq!(host.aggregate(&globex, "templates").expect("globex").len(), 0, "sibling space is independent");
     assert_ne!(host.incarnation(&acme, "sales"), host.incarnation(&globex, "sales"));
+}
+
+fn declared_host() -> ModuleHost<MemoryStoreFactory> {
+    let mut generator = generator();
+    let root = Engine::load(MemoryStore::new(liasse_ident::InstanceId::new("spaces")), DECLARED_ROOT, &mut generator)
+        .expect("declared-space root loads");
+    ModuleHost::new(MemoryStoreFactory::new(), root)
+}
+
+fn try_install(host: &mut ModuleHost<MemoryStoreFactory>, space: &ModuleSpace, name: &str) -> Result<(), ModuleError> {
+    let mut generator = generator();
+    host.install(space, InstallRequest::new(name, TEMPLATES), &mut generator).map(|_| ())
+}
+
+#[test]
+fn install_into_declared_space_with_live_containing_row_is_admitted() {
+    // §13.2/§13.3: `acme` is a live company row, so its module space exists and the
+    // install is admitted — the check must not over-reject a real containing row.
+    let mut host = declared_host();
+    let acme = ModuleSpace::new("/companies/acme/modules").expect("mount path");
+    try_install(&mut host, &acme, "kit").expect("install into a live containing row's space");
+    assert!(host.is_installed(&acme, "kit"));
+}
+
+#[test]
+fn install_into_ghost_containing_row_is_rejected() {
+    // §13.2/§13.3: no `ghost` company row exists, so `/companies/ghost/modules` names
+    // no space; the install has nothing to target and is refused, never admitted into
+    // a ghost row.
+    let mut host = declared_host();
+    let ghost = ModuleSpace::new("/companies/ghost/modules").expect("mount path");
+    match try_install(&mut host, &ghost, "kit") {
+        Err(ModuleError::MissingContainingRow(path)) => assert_eq!(path, "/companies/ghost/modules"),
+        other => panic!("expected a missing-containing-row refusal, got {other:?}"),
+    }
+    assert!(!host.is_installed(&ghost, "kit"), "no instance is recorded for a ghost-row space");
+}
+
+#[test]
+fn install_into_top_level_declared_space_is_admitted() {
+    // §13.2: a top-level `$modules` space is contained by the package root, which is
+    // always live, so an install is admitted with no containing row to resolve.
+    let mut host = declared_host();
+    let hub = ModuleSpace::new("/hub").expect("mount path");
+    try_install(&mut host, &hub, "kit").expect("install into a top-level space");
+    assert!(host.is_installed(&hub, "kit"));
 }
 
 #[test]

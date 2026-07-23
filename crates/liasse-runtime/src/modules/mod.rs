@@ -32,8 +32,10 @@
 //! - Installation `$data` overlay onto the child genesis (§13.3), and wiring the
 //!   [`SeedMerge`] rule into the update seed pass (§13.13).
 //! - Peer/parent resolution against the sibling set, interface satisfaction, and
-//!   `$deps` nested-instance provisioning (§13.4–§13.6); binding a space to a
-//!   declared `$modules` mount and checking the containing row exists (§13.2).
+//!   `$deps` nested-instance provisioning (§13.4–§13.6). Binding a declared-space
+//!   install to a live containing row is landed ([`ModuleHost::install`] rejects a
+//!   ghost-row install into a declared `$modules` space, §13.2/§13.3); matching a
+//!   space against a declared mount for the *undeclared*-space case remains a seam.
 //! - Interface-addressed *mutation* dispatch and cross-module atomic transitions
 //!   (§13.10/§13.11); `$if_module`-guarded declaration activation (§13.7).
 
@@ -72,6 +74,13 @@ pub enum ModuleError {
     /// The mount path is not a well-formed module-space location (§13.2).
     #[error("`{0}` is not an absolute module-space mount path")]
     InvalidSpace(String),
+    /// The module space's containing row is not live in root state, so the space
+    /// does not exist and there is nothing to install into (§13.2/§13.3: an install
+    /// creates an instance "inside an existing module space", and a `$modules` space
+    /// exists at the location of each containing row). Rejects a ghost-row install
+    /// (e.g. into `/companies/ghost/modules` when no `ghost` company row exists).
+    #[error("the module space `{0}` has no containing row in root state")]
+    MissingContainingRow(String),
     /// A `$use`/`$deps` binding spec is malformed (§13.5/§13.6).
     #[error("`{0}` is not a valid module binding spec")]
     InvalidBinding(String),

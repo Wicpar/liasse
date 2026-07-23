@@ -351,7 +351,8 @@ fn observe(observation: ModuleObservation) -> Observation {
         ModuleObservation::DuplicateName(_)
         | ModuleObservation::Unknown(_)
         | ModuleObservation::Disabled(_)
-        | ModuleObservation::InvalidSpace(_) => Observation::outcome(Outcome::Rejected),
+        | ModuleObservation::InvalidSpace(_)
+        | ModuleObservation::MissingContainingRow(_) => Observation::outcome(Outcome::Rejected),
     }
 }
 

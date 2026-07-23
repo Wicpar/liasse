@@ -205,8 +205,6 @@ pub const SKIP: &[(&str, &str)] = &[
     // request (adapter/modules.rs), so a fresh-row overlay and its `$check` now run;
     // the three-way *merge* onto an already-seeded row is a runtime seam.
     ("13-modules/install-data-overlay-merge", "§13.3 the installation `$data` overlay's three-way merge onto an existing package-`$data`-seeded row is not landed in the runtime, so the overlay over a seeded row is rejected rather than merged"),
-    // Module-space existence (§13.2): the containing-row check is a documented seam.
-    ("13-modules/install-into-nonexistent-space-rejected", "§13.2 the containing-row existence check for a module space is unlanded, so an install into a ghost row is admitted"),
     // Peer/`$deps` resolution (§13.5/§13.6): the consumer child fails a standalone
     // compile (an unresolved `#peer` handle, or no `$model`) before peer/dep
     // binding can run, so a peer-admission `rejected` is observed as a static
