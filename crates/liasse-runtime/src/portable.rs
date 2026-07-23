@@ -138,6 +138,14 @@ impl StateSection {
         &self.collections
     }
 
+    /// The captured §8.2 root singleton reserved row, or `None` when the instance
+    /// holds no singleton state. The singleton is not a keyed collection, so it is
+    /// absent from [`Self::collections`]; a caller reasoning over ALL captured live
+    /// state (e.g. the §20.2 downgrade representability gate) reads it here.
+    pub(crate) fn singleton(&self) -> Option<&FieldMap> {
+        self.singleton.as_ref()
+    }
+
     /// Serialize to canonical strict-JSON bytes for the artifact state section.
     pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut object = serde_json::Map::new();

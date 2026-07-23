@@ -1,0 +1,78 @@
+{
+  format: 1
+  name: downgrade-drops-unrepresentable-struct-rejected
+  suite: scenario
+  spec: ["#evolution", "§20.2", "#state-model", "§5.3", "#loading", "§9.4"]
+  note: '''
+    Static-struct analogue of downgrade-drops-unrepresentable-field-rejected.
+
+    §20.2: "A downgrade is rejected only when a populated live value cannot be
+    represented in the older shape and no declared `$down`, deduced inverse, or
+    stash restoration preserves it." A static struct member (§5.3) is a live
+    value of the row exactly as a scalar field is. The active 2.0.0 shape carries
+    a `profile` struct with live data (seeded); the older 1.0.0 shape has no
+    struct member of that name and no inverse folds it into an existing member. A
+    silent downgrade would discard the live struct data, so it MUST be rejected,
+    leaving 2.0.0 active. Prior values remain available in history (§20.2).
+
+    ATTACK (red): the §20.2 downgrade representability gate scans the collection's
+    scalar FIELDS for a populated value the older shape cannot represent; a static
+    struct member compiles separately from fields, so a whole populated struct
+    dropped on downgrade would slip past the gate and commit — losing the data the
+    field-drop variant is rejected to protect. It must be rejected the same way.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.dropstruct@2.0.0"
+    $model: {
+      tickets: {
+        $key: "id"
+        id: "text"
+        title: "text"
+        profile: {
+          severity: "int"
+          note: "text"
+        }
+      }
+      $public: {
+        tickets: { $view: ".tickets { id, title, severity: .profile.severity }" }
+      }
+    }
+    $data: {
+      tickets: { t1: { title: "Boot loops", profile: { severity: "5", note: "urgent" } } }
+    }
+  }
+
+  steps: [
+    // live under 2.0.0: the seeded struct data is readable
+    { watch: "public.tickets", id: "w1",
+      expect_init: { value: [ { id: "t1", title: "Boot loops", severity: "5" } ] } }
+    // downgrade to 1.0.0: the older shape has no `profile` struct and no declared
+    // inverse preserves it -> rejected (§20.2)
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.dropstruct@1.0.0"
+          $model: {
+            tickets: {
+              $key: "id"
+              id: "text"
+              title: "text"
+            }
+            $public: {
+              tickets: { $view: ".tickets { id, title }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.2"]
+        detail: "older shape cannot represent the live 'profile' struct and no declared downgrade transform preserves it"
+      } }
+    // 2.0.0 stays active with the struct data intact
+    { watch: "public.tickets", id: "w2",
+      expect_init: { value: [ { id: "t1", title: "Boot loops", severity: "5" } ] } }
+  ]
+}

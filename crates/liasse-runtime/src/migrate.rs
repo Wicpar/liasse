@@ -147,7 +147,7 @@ impl<S: InstanceStore> Engine<S> {
                 UpdateError::Engine(EngineError::Internal("active definition unavailable for downgrade".to_owned()))
             })?;
             let plan = downgrade_plan(&active, target).map_err(UpdateError::Engine)?;
-            downgrade_representable(self.compiled(), &old_state, &compilation, &plan)
+            downgrade_representable(self.compiled(), self.model(), &old_state, &compilation, &plan)
                 .map_err(UpdateError::Rejected)?;
             plan
         } else {
@@ -870,6 +870,7 @@ fn downgrade_plan(active_definition: &str, target: &str) -> Result<MigrationPlan
 /// rejected and the current package stays active (E.9).
 fn downgrade_representable(
     active_compiled: &Compiled,
+    active_model: &Model,
     active_state: &StateSection,
     target: &Compilation,
     plan: &MigrationPlan,
@@ -893,6 +894,72 @@ fn downgrade_representable(
                         "downgrade drops populated field `{}` of `{name}`: the older shape cannot represent \
                          it and no declared downgrade transform preserves it",
                         field.name
+                    ),
+                ));
+            }
+        }
+        // §5.3/§20.2: a static struct member (§5.3) is a live value of the row, but
+        // it compiles into `CompiledCollection::structs`, not `fields`, so the field
+        // loop above never inspects it. A downgrade that drops a populated struct the
+        // older shape cannot represent — no same-named target struct or field carries
+        // it, no declared mapping reconstructs it — silently discards live data,
+        // exactly the §20.2 loss the field loop rejects. Apply the identical gate to
+        // struct members so the two travel on the same footing (a struct kept under
+        // the same name is re-decoded against the target struct type by
+        // `coerce_and_require`, which rejects an inner-shape mismatch there).
+        for structure in &active_collection.structs {
+            let populated =
+                rows.iter().any(|row| row.get(&structure.name).is_some_and(|value| *value != Value::None));
+            if !populated {
+                continue;
+            }
+            let kept = target_collection.is_some_and(|collection| {
+                collection.struct_type(&structure.name).is_some() || collection.field(&structure.name).is_some()
+            });
+            let reconstructed =
+                migration.is_some_and(|migration| migration.fields.values().any(|f| f.from == structure.name));
+            if !kept && !reconstructed {
+                return Err(Rejection::new(
+                    RejectionReason::Compatibility,
+                    format!(
+                        "downgrade drops populated struct `{}` of `{name}`: the older shape cannot represent \
+                         it and no declared downgrade transform preserves it",
+                        structure.name
+                    ),
+                ));
+            }
+        }
+    }
+    // §8.2/§20.2: the root singleton reserved row is live state too, but it is not a
+    // keyed collection, so `active_state.collections()` never yields it and the loop
+    // above never inspects it. Apply the identical §20.2 gate to each populated
+    // singleton member (a writable root scalar/ref/set/static-struct, §8.2): a
+    // downgrade that drops one for which the older shape declares no same-named
+    // singleton member — and no declared mapping (`$from`) reconstructs — silently
+    // discards live root state, exactly the loss the collection gates reject.
+    if let Some(active_singleton) = active_state.singleton() {
+        for member in &active_model.root().members {
+            if crate::singleton::member_type(active_model, &member.node).is_none() {
+                continue;
+            }
+            let name = member.name.as_str();
+            let populated = active_singleton.get(name).is_some_and(|value| *value != Value::None);
+            if !populated {
+                continue;
+            }
+            let kept = target
+                .model
+                .root()
+                .member(name)
+                .and_then(|target_member| crate::singleton::member_type(&target.model, &target_member.node))
+                .is_some();
+            let reconstructed = plan.singleton_fields.values().any(|f| f.from == name);
+            if !kept && !reconstructed {
+                return Err(Rejection::new(
+                    RejectionReason::Compatibility,
+                    format!(
+                        "downgrade drops populated root member `{name}`: the older shape cannot represent \
+                         it and no declared downgrade transform preserves it"
                     ),
                 ));
             }
