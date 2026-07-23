@@ -73,10 +73,14 @@ pub const SKIP: &[(&str, &str)] = &[
     // not yet expose (adapter/mod.rs documents the reach). Each such step reports a
     // harness skip, so the case is skipped, not judged.
     // ========================================================================
-    // --- `authenticate` step ---
-    // The `authenticate` step drives through `SurfaceHost::authenticate`; the
-    // residual case fails later — its `watch`/`call` name a multiplexed `context`
-    // (§11.8) the adapter does not yet thread onto the surface watch/call.
+    // --- `authenticate` step (CLOSED) ---
+    // The `authenticate` step drives through `SurfaceHost::authenticate`, binding a
+    // named multiplexed `context` (§11.8) via its `as` label, and a `watch`/`call`
+    // naming that `context` threads it onto the surface subscription/call
+    // (`with_context`, adapter/runtime.rs). So the §11.8 completion-barrier and
+    // cross-context-isolation cases (`completion-barrier-spans-sessions`,
+    // `multiple-credentials-one-connection`, `shared-connection-cross-context-isolation`)
+    // all pass — no residual authenticate-step debt remains.
     // --- §18 blob steps drive the composed blob host end to end ---
     // The blob-parameter upload (`blob_put`, staged into the blob host and admitted
     // under the step's role selection), fetch (`blob_get`, gated through the caller's
@@ -100,16 +104,31 @@ pub const SKIP: &[(&str, &str)] = &[
     // `same-content-different-metadata-distinct-descriptors`, `descriptor-bytes-encoding`,
     // and `descriptor-metadata-readable-in-view`.
     // §18.3 pins eager connector resolution: a store-row write feeding a declared
-    // placement is rejected at admission when its connector is unregistered. The
-    // runtime `Engine` holds no blob-connector registry (connectors live in the
-    // driver's composed `BlobHost`, not `Engine::call`'s admission), so the store-row
-    // insert commits as ordinary data instead of rejecting — a flagged follow-on hole
-    // (wiring the connector registry into runtime admission is a subsystem-crossing
-    // change), acknowledged here against the now-pinned §18.3 outcome.
-    ("18-blobs/connector-resolution-timing", "eager store-row connector validation (§18.3) needs the connector registry threaded into runtime admission, which the engine does not hold"),
-    // --- `budget_set` step ---
-    ("23-host-contract/budget-exhaustion-rejects-not-backpressure", "`budget_set` step not driven this phase"),
-    ("23-host-contract/budget-exhaustion-never-partial-transition", "`budget_set` step not driven this phase"),
+    // placement is rejected at admission when its connector is unregistered. This is
+    // a genuine subsystem-crossing feature, not a harness gap, spanning THREE layers
+    // the runtime does not currently reach: (1) liasse-model discards `$blob_storage`
+    // after syntactic validation (`blob::check_all`) — the built model carries no
+    // placement policy, so the runtime cannot know which store collections are
+    // placement-reachable; (2) the runtime `Engine` holds no blob-connector registry
+    // (connectors live in the driver's composed `BlobHost` and in `BlobEngine`, not
+    // `Engine::call`'s admission); (3) no admission hook inspects a written store row
+    // against a placement target. Absent all three, the store-row insert commits as
+    // ordinary data instead of rejecting. Scoped as acknowledged debt against the
+    // now-pinned §18.3 outcome (rejecting it in the harness alone would fake the
+    // runtime property SPEC.md makes an admission rule, so it is left to the feature).
+    ("18-blobs/connector-resolution-timing", "eager store-row connector validation (§18.3) is a subsystem-crossing feature: the model discards `$blob_storage` (no runtime placement-reachability), the engine holds no connector registry, and `Engine::call` admission has no store-row/placement hook — none surgical"),
+    // --- `budget_set` step (CLOSED) ---
+    // §23.6 makes the in-flight external-component bound MANDATORY and UNCONDITIONAL
+    // ("a runtime MUST bound each in-flight external-component call … regardless of
+    // whether a numeric budget is declared"); a non-returning call is a §17.9 failure
+    // that rejects the enclosing request, committing no effect. The sim provider's
+    // `hang` script models exactly that (`ProviderFailure::WouldNotReturn`), so the
+    // runtime already produces the terminal §23.6 rejection through the signing path,
+    // and its §22.2 atomicity leaves no partial row. `budget_set` is now driven
+    // (adapter/ops.rs `drive_budget_set`: it establishes the budget precondition and
+    // validates the declaration; the mandatory in-flight bound needs no separate
+    // numeric gate), so `budget-exhaustion-rejects-not-backpressure` and
+    // `budget-exhaustion-never-partial-transition` both pass and were removed here.
     // (§4 `build_artifact`/`repack_artifact`/`load_artifact` now drive the real
     // `liasse-artifact` archive layer — adapter/artifacts.rs — so every
     // 04-package-structure case passes.)

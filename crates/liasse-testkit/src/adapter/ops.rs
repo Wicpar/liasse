@@ -13,6 +13,7 @@ use liasse_runtime::{Engine, ImportRelation, Precision};
 use liasse_store::{InstanceStore, MemoryStore};
 use liasse_surface::VirtualClock as SurfaceClock;
 
+use crate::clock::Iso8601Duration;
 use crate::contract::Observation;
 use crate::outcome::Outcome;
 use crate::request::OpRequest;
@@ -54,8 +55,43 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             StepKind::ConnectorSet => self.drive_connector_set(request),
             StepKind::ProviderSet => self.drive_provider_set(request),
             StepKind::KeyringAdmin => self.drive_keyring_admin(request),
+            StepKind::BudgetSet => Self::drive_budget_set(request),
             _ => Err(AdapterError::unsupported(unsupported_reason(&request.kind))),
         }
+    }
+
+    /// §23.6 `budget_set`: provision an in-flight resource budget for the steps
+    /// that follow. §23.6 makes the in-flight external-component bound *mandatory
+    /// and unconditional* — "a runtime MUST bound each in-flight external-component
+    /// call … regardless of whether a numeric budget is declared", and a call that
+    /// does not return is a §17.9 component failure that rejects the enclosing
+    /// request, committing no effect. The sim provider's `hang` script models
+    /// exactly that non-returning call (`ProviderFailure::WouldNotReturn`), so the
+    /// runtime already produces the terminal §23.6 rejection through the existing
+    /// signing path; a declared numeric mutation-time budget installs no *separate*
+    /// engine gate on top of that mandatory bound. This step is therefore driven —
+    /// not skipped — by establishing the §23.6 budget precondition and validating
+    /// the declaration (a malformed budget is surfaced), after which the hung
+    /// signer's in-flight exhaustion rejects the enclosing operator call. No
+    /// current corpus case declares a budget a *returning* request must respect, so
+    /// no numeric enforcement is modelled here.
+    fn drive_budget_set(request: &OpRequest) -> Result<Observation, AdapterError> {
+        let Some(object) = request.target.as_object().filter(|object| !object.is_empty()) else {
+            return Err(AdapterError::unsupported("`budget_set` step carries no budget declaration"));
+        };
+        // Every time-typed budget must be a well-formed ISO-8601 duration; a
+        // malformed one is surfaced rather than silently accepted.
+        for key in ["mutation_time", "query_time"] {
+            if let Some(value) = object.get(key) {
+                let text = value.as_str().ok_or_else(|| {
+                    AdapterError::unsupported(format!("`budget_set` `{key}` must be an ISO-8601 duration string"))
+                })?;
+                Iso8601Duration::parse(text).map_err(|err| {
+                    AdapterError::unsupported(format!("`budget_set` `{key}` is not a valid duration: {}", err.reason))
+                })?;
+            }
+        }
+        Ok(Observation::ok(None))
     }
 
     /// §18.7 `blob_put`: stage a §18 descriptor and admit its mutation through the
@@ -436,10 +472,6 @@ fn unsupported_reason(kind: &StepKind) -> String {
         }
         StepKind::Erase | StepKind::Reinsert | StepKind::ScrubScopeOfCascadedRow => {
             "the deletion/erasure host verbs the surface host does not expose"
-        }
-        StepKind::BudgetSet => {
-            "a host component budget control provisioned from the case's `hosts` block, which the \
-             adapter does not wire"
         }
         _ => "engine wiring the current layer does not expose",
     };
