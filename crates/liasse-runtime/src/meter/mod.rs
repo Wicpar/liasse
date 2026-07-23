@@ -441,16 +441,32 @@ fn compile_meter(
     })
 }
 
-/// The `spend` binding row type for `$eligible` (§15.2): the union of the scalar
-/// fields of every descendant spend collection that consumes a meter declared at
-/// `path`, so `spend.<metadata>` type-checks. The concrete metadata values are
-/// folded in as cells at eval time.
+/// The `spend` binding row type for `$eligible` (§15.2/§15.6): the union of the
+/// scalar fields of every descendant spend collection that consumes a meter
+/// declared at `path`, so `spend.<metadata>` type-checks, plus the structural
+/// `$amount`/`$time` bindings §15.6 lets eligibility read (`spend.$amount`,
+/// `spend.$time`). Both the metadata fields and the structural amount/time are
+/// folded in as cells at eval time (`spend_context_cell`). A structural `$`-member
+/// resolves through the row's structural bindings (§14.4), never its fields, so it
+/// MUST be attached here or the whole meter silently fails to type and is dropped.
 fn spend_binding_type(schema: Schema<'_>, path: &[String]) -> RowType {
     let mut fields: Vec<(String, ExprType)> = Vec::new();
     if let Some(collection) = schema.collection_at_path(path) {
         collect_spend_fields(collection, &mut fields);
     }
-    RowType::keyless(fields)
+    RowType::keyless(fields).with_structural(spend_structurals())
+}
+
+/// The structural `$`-bindings a `spend` binding exposes to `$eligible` (§15.6):
+/// the spend's evaluated `$amount` and `$time`. `$time` types at the package
+/// timestamp default (§A.5) so it compares against declared `timestamp` fields
+/// (which carry that same default type) — exactly what a temporal `$eligible`
+/// such as `spend.$time >= pool.available_from` needs.
+fn spend_structurals() -> [(String, ExprType); 2] {
+    [
+        ("amount".to_owned(), ExprType::scalar(Type::Decimal)),
+        ("time".to_owned(), ExprType::scalar(Type::Timestamp(liasse_value::Precision::DEFAULT))),
+    ]
 }
 
 /// Union the scalar fields of every descendant `$consumes` collection into
@@ -474,8 +490,13 @@ fn collect_spend_fields(collection: &liasse_model::Collection, fields: &mut Vec<
 }
 
 /// The merged pool row type across a meter's sources (§15.2): the union of every
-/// projected metadata field plus the structural `$quantity`/`$from`/`$until`
-/// capacity and interval cells a `pool` binding or `$order` key reads.
+/// projected metadata field, plus the structural `$quantity`/`$from`/`$until`
+/// capacity and interval a `pool` binding or `$order` key reads. `$eligible`
+/// spells these as `$`-members (`pool.$quantity`, `pool.$until`), which resolve
+/// through the row's STRUCTURAL bindings (§14.4), never its fields — so they are
+/// attached as structural bindings, not appended as fields; without them any
+/// `$eligible` reading a pool structural fails to type and the whole meter is
+/// silently dropped.
 fn pool_row_type(sources: &[CompiledSource]) -> RowType {
     let mut fields: Vec<(String, ExprType)> = Vec::new();
     for source in sources {
@@ -487,16 +508,16 @@ fn pool_row_type(sources: &[CompiledSource]) -> RowType {
             }
         }
     }
-    for (name, ty) in [
-        ("$quantity", ExprType::scalar(Type::Decimal)),
-        ("$from", ExprType::scalar(Type::Optional(Box::new(Type::Timestamp(liasse_value::Precision::Seconds))))),
-        ("$until", ExprType::scalar(Type::Optional(Box::new(Type::Timestamp(liasse_value::Precision::Seconds))))),
-    ] {
-        if fields.iter().all(|(n, _)| n != name) {
-            fields.push((name.to_owned(), ty));
-        }
-    }
-    RowType::keyless(fields)
+    // §A.5: the interval bounds type at the package timestamp default, matching a
+    // declared `timestamp` field, so a temporal `$eligible` (`pool.$until >= …`)
+    // can compare them against ordinary timestamp fields.
+    let optional_timestamp =
+        || ExprType::scalar(Type::Optional(Box::new(Type::Timestamp(liasse_value::Precision::DEFAULT))));
+    RowType::keyless(fields).with_structural([
+        ("quantity".to_owned(), ExprType::scalar(Type::Decimal)),
+        ("from".to_owned(), optional_timestamp()),
+        ("until".to_owned(), optional_timestamp()),
+    ])
 }
 
 fn compile_consumes(

@@ -1,0 +1,80 @@
+{
+  format: 1
+  name: eligible-structural-reference-still-enforces
+  suite: scenario
+  spec: ["#meters", "§15.6", "§15.2"]
+  tags: [temporal]
+  note: '''Attack: hide behind a structural $eligible to slip an unmetered spend through.
+$eligible reads the spend's structural $time (SPEC §15.6 lets eligibility reference $time)
+to gate pools by an application `available_from`: a pool funds a spend only once its
+availability instant has been reached. The adversary submits a spend that exceeds the
+capacity currently eligible, betting the engine drops the whole meter — silently admitting
+everything unmetered — because $eligible names a $-structural. A conforming engine keeps the
+meter live: at the epoch only the `early` pool (available_from = epoch) is eligible, so a 150
+spend is rejected against its 100; after the `late` pool's availability instant is reached it
+too funds, and once both are drained even a 1 rejects. spend.$time / pool.available_from
+resolve through the spend/pool structural bindings.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.eligtime@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+          available_from: "timestamp"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount, available_from }" }
+            $eligible: "spend.$time >= pool.available_from"
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount, occurred_at: @at }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: { $mut: { consume: ".users[@user].consume" } }
+      }
+    }
+    // early is available from the epoch 2026-01-01; late only from 2026-06-01.
+    $data: { users: { u1: { topups: {
+      early: { amount: "100", available_from: "1767225600" }
+      late:  { amount: "100", available_from: "1780272000" }
+    } } } }
+  }
+
+  steps: [
+    // spend at the epoch: only `early` is eligible (spend.$time >= early.available_from,
+    // but spend.$time < late.available_from). 150 > 100 eligible -> rejected. This is the
+    // attack: were the meter silently unmetered, 150 would admit.
+    { call: "public.wallet.consume", args: { user: "u1", amount: "150", at: "1767225600" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"],
+                detail: "only the epoch-available pool is eligible at the epoch spend time" } }
+    // exactly 100 admits at the epoch, draining `early` to zero.
+    { call: "public.wallet.consume", args: { user: "u1", amount: "100", at: "1767225600" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    // a spend timed at 2026-06-01 now finds `late` eligible too; 100 admits, draining it.
+    { call: "public.wallet.consume", args: { user: "u1", amount: "100", at: "1780272000" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    // both pools exhausted: even at the later time, 1 has no eligible capacity -> rejected.
+    { call: "public.wallet.consume", args: { user: "u1", amount: "1", at: "1780272000" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"] } }
+  ]
+}

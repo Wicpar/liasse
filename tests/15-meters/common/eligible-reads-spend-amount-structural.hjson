@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: eligible-reads-spend-amount-structural
+  suite: scenario
+  spec: ["#meters", "§15.6", "§15.2"]
+  note: '''$eligible may read the spend's structural $amount (SPEC §15.6: "When eligibility
+references $amount, $time, or named spend metadata, the accessor call MUST supply every
+referenced value"). Here $eligible is `pool.$quantity >= spend.$amount`: a spend may draw
+only from a pool whose whole capacity alone covers it (a "single-pool coverage" rule). Both
+pools hold 50. A spend of 40 fits either pool and admits; a spend of 60 fits NO single pool
+and is rejected even though the two pools total 100 remaining — the §15.2 eligible predicate
+excludes both pools, leaving zero eligible capacity. Reads pool.$quantity and spend.$amount,
+which resolve through the pool/spend structural bindings, not their fields.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.meters.eligamount@1.0.0"
+    $semantics: { timestamp_precision: "s" }
+    $model: {
+      users: {
+        $key: "id"
+        id: "text"
+        topups: {
+          $key: "id"
+          id: "text"
+          amount: "decimal"
+        }
+        spends: {
+          $key: "id"
+          $consumes: "credits"
+          id: "uuid = uuid()"
+          amount: "decimal"
+          occurred_at: "timestamp = now()"
+        }
+        $limits: {
+          credits: {
+            $sources: { topup: ".topups { $quantity: .amount }" }
+            $eligible: "pool.$quantity >= spend.$amount"
+          }
+        }
+        $mut: {
+          consume: [
+            "spend = .spends + { amount: @amount }"
+            "return spend { id }"
+          ]
+        }
+      }
+      $public: {
+        wallet: { $mut: { consume: ".users[@user].consume" } }
+      }
+    }
+    $data: { users: { u1: { topups: { a: { amount: "50" }, b: { amount: "50" } } } } }
+  }
+
+  steps: [
+    // 40 <= 50: each pool alone covers it, so both are eligible; it admits (drains pool a).
+    { call: "public.wallet.consume", args: { user: "u1", amount: "40" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+    // 60 > 50: neither pool's $quantity covers it, so NO pool is eligible; rejected even
+    // though 10 + 50 = 60 remaining would otherwise suffice.
+    { call: "public.wallet.consume", args: { user: "u1", amount: "60" },
+      expect: { outcome: rejected, violates: ["#meters", "§15.2"],
+                detail: "no single eligible pool covers the spend amount" } }
+    // 10 <= 50: both pools eligible; the 10 left in pool a exactly absorbs it.
+    { call: "public.wallet.consume", args: { user: "u1", amount: "10" },
+      expect: { outcome: ok, value: { id: "$any:uuid" } } }
+  ]
+}

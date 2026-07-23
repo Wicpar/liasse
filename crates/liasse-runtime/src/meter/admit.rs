@@ -124,7 +124,8 @@ fn fund_spend(
             .at(address.render()));
         }
         let time = eval_time(ctx, prospective, &consume.time, &spend_cell, now)?;
-        let context = SpendContext { cell: spend_context_cell(ctx, prospective, &spend_row, consume, now)?, time };
+        let cell = spend_context_cell(ctx, prospective, &spend_row, consume, &amount, time, now)?;
+        let context = SpendContext { cell, time };
         fund_consume(ctx, meters, prospective, address, decl, consume, &amount, &context, &mut entries)?;
     }
 
@@ -251,13 +252,19 @@ fn decl_path(address: &RowAddress) -> Vec<String> {
     address.steps().map(|s| s.name().as_str().to_owned()).collect()
 }
 
-/// The `spend` binding cell for `$eligible` (§15.2): the materialized spend row
-/// with its config metadata folded in and `$amount`/`$time` structural cells.
+/// The `spend` binding cell for `$eligible` (§15.2/§15.6): the materialized spend
+/// row with its config metadata folded in and the evaluated `$amount`/`$time`
+/// structural cells `spend.$amount`/`spend.$time` read. `amount`/`time` are the
+/// exact values already resolved for this consume, so eligibility sees the spend's
+/// effective amount and time — not merely its raw `.amount`/`.occurred_at` fields,
+/// which a config `$amount`/`$time` override may diverge from.
 fn spend_context_cell(
     ctx: &EvalCtx<'_>,
     prospective: &Prospective,
     spend_row: &Row,
     consume: &SpendConsume,
+    amount: &BigDecimal,
+    time: Timestamp,
     now: Timestamp,
 ) -> Result<Cell, Rejection> {
     let mut cells: Vec<(String, Cell)> =
@@ -268,6 +275,8 @@ fn spend_context_cell(
         let value = expr.evaluate(&env, &base).map_err(Rejection::from)?;
         set_cell(&mut cells, name, value);
     }
+    set_cell(&mut cells, "$amount", Cell::Scalar(Value::Decimal(Decimal::from_big_decimal(amount.clone()))));
+    set_cell(&mut cells, "$time", Cell::Scalar(Value::Timestamp(time)));
     Ok(Cell::Row(Box::new(Row::new(spend_row.id().clone(), spend_row.key().clone(), cells))))
 }
 
