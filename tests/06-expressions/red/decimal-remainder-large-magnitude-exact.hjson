@@ -1,0 +1,50 @@
+{
+  format: 1
+  name: decimal-remainder-large-magnitude-exact
+  suite: scenario
+  spec: ["#expressions", "§6.1", "§A.6"]
+  tags: ["boundary", "decimal"]
+  note: '''Annex A.6 defines `%` for `decimal` as `a - trunc(a / b) * b` with the
+quotient truncated toward zero, giving the exact remainder and satisfying
+`(a / b)*b + (a % b) = a` — matching PostgreSQL `mod`, with NO magnitude caveat.
+The remainder is therefore always exact and lies in `[0, |b|)` for a positive
+dividend. Here a = 3*10^100 - 1 (the digit 2 followed by one hundred 9s) and
+b = 10^100 (1 followed by one hundred 0s). Since a = 2*b + (b - 1) and b - 1 < b,
+the exact remainder is b - 1 = 10^100 - 1, i.e. one hundred 9s. A conforming
+engine must return that. An implementation that first rounds the intermediate
+quotient a/b = 2.999...9 (one hundred 9s) to a bounded significant-digit
+precision rounds it UP to 3, then truncates to 3, and returns a - 3*b = -1 — a
+value that is not even in range. This case pins the exact-remainder guarantee.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.decmodbig@1.0.0"
+    $model: {
+      calc: {
+        $key: "id"
+        id: "text"
+        a: "decimal"
+        b: "decimal"
+        r: "= .a % .b"
+      }
+      $public: {
+        calc: { $view: ".calc { id, r }" }
+      }
+    }
+    $data: {
+      calc: {
+        big: {
+          a: "29999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999"
+          b: "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+        }
+      }
+    }
+  }
+
+  steps: [
+    // (3*10^100 - 1) % 10^100 = 10^100 - 1 = one hundred 9s (exact, in range).
+    { watch: "public.calc", id: "w1",
+      expect_init: { value: [ { id: "big",
+        r: "9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999" } ] } }
+  ]
+}

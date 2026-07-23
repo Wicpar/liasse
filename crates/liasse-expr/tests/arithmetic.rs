@@ -62,6 +62,37 @@ fn decimal_remainder_is_the_remainder_not_the_quotient() {
 }
 
 #[test]
+fn decimal_remainder_is_exact_at_large_magnitude() {
+    // A.6: `%` is the EXACT remainder `a - trunc(a/b)*b` for every magnitude,
+    // matching PostgreSQL `mod`; it must satisfy `(a/b)*b + (a%b) = a` and, for a
+    // positive dividend, lie in `[0, |b|)`. It must NOT be computed by truncating
+    // `a/b`: the `/` operator rounds the quotient to a bounded significant-digit
+    // precision, so a quotient one ulp below an integer (a long trailing run of
+    // 9s) rounds UP to the next integer and truncating it gives the wrong result.
+    //
+    // a = 3*10^100 - 1 = "2" then one hundred "9"; b = 10^100 = "1" then one
+    // hundred "0". a = 2*b + (b - 1) and b - 1 < b, so a % b = b - 1 = 10^100 - 1
+    // = one hundred "9" (derived by hand: 10^100 - 1). The intermediate quotient
+    // a/b = 2.999...9 (one hundred 9s) rounds up to 3 under `/`, so a
+    // truncate-the-quotient reading would wrongly yield a - 3*b = -1.
+    let a = format!("2{}", "9".repeat(100));
+    let b = format!("1{}", "0".repeat(100));
+    let expected = "9".repeat(100);
+    assert_eq!(run(&format!("{a}.0 % {b}.0")), vdec(&expected));
+    // Dividend sign is preserved (truncated division): -(3*10^100-1) % 10^100 =
+    // -(10^100 - 1) = negative one hundred "9".
+    assert_eq!(run(&format!("-{a}.0 % {b}.0")), vdec(&format!("-{expected}")));
+
+    // A smaller run (30 nines) that already exceeds the display scale but stays
+    // within the quotient's significant-digit budget, and a mixed-scale case.
+    let a30 = format!("2{}", "9".repeat(30));
+    let b30 = format!("1{}", "0".repeat(30));
+    assert_eq!(run(&format!("{a30}.0 % {b30}.0")), vdec(&"9".repeat(30)));
+    // 100.5 % 0.7: bc gives trunc(100.5/0.7)=143, 100.5 - 143*0.7 = 100.5 - 100.1.
+    assert_eq!(run("100.5 % 0.7"), vdec("0.4"));
+}
+
+#[test]
 fn decimal_add_sub_mul_are_exact() {
     // A.6: decimal +,-,* are exact — no binary-float drift.
     assert_eq!(run("0.1 + 0.2"), vdec("0.3"));

@@ -5,7 +5,7 @@
 use std::borrow::Cow;
 use std::cmp::Ordering;
 
-use liasse_value::bigdecimal::{BigDecimal, RoundingMode, Zero};
+use liasse_value::bigdecimal::{BigDecimal, Zero};
 use liasse_value::num_bigint::BigInt;
 use liasse_value::{Decimal, Integer, RefKey, Text, Value};
 
@@ -225,10 +225,21 @@ fn decimal_arith(op: ArithOp, left: &Value, right: &Value) -> Result<Value, Eval
 }
 
 /// Exact decimal remainder `a - trunc(a / b) * b`, with the quotient truncated
-/// toward zero so the remainder takes the dividend's sign (SPEC-ISSUES item 3).
+/// toward zero so the remainder takes the dividend's sign (A.6 / SPEC-ISSUES
+/// item 3).
+///
+/// This is `BigDecimal`'s `%`: it brings both mantissas to the common scale
+/// `max(a.scale, b.scale)`, takes the integer remainder (`BigInt` `%` truncates
+/// toward zero, so the sign follows the dividend), and rescales. That is exact
+/// for every magnitude. It must NOT be computed by truncating `a / b`: the `/`
+/// operator rounds the quotient to a bounded significant-digit precision, so a
+/// quotient one ulp below an integer (a long run of trailing 9s, e.g.
+/// `(3·10^100 − 1) / 10^100` = `2.999…9`) rounds UP to the next integer, and
+/// truncating that rounded value yields the wrong quotient and a remainder
+/// outside `[0, |b|)` — `(3·10^100 − 1) % 10^100` would be `−1` instead of
+/// `10^100 − 1`. `normalized()` renders the exact result minimal-scale (A.1).
 fn decimal_remainder(a: &BigDecimal, b: &BigDecimal) -> BigDecimal {
-    let quotient = (a / b).with_scale_round(0, RoundingMode::Down);
-    (a - quotient * b).normalized()
+    (a % b).normalized()
 }
 
 fn to_big_decimal(value: &Value) -> Result<BigDecimal, EvalError> {
