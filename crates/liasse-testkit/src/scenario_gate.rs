@@ -256,12 +256,14 @@ pub const SKIP: &[(&str, &str)] = &[
     // ========================================================================
     // --- load ---
     ("10-interfaces-roles/duplicate-membership-no-extra-authority", "package does not load yet (upstream compile/model gap)"),
-    // 11-auth session/host-verifier wiring is live (adapter/auth.rs); these
-    // residual cases need a seam the auth wiring does not reach: a role-scoped
-    // `$actor` view rendering, a scoped-role session mutation, or a session
-    // collection with no `expires`/bucket lower bound.
+    // 11-auth session/host-verifier wiring is live (adapter/auth.rs); this
+    // residual case needs a seam the auth wiring does not reach: a scoped-role
+    // inline `$mut` (`/sessions[$session.$key].revoke()`) reading the request-scoped
+    // `$session`, which the surface router does not bind. (The bucket-expiry
+    // reconstruction is now derived from the collection's `$bucket` `$until`, so a
+    // session with an explicit `$from` lower bound activates at its boundary —
+    // `session-not-yet-active-denied` passes and was pruned here.)
     ("11-auth-sessions/committed-request-final-after-revocation", "scoped-role session `revoke()` mutation not bound (denied)"),
-    ("11-auth-sessions/session-not-yet-active-denied", "session bucket lower-bound activation not observed at boundary"),
     // §14.5 bounded temporal read of an unbounded recurring source-backed bucket
     // now generates the series to the selector's own bound, so `.$at`/`.$between`
     // past the clock resolve; the rollover-at-boundary, future-spanning window, and

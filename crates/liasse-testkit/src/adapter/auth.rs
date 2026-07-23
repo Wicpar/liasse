@@ -534,7 +534,8 @@ impl SessionFields {
 
 /// The §11.2 session field roles of collection `name`, read from the raw model:
 /// its key, the account reference (the `$session.<field>` named by `actor_expr`,
-/// else the sole `$ref` field), and the timestamp/bool lifetime fields by type.
+/// else the sole `$ref` field), the bucket-derived expiry field, and the bool
+/// revocation field.
 fn session_fields(model: &J, name: &str, actor_expr: &str) -> Option<SessionFields> {
     let key = collection_key(model, name)?;
     let members = model.get(name)?.as_object()?;
@@ -544,9 +545,42 @@ fn session_fields(model: &J, name: &str, actor_expr: &str) -> Option<SessionFiel
     Some(SessionFields {
         key,
         account,
-        expires: typed_field(members, "timestamp"),
+        expires: session_expires_field(model, name, members),
         revoked: typed_field(members, "bool"),
     })
+}
+
+/// The session's expiry field — the collection's `$bucket` upper bound `$until`
+/// (§14.1/§14.2), the instant the row leaves the active interval and the session
+/// ceases to authenticate (§11.7). The lower bound `$from` is enforced by the
+/// engine's bucketed read of the session view (a bare `.sessions` read yields only
+/// rows active at the clock, §14.1), so the authenticator re-checks only the upper
+/// bound here. This must be read from the bucket, not guessed as the first
+/// timestamp member: a collection declaring an explicit `$from` before its
+/// `$until` (`starts_at` then `expires_at`) would otherwise mis-select the lower
+/// bound as the expiry and deny a session at its own activation instant. A
+/// `$bucket` with no `$until` is unbounded above (a perpetual session, `None`); a
+/// session collection with no `$bucket` falls back to its sole timestamp field.
+fn session_expires_field(model: &J, name: &str, members: &serde_json::Map<String, J>) -> Option<String> {
+    match model.get(name).and_then(|collection| collection.get("$bucket")) {
+        Some(bucket) => bucket_until_field(bucket).filter(|field| members.contains_key(field.as_str())),
+        None => typed_field(members, "timestamp"),
+    }
+}
+
+/// The field a `$bucket`'s upper bound `$until` reads (§14.1/§14.2): the short form
+/// `"$bucket": ".expires_at"` *is* the `$until` expression; the explicit object
+/// form reads its `$until` member. Either bound is a `.field` navigation over the
+/// row, so the leading `.` is stripped to the field name. A source-backed or
+/// non-`.field` bound, or an object with no `$until`, yields `None`.
+fn bucket_until_field(bucket: &J) -> Option<String> {
+    let until = match bucket {
+        J::String(short) => short.as_str(),
+        J::Object(_) => bucket.get("$until").and_then(J::as_str)?,
+        _ => return None,
+    };
+    let field = until.trim().strip_prefix('.')?.trim();
+    is_identifier(field).then(|| field.to_owned())
 }
 
 /// The member named by a `$actor` selection's `$session.<field>` account key
