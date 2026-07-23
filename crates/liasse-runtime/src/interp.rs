@@ -702,8 +702,22 @@ impl<'a> Interp<'a> {
     }
 
     fn mark(&mut self, address: RowAddress) {
-        if !self.touched.contains(&address) {
-            self.touched.push(address);
+        if self.touched.contains(&address) {
+            return;
+        }
+        self.touched.push(address.clone());
+        // §22.1/§5.10/§5.5: touching a nested row may move an ANCESTOR row's aggregate
+        // over its child collection — a row/struct `$check` such as `count(.offices)
+        // >= 1` (§5.10), a computed value, a uniqueness scope. Those are state
+        // constraints that "hold in every committed state", so re-validating only the
+        // touched row is not enough: every surviving ancestor must re-enter `finalize`
+        // too. Walk up the parent chain marking each live ancestor. A top-level row has
+        // no parent row and ends the walk; an ancestor that is itself being removed is
+        // skipped (finalize reads the prospective state, so a gone ancestor is inert).
+        if let Some(parent) = parent_row(&address)
+            && self.prospective.contains(&parent)
+        {
+            self.mark(parent);
         }
     }
 
@@ -1449,6 +1463,15 @@ impl<'a> Interp<'a> {
             self.prospective.remove(&descendant);
         }
         self.prospective.remove(address);
+        // §22.1/§5.10/§5.5: the removed child is gone (never marked), but its removal
+        // changed the parent's nested-collection aggregate, so re-validate the
+        // surviving parent's state constraints. `mark` walks the rest of the ancestor
+        // chain from there; a top-level removal has no parent row and marks nothing.
+        if let Some(parent) = parent_row(address)
+            && self.prospective.contains(&parent)
+        {
+            self.mark(parent);
+        }
     }
 
     /// `-selection` (§8): delete every row a selector picks. The operand is a
@@ -2016,6 +2039,22 @@ fn selection_collection(operand: &Expr) -> &Expr {
 fn is_prefix(prefix: &RowAddress, address: &RowAddress) -> bool {
     let mut steps = address.steps();
     prefix.steps().all(|step| steps.next() == Some(step))
+}
+
+/// The PARENT ROW address of a nested row (§5.4): its address with the final
+/// collection step dropped. A top-level row (depth 1) has no parent row and yields
+/// `None`. Used to re-validate a surviving parent's state constraints after a nested
+/// child is removed (§22.1/§5.10).
+fn parent_row(address: &RowAddress) -> Option<RowAddress> {
+    let mut steps = address.steps().cloned();
+    let first = steps.next()?;
+    let rest: Vec<liasse_store::AddressStep> = steps.collect();
+    let (_, ancestors) = rest.split_last()?;
+    let mut parent = RowAddress::root(first);
+    for step in ancestors {
+        parent = parent.child(step.clone());
+    }
+    Some(parent)
 }
 
 /// Rewrite every inbound reference into top-level collection `target` whose key

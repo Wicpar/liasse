@@ -1,0 +1,88 @@
+{
+  format: 1
+  name: nested-membership-change-revalidates-parent-check
+  suite: scenario
+  spec: ["#state-model", "§5.5", "§5.10", "#runtime", "§22.1"]
+  tags: ["atomicity"]
+  note: '''§22.1 lists field and row checks among the state constraints that "hold in
+every committed state"; §5.10 lets a row `$check` read the row's own nested child
+collection (`count(.offices)`). Changing a nested collection's membership — a nested
+`collection - key` delete OR a nested `collection + { … }` insert — moves that
+aggregate, so the PARENT row check MUST be re-evaluated before the transition commits.
+A naive engine re-validates only the directly-mutated (child) row and never re-checks
+the parent, silently committing a state that breaks the parent check. Both directions
+are pinned here: deleting the last office (count 0 < 1) and adding a third office
+(count 3 > 2) each reject, and the pre-transition state remains; the two controls
+(2 offices, then back to 1) stay within bounds and commit.'''
+
+  package: {
+    $liasse: 1
+    $app: "t.nestedparentcheck@1.0.0"
+    $model: {
+      companies: {
+        $key: "cid"
+        cid: "text"
+        $check: [
+          ["count(.offices) >= 1", "a company keeps at least one office"]
+          ["count(.offices) <= 2", "a company holds at most two offices"]
+        ]
+        offices: {
+          $key: "oid"
+          oid: "text"
+        }
+      }
+      $public: {
+        companies: {
+          $view: ".companies { cid, offices, $sort: [cid] }"
+          $mut: {
+            add_office: ".companies[@cid].offices + { oid: @oid }"
+            delete_office: ".companies[@cid].offices - @oid"
+          }
+        }
+      }
+    }
+    $data: {
+      companies: {
+        acme: { offices: { paris: {} } }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.companies", id: "w1", expect_init: { value: [
+      { cid: "acme", offices: [ { oid: "paris" } ] }
+    ] } }
+
+    // DELETE re-validation: removing the only office leaves count(.offices) == 0,
+    // breaking the lower-bound row check -> the whole transition must reject.
+    { call: "public.companies.delete_office", args: { cid: "acme", oid: "paris" },
+      expect: { outcome: rejected, violates: ["§5.10", "§22.1"],
+                detail: "a company keeps at least one office" } }
+    { expect_view: { watch: "w1", value: [
+      { cid: "acme", offices: [ { oid: "paris" } ] }
+    ] } }
+
+    // control: a second office keeps count within [1, 2] and commits.
+    { call: "public.companies.add_office", args: { cid: "acme", oid: "lyon" },
+      expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [
+      { cid: "acme", offices: { $unordered: [ { oid: "lyon" }, { oid: "paris" } ] } }
+    ] } }
+
+    // INSERT re-validation (symmetric): a third office makes count(.offices) == 3,
+    // breaking the upper-bound row check -> the whole transition must reject.
+    { call: "public.companies.add_office", args: { cid: "acme", oid: "berlin" },
+      expect: { outcome: rejected, violates: ["§5.10", "§22.1"],
+                detail: "a company holds at most two offices" } }
+    { expect_view: { watch: "w1", value: [
+      { cid: "acme", offices: { $unordered: [ { oid: "lyon" }, { oid: "paris" } ] } }
+    ] } }
+
+    // control: deleting one of the two offices returns count to 1 and commits.
+    { call: "public.companies.delete_office", args: { cid: "acme", oid: "lyon" },
+      expect: { outcome: ok } }
+    { expect_view: { watch: "w1", value: [
+      { cid: "acme", offices: [ { oid: "paris" } ] }
+    ] } }
+  ]
+}
