@@ -2,7 +2,7 @@
   format: 1
   name: surplus-copy-after-policy-shrinks
   suite: scenario
-  spec: ["#blobs", "§18.4", "§18.5"]
+  spec: ["#blobs", "§18.4", "§18.5", "#expressions", "§6.3", "#clients", "§12.2"]
   tags: ["blob", "placement", "surplus", "lifecycle"]
   note: '''
     §18.5: "$stored contains verified stores. $satisfied evaluates the placement
@@ -16,6 +16,10 @@
     present), and the now-unrequired copy in `b` appears in $surplus. This is the
     orphaned/surplus observation §18.5 defines; whether a reconciler later drains
     it is grace-gated (§18.6 step 5) and not asserted here.
+    §6.3/Annex C.6: `.docs[@id]` is a collection selector yielding a ROW VIEW
+    (one row for a present scalar key); §12.2 delivers that view result as
+    `init(frontier, rows)`, an array — the single selected row is the
+    one-element array in each assertion below, not a bare object.
   '''
 
   package: {
@@ -87,21 +91,21 @@
       expect: { outcome: ok, value: { id: "d1" } } }
     // Both enabled stores required and verified: nothing surplus yet.
     { watch: "public.docs", args: { id: "d1" }, on: "c1", id: "w1",
-      expect_init: { value: {
+      expect_init: { value: [ {
         id: "d1"
         stored: { $unordered: [ { id: "a" }, { id: "b" } ] }
         satisfied: true
         surplus: { $unordered: [] }
-      } } }
+      } ] } }
     // Shrink the policy: disable b. No bytes move; b's verified copy is now
     // outside the required policy, hence surplus. a alone still satisfies.
     { call: "public.stores.set_enabled", args: { id: "b", enabled: false }, on: "c1",
       expect: { outcome: ok, value: { id: "b", enabled: false } } }
-    { expect_view: { watch: "w1", value: {
+    { expect_view: { watch: "w1", value: [ {
         id: "d1"
         stored: { $unordered: [ { id: "a" }, { id: "b" } ] }
         satisfied: true
         surplus: { $unordered: [ { id: "b" } ] }
-    } } }
+    } ] } }
   ]
 }

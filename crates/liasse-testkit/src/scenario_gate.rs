@@ -302,15 +302,35 @@ pub const SKIP: &[(&str, &str)] = &[
     // compiles and serves (adapter/surface_params.rs reconstructs its `$params`),
     // and the §18.5 placement facts are recorded into the engine before a placement
     // member is read (adapter/blobs.rs + runtime.rs, §18.5). The residuals below are
-    // an aggregate-over-projected-member type-check gap, a background reconciler
-    // step, or the §12.2 keyed-selection surface-view result shape — none of them
-    // the record-placement seam.
+    // an aggregate-over-projected-member type-check gap or a background reconciler
+    // step — neither the record-placement seam.
+    //
+    // The §12.2 keyed-selection surface-view shape is CLOSED as a corpus bug: a
+    // keyed-selection view `.docs[@id] { … }` is a §6.3/Annex C.6 collection
+    // *selector*, so it yields a ROW VIEW (zero-or-one rows for a scalar key),
+    // which §12.2 delivers as `init(frontier, rows)` — an array, NOT a single
+    // object (the runtime/adapter is spec-correct, matching `06-expressions/
+    // selector-scalar-key-zero-or-one-row` and `adapter_view_shape`). Four blob
+    // cases wrongly expected a bare object; their expectations were corrected to
+    // the one-element array. Two (`metadata-only-projection-grants-no-fetch`,
+    // `placement-observations-single-store`) now pass and were un-skipped. The two
+    // below still fail for a DISTINCT, previously-masked seam (not view-shape).
     ("18-blobs/billing-sum-over-stored-descriptors", "§18.11 the billing view `sum(.uploads[:u | /stores['primary'] in u.file.$stored].file.$bytes)` does not type-check — the aggregate-over-projected-member seam (`in`/`sum` over the projected `.file.$stored`/`.file.$bytes` placement member), so the package does not load"),
     ("18-blobs/corrupt-copy-demoted-and-repaired", "the placement view now resolves and steps 0–2 pass; the residual is the `run_reconciler` step (a background reconciler loop over retained lineages that demotes and repairs a corrupt copy), which the single-step `reconcile`/`apply_correction` verbs do not model — the run_reconciler seam"),
-    ("18-blobs/descriptor-metadata-readable-in-view", "§12.2 keyed-selection surface view (`.docs[@id] { … }`) delivers a row array, but the case expects a single object — a runtime/corpus view-shape tension, not a driving gap"),
-    ("18-blobs/metadata-only-projection-grants-no-fetch", "§12.2 keyed-selection surface view delivers a row array, but the case's metadata watch expects a single object — a runtime/corpus view-shape tension reached before the `blob_get` gate"),
-    ("18-blobs/placement-observations-single-store", "the §18.5 placement facts are recorded and the placement members resolve, but the keyed-selection surface view (`.docs[@id] { … }`) delivers a §12.2 row array while the case expects a single object — the same view-shape tension as `descriptor-metadata-readable-in-view` (and in conflict with `06-expressions/selector-scalar-key-zero-or-one-row`, which expects the array form); a view-shape seam, not the record-placement seam"),
-    ("18-blobs/surplus-copy-after-policy-shrinks", "the §18.5 placement facts are recorded and re-recorded on the store `enabled` shrink (adapter refresh), but the keyed-selection placement view (`.docs[@id] { … }`) delivers a §12.2 row array while the case expects a single object — the same view-shape seam as `placement-observations-single-store`, not the record-placement seam"),
+    // view-shape corpus bug FIXED (array form, §6.3/§12.2); this case's residual is
+    // the declared-`$name` descriptor-binding seam (same family as
+    // `same-content-different-metadata-distinct-descriptors`): the honest blob
+    // parameter drops the declared `$name`, so the projected `name: .file.$name`
+    // member is absent from the (now correctly-array) row.
+    ("18-blobs/descriptor-metadata-readable-in-view", "view-shape corpus error fixed (`.docs[@id] { … }` now expects the §6.3/§12.2 one-row array); residual is the declared-`$name` descriptor-binding seam — the honest blob parameter drops `$name`, so `name: .file.$name` is absent from the row (same seam as `same-content-different-metadata-distinct-descriptors`)"),
+    // view-shape corpus bug FIXED (array form, §6.3/§12.2); this case's residual,
+    // previously masked by the step-2 view-shape failure, is a §8.4/§8.5 bound-patch
+    // admission seam: the `set_enabled` mutation `s = .stores[@id] { enabled = @enabled }`
+    // BINDS a patch result to a local and is admission-rejected, whereas the direct
+    // patch statement `.stores[@id] { enabled = @enabled }` (no local bind) is
+    // admitted — isolated by probe (bind vs. no-bind is the discriminator, not the
+    // param key). Not the view-shape seam; distinct §8 bound-patch investigation.
+    ("18-blobs/surplus-copy-after-policy-shrinks", "view-shape corpus error fixed (`.docs[@id] { … }` now expects the §6.3/§12.2 one-row array); residual (previously masked) is a §8.4/§8.5 bound-patch seam — `s = .stores[@id] { enabled = @enabled }` binding a patch result to a local is admission-rejected while the direct patch statement is admitted (isolated by probe: bind vs no-bind, not the param key)"),
     ("annex-d-identity/ref-wire-value-is-current-typed-key", "package does not load yet (upstream compile/model gap)"),
     ("w-worked-examples/w2-cross-account-session-revoke-has-no-owner-check", "package does not load yet (upstream compile/model gap)"),
     ("w-worked-examples/w2-disabled-account-fails-actor-check", "package does not load yet (upstream compile/model gap)"),

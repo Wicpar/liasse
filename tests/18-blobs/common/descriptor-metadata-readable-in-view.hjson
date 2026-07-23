@@ -2,13 +2,17 @@
   format: 1
   name: descriptor-metadata-readable-in-view
   suite: scenario
-  spec: ["#blobs", "§18.1", "§18.5"]
+  spec: ["#blobs", "§18.1", "§18.5", "#expressions", "§6.3", "#clients", "§12.2"]
   tags: ["blob"]
   note: '''
     §18.1/§18.5: "Expressions read descriptor metadata and placement state."
     A view projects the descriptor's $bytes (a non-negative integer byte
     count, §18.1), $media, and optional $name of a committed blob. The staged
     content "hello" is 5 UTF-8 bytes, declared media text/plain, name a.txt.
+    §6.3/Annex C.6: `.docs[@id]` is a collection selector, so it yields a ROW
+    VIEW (a scalar key contributes one row when present); §12.2 delivers that
+    view result as `init(frontier, rows)`, an array. The single selected row
+    is therefore the one-element array below, not a bare object.
   '''
 
   package: {
@@ -67,6 +71,6 @@
       }
       expect: { outcome: ok, value: { id: "d1" } } }
     { watch: "public.docs", args: { id: "d1" }, on: "c1", id: "w1",
-      expect_init: { value: { id: "d1", bytes: 5, media: "text/plain", name: "a.txt" } } }
+      expect_init: { value: [ { id: "d1", bytes: 5, media: "text/plain", name: "a.txt" } ] } }
   ]
 }

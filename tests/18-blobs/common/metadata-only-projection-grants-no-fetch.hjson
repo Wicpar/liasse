@@ -2,13 +2,17 @@
   format: 1
   name: metadata-only-projection-grants-no-fetch
   suite: scenario
-  spec: ["#blobs", "§18.8"]
+  spec: ["#blobs", "§18.8", "#expressions", "§6.3", "#clients", "§12.2"]
   tags: ["blob", "fetch", "authz"]
   note: '''
     §18.8: "A projection exposing only selected metadata grants that metadata
     and no blob fetch." The surface projects only $bytes and $media, never the
     blob value itself, so a fetch attempt over that surface is denied even
     though the metadata is visible.
+    §6.3/Annex C.6: `.docs[@id]` is a collection selector, so it yields a ROW
+    VIEW (one row for a present scalar key); §12.2 delivers that view result as
+    `init(frontier, rows)`, an array — the single selected row is the
+    one-element array below, not a bare object.
   '''
 
   package: {
@@ -67,7 +71,7 @@
       expect: { outcome: ok, value: { id: "d1" } } }
     // Metadata is visible...
     { watch: "public.docs", args: { id: "d1" }, on: "c1", id: "w1",
-      expect_init: { value: { id: "d1", bytes: 12, media: "text/plain" } } }
+      expect_init: { value: [ { id: "d1", bytes: 12, media: "text/plain" } ] } }
     // ...but the projection carries no blob value, so no fetch is granted.
     { blob_get: {
         surface: "public.docs"

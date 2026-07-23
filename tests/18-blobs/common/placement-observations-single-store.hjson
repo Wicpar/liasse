@@ -2,13 +2,17 @@
   format: 1
   name: placement-observations-single-store
   suite: scenario
-  spec: ["#blobs", "§18.5"]
+  spec: ["#blobs", "§18.5", "#expressions", "§6.3", "#clients", "§12.2"]
   tags: ["blob", "placement"]
   note: '''
     §18.5: "$stored contains verified stores. $satisfied evaluates the
     placement policy over them. $surplus contains verified copies outside the
     currently required policy." With a single-store $in policy and one verified
     copy, $stored is {primary}, $satisfied is true, and $surplus is empty.
+    §6.3/Annex C.6: `.docs[@id]` is a collection selector yielding a ROW VIEW
+    (one row for a present scalar key); §12.2 delivers that view result as
+    `init(frontier, rows)`, an array — the single selected row is the
+    one-element array below, not a bare object.
   '''
 
   package: {
@@ -66,11 +70,11 @@
       }
       expect: { outcome: ok, value: { id: "d1" } } }
     { watch: "public.docs", args: { id: "d1" }, on: "c1", id: "w1",
-      expect_init: { value: {
+      expect_init: { value: [ {
         id: "d1"
         stored: { $unordered: [ { id: "primary" } ] }
         satisfied: true
         surplus: { $unordered: [] }
-      } } }
+      } ] } }
   ]
 }
