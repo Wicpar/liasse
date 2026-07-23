@@ -1,0 +1,78 @@
+{
+  format: 1
+  name: finite-bound-clips-before-reject-boundary
+  suite: scenario
+  spec: ["#buckets", "§14.1", "§14.5", "§14.7", "§A.4"]
+  tags: ["calendar", "recurrence", "boundary", "overflow"]
+  note: "Complement of red/overflow-reject-detection-timing. There the finite series bound (Mar 31) lies PAST the missing b1 = Feb 31, so the reject boundary is a genuine interval endpoint WITHIN the enumerable series and admission rejects. Here the bound (Feb 15) clips the series BEFORE b1: a monthly overflow: reject subscription anchored on 2026-01-31 with ends_at 2026-02-15 produces b1 = 'Feb 31' (absent from February; its clamped position Feb 28 is past the Feb 15 bound). §14.5 clips the final interval to $until = series-until, so the single interval is [Jan 31, Feb 15) and b1 is never an interval endpoint — it is NOT 'within the enumerable series' (§14.5/§14.7). Admission MUST therefore accept the subscription (the missing boundary lies past the committed bound, exactly the case §14.7 keeps out of eager rejection), and a temporal read MUST return the one clipped interval. The runtime over-rejected because recurring_intervals (crates/liasse-value/src/recur.rs) computed b1 with `?` before testing whether it clips past the bound, propagating CalendarOverflowRejected for a boundary that no generated interval ever reaches."
+
+  package: {
+    $liasse: 1
+    $app: "t.b14.clipbeforereject@1.0.0"
+    $model: {
+      plans: {
+        $key: "id"
+        id: "text"
+        credits: "decimal"
+        period: "period?"
+      }
+      subscriptions: {
+        $key: "id"
+        id: "text"
+        plan: { $ref: "/plans" }
+        starts_at: "timestamp"
+        ends_at: "timestamp?"
+      }
+      credit_periods: {
+        $bucket: {
+          $source: ".subscriptions"
+          $from: "$source.starts_at"
+          $until: "$source.ends_at"
+          $repeat: "/plans[$source.plan].period"
+        }
+        credits: "= /plans[$source.plan].credits"
+      }
+      $public: {
+        periods: {
+          $params: { a: "timestamp", b: "timestamp" }
+          $view: '.credit_periods.$between(@a, @b) { index: $index, from: $from, until: $until, $sort: ["from"] }'
+        }
+        subs: {
+          $mut: {
+            add: [
+              "s = .subscriptions + { id: @id, plan: @plan, starts_at: @starts_at, ends_at: @ends_at }"
+              "return s { id }"
+            ]
+          }
+        }
+      }
+    }
+    $data: {
+      plans: {
+        // months:1, reject when the destination day is missing
+        strict_monthly: { credits: "100", period: { months: 1, zone: "UTC", overflow: "reject" } }
+      }
+    }
+  }
+
+  steps: [
+    // starts_at 2026-01-31T00:00:00Z, ends_at 2026-02-15T00:00:00Z. b1 = "Feb 31"
+    // is missing, but its position is past the Feb 15 bound, so the finite series
+    // is one clipped interval [Jan 31, Feb 15) and the missing boundary is never
+    // enumerated. §14.5/§14.7: admission MUST accept — the reject boundary lies
+    // outside the enumerable series [Jan 31, Feb 15).
+    { call: "public.subs.add"
+      args: { id: "s1", plan: "strict_monthly", starts_at: "1769817600000000", ends_at: "1771113600000000" }
+      expect: { outcome: ok, value: { id: "s1" } } }
+
+    // window [2026-01-01, 2026-03-01) intersects the clipped interval; §14.1 returns it.
+    { watch: "public.periods"
+      args: { a: "1767225600000000", b: "1772323200000000" }
+      id: "w1"
+      expect_init: {
+        value: [
+          { index: "0", from: "1769817600000000", until: "1771113600000000" }
+        ]
+      } }
+  ]
+}

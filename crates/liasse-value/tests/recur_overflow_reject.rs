@@ -24,7 +24,7 @@
 //! from February. Under `clamp` this yields 2025-02-28; under `reject` the boundary
 //! computation MUST fail.
 
-#![allow(clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 
 use liasse_value::{
     recurring_intervals, CalendarPeriodBuilder, Overflow, Period, Precision, Timestamp,
@@ -111,5 +111,53 @@ fn recurring_series_rejects_when_a_boundary_is_missing() {
         series.is_err(),
         "A.4/§14.5: a reject-policy series crossing the missing 'Feb 31' boundary \
          MUST fail generation, not emit clamped intervals; got {series:?}",
+    );
+}
+
+// 2025-02-15T00:00:00Z: a finite series bound that clips BEFORE the missing b1 = Feb 31.
+const FEB15: i128 = 1_739_577_600;
+
+/// §14.5/§14.7: a finite series bound that clips the last interval BEFORE the first
+/// missing boundary is admitted, because the missing boundary is not "within the
+/// enumerable series". The series `[Jan 31, Feb 15)` monthly `overflow: reject` has
+/// b1 = "Feb 31" (missing), whose clamped position Feb 28 is at or after the bound
+/// Feb 15 — so b1 is clipped away and never an interval endpoint. Enumeration yields
+/// exactly one interval `[Jan 31, Feb 15)`; it MUST NOT fail on the clipped-away
+/// missing boundary. (Contrast `recurring_series_rejects_when_a_boundary_is_missing`,
+/// where the bound is past b1 so the missing boundary is a real endpoint.)
+#[test]
+fn finite_bound_clipping_before_missing_boundary_is_admitted() {
+    let series = recurring_intervals(
+        secs(JAN31),
+        Some(secs(FEB15)),
+        Some(&monthly(Overflow::Reject)),
+        secs(FEB15),
+    )
+    .expect("a finite bound that clips before the missing b1 must generate, not reject");
+    let got: Vec<_> = series.iter().map(|i| (i.index, i.from, i.until)).collect();
+    assert_eq!(
+        got,
+        vec![(0, secs(JAN31), Some(secs(FEB15)))],
+        "the clipped final interval [Jan 31, Feb 15) is included; the missing 'Feb 31' \
+         boundary lies past the bound and takes no part",
+    );
+}
+
+/// The complement of the case above: a finite bound PAST the first missing boundary
+/// leaves that boundary strictly inside the enumerable series, so it is a genuine
+/// interval endpoint and generation MUST reject (§14.7). Series `[Jan 31, Mar 31)`
+/// monthly `overflow: reject`: b1 = "Feb 31" (missing) sits well inside the series.
+#[test]
+fn finite_bound_past_missing_interior_boundary_rejects() {
+    let series = recurring_intervals(
+        secs(JAN31),
+        Some(secs(MAR31)),
+        Some(&monthly(Overflow::Reject)),
+        secs(MAR31),
+    );
+    assert!(
+        series.is_err(),
+        "a missing boundary strictly inside a finite series is a real endpoint and \
+         MUST fail generation; got {series:?}",
     );
 }

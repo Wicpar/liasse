@@ -73,15 +73,53 @@ impl Period {
             Self::Calendar(calendar) => advance_calendar(calendar, anchor, steps),
         }
     }
+
+    /// The recurrence boundary `steps` after `anchor` for the interval-series
+    /// generator: the CLAMPED boundary, plus whether that boundary would be rejected
+    /// under this period's own `overflow: reject` policy (its destination day is
+    /// absent from its month, §14.7/A.4). A fixed period never overflows a calendar
+    /// date, so it never "would reject".
+    ///
+    /// Distinct from [`Period::advance_from`], which collapses a would-reject boundary
+    /// into the error and returns no instant. [`recurring_intervals`] instead needs
+    /// the clamped position to decide whether a missing boundary lies WITHIN a finite
+    /// series or is clipped away past its `$until` bound (§14.5): a boundary at or
+    /// after the bound is never an interval endpoint, so its overflow must not fail
+    /// admission — only a missing boundary strictly inside the series does.
+    fn advance_reporting(&self, anchor: Timestamp, steps: i64) -> Result<(Timestamp, bool), ValueError> {
+        match self {
+            Self::Fixed(_) => Ok((self.advance_from(anchor, steps)?, false)),
+            Self::Calendar(calendar) => advance_calendar_checked(calendar, anchor, steps),
+        }
+    }
 }
 
 /// Advance `anchor` by `steps` calendar periods through `jiff`'s zoned arithmetic,
-/// scaling every magnitude by `steps` so the shift is anchored (Annex A.4).
+/// scaling every magnitude by `steps` so the shift is anchored (Annex A.4). A
+/// boundary landing on a day absent from its destination month under
+/// `overflow: reject` fails; every other case yields the clamped instant.
 fn advance_calendar(
     calendar: &CalendarPeriod,
     anchor: Timestamp,
     steps: i64,
 ) -> Result<Timestamp, ValueError> {
+    let (boundary, would_reject) = advance_calendar_checked(calendar, anchor, steps)?;
+    if would_reject {
+        return Err(ValueError::CalendarOverflowRejected);
+    }
+    Ok(boundary)
+}
+
+/// Advance `anchor` by `steps` calendar periods, returning the CLAMPED boundary
+/// together with whether it would be rejected under the period's `overflow: reject`
+/// policy (§14.7/A.4). The clamped instant is returned regardless of policy so the
+/// series generator can position a would-be-rejected boundary for the §14.5
+/// within-series clip test; [`advance_calendar`] turns the flag back into the error.
+fn advance_calendar_checked(
+    calendar: &CalendarPeriod,
+    anchor: Timestamp,
+    steps: i64,
+) -> Result<(Timestamp, bool), ValueError> {
     let per_tick = nanos_per_tick(anchor.precision());
     let nanos = anchor
         .count()
@@ -106,10 +144,11 @@ fn advance_calendar(
     // The sibling zone-resolution policies (`ambiguous`/`missing`) would hook in at
     // this same site, but a build without a time-zone database never resolves a named
     // IANA zone (`resolve_zone` errors first), so their branches are unreachable here.
-    let overflow = calendar.policies().0;
-    if overflow == Overflow::Reject && calendar_day_is_missing(zoned.date(), years, months)? {
-        return Err(ValueError::CalendarOverflowRejected);
-    }
+    // The caller decides what a would-reject boundary means (fail, or — past a finite
+    // series bound — clip away, §14.5); here we only report it alongside the clamped
+    // instant, which is computed unconditionally below.
+    let would_reject = calendar.policies().0 == Overflow::Reject
+        && calendar_day_is_missing(zoned.date(), years, months)?;
 
     // `overflow: clamp` (§14.7) is jiff's default day handling: a calendar step
     // whose destination day is absent lands on the last valid day of the month.
@@ -138,7 +177,7 @@ fn advance_calendar(
         .checked_add(time_total)
         .ok_or(ValueError::PeriodOutOfRange)?;
     let count = result_nanos.div_euclid(per_tick);
-    Ok(Timestamp::new(count, anchor.precision()))
+    Ok((Timestamp::new(count, anchor.precision()), would_reject))
 }
 
 /// Whether a scaled year/month calendar shift from `anchor` lands on a day-of-month
@@ -206,6 +245,15 @@ const SERIES_CAP: usize = 200_000;
 /// Rejects a finite `series_until` at or before `from`, and a `repeat` that fails
 /// to advance strictly from a boundary (a zero, negative, or otherwise
 /// non-advancing period).
+///
+/// Under a calendar `overflow: reject` `repeat`, a boundary landing on a missing
+/// calendar date rejects only when it lies WITHIN the enumerable series (§14.5/§14.7):
+/// a finite `series_until` clips its last interval to the bound, so a missing boundary
+/// at or after the bound is never an interval endpoint and does not fail generation —
+/// only a missing boundary strictly inside `[from, series_until)` does. An unbounded
+/// series clips nothing, so a missing boundary that closes an in-horizon interval
+/// rejects. This mirrors the horizon rule: a reject boundary outside the enumerated
+/// window is never surfaced.
 pub fn recurring_intervals(
     from: Timestamp,
     series_until: Option<Timestamp>,
@@ -229,28 +277,47 @@ pub fn recurring_intervals(
         // Annex A.4: boundary `i+1` is the anchor advanced by `(i+1) × period`,
         // computed from `from` rather than from the prior (possibly clamped)
         // `boundary`, so end-of-month anchors are preserved across the series.
-        let next = repeat.advance_from(from, index + 1)?;
-        if next <= boundary {
-            return Err(ValueError::NonAdvancingPeriod);
-        }
+        // `would_reject` flags a boundary landing on a calendar date absent from its
+        // destination month under `overflow: reject`; `next` is then that boundary's
+        // CLAMPED position, used only to place it against a finite `series_until`.
+        let (next, would_reject) = repeat.advance_reporting(from, index + 1)?;
         match series_until {
             Some(bound) => {
-                // §14.5: `$until = min(bi+1, series-until)`; a clipped final interval
-                // is included when its start is below its end.
-                let until = if next < bound { next } else { bound };
-                intervals.push(Interval { index, from: boundary, until: Some(until) });
+                // §14.5/§14.7: the final interval is CLIPPED to the series bound, so a
+                // boundary at or after `bound` is never an interval endpoint and is not
+                // "within the enumerable series". Clip to `bound` and stop — even when
+                // this clipped-away boundary would overflow under `overflow: reject`:
+                // that missing date lies outside [from, bound) and must not fail
+                // admission. `next >= bound > boundary`, so the clipped interval is
+                // non-empty. A missing `reject` boundary strictly inside [from, bound)
+                // is a genuine endpoint and rejects the transition (checked below).
                 if next >= bound {
+                    intervals.push(Interval { index, from: boundary, until: Some(bound) });
                     break;
                 }
+                if would_reject {
+                    return Err(ValueError::CalendarOverflowRejected);
+                }
+                if next <= boundary {
+                    return Err(ValueError::NonAdvancingPeriod);
+                }
+                intervals.push(Interval { index, from: boundary, until: Some(next) });
             }
             None => {
                 // §14.5: an unbounded series generates indefinitely; each period has a
-                // finite `$until` from its next boundary. `horizon` is the exclusive
-                // upper bound on interval starts: stop as soon as a boundary REACHES it,
-                // so the boundary closing the last in-window interval is computed but the
-                // following one — a start at or past the horizon, and possibly a §A.4
-                // `reject` outside the window — is not. Mirrors the bounded branch's
-                // `next >= bound`.
+                // finite `$until` from its next boundary. Intervals are NOT clipped, so
+                // a would-reject boundary that closes an in-horizon interval is a real
+                // endpoint and rejects (caught the moment a selector enumerates it).
+                if would_reject {
+                    return Err(ValueError::CalendarOverflowRejected);
+                }
+                if next <= boundary {
+                    return Err(ValueError::NonAdvancingPeriod);
+                }
+                // `horizon` is the exclusive upper bound on interval starts: stop as soon
+                // as a boundary REACHES it, so the boundary closing the last in-window
+                // interval is computed but the following one — a start at or past the
+                // horizon, and possibly a §A.4 `reject` outside the window — is not.
                 intervals.push(Interval { index, from: boundary, until: Some(next) });
                 if next >= horizon {
                     break;
