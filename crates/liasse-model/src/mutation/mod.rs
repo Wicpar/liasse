@@ -15,6 +15,7 @@
 //! mis-rejected.
 
 mod helpers;
+mod host_args;
 
 use liasse_diag::{ByteSpan, SourceId, SourceMap};
 use liasse_expr::{check_statement, ExprType, RowType};
@@ -32,10 +33,11 @@ use crate::state::{Node, Shape};
 use crate::walk::child_exprs;
 
 use helpers::{
-    arg_expr, collect_param_refs, host_call_target, is_program_call, is_scalar_binop,
-    local_binding_name, receiver_shape, record, references_deferred, resolve_node,
-    uses_mutation_operator, wrap, write_path, BindEnv, Params,
+    arg_expr, collect_param_refs, is_program_call, is_scalar_binop, local_binding_name,
+    receiver_shape, record, references_deferred, resolve_node, uses_mutation_operator, wrap,
+    write_path, BindEnv, Params,
 };
+use host_args::HostArgInference;
 // Re-exported for the surface phase's inline-program check (§10.1), which walks a
 // statement's expressions to reject a public `$actor`/`$session` reference.
 pub(crate) use helpers::stmt_exprs;
@@ -237,46 +239,17 @@ impl MutPhase<'_, '_> {
                 self.infer_in(expr, receiver, &binds, params);
             }
         }
-        // §8.3/§16.4/§11.5: a *second* pass fills a host-namespace call argument's
-        // parameter — the login shape `identity = webauthn.verify(@response)` uses
-        // `@response` nowhere else, so it must become a real contract parameter that
-        // the caller passes explicitly in the §12.1 closed argument object. Running
-        // it after every prototype/state-anchored use above makes it order
-        // independent and strictly gap-filling: a parameter already pinned by a
-        // prototype or a state use keeps that stronger type, and a mismatch against
-        // the host signature is enforced at the call boundary (§16.2/§16.5), not as
-        // a load conflict here.
+        // §8.3/§16.4/§11.5: a *second* pass fills parameters anywhere inside a
+        // host-namespace call argument. Running it after every prototype/state-
+        // anchored use above makes it order independent and strictly gap-filling:
+        // a parameter already pinned by a prototype or state use keeps that stronger
+        // type, and a mismatch against the host signature is enforced at the call
+        // boundary (§16.2/§16.5), not as a load conflict here.
+        let host_args = HostArgInference::new(self.hosts);
         for (stmt, _) in statements {
             for expr in stmt_exprs(stmt) {
-                self.infer_host_args(expr, params);
+                host_args.infer(expr, params);
             }
-        }
-    }
-
-    /// §8.3/§16.4: fill a host-namespace call argument's parameter type when no
-    /// prior use pinned it. A bare `@param` positional argument of a host call
-    /// `ns.fn(…, @p, …)` takes the host function's declared argument type at that
-    /// position when the resolved `$requires` descriptor is available (§16.2);
-    /// otherwise it takes the permissive top type `json`, whose real validation is
-    /// the runtime host-call boundary (§16). Either way the parameter BINDS.
-    fn infer_host_args(&self, expr: &Expr, params: &mut Params) {
-        if let ExprKind::Call { callee, args } = &expr.kind
-            && let Some((namespace, function)) = host_call_target(callee)
-        {
-            let signature = self.hosts.op(namespace, function);
-            for (index, arg) in args.iter().enumerate() {
-                if let ExprKind::Param(id) = &arg_expr(arg).kind
-                    && !params.contains(&id.text)
-                {
-                    let ty = signature
-                        .and_then(|op| op.params().get(index))
-                        .map_or_else(|| ExprType::scalar(Type::Json), |arg_ty| ExprType::scalar(arg_ty.clone()));
-                    record(params, &id.text, ty);
-                }
-            }
-        }
-        for child in child_exprs(expr) {
-            self.infer_host_args(child, params);
         }
     }
 
