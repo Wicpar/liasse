@@ -1,0 +1,123 @@
+{
+  format: 1
+  name: surface-over-a-map-collection
+  suite: scenario
+  // §5.4: "a map IS a table, so every access a keyed collection has applies to
+  // it unchanged" — a map is the degenerate keyed collection, not a second kind
+  // of declaration. Nothing in §10 makes it unexposable, so a map declaration
+  // carries the same `$mut` a table's does, and §10.1's two surface reference
+  // forms resolve over it identically:
+  //   - a ROOT mutation reference (`.put`), and
+  //   - a ROW mutation reference selecting exactly one receiver
+  //     (`.settings[@name].retitle`) — here the receiver is one map ENTRY, whose
+  //     canonical key is the entry key (§5.4).
+  // §10.2: the public surface is callable with no authenticated actor. §10.3:
+  // the role surface is available only to a resolved actor `$members` admits,
+  // and a denied call changes nothing.
+  spec: ["#interfaces", "§10.1", "§10.2", "§10.3", "#state-model", "§5.4"]
+  tags: ["public", "authz"]
+
+  package: {
+    $liasse: 1
+    $app: "t.map_surface@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        enabled: "bool = true"
+      }
+      // The map. Its entries are ordinary keyed rows over the fixed
+      // `{ $key, $value }` shape, and the declaration carries a ROW mutation
+      // exactly as a table's does.
+      settings: {
+        $key: "text"
+        $value: "text"
+        $mut: {
+          retitle: [
+            ".$value = @value"
+            "return . { name: .$key, value: .$value }"
+          ]
+        }
+      }
+      entries: { $view: ".settings[:e] { name: e.$key, value: e.$value }" }
+      $mut: {
+        "put({ name: text, value: text })": [
+          "e = .settings + { $key: @name, $value: @value }"
+          "return e { name: e.$key, value: e.$value }"
+        ]
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
+        }
+      }
+      $public: {
+        config: {
+          $view: ".entries"
+          $mut: { put: ".put" }
+        }
+      }
+      $roles: {
+        admin: {
+          $auth: "token"
+          $members: ".accounts[:a | a.enabled]"
+          config: {
+            $view: ".entries"
+            $mut: { retitle: ".settings[@name].retitle" }
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        alice: {}
+        mallory: { enabled: false }
+      }
+      settings: {
+        theme: { $value: "dark" }
+      }
+    }
+  }
+
+  steps: [
+    // §10.2: the public surface reads and writes the map with no actor at all.
+    { connect: "c0" }
+    { watch: "public.config", id: "w0", on: "c0",
+      expect_init: { value: [ { name: "theme", value: "dark" } ] } }
+    { call: "public.config.put", args: { name: "locale", value: "fr" }, on: "c0",
+      expect: { outcome: ok, value: { name: "locale", value: "fr" } } }
+    { expect_view: { watch: "w0", value: { $unordered: [
+        { name: "theme", value: "dark" }
+        { name: "locale", value: "fr" }
+      ] } } }
+
+    // §10.1: a ROW mutation on the map, addressed through a role surface. The
+    // selector parameter `@name` inherits the map's entry-key type and `@value`
+    // the entry value's — the same combination §10.1 specifies for a table's row
+    // mutation.
+    { connect: "c1", authenticate: { role: "admin", auth: "token", credential: "alice" } }
+    { watch: "admin.config", id: "w1", on: "c1", expect_init: { value: { $unordered: [
+        { name: "theme", value: "dark" }
+        { name: "locale", value: "fr" }
+      ] } } }
+    { call: "admin.config.retitle", args: { name: "theme", value: "light" }, on: "c1",
+      expect: { outcome: ok, value: { name: "theme", value: "light" } } }
+    { expect_view: { watch: "w1", value: { $unordered: [
+        { name: "theme", value: "light" }
+        { name: "locale", value: "fr" }
+      ] } } }
+
+    // §10.3: a resolved actor `$members` does not admit reaches nothing, and the
+    // refused call leaves the entry as it was.
+    { connect: "c2", authenticate: { role: "admin", auth: "token", credential: "mallory" } }
+    { call: "admin.config.retitle", args: { name: "theme", value: "pwned" }, on: "c2",
+      expect: { outcome: denied, violates: ["#interfaces"],
+                detail: "actor row is not a member of the targeted role" } }
+    { expect_view: { watch: "w1", value: { $unordered: [
+        { name: "theme", value: "light" }
+        { name: "locale", value: "fr" }
+      ] } } }
+  ]
+}

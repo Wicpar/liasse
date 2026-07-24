@@ -304,7 +304,7 @@ fn walk_path(expr: &Expr, receiver: &[String], segments: &mut Vec<String>) -> bo
             if !walk_path(base, receiver, segments) {
                 return false;
             }
-            segments.push(member.text.clone());
+            segments.push(member.member_name());
             true
         }
         ExprKind::Select { base, .. } => walk_path(base, receiver, segments),

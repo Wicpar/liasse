@@ -596,9 +596,13 @@ impl MutPhase<'_, '_> {
                 let base_ty = self.resolve(base, receiver, binds)?;
                 base_ty.as_view().map(|row| ExprType::View(row.clone()))
             }
+            // A structural name keeps its sigil in a ROW-MEMBER position (§5.4): a
+            // map row's two members are `$key`/`$value`, so `.$value` looks up
+            // `$value`. Reading `member.text` would miss the map member — and could
+            // silently resolve an unrelated field that happens to be named `value`.
             ExprKind::Field { base, member } => {
                 let base_ty = self.resolve(base, receiver, binds)?;
-                base_ty.as_row().and_then(|r| r.field(&member.text)).cloned()
+                base_ty.as_row().and_then(|r| r.field(&member.member_name())).cloned()
             }
             ExprKind::Select { base, selector } => {
                 let row = self.resolve(base, receiver, binds)?.as_view()?.clone();

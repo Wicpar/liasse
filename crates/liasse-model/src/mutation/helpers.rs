@@ -215,12 +215,14 @@ pub(super) fn local_binding_name(target: &Expr) -> Option<&str> {
     }
 }
 
-/// Resolve a target expression to the model node it addresses, if any.
+/// Resolve a target expression to the model node it addresses, if any. A
+/// structural member keeps its sigil here (§5.4): a map row's members are
+/// declared as `$key`/`$value`, so `.$value` addresses the `$value` member.
 pub(super) fn resolve_node<'t>(expr: &Expr, receiver: &'t Shape, root: &'t Shape) -> Option<&'t Node> {
     match &expr.kind {
         ExprKind::Field { base, member } => {
             let base_shape = target_shape(base, receiver, root)?;
-            base_shape.member(&member.text).map(|m| &m.node)
+            base_shape.member(&member.member_name()).map(|m| &m.node)
         }
         _ => None,
     }
@@ -272,7 +274,7 @@ fn collect_segments(expr: &Expr, receiver: &[String], segments: &mut Vec<String>
         ExprKind::Root => true,
         ExprKind::Field { base, member } => {
             collect_segments(base, receiver, segments) && {
-                segments.push(member.text.clone());
+                segments.push(member.member_name());
                 true
             }
         }

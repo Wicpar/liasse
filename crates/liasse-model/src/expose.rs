@@ -216,7 +216,7 @@ fn resolve_path(expr: &liasse_syntax::Expr) -> Option<Vec<String>> {
         ExprKind::Current | ExprKind::Root => Some(Vec::new()),
         ExprKind::Field { base, member } => {
             let mut path = resolve_path(base)?;
-            path.push(member.text.clone());
+            path.push(member.member_name());
             Some(path)
         }
         ExprKind::Select { base, .. } => resolve_path(base),

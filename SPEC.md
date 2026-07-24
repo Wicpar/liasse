@@ -497,6 +497,8 @@ A map entry is a **real row**. Its row shape is `{ $key, $value }`: `$key` is th
 
 The map key type is subject to the key rules of every keyed collection: it MUST be key-eligible (Annex A.8) and it is never optional (§5.5). The map value type may be any present value type or shape, including a nested struct, a `$ref`, or a `module`.
 
+A map **declaration** is a collection declaration. Beside `$key` and `$value` it carries exactly what any keyed collection's declaration carries, with the same meaning and the same scope — the entry row: `$mut` row mutations (§8.2), nested `$roles` (§10.3), `$check` (§5.10), `$unique` (§5.7), and `$sort` (§7.3). A map's entries are therefore exposable on a `$public` or role surface exactly as a table's rows are: a surface `$mut` selecting one entry before naming the mutation (`.settings[@name].retitle`) is the ordinary row-mutation reference of §10.1, and a role nested on a map is scoped to the entry the request addresses. Nothing about the map form makes a declaration unexposable. Because the row shape is fixed at `{ $key, $value }`, an **application-named** member of a map declaration declares nothing and is a static error; a per-entry field belongs inside `$value`.
+
 ##### Map access
 
 A map **is** a table, so every access a keyed collection has applies to it unchanged and none of it is separately specified here: the key selector and its comma-separated operands (§6.3), row bindings and filters (§6.4), projection, `$sort`, `$skip`/`$limit`, view combinators (§7), the aggregates including `count` (§7.5), `has`, enumeration, insertion/replacement/deletion (§8.7), and refs to an entry (§5.6).

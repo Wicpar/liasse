@@ -808,7 +808,7 @@ impl SurfacePhase<'_, '_> {
             ExprKind::Root => Some(self.root_row.clone()),
             ExprKind::Field { base, member } => {
                 let base_ty = self.base_type(base)?;
-                base_ty.as_row().and_then(|row| row.field(&member.text)).cloned()
+                base_ty.as_row().and_then(|row| row.field(&member.member_name())).cloned()
             }
             // A key selection on a collection stream resolves to one row.
             ExprKind::Select { base, .. } => {
@@ -828,7 +828,7 @@ impl SurfacePhase<'_, '_> {
             ExprKind::Root => Some(Vec::new()),
             ExprKind::Field { base, member } => {
                 let mut path = self.resolve_path(base)?;
-                path.push(member.text.clone());
+                path.push(member.member_name());
                 Some(path)
             }
             ExprKind::Select { base, .. } => self.resolve_path(base),

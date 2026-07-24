@@ -1,0 +1,21 @@
+{
+  format: 1
+  name: map-authored-field-invalid
+  suite: static
+  spec: ["#state-model", "§5.4"]
+  note: "§5.4: 'Because the row shape is fixed at `{ $key, $value }`, an application-named member of a map declaration declares nothing and is a static error; a per-entry field belongs inside `$value`.' The attack is a field smuggled into a map declaration alongside the two markers: if the builder read only `$key`/`$value` and ignored the rest, `label` would vanish silently — the package would load, `.settings[k].label` would not exist, and the author would believe a field is stored that no row carries. It is rejected at load instead."
+
+  package: {
+    $liasse: 1
+    $app: "t.mapfield@1.0.0"
+    $model: {
+      settings: {
+        $key: "text"
+        $value: "text"
+        label: "text"
+      }
+    }
+  }
+
+  expect: { outcome: invalid, violates: ["§5.4"] }
+}

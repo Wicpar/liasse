@@ -401,9 +401,9 @@ fn collect_field_refs(expr: &Expr, siblings: &BTreeSet<&str>, out: &mut BTreeSet
         }
         ExprKind::Field { base, member }
             if matches!(base.kind, ExprKind::Current)
-                && siblings.contains(member.text.as_str()) =>
+                && siblings.contains(member.member_name().as_str()) =>
         {
-            out.insert(member.text.clone());
+            out.insert(member.member_name());
         }
         _ => {}
     }

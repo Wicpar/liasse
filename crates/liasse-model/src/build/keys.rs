@@ -53,6 +53,10 @@ impl<'a> Builder<'a> {
     /// what leaves this function is an ordinary [`Collection`] keyed on a
     /// declared field: every downstream path — key derivation, storage, refs,
     /// deltas, projection typing — applies with no map-specific branch.
+    ///
+    /// Everything the declaration carries *besides* those two markers is an
+    /// ordinary collection declaration and is collected through exactly the paths
+    /// [`Self::collection`] uses — see [`Self::map_declarations`].
     pub(super) fn map_collection(
         &mut self,
         reporter: &mut Reporter,
@@ -90,13 +94,62 @@ impl<'a> Builder<'a> {
             span: entry.value.span,
             node,
         });
+        self.map_declarations(reporter, value, path, &mut shape);
+        let mut unique = value
+            .member("$unique")
+            .map(|m| self.unique_keys(reporter, &m.value, &shape))
+            .unwrap_or_default();
+        unique.extend(self.field_unique_keys(reporter, &shape));
         Collection {
             path: super::absolute_path(path),
             key: vec![DeclName::map_member(liasse_expr::MAP_KEY)],
             key_span,
-            unique: Vec::new(),
-            consumes: false,
+            unique,
+            consumes: value.member("$consumes").is_some(),
             shape,
+        }
+    }
+
+    /// The rest of a map declaration (§5.4 "a map IS a table"): every member that
+    /// is not one of the two markers the map form consumes.
+    ///
+    /// A map is the degenerate keyed collection, so a map declaration is a
+    /// *collection* declaration — it carries `$mut`, `$roles`, `$check`, `$sort`,
+    /// `$auth`, `$limits`, `$consumes`, … exactly as a table does. Those are
+    /// routed through the same shape-level dispatch a table's members go through,
+    /// so a mutation or role declared on a map reaches the mutation/surface phases
+    /// and is exposable (§10.1); before this, they were dropped on the floor and a
+    /// surface over a map resolved nothing.
+    ///
+    /// An *authored* (non-`$`) member has no place: the row shape is the fixed
+    /// `{ $key, $value }`, so a declared field is a named static error rather than
+    /// a silent omission — the same loudness the reserved-member dispatch gives an
+    /// unknown `$` member.
+    fn map_declarations(
+        &mut self,
+        reporter: &mut Reporter,
+        value: &'a DocValue,
+        path: &[String],
+        shape: &mut Shape,
+    ) {
+        for member in value.as_object().unwrap_or(&[]) {
+            if crate::names::is_reserved(&member.name.text) {
+                // `$key`/`$value` are already consumed above; the dispatch treats
+                // both as no-ops, so the map form needs no exception here.
+                self.shape_reserved(reporter, member, path, false, shape);
+            } else {
+                reporter.reject_hint(
+                    member.span,
+                    code::SHAPE,
+                    format!(
+                        "`{}` is not a member of a map: a map's row shape is the fixed \
+                         `{{ $key, $value }}` (§5.4)",
+                        member.name.text
+                    ),
+                    "declare the field inside `$value`, or drop `$value` and declare an \
+                     ordinary keyed collection",
+                );
+            }
         }
     }
 
@@ -189,6 +242,12 @@ impl<'a> Builder<'a> {
     }
 
     /// Validate that `name` is a declared, key-eligible, non-optional field.
+    ///
+    /// The accepted name is the member's OWN [`DeclName`], not a re-parse of the
+    /// authored text: a member is in the shape only because its name already
+    /// passed the grammar, so re-parsing duplicated that check — and refused the
+    /// two names a map row carries (`$key`/`$value`, §5.4), which no authored
+    /// field can spell but which a map's own `$unique` legitimately names.
     fn key_field_type(&self, shape: &Shape, name: &str) -> Result<DeclName, String> {
         let member = shape.member(name).ok_or_else(|| {
             format!("`$key` names `{name}`, which is not a declared field of the collection")
@@ -206,7 +265,7 @@ impl<'a> Builder<'a> {
                         "key field `{name}` is an optional ref; optional types are excluded from row keys (A.8)"
                     ))
                 } else {
-                    DeclName::parse(name).map_err(|_| format!("`{name}` is not a valid field name"))
+                    Ok(member.name.clone())
                 };
             }
             // A.8: a `$key` MAY name a "struct composed solely of key-eligible
@@ -215,10 +274,8 @@ impl<'a> Builder<'a> {
             // `Type::is_key_eligible` judge it — accepting an all-eligible struct
             // and rejecting one that launders an ineligible member (json,
             // optional, …) with a diagnostic naming that member.
-            Node::Struct(shape) => {
-                return Self::struct_key_type(shape).and_then(|_key_type| {
-                    DeclName::parse(name).map_err(|_| format!("`{name}` is not a valid field name"))
-                });
+            Node::Struct(fields) => {
+                return Self::struct_key_type(fields).map(|_key_type| member.name.clone());
             }
             _ => {
                 return Err(format!(
@@ -237,7 +294,7 @@ impl<'a> Builder<'a> {
                 ty.name()
             ));
         }
-        DeclName::parse(name).map_err(|_| format!("`{name}` is not a valid field name"))
+        Ok(member.name.clone())
     }
 
     /// The key `Type` of a struct field named as a `$key` component (A.8:
@@ -348,10 +405,7 @@ impl<'a> Builder<'a> {
             // unlike a primary row key — an *optional* ref is admissible too; the
             // row simply does not participate in the constraint while it is
             // `none`. This matches the optional-scalar handling below.
-            Node::Reference(_) => {
-                return DeclName::parse(name)
-                    .map_err(|_| format!("`{name}` is not a valid field name"));
-            }
+            Node::Reference(_) => return Ok(member.name.clone()),
             // A.8 (SPEC.md:4471-4475): candidate-key components "use the same
             // eligible base types" as `$key` fields — which include "structs
             // composed solely of key-eligible required fields". Judge a struct
@@ -363,10 +417,8 @@ impl<'a> Builder<'a> {
             // "must be a scalar or ref field" refusal that masked the exclusion.
             // This covers both a standalone struct candidate and a struct
             // component of a composite candidate, since both route through here.
-            Node::Struct(shape) => {
-                return Self::struct_key_type(shape).and_then(|_key_type| {
-                    DeclName::parse(name).map_err(|_| format!("`{name}` is not a valid field name"))
-                });
+            Node::Struct(fields) => {
+                return Self::struct_key_type(fields).map(|_key_type| member.name.clone());
             }
             _ => return Err(format!("candidate-key field `{name}` must be a scalar or ref field")),
         };
@@ -380,6 +432,6 @@ impl<'a> Builder<'a> {
                 base.name()
             ));
         }
-        DeclName::parse(name).map_err(|_| format!("`{name}` is not a valid field name"))
+        Ok(member.name.clone())
     }
 }

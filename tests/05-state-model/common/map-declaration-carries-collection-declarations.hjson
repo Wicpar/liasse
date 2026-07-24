@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: map-declaration-carries-collection-declarations
+  suite: static
+  spec: ["#state-model", "§5.4", "#interfaces", "§10.1"]
+  note: "§5.4: 'A map declaration is a collection declaration. Beside `$key` and `$value` it carries exactly what any keyed collection's declaration carries, with the same meaning and the same scope — the entry row: `$mut` row mutations (§8.2), nested `$roles` (§10.3), `$check` (§5.10), `$unique` (§5.7), and `$sort` (§7.3).' Each of the five is declared here over the map's entry row, and the row mutation is exposed through a `$public` surface by the ordinary §10.1 row reference `.settings[@name].retitle` — the map's entry is the selected receiver. If a map declaration were read as only its two markers, every one of these would declare nothing: the `$check` would never constrain, the `$unique` would never hold, and the surface would name a mutation that does not exist."
+
+  package: {
+    $liasse: 1
+    $app: "t.mapdecl2@1.0.0"
+    $model: {
+      settings: {
+        $key: "text"
+        $value: "text"
+        $sort: ["$key"]
+        $unique: [["$value"]]
+        $check: ".$value != \"\""
+        $mut: {
+          retitle: [
+            ".$value = @value"
+            "return . { name: .$key, value: .$value }"
+          ]
+        }
+      }
+      $mut: {
+        "put({ name: text, value: text })": ".settings + { $key: @name, $value: @value }"
+      }
+      $public: {
+        config: {
+          $view: ".settings[:e] { name: e.$key, value: e.$value }"
+          $mut: { put: ".put", retitle: ".settings[@name].retitle" }
+        }
+      }
+    }
+  }
+
+  expect: { outcome: ok }
+}
