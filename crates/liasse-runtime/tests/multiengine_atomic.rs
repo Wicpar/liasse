@@ -1,4 +1,9 @@
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 //! §13.10 multi-engine atomic transition (in-memory store).
 //!
 //! A ROOT mutation reaches across a module boundary with `#handle.mutation(args)`.
@@ -208,8 +213,12 @@ fn space() -> ModuleSpace {
 fn host_with_bank() -> ModuleHost<MemoryStoreFactory> {
     let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
     let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
-    host.install(&space(), InstallRequest::new("bank", BANK), &mut generator())
-        .expect("the bank child installs");
+    host.install(
+        &space(),
+        InstallRequest::new("bank", BANK),
+        &mut generator(),
+    )
+    .expect("the bank child installs");
     host
 }
 
@@ -228,8 +237,12 @@ fn bank_balance(host: &ModuleHost<MemoryStoreFactory>) -> Value {
 /// to the bank instance at dispatch.
 fn host_with_shop_and_bank() -> ModuleHost<MemoryStoreFactory> {
     let mut host = host_with_bank();
-    host.install(&space(), InstallRequest::new("shop", SHOP).use_handle("credits", "t.multi.bank/credits@1"), &mut generator())
-        .expect("the shop child installs");
+    host.install(
+        &space(),
+        InstallRequest::new("shop", SHOP).use_handle("credits", "t.multi.bank/credits@1"),
+        &mut generator(),
+    )
+    .expect("the shop child installs");
     host
 }
 
@@ -237,14 +250,21 @@ fn host_with_shop_and_bank() -> ModuleHost<MemoryStoreFactory> {
 /// it under `$use` (§13.10 import-scope over-reach).
 fn host_with_rogue_and_bank() -> ModuleHost<MemoryStoreFactory> {
     let mut host = host_with_bank();
-    host.install(&space(), InstallRequest::new("rogue", ROGUE), &mut generator())
-        .expect("the rogue child installs (its over-reach is caught at dispatch, not install)");
+    host.install(
+        &space(),
+        InstallRequest::new("rogue", ROGUE),
+        &mut generator(),
+    )
+    .expect("the rogue child installs (its over-reach is caught at dispatch, not install)");
     host
 }
 
 /// The order ids committed in a named child instance's exposed `orders` interface.
 fn child_order_ids(host: &ModuleHost<MemoryStoreFactory>, name: &str) -> Vec<String> {
-    let view = host.interface_read(&space(), name, "orders").expect("read").expect("orders is exposed");
+    let view = host
+        .interface_read(&space(), name, "orders")
+        .expect("read")
+        .expect("orders is exposed");
     view.rows()
         .iter()
         .map(|row| match row.field("id").expect("id is projected") {
@@ -256,7 +276,11 @@ fn child_order_ids(host: &ModuleHost<MemoryStoreFactory>, name: &str) -> Vec<Str
 
 /// The root order ids currently committed.
 fn root_order_ids(host: &ModuleHost<MemoryStoreFactory>) -> Vec<String> {
-    let view = host.root().view_at_head("orders_view").expect("view").expect("orders_view exists");
+    let view = host
+        .root()
+        .view_at_head("orders_view")
+        .expect("view")
+        .expect("orders_view exists");
     view.rows()
         .iter()
         .map(|row| match row.field("id").expect("id is projected") {
@@ -271,22 +295,44 @@ fn root_order_ids(host: &ModuleHost<MemoryStoreFactory>) -> Vec<String> {
 #[test]
 fn cross_engine_dispatch_commits_parent_and_child_together() {
     let mut host = host_with_bank();
-    assert_eq!(bank_balance(&host), int(10), "the bank starts with 10 credits");
-    assert!(root_order_ids(&host).is_empty(), "no order before the transition");
+    assert_eq!(
+        bank_balance(&host),
+        int(10),
+        "the bank starts with 10 credits"
+    );
+    assert!(
+        root_order_ids(&host).is_empty(),
+        "no order before the transition"
+    );
     let root_head_before = host.root().store().head().expect("head");
 
-    let request = CallRequest::new("buy").arg("id", text("o1")).arg("cost", int(4));
-    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+    let request = CallRequest::new("buy")
+        .arg("id", text("o1"))
+        .arg("cost", int(4));
+    let outcome = host
+        .call_multi(&request, &mut generator())
+        .expect("no engine fault");
 
     assert!(
         matches!(outcome, CallOutcome::Committed { .. }),
         "the cross-engine transition commits: {outcome:?}"
     );
     // The parent order committed AND the child meter spend committed — one transition.
-    assert_eq!(root_order_ids(&host), vec!["o1".to_owned()], "the parent order committed");
-    assert_eq!(bank_balance(&host), int(6), "the child meter spend committed (10 - 4)");
+    assert_eq!(
+        root_order_ids(&host),
+        vec!["o1".to_owned()],
+        "the parent order committed"
+    );
+    assert_eq!(
+        bank_balance(&host),
+        int(6),
+        "the child meter spend committed (10 - 4)"
+    );
     let root_head_after = host.root().store().head().expect("head");
-    assert_ne!(root_head_before, root_head_after, "the root head advanced with the child");
+    assert_ne!(
+        root_head_before, root_head_after,
+        "the root head advanced with the child"
+    );
 }
 
 /// §13.10 same-engine re-entrancy: two `#bank.consume(6)` in ONE transition against
@@ -298,18 +344,33 @@ fn cross_engine_dispatch_commits_parent_and_child_together() {
 #[test]
 fn same_engine_reentrancy_composes_and_rejects_the_overspend() {
     let mut host = host_with_bank();
-    assert_eq!(bank_balance(&host), int(10), "the bank starts with 10 credits");
+    assert_eq!(
+        bank_balance(&host),
+        int(10),
+        "the bank starts with 10 credits"
+    );
 
     // Two spends of 6 against balance 10: the composed second spend over-draws.
-    let request = CallRequest::new("buy_twice").arg("id", text("o1")).arg("cost", int(6));
-    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+    let request = CallRequest::new("buy_twice")
+        .arg("id", text("o1"))
+        .arg("cost", int(6));
+    let outcome = host
+        .call_multi(&request, &mut generator())
+        .expect("no engine fault");
 
     assert!(
         matches!(outcome, CallOutcome::Rejected(_)),
         "the second composed spend over-draws and rejects the whole transition: {outcome:?}"
     );
-    assert_eq!(bank_balance(&host), int(10), "no spend committed — the composed over-draw rolled back (not 4)");
-    assert!(root_order_ids(&host).is_empty(), "the parent's own order did not commit either");
+    assert_eq!(
+        bank_balance(&host),
+        int(10),
+        "no spend committed — the composed over-draw rolled back (not 4)"
+    );
+    assert!(
+        root_order_ids(&host).is_empty(),
+        "the parent's own order did not commit either"
+    );
 }
 
 /// §13.10 same-engine re-entrancy: two spends that TOGETHER fit the budget both
@@ -321,12 +382,27 @@ fn same_engine_reentrancy_composes_two_fitting_spends() {
     assert_eq!(bank_balance(&host), int(10));
 
     // Two spends of 3 against balance 10: both fit, composed to 10 - 3 - 3 = 4.
-    let request = CallRequest::new("buy_twice").arg("id", text("o1")).arg("cost", int(3));
-    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+    let request = CallRequest::new("buy_twice")
+        .arg("id", text("o1"))
+        .arg("cost", int(3));
+    let outcome = host
+        .call_multi(&request, &mut generator())
+        .expect("no engine fault");
 
-    assert!(matches!(outcome, CallOutcome::Committed { .. }), "both composed spends commit: {outcome:?}");
-    assert_eq!(bank_balance(&host), int(4), "both spends applied (10 - 3 - 3), not just the last (7)");
-    assert_eq!(root_order_ids(&host), vec!["o1".to_owned()], "the parent order committed with them");
+    assert!(
+        matches!(outcome, CallOutcome::Committed { .. }),
+        "both composed spends commit: {outcome:?}"
+    );
+    assert_eq!(
+        bank_balance(&host),
+        int(4),
+        "both spends applied (10 - 3 - 3), not just the last (7)"
+    );
+    assert_eq!(
+        root_order_ids(&host),
+        vec!["o1".to_owned()],
+        "the parent order committed with them"
+    );
 }
 
 /// §13.10: a parent mutation that rejects AFTER a successful child dispatch leaves
@@ -336,15 +412,26 @@ fn parent_reject_after_child_dispatch_leaves_child_unchanged() {
     let mut host = host_with_bank();
     assert_eq!(bank_balance(&host), int(10));
 
-    let request = CallRequest::new("buy_then_fail").arg("id", text("o1")).arg("cost", int(4));
-    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+    let request = CallRequest::new("buy_then_fail")
+        .arg("id", text("o1"))
+        .arg("cost", int(4));
+    let outcome = host
+        .call_multi(&request, &mut generator())
+        .expect("no engine fault");
 
     assert!(
         matches!(outcome, CallOutcome::Rejected(_)),
         "the parent's false assertion rejects the whole transition: {outcome:?}"
     );
-    assert_eq!(bank_balance(&host), int(10), "the child meter spend rolled back with the parent");
-    assert!(root_order_ids(&host).is_empty(), "the parent's own order did not commit either");
+    assert_eq!(
+        bank_balance(&host),
+        int(10),
+        "the child meter spend rolled back with the parent"
+    );
+    assert!(
+        root_order_ids(&host).is_empty(),
+        "the parent's own order did not commit either"
+    );
 }
 
 /// §13.10: the SINGLE-engine admission path has no coordinator, so a `#bank.consume`
@@ -355,14 +442,22 @@ fn parent_reject_after_child_dispatch_leaves_child_unchanged() {
 fn single_engine_call_refuses_cross_engine_dispatch() {
     let mut host = host_with_bank();
 
-    let request = CallRequest::new("buy").arg("id", text("o1")).arg("cost", int(4));
-    let outcome = host.root_mut().call(&request, &mut generator()).expect("no engine fault");
+    let request = CallRequest::new("buy")
+        .arg("id", text("o1"))
+        .arg("cost", int(4));
+    let outcome = host
+        .root_mut()
+        .call(&request, &mut generator())
+        .expect("no engine fault");
 
     assert!(
         matches!(outcome, CallOutcome::Rejected(_)),
         "a cross-engine dispatch outside a multi-engine transition is refused: {outcome:?}"
     );
-    assert!(root_order_ids(&host).is_empty(), "nothing committed on the single-engine path");
+    assert!(
+        root_order_ids(&host).is_empty(),
+        "nothing committed on the single-engine path"
+    );
     assert_eq!(bank_balance(&host), int(10), "the child was never reached");
 }
 
@@ -374,15 +469,22 @@ fn child_reject_rejects_the_whole_parent_transition() {
     assert_eq!(bank_balance(&host), int(10));
 
     // cost 20 > balance 10: the bank's `consume` assertion fails.
-    let request = CallRequest::new("buy").arg("id", text("o1")).arg("cost", int(20));
-    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+    let request = CallRequest::new("buy")
+        .arg("id", text("o1"))
+        .arg("cost", int(20));
+    let outcome = host
+        .call_multi(&request, &mut generator())
+        .expect("no engine fault");
 
     assert!(
         matches!(outcome, CallOutcome::Rejected(_)),
         "the child's meter over-spend rejects the whole transition: {outcome:?}"
     );
     assert_eq!(bank_balance(&host), int(10), "the child meter is unchanged");
-    assert!(root_order_ids(&host).is_empty(), "the parent's order insert did not commit");
+    assert!(
+        root_order_ids(&host).is_empty(),
+        "the parent's order insert did not commit"
+    );
 }
 
 /// §13.10 fold: an `interface_call` on a child whose exposed mutation reaches a peer
@@ -393,17 +495,34 @@ fn interface_call_folds_a_peer_reaching_child_transition() {
     let mut host = host_with_shop_and_bank();
     assert_eq!(bank_balance(&host), int(10));
 
-    let request = CallRequest::new("place").arg("id", text("s1")).arg("cost", int(3));
+    let request = CallRequest::new("place")
+        .arg("id", text("s1"))
+        .arg("cost", int(3));
     let outcome = host
-        .interface_call(&space(), "shop", "orders", "place", &request, &mut generator())
+        .interface_call(
+            &space(),
+            "shop",
+            "orders",
+            "place",
+            &request,
+            &mut generator(),
+        )
         .expect("no engine fault");
 
     assert!(
         matches!(outcome, CallOutcome::Committed { .. }),
         "the folded shop+bank transition commits: {outcome:?}"
     );
-    assert_eq!(child_order_ids(&host, "shop"), vec!["s1".to_owned()], "the shop order committed");
-    assert_eq!(bank_balance(&host), int(7), "the bank meter spend committed (10 - 3)");
+    assert_eq!(
+        child_order_ids(&host, "shop"),
+        vec!["s1".to_owned()],
+        "the shop order committed"
+    );
+    assert_eq!(
+        bank_balance(&host),
+        int(7),
+        "the bank meter spend committed (10 - 3)"
+    );
 }
 
 /// §13.10 fold: when the reached peer rejects, the child's own transition rejects
@@ -414,16 +533,28 @@ fn interface_call_fold_rejects_when_the_peer_rejects() {
     assert_eq!(bank_balance(&host), int(10));
 
     // cost 20 > balance 10: the bank peer's `consume` assertion fails.
-    let request = CallRequest::new("place").arg("id", text("s1")).arg("cost", int(20));
+    let request = CallRequest::new("place")
+        .arg("id", text("s1"))
+        .arg("cost", int(20));
     let outcome = host
-        .interface_call(&space(), "shop", "orders", "place", &request, &mut generator())
+        .interface_call(
+            &space(),
+            "shop",
+            "orders",
+            "place",
+            &request,
+            &mut generator(),
+        )
         .expect("no engine fault");
 
     assert!(
         matches!(outcome, CallOutcome::Rejected(_)),
         "the peer's over-spend rejects the whole folded transition: {outcome:?}"
     );
-    assert!(child_order_ids(&host, "shop").is_empty(), "the shop order did not commit");
+    assert!(
+        child_order_ids(&host, "shop").is_empty(),
+        "the shop order did not commit"
+    );
     assert_eq!(bank_balance(&host), int(10), "the bank meter is unchanged");
 }
 
@@ -436,12 +567,28 @@ fn interface_call_fold_rejects_when_the_peer_rejects() {
 #[test]
 fn peer_alias_dispatch_resolves_to_the_peer_and_commits_atomically() {
     let mut host = host_with_shop_and_bank();
-    assert_eq!(bank_balance(&host), int(10), "the bank starts with 10 credits");
-    assert!(child_order_ids(&host, "shop").is_empty(), "no shop order before the transition");
+    assert_eq!(
+        bank_balance(&host),
+        int(10),
+        "the bank starts with 10 credits"
+    );
+    assert!(
+        child_order_ids(&host, "shop").is_empty(),
+        "no shop order before the transition"
+    );
 
-    let request = CallRequest::new("place").arg("id", text("s1")).arg("cost", int(4));
+    let request = CallRequest::new("place")
+        .arg("id", text("s1"))
+        .arg("cost", int(4));
     let outcome = host
-        .interface_call(&space(), "shop", "orders", "place", &request, &mut generator())
+        .interface_call(
+            &space(),
+            "shop",
+            "orders",
+            "place",
+            &request,
+            &mut generator(),
+        )
         .expect("no engine fault");
 
     assert!(
@@ -450,8 +597,16 @@ fn peer_alias_dispatch_resolves_to_the_peer_and_commits_atomically() {
     );
     // The alias `credits` resolved to the `bank` instance: its meter spend committed
     // together with the caller's own order — one atomic cross-module transition.
-    assert_eq!(child_order_ids(&host, "shop"), vec!["s1".to_owned()], "the caller's order committed");
-    assert_eq!(bank_balance(&host), int(6), "the aliased peer's meter spend committed (10 - 4)");
+    assert_eq!(
+        child_order_ids(&host, "shop"),
+        vec!["s1".to_owned()],
+        "the caller's order committed"
+    );
+    assert_eq!(
+        bank_balance(&host),
+        int(6),
+        "the aliased peer's meter spend committed (10 - 4)"
+    );
 }
 
 /// §13.10 import scope: a module that hard-codes `#bank` on a sibling it never
@@ -463,17 +618,33 @@ fn dispatch_to_a_non_imported_sibling_is_refused() {
     let mut host = host_with_rogue_and_bank();
     assert_eq!(bank_balance(&host), int(10));
 
-    let request = CallRequest::new("place").arg("id", text("r1")).arg("cost", int(3));
+    let request = CallRequest::new("place")
+        .arg("id", text("r1"))
+        .arg("cost", int(3));
     let outcome = host
-        .interface_call(&space(), "rogue", "orders", "place", &request, &mut generator())
+        .interface_call(
+            &space(),
+            "rogue",
+            "orders",
+            "place",
+            &request,
+            &mut generator(),
+        )
         .expect("no engine fault");
 
     assert!(
         matches!(outcome, CallOutcome::Rejected(_)),
         "reaching a non-imported sibling is refused (import scope): {outcome:?}"
     );
-    assert!(child_order_ids(&host, "rogue").is_empty(), "the over-reaching order did not commit");
-    assert_eq!(bank_balance(&host), int(10), "the non-imported sibling was never reached");
+    assert!(
+        child_order_ids(&host, "rogue").is_empty(),
+        "the over-reaching order did not commit"
+    );
+    assert_eq!(
+        bank_balance(&host),
+        int(10),
+        "the non-imported sibling was never reached"
+    );
 }
 
 /// §13.11 actor propagation: the folded/dispatched child admits under the external
@@ -485,20 +656,36 @@ fn dispatch_to_a_non_imported_sibling_is_refused() {
 fn dispatched_child_observes_the_parents_actor() {
     let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
     let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
-    host.install(&space(), InstallRequest::new("bank", BANK_AUTH), &mut generator())
-        .expect("the bank child installs");
+    host.install(
+        &space(),
+        InstallRequest::new("bank", BANK_AUTH),
+        &mut generator(),
+    )
+    .expect("the bank child installs");
 
-    let request = CallRequest::new("buy").arg("id", text("o1")).arg("cost", int(4)).actor(text("alice"));
-    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+    let request = CallRequest::new("buy")
+        .arg("id", text("o1"))
+        .arg("cost", int(4))
+        .actor(text("alice"));
+    let outcome = host
+        .call_multi(&request, &mut generator())
+        .expect("no engine fault");
 
     assert!(
         matches!(outcome, CallOutcome::Committed { .. }),
         "the child bound the propagated `$actor` and committed: {outcome:?}"
     );
     // The dispatched child recorded the PARENT's actor key in its receipt.
-    let receipts = host.interface_read(&space(), "bank", "receipts").expect("read").expect("receipts exposed");
+    let receipts = host
+        .interface_read(&space(), "bank", "receipts")
+        .expect("read")
+        .expect("receipts exposed");
     let who = receipts.rows()[0].field("who").expect("who is projected");
-    assert_eq!(who, &text("alice"), "the child observed the parent's `$actor` (alice)");
+    assert_eq!(
+        who,
+        &text("alice"),
+        "the child observed the parent's `$actor` (alice)"
+    );
 }
 
 /// §13.11 fail-closed contrast: the SAME dispatch with NO actor bound leaves the
@@ -509,11 +696,19 @@ fn dispatched_child_observes_the_parents_actor() {
 fn dispatched_child_without_actor_faults_closed() {
     let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
     let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
-    host.install(&space(), InstallRequest::new("bank", BANK_AUTH), &mut generator())
-        .expect("the bank child installs");
+    host.install(
+        &space(),
+        InstallRequest::new("bank", BANK_AUTH),
+        &mut generator(),
+    )
+    .expect("the bank child installs");
 
-    let request = CallRequest::new("buy").arg("id", text("o1")).arg("cost", int(4));
-    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+    let request = CallRequest::new("buy")
+        .arg("id", text("o1"))
+        .arg("cost", int(4));
+    let outcome = host
+        .call_multi(&request, &mut generator())
+        .expect("no engine fault");
 
     assert!(
         matches!(outcome, CallOutcome::Rejected(_)),
@@ -560,15 +755,27 @@ fn cyclic_cross_engine_dispatch_is_refused_without_overflow() {
     let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
     let peer = "t.multi.loop/hop@1";
     // a: optional peer resolves absent (no sibling yet).
-    host.install(&space(), InstallRequest::new("a", LOOPER).optional_use("peer", peer), &mut generator())
-        .expect("a installs");
+    host.install(
+        &space(),
+        InstallRequest::new("a", LOOPER).optional_use("peer", peer),
+        &mut generator(),
+    )
+    .expect("a installs");
     // b: its optional peer auto-binds to the only candidate, a.
-    host.install(&space(), InstallRequest::new("b", LOOPER).optional_use("peer", peer), &mut generator())
-        .expect("b installs");
+    host.install(
+        &space(),
+        InstallRequest::new("b", LOOPER).optional_use("peer", peer),
+        &mut generator(),
+    )
+    .expect("b installs");
     // Re-install a so its optional peer now binds to b — closing the a ⇄ b cycle.
     host.uninstall(&space(), "a").expect("a uninstalls");
-    host.install(&space(), InstallRequest::new("a", LOOPER).optional_use("peer", peer), &mut generator())
-        .expect("a re-installs, now bound to b");
+    host.install(
+        &space(),
+        InstallRequest::new("a", LOOPER).optional_use("peer", peer),
+        &mut generator(),
+    )
+    .expect("a re-installs, now bound to b");
 
     let request = CallRequest::new("ping").arg("id", text("x"));
     let outcome = host
@@ -580,6 +787,12 @@ fn cyclic_cross_engine_dispatch_is_refused_without_overflow() {
         "the cyclic dispatch is refused loudly (no stack overflow): {outcome:?}"
     );
     // Nothing committed: an aborted transition leaves every engine at its prior state.
-    let marks = host.interface_read(&space(), "b", "hop").expect("read").expect("hop exposed");
-    assert!(marks.rows().is_empty(), "the aborted cyclic transition committed nothing");
+    let marks = host
+        .interface_read(&space(), "b", "hop")
+        .expect("read")
+        .expect("hop exposed");
+    assert!(
+        marks.rows().is_empty(),
+        "the aborted cyclic transition committed nothing"
+    );
 }

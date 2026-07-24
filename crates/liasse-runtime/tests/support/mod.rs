@@ -3,7 +3,12 @@
 //! Each integration-test binary uses a different subset of these fixtures, so
 //! the unused-per-binary items are expected.
 #![allow(dead_code)]
-#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    clippy::panic,
+    clippy::indexing_slicing
+)]
 
 use liasse_ident::InstanceId;
 use liasse_runtime::{Engine, FixedGenerators, Precision};

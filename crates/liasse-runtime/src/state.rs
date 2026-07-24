@@ -180,7 +180,8 @@ impl Prospective {
         for change in changes {
             match change {
                 Change::Insert(address, value) | Change::Update(address, value) => {
-                    self.working.insert(address.clone(), materialize::fields_of(value));
+                    self.working
+                        .insert(address.clone(), materialize::fields_of(value));
                 }
                 Change::Delete(address) => {
                     self.working.remove(address);
