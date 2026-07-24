@@ -717,6 +717,9 @@ fn run_program(
         erase_exports: Vec::new(),
         locals: BTreeMap::new(),
         depth: 0,
+        // §20: a migration program runs on the target instance alone; it reaches no
+        // other engine, so no cross-instance dispatch handle is lent.
+        dispatch: None,
     };
     interp.run()?;
     touched.append(&mut interp.touched);

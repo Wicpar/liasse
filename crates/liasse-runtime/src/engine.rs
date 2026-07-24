@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::SourceMap;
 use liasse_expr::{check_expression, Cell, DivisionRounding, SortOrder};
-use liasse_ident::NameSegment;
+use liasse_ident::{NameSegment, TransactionId};
 use liasse_model::Model;
 use liasse_store::{
     AddressStep, CommitOutcome, CommitSeq, DefinitionText, InstanceStore, KeyValue, RowAddress, Transition,
@@ -27,7 +27,7 @@ use crate::blobs::{
     BlobCatalog, BlobFetch, BlobIngress, DeclaredDescriptor, FetchError, PlacementState,
     UploadError,
 };
-use crate::compiled::{Compiled, CompiledKeyring, CompiledMutation};
+use crate::compiled::{Compiled, CompiledKeyring, CompiledMutation, ResolvedBlobPolicy};
 use crate::doc;
 use crate::engine_provider::EngineKeyProvider;
 use crate::host::{HostBinding, HostDispatch, HostSignatures};
@@ -43,6 +43,35 @@ use crate::response::ResponseValue;
 use crate::schema::Schema;
 use crate::state::{Change, Prospective};
 use crate::view::ViewResult;
+
+/// One engine's fully staged, not-yet-committed admission (§22.2, §13.10) — the
+/// outcome of [`Engine::stage_admission`], carrying everything the admission
+/// pipeline computed with no durable state touched. A single-engine admission
+/// commits the [`StagedChange`] immediately; a multi-engine transition collects one
+/// per touched engine and commits them together, all-or-none.
+pub(crate) enum StagedAdmission {
+    /// The rule pipeline refused the admission (§8.8); nothing to commit. In a
+    /// multi-engine transition this unwinds every participant — none commits.
+    Rejected(Rejection),
+    /// The program changed no state (§8.9); any `return` is over the unchanged
+    /// state and no frontier advances.
+    Unchanged { response: Option<ResponseValue> },
+    /// A validated state change ready to commit.
+    Changed(StagedChange),
+}
+
+/// The committable payload of a validated admission: the resolved row changes, the
+/// evaluated response, the admission instant, and any staged blob placement to land
+/// at commit. It owns all of this — no borrow of the engine — so a coordinator MAY
+/// hold several (one per touched engine) and commit them together under one shared
+/// transaction identity (§13.10).
+pub(crate) struct StagedChange {
+    changes: Vec<Change>,
+    response: Option<ResponseValue>,
+    now: Timestamp,
+    ingresses: Vec<BlobIngress>,
+    resolved_ingresses: Vec<ResolvedBlobPolicy>,
+}
 
 /// The parsed, validated, compiled artefacts of one definition text — the
 /// reusable output of the load-time front end that genesis, restore, and update
@@ -1506,8 +1535,41 @@ impl<S: InstanceStore> Engine<S> {
         backing: BlobBacking,
         generator: &mut G,
     ) -> Result<CallOutcome, EngineError> {
+        // A single-engine admission stages against this instance alone (no lent
+        // dispatch handle) and commits it immediately — the exact pipeline as before
+        // the stage/commit split, so single-engine behaviour is unchanged.
+        let seed = generator.next_seed();
+        match self.stage_admission(request, ingresses, backing, seed, None)? {
+            StagedAdmission::Rejected(rejection) => Ok(CallOutcome::Rejected(rejection)),
+            StagedAdmission::Unchanged { response } => Ok(CallOutcome::Unchanged { response }),
+            StagedAdmission::Changed(change) => self.commit_staged(change, None),
+        }
+    }
+
+    /// Stage one mutation's admission WITHOUT committing (§22.2, §13.10).
+    ///
+    /// This gathers the prospective, runs the program — lending `dispatch` so a
+    /// `#handle.mutation(args)` call reaches another engine within the same
+    /// transition — and runs the whole rule / source-series / meter / blob / return
+    /// pipeline, resolving any staged blob placement. It is entirely read-only on
+    /// this engine: nothing durable is touched, so dropping the result leaves
+    /// committed state intact. The caller decides how to commit the resulting
+    /// [`StagedAdmission`]: [`Engine::commit_staged`] on its own (the single-engine
+    /// path), or jointly with every other engine a multi-engine transition reached
+    /// (the coordinator lends the same commit under one shared transaction, §13.10).
+    pub(crate) fn stage_admission(
+        &self,
+        request: &CallRequest,
+        ingresses: Vec<BlobIngress>,
+        backing: BlobBacking,
+        seed: u64,
+        dispatch: Option<&dyn crate::dispatch::Dispatch>,
+    ) -> Result<StagedAdmission, EngineError> {
         let Some(mutation) = self.compiled.mutation(request.mutation()) else {
-            return Ok(rejected(RejectionReason::Malformed, format!("unknown mutation `{}`", request.mutation())));
+            return Ok(StagedAdmission::Rejected(Rejection::new(
+                RejectionReason::Malformed,
+                format!("unknown mutation `{}`", request.mutation()),
+            )));
         };
         // §18.2/§18.7 (no committed blob field without stored bytes): a blob
         // descriptor may be admitted only with its bytes persisted. Under
@@ -1521,20 +1583,20 @@ impl<S: InstanceStore> Engine<S> {
         if let BlobBacking::Ingress = backing {
             for name in request.blob_arg_names() {
                 if ingresses.iter().filter(|ingress| ingress.parameter == name).count() != 1 {
-                    return Ok(rejected(
+                    return Ok(StagedAdmission::Rejected(Rejection::new(
                         RejectionReason::Malformed,
                         format!(
                             "blob argument `@{name}` must be admitted with its verified bytes: \
                              stage it with `stage_blob` and pass the owned ingress to \
                              `call_with_blob`, never as a bare `call` argument (§18.7)"
                         ),
-                    ));
+                    )));
                 }
             }
         }
         let params = match collect_params(mutation, request) {
             Ok(params) => params,
-            Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+            Err(rejection) => return Ok(StagedAdmission::Rejected(rejection)),
         };
         let schema = Schema::new(&self.model);
         let snapshots = self.keyring_snapshots();
@@ -1543,7 +1605,7 @@ impl<S: InstanceStore> Engine<S> {
             compiled: &self.compiled,
             params,
             now: self.clock,
-            seed: generator.next_seed(),
+            seed,
             keyrings: &snapshots,
             placements: &self.blob_placements,
             // §13.1: a module instance's mutation reads its installed `$config`;
@@ -1571,7 +1633,7 @@ impl<S: InstanceStore> Engine<S> {
         // resolved to the receiver only after `gather` below.
         let operands = match receiver_operands(&self.compiled, mutation, request) {
             Ok(operands) => operands,
-            Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+            Err(rejection) => return Ok(StagedAdmission::Rejected(rejection)),
         };
 
         let mut prospective = Prospective::gather(&self.store, schema)?;
@@ -1592,7 +1654,7 @@ impl<S: InstanceStore> Engine<S> {
         // silently addressing one and dropping the rest.
         let receiver = match select_receiver(&ctx, &prospective, operands) {
             Ok(receiver) => receiver,
-            Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+            Err(rejection) => return Ok(StagedAdmission::Rejected(rejection)),
         };
         let mut interp = Interp {
             compiled: &self.compiled,
@@ -1606,9 +1668,12 @@ impl<S: InstanceStore> Engine<S> {
             erase_exports: Vec::new(),
             locals: BTreeMap::new(),
             depth: 0,
+            // §13.10: lend the cross-instance dispatch handle so a `#handle.mut(...)`
+            // in this program stages the addressed child into the same transition.
+            dispatch,
         };
         if let Err(rejection) = interp.run() {
-            return Ok(CallOutcome::Rejected(rejection));
+            return Ok(StagedAdmission::Rejected(rejection));
         }
         let touched = std::mem::take(&mut interp.touched);
         let ret = interp.ret.take();
@@ -1621,14 +1686,14 @@ impl<S: InstanceStore> Engine<S> {
         let receiver = interp.receiver.take();
 
         if let Err(rejection) = crate::rules::finalize(&self.compiled, &ctx, &prospective, &touched) {
-            return Ok(CallOutcome::Rejected(rejection));
+            return Ok(StagedAdmission::Rejected(rejection));
         }
 
         // §14.5: reject a transition (a source insert/edit, or a change to referenced
         // period data) that would make a source-backed recurring bucket non-advancing
         // or ill-bounded.
         if let Err(rejection) = ctx.validate_source_series(&prospective) {
-            return Ok(CallOutcome::Rejected(rejection));
+            return Ok(StagedAdmission::Rejected(rejection));
         }
 
         // §15.2: fund every new or changed spend from the reachable pools, freezing
@@ -1637,7 +1702,7 @@ impl<S: InstanceStore> Engine<S> {
         if let Err(rejection) =
             crate::meter::admit::enforce(&ctx, &self.compiled.meters, &mut prospective, &touched)
         {
-            return Ok(CallOutcome::Rejected(rejection));
+            return Ok(StagedAdmission::Rejected(rejection));
         }
 
         // §18.3: every placement-reachable store row selects its connector
@@ -1646,10 +1711,10 @@ impl<S: InstanceStore> Engine<S> {
         if self.host.strict_components() {
             let stores = match self.compiled.blobs.reachable_stores(&ctx, &prospective) {
                 Ok(stores) => stores,
-                Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+                Err(rejection) => return Ok(StagedAdmission::Rejected(rejection)),
             };
             if let Err(rejection) = crate::blobs::validate_connectors(&stores, &self.host) {
-                return Ok(CallOutcome::Rejected(rejection));
+                return Ok(StagedAdmission::Rejected(rejection));
             }
         }
 
@@ -1661,11 +1726,11 @@ impl<S: InstanceStore> Engine<S> {
         for ingress in &ingresses {
             let field = match self.compiled.blobs.field(mutation, &ingress.parameter) {
                 Ok(field) => field,
-                Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+                Err(rejection) => return Ok(StagedAdmission::Rejected(rejection)),
             };
             match field.resolve(&ctx, &prospective) {
                 Ok(resolved) => resolved_ingresses.push(resolved),
-                Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+                Err(rejection) => return Ok(StagedAdmission::Rejected(rejection)),
             }
         }
 
@@ -1707,7 +1772,7 @@ impl<S: InstanceStore> Engine<S> {
                 state_changed,
             ) {
                 Ok(response) => response,
-                Err(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+                Err(rejection) => return Ok(StagedAdmission::Rejected(rejection)),
             }
         };
         // §21.2: a bare `erase(row)` statement with no explicit `return` still
@@ -1720,14 +1785,41 @@ impl<S: InstanceStore> Engine<S> {
 
         if !state_changed {
             // §8.9: no state change → `unchanged`; the frontier does not advance.
-            return Ok(CallOutcome::Unchanged { response });
+            return Ok(StagedAdmission::Unchanged { response });
         }
 
-        // §18.7 step 6: only a mutation that has passed its complete rule and
-        // return evaluation lands physical copies. Each required destination is
-        // verified before state admission. Until the store transaction below
-        // commits, the result remains absent from `blob_catalog` and cannot be
-        // served.
+        // §22.5/§22.6: the admission instant is the engine clock, so every row this
+        // transition inserts records this `now` as its `$created` (§14.1). The staged
+        // change owns everything the commit needs (rows, response, blob placement),
+        // so the coordinator may hold it — and one per every other touched engine —
+        // before committing them together (§13.10).
+        Ok(StagedAdmission::Changed(StagedChange {
+            changes,
+            response,
+            now: self.clock,
+            ingresses,
+            resolved_ingresses,
+        }))
+    }
+
+    /// Commit one already-staged change to this engine's durable store (§22.2),
+    /// landing its verified blob copies first and advancing the lineage.
+    ///
+    /// `transaction` tags this instance's commit when it is one participant of a
+    /// multi-engine atomic transition (§13.10/§19.1), so every touched instance
+    /// records the same cross-instance grouping; `None` for an ordinary
+    /// single-engine commit. All-or-nothing at this store; a multi-engine
+    /// transition's all-or-none across stores is the coordinator's contract, which
+    /// stages and validates every participant before committing any.
+    pub(crate) fn commit_staged(
+        &mut self,
+        staged: StagedChange,
+        transaction: Option<TransactionId>,
+    ) -> Result<CallOutcome, EngineError> {
+        let StagedChange { changes, response, now, ingresses, resolved_ingresses } = staged;
+        // §18.7 step 6: only a mutation that has passed its complete rule and return
+        // evaluation lands physical copies. Until the store transaction below
+        // commits, the result remains absent from `blob_catalog` and cannot be served.
         let mut staged_blobs = Vec::with_capacity(ingresses.len());
         for (ingress, resolved) in ingresses.iter().zip(resolved_ingresses) {
             match BlobCatalog::land(&mut self.host, ingress, resolved) {
@@ -1741,11 +1833,13 @@ impl<S: InstanceStore> Engine<S> {
             }
         }
 
-        // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
-        // every row it inserts records this `now` as its `$created` (§14.1).
-        let now = self.clock;
         let mut txn = self.store.begin();
         txn.set_now(now);
+        // §13.10/§19.1: a multi-engine atomic commit tags every touched instance's
+        // transition with one shared transaction identity.
+        if let Some(transaction) = transaction {
+            txn.set_transaction(transaction);
+        }
         stage(&mut txn, changes)?;
         let committed = match txn.commit() {
             Ok(committed) => committed,
@@ -2462,7 +2556,7 @@ fn rejected(reason: RejectionReason, message: impl Into<String>) -> CallOutcome 
 /// committed only with its bytes stored, so admission requires each blob
 /// argument to name its persistence explicitly rather than defaulting to a
 /// zero-copy commit.
-enum BlobBacking {
+pub(crate) enum BlobBacking {
     /// Each blob-valued argument must carry exactly one owned [`BlobIngress`]
     /// staged for this mutation; the engine lands the verified copies through the
     /// resolved connector before commit (`call`/`call_with_blobs`).

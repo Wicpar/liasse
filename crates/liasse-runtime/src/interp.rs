@@ -136,6 +136,19 @@ fn field_write_root(target: &Expr) -> Option<&str> {
     }
 }
 
+/// Whether `callee` addresses an interface mutation on an imported instance —
+/// `#handle.mutation` (§13.8/§13.10): a field access whose base is an `#import`
+/// handle and whose member is an ordinary (non-structural) name. This is the
+/// cross-instance dispatch the interpreter routes through the lent coordinator,
+/// distinct from a `.name`/`name` internal call or a `namespace.fn` host call.
+fn is_interface_dispatch(callee: &Expr) -> bool {
+    matches!(
+        &callee.kind,
+        ExprKind::Field { base, member }
+            if matches!(base.kind, ExprKind::Import(_)) && !member.structural
+    )
+}
+
 /// The internal-call nesting bound (§8.11): a program calling another mutation
 /// recurses this interpreter, so a cyclic mutation graph is capped rather than
 /// overflowing the stack. Real packages nest only a handful of levels.
@@ -169,6 +182,12 @@ pub(crate) struct Interp<'a> {
     /// program, incremented for each `.mut()` call it makes, so recursion is
     /// bounded by [`MAX_CALL_DEPTH`].
     pub(crate) depth: usize,
+    /// The cross-instance dispatch handle a multi-engine atomic transition lends
+    /// (§13.10): present when this program runs inside a coordinator that owns the
+    /// reached engines, so a `#handle.mutation(args)` call stages the addressed
+    /// child transition into the same commit. `None` for an ordinary single-engine
+    /// admission, where a cross-engine dispatch has no coordinator and is refused.
+    pub(crate) dispatch: Option<&'a dyn crate::dispatch::Dispatch>,
 }
 
 impl<'a> Interp<'a> {
@@ -539,6 +558,14 @@ impl<'a> Interp<'a> {
             self.locals.insert(name, LocalBind::Value(cell, ty));
             return Ok(());
         }
+        // §13.10: `name = #handle.mutation(args)` stages the addressed child
+        // transition into the same atomic commit and binds its `$return`, so a later
+        // statement or the `return` can read the cross-module result.
+        if let Some(result) = self.interface_dispatch(value, source) {
+            let cell = result?;
+            self.locals.insert(name, LocalBind::Value(cell, ExprType::scalar(Type::Json)));
+            return Ok(());
+        }
         if let ExprKind::Binary { op: BinaryOp::Add, lhs, rhs } = &value.kind
             && self.collection_ref(lhs, source)?.is_some()
         {
@@ -850,6 +877,15 @@ impl<'a> Interp<'a> {
                 self.exec_erase(args, source)?;
                 Ok(())
             }
+            // §13.10: a bare `#handle.mutation(args)` statement stages the addressed
+            // child transition into the same atomic commit; its `$return` is
+            // discarded (only a bound `r = #handle.mut(…)` keeps it).
+            ExprKind::Call { callee, .. } if is_interface_dispatch(callee) => {
+                if let Some(result) = self.interface_dispatch(expr, source) {
+                    result?;
+                }
+                Ok(())
+            }
             // §8.11: a statement invoking a declared mutation (`.rename(…)`, or the
             // bare shorthand `rename({ … })`) runs it inside the same atomic
             // program. A callee that resolves no declared mutation (a bare
@@ -883,6 +919,81 @@ impl<'a> Interp<'a> {
             _ => return None,
         };
         self.compiled.mutation(name)
+    }
+
+    /// Run a `#handle.mutation(args)` cross-instance dispatch (§13.10) when `expr` is
+    /// one, yielding the addressed child mutation's `$return` cell — or a rejection
+    /// when no coordinator is lent (a cross-engine effect outside a multi-engine
+    /// transition). `None` when `expr` is not an interface-mutation dispatch call, so
+    /// the caller falls through to its ordinary handling.
+    fn interface_dispatch(&self, expr: &Expr, source: SourceId) -> Option<Result<Cell, Rejection>> {
+        let ExprKind::Call { callee, args } = &expr.kind else { return None };
+        if !is_interface_dispatch(callee) {
+            return None;
+        }
+        let ExprKind::Field { base, member } = &callee.kind else { return None };
+        let ExprKind::Import(handle) = &base.kind else { return None };
+        Some(self.run_dispatch(&handle.text, &member.text, args, source))
+    }
+
+    /// Evaluate a `#handle.mutation(args)` dispatch's arguments and route it through
+    /// the lent coordinator (§13.10): the argument object maps parameter names to
+    /// values, each evaluated against the current prospective state, so the child's
+    /// admission runs on the caller's own resulting state within the transition. A
+    /// dispatch with no coordinator is refused loudly — a cross-engine effect cannot
+    /// be served by a single-engine admission.
+    fn run_dispatch(&self, handle: &str, mutation: &str, args: &[Arg], source: SourceId) -> Result<Cell, Rejection> {
+        let Some(dispatch) = self.dispatch else {
+            return Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!(
+                    "interface mutation `#{handle}.{mutation}` was dispatched outside a \
+                     multi-engine transition — a cross-engine dispatch needs the coordinator the \
+                     module host lends (§13.10)"
+                ),
+            ));
+        };
+        let current = self.current()?;
+        let mut values = Vec::new();
+        for arg in args {
+            match arg {
+                Arg::Positional(Expr { kind: ExprKind::Object(members), .. }) => {
+                    for member in members {
+                        values.push(self.dispatch_member(member, source, &current)?);
+                    }
+                }
+                Arg::Named { name, value } => {
+                    values.push((name.text.clone(), self.scalar_value(value, source, &current)?));
+                }
+                Arg::Positional(_) => {
+                    return Err(Rejection::new(
+                        RejectionReason::Malformed,
+                        "an interface mutation call takes an argument object mapping parameter \
+                         names to values (§8.11)",
+                    ));
+                }
+            }
+        }
+        dispatch.dispatch(handle, mutation, values)
+    }
+
+    /// One `(parameter, value)` pair of a `#handle.mutation({ … })` argument object
+    /// (§8.11): a `name: value` member, or the value-elided `name` shorthand (a read
+    /// of `name` in the current scope).
+    fn dispatch_member(&self, member: &BlockMember, source: SourceId, current: &Cell) -> Result<(String, Value), Rejection> {
+        match &member.kind {
+            BlockMemberKind::Named { name, value: Some(value) } => {
+                Ok((name.text.clone(), self.scalar_value(value, source, current)?))
+            }
+            BlockMemberKind::Named { name, value: None } => {
+                let synthetic = Expr { span: member.span, kind: ExprKind::Name(name.clone()) };
+                Ok((name.text.clone(), self.scalar_value(&synthetic, source, current)?))
+            }
+            _ => Err(Rejection::new(
+                RejectionReason::Malformed,
+                "an interface mutation argument must be `name: value`",
+            )),
+        }
     }
 
     /// Run a declared mutation as an internal call (§8.11): its program executes
@@ -937,6 +1048,9 @@ impl<'a> Interp<'a> {
             erase_exports: Vec::new(),
             locals: BTreeMap::new(),
             depth: self.depth + 1,
+            // §13.10: a nested internal call keeps the same coordinator, so a
+            // `#handle.mut(...)` it makes reaches the same lent engines atomically.
+            dispatch: self.dispatch,
         };
         child.run()?;
         // The call's writes are the caller's: carry its touched rows so the final

@@ -142,6 +142,7 @@ mod compiled;
 mod config;
 mod contract;
 mod deletion;
+mod dispatch;
 mod doc;
 mod engine;
 mod engine_provider;
