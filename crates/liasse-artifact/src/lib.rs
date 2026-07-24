@@ -49,7 +49,7 @@ mod raw;
 mod version;
 
 pub use archive::{Archive, ArchiveBuilder, ArchiveEntry};
-pub use artifact::Artifact;
+pub use artifact::{decode_package_from_blob, Artifact, DecodedPackage};
 pub use build::ArtifactBuilder;
 pub use compat::{CompatibilityDecision, ContractRule, UpdateRelation};
 pub use error::{ArtifactError, MIMETYPE};

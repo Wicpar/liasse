@@ -49,6 +49,50 @@ const REQUIRED_ENTRIES: &[&str] = &["mimetype", LIASSE_JSON_PATH, STATE_PATH, HI
 /// stack. Real compositions nest a handful deep at most.
 const MAX_MODULE_DEPTH: usize = 64;
 
+/// The package definition decoded from a `.liasse` blob (§13.10, §20.1): the UTF-8
+/// `liasse.json` definition text — its head `$model` and declared `$migrations`
+/// delta chain — and the D.4 definition identity recomputed from those bytes.
+///
+/// This is the parse-don't-validate boundary a host-privileged `module.install`/
+/// `module.update` lifecycle mutation decodes from a blob descriptor's bytes: the
+/// runtime installs or migrates from [`definition`](Self::definition), and records
+/// [`definition_id`](Self::definition_id) as a fact of the commit (§5.1). The
+/// `name@version` package identity is decoded in the runtime by compiling the model
+/// header — the artifact layer does not parse the hjson definition.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedPackage {
+    definition: String,
+    definition_id: DefinitionId,
+}
+
+impl DecodedPackage {
+    /// The `liasse.json` package definition text (head `$model` + `$migrations`).
+    #[must_use]
+    pub fn definition(&self) -> &str {
+        &self.definition
+    }
+
+    /// The D.4 definition identity, recomputed from the definition bytes.
+    #[must_use]
+    pub fn definition_id(&self) -> &DefinitionId {
+        &self.definition_id
+    }
+
+    /// Consume into the owned definition text and its identity.
+    #[must_use]
+    pub fn into_parts(self) -> (String, DefinitionId) {
+        (self.definition, self.definition_id)
+    }
+}
+
+/// Decode a package definition from a `.liasse` blob descriptor's bytes (§13.10):
+/// open and integrity-verify the artifact, then extract its definition text and D.4
+/// identity. A malformed container or a non-UTF-8 definition fails LOUDLY as a typed
+/// [`ArtifactError`] — never a partial or silent decode.
+pub fn decode_package_from_blob(bytes: &[u8]) -> Result<DecodedPackage, ArtifactError> {
+    Artifact::open(bytes)?.package_definition()
+}
+
 /// A verified, structurally well-formed `.liasse` artifact.
 #[derive(Debug, Clone)]
 pub struct Artifact {
@@ -154,6 +198,18 @@ impl Artifact {
     #[must_use]
     pub fn definition_id(&self) -> DefinitionId {
         DefinitionId::of_canonical_bytes(self.liasse_json())
+    }
+
+    /// Decode this artifact's package definition (§13.10, §20.1): the UTF-8
+    /// `liasse.json` text (head `$model` + declared `$migrations` delta chain) and
+    /// its D.4 identity. Open already integrity-verified the bytes; this is the
+    /// text-decode boundary a lifecycle mutation installs/migrates from. A
+    /// non-UTF-8 definition fails LOUDLY.
+    pub fn package_definition(&self) -> Result<DecodedPackage, ArtifactError> {
+        let definition = std::str::from_utf8(self.liasse_json())
+            .map_err(|error| ArtifactError::DefinitionNotUtf8 { detail: error.to_string() })?
+            .to_owned();
+        Ok(DecodedPackage { definition_id: self.definition_id(), definition })
     }
 
     /// Check the manifest's declared `definition.identity` against the D.4

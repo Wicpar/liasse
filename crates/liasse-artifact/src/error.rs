@@ -203,6 +203,15 @@ pub enum ArtifactError {
         detail: String,
     },
 
+    /// The decoded `liasse.json` definition bytes are not valid UTF-8 (§4.1: a
+    /// package definition is text). A package cannot be installed from a blob whose
+    /// definition section is not decodable text.
+    #[error("`liasse.json` definition is not valid UTF-8: {detail}")]
+    DefinitionNotUtf8 {
+        /// The UTF-8 decode error detail.
+        detail: String,
+    },
+
     /// A digest string in the manifest failed the Annex D `sha256:` grammar.
     #[error("invalid digest in manifest: {0}")]
     Digest(#[from] IdentError),
