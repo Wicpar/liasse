@@ -549,4 +549,8 @@ pub(crate) enum BuiltinFn {
     StringTrim,
     /// `time.duration(text)` — parse an ISO-8601 duration literal (§16.1).
     TimeDuration,
+    /// `unpack(blob)` — read a `.liasse` blob into a `module` value (§13.16), with
+    /// decode/mount/state reconstruction DEFERRED to when the value is applied or
+    /// read. Produces a move-only `Value::Module(Pending(..))` carrying the blob.
+    Unpack,
 }
