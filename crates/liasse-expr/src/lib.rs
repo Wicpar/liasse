@@ -71,3 +71,13 @@ pub use scope::{InterfaceMut, Scope};
 pub use semantics::DivisionRounding;
 pub use ty::{ExprType, RowType};
 pub use typed::{InterfaceCall, TypedExpr};
+
+/// The identity member of a MAP row (§5.4). A map is the degenerate keyed
+/// collection, so its entries are ordinary rows whose two members are named by
+/// the markers that declared them. The name lives here, beside the row model
+/// that reads it, so the model builder, the checker, and the evaluator all agree
+/// on one spelling.
+pub const MAP_KEY: &str = "$key";
+
+/// The value member of a MAP row (§5.4). See [`MAP_KEY`].
+pub const MAP_VALUE: &str = "$value";

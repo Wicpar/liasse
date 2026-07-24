@@ -311,13 +311,13 @@ const KEYS_ROOT: &str = r#"{
         }
       }
     }
-    "installed": { "$view": ". { keys: .modules.$keys }" }
+    "installed": { "$view": ". { keys: .modules { $key } }" }
   }
 }"#;
 
 #[test]
-fn modules_keys_reads_the_set_of_installed_instance_keys() {
-    // §13.16: `.modules.$keys` is the set of installed instance keys, resolved
+fn modules_key_projection_reads_the_set_of_installed_instance_keys() {
+    // §5.4/§13.16: `.modules { $key }` is the set of installed instance keys, resolved
     // through the root engine's module-aware evaluation (the folded module space).
     let space = ModuleSpace::new("/modules").expect("mount");
     let mut host = host(KEYS_ROOT);

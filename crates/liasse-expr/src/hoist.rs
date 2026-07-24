@@ -179,7 +179,9 @@ impl HoistCtx<'_> {
                 TypedKind::Temporal { base: self.child(base), query: self.temporal(query) }
             }
             TypedKind::Key(base) => TypedKind::Key(self.child(base)),
-            TypedKind::Keys(base) => TypedKind::Keys(self.child(base)),
+            TypedKind::MapColumn { source, column } => {
+                TypedKind::MapColumn { source: self.child(source), column: *column }
+            }
             TypedKind::Keyring { base, selector } => {
                 TypedKind::Keyring { base: self.child(base), selector: *selector }
             }
@@ -321,11 +323,11 @@ fn any_child(expr: &TypedExpr, f: &mut dyn FnMut(&TypedExpr) -> bool) -> bool {
         | TypedKind::Not(base)
         | TypedKind::Composite { source: base, .. }
         | TypedKind::Key(base)
-        | TypedKind::Keys(base)
         | TypedKind::Temporal { base, .. }
         | TypedKind::Keyring { base, .. }
         | TypedKind::BlobMember { base, .. } => visit(base),
-        TypedKind::Select { base, selector } => {
+        TypedKind::MapColumn { source, .. } => visit(source),
+            TypedKind::Select { base, selector } => {
             visit(base);
             match selector {
                 TypedSelector::Keys(keys) => keys.iter().for_each(&mut visit),

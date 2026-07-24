@@ -345,11 +345,17 @@ pub(crate) enum TypedKind {
     /// keyed selection); the result is that row's canonical key value. Boxed so
     /// the node stays finite-sized.
     Key(Box<TypedExpr>),
-    /// `base.$keys` — the SET of identity keys of a keyed collection/view (§13.16:
-    /// `.modules.$keys` is the set of installed instance keys). The base is a keyed
-    /// view; the result is a `{ $set: K }` of its rows' key values. Boxed so the node
-    /// stays finite-sized.
-    Keys(Box<TypedExpr>),
+    /// `m { $key }` / `m { $value }` — a map's two whole-collection projections
+    /// (§5.4). The source is a keyed view; the result is the set of that column's
+    /// values across its rows, deduplicated and ordered by
+    /// [`Value`](liasse_value::Value) like any set. Boxed so the node stays
+    /// finite-sized.
+    MapColumn {
+        /// The map (a keyed view).
+        source: Box<TypedExpr>,
+        /// Which of the row's two columns the projection reads.
+        column: MapColumn,
+    },
     /// A keyring public version selector over a keyring's version view (§17.2):
     /// `.$current`, `.$accepted`, `.$public`, `.$versions`. Evaluation defers
     /// version-lifecycle resolution to the environment's keyring index; the
@@ -425,6 +431,26 @@ pub(crate) enum TypedSelector {
         name: String,
         condition: Option<Box<TypedExpr>>,
     },
+}
+
+/// Which column of a map row a whole-collection projection reads (§5.4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
+pub(crate) enum MapColumn {
+    /// `m { $key }` — the entry keys.
+    Key,
+    /// `m { $value }` — the entry values.
+    Value,
+}
+
+impl MapColumn {
+    /// The projection's authored spelling, for diagnostics.
+    pub(crate) fn spelling(self) -> &'static str {
+        match self {
+            Self::Key => "$key",
+            Self::Value => "$value",
+        }
+    }
 }
 
 /// A resolved projection.

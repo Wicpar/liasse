@@ -40,6 +40,33 @@ impl<'a> Builder<'a> {
         // fails the load.
         let present: Vec<&str> =
             Self::KIND_MARKERS.iter().copied().filter(|m| value.member(m).is_some()).collect();
+        // §5.4/C.2: `$value` COMPOSES with `$key` to put a declaration in map
+        // form; beside any other kind marker it has no meaning, and beside none
+        // at all it names no key type. Both are the same static error the
+        // conflicting-marker rule above raises, named the same way, so a `$value`
+        // never silently degrades the object to some other kind.
+        if value.member("$value").is_some() {
+            let conflict = present.iter().copied().find(|m| *m != "$key");
+            if let Some(other) = conflict {
+                reporter.reject_hint(
+                    value.span,
+                    code::SHAPE,
+                    format!(
+                        "conflicting shape markers `$value` and `{other}` on one object: `$value` \
+                         composes only with `$key`, as a map (§5.4, Annex C.2)"
+                    ),
+                    "split the map into its own declaration",
+                );
+            } else if !present.contains(&"$key") {
+                reporter.reject_hint(
+                    value.span,
+                    code::SHAPE,
+                    "`$value` needs a `$key`: it is what puts a declaration in map form, and a \
+                     map's entries are keyed (§5.4)",
+                    "write `{ \"$key\": \"<key type>\", \"$value\": \"<value type>\" }`",
+                );
+            }
+        }
         if present.len() > 1 {
             reporter.reject_hint(
                 value.span,
@@ -74,7 +101,15 @@ impl<'a> Builder<'a> {
             return self.source_bucket_node(value, path);
         }
         if value.member("$key").is_some() {
-            return Node::Collection(Box::new(self.collection(reporter, value, path)));
+            // §5.4: `$value` alongside `$key` is the MAP form — `$key` reads as a
+            // type expression rather than as declared field names, and the row
+            // shape is the fixed `{ $key, $value }`. It is the same
+            // `Node::Collection`, built from a synthesized two-member shape, so
+            // every keyed-collection path downstream applies unchanged.
+            return Node::Collection(Box::new(match value.member("$value") {
+                Some(entry) => self.map_collection(reporter, value, entry, path),
+                None => self.collection(reporter, value, path),
+            }));
         }
         if let Some(set) = value.member("$set") {
             return self.set_node(reporter, value, set);

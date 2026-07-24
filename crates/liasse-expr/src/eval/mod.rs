@@ -25,7 +25,7 @@ use liasse_value::{Text, Value};
 use crate::env::{Cell, Environment, Row, RowId};
 use crate::error::EvalError;
 use crate::ty::ExprType;
-use crate::typed::{TypedExpr, TypedKind, TypedSelector};
+use crate::typed::{MapColumn, TypedExpr, TypedKind, TypedSelector};
 
 impl TypedExpr {
     /// Evaluate against `env` with `current` as the initial `.` (§6.2).
@@ -237,7 +237,7 @@ impl Evaluator<'_> {
             // distinct sites and the environment derives distinct values.
             TypedKind::Uuid(site) => Ok(Cell::Scalar(Value::Uuid(self.env.uuid(*site)))),
             TypedKind::Key(base) => self.eval_key(base),
-            TypedKind::Keys(base) => self.eval_key_set(base),
+            TypedKind::MapColumn { source, column } => self.eval_map_column(source, *column),
             TypedKind::Temporal { base, query } => self.eval_temporal(base, query),
             TypedKind::Keyring { base, selector } => self.eval_keyring(expr, base, *selector),
             TypedKind::BlobMember { base, member } => self.eval_blob_member(base, *member),
@@ -278,17 +278,32 @@ impl Evaluator<'_> {
         }
     }
 
-    /// `base.$keys` (§13.16): the set of identity keys of a keyed collection. The
-    /// checker has proven the base is a scalar-keyed view, so evaluation collects
-    /// each row's key value into a set (deduplicated and ordered by [`Value`], B.2).
-    fn eval_key_set(&mut self, base: &TypedExpr) -> Result<Cell, EvalError> {
-        let rows = match self.eval(base)? {
+    /// `m { $key }` / `m { $value }` (§5.4): a map's two whole-collection
+    /// projections. The checker has proven the source is a keyed view carrying the
+    /// column, so evaluation collects that column across the rows into a set
+    /// (deduplicated and ordered by [`Value`], Annex B).
+    fn eval_map_column(
+        &mut self,
+        source: &TypedExpr,
+        column: MapColumn,
+    ) -> Result<Cell, EvalError> {
+        let rows = match self.eval(source)? {
             Cell::Collection(rows) => rows,
             Cell::Row(row) => vec![*row],
             _ => return Err(EvalError::ShapeMismatch { expected: "a keyed collection" }),
         };
-        let keys = rows.into_iter().map(|row| row.key().clone()).collect();
-        Ok(Cell::Scalar(Value::Set(keys)))
+        let mut values = std::collections::BTreeSet::new();
+        for row in rows {
+            let value = match column {
+                MapColumn::Key => row.key().clone(),
+                MapColumn::Value => match row.cell(crate::MAP_VALUE) {
+                    Some(Cell::Scalar(value)) => value.clone(),
+                    _ => return Err(EvalError::ShapeMismatch { expected: "a map entry value" }),
+                },
+            };
+            values.insert(value);
+        }
+        Ok(Cell::Scalar(Value::Set(values)))
     }
 
     fn eval_field(&mut self, base: &TypedExpr, name: &str) -> Result<Cell, EvalError> {

@@ -1,0 +1,29 @@
+{
+  format: 1
+  name: map-declares-a-keyed-collection
+  suite: static
+  spec: ["#state-model", "§5.4"]
+  note: "§5.4: `$value` is what puts a declaration in map form, and only then is `$key` a type expression — the type of the entry key — rather than the name of a declared field. `$value` composes with `$key` the way `$bucket` does. The map's row shape is the fixed `{ $key, $value }`, so `.settings[k]` selects one entry, `e.$key`/`e.$value` read its two members, and `{ $key }` / `{ $value }` are its two whole-collection projections. Nothing here is map-specific machinery: a map IS a keyed collection."
+
+  package: {
+    $liasse: 1
+    $app: "t.mapdecl@1.0.0"
+    $model: {
+      settings: {
+        $key: "text"
+        $value: "text"
+      }
+      entries: { $view: ".settings[:e] { name: e.$key, value: e.$value }" }
+      names: { $view: ".settings { $key }" }
+      values: { $view: ".settings { $value }" }
+      total: { $view: "= count(.settings)" }
+      $mut: {
+        "put({ name: text, value: text })": ".settings + { $key: @name, $value: @value }"
+        "retitle({ name: text, value: text })": ".settings[@name].$value = @value"
+        "drop({ name: text })": ".settings - [@name]"
+      }
+    }
+  }
+
+  expect: { outcome: ok }
+}

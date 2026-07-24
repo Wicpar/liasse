@@ -456,9 +456,24 @@ impl MutPhase<'_, '_> {
             // assignment (`field = value`), or `@name` shorthand form. The
             // `@name` shorthand means `name = @name` (§8.6): the field is the
             // parameter's own name, so the parameter inherits that field's type.
+            // §5.4: `$key`/`$value` in a ROW object name a map row's two members
+            // (C.7's projection directives have no meaning in a row), so a
+            // parameter in either position inherits that member's declared type
+            // exactly as a plain `field: @p` does. The member name carries its
+            // marker, matching how the row shape spells it.
+            let map_member;
             let (field, value): (&str, &Expr) = match &member.kind {
                 BlockMemberKind::Named { name, value: Some(value) } => (&name.text, value),
                 BlockMemberKind::Assign { target, value } => (&target.text, value),
+                BlockMemberKind::Directive { name, value }
+                    if matches!(
+                        name.member_name().as_str(),
+                        liasse_expr::MAP_KEY | liasse_expr::MAP_VALUE
+                    ) =>
+                {
+                    map_member = name.member_name();
+                    (map_member.as_str(), value)
+                }
                 BlockMemberKind::Shorthand(value) => {
                     if let ExprKind::Param(param) = &value.kind
                         && let Some(field_ty) = row.and_then(|r| r.field(&param.text))

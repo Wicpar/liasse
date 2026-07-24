@@ -215,6 +215,22 @@ pub struct Ident {
     pub structural: bool,
 }
 
+impl Ident {
+    /// The name as a ROW MEMBER: the `$`-prefixed spelling for a structural name,
+    /// the bare text otherwise. A map row's two members are named `$key` and
+    /// `$value` (SPEC §5.4), so a structural name reaching a row-member position
+    /// must carry its sigil back rather than silently addressing a different,
+    /// bare-named member.
+    #[must_use]
+    pub fn member_name(&self) -> String {
+        if self.structural {
+            format!("${}", self.text)
+        } else {
+            self.text.clone()
+        }
+    }
+}
+
 /// A row selector (Annex C.6).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Selector {

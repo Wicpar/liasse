@@ -14,7 +14,7 @@ use crate::check::walk::{
     shorthand_name, RawOutput,
 };
 use crate::ty::{ExprType, RowType};
-use crate::typed::{Output, Projection, SortKey, TypedExpr, TypedKind};
+use crate::typed::{MapColumn, Output, Projection, SortKey, TypedExpr, TypedKind};
 
 impl Checker<'_> {
     pub(crate) fn check_block(
@@ -23,6 +23,16 @@ impl Checker<'_> {
         base: &Expr,
         members: &[BlockMember],
     ) -> Option<TypedExpr> {
+        // §5.4: a lone bare `$key` / `$value` member is a MAP's whole-collection
+        // projection — the set of its keys or of its values — not an output list.
+        // It is recognised before the general path because those two names are
+        // markers, not output names, and a map's row shape admits no other
+        // whole-collection projection.
+        if let [BlockMember { kind: BlockMemberKind::Shorthand(inner), .. }] = members
+            && let ExprKind::Structural(name) = &inner.kind
+        {
+            return self.check_map_column(expr, base, name);
+        }
         let base = self.check(base)?;
         // §6.3: a projection carries the cardinality of the row source it maps
         // over. A base that already denotes a single row — a lone scalar or
@@ -266,6 +276,73 @@ impl Checker<'_> {
     }
 
     /// `$key` is a scalar output name or an array of names (§7.2).
+    /// `m { $key }` / `m { $value }` (§5.4): a map's two whole-collection
+    /// projections, each collapsing the entry stream to the set of one column's
+    /// values. Every OTHER access to a map is an ordinary keyed-collection access
+    /// and never reaches here.
+    fn check_map_column(&mut self, expr: &Expr, base: &Expr, name: &Ident) -> Option<TypedExpr> {
+        let column = match name.text.as_str() {
+            "key" => MapColumn::Key,
+            "value" => MapColumn::Value,
+            other => {
+                return self.error(
+                    expr,
+                    format!(
+                        "`${other}` is not a projection member; a map projects `{{ $key }}` or \
+                         `{{ $value }}` (§5.4), and any other output is named `name: expression`"
+                    ),
+                );
+            }
+        };
+        let source = self.check(base)?;
+        let row = match source.ty() {
+            ExprType::View(row) => row.clone(),
+            other => {
+                return self.error(
+                    expr,
+                    format!(
+                        "`{{ {} }}` projects a map's entries, not a {}",
+                        column.spelling(),
+                        other.describe()
+                    ),
+                );
+            }
+        };
+        let element = match column {
+            MapColumn::Key => row.key().and_then(ExprType::as_scalar).cloned(),
+            MapColumn::Value => row.field(crate::MAP_VALUE).and_then(ExprType::as_scalar).cloned(),
+        };
+        let Some(element) = element else {
+            return self.error(
+                expr,
+                match column {
+                    MapColumn::Key => "`{ $key }` needs a scalar-keyed collection; a keyless or \
+                                       composite-keyed view has no scalar key set",
+                    MapColumn::Value => "`{ $value }` reads a map's values; this collection is \
+                                         not a map (§5.4: a map declares `$key` and `$value`)",
+                },
+            );
+        };
+        // §5.4/§8.5: the projection builds a SET of the column's values, so a
+        // move-only value type would have to be duplicated once per entry. Refuse
+        // it rather than silently copying a handle the type forbids copying.
+        if !element.is_copyable() {
+            return self.error(
+                expr,
+                format!(
+                    "`{{ $value }}` would copy a move-only `{}` out of every entry (§8.5); read \
+                     one entry's value with `m[k].$value`, or enumerate with `m[:e]`",
+                    element.name()
+                ),
+            );
+        }
+        Some(TypedExpr::new(
+            expr.span,
+            ExprType::scalar(Type::Set(Box::new(element))),
+            TypedKind::MapColumn { source: Box::new(source), column },
+        ))
+    }
+
     fn key_field_names(&mut self, value: &Expr) -> Option<Vec<String>> {
         match &value.kind {
             ExprKind::Name(name) => Some(vec![name.text.clone()]),

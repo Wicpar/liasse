@@ -1,0 +1,17 @@
+{
+  format: 1
+  name: map-value-without-key-invalid
+  suite: static
+  spec: ["#state-model", "§5.4"]
+  note: "§5.4: 'A `$value` with no `$key` is likewise a static error: a map's entries are keyed, so the key type is not optional.' The object has no determined node kind — it is neither a table nor a map — so it is rejected at load rather than silently read as a struct carrying a reserved member."
+
+  package: {
+    $liasse: 1
+    $app: "t.mapnokey@1.0.0"
+    $model: {
+      settings: { $value: "text" }
+    }
+  }
+
+  expect: { outcome: invalid, violates: ["§5.4"] }
+}

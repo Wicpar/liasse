@@ -463,7 +463,7 @@ impl<'a> Interp<'a> {
             // nothing (a documented seam).
             return Ok(());
         };
-        let field = member.text.clone();
+        let field = member.member_name();
         let rows: Vec<RowTarget> = match plan {
             PatchPlan::Single(row) => vec![row],
             PatchPlan::Many(rows) => rows,
@@ -1730,18 +1730,23 @@ impl<'a> Interp<'a> {
     ) -> Result<Option<(String, Value)>, Rejection> {
         match &member.kind {
             BlockMemberKind::Named { name, value: Some(value) } => {
-                Ok(Some((name.text.clone(), self.scalar_value(value, source, current)?)))
+                Ok(Some((name.member_name(), self.scalar_value(value, source, current)?)))
             }
             BlockMemberKind::Assign { target, value } => {
-                Ok(Some((target.text.clone(), self.scalar_value(value, source, current)?)))
+                Ok(Some((target.member_name(), self.scalar_value(value, source, current)?)))
             }
             BlockMemberKind::Shorthand(expr) => match &expr.kind {
                 ExprKind::Param(id) => Ok(Some((id.text.clone(), self.scalar_value(expr, source, current)?))),
                 ExprKind::Field { member: field, .. } | ExprKind::Name(field) => {
-                    Ok(Some((field.text.clone(), self.scalar_value(expr, source, current)?)))
+                    Ok(Some((field.member_name(), self.scalar_value(expr, source, current)?)))
                 }
                 _ => Ok(None),
             },
+            // §5.4: `$key`/`$value` in a ROW object name a map row's two members;
+            // C.7's projection directives have no meaning here.
+            BlockMemberKind::Directive { name, value } if is_map_member(name) => {
+                Ok(Some((name.member_name(), self.scalar_value(value, source, current)?)))
+            }
             BlockMemberKind::Named { value: None, .. }
             | BlockMemberKind::Clear(_)
             | BlockMemberKind::Directive { .. } => Ok(None),
@@ -2196,16 +2201,21 @@ impl<'a> Interp<'a> {
             }
         };
         match &member.kind {
-            BlockMemberKind::Assign { target, value } => Ok(Some((target.text.clone(), value_of(value)?))),
-            BlockMemberKind::Named { name, value: Some(value) } => Ok(Some((name.text.clone(), value_of(value)?))),
-            BlockMemberKind::Clear(field) => Ok(Some((field.text.clone(), Value::None))),
+            BlockMemberKind::Assign { target, value } => Ok(Some((target.member_name(), value_of(value)?))),
+            BlockMemberKind::Named { name, value: Some(value) } => Ok(Some((name.member_name(), value_of(value)?))),
+            BlockMemberKind::Clear(field) => Ok(Some((field.member_name(), Value::None))),
             BlockMemberKind::Shorthand(expr) => match &expr.kind {
                 ExprKind::Param(id) => Ok(Some((id.text.clone(), value_of(expr)?))),
                 ExprKind::Field { member: field, .. } | ExprKind::Name(field) => {
-                    Ok(Some((field.text.clone(), value_of(expr)?)))
+                    Ok(Some((field.member_name(), value_of(expr)?)))
                 }
                 _ => Ok(None),
             },
+            // §5.4: `$key`/`$value` in a ROW block name a map row's two members —
+            // the projection directives of C.7 have no meaning in a patch.
+            BlockMemberKind::Directive { name, value } if is_map_member(name) => {
+                Ok(Some((name.member_name(), value_of(value)?)))
+            }
             BlockMemberKind::Named { value: None, .. } | BlockMemberKind::Directive { .. } => Ok(None),
         }
     }
@@ -2218,7 +2228,7 @@ impl<'a> Interp<'a> {
         let ExprKind::Field { base, member } = &target.kind else {
             return Ok(None);
         };
-        Ok(self.row_target(base, source)?.map(|row| (row, member.text.clone())))
+        Ok(self.row_target(base, source)?.map(|row| (row, member.member_name())))
     }
 
     /// Resolve an expression denoting one row to its address and collection path.
@@ -2401,10 +2411,22 @@ fn keyring_ref(expr: &Expr) -> Option<&str> {
 /// or static-struct member before decoding it as a scalar field.
 fn named_member(member: &BlockMember) -> Option<(String, &Expr)> {
     match &member.kind {
-        BlockMemberKind::Named { name, value: Some(value) } => Some((name.text.clone(), value)),
-        BlockMemberKind::Assign { target, value } => Some((target.text.clone(), value)),
+        BlockMemberKind::Named { name, value: Some(value) } => Some((name.member_name(), value)),
+        BlockMemberKind::Assign { target, value } => Some((target.member_name(), value)),
+        // §5.4: a map row's two members are spelled with their markers.
+        BlockMemberKind::Directive { name, value } if is_map_member(name) => {
+            Some((name.member_name(), value))
+        }
         _ => None,
     }
+}
+
+/// Whether a `$name` block member names one of a map row's two members (§5.4),
+/// as opposed to a C.7 projection directive. The distinction is positional — a
+/// row block has no projection directives — so this is the single predicate both
+/// row-member paths consult.
+fn is_map_member(name: &liasse_syntax::Ident) -> bool {
+    matches!(name.member_name().as_str(), liasse_expr::MAP_KEY | liasse_expr::MAP_VALUE)
 }
 
 /// A logical row cell over a static struct's provisional fields, for evaluating

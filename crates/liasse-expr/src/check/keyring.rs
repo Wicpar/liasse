@@ -34,7 +34,7 @@ impl Checker<'_> {
         let keyring = match selector {
             "all" => return self.check_temporal_all(expr, base),
             "key" => return self.check_key_selector(expr, base),
-            "keys" => return self.check_keys_selector(expr, base),
+            "value" => return self.check_map_value_selector(expr, base),
             "current" => KeyringSelector::Current,
             "accepted" => KeyringSelector::Accepted,
             "public" => KeyringSelector::Public,
@@ -56,7 +56,8 @@ impl Checker<'_> {
                 return self.error(
                     expr,
                     format!(
-                        "`.${other}` is not a selector (row identity `.$key`, §6.3; temporal \
+                        "`.${other}` is not a selector (row identity `.$key`, §6.3; map entry value \
+                         `.$value`, §5.4; temporal \
                          `.$all`, §14.2; keyring \
                          `.$current`/`.$accepted`/`.$public`/`.$versions`, §17.2; blob descriptor \
                          `.$sha512`/`.$bytes`/`.$media`/`.$name`, §18.1; blob placement \
@@ -112,37 +113,34 @@ impl Checker<'_> {
         }
     }
 
-    /// `base.$keys` (§13.16): the SET of identity keys of a keyed collection/view —
-    /// e.g. `.modules.$keys` is the set of installed instance keys. The base is a
-    /// keyed *view* (a stream of keyed rows); the result is a `{ $set: K }` over its
-    /// rows' key values. A single row (use `.$key`) or a keyless / non-scalar-keyed
-    /// view is a static error, kept loud rather than guessing an element type.
-    fn check_keys_selector(&mut self, expr: &Expr, base: &Expr) -> Option<TypedExpr> {
-        use liasse_value::Type;
+    /// `base.$value` (§5.4): the value one map entry holds. The base is a single
+    /// map row — the `{ $key, $value }` shape a map collection's rows carry — so
+    /// this is an ordinary read of that row's `$value` cell, the symmetric sibling
+    /// of `.$key` reading its identity. Reading BORROWS the value: a move-only
+    /// entry value (§8.5) transfers only through a move operator, never here.
+    fn check_map_value_selector(&mut self, expr: &Expr, base: &Expr) -> Option<TypedExpr> {
         let base = self.check(base)?;
-        let key = match base.ty() {
-            ExprType::View(row) => row.key().cloned(),
+        let ty = match base.ty() {
+            ExprType::Row(row) => row.field(crate::MAP_VALUE).cloned(),
             other => {
                 return self.error(
                     expr,
-                    format!("`.$keys` reads the key set of a keyed collection, not a {}", other.describe()),
+                    format!("`.$value` reads a map entry's value, not a {}", other.describe()),
                 );
             }
         };
-        let element = match key.as_ref().and_then(ExprType::as_scalar) {
-            Some(ty) => ty.clone(),
-            None => {
-                return self.error(
-                    expr,
-                    "`.$keys` needs a scalar-keyed collection; a keyless or composite-keyed view has no scalar key set",
-                );
-            }
-        };
-        Some(TypedExpr::new(
-            expr.span,
-            ExprType::scalar(Type::Set(Box::new(element))),
-            TypedKind::Keys(Box::new(base)),
-        ))
+        match ty {
+            Some(ty) => Some(TypedExpr::new(
+                expr.span,
+                ty,
+                TypedKind::Field { base: Box::new(base), name: crate::MAP_VALUE.to_owned() },
+            )),
+            None => self.error(
+                expr,
+                "`.$value` needs a map entry; this row is not a map row (§5.4: a map declares \
+                 `$key` and `$value`)",
+            ),
+        }
     }
 
     /// A keyring public version selector (§17.2) over a keyring's version view.

@@ -40,6 +40,18 @@ impl DeclName {
         Ok(Self(text.to_owned()))
     }
 
+    /// One of the two reserved member names a MAP row carries (§5.4):
+    /// [`liasse_expr::MAP_KEY`] and [`liasse_expr::MAP_VALUE`]. A map is the
+    /// degenerate keyed collection, so its entries are ordinary rows whose two
+    /// members are named by the markers that declared them — names
+    /// [`DeclName::parse`] deliberately refuses for authored fields, which is
+    /// exactly why they can never collide with one. Private to the builder: no
+    /// authored name reaches it, so the `parse` grammar stays the only door for
+    /// application names.
+    pub(crate) fn map_member(name: &str) -> Self {
+        Self(name.to_owned())
+    }
+
     /// The name text.
     #[must_use]
     pub fn as_str(&self) -> &str {

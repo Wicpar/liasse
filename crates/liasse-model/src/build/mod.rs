@@ -292,8 +292,12 @@ impl<'a> Builder<'a> {
         shape: &mut Shape,
     ) {
         match member.name.text.as_str() {
-            // $key/$unique are consumed where the collection is recognised.
-            "$key" | "$unique" => {}
+            // $key/$unique are consumed where the collection is recognised; so is
+            // the map form's `$value` (§5.4), whose absence of a `$key` the
+            // shape-marker guard already rejects precisely — accepting it here
+            // keeps that one diagnostic from being doubled by a generic
+            // "unknown reserved member".
+            "$key" | "$unique" | "$value" => {}
             // §20.1: a collection MAY carry `$from` to rename an old collection,
             // adopting its rows ("The same shorthand renames a collection"). This
             // is the collection-level analogue of the field-level `$from`/`$as`/
@@ -400,7 +404,7 @@ impl<'a> Builder<'a> {
     }
 
     /// Build one member's node from its value form (Annex C.3).
-    fn member_node(
+    pub(super) fn member_node(
         &mut self,
         reporter: &mut Reporter,
         member: &'a DocMember,
@@ -483,8 +487,15 @@ fn node_at_path<'s>(root: &'s Shape, path: &[String]) -> Option<&'s Node> {
 /// A blank writable-`json` field used as a placeholder after a rejection so the
 /// tree stays shaped and later phases can keep going.
 fn placeholder(span: liasse_diag::ByteSpan) -> ScalarField {
+    scalar_of(Type::Json, span)
+}
+
+/// A plain writable scalar field of `ty`: no default, normalization, check, or
+/// precision override. Used for a synthesized member the author did not spell
+/// out as a field — today a map's `$key` (§5.4) — and for [`placeholder`].
+fn scalar_of(ty: Type, span: liasse_diag::ByteSpan) -> ScalarField {
     ScalarField {
-        ty: Type::Json,
+        ty,
         computed: None,
         default: None,
         normalize: None,

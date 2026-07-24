@@ -8,7 +8,7 @@ use liasse_value::{RefTarget, StructType, Type};
 use crate::doc::DocValueExt;
 use crate::names::DeclName;
 use crate::report::{code, Reporter};
-use crate::state::{Collection, Node, Shape};
+use crate::state::{Collection, Member, Node, Shape};
 
 use super::Builder;
 
@@ -41,6 +41,99 @@ impl<'a> Builder<'a> {
             consumes,
             shape,
         }
+    }
+
+    /// A MAP collection (§5.4): the degenerate keyed collection whose row shape
+    /// is the fixed `{ $key, $value }`.
+    ///
+    /// `$value` is what puts the declaration in map form, and only then is `$key`
+    /// a **type expression** — the entry key's type — instead of a list of
+    /// declared field names. Both markers are lowered to ordinary shape members
+    /// under the reserved names [`liasse_expr::MAP_KEY`]/[`liasse_expr::MAP_VALUE`], so
+    /// what leaves this function is an ordinary [`Collection`] keyed on a
+    /// declared field: every downstream path — key derivation, storage, refs,
+    /// deltas, projection typing — applies with no map-specific branch.
+    pub(super) fn map_collection(
+        &mut self,
+        reporter: &mut Reporter,
+        value: &'a DocValue,
+        entry: &'a DocMember,
+        path: &[String],
+    ) -> Collection {
+        let mut shape = Shape::default();
+        let key_member = value.member("$key");
+        let key_span = key_member.map_or(value.span, |m| m.value.span);
+        let key = self.map_key_field(reporter, key_member);
+        shape.members.push(Member {
+            name: DeclName::map_member(liasse_expr::MAP_KEY),
+            span: key_span,
+            node: Node::Scalar(super::scalar_of(key, key_span)),
+        });
+        // The value takes the full member-node vocabulary a field has (a type
+        // string, a struct, a `$ref`, a `$set`, an inline `$enum`), so a map value
+        // is not a weaker position than an ordinary field.
+        let mut value_path = path.to_vec();
+        value_path.push(liasse_expr::MAP_VALUE.to_owned());
+        let node = self.member_node(reporter, entry, &value_path);
+        if let Node::Scalar(field) = &node
+            && matches!(field.ty, Type::Optional(_))
+        {
+            reporter.reject_hint(
+                entry.value.span,
+                code::TYPE,
+                crate::types::map_value_optional_reason(),
+                "a map entry is absent by having no key, never by holding `none`",
+            );
+        }
+        shape.members.push(Member {
+            name: DeclName::map_member(liasse_expr::MAP_VALUE),
+            span: entry.value.span,
+            node,
+        });
+        Collection {
+            path: super::absolute_path(path),
+            key: vec![DeclName::map_member(liasse_expr::MAP_KEY)],
+            key_span,
+            unique: Vec::new(),
+            consumes: false,
+            shape,
+        }
+    }
+
+    /// The entry-key type of a map (§5.4): `$key` read as a type expression, and
+    /// held to the same A.8 key-eligibility and non-optionality every keyed
+    /// collection's key obeys.
+    fn map_key_field(&mut self, reporter: &mut Reporter, key_member: Option<&DocMember>) -> Type {
+        let Some(member) = key_member else {
+            return Type::Json;
+        };
+        let span = member.value.span;
+        let Some(ty) = self.scalar_shape(reporter, &member.value) else {
+            reporter.reject_hint(
+                span,
+                code::KEY,
+                "a map's `$key` is a type expression: the type of its entry keys (§5.4)",
+                "e.g. `\"$key\": \"text\"`",
+            );
+            return Type::Json;
+        };
+        if matches!(ty, Type::Optional(_)) {
+            reporter.reject(span, code::TYPE, crate::types::map_key_optional_reason());
+            return Type::Json;
+        }
+        if !ty.is_key_eligible() {
+            reporter.reject_hint(
+                span,
+                code::KEY,
+                format!(
+                    "a map's `$key` type `{}` is not key-eligible (A.8)",
+                    ty.name()
+                ),
+                "a map is a keyed collection, so its key obeys the same A.8 rule",
+            );
+            return Type::Json;
+        }
+        ty
     }
 
     /// Parse and validate `$key` (§5.4, A.8): names must be declared,

@@ -209,13 +209,13 @@ pub(crate) fn set_optional_reason() -> String {
 }
 
 /// A map `$value` type spelled `V?` (A.1).
-fn map_value_optional_reason() -> String {
+pub(crate) fn map_value_optional_reason() -> String {
     "a map `$value` type is never optional: a map never stores a `none` value; absence is the key being absent (A.1) — declare the value as `V`".to_owned()
 }
 
 /// A map `$key` type spelled `K?` (§5.5 / A.1). Symmetric to the optional-value
 /// and optional-set-element rejections: `none` is absence, never a value, so it
 /// can never be carried as a map key.
-fn map_key_optional_reason() -> String {
+pub(crate) fn map_key_optional_reason() -> String {
     "a map `$key` type is never optional: `none` is absence, not a value, so it is never a map key (§5.5, A.1) — declare the key as `K`".to_owned()
 }
