@@ -1035,6 +1035,7 @@ dependencies = [
  "criterion",
  "data-encoding",
  "liasse-ident",
+ "liasse-runtime",
  "liasse-store",
  "liasse-testkit",
  "liasse-value",

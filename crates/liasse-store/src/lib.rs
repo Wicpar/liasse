@@ -47,7 +47,7 @@ mod view_program;
 pub mod contract_tests;
 
 pub use commit::{CommitOutcome, CommitSeq, CommittedRowOp, CommittedTransition};
-pub use contract::{InstanceStore, StoreFactory, Transition};
+pub use contract::{GroupMember, InstanceStore, PendingCommit, StoreFactory, Transition};
 pub use error::StoreError;
 pub use key::{key_from_components, AddressStep, CollectionPath, KeyValue, RowAddress};
 pub use memory::{MemoryStore, MemoryStoreFactory};

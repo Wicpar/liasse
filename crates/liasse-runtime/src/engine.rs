@@ -15,7 +15,8 @@ use liasse_expr::{check_expression, Cell, DivisionRounding, SortOrder};
 use liasse_ident::{NameSegment, TransactionId};
 use liasse_model::Model;
 use liasse_store::{
-    AddressStep, CommitOutcome, CommitSeq, DefinitionText, InstanceStore, KeyValue, RowAddress, Transition,
+    AddressStep, CommitOutcome, CommitSeq, DefinitionText, InstanceStore, KeyValue, PendingCommit,
+    RowAddress, Transition,
 };
 use liasse_syntax::parse_document;
 use liasse_value::{Json, Struct, Text, Timestamp, Type, Value};
@@ -25,7 +26,7 @@ use liasse_host::{BlobConnector, KeyProvider, Registry};
 
 use crate::blobs::{
     BlobCatalog, BlobFetch, BlobIngress, DeclaredDescriptor, FetchError, PlacementState,
-    UploadError,
+    StagedBlob, UploadError,
 };
 use crate::compiled::{Compiled, CompiledKeyring, CompiledMutation, ResolvedBlobPolicy};
 use crate::doc;
@@ -90,6 +91,31 @@ impl StagedChange {
     pub(crate) fn changes(&self) -> &[Change] {
         &self.changes
     }
+}
+
+/// The outcome of preparing a staged change for a durable commit (§13.10): a blob
+/// placement can reject the whole admission before any store payload is extracted.
+pub(crate) enum PrepareOutcome {
+    /// A blob placement failed; the whole admission rejects and nothing lands.
+    Rejected(Rejection),
+    /// The change's blobs landed and its store payload was extracted, ready to
+    /// commit — alone (single engine) or together with peers (folded, §13.10).
+    Prepared(PreparedCommit),
+}
+
+/// One participant's fully prepared commit within a multi-engine transition
+/// (§13.10): its extracted store payload, the blob copies it landed awaiting the
+/// durable commit, and the mutation's evaluated response. It owns everything and
+/// borrows no engine, so a coordinator holds one per touched engine, commits every
+/// payload together via [`liasse_store::InstanceStore::commit_pending_group`], then
+/// finalizes each ([`Engine::finalize_commit`]).
+pub(crate) struct PreparedCommit {
+    /// The resolved store payload to admit durably.
+    pub(crate) pending: PendingCommit,
+    /// The verified blob copies to record on a state change, or roll back otherwise.
+    pub(crate) staged_blobs: Vec<StagedBlob>,
+    /// The program's evaluated `return`, delivered with the commit outcome.
+    pub(crate) response: Option<ResponseValue>,
 }
 
 /// A staged admission's response as a value cell (§13.10): the wrapped
@@ -1221,6 +1247,13 @@ impl<S: InstanceStore> Engine<S> {
         &self.store
     }
 
+    /// The backing store, borrowed exclusively — the seam a multi-engine coordinator
+    /// pairs with a [`PendingCommit`] into a `GroupMember` for an all-or-none durable
+    /// commit across engines (§13.10).
+    pub(crate) fn store_mut(&mut self) -> &mut S {
+        &mut self.store
+    }
+
     /// The internally-provisioned keyring named `ring` (§17), for reading its
     /// version metadata (`.$current`/`.$accepted`/`.$versions`) and lifecycle
     /// state. The engine bootstraps and rotates it on the virtual clock; a host
@@ -1849,19 +1882,50 @@ impl<S: InstanceStore> Engine<S> {
         staged: StagedChange,
         transaction: Option<TransactionId>,
     ) -> Result<CallOutcome, EngineError> {
+        let PreparedCommit { pending, staged_blobs, response } =
+            match self.prepare_commit(staged, transaction)? {
+                PrepareOutcome::Rejected(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+                PrepareOutcome::Prepared(prepared) => prepared,
+            };
+        // A single-engine commit lands its own store transition; a multi-engine
+        // transition routes every participant through `commit_pending_group` instead.
+        let committed = match self.store.commit_pending(pending) {
+            Ok(committed) => committed,
+            Err(error) => {
+                self.rollback_blobs(staged_blobs);
+                return Err(error.into());
+            }
+        };
+        self.finalize_commit(committed, staged_blobs, response)
+    }
+
+    /// Land a staged change's blob copies and extract its committable store payload
+    /// WITHOUT committing the store transition — the stage/commit split an all-or-none
+    /// multi-engine transition needs (§13.10). A blob-placement failure rejects the
+    /// whole admission (nothing lands). The returned [`PreparedCommit`] owns
+    /// everything the durable commit needs and borrows no engine, so a coordinator
+    /// holds one per touched engine and commits them together.
+    ///
+    /// `transaction` tags this instance's commit when it is one participant of a
+    /// multi-engine atomic transition (§13.10/§19.1), so every touched instance
+    /// records the same cross-instance grouping; `None` for an ordinary single-engine
+    /// commit.
+    pub(crate) fn prepare_commit(
+        &mut self,
+        staged: StagedChange,
+        transaction: Option<TransactionId>,
+    ) -> Result<PrepareOutcome, EngineError> {
         let StagedChange { changes, response, now, ingresses, resolved_ingresses } = staged;
         // §18.7 step 6: only a mutation that has passed its complete rule and return
-        // evaluation lands physical copies. Until the store transaction below
-        // commits, the result remains absent from `blob_catalog` and cannot be served.
+        // evaluation lands physical copies. Until the store transaction commits, the
+        // result remains absent from `blob_catalog` and cannot be served.
         let mut staged_blobs = Vec::with_capacity(ingresses.len());
         for (ingress, resolved) in ingresses.iter().zip(resolved_ingresses) {
             match BlobCatalog::land(&mut self.host, ingress, resolved) {
                 Ok(staged) => staged_blobs.push(staged),
                 Err(error) => {
-                    for staged in staged_blobs {
-                        staged.rollback(&mut self.host);
-                    }
-                    return Ok(CallOutcome::Rejected(blob_upload_rejection(error)));
+                    self.rollback_blobs(staged_blobs);
+                    return Ok(PrepareOutcome::Rejected(blob_upload_rejection(error)));
                 }
             }
         }
@@ -1874,15 +1938,22 @@ impl<S: InstanceStore> Engine<S> {
             txn.set_transaction(transaction);
         }
         stage(&mut txn, changes)?;
-        let committed = match txn.commit() {
-            Ok(committed) => committed,
-            Err(error) => {
-                for staged in staged_blobs {
-                    staged.rollback(&mut self.host);
-                }
-                return Err(error.into());
-            }
-        };
+        // Extract the resolved payload; nothing durable is written here (the overlay
+        // is discarded), so the group commit below is the sole durable admission.
+        let pending = txn.into_pending();
+        Ok(PrepareOutcome::Prepared(PreparedCommit { pending, staged_blobs, response }))
+    }
+
+    /// Finalize a participant's commit AFTER its store payload has been durably
+    /// admitted (§13.10). On a state change it records and commits every verified
+    /// blob copy and advances the lineage; on `Unchanged` it rolls the blobs back.
+    /// Returns the `Committed` outcome carrying the program's evaluated `return`.
+    pub(crate) fn finalize_commit(
+        &mut self,
+        committed: CommitOutcome,
+        staged_blobs: Vec<StagedBlob>,
+        response: Option<ResponseValue>,
+    ) -> Result<CallOutcome, EngineError> {
         let seq = match committed {
             // §19.2: a state-changing commit takes a fresh point on the active
             // lineage — the identity a later export names and an import classifies.
@@ -1897,13 +1968,20 @@ impl<S: InstanceStore> Engine<S> {
                 seq
             }
             CommitOutcome::Unchanged => {
-                for staged in staged_blobs {
-                    staged.rollback(&mut self.host);
-                }
+                self.rollback_blobs(staged_blobs);
                 self.store.head()?
             }
         };
         Ok(CallOutcome::Committed { seq, response })
+    }
+
+    /// Roll back a participant's already-landed blob copies — a folded transition
+    /// unwound before its durable commit, or a commit that turned out `Unchanged`
+    /// (§13.10). Each leaves an uncommitted transport object §18.7 lets a sweeper reap.
+    pub(crate) fn rollback_blobs(&mut self, staged_blobs: Vec<StagedBlob>) {
+        for staged in staged_blobs {
+            staged.rollback(&mut self.host);
+        }
     }
 
     /// Evaluate a named view against committed state at `frontier` (§7, §12.4)

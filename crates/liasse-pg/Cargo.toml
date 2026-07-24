@@ -42,6 +42,10 @@ data-encoding = "2.11"
 # corpus through the shared runtime/surface harness over this store, gating it
 # against the identical `scenario_gate::SKIP` ledger the in-memory runner uses.
 liasse-testkit = { path = "../liasse-testkit" }
+# The multi-engine atomic-transition suite drives the runtime module host
+# (`ModuleHost`) over this store, proving a cross-engine dispatch commits every
+# touched instance durably as ONE PostgreSQL transaction (§13.10).
+liasse-runtime = { path = "../liasse-runtime" }
 # Throughput benchmarks comparing each backend op to the equivalent raw SQL on the
 # same populated database, so the backend's overhead over pure PostgreSQL is
 # measurable. `default-features = false` matches the rest of the workspace.

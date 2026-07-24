@@ -27,10 +27,11 @@
 use liasse_ident::{HistoryPoint, InstanceId, RowIncarnation, TransactionId};
 use liasse_store::{
     CollectionPath, CommitOutcome, CommitSeq, CommittedRowOp, CommittedTransition, Composition,
-    DefinitionText, InstanceStore, RowAddress, Snapshot, StoreError, StoredRow,
+    DefinitionText, GroupMember, InstanceStore, PendingCommit, RowAddress, Snapshot, StoreError,
+    StoredRow,
 };
 use liasse_value::{Sha512, Timestamp};
-use postgres::{Client, NoTls};
+use postgres::{Client, NoTls, Transaction};
 use r2d2::Pool;
 use r2d2_postgres::PostgresConnectionManager;
 use serde_json::Value as J;
@@ -150,61 +151,16 @@ impl PgStore {
             return Ok(CommitOutcome::Unchanged);
         }
         let s = self.schema.quoted();
-        // Neither `jsonb` nor a raw `text` column can hold a `U+0000`, which a valid
-        // `text` value/key or an unvalidated D.5 token (transaction id) or D.4 source
-        // may carry; NUL-safe-encode every string leaf before it reaches a column.
-        let transaction_id = transaction.as_ref().map(|t| jsonb_text::encode_text(t.as_str()));
-        let ops_wire = jsonb_text::to_jsonb(&J::Array(ops.iter().map(encode_op).collect()));
-        // §22.5/§22.6: the commit's fixed `now` — the `$created` every inserted row
-        // records — persisted so a log-fold replay reconstructs it (§14.1).
-        let created_wire = jsonb_text::to_jsonb(&crate::value_codec::encode_created(created));
-        let definition_source = definition.as_ref().map(|d| jsonb_text::encode_text(d.source()));
-        let definition_id = definition.as_ref().map(|d| d.identity().to_canonical_text());
-        let composition_wire =
-            composition.as_ref().map(|c| jsonb_text::to_jsonb(&encode_composition(c)));
-
         let mut txn = self.writer.transaction().map_err(backend)?;
-        // Take the per-instance write lock and read the authoritative head.
-        let locked = txn
-            .query_one(&format!("SELECT head FROM {s}.instance_meta WHERE id = 1 FOR UPDATE"), &[])
-            .map_err(backend)?;
-        // Pure PG: the locked durable head is the sole truth (§6.2); the next serial
-        // position is its immediate successor. There is no second (projection) head
-        // to cross-check any more, so the old divergence guard is gone.
-        let durable_head: i64 = cell(&locked, "instance_meta", "head")?;
-        let seq = seq_from(durable_head, "instance_meta.head")?.next();
-        let seq_num = i64::try_from(seq.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
-        txn.execute(
-            &format!(
-                "INSERT INTO {s}.commit_log (seq, transaction_id, ops, created) VALUES ($1, $2, $3, $4)"
-            ),
-            &[&seq_num, &transaction_id, &ops_wire, &created_wire],
-        )
-        .map_err(backend)?;
-        // Every op lands in the `nodes` adjacency tree — the sole durable row
-        // representation — in this one admission transaction. `NodeWriter` resolves
-        // each address to its surrogate id by an in-transaction SQL point lookup
-        // (§6.1), so nodes inserted earlier in this same admission are visible; there
-        // is no `by_id` projection to advance afterward. It carries the commit's
-        // `now` so a fresh insert stamps the row's `$created` (§14.1, §22.6).
-        let mut node_writer = NodeWriter::new(&s, created);
-        for op in &ops {
-            node_writer.apply(&mut txn, op)?;
-        }
-        // The commit no longer writes `next_incarnation`: the counter is advanced at
-        // allocation time, durably (§6.3). Only the head and any definition/
-        // composition are stamped here.
-        txn.execute(
-            &format!(
-                "UPDATE {s}.instance_meta SET \
-                 head = $1, \
-                 definition_source = COALESCE($2, definition_source), \
-                 definition_id = COALESCE($3, definition_id), \
-                 composition = COALESCE($4, composition) WHERE id = 1"
-            ),
-            &[&seq_num, &definition_source, &definition_id, &composition_wire],
-        )
-        .map_err(backend)?;
+        let seq = commit_body(
+            &mut txn,
+            &s,
+            &ops,
+            created,
+            transaction.as_ref(),
+            definition.as_ref(),
+            composition.as_ref(),
+        )?;
         txn.commit().map_err(backend)?;
 
         // Pure PG: the durable tables the transaction just wrote *are* the committed
@@ -214,11 +170,188 @@ impl PgStore {
     }
 }
 
+/// Admit one instance's already-resolved ops into an OPEN SQL transaction against
+/// its quoted `schema` (`s`), WITHOUT beginning or committing the transaction —
+/// taking that instance's per-instance write lock (`instance_meta.head` `FOR UPDATE`)
+/// and advancing its gapless head, then landing the ops in the `nodes` tree and the
+/// `commit_log`. The caller owns the transaction: a single-engine admission commits
+/// it alone; a folded multi-engine commit (§13.10) runs this once per touched schema
+/// on ONE shared transaction, so every touched instance commits together or the whole
+/// transaction rolls back. Assumes the payload is non-empty (the empty case is
+/// [`CommitOutcome::Unchanged`], filtered before this is reached).
+fn commit_body(
+    txn: &mut Transaction<'_>,
+    s: &str,
+    ops: &[CommittedRowOp],
+    created: Timestamp,
+    transaction: Option<&TransactionId>,
+    definition: Option<&DefinitionText>,
+    composition: Option<&Composition>,
+) -> Result<CommitSeq, StoreError> {
+    // Neither `jsonb` nor a raw `text` column can hold a `U+0000`, which a valid
+    // `text` value/key or an unvalidated D.5 token (transaction id) or D.4 source
+    // may carry; NUL-safe-encode every string leaf before it reaches a column.
+    let transaction_id = transaction.map(|t| jsonb_text::encode_text(t.as_str()));
+    let ops_wire = jsonb_text::to_jsonb(&J::Array(ops.iter().map(encode_op).collect()));
+    // §22.5/§22.6: the commit's fixed `now` — the `$created` every inserted row
+    // records — persisted so a log-fold replay reconstructs it (§14.1).
+    let created_wire = jsonb_text::to_jsonb(&crate::value_codec::encode_created(created));
+    let definition_source = definition.map(|d| jsonb_text::encode_text(d.source()));
+    let definition_id = definition.map(|d| d.identity().to_canonical_text());
+    let composition_wire = composition.map(|c| jsonb_text::to_jsonb(&encode_composition(c)));
+
+    // Take the per-instance write lock and read the authoritative head. Locking
+    // `FOR UPDATE` here is what serializes concurrent writers of THIS instance; a
+    // folded commit acquires every touched instance's lock in a fixed global order
+    // (see `commit_pending_group`), so overlapping multi-engine transitions cannot
+    // deadlock or partial-commit.
+    let locked = txn
+        .query_one(&format!("SELECT head FROM {s}.instance_meta WHERE id = 1 FOR UPDATE"), &[])
+        .map_err(backend)?;
+    // Pure PG: the locked durable head is the sole truth (§6.2); the next serial
+    // position is its immediate successor. There is no second (projection) head
+    // to cross-check any more, so the old divergence guard is gone.
+    let durable_head: i64 = cell(&locked, "instance_meta", "head")?;
+    let seq = seq_from(durable_head, "instance_meta.head")?.next();
+    let seq_num = i64::try_from(seq.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
+    txn.execute(
+        &format!(
+            "INSERT INTO {s}.commit_log (seq, transaction_id, ops, created) VALUES ($1, $2, $3, $4)"
+        ),
+        &[&seq_num, &transaction_id, &ops_wire, &created_wire],
+    )
+    .map_err(backend)?;
+    // Every op lands in the `nodes` adjacency tree — the sole durable row
+    // representation — in this one admission transaction. `NodeWriter` resolves
+    // each address to its surrogate id by an in-transaction SQL point lookup
+    // (§6.1), so nodes inserted earlier in this same admission are visible; there
+    // is no `by_id` projection to advance afterward. It carries the commit's
+    // `now` so a fresh insert stamps the row's `$created` (§14.1, §22.6).
+    let mut node_writer = NodeWriter::new(s, created);
+    for op in ops {
+        node_writer.apply(txn, op)?;
+    }
+    // The commit no longer writes `next_incarnation`: the counter is advanced at
+    // allocation time, durably (§6.3). Only the head and any definition/
+    // composition are stamped here.
+    txn.execute(
+        &format!(
+            "UPDATE {s}.instance_meta SET \
+             head = $1, \
+             definition_source = COALESCE($2, definition_source), \
+             definition_id = COALESCE($3, definition_id), \
+             composition = COALESCE($4, composition) WHERE id = 1"
+        ),
+        &[&seq_num, &definition_source, &definition_id, &composition_wire],
+    )
+    .map_err(backend)?;
+    Ok(seq)
+}
+
+/// Admit one participant's payload into an open transaction, mapping an empty
+/// payload to [`CommitOutcome::Unchanged`] without touching the store (§22.2).
+fn commit_member(
+    txn: &mut Transaction<'_>,
+    s: &str,
+    pending: &PendingCommit,
+) -> Result<CommitOutcome, StoreError> {
+    if pending.ops.is_empty() && pending.definition.is_none() && pending.composition.is_none() {
+        return Ok(CommitOutcome::Unchanged);
+    }
+    let seq = commit_body(
+        txn,
+        s,
+        &pending.ops,
+        pending.created,
+        pending.transaction.as_ref(),
+        pending.definition.as_ref(),
+        pending.composition.as_ref(),
+    )?;
+    Ok(CommitOutcome::Committed(seq))
+}
+
 impl InstanceStore for PgStore {
     type Transition<'s> = PgTransition<'s>;
 
     fn instance(&self) -> &InstanceId {
         &self.instance
+    }
+
+    /// PostgreSQL commits an all-or-none multi-instance transition durably: every
+    /// touched instance's schema is on the SAME database, so the coordinator commits
+    /// them together in ONE SQL transaction ([`Self::commit_pending_group`]) — atomic
+    /// by construction, all schemas commit or the transaction rolls back entirely.
+    fn multi_instance_atomic_commit(&self) -> bool {
+        true
+    }
+
+    /// Commit one already-staged payload on this instance's own writer, in its own
+    /// SQL transaction (§22.2) — the single-participant durable commit. The
+    /// already-resolved ops are admitted directly; nothing is re-staged.
+    fn commit_pending(&mut self, pending: PendingCommit) -> Result<CommitOutcome, StoreError> {
+        let PendingCommit { ops, created, transaction, definition, composition } = pending;
+        self.commit_transition(ops, created, transaction, definition, composition)
+    }
+
+    /// Commit every participant's payload as ONE durable all-or-none transition
+    /// (§13.10). All instances of one deployment share a single database (one schema
+    /// each), so a folded multi-engine transition is committed in ONE SQL transaction
+    /// spanning every touched schema, on a single coordinating connection: atomicity
+    /// is inherent — every schema commits, or the transaction rolls back entirely, so
+    /// no surviving committed child under a rejected parent and no parent commit with
+    /// an uncommitted child.
+    ///
+    /// Before writing, each touched instance's `instance_meta.head` is locked
+    /// `FOR UPDATE`, in a FIXED global order — ascending by PostgreSQL schema name,
+    /// which is globally unique and stable per instance. Because every folded commit
+    /// acquires its locks in that same order, two concurrent multi-engine
+    /// transitions touching overlapping instances serialize on the first shared lock
+    /// instead of deadlocking, and neither can lost-update or partial-commit. Outcomes
+    /// are returned in the SAME order the members were given, not lock order.
+    fn commit_pending_group(
+        members: Vec<GroupMember<'_, PgStore>>,
+    ) -> Result<Vec<CommitOutcome>, StoreError> {
+        if members.is_empty() {
+            return Ok(Vec::new());
+        }
+        // Reorder into the fixed global lock order (ascending schema name), keeping
+        // each member's original input index so outcomes come back in input order.
+        let mut ordered: Vec<(usize, GroupMember<'_, PgStore>)> =
+            members.into_iter().enumerate().collect();
+        ordered.sort_by(|(_, a), (_, b)| a.store.schema.name().cmp(b.store.schema.name()));
+
+        // The first member in lock order lends its writer as the single coordinating
+        // connection; every touched schema is written through it in ONE transaction.
+        // A concurrent folded commit that also touches this instance blocks on the
+        // same `FOR UPDATE` head lock rather than opening a second transaction, so the
+        // one-writer-per-instance invariant still holds across the whole group.
+        let Some((first, rest)) = ordered.split_first_mut() else {
+            return Ok(Vec::new());
+        };
+        let (first_idx, first_member) = (first.0, &mut first.1);
+        let first_pending = &first_member.pending;
+        let PgStore { writer, schema, .. } = &mut *first_member.store;
+        let first_schema = schema.quoted();
+        let mut txn = writer.transaction().map_err(backend)?;
+
+        // Lock-and-write each participant in ascending schema order, tagging its
+        // outcome with its input position. Interleaving the write with the next lock
+        // does not affect deadlock-freedom: locks are only ever acquired in ascending
+        // order, the textbook ordered-locking condition, so no cycle of waits forms.
+        let mut indexed: Vec<(usize, CommitOutcome)> = Vec::with_capacity(rest.len() + 1);
+        indexed.push((first_idx, commit_member(&mut txn, &first_schema, first_pending)?));
+        for (orig_idx, member) in rest.iter() {
+            let s = member.store.schema.quoted();
+            indexed.push((*orig_idx, commit_member(&mut txn, &s, &member.pending)?));
+        }
+
+        // ONE commit lands every touched schema atomically; any error above dropped
+        // `txn` uncommitted, so nothing was written.
+        txn.commit().map_err(backend)?;
+
+        // Restore input order from the lock order the outcomes were produced in.
+        indexed.sort_by_key(|(index, _)| *index);
+        Ok(indexed.into_iter().map(|(_, outcome)| outcome).collect())
     }
 
     fn head(&self) -> Result<CommitSeq, StoreError> {

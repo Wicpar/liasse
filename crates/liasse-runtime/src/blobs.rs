@@ -30,7 +30,7 @@ use liasse_value::{BlobDescriptor, MediaType, Sha512};
 mod ingress;
 mod placement;
 
-pub(crate) use ingress::{BlobCatalog, validate_connectors};
+pub(crate) use ingress::{BlobCatalog, StagedBlob, validate_connectors};
 pub use ingress::{BlobFetch, BlobIngress};
 use placement::dedup;
 pub use placement::{CopyState, Placement, PlacementPolicy, PlacementState, Store, StoreId};

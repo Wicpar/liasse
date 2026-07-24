@@ -20,7 +20,7 @@ use liasse_value::{Sha512, Timestamp};
 use sha2::{Digest as _, Sha512 as Sha512Hasher};
 
 use crate::commit::{CommitOutcome, CommitSeq, CommittedRowOp, CommittedTransition};
-use crate::contract::{InstanceStore, StoreFactory};
+use crate::contract::{InstanceStore, PendingCommit, StoreFactory};
 use crate::error::StoreError;
 use crate::key::{CollectionPath, RowAddress};
 use crate::meta::{Composition, DefinitionText};
@@ -150,6 +150,13 @@ impl InstanceStore for MemoryStore {
     /// and no other writer interleaves — indivisible in practice.
     fn multi_instance_atomic_commit(&self) -> bool {
         true
+    }
+
+    /// Commit an already-staged payload directly (§13.10): the resolved ops are
+    /// admitted as one transition without re-staging or re-allocating incarnations.
+    fn commit_pending(&mut self, pending: PendingCommit) -> Result<CommitOutcome, StoreError> {
+        let PendingCommit { ops, created, transaction, definition, composition } = pending;
+        self.commit_transition(ops, created, transaction, definition, composition)
     }
 
     fn head(&self) -> Result<CommitSeq, StoreError> {

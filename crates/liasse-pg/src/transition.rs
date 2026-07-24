@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use liasse_ident::{RowIncarnation, TransactionId};
 use liasse_store::{
     CollectionPath, CommitOutcome, CommittedRowOp, Composition, DefinitionText, InstanceStore,
-    RowAddress, StoreError, StoredRow, Transition,
+    PendingCommit, RowAddress, StoreError, StoredRow, Transition,
 };
 use liasse_value::{Precision, Timestamp, Value};
 
@@ -172,6 +172,14 @@ impl Transition for PgTransition<'_> {
     fn commit(self) -> Result<CommitOutcome, StoreError> {
         let Self { store, ops, now, definition, composition, transaction, overlay: _ } = self;
         store.commit_transition(ops, now, transaction, definition, composition)
+    }
+
+    fn into_pending(self) -> PendingCommit {
+        // Nothing has touched PostgreSQL (the overlay is pure in-memory), so dropping
+        // the borrowed store here writes nothing; the extracted payload carries every
+        // resolved op forward to the shared multi-instance commit (§13.10).
+        let Self { ops, now, definition, composition, transaction, store: _, overlay: _ } = self;
+        PendingCommit { ops, created: now, transaction, definition, composition }
     }
 
     fn abort(self) {

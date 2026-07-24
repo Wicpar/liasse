@@ -11,7 +11,7 @@
 use liasse_ident::{HistoryPoint, InstanceId, RowIncarnation, TransactionId};
 use liasse_value::{Sha512, Timestamp, Value};
 
-use crate::commit::{CommitOutcome, CommitSeq, CommittedTransition};
+use crate::commit::{CommitOutcome, CommitSeq, CommittedRowOp, CommittedTransition};
 use crate::error::StoreError;
 use crate::key::{CollectionPath, RowAddress};
 use crate::meta::{Composition, DefinitionText};
@@ -46,6 +46,42 @@ pub trait InstanceStore {
     /// not others. This is the store-agnostic seam the durable follow-up fills.
     fn multi_instance_atomic_commit(&self) -> bool {
         false
+    }
+
+    /// Commit a pre-staged [`PendingCommit`] to this instance's durable store — the
+    /// single-participant durable commit the multi-engine coordinator uses per
+    /// engine (§13.10), and the building block the default
+    /// [`InstanceStore::commit_pending_group`] commits each member with.
+    ///
+    /// Equivalent in effect to staging the payload's operations into a
+    /// [`Transition`] and committing it, but it admits the already-resolved ops
+    /// directly (their incarnations were allocated when the payload was staged), so
+    /// it never re-stages, re-checks occupancy, or re-allocates. Empty payloads are
+    /// [`CommitOutcome::Unchanged`] and consume no position (§22.2).
+    fn commit_pending(&mut self, pending: PendingCommit) -> Result<CommitOutcome, StoreError>;
+
+    /// Commit a set of participants' pre-staged payloads all-or-none, as one atomic
+    /// multi-instance transition (§13.10). Returns each member's
+    /// [`CommitOutcome`] in the SAME order the members were given.
+    ///
+    /// The default commits each member in turn via [`InstanceStore::commit_pending`]:
+    /// correct for a store whose validated commit cannot fail and whose writer no
+    /// other participant interleaves — the in-memory reference (in-process,
+    /// single-writer), where once every participant has staged and validated,
+    /// committing each in turn is indivisible in practice. A durable multi-instance
+    /// backend (PostgreSQL) overrides this with one shared SQL transaction spanning
+    /// every touched instance, taking each instance's head lock in a fixed global
+    /// order so concurrent multi-engine transitions cannot deadlock, lost-update, or
+    /// partial-commit; a store that returns `false` from
+    /// [`InstanceStore::multi_instance_atomic_commit`] must not be driven through
+    /// this path.
+    fn commit_pending_group(
+        members: Vec<GroupMember<'_, Self>>,
+    ) -> Result<Vec<CommitOutcome>, StoreError>
+    where
+        Self: Sized,
+    {
+        members.into_iter().map(|member| member.store.commit_pending(member.pending)).collect()
     }
 
     /// The current head position: the highest committed serial position, or
@@ -205,8 +241,51 @@ pub trait Transition {
     /// empty transition returns [`CommitOutcome::Unchanged`] without a commit.
     fn commit(self) -> Result<CommitOutcome, StoreError>;
 
+    /// Extract this transition's committable payload WITHOUT committing it — the
+    /// stage/commit split an all-or-none multi-instance transition needs (§13.10).
+    /// The returned [`PendingCommit`] owns every staged operation and borrows no
+    /// store, so a coordinator holds one per touched engine and commits them
+    /// together via [`InstanceStore::commit_pending_group`]. Any durable side effect
+    /// staging already had (a burn-on-allocate incarnation counter) stands; no row
+    /// state is written, so — exactly like [`Transition::abort`] — dropping the
+    /// payload without committing it leaves committed state untouched.
+    fn into_pending(self) -> PendingCommit;
+
     /// Discard every staged write, leaving committed state untouched.
     fn abort(self);
+}
+
+/// A validated, extracted transition payload ready for a durable commit (§13.10):
+/// the resolved row operations, the commit's fixed admission instant, and any shared
+/// transaction identity, active definition, or composition staged with them. It owns
+/// everything and borrows no store, so a multi-engine coordinator holds one per
+/// touched engine and commits them together, all-or-none.
+#[derive(Debug, Clone)]
+pub struct PendingCommit {
+    /// The resolved row operations to admit, in application order — incarnations
+    /// already allocated during staging.
+    pub ops: Vec<CommittedRowOp>,
+    /// The commit's fixed admission instant (§22.5): the `$created` every inserted
+    /// row records (§14.1, §22.6).
+    pub created: Timestamp,
+    /// The shared cross-instance transaction identity every touched instance records
+    /// (§19.1), when this payload is one participant of a folded multi-engine commit.
+    pub transaction: Option<TransactionId>,
+    /// A new active definition staged with this transition (a `load` commit), if any.
+    pub definition: Option<DefinitionText>,
+    /// A new composition staged with this transition, if any.
+    pub composition: Option<Composition>,
+}
+
+/// One participant of an all-or-none multi-instance commit (§13.10): the instance
+/// store to commit into, borrowed exclusively, and its pre-staged payload. The
+/// coordinator collects one per touched engine and hands the whole set to
+/// [`InstanceStore::commit_pending_group`], which commits them together.
+pub struct GroupMember<'a, S: InstanceStore> {
+    /// The participant's store, borrowed exclusively for the commit.
+    pub store: &'a mut S,
+    /// The participant's pre-staged committable payload.
+    pub pending: PendingCommit,
 }
 
 /// Constructs instance stores. The conformance suite is generic over this trait

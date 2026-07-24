@@ -12,7 +12,7 @@ use liasse_ident::{RowIncarnation, TransactionId};
 use liasse_value::{Precision, Timestamp, Value};
 
 use crate::commit::{CommitOutcome, CommittedRowOp};
-use crate::contract::Transition;
+use crate::contract::{PendingCommit, Transition};
 use crate::error::StoreError;
 use crate::key::{CollectionPath, RowAddress};
 use crate::memory::MemoryStore;
@@ -213,6 +213,11 @@ impl Transition for MemoryTransition<'_> {
     fn commit(self) -> Result<CommitOutcome, StoreError> {
         let Self { store, ops, now, definition, composition, transaction, overlay: _ } = self;
         store.commit_transition(ops, now, transaction, definition, composition)
+    }
+
+    fn into_pending(self) -> PendingCommit {
+        let Self { ops, now, definition, composition, transaction, store: _, overlay: _ } = self;
+        PendingCommit { ops, created: now, transaction, definition, composition }
     }
 
     fn abort(self) {

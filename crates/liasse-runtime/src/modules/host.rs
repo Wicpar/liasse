@@ -6,11 +6,15 @@ use std::collections::BTreeMap;
 
 use liasse_expr::{Cell, ExprType};
 use liasse_ident::{InstanceId, TransactionId};
-use liasse_store::{InstanceStore, StoreFactory};
+use liasse_store::{GroupMember, InstanceStore, PendingCommit, StoreFactory};
 use liasse_value::{Type, Value};
 
+use crate::blobs::StagedBlob;
 use crate::dispatch::Dispatch;
-use crate::engine::{response_to_cell, BlobBacking, Engine, StagedAdmission, StagedChange};
+use crate::engine::{
+    response_to_cell, BlobBacking, Engine, PrepareOutcome, PreparedCommit, StagedAdmission,
+    StagedChange,
+};
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::generator::Generators;
 use crate::response::ResponseValue;
@@ -56,7 +60,7 @@ impl<S> Child<S> {
 /// The engine a folded transition (§13.10) admits its top-level request against —
 /// the root application, or an installed child addressed through its interface. The
 /// reached instances (each a `#handle.mutation` dispatch) are always children.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Primary {
     Root,
     Child(usize),
@@ -838,15 +842,52 @@ impl<F: StoreFactory> ModuleHost<F> {
         }
     }
 
+    /// The engine a [`Primary`] designates, borrowed exclusively.
+    fn engine_mut(&mut self, primary: Primary) -> Result<&mut Engine<F::Store>, ModuleError> {
+        match primary {
+            Primary::Root => Ok(&mut self.root),
+            Primary::Child(index) => self.children.get_mut(index).map(|child| &mut child.engine).ok_or_else(|| {
+                ModuleError::Engine(EngineError::Internal("primary child index out of range".to_owned()))
+            }),
+        }
+    }
+
+    /// Prepare one participant of a folded transition: land its blobs and extract its
+    /// committable store payload (§13.10), tagging it with the shared `transaction`.
+    fn prepare_participant(
+        &mut self,
+        primary: Primary,
+        change: StagedChange,
+        transaction: &TransactionId,
+    ) -> Result<PrepareOutcome, ModuleError> {
+        self.engine_mut(primary)?
+            .prepare_commit(change, Some(transaction.clone()))
+            .map_err(ModuleError::Engine)
+    }
+
+    /// Roll back every already-prepared participant's landed blobs when a folded
+    /// transition is unwound before its durable commit (§13.10) — a placement
+    /// rejection or a durable-commit fault — so nothing survives a rejected transition.
+    fn unwind_prepared(&mut self, prepared: Vec<(Primary, PreparedCommit)>) {
+        for (primary, plan) in prepared {
+            if let Ok(engine) = self.engine_mut(primary) {
+                engine.rollback_blobs(plan.staged_blobs);
+            }
+        }
+    }
+
     /// Commit a folded multi-engine transition all-or-none (§13.10).
     ///
     /// Every participant was already staged and validated, so committing here does
     /// not re-run admission. The store-agnostic guard first refuses if any touched
-    /// store cannot commit a multi-instance transition atomically (the durable
-    /// follow-up), rather than commit some instances and not others. On the
-    /// in-memory store — single-writer, in-process, a validated commit cannot fail —
-    /// committing the primary then each reached child under one shared transaction is
-    /// indivisible in practice. The response is the primary program's own `return`.
+    /// store cannot commit a multi-instance transition atomically. Then every
+    /// participant's blobs land and its store payload is extracted (Phase 1); a blob
+    /// rejection unwinds them all. The extracted payloads commit together as ONE
+    /// durable all-or-none transition via [`InstanceStore::commit_pending_group`]
+    /// (Phase 2) — on the in-memory reference each in turn (indivisible in practice);
+    /// on PostgreSQL one shared SQL transaction across every touched schema, under
+    /// ordered per-instance head locks. Each participant is then finalized (Phase 3);
+    /// the primary's outcome, carrying its program's `return`, is the transition's.
     fn commit_folded(
         &mut self,
         primary: Primary,
@@ -855,10 +896,10 @@ impl<F: StoreFactory> ModuleHost<F> {
         children: Vec<StagedChild>,
         seed: u64,
     ) -> Result<CallOutcome, ModuleError> {
-        // §13.10 store-agnostic seam: only commit all-or-none when every touched
-        // store supports it. A durable backend that needs a shared-transaction
-        // two-phase commit does not (the default), so refuse loudly rather than
-        // fake atomicity by committing some instances and not others.
+        // §13.10 store-agnostic seam: only commit all-or-none when every touched store
+        // supports it. A backend that cannot commit a multi-instance transition
+        // atomically refuses loudly rather than committing some instances and not
+        // others.
         let atomic = self.primary_atomic(primary)
             && children.iter().all(|child| {
                 self.children
@@ -867,28 +908,120 @@ impl<F: StoreFactory> ModuleHost<F> {
             });
         if !atomic {
             return Err(ModuleError::Engine(EngineError::Unsupported(
-                "multi-engine atomic commit (§13.10) over a durable store needs a shared-transaction \
-                 two-phase commit across instances — UNIMPLEMENTED. The in-memory reference commits \
-                 all-or-none; the durable (PostgreSQL) multi-instance commit is the deferred follow-up."
+                "multi-engine atomic commit (§13.10) needs every touched store to support an \
+                 all-or-none multi-instance commit; at least one does not."
                     .to_owned(),
             )));
         }
-        // §19.1: one shared transaction identity tags every touched instance's
-        // commit, so audit/replay reads them as one atomic cross-instance grouping.
+        // §19.1: one shared transaction identity tags every touched instance's commit,
+        // so audit/replay reads them as one atomic cross-instance grouping.
         let transaction = TransactionId::new(format!("{}::xtx::{seed}", self.root.instance().as_str()));
-        // Commit the primary first (its outcome, with the program's `return`, is the
-        // transition's outcome), then each reached child, all under `transaction`.
-        let outcome = match parent {
-            Some(change) => self.commit_primary(primary, change, Some(transaction.clone()))?,
-            None => CallOutcome::Unchanged { response: unchanged_response },
-        };
-        for child in children {
-            let instance = self.children.get_mut(child.index).ok_or_else(|| {
-                ModuleError::Engine(EngineError::Internal("staged child index out of range".to_owned()))
-            })?;
-            instance.engine.commit_staged(child.change, Some(transaction.clone())).map_err(ModuleError::Engine)?;
+
+        // Phase 1 — prepare each participant (primary first, then each reached child).
+        // A blob-placement rejection unwinds every already-prepared participant before
+        // any durable commit, so the whole transition rejects with nothing landed.
+        let mut prepared: Vec<(Primary, PreparedCommit)> = Vec::new();
+        if let Some(change) = parent {
+            match self.prepare_participant(primary, change, &transaction)? {
+                PrepareOutcome::Rejected(rejection) => {
+                    self.unwind_prepared(prepared);
+                    return Ok(CallOutcome::Rejected(rejection));
+                }
+                PrepareOutcome::Prepared(plan) => prepared.push((primary, plan)),
+            }
         }
-        Ok(outcome)
+        for child in children {
+            let StagedChild { index, change } = child;
+            match self.prepare_participant(Primary::Child(index), change, &transaction)? {
+                PrepareOutcome::Rejected(rejection) => {
+                    self.unwind_prepared(prepared);
+                    return Ok(CallOutcome::Rejected(rejection));
+                }
+                PrepareOutcome::Prepared(plan) => prepared.push((Primary::Child(index), plan)),
+            }
+        }
+
+        // Split the plans into the store payloads and the finalize metadata (landed
+        // blobs + response), keyed by participant so an outcome maps back to its
+        // engine. Root and children live in disjoint fields.
+        let mut root_pending: Option<PendingCommit> = None;
+        let mut child_pendings: BTreeMap<usize, PendingCommit> = BTreeMap::new();
+        let mut root_final: Option<(Vec<StagedBlob>, Option<ResponseValue>)> = None;
+        let mut child_final: BTreeMap<usize, (Vec<StagedBlob>, Option<ResponseValue>)> = BTreeMap::new();
+        for (primary, plan) in prepared {
+            let PreparedCommit { pending, staged_blobs, response } = plan;
+            match primary {
+                Primary::Root => {
+                    root_pending = Some(pending);
+                    root_final = Some((staged_blobs, response));
+                }
+                Primary::Child(index) => {
+                    child_pendings.insert(index, pending);
+                    child_final.insert(index, (staged_blobs, response));
+                }
+            }
+        }
+
+        // Phase 2 — build the group with disjoint `&mut` stores (root field, then the
+        // children Vec) and commit every payload as ONE durable all-or-none
+        // transition. `order` parallels the members, so outcomes (returned in input
+        // order) map back to each participant.
+        let mut members: Vec<GroupMember<'_, F::Store>> = Vec::new();
+        let mut order: Vec<Primary> = Vec::new();
+        if let Some(pending) = root_pending {
+            members.push(GroupMember { store: self.root.store_mut(), pending });
+            order.push(Primary::Root);
+        }
+        for (index, child) in self.children.iter_mut().enumerate() {
+            if let Some(pending) = child_pendings.remove(&index) {
+                members.push(GroupMember { store: child.engine.store_mut(), pending });
+                order.push(Primary::Child(index));
+            }
+        }
+        let outcomes = match <F::Store as InstanceStore>::commit_pending_group(members) {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                // The transaction rolled back — nothing committed. Roll back every
+                // participant's landed blobs and surface the fault.
+                if let Some((blobs, _)) = root_final {
+                    self.root.rollback_blobs(blobs);
+                }
+                for (index, (blobs, _)) in child_final {
+                    if let Some(child) = self.children.get_mut(index) {
+                        child.engine.rollback_blobs(blobs);
+                    }
+                }
+                return Err(ModuleError::Engine(error.into()));
+            }
+        };
+
+        // Phase 3 — finalize each participant with its outcome. The primary's outcome
+        // (its program's `return`) is the folded transition's; a primary that changed
+        // nothing yet reached a child yields `Unchanged` with its response.
+        let mut result = CallOutcome::Unchanged { response: unchanged_response };
+        for (participant, committed) in order.into_iter().zip(outcomes) {
+            let outcome = match participant {
+                Primary::Root => {
+                    let (blobs, response) = root_final.take().ok_or_else(|| {
+                        ModuleError::Engine(EngineError::Internal("missing root finalize metadata".to_owned()))
+                    })?;
+                    self.root.finalize_commit(committed, blobs, response).map_err(ModuleError::Engine)?
+                }
+                Primary::Child(index) => {
+                    let (blobs, response) = child_final.remove(&index).ok_or_else(|| {
+                        ModuleError::Engine(EngineError::Internal("missing child finalize metadata".to_owned()))
+                    })?;
+                    let child = self.children.get_mut(index).ok_or_else(|| {
+                        ModuleError::Engine(EngineError::Internal("staged child index out of range".to_owned()))
+                    })?;
+                    child.engine.finalize_commit(committed, blobs, response).map_err(ModuleError::Engine)?
+                }
+            };
+            if participant == primary {
+                result = outcome;
+            }
+        }
+        Ok(result)
     }
 
     /// Build the root [`CallRequest`] a §13.4 parent-surface-delegating exposed
