@@ -259,6 +259,26 @@ fn requires_of(definition: &str) -> Result<Vec<(String, String)>, EngineError> {
     Ok(read_requires(document.root()))
 }
 
+/// The package identity a definition declares in its §4.1 header — the `$app`
+/// (application) or `$module` (module) `name@version` string — or `None` when
+/// the text does not parse or declares neither. A durable REOPEN compares the
+/// supplied definition's identity against the one the store was installed with,
+/// so a same-version reopen proceeds and any other package or version fails
+/// loudly (a version change is a §20 migration, out of scope for reopen). The
+/// declared token is compared verbatim: two builds of one package version carry
+/// the identical identity string, and any difference is refused fail-closed
+/// rather than risk attaching a foreign shape.
+fn declared_identity(definition: &str) -> Option<String> {
+    let mut sources = SourceMap::new();
+    let src = sources.add_file("liasse.json", definition.to_owned());
+    let document = parse_document(src, definition).ok()?;
+    let root = document.root();
+    doc::member(root, "$app")
+        .or_else(|| doc::member(root, "$module"))
+        .and_then(doc::string)
+        .map(str::to_owned)
+}
+
 /// The package's `$requires` declarations as `(local namespace, "name@major")`
 /// pairs (§16.2). The model has already validated the block's shape (a decl-name
 /// key mapping to a string); resolving each against the host registry is the
@@ -748,6 +768,119 @@ impl<S: InstanceStore> Engine<S> {
         let mut engine = Self { store, model, compiled, clock, cursor, sources, keyrings, host, config: None, blob_placements: crate::env::BlobPlacements::default(), blob_catalog: BlobCatalog::default() };
         engine.genesis(definition, &Genesis { data, bundle }, &crate::imports::EMPTY, generator)?;
         Ok(engine)
+    }
+
+    /// REOPEN an already-installed `store` at its CURRENT persisted head against a
+    /// host [`Registry`], WITHOUT re-running genesis — the durable-boot path a
+    /// process restart takes. Mirrors [`Engine::load_with_hosts`] (resolve
+    /// `$requires`, bind hosts, compile the definition, provision keyrings) with
+    /// two deliberate differences: it adopts the store's head cursor rather than
+    /// [`HistoryCursor::genesis`](crate::lineage::HistoryCursor::genesis), and it
+    /// applies NO `$data`/`$bundle` seed and NO singleton defaults. The reopened
+    /// engine reads the existing committed state and continues from the head.
+    ///
+    /// A fresh (never-installed) store has nothing to reopen: this is a genesis
+    /// load's job ([`Engine::load_with_hosts`]), or use [`Engine::open_with_hosts`]
+    /// to pick the right path automatically.
+    ///
+    /// # Errors
+    /// [`EngineError::Mismatch`] when the store carries no installed definition,
+    /// or when the supplied definition's package identity/version does not match
+    /// the one the store was installed with — a reopen only continues a
+    /// same-version instance (a version change is a §20 migration, out of scope),
+    /// and a mismatch is refused loudly rather than re-seeding or attaching a
+    /// foreign shape. [`EngineError::Invalid`]/[`EngineError::Requirement`]/
+    /// [`EngineError::Keyring`] on a compile, requirement, or keyring failure, and
+    /// [`EngineError::Store`] on a store read failure — exactly as a load.
+    pub fn reopen_with_hosts<G: Generators>(
+        store: S,
+        definition: &str,
+        generator: &mut G,
+        registry: Registry,
+    ) -> Result<Self, EngineError> {
+        // A reopen attaches to an already-installed instance, so the store MUST
+        // carry the active definition it was installed with (§9.3 records one on
+        // every genesis). Its package identity/version must match the supplied
+        // definition; a §20 migration is out of scope and a foreign package or a
+        // version change fails loudly rather than silently re-genesising over
+        // populated state (the restart-collision bug this path fixes) or attaching
+        // the wrong shape.
+        let installed = store.definition()?.ok_or_else(|| {
+            EngineError::Mismatch(
+                "the store carries no installed definition to reopen; a fresh store must be \
+                 genesis-loaded (`load`/`load_with_hosts`/`open_with_hosts`)"
+                    .to_owned(),
+            )
+        })?;
+        match (declared_identity(definition), declared_identity(installed.source())) {
+            (Some(supplied), Some(present)) if supplied == present => {}
+            (supplied, present) => {
+                return Err(EngineError::Mismatch(format!(
+                    "reopen package `{}` does not match the installed package `{}`; a reopen \
+                     continues the SAME package version from its persisted head (a version \
+                     change is a §20 migration, not a reopen)",
+                    supplied.as_deref().unwrap_or("<none>"),
+                    present.as_deref().unwrap_or("<none>"),
+                )));
+            }
+        }
+        // §16.2: resolve the package's requirements strictly against the registry
+        // before compiling, exactly as [`Engine::load_with_hosts`] does.
+        let requires = requires_of(definition)?;
+        let mut host = HostBinding::resolve(registry, &requires, true)?;
+        let Compilation { sources, model, compiled, .. } =
+            compile_definition(definition, &host.expr_signatures(), crate::imports::EMPTY.types())?;
+        let clock = generator.now();
+        // Adopt the store's CURRENT persisted head as the logical cursor position
+        // — the point the committed log already sits at — NOT genesis, so a reopen
+        // continues from the head instead of restarting at point 1.
+        let cursor = crate::lineage::HistoryCursor::at_head(store.instance(), store.head()?);
+        let keyrings = provision_keyrings(&compiled, clock, &mut host, ProviderFallback::SimDefault)?;
+        // No genesis: the committed state is already installed; applying
+        // `$data`/`$bundle`/singleton defaults would collide on the present seed
+        // rows. The reopened engine reads the existing state and continues.
+        Ok(Self {
+            store,
+            model,
+            compiled,
+            clock,
+            cursor,
+            sources,
+            keyrings,
+            host,
+            config: None,
+            blob_placements: crate::env::BlobPlacements::default(),
+            blob_catalog: BlobCatalog::default(),
+        })
+    }
+
+    /// The single durable-boot entry: genesis-load a FRESH store or REOPEN an
+    /// already-installed one, detected from the store itself — the sole boot path
+    /// a durable caller needs for first boot AND every process restart alike.
+    ///
+    /// A store with no committed head ([`CommitSeq::GENESIS`], nothing installed)
+    /// is genesis-loaded ([`Engine::load_with_hosts`]: compile, then seed
+    /// `$data`/`$bundle` as one commit). A store that already carries committed
+    /// state is reopened at its persisted head ([`Engine::reopen_with_hosts`]:
+    /// compile, adopt the head cursor, NO re-seed). This never double-seeds a
+    /// populated store and never leaves a fresh store un-seeded, so a caller boots
+    /// through one call every time instead of branching on store emptiness itself.
+    ///
+    /// # Errors
+    /// As [`Engine::load_with_hosts`] for a fresh store and
+    /// [`Engine::reopen_with_hosts`] for an existing one, plus [`EngineError::Store`]
+    /// if the store's head cannot be read to classify it.
+    pub fn open_with_hosts<G: Generators>(
+        store: S,
+        definition: &str,
+        generator: &mut G,
+        registry: Registry,
+    ) -> Result<Self, EngineError> {
+        if store.head()? == CommitSeq::GENESIS {
+            Self::load_with_hosts(store, definition, generator, registry)
+        } else {
+            Self::reopen_with_hosts(store, definition, generator, registry)
+        }
     }
 
     /// Rebuild an activated instance over `store` from a definition and a
@@ -1355,6 +1488,16 @@ impl<S: InstanceStore> Engine<S> {
     #[must_use]
     pub fn store(&self) -> &S {
         &self.store
+    }
+
+    /// Consume the engine and return its backing store — the handoff seam a
+    /// durable caller uses to REOPEN the SAME store under a fresh engine
+    /// ([`Engine::reopen_with_hosts`]/[`Engine::open_with_hosts`]) after dropping
+    /// this one, and the seam an in-memory reopen test uses to move a populated
+    /// [`MemoryStore`](liasse_store::MemoryStore) from one engine to the next.
+    #[must_use]
+    pub fn into_store(self) -> S {
+        self.store
     }
 
     /// The backing store, borrowed exclusively — the seam a multi-engine coordinator

@@ -30,6 +30,7 @@
 //! reported `unrelated`.
 
 use liasse_ident::{HistoryPoint, InstanceId, LineageId, PointId};
+use liasse_store::CommitSeq;
 use serde_json::Value as J;
 
 use crate::history::ImportRelation;
@@ -77,6 +78,33 @@ impl HistoryCursor {
             active: Link { lineage: genesis_lineage(instance), origin: None },
             point: GENESIS_POINT,
             next: GENESIS_POINT + 1,
+            branch_pending: false,
+        }
+    }
+
+    /// The cursor a durable REOPEN adopts from the store's persisted head
+    /// (§19.2): the linear genesis-lineage position the committed log already
+    /// sits at, so a reopened engine continues from the head instead of
+    /// restarting at genesis and re-seeding.
+    ///
+    /// The store persists the committed serial position (its `head`), not the
+    /// engine's logical cursor. On the genesis lineage the two advance in
+    /// lockstep — genesis commits at point 1 = head 1, and every state-changing
+    /// commit steps both by one — so the head's number IS the current point and
+    /// the next fresh position is `head + 1`. A lineage that diverged through a
+    /// rollback or reconciliation that was never exported is not recoverable from
+    /// a bare store (that identity lives in the §19 artifact, not the store), so a
+    /// reopen adopts the linear genesis-lineage position: exact for a same-version
+    /// process restart (the case this serves), and it never re-seeds nor misreads
+    /// committed state — only a *future* export's lineage label would differ after
+    /// an unexported divergence, which same-version reopen does not perform.
+    pub(crate) fn at_head(instance: &InstanceId, head: CommitSeq) -> Self {
+        let point = head.get();
+        Self {
+            ancestors: Vec::new(),
+            active: Link { lineage: genesis_lineage(instance), origin: None },
+            point,
+            next: point + 1,
             branch_pending: false,
         }
     }

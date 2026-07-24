@@ -35,6 +35,14 @@ pub enum EngineError {
     /// An engine invariant was violated at run time — a bug or corrupt durable
     /// state, never reachable from a well-formed request.
     Internal(String),
+    /// A durable REOPEN ([`Engine::reopen_with_hosts`](crate::Engine::reopen_with_hosts))
+    /// was asked to attach a definition that is not the package the store was
+    /// installed with — a different package identity or version, or a store with
+    /// no installed definition at all. A reopen only continues a same-version
+    /// instance from its persisted head; a version change is a §20 migration, out
+    /// of scope here. The mismatch fails loudly rather than silently re-running
+    /// genesis over populated state or attaching the wrong shape.
+    Mismatch(String),
     /// A well-formed request the current build cannot serve without silent data
     /// loss, so it is refused rather than completed partially (fail-closed). The
     /// standing case is an export (§19.5) of an instance holding committed rows in
@@ -60,6 +68,7 @@ impl core::fmt::Display for EngineError {
             Self::Store(error) => write!(f, "store error: {error}"),
             Self::Seed(rejection) => write!(f, "seed rejected: {}", rejection.message()),
             Self::Internal(detail) => write!(f, "engine invariant violated: {detail}"),
+            Self::Mismatch(detail) => write!(f, "reopen definition mismatch: {detail}"),
             Self::Unsupported(detail) => write!(f, "operation refused to avoid data loss: {detail}"),
         }
     }
