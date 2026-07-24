@@ -30,6 +30,24 @@ pub trait InstanceStore {
     /// The instance incarnation this store owns (D.1).
     fn instance(&self) -> &InstanceId;
 
+    /// Whether this store can participate in an all-or-none multi-instance commit
+    /// (§13.10) through the sequential post-validation commit the runtime
+    /// coordinator uses — every touched engine's admission staged and validated
+    /// first, then each instance's diff committed in turn under one shared
+    /// [`TransactionId`](liasse_ident::TransactionId).
+    ///
+    /// The in-memory reference returns `true`: it is in-process and single-writer,
+    /// so once every participant has validated, committing each in turn is
+    /// indivisible in practice — no other writer interleaves and a validated
+    /// in-memory commit does not fail. A durable multi-instance backend
+    /// (PostgreSQL) returns `false` — the default — until it implements a genuine
+    /// shared-transaction two-phase commit across instances; the coordinator then
+    /// refuses to fake cross-store atomicity rather than commit some instances and
+    /// not others. This is the store-agnostic seam the durable follow-up fills.
+    fn multi_instance_atomic_commit(&self) -> bool {
+        false
+    }
+
     /// The current head position: the highest committed serial position, or
     /// [`CommitSeq::GENESIS`] before any commit. Fallible: a backend that reads
     /// the head from durable storage (PostgreSQL) can fail transport.

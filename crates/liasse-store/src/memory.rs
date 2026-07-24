@@ -144,6 +144,14 @@ impl InstanceStore for MemoryStore {
         &self.instance
     }
 
+    /// The in-memory reference commits an all-or-none multi-instance transition by
+    /// staging and validating every participant first, then committing each in turn
+    /// (§13.10): in-process and single-writer, so a validated commit does not fail
+    /// and no other writer interleaves — indivisible in practice.
+    fn multi_instance_atomic_commit(&self) -> bool {
+        true
+    }
+
     fn head(&self) -> Result<CommitSeq, StoreError> {
         Ok(self.head)
     }

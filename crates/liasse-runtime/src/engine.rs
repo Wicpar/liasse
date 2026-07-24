@@ -73,6 +73,22 @@ pub(crate) struct StagedChange {
     resolved_ingresses: Vec<ResolvedBlobPolicy>,
 }
 
+impl StagedChange {
+    /// The evaluated response as a value cell — the child mutation's `$return` a
+    /// cross-instance dispatch yields to its caller (§13.10), or `none` when the
+    /// mutation returns nothing. Read before the change is committed so the parent
+    /// program can bind and read the result within the transition.
+    pub(crate) fn response_cell(&self) -> Cell {
+        response_to_cell(self.response.as_ref())
+    }
+}
+
+/// A staged admission's response as a value cell (§13.10): the wrapped
+/// [`ResponseValue`]'s cell, or `none` when there is no response.
+pub(crate) fn response_to_cell(response: Option<&ResponseValue>) -> Cell {
+    response.map_or(Cell::Scalar(Value::None), |response| response.cell().clone())
+}
+
 /// The parsed, validated, compiled artefacts of one definition text — the
 /// reusable output of the load-time front end that genesis, restore, and update
 /// all consume (§9.2).

@@ -1,16 +1,19 @@
 //! The module composition host: a root engine plus the child instances mounted in
 //! its row-scoped module spaces (§13).
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use liasse_expr::{Cell, ExprType};
-use liasse_ident::InstanceId;
-use liasse_store::StoreFactory;
+use liasse_ident::{InstanceId, TransactionId};
+use liasse_store::{InstanceStore, StoreFactory};
 use liasse_value::{Type, Value};
 
-use crate::engine::Engine;
-use crate::error::EngineError;
+use crate::dispatch::Dispatch;
+use crate::engine::{response_to_cell, BlobBacking, Engine, StagedAdmission, StagedChange};
+use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::generator::Generators;
+use crate::response::ResponseValue;
 use crate::imports::ParentImports;
 use crate::modules::install::{AdmittedBindings, InstallRequest, UseSpec};
 use crate::modules::peer::{self, ResolvedPeer, SiblingInterface};
@@ -46,6 +49,84 @@ struct Child<S> {
 impl<S> Child<S> {
     fn is(&self, space: &ModuleSpace, name: &str) -> bool {
         &self.space == space && self.name == name
+    }
+}
+
+/// One reached child instance's staged change within a multi-engine transition
+/// (§13.10): which installed child it belongs to (its index in `children`) and the
+/// validated change to commit together with the parent.
+struct StagedChild {
+    index: usize,
+    change: StagedChange,
+}
+
+/// The cross-instance dispatch handle the coordinator lends into a multi-engine
+/// transition (§13.10). It resolves `#handle.mutation(args)` to an installed child
+/// by name, stages that child's exposed mutation into the shared `scratch`, and
+/// returns the child mutation's `$return` to the caller. Each staged child joins
+/// the parent's atomic commit; a rejected child dispatch is an `Err` that unwinds
+/// the whole parent transition, so nothing commits. Every reached engine is
+/// borrowed only immutably here (staging is read-only), so the parent and every
+/// child stage side by side; the coordinator commits them mutably afterwards.
+struct MultiDispatch<'a, S: InstanceStore, G: Generators> {
+    children: &'a [Child<S>],
+    generator: RefCell<&'a mut G>,
+    scratch: RefCell<Vec<StagedChild>>,
+}
+
+impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, S, G> {
+    fn dispatch(&self, handle: &str, mutation: &str, args: Vec<(String, Value)>) -> Result<Cell, Rejection> {
+        // §13.10: resolve the import handle to a reachable (enabled) child instance.
+        let (index, child) = self
+            .children
+            .iter()
+            .enumerate()
+            .find(|(_, child)| child.enabled && child.name == handle)
+            .ok_or_else(|| {
+                Rejection::new(
+                    RejectionReason::Malformed,
+                    format!("`#{handle}` resolves to no reachable module instance in this transition (§13.10)"),
+                )
+            })?;
+        // §13.8: the addressed contract resolves to the private mutation the child
+        // exposes for it, across the child's exposed interfaces.
+        let private = child
+            .engine
+            .exposed_interface_names()
+            .find_map(|interface| child.engine.exposed_mutation(interface, mutation))
+            .ok_or_else(|| {
+                Rejection::new(
+                    RejectionReason::Malformed,
+                    format!("module instance `#{handle}` exposes no mutation `{mutation}` (§13.8)"),
+                )
+            })?;
+        let mut request = CallRequest::new(private);
+        for (name, value) in args {
+            request = request.arg(name, value);
+        }
+        // Stage the child against its own state, lending THIS handle so the child
+        // may itself reach further instances in turn (§13.10). A fresh seed keeps
+        // each engine's generation stream distinct.
+        let seed = self.generator.borrow_mut().next_seed();
+        let staged = child
+            .engine
+            .stage_admission(&request, Vec::new(), BlobBacking::External, seed, Some(self as &dyn Dispatch))
+            .map_err(|error| {
+                Rejection::new(
+                    RejectionReason::Evaluation,
+                    format!("child instance `#{handle}` engine error: {error}"),
+                )
+            })?;
+        match staged {
+            // A rejected child unwinds the whole parent transition — nothing commits.
+            StagedAdmission::Rejected(rejection) => Err(rejection),
+            StagedAdmission::Unchanged { response } => Ok(response_to_cell(response.as_ref())),
+            StagedAdmission::Changed(change) => {
+                let response = change.response_cell();
+                self.scratch.borrow_mut().push(StagedChild { index, change });
+                Ok(response)
+            }
+        }
     }
 }
 
@@ -432,6 +513,107 @@ impl<F: StoreFactory> ModuleHost<F> {
             interface.to_owned(),
             format!("interface binds no routable mutation `{mutation}`"),
         ))
+    }
+
+    /// Admit a **root** mutation as a multi-engine atomic transition (§13.10).
+    ///
+    /// The root program runs with a dispatch handle lent over the installed
+    /// children, so a `#handle.mutation(args)` call it makes stages the addressed
+    /// child instance's exposed mutation into the SAME transition. Every engine the
+    /// transition touches — the root and each reached child — stages and validates
+    /// first; only if all pass do they commit together, under one shared
+    /// transaction, so the whole set advances on that transition or the transition
+    /// is rejected and every engine keeps its prior committed state. A root program
+    /// that reaches no child is an ordinary single-engine admission.
+    ///
+    /// # Errors
+    /// An engine/store fault, or [`EngineError::Unsupported`] when a touched store
+    /// cannot commit an all-or-none multi-instance transition (the durable §13.10
+    /// follow-up) — never a silent partial commit. A rejected transition is a
+    /// [`CallOutcome::Rejected`], not an error.
+    pub fn call_multi<G: Generators>(
+        &mut self,
+        request: &CallRequest,
+        generator: &mut G,
+    ) -> Result<CallOutcome, ModuleError> {
+        // Draw the parent's admission seed before lending the generator for child
+        // seeds, so parent and each child draw distinct generation streams.
+        let seed = generator.next_seed();
+        let (staged, children) = {
+            let handle = MultiDispatch {
+                children: &self.children,
+                generator: RefCell::new(generator),
+                scratch: RefCell::new(Vec::new()),
+            };
+            let staged = self
+                .root
+                .stage_admission(request, Vec::new(), BlobBacking::External, seed, Some(&handle as &dyn Dispatch))
+                .map_err(ModuleError::Engine)?;
+            (staged, handle.scratch.into_inner())
+        };
+        match staged {
+            StagedAdmission::Rejected(rejection) => Ok(CallOutcome::Rejected(rejection)),
+            StagedAdmission::Unchanged { response } => self.commit_multi(None, response, children, seed),
+            StagedAdmission::Changed(change) => self.commit_multi(Some(change), None, children, seed),
+        }
+    }
+
+    /// Commit a staged multi-engine transition all-or-none (§13.10).
+    ///
+    /// Every participant was already staged and validated, so committing here does
+    /// not re-run admission. The store-agnostic all-or-none guard first refuses if
+    /// any touched store cannot commit a multi-instance transition atomically (the
+    /// durable follow-up), rather than commit some instances and not others. On the
+    /// in-memory store — single-writer, in-process, a validated commit cannot fail —
+    /// committing the root then each child in turn under one shared transaction is
+    /// indivisible in practice. The response is the root program's own `return`.
+    fn commit_multi(
+        &mut self,
+        parent: Option<StagedChange>,
+        unchanged_response: Option<ResponseValue>,
+        children: Vec<StagedChild>,
+        seed: u64,
+    ) -> Result<CallOutcome, ModuleError> {
+        if parent.is_none() && children.is_empty() {
+            // Nothing anywhere changed — a query-shaped transition (§8.9).
+            return Ok(CallOutcome::Unchanged { response: unchanged_response });
+        }
+        // §13.10 store-agnostic seam: only commit all-or-none when every touched
+        // store supports it. A durable backend that needs a shared-transaction
+        // two-phase commit does not (the default), so refuse loudly rather than
+        // fake atomicity by committing some instances and not others.
+        let atomic = self.root.store().multi_instance_atomic_commit()
+            && children.iter().all(|child| {
+                self.children
+                    .get(child.index)
+                    .is_some_and(|instance| instance.engine.store().multi_instance_atomic_commit())
+            });
+        if !atomic {
+            return Err(ModuleError::Engine(EngineError::Unsupported(
+                "multi-engine atomic commit (§13.10) over a durable store needs a shared-transaction \
+                 two-phase commit across instances — UNIMPLEMENTED. The in-memory reference commits \
+                 all-or-none; the durable (PostgreSQL) multi-instance commit is the deferred follow-up."
+                    .to_owned(),
+            )));
+        }
+        // §19.1: one shared transaction identity tags every touched instance's
+        // commit, so audit/replay reads them as one atomic cross-instance grouping.
+        let transaction = TransactionId::new(format!("{}::xtx::{seed}", self.root.instance().as_str()));
+        // Commit the root first (its outcome, with the program's `return`, is the
+        // transition's outcome), then each reached child, all under `transaction`.
+        let outcome = match parent {
+            Some(change) => {
+                self.root.commit_staged(change, Some(transaction.clone())).map_err(ModuleError::Engine)?
+            }
+            None => CallOutcome::Unchanged { response: unchanged_response },
+        };
+        for child in children {
+            let instance = self.children.get_mut(child.index).ok_or_else(|| {
+                ModuleError::Engine(EngineError::Internal("staged child index out of range".to_owned()))
+            })?;
+            instance.engine.commit_staged(child.change, Some(transaction.clone())).map_err(ModuleError::Engine)?;
+        }
+        Ok(outcome)
     }
 
     /// Build the root [`CallRequest`] a §13.4 parent-surface-delegating exposed
