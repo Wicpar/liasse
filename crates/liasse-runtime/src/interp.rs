@@ -248,12 +248,7 @@ impl<'a> Interp<'a> {
                 Ok(())
             }
             StmtKind::Assign { target, value } => self.exec_assign(target, value, source),
-            // Move evaluation is wired in a dedicated commit; until then a move that
-            // somehow reaches evaluation is refused loudly rather than mis-executed.
-            StmtKind::Move { .. } => Err(Rejection::new(
-                RejectionReason::Malformed,
-                "the move operator `<-`/`->` is not yet evaluable",
-            )),
+            StmtKind::Move { dest, source: src } => self.exec_move(dest, src, source),
             StmtKind::Clear(target) => self.exec_clear(target, source),
             StmtKind::Bare(expr) => self.exec_bare(expr, source),
         }
@@ -517,6 +512,27 @@ impl<'a> Interp<'a> {
         };
         for row in &rows {
             self.write_field(row, &field, scalar.clone())?;
+        }
+        Ok(())
+    }
+
+    /// §8.5: the move operator `dest <- source` (and the mirror `source -> dest`,
+    /// which the parser normalizes to the same node) transfers the source value
+    /// into `dest` and leaves the source binding moved-from. The type checker has
+    /// established that `source` is a local binding, so evaluation binds the
+    /// destination from the source's value exactly as `=` would, then unsets the
+    /// source local — the second half of the transfer, not a guard: a later read of
+    /// the moved-from binding is already a load-time use-after-move rejection, so it
+    /// never reaches here, and if one somehow did it would fail loudly (an unknown
+    /// binding) rather than read a stale value. `dest <- dest` (an identity move)
+    /// leaves the rebound destination in place rather than unsetting it.
+    fn exec_move(&mut self, dest: &Expr, source: &Expr, at: SourceId) -> Result<(), Rejection> {
+        self.exec_assign(dest, source, at)?;
+        if let ExprKind::Name(src) = &source.kind {
+            let rebinds_source = matches!(&dest.kind, ExprKind::Name(d) if d.text == src.text);
+            if !rebinds_source {
+                self.locals.remove(&src.text);
+            }
         }
         Ok(())
     }
@@ -2214,7 +2230,9 @@ impl<'a> Interp<'a> {
     /// snapshot (§8.1/§8.6). Only such a local binds as a live [`LocalBind::Row`].
     fn local_is_written(&self, name: &str) -> bool {
         self.mutation.program.iter().any(|compiled| match &compiled.stmt.kind {
-            StmtKind::Assign { target, .. } | StmtKind::Clear(target) => field_write_root(target) == Some(name),
+            StmtKind::Assign { target, .. }
+            | StmtKind::Move { dest: target, .. }
+            | StmtKind::Clear(target) => field_write_root(target) == Some(name),
             _ => false,
         })
     }
