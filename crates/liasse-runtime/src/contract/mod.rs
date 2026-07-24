@@ -429,6 +429,16 @@ pub(crate) fn response_shape(mutation: &CompiledMutation) -> Option<BTreeMap<Str
                     scope = scope.with_binding(local.text.clone(), ty);
                 }
             }
+            // A move `dest <- source` binds a lexical local exactly as `=` would
+            // (§8.5): thread the source's type under the destination name so a later
+            // `return` projecting the moved local is typed.
+            StmtKind::Move { dest, source } => {
+                if let ExprKind::Name(local) = &dest.kind
+                    && let Some(ty) = local_type(source, &scope, stmt.source)
+                {
+                    scope = scope.with_binding(local.text.clone(), ty);
+                }
+            }
             StmtKind::Return(expr) => response = Some((expr, stmt.source)),
             StmtKind::Bare(_) | StmtKind::Clear(_) => {}
         }

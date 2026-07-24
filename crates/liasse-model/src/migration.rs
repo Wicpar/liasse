@@ -165,6 +165,7 @@ fn check_statement(reporter: &mut Reporter, span: liasse_diag::ByteSpan, stmt: &
 fn write_target(stmt: &Stmt) -> Option<&Expr> {
     match &stmt.kind {
         StmtKind::Assign { target, .. } => Some(target),
+        StmtKind::Move { dest, .. } => Some(dest),
         StmtKind::Clear(target) => Some(target),
         StmtKind::Bare(expr) => bare_write_target(expr),
         StmtKind::Return(_) => None,
@@ -228,6 +229,10 @@ fn walk_stmt(stmt: &Stmt, visit: &mut impl FnMut(&Expr)) {
         StmtKind::Assign { target, value } => {
             walk_expr(target, visit);
             walk_expr(value, visit);
+        }
+        StmtKind::Move { dest, source } => {
+            walk_expr(dest, visit);
+            walk_expr(source, visit);
         }
     }
 }

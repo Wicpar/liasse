@@ -645,6 +645,15 @@ impl MutPhase<'_, '_> {
                         self.check_assign(target, value, receiver_shape, &scope, *source);
                     }
                 }
+                // The move operator is checked in a dedicated pass (added with the
+                // move type-checking commit); until then it is refused loudly so no
+                // move program is silently mistyped.
+                StmtKind::Move { .. } => self.reject_at(
+                    *source,
+                    stmt.span,
+                    "the move operator `<-`/`->` is not yet checkable (§8.5)",
+                    "this build stage does not yet type-check moves",
+                ),
                 StmtKind::Bare(expr) => self.check_bare(expr, &scope, *source),
                 StmtKind::Clear(target) => self.check_clear(target, receiver_shape, *source),
                 StmtKind::Return(_) => {}

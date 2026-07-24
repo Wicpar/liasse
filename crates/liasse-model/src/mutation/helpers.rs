@@ -401,6 +401,7 @@ pub(crate) fn stmt_exprs(stmt: &Stmt) -> Vec<&Expr> {
     match &stmt.kind {
         StmtKind::Return(expr) | StmtKind::Bare(expr) | StmtKind::Clear(expr) => vec![expr],
         StmtKind::Assign { target, value } => vec![target, value],
+        StmtKind::Move { dest, source } => vec![dest, source],
     }
 }
 

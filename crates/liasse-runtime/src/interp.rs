@@ -248,6 +248,12 @@ impl<'a> Interp<'a> {
                 Ok(())
             }
             StmtKind::Assign { target, value } => self.exec_assign(target, value, source),
+            // Move evaluation is wired in a dedicated commit; until then a move that
+            // somehow reaches evaluation is refused loudly rather than mis-executed.
+            StmtKind::Move { .. } => Err(Rejection::new(
+                RejectionReason::Malformed,
+                "the move operator `<-`/`->` is not yet evaluable",
+            )),
             StmtKind::Clear(target) => self.exec_clear(target, source),
             StmtKind::Bare(expr) => self.exec_bare(expr, source),
         }

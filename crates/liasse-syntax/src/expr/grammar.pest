@@ -26,8 +26,16 @@ statement  = { return_stmt | tail_stmt }
 // follows is parsed normally (whitespace-skipping) by `return_stmt`.
 return_stmt = { return_kw ~ expression }
 return_kw   = @{ "return" ~ !ident_cont }
-tail_stmt   = { expression ~ (assign_tail | clear_tail)? }
+// `assign_tail` copies; `move_from_tail`/`move_to_tail` are the two spellings of
+// one move (§8.5). `dest <- source` and `source -> dest` both transfer the value
+// and leave the source moved-from; the parser normalizes both to one AST node.
+// `move_from` must be tried before `clear`: they share the leading `-` only via
+// `->` vs a trailing `-`, and `<-`/`->` never overlap a comparison because `lt`
+// (below) refuses a `<` glued to a `-`.
+tail_stmt   = { expression ~ (assign_tail | move_from_tail | move_to_tail | clear_tail)? }
 assign_tail = { "=" ~ !"=" ~ expression }
+move_from_tail = { "<-" ~ expression }
+move_to_tail   = { "->" ~ expression }
 clear_tail  = { "-" ~ &EOI }
 
 expression = { ternary }
@@ -58,7 +66,12 @@ comparison = { additive ~ (rel_op ~ additive)* }
 rel_op = { le | ge | lt | gt | eq | ne | in_op }
 le = { "<=" }
 ge = { ">=" }
-lt = { "<" }
+// Atomic and `!"-"`-guarded so a `<` immediately glued to a `-` is NOT a
+// comparison: `a<-b` and `a <-b` are the move operator (§8.5, `move_from_tail`),
+// while `a < -b` (any character between, including a space) stays `a < (-b)`.
+// The negative lookahead runs with no whitespace insertion (atomic), so only the
+// adjacent `<-` token is reserved for the move operator.
+lt = @{ "<" ~ !"-" }
 gt = { ">" }
 eq = { "==" }
 ne = { "!=" }

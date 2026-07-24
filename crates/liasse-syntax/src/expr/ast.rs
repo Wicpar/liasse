@@ -50,12 +50,23 @@ pub struct Stmt {
 pub enum StmtKind {
     /// `return value_or_view` — the final statement of a program.
     Return(Expr),
-    /// `target = value` — assignment / local binding.
+    /// `target = value` — assignment / local binding. Copies the value (§8.5).
     Assign {
         /// The assignment target (a local name, field, or selector).
         target: Expr,
         /// The assigned value or mutation result.
         value: Expr,
+    },
+    /// The move operator (§8.5). `dest <- source` and `source -> dest` are two
+    /// spellings of one move: both transfer the value to `dest` and leave
+    /// `source` moved-from. The parser normalizes both spellings to this one
+    /// node, so downstream stages never distinguish the two directions.
+    Move {
+        /// The destination place the value is transferred into.
+        dest: Expr,
+        /// The source the value is moved out of (a place, left moved-from, or any
+        /// value expression).
+        source: Expr,
     },
     /// `field -` — clear an optional field (trailing minus).
     Clear(Expr),

@@ -858,7 +858,10 @@ fn param_refs<'e>(expr: &'e Expr, out: &mut Vec<(&'e str, liasse_diag::ByteSpan)
 fn strict_descendant_through(stmt: &Stmt) -> bool {
     match &stmt.kind {
         StmtKind::Bare(expr) => descends_from_current(expr),
-        StmtKind::Return(_) | StmtKind::Assign { .. } | StmtKind::Clear(_) => false,
+        StmtKind::Return(_)
+        | StmtKind::Assign { .. }
+        | StmtKind::Move { .. }
+        | StmtKind::Clear(_) => false,
     }
 }
 

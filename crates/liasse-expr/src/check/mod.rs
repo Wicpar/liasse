@@ -46,7 +46,7 @@ pub fn check_statement(
     let stmt = statement.statement();
     match &stmt.kind {
         StmtKind::Bare(expr) | StmtKind::Return(expr) => check_expression(scope, source, expr),
-        StmtKind::Assign { .. } | StmtKind::Clear(_) => {
+        StmtKind::Assign { .. } | StmtKind::Move { .. } | StmtKind::Clear(_) => {
             Err(single(reject(source, stmt, "a mutation statement is not a value or view expression")))
         }
     }
@@ -112,7 +112,7 @@ pub fn audit_host_position(
         StmtKind::Bare(expr) | StmtKind::Return(expr) => expr,
         // A mutation statement in a read position is a shape error the model
         // already rejects; this audit concerns value expressions only.
-        StmtKind::Assign { .. } | StmtKind::Clear(_) => return Ok(()),
+        StmtKind::Assign { .. } | StmtKind::Move { .. } | StmtKind::Clear(_) => return Ok(()),
     };
     let mut checker = Checker::new(scope, source);
     let _ = checker.check(expr);

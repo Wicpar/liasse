@@ -1900,6 +1900,10 @@ fn walk_stmt(stmt: &Stmt, signed: &mut BTreeSet<String>) {
             walk_expr(target, signed);
             walk_expr(value, signed);
         }
+        StmtKind::Move { dest, source } => {
+            walk_expr(dest, signed);
+            walk_expr(source, signed);
+        }
     }
 }
 
