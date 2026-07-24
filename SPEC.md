@@ -1045,7 +1045,9 @@ collection = view             replace the complete collection
 row_source { patch }          patch selected rows
 collection - keys             delete rows by key
 -row_source                   delete selected rows
-field = value                 set a field
+field = value                 set a field (copy)
+dest <- source                move a value into dest, unsetting source
+source -> dest                move a value to dest, unsetting source
 field -                       clear an optional field
 set_field + values            add set members
 set_field - values            remove set members
@@ -1056,6 +1058,14 @@ return view_or_value           define the response; final statement only
 ```
 
 `mutation()` is the compact spelling of `mutation({})`; both forms are exactly equivalent. Set addition is union and set removal is difference: adding an existing member or removing an absent member succeeds without changing that set.
+
+#### Copy, move, and affine values
+
+Every value is either **copyable** or **move-only**. A copyable value — a scalar, a struct or collection built from copyable values, or an immutable reference (`ref`, `blob`) — may be duplicated freely. A **move-only** (affine) value owns live mutable state with exactly one owner; it is never duplicated, only transferred.
+
+`=` **copies**, and is valid only when the assigned value is copyable: assigning a move-only value with `=` is a static error. `<-` and `->` **move** — two spellings of one operator. `dest <- source` and `source -> dest` both transfer the value to `dest` and leave `source` **moved-from**. A move is valid for any value: it is required for a move-only value and an explicit transfer for a copyable one.
+
+Only a move consumes its source. Reading a value, accessing a field of it, dispatching on it, and passing it as a call argument **borrow** it, leaving it intact. A binding or path that has been moved from is **moved-from** and cannot be read again until it is reassigned; reading a moved-from value is a static error (a *use-after-move*).
 
 ### 8.6 Patches
 
@@ -4988,6 +4998,8 @@ row_source { patch }
 collection - keys
 -row_source
 field = value
+dest <- source                          move a value into dest, unsetting source
+source -> dest                          move a value to dest, unsetting source
 field -
 set + values
 set - values
