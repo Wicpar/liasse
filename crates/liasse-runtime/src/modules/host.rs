@@ -349,6 +349,37 @@ struct LifecycleRecorder<'a, S: InstanceStore> {
 }
 
 impl<S: InstanceStore> LifecycleRecorder<'_, S> {
+    /// The argument members `module.<op>` supports (§13.10): `install`/`update`
+    /// name the mount and carry the package `blob`; `remove` names only the mount.
+    fn supported_args(op: LifecycleOp) -> &'static [&'static str] {
+        match op {
+            LifecycleOp::Install | LifecycleOp::Update => &["space", "name", "blob"],
+            LifecycleOp::Remove => &["space", "name"],
+        }
+    }
+
+    /// Refuse any lifecycle argument member this builtin does not apply (§13.10).
+    /// A `$config`/`$data` overlay is loud-deferred, so silently accepting an
+    /// unsupported member (e.g. `config`) would mislead the caller into believing
+    /// it took effect; it is rejected LOUDLY rather than dropped.
+    fn reject_unsupported_args(args: &[(String, Value)], op: LifecycleOp) -> Result<(), Rejection> {
+        let supported = Self::supported_args(op);
+        for (key, _) in args {
+            if !supported.contains(&key.as_str()) {
+                return Err(Rejection::new(
+                    RejectionReason::Malformed,
+                    format!(
+                        "`module.{}` does not support the `{key}` argument (§13.10); \
+                         supported members are {} — refusing rather than silently ignoring it",
+                        op.member(),
+                        supported.join(", "),
+                    ),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     /// The value of a required text member of the lifecycle call's argument object.
     fn text_arg(args: &[(String, Value)], key: &str, op: LifecycleOp) -> Result<String, Rejection> {
         match args.iter().find(|(name, _)| name == key).map(|(_, value)| value) {
@@ -392,6 +423,7 @@ impl<S: InstanceStore> LifecycleRecorder<'_, S> {
 
 impl<S: InstanceStore> Lifecycle for LifecycleRecorder<'_, S> {
     fn perform(&self, op: LifecycleOp, args: Vec<(String, Value)>) -> Result<Cell, Rejection> {
+        Self::reject_unsupported_args(&args, op)?;
         let space = Self::text_arg(&args, "space", op)?;
         let name = Self::text_arg(&args, "name", op)?;
         let cell = match op {

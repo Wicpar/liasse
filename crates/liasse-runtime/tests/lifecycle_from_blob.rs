@@ -97,6 +97,32 @@ const SALES_V2_BAD: &str = r#"{
   "$expose": { "items": { "$view": ".items { id, qty }" } }
 }"#;
 
+/// A root whose `provision` mutation calls `module.install` with an UNSUPPORTED
+/// `config` member alongside the supported `{ blob, space, name }`. The builtin
+/// does not apply a `config`/`$data` overlay, so it must refuse rather than
+/// silently ignore the member.
+const ROOT_UNKNOWN_ARG: &str = r#"{
+  "$liasse": 1
+  "$app": "t.blob.host.badarg@1.0.0"
+  "$model": {
+    "log": { "$key": "id", "id": "text" }
+    "log_view": { "$view": ".log { id }" }
+    "companies": {
+      "$key": "id"
+      "id": "text"
+      "modules": { "$modules": {} }
+    }
+    "$mut": {
+      "provision({ id: text, blob: blob })": [
+        "e = .log + { id: @id }"
+        "module.install({ blob: @blob, space: '/companies/acme/modules', name: 'sales', config: 'x' })"
+        "return e { id }"
+      ]
+    }
+  }
+  "$data": { "companies": { "acme": {} } }
+}"#;
+
 fn space() -> ModuleSpace {
     ModuleSpace::new("/companies/acme/modules").expect("well-formed mount path")
 }
@@ -265,6 +291,29 @@ fn the_decoded_package_identity_is_recorded_and_reproduced() {
     let mounted = host.mounted_package(&space(), "sales").expect("mounted package");
     assert_eq!(mounted.definition, expected_definition);
     assert_eq!(mounted.content, expected_content);
+}
+
+#[test]
+fn an_unsupported_lifecycle_argument_is_refused_loudly() {
+    let root: Engine<MemoryStore> = support::load("t.blob.host.badarg", ROOT_UNKNOWN_ARG);
+    let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
+    let blob = blob_of(&mut host, SALES_V1);
+
+    let request = CallRequest::new("provision").arg("id", text("first")).arg("blob", Value::Blob(Box::new(blob)));
+    let outcome = host.call_root_lifecycle(&request, &mut generator()).expect("no engine fault");
+
+    match outcome {
+        CallOutcome::Rejected(rejection) => assert!(
+            rejection.message().contains("config") && rejection.message().contains("does not support"),
+            "the refusal names the unsupported `config` member: {}",
+            rejection.message()
+        ),
+        other => panic!("expected a loud refusal of the unsupported `config` argument, got {other:?}"),
+    }
+
+    // The unsupported argument aborted the whole transition: nothing half-applied.
+    assert!(!host.is_installed(&space(), "sales"), "no instance mounted when the arg is refused");
+    assert!(root_log_ids(&host).is_empty(), "the parent's own change rolled back");
 }
 
 #[test]
