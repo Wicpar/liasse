@@ -521,3 +521,65 @@ fn dispatched_child_without_actor_faults_closed() {
     );
     assert!(root_order_ids(&host).is_empty(), "nothing committed");
 }
+
+/// A module whose exposed `ping` mutation dispatches its OPTIONAL same-line peer's
+/// `ping` — the building block of a cyclic dispatch graph (§13.10). Two instances
+/// bound to each other make `ping` recurse across the boundary without bound.
+const LOOPER: &str = r#"{
+  "$liasse": 1
+  "$module": "t.multi.loop@1.0.0"
+  "$use": { "peer": "t.multi.loop/hop@1" }
+  "$model": {
+    "marks": { "$key": "id", "id": "text" }
+    "marks_view": { "$view": ".marks { id }" }
+    "$mut": {
+      "ping": [
+        "m = .marks + { id: @id }"
+        "r = #peer.ping({ id: @id })"
+        "return m { id }"
+      ]
+    }
+  }
+  "$expose": {
+    "hop": {
+      "$view": ".marks { id }"
+      "$mut": { "ping": ".ping" }
+    }
+  }
+}"#;
+
+/// §13.10 depth cap: a cyclic cross-engine dispatch graph (`a` ⇄ `b`, each `ping`
+/// dispatching the other's `ping`) is refused LOUDLY after a bounded number of
+/// boundary hops — the test COMPLETING is itself the proof it did not overflow the
+/// stack. The mutual binding is built by installing `a` (optional peer, absent),
+/// then `b` (binds to `a`), then re-installing `a` so it binds to `b` — closing the
+/// cycle both ways.
+#[test]
+fn cyclic_cross_engine_dispatch_is_refused_without_overflow() {
+    let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
+    let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
+    let peer = "t.multi.loop/hop@1";
+    // a: optional peer resolves absent (no sibling yet).
+    host.install(&space(), InstallRequest::new("a", LOOPER).optional_use("peer", peer), &mut generator())
+        .expect("a installs");
+    // b: its optional peer auto-binds to the only candidate, a.
+    host.install(&space(), InstallRequest::new("b", LOOPER).optional_use("peer", peer), &mut generator())
+        .expect("b installs");
+    // Re-install a so its optional peer now binds to b — closing the a ⇄ b cycle.
+    host.uninstall(&space(), "a").expect("a uninstalls");
+    host.install(&space(), InstallRequest::new("a", LOOPER).optional_use("peer", peer), &mut generator())
+        .expect("a re-installs, now bound to b");
+
+    let request = CallRequest::new("ping").arg("id", text("x"));
+    let outcome = host
+        .interface_call(&space(), "a", "hop", "ping", &request, &mut generator())
+        .expect("no engine fault — the cycle is a rejection, not a crash");
+
+    assert!(
+        matches!(outcome, CallOutcome::Rejected(_)),
+        "the cyclic dispatch is refused loudly (no stack overflow): {outcome:?}"
+    );
+    // Nothing committed: an aborted transition leaves every engine at its prior state.
+    let marks = host.interface_read(&space(), "b", "hop").expect("read").expect("hop exposed");
+    assert!(marks.rows().is_empty(), "the aborted cyclic transition committed nothing");
+}

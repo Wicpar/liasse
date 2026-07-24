@@ -152,10 +152,36 @@ struct MultiDispatch<'a, 'c, S: InstanceStore, G: Generators> {
     /// The engine whose program holds this handle — the import scope `#handle`
     /// resolves against.
     caller: Primary,
+    /// The cross-engine hop count of this handle (§13.10): `0` for the primary,
+    /// incremented at each boundary crossing. A cyclic import graph (A→B→A→…) would
+    /// recurse without bound; the cap refuses it loudly rather than overflowing the
+    /// stack.
+    depth: usize,
 }
+
+/// The cross-engine dispatch hop bound (§13.10): a transition may cross at most this
+/// many module boundaries before it is refused as a cycle. Distinct from — and much
+/// smaller than — the §8.11 per-engine internal-call depth (64): that guard resets
+/// at every engine crossing (each hop builds a fresh `Interp { depth: 0 }`), and each
+/// hop here is a FULL admission (gather + interp + rules + meters + return), so a
+/// deep cross-engine recursion consumes far more stack per level. A generous bound
+/// for any real module composition (which nests a handful of levels) that still
+/// refuses a cycle well before the stack is at risk.
+const MAX_DISPATCH_DEPTH: usize = 16;
 
 impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, '_, S, G> {
     fn dispatch(&self, handle: &str, mutation: &str, args: Vec<(String, Value)>) -> Result<Cell, Rejection> {
+        // §13.10: refuse a runaway cross-engine recursion (a cyclic import graph)
+        // loudly before it overflows the stack — an abort commits nothing.
+        if self.depth >= MAX_DISPATCH_DEPTH {
+            return Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!(
+                    "cross-engine dispatch exceeded {MAX_DISPATCH_DEPTH} module-boundary hops — a cyclic \
+                     import graph is refused rather than recursing without bound (§13.10)"
+                ),
+            ));
+        }
         // §13.5/§13.10: resolve the handle in the caller's import scope (a `$use`
         // peer alias, or a root's own installed child), refusing an over-reach.
         let index = self.coordinator.resolve(self.caller, handle)?;
@@ -197,7 +223,8 @@ impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, '_, S, G> {
         // to the REACHED child so it resolves its OWN `$use` peers in turn (§13.10).
         // A fresh seed keeps each engine's generation stream distinct.
         let seed = self.coordinator.generator.borrow_mut().next_seed();
-        let nested = MultiDispatch { coordinator: self.coordinator, caller: Primary::Child(index) };
+        let nested =
+            MultiDispatch { coordinator: self.coordinator, caller: Primary::Child(index), depth: self.depth + 1 };
         let staged = child
             .engine
             .stage_admission(&request, Vec::new(), BlobBacking::External, seed, &overlay, Some(&nested as &dyn Dispatch))
@@ -684,7 +711,7 @@ impl<F: StoreFactory> ModuleHost<F> {
                 // The primary holds a handle scoped to ITSELF, so its `#handle`
                 // resolves in its own import scope (§13.5) — the root by installed
                 // child name, a child through its `$use` peers.
-                let handle = MultiDispatch { coordinator: &coordinator, caller: primary };
+                let handle = MultiDispatch { coordinator: &coordinator, caller: primary, depth: 0 };
                 let engine = self.primary_engine(primary)?;
                 engine
                     .stage_admission(request, Vec::new(), BlobBacking::External, seed, &[], Some(&handle as &dyn Dispatch))
