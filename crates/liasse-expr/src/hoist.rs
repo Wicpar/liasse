@@ -283,6 +283,11 @@ fn own_external_kind(kind: &TypedKind) -> Option<&'static str> {
         TypedKind::HostCall { .. } => Some("a host-namespace call"),
         TypedKind::Now => Some("`now()`"),
         TypedKind::Uuid(_) => Some("`uuid()`"),
+        // §13.10: a cross-module interface-mutation dispatch is a transition effect,
+        // never a value a lowered row-program can serve — classifying it external
+        // makes the hoist/audit boundary refuse to lower it (falls back to the
+        // interpreter, §7.5) rather than ship a node the pure evaluator refuses.
+        TypedKind::InterfaceCall { .. } => Some("a cross-module interface-mutation dispatch"),
         TypedKind::Temporal { .. } => Some("a temporal selector"),
         TypedKind::Keyring { .. } => Some("a keyring selector"),
         // §18.5 placement members defer to the environment's placement index; the
@@ -354,6 +359,9 @@ fn any_child(expr: &TypedExpr, f: &mut dyn FnMut(&TypedExpr) -> bool) -> bool {
         TypedKind::Struct(fields) => fields.iter().for_each(|(_, e)| visit(e)),
         TypedKind::Builtin { args, .. } | TypedKind::HostCall { args, .. } => {
             args.iter().for_each(&mut visit);
+        }
+        TypedKind::InterfaceCall { args, .. } => {
+            args.iter().for_each(|(_, e)| visit(e));
         }
         TypedKind::Project { source, projection } => {
             visit(source);

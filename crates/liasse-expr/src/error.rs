@@ -93,6 +93,14 @@ pub enum EvalError {
     /// environment contract breach: a placement read must run against a
     /// placement-aware environment (the runtime), never a bare pure environment.
     NoBlobPlacement,
+
+    /// A `#handle.mutation(args)` interface-mutation dispatch (§13.10) reached the
+    /// pure value evaluator. It is a transition effect admitted by the runtime
+    /// interpreter within the parent transition, never a pure value the expression
+    /// evaluator can compute — the evaluator cannot reach the addressed engine. The
+    /// runtime intercepts the dispatch before evaluation, so reaching here is a
+    /// contract breach, refused loudly rather than faking a value.
+    InterfaceDispatch,
 }
 
 impl EvalError {
@@ -125,6 +133,11 @@ impl EvalError {
             }
             Self::NoBlobPlacement => {
                 "a blob placement member needs an environment that owns the placement index"
+                    .to_owned()
+            }
+            Self::InterfaceDispatch => {
+                "an interface mutation dispatch is a transition effect admitted by the runtime, \
+                 not a pure value; the runtime interpreter intercepts it before evaluation (§13.10)"
                     .to_owned()
             }
         }

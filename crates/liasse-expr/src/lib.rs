@@ -44,9 +44,9 @@ mod error;
 mod eval;
 #[cfg(feature = "eval-wire")]
 pub mod hoist;
+mod host;
 #[cfg(feature = "eval-wire")]
 pub mod lower;
-mod host;
 mod order;
 mod scope;
 mod semantics;
@@ -65,7 +65,7 @@ pub use env::{
 pub use error::EvalError;
 pub use host::{DbReadPosition, HostEffect, HostOp, HostOrigin, HostPosition};
 pub use order::{SortOrder, ViewOrders};
-pub use scope::Scope;
+pub use scope::{InterfaceMut, Scope};
 pub use semantics::DivisionRounding;
 pub use ty::{ExprType, RowType};
-pub use typed::TypedExpr;
+pub use typed::{InterfaceCall, TypedExpr};

@@ -15,6 +15,21 @@
 use crate::host::{DbReadPosition, HostOp, HostPosition};
 use crate::ty::ExprType;
 
+/// The typed contract of an interface `$mut` addressed on an imported module
+/// instance (§13.8/§13.10): the parameter types the interface prototype supplies
+/// and the declared `$return` type. Consulted by the checker to type a
+/// `#handle.mutation(args)` dispatch as a well-typed call whose result is its
+/// `$return`. The parameter list is empty when the contract declares no explicit
+/// prototype (nothing to check); `ret` is the declared response type.
+#[derive(Debug, Clone)]
+pub struct InterfaceMut {
+    /// The declared parameter types the boundary supplies, by name (§13.8).
+    pub params: Vec<(String, ExprType)>,
+    /// The declared `$return` response type (§13.8) — the result type the call
+    /// yields to the caller.
+    pub ret: ExprType,
+}
+
 /// Resolves the roots and bindings of §6.2 to static types.
 ///
 /// A missing binding returns `None`; the checker turns that into an
@@ -40,6 +55,18 @@ pub trait Scope: Send + Sync {
 
     /// The type of an imported module or parent surface `#name` (§6.2).
     fn import(&self, name: &str) -> Option<ExprType>;
+
+    /// Resolve an interface `$mut` contract addressed on an imported instance
+    /// `#handle.mutation(...)` (§13.8/§13.10): the parameter types the interface
+    /// prototype supplies and the declared `$return` type. `None` when `#handle`
+    /// imports no such interface mutation — the checker turns that into an
+    /// "unknown interface mutation" diagnostic, so a `#handle.field` view read
+    /// still routes to ordinary field access. The default resolves nothing, so a
+    /// scope that binds no callable interface sees only ordinary import reads.
+    fn interface_mut(&self, handle: &str, mutation: &str) -> Option<InterfaceMut> {
+        let _ = (handle, mutation);
+        None
+    }
 
     /// The type of a lexical local or row binding `name` visible from the
     /// enclosing declaration (§6.2). Bindings introduced *within* the

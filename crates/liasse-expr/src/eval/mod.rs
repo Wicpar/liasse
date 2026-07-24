@@ -226,6 +226,11 @@ impl Evaluator<'_> {
             TypedKind::HostCall { namespace, function, args } => {
                 self.eval_host_call(namespace, function, args)
             }
+            // §13.10: an interface-mutation dispatch is a transition effect the
+            // runtime interpreter admits, never a pure value. The runtime intercepts
+            // it before evaluation, so reaching the pure evaluator is a contract
+            // breach, refused loudly rather than faking a value.
+            TypedKind::InterfaceCall { .. } => Err(EvalError::InterfaceDispatch),
             TypedKind::Now => Ok(Cell::Scalar(Value::Timestamp(self.env.now()))),
             // §5.1/§8.12: the call site was pinned to its own sub-source at check
             // time, so two byte-identical `uuid()` defaults on one row carry

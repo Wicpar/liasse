@@ -28,6 +28,21 @@ use liasse_value::Value;
 use crate::env::{CallSite, KeyringSelector};
 use crate::ty::ExprType;
 
+/// A resolved `#handle.mutation(args)` interface-mutation dispatch (§13.8/§13.10),
+/// borrowed from its [`TypedExpr`]: the import handle, the contract name, and the
+/// typed argument list (each `(parameter name, value)`). The runtime interpreter
+/// evaluates each argument value and admits the addressed child mutation within the
+/// parent transition.
+#[derive(Debug, Clone, Copy)]
+pub struct InterfaceCall<'a> {
+    /// The import handle `#handle` the mutation is addressed on.
+    pub handle: &'a str,
+    /// The interface `$mut` contract name.
+    pub mutation: &'a str,
+    /// The typed arguments, each `(parameter name, value expression)`.
+    pub args: &'a [(String, TypedExpr)],
+}
+
 /// A type-checked expression: its span, its resolved result type, and its
 /// resolved operation.
 #[derive(Debug, Clone)]
@@ -62,6 +77,22 @@ impl TypedExpr {
     #[must_use]
     pub(crate) fn kind(&self) -> &TypedKind {
         &self.kind
+    }
+
+    /// If this node is a `#handle.mutation(args)` interface-mutation dispatch
+    /// (§13.8/§13.10), its handle, contract name, and typed argument list. `None`
+    /// for every other node. The runtime interpreter matches on this to admit the
+    /// addressed child mutation within the parent transition (the pure evaluator
+    /// refuses it); the result type is this node's [`ty`](Self::ty) — the contract's
+    /// declared `$return`.
+    #[must_use]
+    pub fn as_interface_call(&self) -> Option<InterfaceCall<'_>> {
+        match &self.kind {
+            TypedKind::InterfaceCall { handle, mutation, args } => {
+                Some(InterfaceCall { handle, mutation, args })
+            }
+            _ => None,
+        }
     }
 
     /// Whether this expression is the literal `none`.
@@ -281,6 +312,19 @@ pub(crate) enum TypedKind {
         namespace: String,
         function: String,
         args: Vec<TypedExpr>,
+    },
+    /// A `#handle.mutation(args)` dispatch to an interface `$mut` on an imported
+    /// module instance (§13.8/§13.10). The result type is this node's
+    /// [`ExprType`](crate::ExprType) — the contract's declared `$return`. This is a
+    /// TRANSITION EFFECT, not a pure value: the runtime interpreter admits the
+    /// addressed child mutation within the parent transition and binds this node's
+    /// result. The pure value evaluator cannot reach the runtime engine, so it
+    /// refuses this node loudly ([`EvalError::InterfaceDispatch`](crate::EvalError));
+    /// it is only ever produced for the runtime to interpret.
+    InterfaceCall {
+        handle: String,
+        mutation: String,
+        args: Vec<(String, TypedExpr)>,
     },
     /// `now()` — the fixed transaction sample (A.5).
     Now,

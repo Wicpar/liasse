@@ -244,6 +244,12 @@ impl Checker<'_> {
             }
             ExprKind::Field { base, member } => match &base.kind {
                 ExprKind::Name(ns) => self.check_namespace_call(expr, &ns.text, &member.text, args),
+                // §13.8/§13.10: `#handle.mutation(args)` dispatches to an interface
+                // `$mut` on an imported module instance — a well-typed call whose
+                // result is the contract's declared `$return`.
+                ExprKind::Import(handle) => {
+                    self.check_interface_call(expr, &handle.text, &member.text, args)
+                }
                 _ => self.error(expr, "unsupported call target"),
             },
             _ => self.error(expr, "unsupported call target"),
@@ -576,27 +582,7 @@ impl Checker<'_> {
         let mut fields = Vec::with_capacity(members.len());
         let mut types = Vec::with_capacity(members.len());
         for member in members {
-            let (name, value) = match &member.kind {
-                BlockMemberKind::Named { name, value: Some(value) } => {
-                    (name.text.clone(), self.check(value)?)
-                }
-                BlockMemberKind::Named { name, value: None } => {
-                    let synthetic = Expr {
-                        span: member.span,
-                        kind: ExprKind::Name(name.clone()),
-                    };
-                    (name.text.clone(), self.check(&synthetic)?)
-                }
-                BlockMemberKind::Shorthand(inner) => match &inner.kind {
-                    ExprKind::Param(name) | ExprKind::Name(name) => {
-                        (name.text.clone(), self.check(inner)?)
-                    }
-                    _ => {
-                        return self.error(inner, "an object shorthand must name a field");
-                    }
-                },
-                _ => return self.error(expr, "an object literal member must be `name: value`"),
-            };
+            let (name, value) = self.named_member(expr, member)?;
             let ty = match value.ty().as_scalar() {
                 Some(ty) => ty.clone(),
                 None => return self.error(expr, "an object field must be a scalar value"),
@@ -609,6 +595,130 @@ impl Checker<'_> {
             ExprType::scalar(Type::Struct(StructType::new(types))),
             TypedKind::Struct(fields),
         ))
+    }
+
+    /// Parse one object member into its `(field name, checked value)` pair (§6.3):
+    /// `name: value`, the value-elided `name` (a field read of `.name`), and the
+    /// `@name`/`name` shorthand. Shared by the object-literal check and the
+    /// interface-mutation argument object (§8.11).
+    fn named_member(&mut self, expr: &Expr, member: &BlockMember) -> Option<(String, TypedExpr)> {
+        match &member.kind {
+            BlockMemberKind::Named { name, value: Some(value) } => {
+                Some((name.text.clone(), self.check(value)?))
+            }
+            BlockMemberKind::Named { name, value: None } => {
+                let synthetic = Expr { span: member.span, kind: ExprKind::Name(name.clone()) };
+                Some((name.text.clone(), self.check(&synthetic)?))
+            }
+            BlockMemberKind::Shorthand(inner) => match &inner.kind {
+                ExprKind::Param(name) | ExprKind::Name(name) => {
+                    Some((name.text.clone(), self.check(inner)?))
+                }
+                _ => {
+                    self.error(inner, "an object shorthand must name a field");
+                    None
+                }
+            },
+            _ => {
+                self.error(expr, "an object literal member must be `name: value`");
+                None
+            }
+        }
+    }
+
+    /// Type a `#handle.mutation(args)` dispatch to an interface `$mut` on an
+    /// imported module instance (§13.8/§13.10): resolve the interface contract, type
+    /// each supplied argument against the declared parameter prototype, require every
+    /// non-optional declared parameter, and type the whole call as the contract's
+    /// declared `$return`. The result is a [`TypedKind::InterfaceCall`] the runtime
+    /// admits within the transition (never a pure value).
+    fn check_interface_call(
+        &mut self,
+        expr: &Expr,
+        handle: &str,
+        mutation: &str,
+        args: &[Arg],
+    ) -> Option<TypedExpr> {
+        let Some(contract) = self.scope.interface_mut(handle, mutation) else {
+            return self.error(
+                expr,
+                format!("`#{handle}` exposes no interface mutation `{mutation}` (§13.8)"),
+            );
+        };
+        let supplied = self.interface_call_args(expr, args)?;
+        let mut typed_args = Vec::with_capacity(supplied.len());
+        for (name, value) in supplied {
+            match contract.params.iter().find(|(param, _)| param == &name) {
+                Some((_, declared)) => {
+                    if let (Some(actual), Some(declared)) =
+                        (value.ty().as_scalar(), declared.as_scalar())
+                        && !arg_conforms(actual, declared, &value)
+                    {
+                        return self.error(
+                            expr,
+                            format!(
+                                "interface mutation `#{handle}.{mutation}` expects `{}` for `{name}`, but a `{}` was supplied (§13.8)",
+                                declared.name(),
+                                actual.name(),
+                            ),
+                        );
+                    }
+                }
+                // A contract that declares no explicit prototype (`params` empty)
+                // checks no parameter names; otherwise an undeclared name is refused.
+                None if contract.params.is_empty() => {}
+                None => {
+                    return self.error(
+                        expr,
+                        format!("interface mutation `#{handle}.{mutation}` declares no parameter `{name}` (§13.8)"),
+                    );
+                }
+            }
+            typed_args.push((name, value));
+        }
+        for (name, ty) in &contract.params {
+            let optional = matches!(ty.as_scalar(), Some(Type::Optional(_)));
+            if !optional && !typed_args.iter().any(|(supplied, _)| supplied == name) {
+                return self.error(
+                    expr,
+                    format!("interface mutation `#{handle}.{mutation}` is missing argument `{name}` (§13.8)"),
+                );
+            }
+        }
+        Some(TypedExpr::new(
+            expr.span,
+            contract.ret.clone(),
+            TypedKind::InterfaceCall {
+                handle: handle.to_owned(),
+                mutation: mutation.to_owned(),
+                args: typed_args,
+            },
+        ))
+    }
+
+    /// The `(parameter name, checked value)` pairs an interface-mutation argument
+    /// object supplies (§8.11): a single positional object mapping parameter names to
+    /// values (with `@name`/`name` shorthand), or explicit named arguments.
+    fn interface_call_args(&mut self, expr: &Expr, args: &[Arg]) -> Option<Vec<(String, TypedExpr)>> {
+        let mut out = Vec::new();
+        for arg in args {
+            match arg {
+                Arg::Positional(Expr { kind: ExprKind::Object(members), .. }) => {
+                    for member in members {
+                        out.push(self.named_member(expr, member)?);
+                    }
+                }
+                Arg::Named { name, value } => out.push((name.text.clone(), self.check(value)?)),
+                Arg::Positional(_) => {
+                    self.error(
+                        expr,
+                        "an interface mutation call takes an argument object mapping parameter names to values (§8.11)",
+                    );
+                    return None;
+                }
+            }
+        }
+        Some(out)
     }
 }
 
