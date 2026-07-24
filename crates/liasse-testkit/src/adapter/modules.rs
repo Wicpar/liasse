@@ -56,6 +56,7 @@ use liasse_value::{Json, Text, Type, Value};
 use crate::contract::Observation;
 use crate::outcome::{Completion, Outcome};
 
+use super::namespaces::parse_type;
 use super::{wire, AdapterError, EPOCH_MICROS};
 
 /// A recorded module-routed subscription (§13.9): the root surface view address
@@ -278,10 +279,13 @@ impl ModuleState {
         // consume (the space/instance `@param`s address the instance, not the child).
         let forwarded = forward_args(args, &resolved.consumed);
         // §12.1 step 3 / Annex A.1: a forwarded child-mutation argument that does
-        // not decode is a malformed request, rejected rather than coerced. The
-        // forwarded arguments carry no resolved types here, so each is shape-
-        // inferred (§8.3) and this decode does not fail in practice.
-        let Ok(forwarded_args) = wire::decode_args(&forwarded, &BTreeMap::new()) else {
+        // not decode against its declared type is a malformed request, rejected
+        // rather than coerced. §13.10: each forwarded argument is typed from the
+        // interface contract's declared parameter type, so a cross-module dispatch's
+        // `decimal` argument fed a JSON string decodes as a `decimal` (not a `text`)
+        // and the owner mutation's typed metered assert sees the value it declared.
+        // A parameter the contract leaves untyped is shape-inferred (§8.3).
+        let Ok(forwarded_args) = wire::decode_args(&forwarded, &iface.param_types) else {
             return Ok(Observation::outcome(Outcome::Rejected));
         };
         let mut request = CallRequest::new(String::new());
@@ -520,23 +524,28 @@ fn interface_call_bindings(package: &serde_json::Value) -> BTreeMap<String, Inte
     let Some(model) = package.get("$model").and_then(serde_json::Value::as_object) else {
         return map;
     };
+    // The module space's `$interfaces` contracts declare each routed mutation's
+    // parameter types (§13.8); a forwarded dispatch argument decodes against them.
+    let contracts = interface_contracts(package);
     if let Some(public) = model.get("$public").and_then(serde_json::Value::as_object) {
-        collect_surface_interface_calls("public", public, &mut map);
+        collect_surface_interface_calls("public", public, &contracts, &mut map);
     }
     if let Some(roles) = model.get("$roles").and_then(serde_json::Value::as_object) {
         for (role, definition) in roles {
             if let Some(surfaces) = definition.as_object() {
-                collect_surface_interface_calls(role, surfaces, &mut map);
+                collect_surface_interface_calls(role, surfaces, &contracts, &mut map);
             }
         }
     }
     map
 }
 
-/// Record each surface's interface-addressed `$mut` calls under `prefix`.
+/// Record each surface's interface-addressed `$mut` calls under `prefix`, typing each
+/// routed mutation from its `$interfaces` contract in `contracts`.
 fn collect_surface_interface_calls(
     prefix: &str,
     surfaces: &serde_json::Map<String, serde_json::Value>,
+    contracts: &BTreeMap<(String, String), BTreeMap<String, Type>>,
     map: &mut BTreeMap<String, InterfaceRef>,
 ) {
     for (surface, definition) in surfaces {
@@ -547,11 +556,76 @@ fn collect_surface_interface_calls(
             continue;
         };
         for (call, body) in calls {
-            if let Some(iface) = body.as_str().and_then(InterfaceRef::parse) {
+            if let Some(mut iface) = body.as_str().and_then(InterfaceRef::parse) {
+                if let Some(types) = contracts.get(&(iface.interface.clone(), iface.mutation.clone())) {
+                    iface.param_types = types.clone();
+                }
                 map.insert(format!("{prefix}.{surface}.{call}"), iface);
             }
         }
     }
+}
+
+/// The declared parameter types of every module-space interface mutation in a root
+/// package, keyed by `(interface, mutation)` (§13.8/§13.10). A `$modules` node's
+/// `$interfaces.<name>.$mut` keys carry the mutation's typed signature
+/// (`consume({ amount: decimal })`), so a cross-module dispatch's forwarded arguments
+/// can be typed against the contract rather than shape-inferred.
+fn interface_contracts(package: &serde_json::Value) -> BTreeMap<(String, String), BTreeMap<String, Type>> {
+    let mut out = BTreeMap::new();
+    if let Some(model) = package.get("$model") {
+        collect_interface_contracts(model, &mut out);
+    }
+    out
+}
+
+/// Recursively harvest every `$modules.$interfaces` contract's declared mutation
+/// parameter types from a model subtree (a `$modules` space can be nested on any
+/// collection row, §13.2).
+fn collect_interface_contracts(
+    node: &serde_json::Value,
+    out: &mut BTreeMap<(String, String), BTreeMap<String, Type>>,
+) {
+    let Some(object) = node.as_object() else {
+        return;
+    };
+    if let Some(interfaces) =
+        object.get("$modules").and_then(|modules| modules.get("$interfaces")).and_then(serde_json::Value::as_object)
+    {
+        for (interface, definition) in interfaces {
+            let Some(muts) = definition.get("$mut").and_then(serde_json::Value::as_object) else {
+                continue;
+            };
+            for key in muts.keys() {
+                let (mutation, types) = parse_interface_signature(key);
+                if !types.is_empty() {
+                    out.insert((interface.clone(), mutation), types);
+                }
+            }
+        }
+    }
+    for value in object.values() {
+        collect_interface_contracts(value, out);
+    }
+}
+
+/// Parse an interface `$mut` key into its mutation name and declared parameter types.
+/// A signature `consume({ amount: decimal })` yields `("consume", { amount: decimal })`;
+/// a bare name (`consume`) declares no typed parameters.
+fn parse_interface_signature(key: &str) -> (String, BTreeMap<String, Type>) {
+    let key = key.trim();
+    let Some(open) = key.find('(') else {
+        return (key.to_owned(), BTreeMap::new());
+    };
+    let name = key[..open].trim().to_owned();
+    let inner = key[open + 1..].trim_end().strip_suffix(')').unwrap_or_default().trim();
+    let types = match parse_type(inner) {
+        Type::Struct(fields) => {
+            fields.fields().map(|(name, ty)| (name.clone(), ty.clone())).collect()
+        }
+        _ => BTreeMap::new(),
+    };
+    (name, types)
 }
 
 /// A component of an interface-addressed reference's module-space/instance path:
@@ -571,6 +645,13 @@ pub(super) struct InterfaceRef {
     instance: PathSeg,
     interface: String,
     mutation: String,
+    /// The declared parameter types of the routed mutation, taken from the module
+    /// space's `$interfaces` contract (§13.8/§13.10). A forwarded cross-module
+    /// dispatch argument decodes against its declared type here — so a `decimal`
+    /// parameter fed a JSON string (`"4"`) becomes a `decimal`, not a `text`, and
+    /// the owner mutation's typed metered assert sees the value it declared. Empty
+    /// when the contract declares no typed signature for the mutation.
+    param_types: BTreeMap<String, Type>,
 }
 
 /// An [`InterfaceRef`] resolved against a call's arguments.
@@ -617,6 +698,9 @@ impl InterfaceRef {
             instance: key_seg(instance_key)?,
             interface: interface.text.clone(),
             mutation: mutation.text.clone(),
+            // Filled from the package's `$interfaces` contract by the binding
+            // collector, which has the whole package in view.
+            param_types: BTreeMap::new(),
         })
     }
 

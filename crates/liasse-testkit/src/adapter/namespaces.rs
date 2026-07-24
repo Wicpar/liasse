@@ -139,8 +139,9 @@ fn parse_signature(text: &str) -> Option<OpSignature> {
 /// Parse a type spelling into a [`Type`]: a scalar token, or a `{ f: t, ... }`
 /// struct. An unrecognized token falls back to `text`, which is enough for
 /// descriptor registration (the interface hash, pinned explicitly by the case,
-/// carries the semantic identity).
-fn parse_type(text: &str) -> Type {
+/// carries the semantic identity). Shared with the module adapter, which types a
+/// cross-module dispatch's forwarded arguments from its interface contract.
+pub(super) fn parse_type(text: &str) -> Type {
     let text = text.trim();
     if let Some(inner) = text.strip_prefix('{').and_then(|rest| rest.strip_suffix('}')) {
         let fields = inner
