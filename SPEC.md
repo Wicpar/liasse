@@ -422,7 +422,7 @@ A plain object is a static struct:
 
 Struct members are unordered named fields. Their dependency relationships determine evaluation where expressions refer to one another. Structs MAY contain fields, structs, sets, views, and nested keyed collections.
 
-An object's node kind is fixed by exactly one kind marker among `$key`, `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$modules`, and `$like` (Annex C.2); `$bucket` composes with `$key` (§14) and otherwise declares a source-backed bucket. A plain object bearing none of these markers is a static struct. An object bearing two mutually-exclusive kind markers — for example both `$key` and `$set` — has no uniquely determined node kind and is a static (load-time) error that names both conflicting markers; no marker silently wins.
+An object's node kind is fixed by exactly one kind marker among `$key`, `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$modules`, and `$like` (Annex C.2); `$bucket` composes with `$key` (§14) and otherwise declares a source-backed bucket, and `$value` composes with `$key` to put the declaration in map form (§5.4). A plain object bearing none of these markers is a static struct. An object bearing two mutually-exclusive kind markers — for example both `$key` and `$set` — has no uniquely determined node kind and is a static (load-time) error that names both conflicting markers; no marker silently wins. A composing marker next to a mutually-exclusive one it does not compose with — `$value` beside `$set`, say — is the same error, named the same way.
 
 ### 5.4 Keyed collections
 
@@ -473,6 +473,48 @@ Assigning a new value to any key field performs an atomic **rekey**. The runtime
 
 A `$key` entry names declared fields. Source-backed bucket collections MAY additionally use their implicit structural bindings as described in [Buckets](#buckets).
 
+#### Maps
+
+A **map** is the degenerate keyed collection: rows carrying no application fields, only an identity and one value. A declaration enters map form by giving `$value` next to `$key`:
+
+```hjson
+"settings": {
+  "$key": "text"
+  "$value": "json"
+}
+```
+
+`$value` is what puts a declaration in map form, and only in map form is `$key` read as a **type expression** — the type of the entry key — instead of as the name of one or more declared fields. Without `$value` the declaration is an ordinary table and `$key` names declared fields, exactly as above:
+
+```text
+table:  { $key: "id", id: "uuid", title: "text" }
+map:    { $key: "text", $value: "module" }
+```
+
+`$value` is not a kind marker of its own: it **composes** with `$key` the way `$bucket` does (§14, Annex C.2). A `$value` next to a mutually-exclusive kind marker — `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$modules`, `$like` — has no uniquely determined node kind and is a static (load-time) error that names both conflicting markers. A `$value` with no `$key` is likewise a static error: a map's entries are keyed, so the key type is not optional.
+
+A map entry is a **real row**. Its row shape is `{ $key, $value }`: `$key` is the row identity, `$value` the entry payload. Entries are addressable, writable, deletable, referenceable, and incrementally observable one at a time exactly as any keyed-collection row is — one row per entry in storage, one delta per changed entry. That per-entry ownership slot is what lets a map value be a **move-only** value (§8.5) such as a `module` (§13.16): each entry owns its value, and moving an entry's value out empties that entry rather than duplicating a handle. A map's canonical read order is the total order of its key type (Annex B), the keyed-collection order.
+
+The map key type is subject to the key rules of every keyed collection: it MUST be key-eligible (Annex A.8) and it is never optional (§5.5). The map value type may be any present value type or shape, including a nested struct, a `$ref`, or a `module`.
+
+##### Map access
+
+A map **is** a table, so every access a keyed collection has applies to it unchanged and none of it is separately specified here: the key selector and its comma-separated operands (§6.3), row bindings and filters (§6.4), projection, `$sort`, `$skip`/`$limit`, view combinators (§7), the aggregates including `count` (§7.5), `has`, enumeration, insertion/replacement/deletion (§8.7), and refs to an entry (§5.6).
+
+```text
+.settings[@name]                     the entry at a key
+.settings[@a, @b]                    several entries, in operand order
+.settings[:e | e.$value != none]     filtered entries
+count(.settings)                     the number of entries
+.settings { $key }                   the set of keys
+.settings { $value }                 the set of values
+.settings[:e] { k: e.$key, v: e.$value }   an ordinary projection over entries
+```
+
+`m[k]` follows the §6.3 rule for every keyed collection verbatim: "one scalar or composite key contributes zero rows when the key is absent and one row when it exists". A context requiring exactly one row therefore rejects the evaluation when the key is absent. A map never substitutes a default, a sentinel, or an empty value for a missing entry.
+
+`m { $key }` and `m { $value }` are the two whole-collection projections a map's fixed row shape admits: each collapses the entry stream to the set of that column's values, deduplicated in the element type's canonical order like any set (§5.5). `m { $key }` requires a scalar key type, and `m { $value }` requires a **copyable** value type (§8.5) — over a move-only value type it is a static error, because a set of the values would duplicate handles the type forbids duplicating. Per-entry access reads the row shape directly (`e.$key`, `e.$value`), and per-entry ownership transfer uses the move operators of §8.5.
+
 ### 5.5 Sets
 
 A set stores unique membership values without per-member payload. It is the compact form for tags and pure relations; keyed collections cover relations carrying additional fields.
@@ -491,11 +533,13 @@ Set of refs:
 }
 ```
 
-The value of `$set` is the shape of every member. A member shape is a present value type — `none` is absence, not a value, so it is never a set member, and the member shape of a set is never `optional<T>`: a set element type spelled `optional<T>` is a **static error** (Annex A.1), rejected at model build, not a silently accepted shape. (A set *of* a struct that merely carries an optional member is fine; only a direct `optional` element is the error.) Adding `none` to a set is a no-op that leaves the set unchanged, mirroring set membership below. Initial membership comes from data or mutations. Sets have canonical read order from the element type's total order. Membership is mathematical: repeated input values collapse to one member, adding an existing member leaves the set unchanged, and removing an absent member leaves it unchanged.
+The value of `$set` is the shape of every member. A member shape is a present value type — `none` is absence, not a value, so it is never a set member, and the member shape of a set is never optional: a set element type spelled `T?` is a **static error** (Annex A.1), rejected at model build, not a silently accepted shape. (A set *of* a struct that merely carries an optional member is fine; only a directly optional element is the error.) Adding `none` to a set is a no-op that leaves the set unchanged, mirroring set membership below. Initial membership comes from data or mutations. Sets have canonical read order from the element type's total order. Membership is mathematical: repeated input values collapse to one member, adding an existing member leaves the set unchanged, and removing an absent member leaves it unchanged.
 
-A map value type is subject to the same rule: a map never stores a `none` value (absence is the key not being present), so a map value type is never `optional<V>` — `map<K, optional<V>>` is a **static error** (Annex A.1), likewise rejected at model build. A map **key** type is subject to the same rule from the other side: `none` is absence, never a value, so it can never be carried as a map key — a map key type is never `optional<K>`, and `map<optional<K>, V>` is a **static error** (Annex A.1), rejected at model build.
+A map is subject to the same rule on both of its shapes (§5.4, Annex A.2: `{ $key: K, $value: V }`). A map never stores a `none` value — absence is the key not being present — so a map value type is never optional, and a `$value` spelled `V?` is a **static error** (Annex A.1), rejected at model build. From the other side, `none` is absence and never a value, so it can never be carried as a map key: a `$key` type spelled `K?` is likewise a **static error** (Annex A.1), rejected at model build.
 
-When a containing row or struct is created, an omitted child set or keyed collection starts empty; an omitted non-optional `map<K, V>` field likewise starts as the **empty map**, never `none` — the set-analogous default, so the field's declared shape holds in every committed state. A supplied set initializer is a set value. A supplied child-collection initializer is a typed keyed row view. The complete nested result is validated atomically with the containing insertion. `$data` uses the keyed map form defined in [Seed and import data](#loading).
+A map's spelling is one; its **position** decides whether it declares state or names a value type, exactly as `$set`'s does. In **object form** at a model position (`"settings": { "$key": "text", "$value": "json" }`) it declares a nested map **collection**: one row per entry, sitting alongside the other nested child collections of §5.4. As a **type expression** — a quoted field type, a mutation parameter (§8.3), a `$types` shape (§5.8), a host argument (§16) — it names a map **value**: one value carrying its entries, held in its containing row exactly as a set value is. The object form declares state; the type expression names a value type.
+
+When a containing row or struct is created, an omitted child set or keyed collection starts empty; an omitted non-optional map-valued field likewise starts as the **empty map**, never `none` — the set-analogous default, so the field's declared shape holds in every committed state. A supplied set initializer is a set value. A supplied child-collection initializer is a typed keyed row view. The complete nested result is validated atomically with the containing insertion. `$data` uses the keyed map form defined in [Seed and import data](#loading).
 
 Use a keyed collection when a relation carries payload:
 
@@ -923,7 +967,7 @@ sum(view.field)         -> field numeric type
 avg(view.field)         -> decimal?
 min(view.field)         -> field type?
 max(view.field)         -> field type?
-distinct(view.field)    -> set<field type>
+distinct(view.field)    -> { $set: field type }
 ```
 
 Absent inputs are skipped. Empty input yields `0` for `count`, numeric zero for `sum`, and `none` for `avg`, `min`, and `max`. `avg` converts every numeric input exactly to `decimal` and performs decimal division under the package semantics; callers use an explicit rounding function when they need another scale or an integer result.
@@ -1009,7 +1053,7 @@ CEL typing infers a parameter from every use of `@name`:
 An explicit prototype resolves ambiguity or declares a structure that the body cannot uniquely infer. Its object maps parameter names to their type declarations:
 
 ```hjson
-"set_metadata({ metadata: optional<map<text, json>> })": ".metadata = @metadata"
+"set_metadata({ metadata?: { $key: text, $value: json } })": ".metadata = @metadata"
 ```
 
 All uses of the same parameter MUST infer one compatible type. The resulting parameter shape is part of the external surface contract.
@@ -2273,7 +2317,7 @@ Modules are held in ordinary collections. A keyed collection whose member type i
 ```hjson
 "modules": { "$modules": {} }       // a module space: a collection of module values
 ".modules[@id]"                     // one instance (a module value; a read borrows it)
-".modules.$keys"                    // the set of installed keys
+".modules { $key }"                 // the set of installed keys (§5.4)
 ".modules[:m] { m.$key }"           // enumerate
 ```
 
@@ -4579,15 +4623,15 @@ This annex is normative.
 | `json` | canonical JSON value | JSON null/bool/number/string/array/object |
 | `blob` | binary-content descriptor | descriptor object defined in [Blobs](#blobs) |
 | `enum` | one declared label | JSON string |
-| `none` | absence of an `optional<T>` value | represented by position — see below; no wire sentinel |
+| `none` | absence of an optional (`T?`) value | represented by position — see below; no wire sentinel |
 
 JSON `null` is a value of `json`. `none` is absence in the Liasse type system, not a value: it cannot be a member of a set, a map value, or a distinct thing carried by a wire marker. `none` is therefore represented by *position*, never by a sentinel:
 
 - **optional object member** (struct field, singleton member, seeded row field): `none` is the member **omitted** from the wire object; a present member is a present value.
-- **set element**: `none` is **not a member**. `none` is never a valid set element, and adding `none` to a set is a no-op that yields the same set. A set element type MUST NOT be `optional<T>` — the shape is a static error at model build, so no set ever holds a `none` member (§5.5).
-- **map value**: `none` is the **key absent**. A map never stores a `none` value; absence is the key not being present. A map value type MUST NOT be `optional<V>` — the shape is a static error at model build, so no map ever stores a `none` value (§5.5). An omitted non-optional `map` field defaults to the empty map (§5.5), not `none`.
-- **map key**: `none` is **never a key**. `none` is absence, not a value, so it can never be carried as a map key. A map key type MUST NOT be `optional<K>` — the shape is a static error at model build, so no map is ever keyed on `none` (§5.5).
-- **fixed-arity positional composite element** (a positional slot that cannot be omitted): `none` is JSON **`null`** in that position. `null` is unambiguous there because it is not the canonical wire form of any scalar type. For a positional `optional<json>` slot specifically, a positional `null` is `none`; a *present* JSON `null` cannot be written positionally and MUST be object- or array-wrapped.
+- **set element**: `none` is **not a member**. `none` is never a valid set element, and adding `none` to a set is a no-op that yields the same set. A set element type MUST NOT be optional (`T?`) — the shape is a static error at model build, so no set ever holds a `none` member (§5.5).
+- **map value**: `none` is the **key absent**. A map never stores a `none` value; absence is the key not being present. A map `$value` type MUST NOT be optional (`V?`) — the shape is a static error at model build, so no map ever stores a `none` value (§5.5). An omitted non-optional map-valued field defaults to the empty map (§5.5), not `none`.
+- **map key**: `none` is **never a key**. `none` is absence, not a value, so it can never be carried as a map key. A map `$key` type MUST NOT be optional (`K?`) — the shape is a static error at model build, so no map is ever keyed on `none` (§5.5).
+- **fixed-arity positional composite element** (a positional slot that cannot be omitted): `none` is JSON **`null`** in that position. `null` is unambiguous there because it is not the canonical wire form of any scalar type. For a positional optional-`json` (`json?`) slot specifically, a positional `null` is `none`; a *present* JSON `null` cannot be written positionally and MUST be object- or array-wrapped.
 - **storage**: `none` is the backend's native NULL.
 
 There is no `{ "$none": true }` sentinel; it is not produced and carries no `none` meaning on input — a `json` object whose literal shape is `{ "$none": true }` is an ordinary present value that round-trips as itself.
@@ -4605,19 +4649,24 @@ text | bool | int | decimal | bytes | uuid | date | timestamp
 | duration | period | json | blob
 
 named_type
-T?                              shorthand for optional<T>
-optional<T>
-set<T>
-map<K, V>
-view<T>
-ref<target>
-{ field: T, optional_field?: U }
+T?                                  optional
+{ field: T, optional_field?: U }    struct
+{ $key: K, $value: V }              map
+{ $set: T }                         set
+{ $view: T }                        view
+{ $ref: target }                    ref
 collection.$key
 /absolute.collection.$key
 #surface.$key
 ```
 
-Keyed collections represent application row sequences through explicit `$sort`. Sets represent unique membership. `json` carries schema-free JSON values, including JSON arrays, as one typed value.
+Liasse has **one type syntax**. A primitive is a keyword, a named shape (§5.8) is its name, optionality is the `?` suffix, and every composite type is an **object bearing exactly one kind marker** — the same spelling a declaration uses (Annex C.2, C.3). A type expression and a declaration are therefore written the same way, and a reader never has to learn a second vocabulary for the same shape.
+
+There is no parametric `<>` type form. `optional<T>`, `set<T>`, `map<K, V>`, `view<T>`, and `ref<target>` are **not** type expressions: each is a named static error at load naming the removed constructor and its object spelling, never a silently accepted or re-parsed alternative form. There is likewise no `$optional` marker — optionality is written `T?` at a bare type location and `field?: T` inside an object, and those are its only two spellings.
+
+A `$view` value's form follows its **position**, and position alone disambiguates it: inside a *declaration* (§7.1) `$view` carries a view **expression** (`"$view": ".tasks[:t | !t.done] { id, title }"`) whose checked row shape is the declared type; inside a *type expression* it carries a **type**, the row shape of the view being named. Every other marker carries the same thing in both positions.
+
+Keyed collections represent application row sequences through explicit `$sort`. Sets represent unique membership. A map is the keyed collection whose row shape is `{ $key, $value }` (§5.4). `json` carries schema-free JSON values, including JSON arrays, as one typed value.
 
 ### A.3 Field declarations
 
@@ -4632,6 +4681,7 @@ Keyed collections represent application row sequences through explicit `$sort`. 
 | `"tags": { "$set": "text" }` | state set |
 | plain object | static struct |
 | object with `$key` | keyed collection |
+| object with `$key` and `$value` | map collection (§5.4) |
 | object with `$view` | computed view |
 | object with `$modules` | module space |
 | object with `$keyring` | keyring |
@@ -4709,7 +4759,7 @@ The package default is `us`, matching PostgreSQL timestamp precision. A timestam
 
 Decimals are exact base-10 values. Addition, subtraction, and multiplication are exact. Integer division truncates toward zero. `avg` converts its inputs to `decimal` and returns `decimal?`.
 
-The remainder operator `%` is part of the arithmetic surface for `int` and `decimal`. It is defined as `a − trunc(a ÷ b) × b`, where the quotient truncates toward zero; the remainder therefore takes the sign of the dividend and satisfies `(a ÷ b)·b + (a % b) = a`, matching PostgreSQL `mod` (`-7 % 2 = -1`, `7 % -2 = 1`). A zero divisor in `/` or `%` produces no value: it is a typed evaluation error that rejects the containing evaluation — computed field, check, or mutation — with a diagnostic, and never panics, yields `none`, or yields a non-finite value. Because a divisor MAY be read from state, this is detected at evaluation rather than at load; a short-circuiting operator (`&&`, `||`, `?:`, `??`) never evaluates an unreached divisor. Arithmetic and remainder operators require present (non-optional) numeric operands (`int` or `decimal`; `+` additionally concatenates two `text`). An `optional<T>` operand is a static type error at load — coalesce it (`x ?? 0`) or narrow it first. Operators do not skip, propagate, or zero-fill `none`, in contrast to the explicit aggregate rule (§7.5) and ordering rule (Annex B.2).
+The remainder operator `%` is part of the arithmetic surface for `int` and `decimal`. It is defined as `a − trunc(a ÷ b) × b`, where the quotient truncates toward zero; the remainder therefore takes the sign of the dividend and satisfies `(a ÷ b)·b + (a % b) = a`, matching PostgreSQL `mod` (`-7 % 2 = -1`, `7 % -2 = 1`). A zero divisor in `/` or `%` produces no value: it is a typed evaluation error that rejects the containing evaluation — computed field, check, or mutation — with a diagnostic, and never panics, yields `none`, or yields a non-finite value. Because a divisor MAY be read from state, this is detected at evaluation rather than at load; a short-circuiting operator (`&&`, `||`, `?:`, `??`) never evaluates an unreached divisor. Arithmetic and remainder operators require present (non-optional) numeric operands (`int` or `decimal`; `+` additionally concatenates two `text`). An optional (`T?`) operand is a static type error at load — coalesce it (`x ?? 0`) or narrow it first. Operators do not skip, propagate, or zero-fill `none`, in contrast to the explicit aggregate rule (§7.5) and ordering rule (Annex B.2).
 
 The default decimal division and rounding semantics follow PostgreSQL `numeric`:
 
@@ -4758,7 +4808,7 @@ Every scalar key component MUST have non-empty canonical key text (D.2). A key v
 
 ### A.9 Refs
 
-`ref<T>` has the exact key type of its target collection or keyed view. A scalar key uses its scalar wire value. A composite key uses an array of component wire values in `$key` order; named object selectors are authoring syntax for the same typed tuple. When the target is a nested collection, its key type is the full row identity of §D.1 — every ancestor collection `$key` followed by the target's local `$key`, in ancestor-then-local order — encoded as one composite array. Target path information comes from the field declaration.
+A ref (`{ $ref: target }`) has the exact key type of its target collection or keyed view. A scalar key uses its scalar wire value. A composite key uses an array of component wire values in `$key` order; named object selectors are authoring syntax for the same typed tuple. When the target is a nested collection, its key type is the full row identity of §D.1 — every ancestor collection `$key` followed by the target's local `$key`, in ancestor-then-local order — encoded as one composite array. Target path information comes from the field declaration.
 
 ---
 
@@ -4787,7 +4837,7 @@ Every sortable Liasse value has a deterministic ascending total order. Descendin
 | `duration` | exact elapsed-duration order |
 | `enum` | declaration order |
 | `period` | fixed periods before calendar periods; fixed by exact duration; calendar by `(years, months, weeks, days, time, zone, overflow, ambiguous, missing)` |
-| `ref<T>` | target key order |
+| ref | target key order |
 
 Calendar policy labels use the declaration order shown in Annex A:
 
@@ -4805,7 +4855,7 @@ Applications needing case folding, locale collation, natural-number text sorting
 
 ### B.2 Optional values and `none`
 
-The ascending order of `optional<T>` is:
+The ascending order of an optional (`T?`) is:
 
 ```text
 all present T values in ascending order, then none
@@ -4941,7 +4991,8 @@ Each resource name identifies one verified archive entry. Object member order ca
 ### C.2 Shape markers
 
 ```text
-$key        keyed collection
+$key        keyed collection (a key type when `$value` is present)
+$value      map entry value — composes with `$key` (§5.4)
 $set        unique set
 $view       computed view
 $modules    module space
@@ -4957,7 +5008,7 @@ $history    minimum recoverable-history policy
 $blob_storage blob placement policy
 ```
 
-A plain object without a shape marker is a static struct. An object's node kind is fixed by exactly one kind marker among `$key`, `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$modules`, and `$like`; `$bucket` composes with `$key`. An object bearing two mutually-exclusive kind markers is a static error that names both (§5.3).
+A plain object without a shape marker is a static struct. An object's node kind is fixed by exactly one kind marker among `$key`, `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$modules`, and `$like`; `$bucket` and `$value` compose with `$key`. An object bearing two mutually-exclusive kind markers is a static error that names both (§5.3), as is a composing marker beside a kind marker it does not compose with. `$value` is what puts a `$key` declaration in map form, and only then is `$key` a type expression rather than a list of declared field names (§5.4); a `$value` with no `$key` is a static error.
 
 ### C.3 Field forms
 
@@ -4970,8 +5021,10 @@ A plain object without a shape marker is a static struct. An object's node kind 
 "field": { $enum: [...] }
 "field": { $ref: target, $on_delete?: restrict | cascade | none | "= patch" }
 "field": { $set: T }
+"field": { $key: K, $value: V }        map collection (§5.4)
 
-$key: field | [field, ...]
+$key: field | [field, ...]        table form: declared field names
+$key: K, $value: V                map form: the entry key and value types
 $unique: [field | [field, ...], ...]
 $check: expression | [expression, message] | [[expression, message], ...]
 ```
@@ -5032,7 +5085,7 @@ rows[:binding | condition]
 rows::                         same-name row binding
 ```
 
-Every selector yields a row view. A scalar key yields zero or one occurrence; key collections preserve input order and repetitions. Contexts requiring one row reject zero or multiple occurrences. A wildcard selection syntax is absent; projections name fields explicitly.
+Every selector yields a row view. A scalar key yields zero or one occurrence; key collections preserve input order and repetitions. Contexts requiring one row reject zero or multiple occurrences. A wildcard selection syntax is absent; projections name fields explicitly. A map (§5.4) is a keyed collection, so `map[key]` is this same selector — an absent key yields zero occurrences, never a default.
 
 ### C.7 Projection
 
@@ -5049,7 +5102,12 @@ source {
   $skip: integer
   $limit: integer
 }
+
+map { $key }                   the set of a map's keys (§5.4)
+map { $value }                 the set of a map's values (§5.4)
 ```
+
+`$key` and `$value` as **bare** projection members are the two whole-collection map projections (§5.4); `$key: field_or_fields` with a value is the ordinary re-identification directive.
 
 ### C.8 View combinators
 
