@@ -296,3 +296,40 @@ fn unknown_interface_mutation_is_rejected() {
         "an unbound interface mutation is not routable"
     );
 }
+
+/// A root whose `installed` view reads `.modules.$keys` — the set of installed
+/// instance keys (§13.16) — as a scalar `set<text>` field, so a module-aware root
+/// evaluation observes exactly the mounted instance names.
+const KEYS_ROOT: &str = r#"{
+  "$liasse": 1
+  "$app": "t.mod.keys@1.0.0"
+  "$model": {
+    "modules": {
+      "$modules": {
+        "$interfaces": {
+          "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
+        }
+      }
+    }
+    "installed": { "$view": ". { keys: .modules.$keys }" }
+  }
+}"#;
+
+#[test]
+fn modules_keys_reads_the_set_of_installed_instance_keys() {
+    // §13.16: `.modules.$keys` is the set of installed instance keys, resolved
+    // through the root engine's module-aware evaluation (the folded module space).
+    let space = ModuleSpace::new("/modules").expect("mount");
+    let mut host = host(KEYS_ROOT);
+    install(&mut host, &space, "kit_b");
+    install(&mut host, &space, "kit_a");
+
+    let result = host.root_view("installed", &ViewQuery::new()).expect("view").expect("declared");
+    let keys = match result.rows()[0].field("keys") {
+        Some(Value::Set(set)) => set.clone(),
+        other => panic!("expected a `set` of installed keys, got {other:?}"),
+    };
+    let expected: std::collections::BTreeSet<Value> =
+        [text("kit_a"), text("kit_b")].into_iter().collect();
+    assert_eq!(keys, expected, "the installed instance names, deduplicated and ordered (B.2)");
+}

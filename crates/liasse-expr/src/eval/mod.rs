@@ -237,6 +237,7 @@ impl Evaluator<'_> {
             // distinct sites and the environment derives distinct values.
             TypedKind::Uuid(site) => Ok(Cell::Scalar(Value::Uuid(self.env.uuid(*site)))),
             TypedKind::Key(base) => self.eval_key(base),
+            TypedKind::Keys(base) => self.eval_key_set(base),
             TypedKind::Temporal { base, query } => self.eval_temporal(base, query),
             TypedKind::Keyring { base, selector } => self.eval_keyring(expr, base, *selector),
             TypedKind::BlobMember { base, member } => self.eval_blob_member(base, *member),
@@ -275,6 +276,19 @@ impl Evaluator<'_> {
             Cell::Row(row) => Ok(Cell::Scalar(row.key().clone())),
             _ => Err(EvalError::ShapeMismatch { expected: "a keyed row" }),
         }
+    }
+
+    /// `base.$keys` (§13.16): the set of identity keys of a keyed collection. The
+    /// checker has proven the base is a scalar-keyed view, so evaluation collects
+    /// each row's key value into a set (deduplicated and ordered by [`Value`], B.2).
+    fn eval_key_set(&mut self, base: &TypedExpr) -> Result<Cell, EvalError> {
+        let rows = match self.eval(base)? {
+            Cell::Collection(rows) => rows,
+            Cell::Row(row) => vec![*row],
+            _ => return Err(EvalError::ShapeMismatch { expected: "a keyed collection" }),
+        };
+        let keys = rows.into_iter().map(|row| row.key().clone()).collect();
+        Ok(Cell::Scalar(Value::Set(keys)))
     }
 
     fn eval_field(&mut self, base: &TypedExpr, name: &str) -> Result<Cell, EvalError> {

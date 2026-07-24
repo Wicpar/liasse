@@ -72,6 +72,28 @@ fn projection_members_cross_reference_in_dependency_order() {
 }
 
 #[test]
+fn keys_selector_yields_the_set_of_a_collections_keys() {
+    // §13.16: `collection.$keys` is the set of a keyed collection's identity keys —
+    // `.modules.$keys` is the set of installed instance keys. Typed `set<K>`,
+    // evaluated deduplicated and ordered by Value (B.2).
+    let ty = people_type(vec![]);
+    let rows = vec![krow(1, "b", vec![]), krow(2, "a", vec![]), krow(3, "c", vec![])];
+    let (scope, env, dot) = one_collection("people", ty, rows);
+    assert_eq!(
+        check(&scope, ".people.$keys").ty(),
+        &scalar(Type::Set(Box::new(Type::Text))),
+        "`.$keys` types as a set of the key type"
+    );
+    let expected: std::collections::BTreeSet<Value> =
+        [vtext("a"), vtext("b"), vtext("c")].into_iter().collect();
+    assert_eq!(
+        as_scalar(&eval(&scope, &env, &dot, ".people.$keys")),
+        Value::Set(expected),
+        "`.$keys` collects every row's key into the set"
+    );
+}
+
+#[test]
 fn named_selector_binding_visible_in_projection() {
     // §6.4: a named selector `[:p]` binds each projected row to `p`, so the
     // projection body reads `p.field` — the binding must be in scope where the

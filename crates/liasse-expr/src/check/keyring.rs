@@ -34,6 +34,7 @@ impl Checker<'_> {
         let keyring = match selector {
             "all" => return self.check_temporal_all(expr, base),
             "key" => return self.check_key_selector(expr, base),
+            "keys" => return self.check_keys_selector(expr, base),
             "current" => KeyringSelector::Current,
             "accepted" => KeyringSelector::Accepted,
             "public" => KeyringSelector::Public,
@@ -109,6 +110,39 @@ impl Checker<'_> {
             )),
             None => self.error(expr, "`.$key` needs a keyed row, but this row has no identity key"),
         }
+    }
+
+    /// `base.$keys` (§13.16): the SET of identity keys of a keyed collection/view —
+    /// e.g. `.modules.$keys` is the set of installed instance keys. The base is a
+    /// keyed *view* (a stream of keyed rows); the result is a `set<K>` over its
+    /// rows' key values. A single row (use `.$key`) or a keyless / non-scalar-keyed
+    /// view is a static error, kept loud rather than guessing an element type.
+    fn check_keys_selector(&mut self, expr: &Expr, base: &Expr) -> Option<TypedExpr> {
+        use liasse_value::Type;
+        let base = self.check(base)?;
+        let key = match base.ty() {
+            ExprType::View(row) => row.key().cloned(),
+            other => {
+                return self.error(
+                    expr,
+                    format!("`.$keys` reads the key set of a keyed collection, not a {}", other.describe()),
+                );
+            }
+        };
+        let element = match key.as_ref().and_then(ExprType::as_scalar) {
+            Some(ty) => ty.clone(),
+            None => {
+                return self.error(
+                    expr,
+                    "`.$keys` needs a scalar-keyed collection; a keyless or composite-keyed view has no scalar key set",
+                );
+            }
+        };
+        Some(TypedExpr::new(
+            expr.span,
+            ExprType::scalar(Type::Set(Box::new(element))),
+            TypedKind::Keys(Box::new(base)),
+        ))
     }
 
     /// A keyring public version selector (§17.2) over a keyring's version view.

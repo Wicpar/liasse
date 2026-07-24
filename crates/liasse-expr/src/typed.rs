@@ -345,6 +345,11 @@ pub(crate) enum TypedKind {
     /// keyed selection); the result is that row's canonical key value. Boxed so
     /// the node stays finite-sized.
     Key(Box<TypedExpr>),
+    /// `base.$keys` — the SET of identity keys of a keyed collection/view (§13.16:
+    /// `.modules.$keys` is the set of installed instance keys). The base is a keyed
+    /// view; the result is a `set<K>` of its rows' key values. Boxed so the node
+    /// stays finite-sized.
+    Keys(Box<TypedExpr>),
     /// A keyring public version selector over a keyring's version view (§17.2):
     /// `.$current`, `.$accepted`, `.$public`, `.$versions`. Evaluation defers
     /// version-lifecycle resolution to the environment's keyring index; the
