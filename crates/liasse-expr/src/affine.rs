@@ -23,7 +23,7 @@ use std::collections::BTreeSet;
 
 use liasse_syntax::{Expr, ExprKind};
 
-use crate::ty::ExprType;
+use crate::ty::{ExprType, RowType};
 
 /// Whether a value may be copied (`=`) or must be moved (`<-`/`->`) — SPEC §8.5.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -53,22 +53,32 @@ impl ExprType {
     /// The move/copy classification of a value of this result type (SPEC §8.5).
     ///
     /// A scalar/structured result delegates to [`liasse_value::Type::is_copyable`].
-    /// A row or view result is read-only derived data and so is copyable today —
-    /// no field type is move-only yet, so no row owns a move-only value; that is a
-    /// concern for the move-only `module` type (a later task), at which point a row
-    /// carrying a move-only field would classify move-only through the same
-    /// component delegation `Type::is_copyable` already performs.
+    /// A row or view result **delegates componentwise**: it is move-only iff any
+    /// visible field type or its key type is move-only, mirroring the total
+    /// component delegation `Type::is_copyable` performs for structs/sets/maps. This
+    /// matters because the model represents a nested struct as an [`ExprType::Row`]
+    /// (not `Scalar(Type::Struct)`), so a struct/row/view carrying a `module`
+    /// (move-only) field must classify move-only — otherwise `=`-copying the whole
+    /// row would silently alias the contained module, breaking single-ownership.
     #[must_use]
     pub fn affinity(&self) -> Affinity {
         let copyable = match self {
             Self::Scalar(ty) => ty.is_copyable(),
-            Self::Row(_) | Self::View(_) => true,
+            Self::Row(row) | Self::View(row) => Self::row_is_copyable(row),
         };
         if copyable {
             Affinity::Copyable
         } else {
             Affinity::MoveOnly
         }
+    }
+
+    /// Whether a row/view result is copyable: every visible field and the key type
+    /// (each via its own [`affinity`](ExprType::affinity)) is copyable. Structural
+    /// bindings (`$source`/`$from`/…, §14.4) are derived scalars and never carry a
+    /// move-only value, so they do not affect the classification.
+    fn row_is_copyable(row: &RowType) -> bool {
+        row.fields().all(|(_, ty)| ty.is_copyable()) && row.key().is_none_or(ExprType::is_copyable)
     }
 
     /// Whether `=` may COPY a value of this type (SPEC §8.5). The negation is a
@@ -293,9 +303,15 @@ fn overlaps(a: &str, b: &str) -> bool {
 mod tests {
     use liasse_diag::SourceMap;
     use liasse_syntax::{StmtKind, parse_expression};
-    use liasse_value::Type;
+    use liasse_value::{ModuleType, Type};
 
     use super::*;
+
+    /// A bare `module` type — the real move-only value type (no longer a synthetic
+    /// marker): [`Type::is_copyable`] returns `false` for it.
+    fn module() -> Type {
+        Type::Module(ModuleType::Any)
+    }
 
     type Check = Result<(), String>;
 
@@ -325,10 +341,46 @@ mod tests {
 
     #[test]
     fn ordinary_result_types_are_copyable() {
-        // No move-only type exists yet, so every result classifies copyable.
         assert_eq!(ExprType::scalar(Type::Text).affinity(), Affinity::Copyable);
         assert_eq!(ExprType::scalar(Type::Int).affinity(), Affinity::Copyable);
         assert!(ExprType::scalar(Type::Blob).is_copyable());
+    }
+
+    #[test]
+    fn a_module_scalar_result_is_move_only() {
+        // The `module` type is the real move-only value type (§8.5/§13.16).
+        assert_eq!(ExprType::scalar(module()).affinity(), Affinity::MoveOnly);
+        assert!(!ExprType::scalar(module()).is_copyable());
+    }
+
+    #[test]
+    fn a_row_or_view_carrying_a_module_field_is_move_only() {
+        // Finding 3: the model surfaces a nested struct as `ExprType::Row`, so a
+        // row/view carrying a move-only field MUST classify move-only — otherwise
+        // `=`-copying the whole row would silently alias the contained module.
+        let row = RowType::new([("m".to_owned(), ExprType::scalar(module()))], None);
+        assert_eq!(ExprType::Row(row.clone()).affinity(), Affinity::MoveOnly);
+        assert_eq!(ExprType::View(row).affinity(), Affinity::MoveOnly);
+    }
+
+    #[test]
+    fn a_row_of_only_copyable_fields_stays_copyable() {
+        let row = RowType::new(
+            [("n".to_owned(), ExprType::scalar(Type::Int))],
+            Some(ExprType::scalar(Type::Text)),
+        );
+        assert_eq!(ExprType::Row(row.clone()).affinity(), Affinity::Copyable);
+        assert_eq!(ExprType::View(row).affinity(), Affinity::Copyable);
+    }
+
+    #[test]
+    fn a_row_keyed_by_a_move_only_value_is_move_only() {
+        // The delegation covers the key type as well as the fields.
+        let row = RowType::new(
+            [("n".to_owned(), ExprType::scalar(Type::Int))],
+            Some(ExprType::scalar(module())),
+        );
+        assert_eq!(ExprType::Row(row).affinity(), Affinity::MoveOnly);
     }
 
     // --- `=` copies, move-only rejects `=` ----------------------------------

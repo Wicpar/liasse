@@ -68,8 +68,8 @@ pub use period::{
 pub use recur::{recurring_intervals, Interval};
 pub use scalars::{Bytes, Text, Uuid};
 pub use temporal::{Date, Precision, Timestamp};
-pub use ty::{RefTarget, StructType, Type};
-pub use value::{Ref, RefKey, Struct, Value};
+pub use ty::{ModulePackageRef, ModuleType, RefTarget, StructType, Type};
+pub use value::{ModuleHandle, Ref, RefKey, Struct, Value};
 
 /// Re-exported so downstream crates share the exact big-number types the
 /// canonical `int`/`decimal` values are built from.

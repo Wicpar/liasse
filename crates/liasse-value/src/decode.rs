@@ -143,6 +143,15 @@ impl Type {
                 expected: JsonShape::Null,
                 found: JsonShape::of(wire),
             }),
+            // A `module` value has no wire decode form (SPEC §13.16): it is a live
+            // runtime handle produced only by selection/`unpack`, never decoded from
+            // stored or wire data. Rejecting here is the guarantee a module can never
+            // enter state as data.
+            Type::Module(_) => Err(ValueError::TypeMismatch {
+                ty: "module",
+                expected: JsonShape::Null,
+                found: JsonShape::of(wire),
+            }),
         }
     }
 
