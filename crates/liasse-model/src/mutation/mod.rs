@@ -18,7 +18,7 @@ mod helpers;
 mod host_args;
 
 use liasse_diag::{ByteSpan, SourceId, SourceMap};
-use liasse_expr::{check_statement, ExprType, RowType};
+use liasse_expr::{check_statement, ExprType, MoveTracker, RowType};
 use liasse_syntax::{parse_expression, Arg, BinaryOp, Expr, ExprKind, Selector, Stmt, StmtKind};
 use liasse_value::Type;
 
@@ -33,9 +33,9 @@ use crate::state::{Node, Shape};
 use crate::walk::child_exprs;
 
 use helpers::{
-    arg_expr, collect_param_refs, is_program_call, is_scalar_binop, local_binding_name,
-    receiver_shape, record, references_deferred, resolve_node, uses_mutation_operator, wrap,
-    write_path, BindEnv, Params,
+    apply_move_effects, arg_expr, collect_param_refs, is_program_call, is_scalar_binop,
+    local_binding_name, read_exprs, receiver_shape, record, references_deferred, resolve_node,
+    uses_mutation_operator, wrap, write_path, BindEnv, Params,
 };
 use host_args::HostArgInference;
 // Re-exported for the surface phase's inline-program check (§10.1), which walks a
@@ -615,8 +615,13 @@ impl MutPhase<'_, '_> {
         // than reject it with a spurious "unknown name" (full typing runs under a
         // host-resolved load).
         let mut deferred: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        // §8.5 use-after-move: which local bindings a move has left moved-from. A
+        // move CONSUMES its source binding; a read/field access/call argument
+        // BORROWS, so only a move records into this tracker.
+        let mut moved = MoveTracker::new();
         for (index, (stmt, source)) in statements.iter().enumerate() {
             self.check_readonly(stmt, &entry.path, *source);
+            self.reject_moved_reads(stmt, &moved, *source);
             match &stmt.kind {
                 StmtKind::Return(_) if index != last => self.reject_at(
                     *source,
@@ -639,16 +644,83 @@ impl MutPhase<'_, '_> {
                             deferred.insert(local.to_owned());
                         } else if let Some(typed) = self.type_value(value, &scope, *source) {
                             let ty = typed.ty().clone();
+                            self.reject_copy_of_move_only(&ty, value.span, *source);
                             scope = scope.with_binding(local.to_owned(), ty);
                         }
                     } else {
-                        self.check_assign(target, value, receiver_shape, &scope, *source);
+                        self.check_assign(target, value, receiver_shape, &scope, *source, true);
+                    }
+                }
+                StmtKind::Move { dest, source: src } => {
+                    // §8.5: the move operator transfers a local binding into `dest`
+                    // and leaves the binding moved-from. Only a local binding is an
+                    // owner this stage can leave moved-from, so a stored-state place
+                    // (a field path, parameter, selector) or a computed value as the
+                    // source is refused loudly rather than copied under a move
+                    // spelling. A move is valid for any value affinity — it is
+                    // exactly how a move-only value must be transferred — so there is
+                    // no copyability restriction here.
+                    if !matches!(&src.kind, ExprKind::Name(_)) {
+                        self.reject_at(
+                            *source,
+                            src.span,
+                            "a move source must be a local binding (§8.5)",
+                            "bind the value with `=` first, then move the binding; a stored field or computed value cannot be left moved-from",
+                        );
+                    } else if let Some(local) = local_binding_name(dest) {
+                        // `dest <- source` (both local names): `dest` takes the
+                        // source binding's type.
+                        if references_deferred(src, &deferred) {
+                            deferred.insert(local.to_owned());
+                        } else if let Some(typed) = self.type_value(src, &scope, *source) {
+                            scope = scope.with_binding(local.to_owned(), typed.ty().clone());
+                        }
+                    } else {
+                        // `field <- source`: a field destination type-checks like an
+                        // assignment of the source into that field, but as a move it
+                        // permits a value of any affinity (`copies = false`).
+                        self.check_assign(dest, src, receiver_shape, &scope, *source, false);
                     }
                 }
                 StmtKind::Bare(expr) => self.check_bare(expr, &scope, *source),
                 StmtKind::Clear(target) => self.check_clear(target, receiver_shape, *source),
                 StmtKind::Return(_) => {}
             }
+            apply_move_effects(stmt, &mut moved);
+        }
+    }
+
+    /// §8.5 use-after-move: reject a read of a moved-from binding in any of `stmt`'s
+    /// read positions. A move's destination and an assignment's target are writes,
+    /// not reads, so they never trip this — only the value moved/assigned, the base
+    /// a field write descends through, and every bare/return expression do.
+    fn reject_moved_reads(&mut self, stmt: &Stmt, moved: &MoveTracker, source: SourceId) {
+        for expr in read_exprs(stmt) {
+            if let Some(place) = moved.first_moved_read(expr) {
+                self.reject_at(
+                    source,
+                    expr.span,
+                    &format!(
+                        "use-after-move: `{place}` was moved from and cannot be read until it is reassigned (§8.5)"
+                    ),
+                    "read or copy the value before it is moved, or reassign the binding first",
+                );
+            }
+        }
+    }
+
+    /// §8.5 `=` copies, so a move-only value assigned with `=` is a type error — it
+    /// must be transferred with `<-`/`->`. No value type is move-only today, so this
+    /// fires only for a forthcoming move-only type; it is wired now so that type is
+    /// enforced the moment it exists.
+    fn reject_copy_of_move_only(&mut self, ty: &ExprType, span: ByteSpan, source: SourceId) {
+        if ty.affinity().is_move_only() {
+            self.reject_at(
+                source,
+                span,
+                "cannot copy a move-only value with `=`; transfer it with the move operator `<-`/`->` (§8.5)",
+                "replace `=` with `<-` (or the mirror `->`)",
+            );
         }
     }
 
@@ -678,6 +750,7 @@ impl MutPhase<'_, '_> {
     fn check_readonly(&mut self, stmt: &Stmt, receiver: &[String], source: SourceId) {
         let target = match &stmt.kind {
             StmtKind::Assign { target, .. } => Some(target),
+            StmtKind::Move { dest, .. } => Some(dest),
             StmtKind::Bare(expr) => match &expr.kind {
                 ExprKind::Binary { op: liasse_syntax::BinaryOp::Add | liasse_syntax::BinaryOp::Sub, lhs, .. } => Some(lhs.as_ref()),
                 ExprKind::Unary { op: liasse_syntax::UnaryOp::Neg, operand } => Some(operand.as_ref()),
@@ -709,6 +782,9 @@ impl MutPhase<'_, '_> {
         );
     }
 
+    /// Type-check a field write. `copies` is `true` for a `=` copy and `false` for
+    /// a `field <- source` move: the §8.5 copy-only-when-copyable rule applies to
+    /// the copy but not the move (a move transfers a value of any affinity).
     fn check_assign(
         &mut self,
         target: &Expr,
@@ -716,6 +792,7 @@ impl MutPhase<'_, '_> {
         receiver_shape: &Shape,
         scope: &ModelScope,
         source: SourceId,
+        copies: bool,
     ) {
         // Resolve the target field's type up front so the `self.root` borrow is
         // released before the `&mut self` type-check below.
@@ -736,20 +813,24 @@ impl MutPhase<'_, '_> {
         // are accepted structurally. When both the target field type and the
         // value type are known, the value must be assignable to the field (§8.5,
         // the §8.3 contract type of a parameter used as the value).
-        if let Some(typed) = self.type_value(value, scope, source)
-            && let Some(field_ty) = &target_ty
-            && !crate::check::value_assignable(&typed, field_ty)
-        {
-            self.reject_at(
-                source,
-                value.span,
-                &format!(
-                    "this value has type `{}` but the field expects `{}` (§8.5)",
-                    typed.ty().describe(),
-                    field_ty.name()
-                ),
-                "assign a value of the field's declared type",
-            );
+        if let Some(typed) = self.type_value(value, scope, source) {
+            if copies {
+                self.reject_copy_of_move_only(typed.ty(), value.span, source);
+            }
+            if let Some(field_ty) = &target_ty
+                && !crate::check::value_assignable(&typed, field_ty)
+            {
+                self.reject_at(
+                    source,
+                    value.span,
+                    &format!(
+                        "this value has type `{}` but the field expects `{}` (§8.5)",
+                        typed.ty().describe(),
+                        field_ty.name()
+                    ),
+                    "assign a value of the field's declared type",
+                );
+            }
         }
     }
 

@@ -38,6 +38,7 @@
 //! - **Item 4 (`uuid()` identity).** Delegated to [`Environment::uuid`] via a
 //!   [`CallSite`].
 
+mod affine;
 mod check;
 mod env;
 mod error;
@@ -55,6 +56,7 @@ mod typed;
 #[cfg(feature = "eval-wire")]
 pub mod wire;
 
+pub use affine::{Affinity, MoveTracker, assignment_rejects_move_only, place_key, read_places};
 pub use check::{
     audit_host_position, check_composite_delete_operand, check_expression, check_statement,
 };

@@ -95,6 +95,24 @@ impl Struct {
     }
 }
 
+/// A move-only handle to a module instance (SPEC §13.16). It is physically
+/// `Clone` — an *identifier*, not the instance — but the affine type layer forbids
+/// duplicating it with `=` ([`Type::is_copyable`](crate::Type::is_copyable) is
+/// `false` for a `module`), and it is never a persisted field value: a module
+/// space is the module host's live children plus the durable composition, not an
+/// ordinary stored collection. Aliasing (a second owner) is a static error.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ModuleHandle {
+    /// A reference to an instance already mounted in a module space, addressed by
+    /// its `(space declaration path, instance name)` key — the key the module host
+    /// mounts it under.
+    Mounted { space: String, name: String },
+    /// A not-yet-materialized module produced by `unpack`: the source `.liasse`
+    /// blob descriptor, with decode, mount, and state reconstruction DEFERRED to
+    /// apply or read (SPEC §13.16). Boxed to keep [`Value`] small.
+    Pending(Box<BlobDescriptor>),
+}
+
 /// A canonical Liasse runtime value (Annex A). Every variant is well-formed by
 /// construction: there is no way to build, say, a non-decimal `Decimal`.
 #[derive(Debug, Clone)]
@@ -123,6 +141,10 @@ pub enum Value {
     Composite(Vec<Value>),
     Set(BTreeSet<Value>),
     Map(BTreeMap<Value, Value>),
+    /// A `module` value (SPEC §13.16): a move-only handle to an installed instance.
+    /// Carried through evaluation in a `Cell::Scalar`; never persisted as field data
+    /// (a module can never be decoded from wire — see [`Type::decode`](crate::Type::decode)).
+    Module(ModuleHandle),
     /// The Liasse `none` — the *absence* of an `optional<T>` value (A.1). It is
     /// not a value that can be a member of a set, a map value, or a positional
     /// key component; it is represented by not being there (an omitted struct
@@ -191,6 +213,7 @@ impl Value {
             Self::Set(_) => 15,
             Self::Map(_) => 16,
             Self::Composite(_) => 17,
+            Self::Module(_) => 18,
             Self::None => u8::MAX,
         }
     }
@@ -227,6 +250,12 @@ impl Value {
                     .map(|(k, v)| J::Array(vec![k.to_wire(), v.to_wire()]))
                     .collect(),
             ),
+            // A module handle has no DATA wire form and is never persisted as field
+            // data (SPEC §13.16). It is represented FAITHFULLY — as its handle
+            // identity under a `$module` tag, not a fabricated scalar — for the
+            // audit/debug paths that render a value; the guarantee that it never
+            // round-trips as data is `Type::decode` rejecting it, not this arm.
+            Self::Module(handle) => Self::module_to_wire(handle),
             // A.1 / SPEC-ISSUES item 29: `none` is absence, with no wire sentinel.
             // Where absence is expressed by position (an omitted struct member, a
             // non-member of a set, an absent map key) `none` never reaches this arm.
@@ -236,6 +265,24 @@ impl Value {
             // scalar type. The `{ "$none": true }` sentinel is removed entirely.
             Self::None => J::Null,
         }
+    }
+
+    /// The faithful `$module` tag for a module handle's identity (SPEC §13.16).
+    /// Not a data wire form — a module is never persisted; this renders its
+    /// identity for audit/debug only.
+    fn module_to_wire(handle: &ModuleHandle) -> serde_json::Value {
+        use serde_json::Value as J;
+        let inner = match handle {
+            ModuleHandle::Mounted { space, name } => Self::canonical_object([
+                ("name".to_owned(), J::String(name.clone())),
+                ("space".to_owned(), J::String(space.clone())),
+            ]),
+            ModuleHandle::Pending(descriptor) => Self::canonical_object([(
+                "pending".to_owned(),
+                J::String(descriptor.sha512().to_canonical_text()),
+            )]),
+        };
+        Self::wrap("$module", inner)
     }
 
     /// The canonical compact JSON text (A.7): sorted object keys, no
@@ -381,6 +428,7 @@ impl Ord for Value {
             (Self::Composite(a), Self::Composite(b)) => a.cmp(b),
             (Self::Set(a), Self::Set(b)) => a.cmp(b),
             (Self::Map(a), Self::Map(b)) => a.cmp(b),
+            (Self::Module(a), Self::Module(b)) => a.cmp(b),
             (Self::None, Self::None) => Ordering::Equal,
             _ => self.rank().cmp(&other.rank()),
         }

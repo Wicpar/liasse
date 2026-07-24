@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use liasse_diag::{Diagnostics, SourceMap};
 use liasse_expr::ExprType;
 use liasse_syntax::{parse_type_expression, SpannedType, TypeExprKind, TypeField};
-use liasse_value::{StructType, Type};
+use liasse_value::{ModuleType, StructType, Type};
 
 /// A resolved-in-scope table of reusable scalar-shaped types (`$types`).
 pub(crate) type NamedTypes = BTreeMap<String, Type>;
@@ -155,6 +155,11 @@ fn map_name(word: &str, named: &NamedTypes) -> Result<Type, String> {
         "period" => Ok(Type::Period),
         "json" => Ok(Type::Json),
         "blob" => Ok(Type::Blob),
+        // A bare `module` value type (§13.16): a move-only handle to any installed
+        // instance. A package/interface refinement is carried by [`ModuleType`] and
+        // is constructed by the module-space and interface layers; a refined surface
+        // spelling (`module<pkg@^1>`) is a later grammar extension.
+        "module" => Ok(Type::Module(ModuleType::Any)),
         // A generic keyword spelled without its `<...>` argument.
         "optional" | "set" | "view" => Err(format!("`{word}` requires a `<T>` argument")),
         "map" => Err("`map` requires a `<K, V>` argument".to_owned()),

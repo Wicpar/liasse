@@ -389,6 +389,7 @@ pub(crate) fn statement_expr(parsed: &SpannedExpression) -> &Expr {
     match &parsed.statement().kind {
         StmtKind::Bare(expr) | StmtKind::Return(expr) | StmtKind::Clear(expr) => expr,
         StmtKind::Assign { value, .. } => value,
+        StmtKind::Move { source, .. } => source,
     }
 }
 

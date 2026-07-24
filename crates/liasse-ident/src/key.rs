@@ -92,6 +92,7 @@ impl KeyComponent {
             Value::Composite(_) => "composite key",
             Value::Set(_) => "set",
             Value::Map(_) => "map",
+            Value::Module(_) => "module",
             Value::None => "none",
         }
     }

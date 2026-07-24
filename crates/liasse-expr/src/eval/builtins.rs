@@ -8,7 +8,7 @@
 //! CaseFolding.txt C+F), which §6.5 names and B.1 uses for its case-insensitive
 //! `$sort` key — a different operation from lowercasing.
 
-use liasse_value::{Integer, Text, Value};
+use liasse_value::{Integer, ModuleHandle, Text, Value};
 
 use crate::env::Cell;
 use crate::error::EvalError;
@@ -36,6 +36,20 @@ impl Evaluator<'_> {
             }
             BuiltinFn::StringTrim => self.eval_string(args, |text| text.trim().to_owned()),
             BuiltinFn::TimeDuration => self.eval_time_duration(args),
+            BuiltinFn::Unpack => self.eval_unpack(args),
+        }
+    }
+
+    /// `unpack(blob)` (§13.16): read a blob into a move-only `module` value with
+    /// materialization DEFERRED — the value carries the source blob descriptor as a
+    /// `Pending` handle, and no decode/mount happens here. Decode, mount, and state
+    /// reconstruction occur only when the value is applied or read (a later piece).
+    fn eval_unpack(&mut self, args: &[TypedExpr]) -> Result<Cell, EvalError> {
+        match self.first(args)? {
+            Cell::Scalar(Value::Blob(descriptor)) => {
+                Ok(Cell::Scalar(Value::Module(ModuleHandle::Pending(descriptor))))
+            }
+            _ => Err(EvalError::ShapeMismatch { expected: "a blob argument" }),
         }
     }
 

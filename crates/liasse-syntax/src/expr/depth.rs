@@ -93,6 +93,10 @@ impl Stmt {
                 stack.push((target, 1));
                 stack.push((value, 1));
             }
+            StmtKind::Move { dest, source } => {
+                stack.push((dest, 1));
+                stack.push((source, 1));
+            }
         }
     }
 }
@@ -213,6 +217,10 @@ impl StmtKind {
             StmtKind::Assign { target, value } => {
                 stack.push(target);
                 stack.push(value);
+            }
+            StmtKind::Move { dest, source } => {
+                stack.push(dest);
+                stack.push(source);
             }
         }
     }

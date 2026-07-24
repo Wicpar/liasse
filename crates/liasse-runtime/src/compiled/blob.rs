@@ -145,6 +145,18 @@ fn stmt_dests(stmt: &Stmt, parameter: &str, names: &mut Vec<String>) {
             expr_dests(target, parameter, names);
             expr_dests(value, parameter, names);
         }
+        // A move `dest <- source` lands its source exactly where an assignment's
+        // value would (§8.5): a moved blob parameter reaches the same field.
+        StmtKind::Move { dest, source } => {
+            if is_param(source, parameter)
+                && let ExprKind::Field { member, .. } = &dest.kind
+                && !member.structural
+            {
+                names.push(member.text.clone());
+            }
+            expr_dests(dest, parameter, names);
+            expr_dests(source, parameter, names);
+        }
         StmtKind::Return(expr) | StmtKind::Clear(expr) | StmtKind::Bare(expr) => {
             expr_dests(expr, parameter, names);
         }

@@ -128,6 +128,23 @@ impl Builder<'_> {
                         value: self.node(value_pair)?,
                     })
                 }
+                // `dest <- source`: the left expression is the destination, the
+                // tail expression the source. `source -> dest` mirrors it. Both
+                // normalize to one `Move` node (§8.5).
+                Rule::move_from_tail => {
+                    let source_pair = self.first_inner(&tail)?;
+                    Some(StmtKind::Move {
+                        dest: expr,
+                        source: self.node(source_pair)?,
+                    })
+                }
+                Rule::move_to_tail => {
+                    let dest_pair = self.first_inner(&tail)?;
+                    Some(StmtKind::Move {
+                        source: expr,
+                        dest: self.node(dest_pair)?,
+                    })
+                }
                 Rule::clear_tail => Some(StmtKind::Clear(expr)),
                 _ => {
                     let span = self.span(&tail);

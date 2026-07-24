@@ -171,6 +171,12 @@ fn put(value: &Value, out: &mut Vec<u8>) {
             }
             out.push(SEQ_STOP);
         }
+        // A `module` value is not key-eligible (A.8 / §13.16: `is_key_eligible`
+        // is `false`), so a module can never appear in a key — the schema layer
+        // rejects a `module`-typed key component at admission. This arm exists only
+        // for match totality; reaching it is a schema-admission bug, not a value we
+        // silently key on. A reserved marker byte keeps the encoder total.
+        Value::Module(_) => out.push(0xFE),
         Value::None => out.push(0xFF),
     }
 }

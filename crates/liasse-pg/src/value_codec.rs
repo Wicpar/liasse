@@ -158,6 +158,13 @@ pub fn encode(value: &Value) -> J {
                     .collect(),
             ),
         ),
+        // A `module` value is never a persisted field value (§13.16): a module
+        // space is the host's live children plus the durable composition, not an
+        // ordinary stored collection, and the type layer forbids a `module`-typed
+        // stored field. This arm is defense-in-depth — it encodes under a `module`
+        // tag that `decode` refuses LOUDLY, so a module can never be read back as
+        // stored data even if one ever reached the codec.
+        Value::Module(_) => tag("module", J::Null),
         Value::None => tag("none", J::Bool(true)),
     }
 }
@@ -190,6 +197,9 @@ pub fn decode(wire: &J) -> Result<Value, StoreError> {
             .map(|v| Value::Set(v.into_iter().filter(|m| !matches!(m, Value::None)).collect())),
         "map" => decode_map(payload),
         "none" => Ok(Value::None),
+        // A `module` value is not persistable (§13.16); a stored `module` tag is
+        // corruption (a module reached storage, which the type layer forbids).
+        "module" => Err(corrupt("a module value cannot be read from stored state (§13.16)")),
         other => Err(corrupt(format!("unknown value tag `{other}`"))),
     }
 }

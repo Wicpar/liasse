@@ -49,6 +49,53 @@ impl StructType {
     }
 }
 
+/// A package reference refining a `module` type (SPEC §13.16): the package name
+/// and the major version it must be compatible with. Compatibility is major-only
+/// (§13.14/§20.3): a caret spelling such as `t.accounting@^1.2` refines to
+/// `major = 1`, admitting any `1.x` instance of that package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModulePackageRef {
+    name: String,
+    major: u64,
+}
+
+impl ModulePackageRef {
+    /// A reference to `name` at compatibility major `major`.
+    #[must_use]
+    pub fn new(name: impl Into<String>, major: u64) -> Self {
+        Self {
+            name: name.into(),
+            major,
+        }
+    }
+
+    /// The referenced package name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The compatibility major version.
+    #[must_use]
+    pub fn major(&self) -> u64 {
+        self.major
+    }
+}
+
+/// How tightly a `module` value type constrains the instance it admits
+/// (SPEC §13.16). A module value's type is its definition; this is the refinement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModuleType {
+    /// Bare `module` — admits any installed instance.
+    Any,
+    /// `module` refined by a package reference — admits an instance of that
+    /// package at a compatible (major-only) version (§13.14/§20.3).
+    Package(ModulePackageRef),
+    /// `module` refined by a structural interface name (§13.8) — admits any
+    /// instance whose definition exposes that interface.
+    Interface(String),
+}
+
 /// A Liasse type (Annex A / A.2).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
@@ -77,6 +124,12 @@ pub enum Type {
     /// [`Value::Composite`](crate::Value::Composite)) orders and normalizes
     /// positionally. It is the type of a collection's composite primary key.
     Composite(Vec<(String, Type)>),
+    /// A `module` value (SPEC §13.16): a move-only, unique owning handle to an
+    /// installed module instance, typed by its definition (bare, package-refined,
+    /// or interface-refined). It is the only move-only value type
+    /// ([`is_copyable`](Type::is_copyable) `== false`); a struct, set, map,
+    /// optional, or view carrying one classifies move-only by delegation.
+    Module(ModuleType),
 }
 
 impl RefTarget {
@@ -133,6 +186,7 @@ impl Type {
             Self::Ref(_) => "ref",
             Self::Struct(_) => "struct",
             Self::Composite(_) => "composite key",
+            Self::Module(_) => "module",
         }
     }
 
@@ -168,7 +222,51 @@ impl Type {
             | Self::Optional(_)
             | Self::Set(_)
             | Self::Map(_, _)
-            | Self::View(_) => false,
+            | Self::View(_)
+            | Self::Module(_) => false,
+        }
+    }
+
+    /// SPEC §8.5 copyability: whether `=` may COPY a value of this type. A copyable
+    /// value duplicates freely; a **move-only** (affine) value never duplicates and
+    /// is only transferred with the move operator `<-`/`->`.
+    ///
+    /// Every value type Liasse has today is copyable — scalars, immutable content
+    /// and identity references (`blob`, `ref`), enums, and structs, sets, maps,
+    /// optionals, and views built from copyable values. Compound types delegate to
+    /// their components, so this method is the single classification hook a
+    /// forthcoming move-only type opts into: a `module` value (a later task) owns
+    /// live mutable state, so when its `Type` variant is added its arm here returns
+    /// `false`, and any struct, set, map, optional, or view carrying one then
+    /// reports move-only automatically. The scalar arms are enumerated (no
+    /// wildcard) precisely so that adding that variant is a compile error until its
+    /// copyability is decided here.
+    #[must_use]
+    pub fn is_copyable(&self) -> bool {
+        match self {
+            Self::Text
+            | Self::Bool
+            | Self::Int
+            | Self::Decimal
+            | Self::Bytes
+            | Self::Uuid
+            | Self::Date
+            | Self::Timestamp(_)
+            | Self::Duration
+            | Self::Period
+            | Self::Json
+            | Self::Blob
+            | Self::Enum(_)
+            | Self::Ref(_) => true,
+            Self::Optional(inner) | Self::Set(inner) | Self::View(inner) => inner.is_copyable(),
+            Self::Map(key, value) => key.is_copyable() && value.is_copyable(),
+            Self::Struct(fields) => fields.fields().all(|(_, ty)| ty.is_copyable()),
+            Self::Composite(components) => components.iter().all(|(_, ty)| ty.is_copyable()),
+            // A `module` value owns live mutable state with exactly one owner: it is
+            // move-only (SPEC §8.5/§13.16), never copied by `=`. This is the sole
+            // `false` arm; every container of a module classifies move-only above by
+            // component delegation.
+            Self::Module(_) => false,
         }
     }
 }

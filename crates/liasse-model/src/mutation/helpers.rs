@@ -401,6 +401,62 @@ pub(crate) fn stmt_exprs(stmt: &Stmt) -> Vec<&Expr> {
     match &stmt.kind {
         StmtKind::Return(expr) | StmtKind::Bare(expr) | StmtKind::Clear(expr) => vec![expr],
         StmtKind::Assign { target, value } => vec![target, value],
+        StmtKind::Move { dest, source } => vec![dest, source],
+    }
+}
+
+/// The expressions a statement READS (§8.5 move-versus-borrow), for the
+/// use-after-move check. An assignment's target and a move's destination are
+/// WRITES, not reads — only the base a field write descends through (`x.f = …`
+/// reads `x`) is a read — so those are excluded while their value/source is
+/// included.
+pub(super) fn read_exprs(stmt: &Stmt) -> Vec<&Expr> {
+    match &stmt.kind {
+        StmtKind::Return(expr) | StmtKind::Bare(expr) => vec![expr],
+        StmtKind::Clear(target) => write_base_reads(target),
+        StmtKind::Assign { target, value } => {
+            let mut reads = vec![value];
+            reads.extend(write_base_reads(target));
+            reads
+        }
+        StmtKind::Move { dest, source } => {
+            let mut reads = vec![source];
+            reads.extend(write_base_reads(dest));
+            reads
+        }
+    }
+}
+
+/// The read positions inside a write target: a field write reads its receiver
+/// (`x.f = …` reads `x`); a bare-name target is a pure write and reads nothing.
+fn write_base_reads(target: &Expr) -> Vec<&Expr> {
+    match &target.kind {
+        ExprKind::Field { base, .. } => vec![base.as_ref()],
+        _ => Vec::new(),
+    }
+}
+
+/// Apply a statement's effect on the moved-from tracker (§8.5). A move CONSUMES its
+/// local-binding source (leaving it moved-from) and reassigns its destination; an
+/// assignment or clear reassigns its target (reviving a moved-from binding). The
+/// checker has already refused any move whose source is not a local binding, so
+/// only a bare-name source is consumed here.
+pub(super) fn apply_move_effects(stmt: &Stmt, moved: &mut liasse_expr::MoveTracker) {
+    match &stmt.kind {
+        StmtKind::Move { dest, source } => {
+            if let ExprKind::Name(id) = &source.kind {
+                moved.consume(id.text.clone());
+            }
+            if let Some(place) = liasse_expr::place_key(dest) {
+                moved.reassign(&place);
+            }
+        }
+        StmtKind::Assign { target, .. } | StmtKind::Clear(target) => {
+            if let Some(place) = liasse_expr::place_key(target) {
+                moved.reassign(&place);
+            }
+        }
+        StmtKind::Return(_) | StmtKind::Bare(_) => {}
     }
 }
 

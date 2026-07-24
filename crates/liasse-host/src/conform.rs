@@ -117,6 +117,15 @@ impl TypeConformance for Type {
                 Ok(())
             }
 
+            // A `module` value conforms to a `module` type at the VARIANT level —
+            // the level this guard decides (see the module doc). A module handle
+            // carries its identity, not its definition, so the REFINEMENT check
+            // (package major §13.14/§20.3, or interface exposure §13.8) is verified
+            // where the handle resolves to an instance (the runtime dispatch and
+            // lifecycle layer, which holds the mounted definition), not here — this
+            // layer has no access to the instance's package or exposed interfaces.
+            (Type::Module(_), Value::Module(_)) => Ok(()),
+
             (declared, actual) => Err(TypeMismatch::Variant {
                 expected: declared.name(),
                 found: actual.variant_name(),
@@ -190,6 +199,7 @@ impl VariantName for Value {
             Value::Composite(_) => "composite key",
             Value::Set(_) => "set",
             Value::Map(_) => "map",
+            Value::Module(_) => "module",
             Value::None => "none",
         }
     }

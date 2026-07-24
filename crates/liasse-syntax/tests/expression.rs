@@ -524,3 +524,95 @@ fn bracket_free_unary_chain_at_the_cap_is_accepted() -> Check {
     );
     Ok(())
 }
+
+/// The `Move` node of a single-statement move program.
+fn move_stmt(text: &str) -> Result<(Expr, Expr), String> {
+    match parse_ok(text)?.statement.kind {
+        StmtKind::Move { dest, source } => Ok((dest, source)),
+        other => Err(format!("expected a move statement, got {other:?}")),
+    }
+}
+
+#[test]
+fn move_from_spelling_parses_dest_left_source_right() -> Check {
+    // §8.5: `dest <- source` — the left expression is the destination, the right
+    // the moved-from source.
+    let (dest, source) = move_stmt("held <- .cells[@k]")?;
+    let ExprKind::Name(name) = &dest.kind else {
+        return Err(format!("expected the destination to be the name `held`, got {:?}", dest.kind));
+    };
+    assert_eq!(name.text, "held");
+    assert!(matches!(source.kind, ExprKind::Select { .. }));
+    Ok(())
+}
+
+#[test]
+fn move_to_spelling_parses_source_left_dest_right() -> Check {
+    // §8.5: `source -> dest` is the mirror spelling — the left expression is the
+    // source, the right the destination.
+    let (dest, source) = move_stmt(".cells[@k] -> held")?;
+    let ExprKind::Name(name) = &dest.kind else {
+        return Err(format!("expected the destination to be the name `held`, got {:?}", dest.kind));
+    };
+    assert_eq!(name.text, "held");
+    assert!(matches!(source.kind, ExprKind::Select { .. }));
+    Ok(())
+}
+
+#[test]
+fn both_move_spellings_lower_to_the_same_node() -> Check {
+    // §8.5: the two spellings are two ways to write one move, so `a <- b` and
+    // `b -> a` MUST produce the same `Move { dest, source }` structure (`a` the
+    // destination, `b` the source). Only the byte spans differ — the two source
+    // texts place `a` and `b` at different offsets — so compare the shape.
+    let name = |expr: &Expr| match &expr.kind {
+        ExprKind::Name(id) => Ok(id.text.clone()),
+        other => Err(format!("expected a bare name, got {other:?}")),
+    };
+    let (from_dest, from_source) = move_stmt("a <- b")?;
+    let (to_dest, to_source) = move_stmt("b -> a")?;
+    assert_eq!(name(&from_dest)?, "a");
+    assert_eq!(name(&from_source)?, "b");
+    assert_eq!(name(&to_dest)?, name(&from_dest)?, "both spellings share one destination");
+    assert_eq!(name(&to_source)?, name(&from_source)?, "both spellings share one source");
+    Ok(())
+}
+
+#[test]
+fn spaced_move_from_still_parses_as_a_move() -> Check {
+    // A space before `<-` does not change the token: `a <- b` is a move, not a
+    // comparison.
+    let (dest, source) = move_stmt("a <- b")?;
+    assert!(matches!(dest.kind, ExprKind::Name(_)));
+    assert!(matches!(source.kind, ExprKind::Name(_)));
+    Ok(())
+}
+
+#[test]
+fn less_than_negative_is_still_a_comparison_not_a_move() -> Check {
+    // The move token is the ADJACENT `<-`. A `<` separated from a `-` — here by a
+    // space — stays a comparison against a negated operand: `a < (-b)`.
+    let expr = bare("a < -b")?;
+    let ExprKind::Binary { op, rhs, .. } = &expr.kind else {
+        return Err(format!("expected a comparison, got {:?}", expr.kind));
+    };
+    assert_eq!(*op, BinaryOp::Lt);
+    assert!(
+        matches!(&rhs.kind, ExprKind::Unary { op: UnaryOp::Neg, .. }),
+        "expected the right operand to be a negation, got {:?}",
+        rhs.kind
+    );
+    Ok(())
+}
+
+#[test]
+fn move_into_a_field_destination_parses() -> Check {
+    // A move destination may be a field place, exactly as an assignment target is.
+    let (dest, source) = move_stmt(".slot <- incoming")?;
+    assert!(matches!(dest.kind, ExprKind::Field { .. }));
+    let ExprKind::Name(name) = &source.kind else {
+        return Err(format!("expected the source to be a name, got {:?}", source.kind));
+    };
+    assert_eq!(name.text, "incoming");
+    Ok(())
+}

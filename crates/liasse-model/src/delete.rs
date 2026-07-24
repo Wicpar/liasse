@@ -240,6 +240,12 @@ fn scan_statement(kind: &StmtKind, receiver: &[String], targets: &mut BTreeSet<S
                 targets.insert(path);
             }
         }
+        // A move `dest <- source` stages no collection deletion of its own; its
+        // source is scanned exactly like a bare expression so a deletion reachable
+        // through it is still planned.
+        StmtKind::Move { source, .. } => {
+            scan_expr(source, receiver, targets);
+        }
         StmtKind::Bare(expr) | StmtKind::Return(expr) | StmtKind::Clear(expr) => {
             scan_expr(expr, receiver, targets);
         }

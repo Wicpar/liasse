@@ -20,7 +20,8 @@
 use liasse_diag::ByteSpan;
 use liasse_value::{
     BlobDescriptor, Bytes, CalendarPeriodBuilder, Date, Decimal, Duration, EnumValue, Integer,
-    Json, MediaType, Period, Precision, Ref, RefKey, Sha512, Struct, Text, Timestamp, Uuid, Value,
+    Json, MediaType, ModuleHandle, ModulePackageRef, ModuleType, Period, Precision, Ref, RefKey,
+    Sha512, Struct, Text, Timestamp, Uuid, Value,
 };
 use serde::{Deserialize, Serialize};
 
@@ -193,7 +194,17 @@ pub(crate) enum WireValue {
     Composite(Vec<WireValue>),
     Set(Vec<WireValue>),
     Map(Vec<(WireValue, WireValue)>),
+    Module(WireModuleHandle),
     None,
+}
+
+/// A `postcard`-friendly mirror of [`ModuleHandle`](liasse_value::ModuleHandle)
+/// (§13.16). A move-only module value crossing the eval wire is carried by its
+/// handle identity; the `Pending` blob descriptor mirrors [`WireValue::Blob`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) enum WireModuleHandle {
+    Mounted { space: String, name: String },
+    Pending { sha512: String, bytes: u64, media: String, name: Option<String> },
 }
 
 /// The calendar-period fields (§14.7), reconstructed via [`CalendarPeriodBuilder`].
@@ -252,6 +263,17 @@ impl From<&Value> for WireValue {
             Value::Map(entries) => Self::Map(
                 entries.iter().map(|(k, v)| (WireValue::from(k), WireValue::from(v))).collect(),
             ),
+            Value::Module(handle) => Self::Module(match handle {
+                ModuleHandle::Mounted { space, name } => {
+                    WireModuleHandle::Mounted { space: space.clone(), name: name.clone() }
+                }
+                ModuleHandle::Pending(descriptor) => WireModuleHandle::Pending {
+                    sha512: descriptor.sha512().to_canonical_text(),
+                    bytes: descriptor.byte_count(),
+                    media: descriptor.media().as_str().to_owned(),
+                    name: descriptor.name().map(str::to_owned),
+                },
+            }),
             Value::None => Self::None,
         }
     }
@@ -306,6 +328,12 @@ impl WireValue {
                     .map(|(k, v)| Ok((k.into_value()?, v.into_value()?)))
                     .collect::<Result<_, String>>()?,
             ),
+            Self::Module(handle) => Value::Module(match handle {
+                WireModuleHandle::Mounted { space, name } => ModuleHandle::Mounted { space, name },
+                WireModuleHandle::Pending { sha512, bytes, media, name } => ModuleHandle::Pending(
+                    Box::new(BlobDescriptor::new(Sha512::parse(&sha512).map_err(err)?, bytes, MediaType::new(media), name)),
+                ),
+            }),
             Self::None => Value::None,
         })
     }
@@ -373,6 +401,16 @@ pub(crate) enum WireType {
     RefComposite(Vec<(String, WireType)>),
     Struct(Vec<(String, WireType)>),
     Composite(Vec<(String, WireType)>),
+    Module(WireModuleType),
+}
+
+/// A `postcard`-friendly mirror of [`ModuleType`](liasse_value::ModuleType) — the
+/// refinement of a `module` value's type (§13.16).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) enum WireModuleType {
+    Any,
+    Package { name: String, major: u64 },
+    Interface(String),
 }
 
 impl From<&liasse_value::Type> for WireType {
@@ -404,6 +442,13 @@ impl From<&liasse_value::Type> for WireType {
                 Self::Struct(s.fields().map(|(name, ty)| (name.clone(), WireType::from(ty))).collect())
             }
             Type::Composite(components) => Self::Composite(components_to_wire(components)),
+            Type::Module(refinement) => Self::Module(match refinement {
+                ModuleType::Any => WireModuleType::Any,
+                ModuleType::Package(package) => {
+                    WireModuleType::Package { name: package.name().to_owned(), major: package.major() }
+                }
+                ModuleType::Interface(interface) => WireModuleType::Interface(interface.clone()),
+            }),
         }
     }
 }
@@ -435,6 +480,13 @@ impl WireType {
             Self::RefComposite(components) => Type::Ref(RefTarget::Composite(components_from_wire(components)?)),
             Self::Struct(fields) => Type::Struct(StructType::new(components_from_wire(fields)?)),
             Self::Composite(components) => Type::Composite(components_from_wire(components)?),
+            Self::Module(refinement) => Type::Module(match refinement {
+                WireModuleType::Any => ModuleType::Any,
+                WireModuleType::Package { name, major } => {
+                    ModuleType::Package(ModulePackageRef::new(name, major))
+                }
+                WireModuleType::Interface(interface) => ModuleType::Interface(interface),
+            }),
         })
     }
 }
@@ -449,4 +501,42 @@ fn components_from_wire(components: Vec<(String, WireType)>) -> Result<Vec<(Stri
 
 fn err<E: core::fmt::Display>(error: E) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use liasse_value::{
+        BlobDescriptor, MediaType, ModuleHandle, ModulePackageRef, ModuleType, Sha512, Type, Value,
+    };
+
+    use super::{WireType, WireValue};
+
+    #[test]
+    fn module_type_round_trips_each_refinement() -> Result<(), String> {
+        for ty in [
+            Type::Module(ModuleType::Any),
+            Type::Module(ModuleType::Package(ModulePackageRef::new("t.acct", 2))),
+            Type::Module(ModuleType::Interface("credits".to_owned())),
+        ] {
+            assert_eq!(WireType::from(&ty).into_type()?, ty, "module type round-trips");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn module_value_round_trips_both_handles() -> Result<(), String> {
+        let mounted =
+            Value::Module(ModuleHandle::Mounted { space: "s".to_owned(), name: "a".to_owned() });
+        assert_eq!(WireValue::from(&mounted).into_value()?, mounted, "mounted round-trips");
+
+        let sha = Sha512::parse(&"a".repeat(128)).map_err(|e| e.to_string())?;
+        let pending = Value::Module(ModuleHandle::Pending(Box::new(BlobDescriptor::new(
+            sha,
+            42,
+            MediaType::new("application/vnd.liasse+zip"),
+            None,
+        ))));
+        assert_eq!(WireValue::from(&pending).into_value()?, pending, "pending round-trips");
+        Ok(())
+    }
 }
