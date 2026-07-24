@@ -10,7 +10,7 @@ use liasse_store::{GroupMember, InstanceStore, PendingCommit, StoreFactory};
 use liasse_value::{Type, Value};
 
 use crate::blobs::StagedBlob;
-use crate::dispatch::Dispatch;
+use crate::dispatch::{Dispatch, Handles};
 use crate::engine::{
     response_to_cell, BlobBacking, Engine, PrepareOutcome, PreparedCommit, StagedAdmission,
     StagedChange,
@@ -267,7 +267,10 @@ impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, '_, S, G> {
             BlobBacking::External,
             seed,
             &overlay,
-            Some(&nested as &dyn Dispatch),
+            // A reached child is lent the dispatch handle so it may reach further
+            // peers; it is NOT the host/root scope, so it is lent no lifecycle
+            // authority (§13.10 privilege).
+            Handles { dispatch: Some(&nested as &dyn Dispatch), lifecycle: None },
         );
         self.coordinator.active.borrow_mut().pop();
         let staged = staged.map_err(|error| {
@@ -765,7 +768,14 @@ impl<F: StoreFactory> ModuleHost<F> {
                 let handle = MultiDispatch { coordinator: &coordinator, caller: primary, depth: 0 };
                 let engine = self.primary_engine(primary)?;
                 engine
-                    .stage_admission(request, Vec::new(), BlobBacking::External, seed, &[], Some(&handle as &dyn Dispatch))
+                    .stage_admission(
+                        request,
+                        Vec::new(),
+                        BlobBacking::External,
+                        seed,
+                        &[],
+                        Handles { dispatch: Some(&handle as &dyn Dispatch), lifecycle: None },
+                    )
                     .map_err(ModuleError::Engine)?
             };
             // One running change per reached engine, in index order — a deterministic

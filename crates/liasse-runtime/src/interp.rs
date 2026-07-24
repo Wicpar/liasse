@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_diag::SourceId;
 use liasse_expr::{check_expression, Cell, ExprType, Row, RowId};
+use liasse_model::LifecycleOp;
 use liasse_ident::NameSegment;
 use liasse_syntax::{Arg, BinaryOp, BlockMember, BlockMemberKind, Expr, ExprKind, Selector, Stmt, StmtKind, UnaryOp};
 use liasse_store::{CollectionPath, KeyValue, RowAddress};
@@ -149,6 +150,25 @@ fn is_interface_dispatch(callee: &Expr) -> bool {
     )
 }
 
+/// The module-lifecycle operation a call addresses (§13.10) — `module.install`,
+/// `module.update`, or `module.remove` — when `callee` is a
+/// `Field { base: Name("module"), member }` naming one, else `None`. The reserved
+/// `module` namespace and the operation names are owned by `liasse-model`, so the
+/// classification is against one authoritative source. Recognised structurally in
+/// the interpreter (like `#handle.mut`) before any type-check, and refused unless
+/// the host/root-scope lifecycle handle is lent (privilege, §13.10).
+fn lifecycle_op(callee: &Expr) -> Option<LifecycleOp> {
+    let ExprKind::Field { base, member } = &callee.kind else { return None };
+    if member.structural {
+        return None;
+    }
+    let ExprKind::Name(namespace) = &base.kind else { return None };
+    if namespace.text != liasse_model::LIFECYCLE_NAMESPACE {
+        return None;
+    }
+    LifecycleOp::classify(&member.text)
+}
+
 /// The internal-call nesting bound (§8.11): a program calling another mutation
 /// recurses this interpreter, so a cyclic mutation graph is capped rather than
 /// overflowing the stack. Real packages nest only a handful of levels.
@@ -188,6 +208,14 @@ pub(crate) struct Interp<'a> {
     /// child transition into the same commit. `None` for an ordinary single-engine
     /// admission, where a cross-engine dispatch has no coordinator and is refused.
     pub(crate) dispatch: Option<&'a dyn crate::dispatch::Dispatch>,
+    /// The host-privileged module-lifecycle handle (§13.10): present ONLY when this
+    /// program runs as the host/root-scope primary of a lifecycle transition, so a
+    /// `module.install`/`module.update`/`module.remove(args)` call decodes its blob,
+    /// stages the mount/migration/removal into the same commit, and returns the
+    /// decoded package identity. `None` for every non-host caller — a child module
+    /// engine's `module.*` call is then refused LOUDLY (the privilege is enforced by
+    /// lending, §13.10).
+    pub(crate) lifecycle: Option<&'a dyn crate::dispatch::Lifecycle>,
 }
 
 impl<'a> Interp<'a> {
@@ -566,6 +594,14 @@ impl<'a> Interp<'a> {
             self.locals.insert(name, LocalBind::Value(cell, ExprType::scalar(Type::Json)));
             return Ok(());
         }
+        // §13.10: `name = module.install({ … })` (or update/remove) stages the
+        // lifecycle change into the same atomic commit and binds the decoded package
+        // identity, so a later statement or the `return` can read it.
+        if let Some(result) = self.lifecycle_call(value, source) {
+            let cell = result?;
+            self.locals.insert(name, LocalBind::Value(cell, ExprType::scalar(Type::Json)));
+            return Ok(());
+        }
         if let ExprKind::Binary { op: BinaryOp::Add, lhs, rhs } = &value.kind
             && self.collection_ref(lhs, source)?.is_some()
         {
@@ -886,6 +922,16 @@ impl<'a> Interp<'a> {
                 }
                 Ok(())
             }
+            // §13.10: a bare `module.<op>(args)` lifecycle statement stages the
+            // mount/migration/removal into the same atomic commit; the decoded
+            // package identity is discarded (only a bound `p = module.install(…)`
+            // keeps it). Refused LOUDLY when no host/root lifecycle handle is lent.
+            ExprKind::Call { callee, .. } if lifecycle_op(callee).is_some() => {
+                if let Some(result) = self.lifecycle_call(expr, source) {
+                    result?;
+                }
+                Ok(())
+            }
             // §8.11: a statement invoking a declared mutation (`.rename(…)`, or the
             // bare shorthand `rename({ … })`) runs it inside the same atomic
             // program. A callee that resolves no declared mutation (a bare
@@ -996,6 +1042,57 @@ impl<'a> Interp<'a> {
         }
     }
 
+    /// Run a `module.<op>(args)` lifecycle builtin (§13.10) when `expr` is one,
+    /// yielding the decoded package identity — or a LOUD refusal when no lifecycle
+    /// handle is lent (a non-host/non-root caller, or a single-engine admission).
+    /// `None` when `expr` is not a lifecycle call, so the caller falls through.
+    fn lifecycle_call(&self, expr: &Expr, source: SourceId) -> Option<Result<Cell, Rejection>> {
+        let ExprKind::Call { callee, args } = &expr.kind else { return None };
+        let op = lifecycle_op(callee)?;
+        Some(self.run_lifecycle(op, args, source))
+    }
+
+    /// Evaluate a `module.<op>({ … })` lifecycle call's argument object into its
+    /// `(member, value)` pairs and route it through the lent host-privileged handle
+    /// (§13.10). With NO handle lent, refuse LOUDLY: only the host/root scope may
+    /// carry a module instance through its lifecycle, so a child module engine's
+    /// call — or any single-engine admission — is refused rather than served.
+    fn run_lifecycle(&self, op: LifecycleOp, args: &[Arg], source: SourceId) -> Result<Cell, Rejection> {
+        let Some(lifecycle) = self.lifecycle else {
+            return Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!(
+                    "`module.{}` is a host-privileged lifecycle mutation: only the host/root-scope \
+                     transition may carry a module instance through its lifecycle, and this caller \
+                     is not lent that authority (§13.10)",
+                    op.member()
+                ),
+            ));
+        };
+        let current = self.current()?;
+        let mut values = Vec::new();
+        for arg in args {
+            match arg {
+                Arg::Positional(Expr { kind: ExprKind::Object(members), .. }) => {
+                    for member in members {
+                        values.push(self.dispatch_member(member, source, &current)?);
+                    }
+                }
+                Arg::Named { name, value } => {
+                    values.push((name.text.clone(), self.scalar_value(value, source, &current)?));
+                }
+                Arg::Positional(_) => {
+                    return Err(Rejection::new(
+                        RejectionReason::Malformed,
+                        "a module lifecycle call takes an argument object `{ blob, space, name }` \
+                         (§13.10)",
+                    ));
+                }
+            }
+        }
+        lifecycle.perform(op, values)
+    }
+
     /// Run a declared mutation as an internal call (§8.11): its program executes
     /// against the same prospective state, preserving the external request's
     /// `$actor`/`$session` bindings, so its writes and any rejection are the
@@ -1051,6 +1148,9 @@ impl<'a> Interp<'a> {
             // §13.10: a nested internal call keeps the same coordinator, so a
             // `#handle.mut(...)` it makes reaches the same lent engines atomically.
             dispatch: self.dispatch,
+            // §13.10: a nested internal call keeps the host/root lifecycle authority,
+            // so a `module.<op>(...)` it makes stages into the same transition.
+            lifecycle: self.lifecycle,
         };
         child.run()?;
         // The call's writes are the caller's: carry its touched rows so the final

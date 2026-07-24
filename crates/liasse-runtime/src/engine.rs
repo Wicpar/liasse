@@ -1597,7 +1597,7 @@ impl<S: InstanceStore> Engine<S> {
         // dispatch handle) and commits it immediately — the exact pipeline as before
         // the stage/commit split, so single-engine behaviour is unchanged.
         let seed = generator.next_seed();
-        match self.stage_admission(request, ingresses, backing, seed, &[], None)? {
+        match self.stage_admission(request, ingresses, backing, seed, &[], crate::dispatch::Handles::default())? {
             StagedAdmission::Rejected(rejection) => Ok(CallOutcome::Rejected(rejection)),
             StagedAdmission::Unchanged { response } => Ok(CallOutcome::Unchanged { response }),
             StagedAdmission::Changed(change) => self.commit_staged(change, None),
@@ -1622,7 +1622,7 @@ impl<S: InstanceStore> Engine<S> {
         backing: BlobBacking,
         seed: u64,
         overlay: &[Change],
-        dispatch: Option<&dyn crate::dispatch::Dispatch>,
+        handles: crate::dispatch::Handles<'_>,
     ) -> Result<StagedAdmission, EngineError> {
         let Some(mutation) = self.compiled.mutation(request.mutation()) else {
             return Ok(StagedAdmission::Rejected(Rejection::new(
@@ -1736,7 +1736,10 @@ impl<S: InstanceStore> Engine<S> {
             depth: 0,
             // §13.10: lend the cross-instance dispatch handle so a `#handle.mut(...)`
             // in this program stages the addressed child into the same transition.
-            dispatch,
+            dispatch: handles.dispatch,
+            // §13.10: lend the host/root lifecycle handle so a `module.<op>(...)` in
+            // this program stages the mount/migration/removal into the same commit.
+            lifecycle: handles.lifecycle,
         };
         if let Err(rejection) = interp.run() {
             return Ok(StagedAdmission::Rejected(rejection));
