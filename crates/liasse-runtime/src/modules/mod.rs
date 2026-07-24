@@ -46,13 +46,18 @@ mod install;
 mod merge;
 mod parent;
 mod peer;
+mod recorder;
 mod space;
+mod value;
 
 pub(crate) use aggregate::{AggregatedInstance, ModuleAggregate};
 pub use host::{DecodedPackageId, ModuleHost};
 pub use install::{AdmittedBindings, DepSpec, InstallRequest, UseSpec};
 pub use merge::SeedMerge;
 pub use space::ModuleSpace;
+// §13.16: the structured refusal an `update_module(… { migrate: model+data })`
+// hands an external tool instead of merging a divergent history.
+pub use value::AncestryDivergence;
 
 use liasse_store::CommitSeq;
 

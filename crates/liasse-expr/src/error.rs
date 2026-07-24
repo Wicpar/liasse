@@ -101,6 +101,18 @@ pub enum EvalError {
     /// runtime intercepts the dispatch before evaluation, so reaching here is a
     /// contract breach, refused loudly rather than faking a value.
     InterfaceDispatch,
+
+    /// A §13.16 module lifecycle operator (`pack`, `update_module`,
+    /// `rollback_module`) reached the pure value evaluator. Each carries a module
+    /// instance through its §13.10 lifecycle against engines the pure evaluator
+    /// cannot reach, so it is a host-privileged transition effect and never a pure
+    /// value. The runtime interpreter intercepts these before evaluation; reaching
+    /// here is a contract breach, refused loudly rather than returning a blob, an
+    /// identity, or a point that would report a lifecycle that never happened.
+    ModuleLifecycle {
+        /// The operator's surface name.
+        operator: &'static str,
+    },
 }
 
 impl EvalError {
@@ -140,6 +152,11 @@ impl EvalError {
                  not a pure value; the runtime interpreter intercepts it before evaluation (§13.10)"
                     .to_owned()
             }
+            Self::ModuleLifecycle { operator } => format!(
+                "`{operator}` carries a module instance through its lifecycle and is \
+                 host-privileged (§13.16/§13.10): it is admitted by the runtime interpreter \
+                 within a transition, never computed as a pure value"
+            ),
         }
     }
 }

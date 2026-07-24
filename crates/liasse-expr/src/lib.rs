@@ -46,6 +46,7 @@ mod eval;
 #[cfg(feature = "eval-wire")]
 pub mod hoist;
 mod host;
+mod lifecycle;
 #[cfg(feature = "eval-wire")]
 pub mod lower;
 mod order;
@@ -66,6 +67,7 @@ pub use env::{
 };
 pub use error::EvalError;
 pub use host::{DbReadPosition, HostEffect, HostOp, HostOrigin, HostPosition};
+pub use lifecycle::{arg as lifecycle_arg, LifecycleOp, MigrateAxis, ModuleOperator, LIFECYCLE_NAMESPACE};
 pub use order::{SortOrder, ViewOrders};
 pub use scope::{InterfaceMut, Scope};
 pub use semantics::DivisionRounding;

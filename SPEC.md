@@ -2367,7 +2367,21 @@ A module's lifecycle is expressed through ordinary writes plus host-privileged o
 - `migrate: model` migrates `m`'s schema to `u`'s definition and carries `m`'s current data forward (§20.1).
 - `migrate: model+data` additionally forwards `u`'s history and data. The two histories reconcile by lineage: when `m`'s history is an ancestor of `u`'s, the update fast-forwards to `u`'s state; when the histories have diverged, the update is refused loudly. Reconciling a divergent history is performed outside the engine — the engine offers no in-language merge.
 
-**Rollback.** `rollback_module(m, @time)` reconstructs `m`'s definition and state at `@time` from its retained history and makes them current — from history alone, requiring no package and no inverse migration. History reaches back as far as retention holds it (§18.10). A rollback **forks** the timeline: the versions after `@time` are retained and the timeline continues from `@time`; reconciling the fork is performed outside the engine.
+**Rollback.** `rollback_module(m, @point)` reconstructs `m`'s definition and state at a **retained point** and makes them current — from history alone, requiring no package and no inverse migration. History reaches back as far as retention holds it (§18.10). A rollback **forks** the timeline: the versions after the point are retained and the timeline continues from it; reconciling the fork is performed outside the engine.
+
+A retained point is addressed either by its **instant** (`@time`) or by the **`.liasse` artifact that carries it** — the artifact `pack` produced at that point. The two spellings are not interchangeable in what they require of retention: a rollback needs the definition *and* the state at the target, so an implementation may honour a bare `@time` only for a point whose model version it still retains. An implementation MUST NOT approximate an unretained coordinate to the nearest retained one; it refuses, naming what it retains and what would be addressable instead (§13.16 "Retention and refusal" below).
+
+#### Retention and refusal
+
+`pack` and `rollback_module` address **what the instance retains** — retained points and retained versions — never arbitrary instants. Retention is an implementation property (§18.10, §19.4, §19.6): an implementation that keeps only its selected point and its active definition can honour only those coordinates.
+
+Where a requested coordinate is not retained, the operation is **refused**, and the refusal names the axis, the coordinate asked for, and what is retained in its place. Three things it MUST NOT do, because each produces a module state that is wrong while looking correct:
+
+- **snap** an unretained instant to the nearest retained point;
+- emit the active definition under a **version label it does not carry**;
+- state a `coverage` **span the artifact does not hold** (§19.7).
+
+A coherent historical extract is time-anchored (above), so an instant whose model version is not retained is not a partially answerable request: the pairing §13.16 requires cannot be formed, and refusing is the only truthful answer.
 
 #### Provenance and atomicity
 

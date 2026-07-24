@@ -281,8 +281,14 @@ impl Checker<'_> {
             "assert" => {
                 self.check_builtin(expr, BuiltinFn::Assert, args, ExprType::scalar(Type::Bool))
             }
+            // §13.16 blob boundary + lifecycle operators. `unpack` needs no host
+            // authority; the other three carry an instance through its §13.10
+            // lifecycle and are refused by the pure evaluator.
             "unpack" => self.check_unpack(expr, args),
-            _ => self.error(expr, format!("unknown function `{name}`")),
+            _ => match crate::lifecycle::ModuleOperator::classify(name) {
+                Some(operator) => self.check_module_operator(expr, operator, args),
+                None => self.error(expr, format!("unknown function `{name}`")),
+            },
         }
     }
 
@@ -458,29 +464,6 @@ impl Checker<'_> {
             expr.span,
             ExprType::scalar(Type::Int),
             TypedKind::Builtin { func: BuiltinFn::Size, args: vec![checked] },
-        ))
-    }
-
-    /// `unpack(blob)` (§13.16): read a `.liasse` blob into a move-only `module`
-    /// value, materialization DEFERRED to when the value is applied or read. Takes
-    /// one positional `blob` argument and yields an unrefined `module`.
-    fn check_unpack(&mut self, expr: &Expr, args: &[Arg]) -> Option<TypedExpr> {
-        use liasse_value::ModuleType;
-        let value = match args {
-            [Arg::Positional(value)] => value,
-            _ => return self.error(expr, "`unpack` takes one `blob` argument (§13.16)"),
-        };
-        let typed = self.check(value)?;
-        if typed.ty().as_scalar() != Some(&Type::Blob) {
-            return self.error(
-                value,
-                format!("`unpack` reads a `blob` into a module, but a {} was given", typed.ty().describe()),
-            );
-        }
-        Some(TypedExpr::new(
-            expr.span,
-            ExprType::scalar(Type::Module(ModuleType::Any)),
-            TypedKind::Builtin { func: BuiltinFn::Unpack, args: vec![typed] },
         ))
     }
 

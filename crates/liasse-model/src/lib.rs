@@ -65,7 +65,6 @@ mod history;
 mod host;
 mod infer;
 mod keyring;
-mod lifecycle;
 mod meter;
 mod migration;
 mod model;
@@ -86,7 +85,13 @@ pub use config::ConfigSchema;
 pub use expose::{ExposedInterface, ExposedMut};
 pub use header::{Header, Kind};
 pub use host::HostDescriptors;
-pub use lifecycle::{LifecycleOp, LIFECYCLE_NAMESPACE};
+// §13.10/§13.16: the module-lifecycle vocabulary is expression-surface naming, so
+// it lives in `liasse-expr` beside the checker that types the calls. Re-exported
+// here unchanged because the runtime reaches the model, not the expression crate,
+// for its house conventions.
+pub use liasse_expr::{
+    lifecycle_arg, LifecycleOp, MigrateAxis, ModuleOperator, LIFECYCLE_NAMESPACE,
+};
 pub use migration::{nondeterministic_call, Migrations};
 pub use model::Model;
 pub use mutation::Mutation;

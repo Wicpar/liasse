@@ -10,6 +10,7 @@
 
 mod blob;
 mod keyring;
+mod module;
 mod ops;
 mod project;
 mod temporal;

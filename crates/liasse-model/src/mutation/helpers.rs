@@ -351,18 +351,28 @@ pub(super) fn host_call_target(callee: &Expr) -> Option<(&str, &str)> {
     }
 }
 
-/// The pure value/view builtins the expression checker types by name (§6.5): the
-/// generators, `size`/`has`/`assert`, the aggregates, and the `string.*`
-/// namespace functions. Every *other* call in a mutation program is an in-program
-/// mutation call (§8.11), a host-namespace call (§16.4), or a state operation
-/// such as `erase`/`reinsert` (§21) — none of which the value checker types.
+/// The builtins the expression checker types by name: the generators,
+/// `size`/`has`/`assert`, the aggregates, the `string.*` namespace functions
+/// (§6.5), and the §13.16 blob-boundary and lifecycle operators. Every *other*
+/// call in a mutation program is an in-program mutation call (§8.11), a
+/// host-namespace call (§16.4), or a state operation such as `erase`/`reinsert`
+/// (§21) — none of which the value checker types.
+///
+/// The §13.16 operators belong here even though the RUNTIME performs them through
+/// the host-privileged handle rather than by evaluation: their operands and axes
+/// are fully typed (§13.16 fixes each one's coordinate), so leaving them to the
+/// structural path would carry a wrong operand or an unknown axis all the way to a
+/// transition instead of rejecting it at load.
 fn is_builtin_call(callee: &Expr) -> bool {
     match &callee.kind {
-        ExprKind::Name(id) => matches!(
-            id.text.as_str(),
-            "size" | "has" | "assert" | "now" | "uuid" | "count" | "sum" | "avg" | "min" | "max"
-                | "distinct"
-        ),
+        ExprKind::Name(id) => {
+            crate::ModuleOperator::classify(&id.text).is_some()
+                || matches!(
+                    id.text.as_str(),
+                    "size" | "has" | "assert" | "now" | "uuid" | "count" | "sum" | "avg" | "min"
+                        | "max" | "distinct" | "unpack"
+                )
+        }
         // `string.lower/upper/trim` are the only namespace builtins the checker
         // resolves; every other `ns.fn` is a host-namespace call (§16.4).
         ExprKind::Field { base, member } if !member.structural => {

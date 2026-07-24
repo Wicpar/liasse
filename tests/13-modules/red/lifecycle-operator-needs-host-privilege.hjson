@@ -1,0 +1,63 @@
+{
+  format: 1
+  name: lifecycle-operator-needs-host-privilege
+  suite: scenario
+  spec: ["#modules", "§13.16", "§13.10"]
+  tags: ["authz"]
+  note: '''
+    §13.16: "Writing into a module collection is host-privileged; reading and
+    dispatching are not", and every operator here "drives the same runtime as
+    the declarative `modules.install`/`modules.update`/`modules.remove`
+    lifecycle (§13.3, §13.10)" — which §13.10 lends only to the host/root-scope
+    transition.
+
+    The attack is privilege escalation through an ordinary §10.2 `$public`
+    surface: the package exposes a mutation whose body reaches a lifecycle
+    operator, and an unauthenticated caller invokes it. The operand is
+    `unpack(@package)` — a module built from a blob the caller supplies — so the
+    attacker needs no handle to anything already installed; if the operator ran,
+    an anonymous client would be carrying a module through its lifecycle from
+    outside the host scope.
+
+    The call must be REJECTED and the surface's own state change must roll back
+    with it: the mutation inserts an `audit` row BEFORE reaching the operator,
+    so a partially applied program would leave that row behind. The subsequent
+    read proves it did not.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.modvalue.privilege@1.0.0"
+    $model: {
+      audit: { $key: "id", id: "text" }
+      companies: {
+        $key: "id"
+        id: "text"
+        modules: { $modules: {} }
+      }
+      $mut: {
+        "archive({ id: text, package: blob })": [
+          "e = .audit + { id: @id }"
+          "b = pack(unpack(@package))"
+          "return e { id }"
+        ]
+      }
+      $public: {
+        entries: {
+          $view: ".audit { id }"
+          $mut: { archive: ".archive" }
+        }
+      }
+    }
+    $data: { companies: { acme: {} } }
+  }
+
+  steps: [
+    { watch: "public.entries", id: "w", expect_init: { value: [] } }
+    { call: "public.entries.archive", args: { id: "a1", package: { $sha512: "ab", $bytes: "1", $media: "application/vnd.liasse+zip" } }
+      expect: { outcome: rejected, violates: ["§13.16"]
+                detail: "a §13.16 lifecycle operator is host-privileged: a public-surface caller is lent no lifecycle authority" } }
+    // The audit row inserted before the operator must have rolled back with it.
+    { expect_view: { watch: "w", value: [] } }
+  ]
+}

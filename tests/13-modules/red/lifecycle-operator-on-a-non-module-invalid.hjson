@@ -1,0 +1,37 @@
+{
+  format: 1
+  name: lifecycle-operator-on-a-non-module-invalid
+  suite: static
+  spec: ["#modules", "§13.16"]
+  note: '''
+    §13.16's operators act on a `module` VALUE: "`pack(m, …)`",
+    "`update_module(m, u, …)`", "`rollback_module(m, @time)`". The attack passes
+    the *package blob* where the instance belongs — the confusion the blob
+    boundary invites, since `unpack(b)` turns one into the other and the two
+    sit side by side in every delegation contract. A blob has no instance
+    identity, no mount and no retained history, so an operator that accepted one
+    could only invent a result. It is a load error: the operand type is decided
+    statically, before any transition can be staged.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.modvalue.badoperand@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        modules: { $modules: {} }
+      }
+      $mut: {
+        "archive({ package: blob })": [
+          "b = pack(@package)"
+          "return { kept: true }"
+        ]
+      }
+    }
+    $data: { companies: { acme: {} } }
+  }
+
+  expect: { outcome: invalid, violates: ["§13.16"] }
+}

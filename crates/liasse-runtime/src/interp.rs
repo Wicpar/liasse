@@ -255,7 +255,7 @@ impl<'a> Interp<'a> {
     }
 
     /// The receiver `.` cell over the current prospective state.
-    fn current(&self) -> Result<Cell, Rejection> {
+    pub(crate) fn current(&self) -> Result<Cell, Rejection> {
         match &self.receiver {
             None => Ok(Cell::Row(Box::new(self.ctx.root(self.prospective)))),
             Some(receiver) => {
@@ -318,7 +318,7 @@ impl<'a> Interp<'a> {
         self.ctx.eval_with(self.prospective, &typed, current, self.binding_cells())
     }
 
-    fn scalar_value(&self, expr: &Expr, source: SourceId, current: &Cell) -> Result<Value, Rejection> {
+    pub(crate) fn scalar_value(&self, expr: &Expr, source: SourceId, current: &Cell) -> Result<Value, Rejection> {
         match self.eval_value(expr, source, current)? {
             Cell::Scalar(value) => Ok(value),
             // §6.3/§5.6: a single row used where a scalar is required — a ref value,
@@ -620,6 +620,15 @@ impl<'a> Interp<'a> {
         // lifecycle change into the same atomic commit and binds the decoded package
         // identity, so a later statement or the `return` can read it.
         if let Some(result) = self.lifecycle_call(value, source) {
+            let cell = result?;
+            self.locals.insert(name, LocalBind::Value(cell, ExprType::scalar(Type::Json)));
+            return Ok(());
+        }
+        // §13.16: `name = pack(m, { … })` (or `update_module`/`rollback_module`)
+        // performs the operation within this transition and binds its result — the
+        // packed blob, the decoded package identity, or the selected point — so a
+        // later statement or the `return` can read it.
+        if let Some(result) = self.module_operator_call(value, source) {
             let cell = result?;
             self.locals.insert(name, LocalBind::Value(cell, ExprType::scalar(Type::Json)));
             return Ok(());
@@ -950,6 +959,16 @@ impl<'a> Interp<'a> {
             // keeps it). Refused LOUDLY when no host/root lifecycle handle is lent.
             ExprKind::Call { callee, .. } if lifecycle_op(callee).is_some() => {
                 if let Some(result) = self.lifecycle_call(expr, source) {
+                    result?;
+                }
+                Ok(())
+            }
+            // §13.16: a bare `pack(m)` / `update_module(m, u, { … })` /
+            // `rollback_module(m, @p)` statement performs the operation within this
+            // transition and discards its result (only a bound `b = pack(m)` keeps
+            // it). Refused LOUDLY when no host/root lifecycle handle is lent.
+            ExprKind::Call { callee, .. } if crate::module_ops::module_operator(callee).is_some() => {
+                if let Some(result) = self.module_operator_call(expr, source) {
                     result?;
                 }
                 Ok(())

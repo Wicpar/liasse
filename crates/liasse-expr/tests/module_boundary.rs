@@ -1,14 +1,25 @@
-//! The blob boundary (§13.16): `unpack(blob)` reads a `.liasse` blob into a
-//! move-only `module` value, with materialization DEFERRED — no decode or mount
-//! happens at `unpack`; the value carries the source blob as a `Pending` handle.
+//! The blob boundary and the lifecycle operators (§13.16).
+//!
+//! `unpack(blob)` reads a `.liasse` blob into a move-only `module` value, with
+//! materialization DEFERRED — no decode or mount happens at `unpack`; the value
+//! carries the source blob as a `Pending` handle.
+//!
+//! `pack`, `update_module` and `rollback_module` are typed here and REFUSED by the
+//! pure evaluator: each carries an instance through its §13.10 lifecycle against
+//! engines this crate cannot reach, so a pure position must never obtain a result
+//! from one.
 //!
 //! Written without `unwrap`/`expect`/`panic!` so the workspace deny-lints hold:
 //! fallible construction threads through `Result` + `?`.
 
 mod common;
 
-use common::{FixedEnv, FixedScope, check, eval, keyless_row, row_type, scalar, scell};
-use liasse_expr::{Cell, ExprType};
+use common::{
+    check, check_rejects, eval, keyless_row, row_type, scalar, scell, try_eval, FixedEnv,
+    FixedScope,
+};
+use liasse_diag::SourceMap;
+use liasse_expr::{Cell, EvalError, ExprType};
 use liasse_value::{BlobDescriptor, MediaType, ModuleHandle, ModuleType, Sha512, Type, Value};
 
 fn descriptor() -> Result<BlobDescriptor, String> {
@@ -55,6 +66,79 @@ fn unpack_defers_materialization_to_a_pending_handle() -> Result<(), String> {
             );
         }
         other => return Err(format!("expected a pending module value, got {other:?}")),
+    }
+    Ok(())
+}
+
+// ---- §13.16 lifecycle operators -------------------------------------------
+
+/// Each operator's result type is externally deducible from §13.16: `pack` crosses
+/// to a blob; `update_module` reports the decoded package identity, the same fact
+/// the declarative `module.update` reports; `rollback_module` reports the point it
+/// selected.
+#[test]
+fn the_lifecycle_operators_type_to_their_spec_results() -> Result<(), String> {
+    let (scope, _env, _dot) = with_blob(descriptor()?);
+    for (source, expected) in [
+        ("pack(unpack(.pkg))", Type::Blob),
+        ("pack(unpack(.pkg), { data: now() })", Type::Blob),
+        ("update_module(unpack(.pkg), unpack(.pkg))", Type::Text),
+        ("update_module(unpack(.pkg), unpack(.pkg), { migrate: \"model+data\" })", Type::Text),
+        ("rollback_module(unpack(.pkg), now())", Type::Text),
+        ("rollback_module(unpack(.pkg), .pkg)", Type::Text),
+    ] {
+        assert_eq!(check(&scope, source).ty(), &scalar(expected), "`{source}` result type");
+    }
+    Ok(())
+}
+
+/// Every operand shape §13.16 does not define is a LOAD error, not a runtime
+/// surprise: a non-module operand, an axis the operator has no coordinate for, an
+/// axis addressed by the wrong coordinate type, an unknown `migrate` spelling, and
+/// a rollback coordinate that is neither an instant nor the artifact carrying it.
+#[test]
+fn the_operators_refuse_every_undefined_operand_shape() -> Result<(), String> {
+    let (scope, _env, _dot) = with_blob(descriptor()?);
+    for (source, expected) in [
+        ("pack(.pkg)", "`module` value"),
+        ("pack(unpack(.pkg), { snapshot: now() })", "no `snapshot` axis"),
+        ("pack(unpack(.pkg), { data: \"yesterday\" })", "`data` axis is addressed by a `timestamp`"),
+        ("pack(unpack(.pkg), { model: 3 })", "`model` axis is addressed by a `text` version"),
+        ("update_module(unpack(.pkg))", "the module to apply onto it"),
+        ("update_module(unpack(.pkg), .pkg)", "`onto` operand is a `module` value"),
+        ("update_module(unpack(.pkg), unpack(.pkg), { migrate: \"data\" })", "one of model or model+data"),
+        ("update_module(unpack(.pkg), unpack(.pkg), { carry: \"data\" })", "no `carry` axis"),
+        ("rollback_module(unpack(.pkg))", "one retained-point coordinate"),
+        ("rollback_module(unpack(.pkg), 7)", "addresses a retained point"),
+    ] {
+        let mut sources = SourceMap::new();
+        let _ = sources.add_label("test", source);
+        let rendered = check_rejects(&scope, source).render(&sources);
+        assert!(
+            rendered.contains(expected),
+            "`{source}` must be refused naming {expected:?}, got:\n{rendered}"
+        );
+    }
+    Ok(())
+}
+
+/// §13.16/§13.10: the three lifecycle operators are host-privileged. The pure
+/// evaluator can reach no engine, so it must refuse — a fabricated blob, identity,
+/// or point would report a lifecycle that never happened.
+#[test]
+fn the_pure_evaluator_refuses_every_host_privileged_operator() -> Result<(), String> {
+    let (scope, env, dot) = with_blob(descriptor()?);
+    for (source, operator) in [
+        ("pack(unpack(.pkg))", "pack"),
+        ("update_module(unpack(.pkg), unpack(.pkg))", "update_module"),
+        ("rollback_module(unpack(.pkg), now())", "rollback_module"),
+    ] {
+        match try_eval(&scope, &env, &dot, source) {
+            Err(EvalError::ModuleLifecycle { operator: named }) => {
+                assert_eq!(named, operator, "the refusal names the operator that was reached");
+            }
+            other => return Err(format!("`{source}` must refuse in a pure position, got {other:?}")),
+        }
     }
     Ok(())
 }

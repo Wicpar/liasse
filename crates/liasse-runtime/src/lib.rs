@@ -160,6 +160,7 @@ mod lineage;
 mod materialize;
 mod meter;
 mod migrate;
+mod module_ops;
 mod modules;
 mod outcome;
 mod patch;
@@ -207,8 +208,8 @@ pub use history::{
 };
 pub use migrate::{UpdateError, UpdateReport};
 pub use modules::{
-    AdmittedBindings, DecodedPackageId, DepSpec, InstallRequest, InterfaceRow, ModuleError,
-    ModuleHost, ModuleSpace, ModuleUpdateReport, SeedMerge, UseSpec,
+    AdmittedBindings, AncestryDivergence, DecodedPackageId, DepSpec, InstallRequest, InterfaceRow,
+    ModuleError, ModuleHost, ModuleSpace, ModuleUpdateReport, SeedMerge, UseSpec,
 };
 
 /// The Annex E version relationship an [`UpdateReport`] carries (§20.3).

@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: update-module-unknown-migrate-axis-invalid
+  suite: static
+  spec: ["#modules", "§13.16"]
+  note: '''
+    §13.16 defines exactly two `migrate` spellings: `model` (migrate the schema
+    and carry `m`'s current data forward) and `model+data` (additionally forward
+    `u`'s history and data, reconciled by lineage). The attack is a third
+    spelling that reads like it means "carry the data": if an unknown spelling
+    fell back to the `model` default, the update would silently do LESS than the
+    author asked — the schema would move and the incoming data would not — and
+    the instance would afterwards look correctly updated. The two axes differ in
+    exactly which state survives, so the spelling is checked at load.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.modvalue.badmigrate@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        modules: { $modules: {} }
+      }
+      $mut: {
+        "provision({ at: module, package: blob })": [
+          "update_module(@at, unpack(@package), { migrate: 'data' })"
+        ]
+      }
+    }
+    $data: { companies: { acme: {} } }
+  }
+
+  expect: { outcome: invalid, violates: ["§13.16"] }
+}

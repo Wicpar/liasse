@@ -1,0 +1,36 @@
+{
+  format: 1
+  name: pack-unknown-axis-invalid
+  suite: static
+  spec: ["#modules", "§13.16"]
+  note: '''
+    §13.16 gives `pack` exactly three axes — `model`, `data`, `history` — each
+    addressing "its own coordinate on the timeline". The attack is an axis the
+    operator does not define, spelled to look plausible (`snapshot`). If the
+    unknown member were dropped, the package would load, the call would return a
+    blob, and the author would believe they had extracted a snapshot they never
+    asked the engine for and never received. Since a wrong module extract ships
+    looking correct, the unknown axis is a LOAD error, not a silent drop.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.modvalue.badaxis@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        modules: { $modules: {} }
+      }
+      $mut: {
+        "archive({ at: module, when: timestamp })": [
+          "b = pack(@at, { snapshot: @when })"
+          "return { kept: true }"
+        ]
+      }
+    }
+    $data: { companies: { acme: {} } }
+  }
+
+  expect: { outcome: invalid, violates: ["§13.16"] }
+}

@@ -4,26 +4,26 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
-use liasse_artifact::decode_package_from_blob;
 use liasse_expr::{Cell, ExprType};
 use liasse_ident::{DefinitionId, InstanceId, TransactionId};
-use liasse_model::LifecycleOp;
 use liasse_store::{Composition, GroupMember, InstanceStore, Mount, PackagePin, PendingCommit, StoreFactory};
 use liasse_value::{BlobDescriptor, MediaType, Sha512, Type, Value};
 
 use crate::blobs::StagedBlob;
-use crate::dispatch::{Dispatch, Handles, Lifecycle};
+use crate::dispatch::{Dispatch, Handles};
 use crate::engine::StagedMigration;
 use crate::engine::{
     response_to_cell, BlobBacking, Engine, PrepareOutcome, PreparedCommit, StagedAdmission,
     StagedChange,
 };
 use crate::error::{EngineError, Rejection, RejectionReason};
+use crate::history::ImportRelation;
 use crate::generator::Generators;
 use crate::response::ResponseValue;
 use crate::imports::ParentImports;
 use crate::modules::install::{AdmittedBindings, InstallRequest, UseSpec};
 use crate::modules::peer::{self, ResolvedPeer, SiblingInterface};
+use crate::modules::recorder::{LifecycleIntent, LifecycleRecorder, MountedInstance};
 use crate::modules::{AggregatedInstance, InterfaceRow, ModuleAggregate, ModuleError, ModuleSpace};
 use crate::outcome::CallOutcome;
 use crate::request::{CallRequest, ViewQuery};
@@ -324,131 +324,6 @@ pub struct DecodedPackageId {
     pub content: Sha512,
 }
 
-/// A lifecycle intent recorded during staging (§13.10): the host-privileged
-/// `module.<op>` builtin decodes the blob (install/update) and records what to
-/// mount/migrate/remove; the module host performs it in the commit phase, folding it
-/// into the same atomic transition as the parent's own change.
-enum LifecycleIntent {
-    /// Install a new instance from the decoded package definition.
-    Install { space: String, name: String, definition: String, package: DecodedPackageId },
-    /// Update an existing instance to the decoded package definition (§20.1 chain).
-    Update { space: String, name: String, definition: String, package: DecodedPackageId },
-    /// Remove an existing instance (§13.12).
-    Remove { space: String, name: String },
-}
-
-/// The host-privileged lifecycle handle lent into the root/host-scope program
-/// (§13.10). It DECODES the blob argument (failing LOUDLY on a malformed or
-/// unfetchable package) and records a [`LifecycleIntent`]; the module host performs
-/// the mount/migration/removal in the commit phase, so the lifecycle change folds
-/// into the same atomic transition. It borrows the root store read-only to fetch the
-/// package bytes (§18.3), so staging touches no durable state.
-struct LifecycleRecorder<'a, S: InstanceStore> {
-    blobs: &'a S,
-    intents: RefCell<Vec<LifecycleIntent>>,
-}
-
-impl<S: InstanceStore> LifecycleRecorder<'_, S> {
-    /// The argument members `module.<op>` supports (§13.10): `install`/`update`
-    /// name the mount and carry the package `blob`; `remove` names only the mount.
-    fn supported_args(op: LifecycleOp) -> &'static [&'static str] {
-        match op {
-            LifecycleOp::Install | LifecycleOp::Update => &["space", "name", "blob"],
-            LifecycleOp::Remove => &["space", "name"],
-        }
-    }
-
-    /// Refuse any lifecycle argument member this builtin does not apply (§13.10).
-    /// A `$config`/`$data` overlay is loud-deferred, so silently accepting an
-    /// unsupported member (e.g. `config`) would mislead the caller into believing
-    /// it took effect; it is rejected LOUDLY rather than dropped.
-    fn reject_unsupported_args(args: &[(String, Value)], op: LifecycleOp) -> Result<(), Rejection> {
-        let supported = Self::supported_args(op);
-        for (key, _) in args {
-            if !supported.contains(&key.as_str()) {
-                return Err(Rejection::new(
-                    RejectionReason::Malformed,
-                    format!(
-                        "`module.{}` does not support the `{key}` argument (§13.10); \
-                         supported members are {} — refusing rather than silently ignoring it",
-                        op.member(),
-                        supported.join(", "),
-                    ),
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    /// The value of a required text member of the lifecycle call's argument object.
-    fn text_arg(args: &[(String, Value)], key: &str, op: LifecycleOp) -> Result<String, Rejection> {
-        match args.iter().find(|(name, _)| name == key).map(|(_, value)| value) {
-            Some(Value::Text(text)) => Ok(text.as_str().to_owned()),
-            _ => Err(Rejection::new(
-                RejectionReason::Malformed,
-                format!("`module.{}` requires a text `{key}` argument (§13.10)", op.member()),
-            )),
-        }
-    }
-
-    /// Decode the package definition from the `blob` argument's bytes (§13.10,
-    /// §18.3): resolve the blob descriptor, fetch its bytes from the store, and
-    /// decode the artifact. A missing blob or a malformed/incompatible package is a
-    /// LOUD rejection that unwinds the whole transition.
-    fn decode(&self, args: &[(String, Value)], op: LifecycleOp) -> Result<(String, DecodedPackageId), Rejection> {
-        let Some(Value::Blob(descriptor)) = args.iter().find(|(name, _)| name == "blob").map(|(_, value)| value) else {
-            return Err(Rejection::new(
-                RejectionReason::Malformed,
-                format!("`module.{}` requires a `blob` argument carrying the package (§13.10)", op.member()),
-            ));
-        };
-        let sha512 = *descriptor.sha512();
-        let bytes = self
-            .blobs
-            .get_blob(&sha512)
-            .map_err(|error| Rejection::new(RejectionReason::Evaluation, format!("blob store error: {error}")))?
-            .ok_or_else(|| {
-                Rejection::new(
-                    RejectionReason::Malformed,
-                    "the package `blob` is not held by the store, so its bytes cannot be decoded (§18.3)",
-                )
-            })?;
-        let decoded = decode_package_from_blob(&bytes).map_err(|error| {
-            Rejection::new(RejectionReason::Malformed, format!("malformed module package blob: {error} (§13.10)"))
-        })?;
-        let (definition, definition_id) = decoded.into_parts();
-        Ok((definition, DecodedPackageId { definition: definition_id, content: sha512 }))
-    }
-}
-
-impl<S: InstanceStore> Lifecycle for LifecycleRecorder<'_, S> {
-    fn perform(&self, op: LifecycleOp, args: Vec<(String, Value)>) -> Result<Cell, Rejection> {
-        Self::reject_unsupported_args(&args, op)?;
-        let space = Self::text_arg(&args, "space", op)?;
-        let name = Self::text_arg(&args, "name", op)?;
-        let cell = match op {
-            LifecycleOp::Install | LifecycleOp::Update => {
-                let (definition, package) = self.decode(&args, op)?;
-                // §5.1/§13.10: the decoded package identity is the intent's fact — the
-                // caller reads it as the call's result (the D.4 identity text).
-                let identity = Cell::Scalar(Value::Text(liasse_value::Text::new(package.definition.to_canonical_text())));
-                let intent = match op {
-                    LifecycleOp::Install => LifecycleIntent::Install { space, name, definition, package },
-                    _ => LifecycleIntent::Update { space, name, definition, package },
-                };
-                self.intents.borrow_mut().push(intent);
-                identity
-            }
-            LifecycleOp::Remove => {
-                let identity = Cell::Scalar(Value::Text(liasse_value::Text::new(name.clone())));
-                self.intents.borrow_mut().push(LifecycleIntent::Remove { space, name });
-                identity
-            }
-        };
-        Ok(cell)
-    }
-}
-
 /// One staged module install held between the group commit and the finalize
 /// (§13.10): the freshly-loaded instance engine (its genesis staged, not committed),
 /// its extracted genesis payload, and the boundary metadata to record on the mounted
@@ -479,6 +354,15 @@ impl PendingUpdate {
     fn target_version(&self) -> [u64; 3] {
         self.staged.as_ref().map_or([0, 0, 0], StagedMigration::target_version)
     }
+}
+
+/// One §13.16 history movement resolved during staging and applied once the shared
+/// commit lands: the addressed child, the artifact carrying the target point, and
+/// the §19.8 relation the staging classification established.
+struct PendingMovement {
+    index: usize,
+    artifact: Vec<u8>,
+    relation: ImportRelation,
 }
 
 impl DecodedPackageId {
@@ -949,8 +833,10 @@ impl<F: StoreFactory> ModuleHost<F> {
         let seed = generator.next_seed();
         let (staged, intents) = {
             // The recorder decodes each lifecycle op's blob against the root store's
-            // §18.3 blobs during staging (read-only), recording an intent to perform.
-            let recorder = LifecycleRecorder { blobs: self.root.store(), intents: RefCell::new(Vec::new()) };
+            // §18.3 blobs and reads each addressed instance's engine during staging
+            // (read-only), recording an intent to perform. Every borrow here is
+            // shared, so staging cannot touch durable state.
+            let recorder = LifecycleRecorder::new(self.root.store(), self.mounted_instances());
             let staged = self
                 .root
                 .stage_admission(
@@ -962,7 +848,7 @@ impl<F: StoreFactory> ModuleHost<F> {
                     Handles { dispatch: None, lifecycle: Some(&recorder) },
                 )
                 .map_err(ModuleError::Engine)?;
-            (staged, recorder.intents.into_inner())
+            (staged, recorder.into_intents())
         };
         // No lifecycle op: an ordinary single-engine root admission (the parent's own
         // change commits on its own, valid on any store).
@@ -1006,6 +892,8 @@ impl<F: StoreFactory> ModuleHost<F> {
         let mut installs: Vec<PendingInstall<F::Store>> = Vec::new();
         let mut updates: Vec<PendingUpdate> = Vec::new();
         let mut removes: Vec<usize> = Vec::new();
+        let mut packs: Vec<Vec<u8>> = Vec::new();
+        let mut movements: Vec<PendingMovement> = Vec::new();
         for intent in intents {
             match intent {
                 LifecycleIntent::Install { space, name, definition, package } => {
@@ -1036,6 +924,19 @@ impl<F: StoreFactory> ModuleHost<F> {
                 LifecycleIntent::Remove { space, name } => {
                     let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
                     removes.push(self.enabled_child_index(&space, &name)?);
+                }
+                // §13.16: the packed bytes are landed after the shared commit, so a
+                // rejected transition stores nothing. The descriptor the caller
+                // already holds is a pure function of these bytes, so it addresses
+                // exactly what lands.
+                LifecycleIntent::Pack { bytes } => packs.push(bytes),
+                // §13.16/§19.8: the movement was CLASSIFIED during staging, so a
+                // divergence had already rejected the transition. Resolve the
+                // instance now so an unreachable mount rejects before any commit.
+                LifecycleIntent::Movement { space, name, artifact, relation } => {
+                    let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
+                    let index = self.enabled_child_index(&space, &name)?;
+                    movements.push(PendingMovement { index, artifact, relation });
                 }
             }
         }
@@ -1169,7 +1070,91 @@ impl<F: StoreFactory> ModuleHost<F> {
                 self.children.remove(index);
             }
         }
+        // §13.16: land the packed bytes and apply the classified movements, on the
+        // same "only after the shared commit lands" discipline the removes follow.
+        // Both were fully resolved during staging — the bytes exist, the relation is
+        // established — so a rejected transition performed neither.
+        self.land_packs(packs)?;
+        self.apply_movements(movements)?;
         Ok(result)
+    }
+
+    /// Land freshly packed `.liasse` bytes in the root's §18.3 blob storage, so the
+    /// descriptor the program already returned resolves to fetchable content.
+    fn land_packs(&mut self, packs: Vec<Vec<u8>>) -> Result<(), ModuleError> {
+        for bytes in packs {
+            self.root
+                .store_mut()
+                .put_blob(&bytes)
+                .map_err(|error| ModuleError::Engine(EngineError::Store(error)))?;
+        }
+        Ok(())
+    }
+
+    /// Apply each classified §19.8 movement to its instance (§13.16): the
+    /// fast-forward of an `update_module(… { migrate: model+data })` and the fork of
+    /// a `rollback_module`. The movement carries the point's OWN definition and
+    /// state, so a move across a migration stays coherent (§20.2), and the cursor
+    /// adopts the incoming point — a rollback leaving the next commit to branch a
+    /// new lineage, which is the fork §13.16 describes.
+    ///
+    /// A movement that does not activate is a LOUD engine error, never a silent
+    /// no-op: its relation was established before anything committed, so failing to
+    /// activate here means the artifact or the instance changed underneath and the
+    /// caller must not be told the module moved.
+    fn apply_movements(&mut self, movements: Vec<PendingMovement>) -> Result<(), ModuleError> {
+        for movement in movements {
+            let child = self.children.get_mut(movement.index).ok_or_else(|| {
+                ModuleError::Engine(EngineError::Internal("movement child index out of range".to_owned()))
+            })?;
+            let report = child
+                .engine
+                .import(&movement.artifact, &[movement.relation])
+                .map_err(|error| ModuleError::Engine(EngineError::Internal(format!("module movement failed: {error}"))))?;
+            if !report.applied {
+                return Err(ModuleError::Engine(EngineError::Internal(format!(
+                    "a §13.16 module movement classified {:?} at staging did not activate (it \
+                     classified {:?} at application): the instance is unchanged and the operation \
+                     is refused rather than reported as done",
+                    movement.relation, report.relation
+                ))));
+            }
+        }
+        Ok(())
+    }
+
+    /// Pack an installed instance into a `.liasse` artifact (§13.16 `pack`), under
+    /// the same retention policy the in-language operator applies.
+    ///
+    /// This is the embedder's half of the blob boundary: a host that manages module
+    /// instances directly packs one here rather than through a mutation program. The
+    /// artifact is the §19.5 export, so [`Engine::restore`], `Engine::classify` and
+    /// `Engine::import` consume it unchanged.
+    ///
+    /// # Errors
+    /// [`ModuleError::Unknown`] when the mount names no enabled instance, or an
+    /// [`EngineError::Unsupported`] when the instance holds state this build cannot
+    /// carry — never an artifact that silently drops it.
+    pub fn pack_instance(&self, space: &ModuleSpace, name: &str) -> Result<Vec<u8>, ModuleError> {
+        let child = self
+            .find(space, name)
+            .filter(|child| child.enabled)
+            .ok_or_else(|| ModuleError::Unknown(name.to_owned()))?;
+        child.engine.export().map_err(ModuleError::Engine)
+    }
+
+    /// The mounted instances a §13.16 operator may address, borrowed read-only for
+    /// the duration of staging.
+    fn mounted_instances(&self) -> Vec<MountedInstance<'_, F::Store>> {
+        self.children
+            .iter()
+            .map(|child| MountedInstance {
+                space: &child.space,
+                name: &child.name,
+                engine: &child.engine,
+                enabled: child.enabled,
+            })
+            .collect()
     }
 
     /// Stage a module install WITHOUT committing (§13.3/§13.10): validate the space

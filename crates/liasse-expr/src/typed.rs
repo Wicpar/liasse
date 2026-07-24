@@ -67,6 +67,28 @@ impl TypedExpr {
         self.span
     }
 
+    /// The literal `none` at `span` — an operator axis the caller left at its
+    /// default (§13.16). Typed as the widest optional (A.7), like a bare `none`.
+    #[must_use]
+    pub(crate) fn absent(span: ByteSpan) -> Self {
+        Self::new(
+            span,
+            ExprType::scalar(liasse_value::Type::Optional(Box::new(liasse_value::Type::Json))),
+            TypedKind::Literal(Value::None),
+        )
+    }
+
+    /// A `text` literal at `span` — a checked axis spelling carried to the runtime
+    /// as its canonical word rather than as the author's raw AST node.
+    #[must_use]
+    pub(crate) fn text(span: ByteSpan, text: &str) -> Self {
+        Self::new(
+            span,
+            ExprType::scalar(liasse_value::Type::Text),
+            TypedKind::Literal(Value::Text(liasse_value::Text::new(text))),
+        )
+    }
+
     /// The resolved result type.
     #[must_use]
     pub fn ty(&self) -> &ExprType {
@@ -579,4 +601,16 @@ pub(crate) enum BuiltinFn {
     /// decode/mount/state reconstruction DEFERRED to when the value is applied or
     /// read. Produces a move-only `Value::Module(Pending(..))` carrying the blob.
     Unpack,
+    /// `pack(m, model?, data?, history?)` — serialize a module's axes into a
+    /// `.liasse` blob (§13.16). The checker fixes the three axis operands in that
+    /// order, `none` for an axis left at its current value. HOST-PRIVILEGED: the
+    /// pure evaluator refuses it; the runtime routes it to the §13.10 handle.
+    Pack,
+    /// `update_module(m, u, migrate)` — apply `u` onto the live instance `m`
+    /// (§13.16), `migrate` being the checked axis spelling. HOST-PRIVILEGED.
+    UpdateModule,
+    /// `rollback_module(m, point)` — fork `m`'s timeline back to a retained point
+    /// (§13.16). HOST-PRIVILEGED.
+    RollbackModule,
 }
+

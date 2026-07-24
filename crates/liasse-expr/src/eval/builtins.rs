@@ -13,6 +13,7 @@ use liasse_value::{Integer, ModuleHandle, Text, Value};
 use crate::env::Cell;
 use crate::error::EvalError;
 use crate::eval::Evaluator;
+use crate::lifecycle::ModuleOperator;
 use crate::typed::{BuiltinFn, TypedExpr};
 
 impl Evaluator<'_> {
@@ -37,7 +38,20 @@ impl Evaluator<'_> {
             BuiltinFn::StringTrim => self.eval_string(args, |text| text.trim().to_owned()),
             BuiltinFn::TimeDuration => self.eval_time_duration(args),
             BuiltinFn::Unpack => self.eval_unpack(args),
+            // §13.16/§13.10: the lifecycle operators are host-privileged transition
+            // effects over engines this evaluator cannot reach. The runtime
+            // intercepts them before evaluation, so reaching here is a contract
+            // breach — refused loudly, never served a fabricated blob, identity,
+            // or point.
+            BuiltinFn::Pack => Self::refuse_lifecycle(ModuleOperator::Pack),
+            BuiltinFn::UpdateModule => Self::refuse_lifecycle(ModuleOperator::UpdateModule),
+            BuiltinFn::RollbackModule => Self::refuse_lifecycle(ModuleOperator::Rollback),
         }
+    }
+
+    /// The refusal a host-privileged §13.16 operator gets in a pure position.
+    fn refuse_lifecycle(operator: ModuleOperator) -> Result<Cell, EvalError> {
+        Err(EvalError::ModuleLifecycle { operator: operator.name() })
     }
 
     /// `unpack(blob)` (§13.16): read a blob into a move-only `module` value with

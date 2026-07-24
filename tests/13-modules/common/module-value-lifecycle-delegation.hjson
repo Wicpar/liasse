@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: module-value-lifecycle-delegation
+  suite: static
+  spec: ["#modules", "§13.16", "§13.10"]
+  note: '''
+    §13.16 "Delegation": "A module owning submodules delegates their lifecycle
+    through a host-exposed procedure. The host exposes a mutation taking a
+    `module` parameter; a submodule invokes it with a module it owns, and the
+    host applies its policy — rate, entitlement, verification — before
+    performing the operation." The spec states the contract verbatim as
+    `provision({ at: module, package: blob })` with a body of
+    `meter(@at)` + `update_module(@at, unpack(@package), { migrate: model+data })`.
+
+    This case is that contract, plus the other two value-surface operators, so
+    every §13.16 operator is typed at load: `pack(m, { … })` over the three
+    axes, `update_module(m, u, { migrate })` in both spellings, and
+    `rollback_module(m, @point)` addressing the point by the artifact carrying
+    it. A `module` parameter is move-only (§8.5) and every operand here BORROWS
+    it — §13.16: "reading it, dispatching into it, or passing it as an argument
+    borrows it without transferring ownership" — so no operand is a copy.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.modvalue.delegation@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        modules: { $modules: {} }
+      }
+      $mut: {
+        // The §13.16 delegation contract, verbatim from the spec's example.
+        "provision({ at: module, package: blob })": [
+          "update_module(@at, unpack(@package), { migrate: 'model+data' })"
+        ]
+        // `migrate` defaults to `model` — schema migration carrying the live
+        // instance's own data forward (§20.1).
+        "revise({ at: module, package: blob })": [
+          "update_module(@at, unpack(@package))"
+        ]
+        // All three pack axes, each at its own coordinate type: the definition
+        // by version, the state by a point in time, the history by a range.
+        "archive({ at: module })": [
+          "b = pack(@at)"
+          "return { kept: true }"
+        ]
+        "archive_at({ at: module, version: text, when: timestamp })": [
+          "b = pack(@at, { model: @version, data: @when })"
+          "return { kept: true }"
+        ]
+        // A rollback addresses its retained point by the `.liasse` artifact
+        // that carries it — the artifact `pack` produced there.
+        "revert({ at: module, point: blob })": [
+          "rollback_module(@at, @point)"
+        ]
+      }
+    }
+    $data: { companies: { acme: {} } }
+  }
+
+  expect: { outcome: ok }
+}
