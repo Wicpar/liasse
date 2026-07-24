@@ -16,13 +16,14 @@
 //! codecs, not a read model (`DESIGN-pure-pg.md` §4.3, Phase 3).
 
 use liasse_ident::{
-    HistoryPoint, InstanceId, LineageId, NameSegment, PointId, RowIncarnation, TransactionId,
+    DefinitionId, HistoryPoint, InstanceId, LineageId, NameSegment, PointId, RowIncarnation,
+    TransactionId,
 };
 use liasse_store::{
-    AddressStep, CommitSeq, CommittedRowOp, CommittedTransition, Composition, Mount, RowAddress,
-    StoreError, key_from_components,
+    AddressStep, CommitSeq, CommittedRowOp, CommittedTransition, Composition, Mount, PackagePin,
+    RowAddress, StoreError, key_from_components,
 };
-use liasse_value::Value;
+use liasse_value::{Sha512, Value};
 use postgres::Row;
 use serde_json::{Map, Value as J};
 
@@ -182,6 +183,16 @@ pub(crate) fn encode_composition(composition: &Composition) -> J {
         entry.insert("instance".to_owned(), J::String(mount.instance().as_str().to_owned()));
         entry.insert("lineage".to_owned(), J::String(mount.selected().lineage().as_str().to_owned()));
         entry.insert("point".to_owned(), J::String(mount.selected().point().as_str().to_owned()));
+        // §5.1/§13.10: the decoded-package provenance pinned on a lifecycle-mounted
+        // instance, when present.
+        if let Some(pin) = mount.package() {
+            let mut pkg = Map::new();
+            pkg.insert("content".to_owned(), J::String(pin.content().to_canonical_text()));
+            pkg.insert("definition".to_owned(), J::String(pin.definition().to_canonical_text()));
+            let [major, minor, patch] = pin.version();
+            pkg.insert("version".to_owned(), J::Array(vec![J::from(major), J::from(minor), J::from(patch)]));
+            entry.insert("package".to_owned(), J::Object(pkg));
+        }
         obj.insert(name.to_owned(), J::Object(entry));
     }
     J::Object(obj)
@@ -197,13 +208,34 @@ pub(crate) fn decode_composition(wire: &J) -> Result<Composition, StoreError> {
         let field = |key: &str| {
             entry.get(key).and_then(J::as_str).ok_or_else(|| corrupt(format!("mount missing `{key}`")))
         };
-        let mount = Mount::new(
-            InstanceId::new(field("instance")?),
-            HistoryPoint::new(LineageId::new(field("lineage")?), PointId::new(field("point")?)),
-        );
+        let instance = InstanceId::new(field("instance")?);
+        let point = HistoryPoint::new(LineageId::new(field("lineage")?), PointId::new(field("point")?));
+        let mount = match entry.get("package") {
+            Some(package) => Mount::pinned(instance, point, decode_package_pin(package)?),
+            None => Mount::new(instance, point),
+        };
         composition = composition.with(name.clone(), mount);
     }
     Ok(composition)
+}
+
+/// Decode a mount's `package` provenance sub-object into a [`PackagePin`] (§5.1) —
+/// the inverse of the encode above.
+fn decode_package_pin(wire: &J) -> Result<PackagePin, StoreError> {
+    let obj = wire.as_object().ok_or_else(|| corrupt("mount `package` is not an object"))?;
+    let text = |key: &str| obj.get(key).and_then(J::as_str).ok_or_else(|| corrupt(format!("`package` missing `{key}`")));
+    let content = Sha512::parse(text("content")?).map_err(|error| corrupt(format!("bad `package.content`: {error}")))?;
+    let definition =
+        DefinitionId::parse(text("definition")?).map_err(|error| corrupt(format!("bad `package.definition`: {error}")))?;
+    let version = obj.get("version").and_then(J::as_array).ok_or_else(|| corrupt("`package` missing `version`"))?;
+    let mut parts = [0u64; 3];
+    if version.len() != 3 {
+        return Err(corrupt("`package.version` is not a three-part version"));
+    }
+    for (slot, value) in parts.iter_mut().zip(version) {
+        *slot = value.as_u64().ok_or_else(|| corrupt("`package.version` component is not a u64"))?;
+    }
+    Ok(PackagePin::new(content, definition, parts))
 }
 
 /// Rebuild the serial position stored as the durable `BIGINT` `raw` (from column

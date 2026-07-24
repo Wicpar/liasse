@@ -51,7 +51,7 @@ pub use contract::{GroupMember, InstanceStore, PendingCommit, StoreFactory, Tran
 pub use error::StoreError;
 pub use key::{key_from_components, AddressStep, CollectionPath, KeyValue, RowAddress};
 pub use memory::{MemoryStore, MemoryStoreFactory};
-pub use meta::{Composition, DefinitionText, Mount};
+pub use meta::{Composition, DefinitionText, Mount, PackagePin};
 pub use row::StoredRow;
 pub use snapshot::Snapshot;
 pub use staging::MemoryTransition;

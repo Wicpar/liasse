@@ -230,6 +230,44 @@ fn a_failed_migration_leaves_the_instance_at_its_prior_version() {
 }
 
 #[test]
+fn the_decoded_package_identity_is_recorded_and_reproduced() {
+    use liasse_artifact::decode_package_from_blob;
+
+    let mut host = host();
+    let package_bytes = package_blob(SALES_V1);
+    let expected_definition = *decode_package_from_blob(&package_bytes).expect("decode").definition_id();
+    let blob = host.store_package_blob(&package_bytes, Some("sales.liasse".to_owned())).expect("store");
+    let expected_content = *blob.sha512();
+
+    let request = CallRequest::new("provision").arg("id", text("first")).arg("blob", Value::Blob(Box::new(blob)));
+    host.call_root_lifecycle(&request, &mut generator()).expect("install");
+
+    // The decoded package identity is a DURABLE fact of the commit: the parent's
+    // composition pins the sales mount to the blob content id, the D.4 definition id,
+    // and the version (§5.1) — read back from committed state, not re-derived.
+    let composition = host.durable_composition().expect("read composition").expect("a composition was recorded");
+    let mount = composition.mount("/companies/acme/modules/sales").expect("the sales mount is recorded");
+    let pin = mount.package().expect("the mount carries package provenance");
+    assert_eq!(pin.content(), &expected_content, "the mount pins the decoded blob content id");
+    assert_eq!(pin.definition(), &expected_definition, "the mount pins the D.4 definition id");
+    assert_eq!(pin.version(), [1, 0, 0], "the mount pins the package version");
+
+    // Reproduced on replay / in audit: re-reading the committed fact yields the
+    // identical pin — it is stored and reused verbatim, never re-generated (§5.1).
+    let again = host.durable_composition().expect("re-read").expect("still recorded");
+    assert_eq!(
+        again.mount("/companies/acme/modules/sales").and_then(liasse_store::Mount::package),
+        Some(pin),
+        "the recorded provenance is reproduced verbatim on a fresh read"
+    );
+
+    // The in-memory audit accessor agrees with the durable fact.
+    let mounted = host.mounted_package(&space(), "sales").expect("mounted package");
+    assert_eq!(mounted.definition, expected_definition);
+    assert_eq!(mounted.content, expected_content);
+}
+
+#[test]
 fn remove_within_a_transition_commits_atomically() {
     let mut host = host();
     let v1 = blob_of(&mut host, SALES_V1);

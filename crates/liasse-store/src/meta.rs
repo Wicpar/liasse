@@ -4,6 +4,45 @@
 use std::collections::BTreeMap;
 
 use liasse_ident::{DefinitionId, HistoryPoint, InstanceId};
+use liasse_value::Sha512;
+
+/// The decoded-package provenance a §13.10 lifecycle op pins on a mount (§5.1): the
+/// artifact/content id of the `.liasse` blob it decoded, the D.4 definition identity,
+/// and the `major.minor.patch` package version. Recorded as a fact of the commit that
+/// mounts or migrates the instance, so audit and replay report WHICH package bytes are
+/// in force, never re-derived.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackagePin {
+    content: Sha512,
+    definition: DefinitionId,
+    version: [u64; 3],
+}
+
+impl PackagePin {
+    /// Pin the decoded package: its blob content id, D.4 definition id, and version.
+    #[must_use]
+    pub fn new(content: Sha512, definition: DefinitionId, version: [u64; 3]) -> Self {
+        Self { content, definition, version }
+    }
+
+    /// The content id (SHA-512) of the `.liasse` blob the package was decoded from.
+    #[must_use]
+    pub fn content(&self) -> &Sha512 {
+        &self.content
+    }
+
+    /// The D.4 definition identity of the decoded `liasse.json`.
+    #[must_use]
+    pub fn definition(&self) -> &DefinitionId {
+        &self.definition
+    }
+
+    /// The `major.minor.patch` package version.
+    #[must_use]
+    pub fn version(&self) -> [u64; 3] {
+        self.version
+    }
+}
 
 /// The definition text active for a package instance, with its canonical
 /// identity (D.4).
@@ -46,13 +85,24 @@ impl DefinitionText {
 pub struct Mount {
     instance: InstanceId,
     selected: HistoryPoint,
+    /// The decoded-package provenance a §13.10 lifecycle op pinned on this mount
+    /// (§5.1), or `None` for an instance mounted through the ordinary install path
+    /// (no blob decode).
+    package: Option<PackagePin>,
 }
 
 impl Mount {
-    /// Bind a child incarnation to a selected point.
+    /// Bind a child incarnation to a selected point, with no package provenance.
     #[must_use]
     pub fn new(instance: InstanceId, selected: HistoryPoint) -> Self {
-        Self { instance, selected }
+        Self { instance, selected, package: None }
+    }
+
+    /// Bind a child incarnation to a selected point WITH the decoded-package
+    /// provenance a §13.10 lifecycle op recorded (§5.1).
+    #[must_use]
+    pub fn pinned(instance: InstanceId, selected: HistoryPoint, package: PackagePin) -> Self {
+        Self { instance, selected, package: Some(package) }
     }
 
     /// The child instance incarnation.
@@ -65,6 +115,12 @@ impl Mount {
     #[must_use]
     pub fn selected(&self) -> &HistoryPoint {
         &self.selected
+    }
+
+    /// The decoded-package provenance pinned on this mount (§5.1), if any.
+    #[must_use]
+    pub fn package(&self) -> Option<&PackagePin> {
+        self.package.as_ref()
     }
 }
 

@@ -130,6 +130,16 @@ pub(crate) struct StagedMigration {
     provisioned_keyrings: BTreeMap<String, Keyring<EngineKeyProvider>>,
 }
 
+impl StagedMigration {
+    /// The target package version this migration adopts as a `[major, minor, patch]`
+    /// triple — the version half of the §5.1 provenance a lifecycle update records,
+    /// available before the migration commits (the target model is already built).
+    pub(crate) fn target_version(&self) -> [u64; 3] {
+        let version = &self.model.header().identity.version;
+        [version.major, version.minor, version.patch]
+    }
+}
+
 /// A staged admission's response as a value cell (§13.10): the wrapped
 /// [`ResponseValue`]'s cell, or `none` when there is no response.
 pub(crate) fn response_to_cell(response: Option<&ResponseValue>) -> Cell {
@@ -1257,6 +1267,14 @@ impl<S: InstanceStore> Engine<S> {
     #[must_use]
     pub fn model(&self) -> &Model {
         &self.model
+    }
+
+    /// This instance's active package version as a `[major, minor, patch]` triple
+    /// (§4.3) — the version half of the §5.1 lifecycle provenance a mount records.
+    #[must_use]
+    pub(crate) fn package_version(&self) -> [u64; 3] {
+        let version = &self.model.header().identity.version;
+        [version.major, version.minor, version.patch]
     }
 
     /// Type-check and bind an installation's `$config` values onto this instance

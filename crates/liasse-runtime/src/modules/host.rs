@@ -8,7 +8,7 @@ use liasse_artifact::decode_package_from_blob;
 use liasse_expr::{Cell, ExprType};
 use liasse_ident::{DefinitionId, InstanceId, TransactionId};
 use liasse_model::LifecycleOp;
-use liasse_store::{GroupMember, InstanceStore, PendingCommit, StoreFactory};
+use liasse_store::{Composition, GroupMember, InstanceStore, Mount, PackagePin, PendingCommit, StoreFactory};
 use liasse_value::{BlobDescriptor, MediaType, Sha512, Type, Value};
 
 use crate::blobs::StagedBlob;
@@ -441,6 +441,24 @@ struct PendingUpdate {
     staged: Option<StagedMigration>,
     package: DecodedPackageId,
 }
+
+impl PendingUpdate {
+    /// The target package version this update migrates to, for its §5.1 mount pin.
+    fn target_version(&self) -> [u64; 3] {
+        self.staged.as_ref().map_or([0, 0, 0], StagedMigration::target_version)
+    }
+}
+
+impl DecodedPackageId {
+    /// The durable §5.1 mount provenance pin for this decoded package at `version`.
+    fn pin(&self, version: [u64; 3]) -> PackagePin {
+        PackagePin::new(self.content, self.definition, version)
+    }
+}
+
+/// A participant's post-commit finalize metadata (§13.10): the verified blob copies
+/// to record (or roll back) and the program's evaluated response.
+type FinalizeMeta = (Vec<StagedBlob>, Option<ResponseValue>);
 
 /// Which participant of a lifecycle transition an outcome maps back to (§13.10),
 /// in the order they were handed to the group commit.
@@ -1001,18 +1019,35 @@ impl<F: StoreFactory> ModuleHost<F> {
             )));
         }
 
-        // Phase B — prepare the parent participant (land its blobs, extract payload).
-        let mut root_final: Option<(Vec<StagedBlob>, Option<ResponseValue>)> = None;
-        let mut root_pending: Option<PendingCommit> = None;
-        if let Some(change) = parent {
-            match self.root.prepare_commit(change, Some(transaction.clone())).map_err(ModuleError::Engine)? {
-                PrepareOutcome::Rejected(rejection) => return Ok(CallOutcome::Rejected(rejection)),
-                PrepareOutcome::Prepared(PreparedCommit { pending, staged_blobs, response }) => {
-                    root_pending = Some(pending);
-                    root_final = Some((staged_blobs, response));
+        // §5.1: the decoded package identity of every touched instance becomes a fact
+        // of this commit — the parent's composition pins each mount to its content id,
+        // D.4 definition id, and version, reproduced on replay and in audit.
+        let composition = self.lifecycle_composition(&installs, &updates, &removes);
+
+        // Phase B — prepare the parent participant (land its blobs, extract payload)
+        // and stage the provenance composition on its transition. A root program that
+        // changed nothing itself still records the composition as a composition-only
+        // commit, so the provenance is durable regardless of the parent's own change.
+        let (root_pending, mut root_final): (PendingCommit, Option<FinalizeMeta>) =
+            if let Some(change) = parent {
+                match self.root.prepare_commit(change, Some(transaction.clone())).map_err(ModuleError::Engine)? {
+                    PrepareOutcome::Rejected(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+                    PrepareOutcome::Prepared(PreparedCommit { mut pending, staged_blobs, response }) => {
+                        pending.composition = Some(composition);
+                        (pending, Some((staged_blobs, response)))
+                    }
                 }
-            }
-        }
+            } else {
+                let pending = PendingCommit {
+                    ops: Vec::new(),
+                    created: self.root.now(),
+                    transaction: Some(transaction.clone()),
+                    definition: None,
+                    composition: Some(composition),
+                };
+                (pending, Some((Vec::new(), unchanged_response.clone())))
+            };
+        let root_pending = Some(root_pending);
 
         // Phase C — build the group (disjoint `&mut` stores) and commit all-or-none.
         let mut update_pendings: BTreeMap<usize, PendingCommit> = BTreeMap::new();
@@ -1175,6 +1210,50 @@ impl<F: StoreFactory> ModuleHost<F> {
     #[must_use]
     pub fn mounted_package(&self, space: &ModuleSpace, name: &str) -> Option<&DecodedPackageId> {
         self.find(space, name).and_then(|child| child.package.as_ref())
+    }
+
+    /// The root instance's DURABLE composition of mounted children (§19.5) as
+    /// recorded on the store — the fact a §13.10 lifecycle op wrote, carrying each
+    /// mount's §5.1 package provenance pin. Reproduced on replay and in audit
+    /// (re-read verbatim from committed state, never re-derived).
+    pub fn durable_composition(&self) -> Result<Option<Composition>, ModuleError> {
+        self.root.store().composition().map_err(|error| ModuleError::Engine(EngineError::Store(error)))
+    }
+
+    /// The composition to record as a fact of the lifecycle commit (§5.1, §19.5): the
+    /// full set of mounts AFTER this transition — every current child except the
+    /// removed ones (each keyed by its space/name, pinned to its decoded package where
+    /// one is known), an updated child re-pinned to its target version, plus each
+    /// freshly-installed instance.
+    fn lifecycle_composition(
+        &self,
+        installs: &[PendingInstall<F::Store>],
+        updates: &[PendingUpdate],
+        removes: &[usize],
+    ) -> Composition {
+        let mut composition = Composition::new();
+        for (index, child) in self.children.iter().enumerate() {
+            if removes.contains(&index) {
+                continue;
+            }
+            let key = mount_key(&child.space, &child.name);
+            let selected = child.engine.cursor().point();
+            let mount = if let Some(update) = updates.iter().find(|update| update.index == index) {
+                Mount::pinned(child.incarnation.clone(), selected, update.package.pin(update.target_version()))
+            } else if let Some(package) = &child.package {
+                Mount::pinned(child.incarnation.clone(), selected, package.pin(child.engine.package_version()))
+            } else {
+                Mount::new(child.incarnation.clone(), selected)
+            };
+            composition = composition.with(key, mount);
+        }
+        for install in installs {
+            let key = mount_key(&install.space, &install.name);
+            let selected = install.engine.cursor().point();
+            let pin = install.package.pin(install.engine.package_version());
+            composition = composition.with(key, Mount::pinned(install.incarnation.clone(), selected, pin));
+        }
+        composition
     }
 
     /// Store a `.liasse` package's bytes in the root instance's §18.3 blob storage
@@ -1899,6 +1978,12 @@ fn is_inline_child_binding(binding: &str) -> bool {
     let text = binding.trim();
     let text = text.strip_prefix('=').map_or(text, str::trim);
     text.starts_with('.')
+}
+
+/// The composition mount key for an instance (§19.5): its module-space path and
+/// instance name, unique per installed instance.
+fn mount_key(space: &ModuleSpace, name: &str) -> String {
+    format!("{}/{name}", space.as_str())
 }
 
 /// The `major.minor.patch` version string of a package model (§13.15 `$from`/`$to`).
