@@ -85,6 +85,16 @@ struct MultiCoordinator<'a, S: InstanceStore, G: Generators> {
     children: &'a [Child<S>],
     generator: RefCell<&'a mut G>,
     scratch: RefCell<BTreeMap<usize, StagedChange>>,
+    /// The engine indices whose staging is currently IN-FLIGHT on the active
+    /// dispatch stack (§13.10): the primary's own index (seeded on entry) plus every
+    /// dispatch target between it and the running program, pushed on entry and popped
+    /// once staging returns. A dispatch whose target is ALREADY here re-enters an
+    /// engine still mid-staging — through a finite peer cycle back to an ancestor —
+    /// whose in-flight change lives OUTSIDE `scratch` and so cannot be composed by the
+    /// overlay; it is refused LOUDLY rather than staged against committed state and
+    /// double-committed. A COMPLETED sibling (already popped, recorded in `scratch`)
+    /// is NOT here, so a later repeat dispatch to it still composes via the overlay.
+    active: RefCell<Vec<usize>>,
     /// §13.11: the external request's established `$actor`/`$session` identity.
     /// Module execution introduces no new actor — every cross-engine dispatch
     /// carries the caller's, matching how §8.11 internal calls preserve them — so a
@@ -185,6 +195,23 @@ impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, '_, S, G> {
         // §13.5/§13.10: resolve the handle in the caller's import scope (a `$use`
         // peer alias, or a root's own installed child), refusing an over-reach.
         let index = self.coordinator.resolve(self.caller, handle)?;
+        // §13.10: refuse re-entry to an engine still mid-staging on the active
+        // dispatch stack (a finite peer cycle back to an in-flight ancestor). Its
+        // in-flight change is held outside `scratch`, so it cannot be composed by the
+        // overlay — staging it here would read committed state and double-commit the
+        // engine (a silent lost update). A COMPLETED same-engine sibling is already
+        // popped and recorded in `scratch`, so it is NOT on the stack and still
+        // composes below.
+        if self.coordinator.active.borrow().contains(&index) {
+            return Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!(
+                    "`#{handle}` re-enters an engine still staging on this transition (a finite import \
+                     cycle back to an in-flight instance) — its in-flight change cannot be folded, so it \
+                     is refused rather than silently double-committed (§13.10)"
+                ),
+            ));
+        }
         let child = self.coordinator.children.get(index).ok_or_else(|| unreachable_handle(handle))?;
         // §13.8: the addressed contract resolves to the private mutation the child
         // exposes for it, across the child's exposed interfaces.
@@ -225,15 +252,26 @@ impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, '_, S, G> {
         let seed = self.coordinator.generator.borrow_mut().next_seed();
         let nested =
             MultiDispatch { coordinator: self.coordinator, caller: Primary::Child(index), depth: self.depth + 1 };
-        let staged = child
-            .engine
-            .stage_admission(&request, Vec::new(), BlobBacking::External, seed, &overlay, Some(&nested as &dyn Dispatch))
-            .map_err(|error| {
-                Rejection::new(
-                    RejectionReason::Evaluation,
-                    format!("child instance `#{handle}` engine error: {error}"),
-                )
-            })?;
+        // §13.10: mark this engine in-flight for the duration of its staging (which may
+        // itself re-enter dispatch), so a nested cycle back to it is refused above; pop
+        // it once staging returns, whether it staged, was unchanged, or rejected, so a
+        // later COMPLETED-sibling dispatch to it composes.
+        self.coordinator.active.borrow_mut().push(index);
+        let staged = child.engine.stage_admission(
+            &request,
+            Vec::new(),
+            BlobBacking::External,
+            seed,
+            &overlay,
+            Some(&nested as &dyn Dispatch),
+        );
+        self.coordinator.active.borrow_mut().pop();
+        let staged = staged.map_err(|error| {
+            Rejection::new(
+                RejectionReason::Evaluation,
+                format!("child instance `#{handle}` engine error: {error}"),
+            )
+        })?;
         match staged {
             // A rejected child unwinds the whole parent transition — nothing commits.
             StagedAdmission::Rejected(rejection) => Err(rejection),
@@ -703,6 +741,15 @@ impl<F: StoreFactory> ModuleHost<F> {
                 children: &self.children,
                 generator: RefCell::new(generator),
                 scratch: RefCell::new(BTreeMap::new()),
+                // §13.10: seed the active dispatch stack with the primary's own index,
+                // so a dispatch that resolves back to the still-staging primary (a
+                // finite cycle) is refused as an in-flight re-entry rather than
+                // double-committed. The root is never a dispatch target, so it seeds
+                // nothing.
+                active: RefCell::new(match primary {
+                    Primary::Root => Vec::new(),
+                    Primary::Child(index) => vec![index],
+                }),
                 // §13.11: carry the external request's identity into every dispatch.
                 actor: request.actor_key().cloned(),
                 session: request.session_key().cloned(),

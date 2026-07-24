@@ -70,6 +70,20 @@ const ROOT: &str = r#"{
         "r2 = #bank.consume({ amount: @cost })"
         "return o { id }"
       ]
+      "buy_thrice({ id: text, c1: int, c2: int, c3: int })": [
+        "o = .orders + { id: @id, cost: @c1 }"
+        "r1 = #bank.consume({ amount: @c1 })"
+        "r2 = #bank.consume({ amount: @c2 })"
+        "r3 = #bank.consume({ amount: @c3 })"
+        "return o { id }"
+      ]
+      "buy_interleaved({ id: text, a: int, b: int, c: int })": [
+        "o = .orders + { id: @id, cost: @a }"
+        "r1 = #bank.consume({ amount: @a })"
+        "r2 = #vault.consume({ amount: @b })"
+        "r3 = #bank.consume({ amount: @c })"
+        "return o { id }"
+      ]
     }
   }
   "$data": { "companies": { "acme": {} } }
@@ -742,6 +756,248 @@ const LOOPER: &str = r#"{
     }
   }
 }"#;
+
+/// A metered `acct` module for the NESTED same-engine re-entry probe (§13.10). Its
+/// exposed `a`→`outer` spends its own pool and then dispatches its `mid` peer's
+/// `bounce`; its exposed `b`→`inner` spends the SAME pool with NO dispatch. Paired
+/// with `MID` over a finite `acct ⇄ mid` cycle, `outer` re-enters `acct`'s own
+/// `inner` WHILE `outer` is still mid-staging — the in-flight re-entry the fix must
+/// refuse rather than double-commit.
+const ACCT: &str = r#"{
+  "$liasse": 1
+  "$module": "t.acct@1.0.0"
+  "$use": { "mid": "t.mid/hop@1" }
+  "$model": {
+    "pools": { "$key": "id", "id": "text", "balance": "int" }
+    "credits_view": { "$view": ".pools { id, balance }" }
+    "$mut": {
+      "outer": [
+        ".pools['main'].balance = .pools['main'].balance - @amount"
+        "r = #mid.bounce({ amount: @amount })"
+        "return { remaining: .pools['main'].balance }"
+      ]
+      "inner": [
+        ".pools['main'].balance = .pools['main'].balance - @amount"
+        "return { remaining: .pools['main'].balance }"
+      ]
+    }
+  }
+  "$data": { "pools": { "main": { "balance": "10" } } }
+  "$expose": {
+    "a": {
+      "$view": ".pools { id, balance }"
+      "$mut": { "outer": ".outer" }
+    }
+    "b": {
+      "$view": ".pools { id, balance }"
+      "$mut": { "inner": ".inner" }
+    }
+  }
+}"#;
+
+/// The `mid` hop that closes the `acct ⇄ mid` cycle: its exposed `hop`→`bounce`
+/// dispatches its `back` peer's `inner` (bound to `acct`'s `b` interface) and writes
+/// nothing of its own — so the only staged change is `acct`'s, whose re-entrant
+/// second spend the coordinator must refuse rather than silently double-commit.
+const MID: &str = r#"{
+  "$liasse": 1
+  "$module": "t.mid@1.0.0"
+  "$use": { "back": "t.acct/b@1" }
+  "$model": {
+    "marks": { "$key": "id", "id": "text" }
+    "marks_view": { "$view": ".marks { id }" }
+    "$mut": {
+      "bounce({ amount: int })": [
+        "r = #back.inner({ amount: @amount })"
+        "return { ok: @amount }"
+      ]
+    }
+  }
+  "$expose": {
+    "hop": {
+      "$view": ".marks { id }"
+      "$mut": { "bounce": ".bounce" }
+    }
+  }
+}"#;
+
+/// A host with a second metered `bank` instance named `vault`, so a root program can
+/// interleave dispatches to two DISTINCT engines (`#bank`, `#vault`, `#bank`) and
+/// prove each composes on its OWN prospective, keyed by its own index (§13.10).
+fn host_with_bank_and_vault() -> ModuleHost<MemoryStoreFactory> {
+    let mut host = host_with_bank();
+    host.install(
+        &space(),
+        InstallRequest::new("vault", BANK),
+        &mut generator(),
+    )
+    .expect("the vault child installs");
+    host
+}
+
+/// A host closing the finite `acct ⇄ mid` cycle via the optional-peer reinstall
+/// trick (as the cyclic depth-cap test does): install `mid` (optional `back`,
+/// resolves absent), install `acct` (optional `mid` → binds `mid`), uninstall `mid`,
+/// reinstall `mid` (optional `back` → binds `acct`). Now `acct.outer` reaches
+/// `mid.bounce`, which reaches back into `acct.inner`.
+fn host_with_acct_mid_cycle() -> ModuleHost<MemoryStoreFactory> {
+    let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
+    let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
+    host.install(
+        &space(),
+        InstallRequest::new("mid", MID).optional_use("back", "t.acct/b@1"),
+        &mut generator(),
+    )
+    .expect("mid installs (optional back resolves absent)");
+    host.install(
+        &space(),
+        InstallRequest::new("acct", ACCT).optional_use("mid", "t.mid/hop@1"),
+        &mut generator(),
+    )
+    .expect("acct installs, binding mid");
+    host.uninstall(&space(), "mid").expect("mid uninstalls");
+    host.install(
+        &space(),
+        InstallRequest::new("mid", MID).optional_use("back", "t.acct/b@1"),
+        &mut generator(),
+    )
+    .expect("mid re-installs, now bound to acct");
+    host
+}
+
+/// The `acct` pool balance as read through its exposed `a` interface.
+fn acct_balance(host: &ModuleHost<MemoryStoreFactory>) -> Value {
+    let view = host
+        .interface_read(&space(), "acct", "a")
+        .expect("read")
+        .expect("interface a is exposed");
+    view.rows()[0]
+        .field("balance")
+        .expect("balance is projected")
+        .clone()
+}
+
+/// The named metered instance's pool balance, read through its `credits` interface.
+fn instance_balance(host: &ModuleHost<MemoryStoreFactory>, name: &str) -> Value {
+    let view = host
+        .interface_read(&space(), name, "credits")
+        .expect("read")
+        .expect("credits is exposed");
+    view.rows()[0]
+        .field("balance")
+        .expect("balance is projected")
+        .clone()
+}
+
+/// §13.10 sequential re-entrancy: THREE same-engine dispatches in one transition
+/// (`#bank.consume` at 2, 3, 4) each read all prior writes and compose to a single
+/// commit — 10 − 2 − 3 − 4 = 1 — never a lost update or a double-apply. Each dispatch
+/// is a COMPLETED sibling (off the active stack, recorded in `scratch`) by the time
+/// the next is reached, so the overlay composition holds.
+#[test]
+fn sequential_same_engine_composes_three_spends() {
+    let mut host = host_with_bank();
+    assert_eq!(bank_balance(&host), int(10));
+
+    let request = CallRequest::new("buy_thrice")
+        .arg("id", text("o1"))
+        .arg("c1", int(2))
+        .arg("c2", int(3))
+        .arg("c3", int(4));
+    let outcome = host
+        .call_multi(&request, &mut generator())
+        .expect("no engine fault");
+
+    assert!(
+        matches!(outcome, CallOutcome::Committed { .. }),
+        "the three composed spends commit as one transition: {outcome:?}"
+    );
+    assert_eq!(
+        bank_balance(&host),
+        int(1),
+        "all three spends applied (10 - 2 - 3 - 4), not just the last"
+    );
+    assert_eq!(
+        root_order_ids(&host),
+        vec!["o1".to_owned()],
+        "the parent order committed"
+    );
+}
+
+/// §13.10 interleaved re-entrancy: `#bank`(3), `#vault`(5), `#bank`(4) in ONE
+/// transition — the two `#bank` dispatches accumulate on bank's single prospective
+/// (10 − 3 − 4 = 3) while `#vault` composes independently on its own (10 − 5 = 5),
+/// keyed by each engine's own index. A completed same-engine sibling composes; the
+/// distinct engine stays disjoint.
+#[test]
+fn interleaved_same_engine_composes_per_engine() {
+    let mut host = host_with_bank_and_vault();
+    assert_eq!(instance_balance(&host, "bank"), int(10));
+    assert_eq!(instance_balance(&host, "vault"), int(10));
+
+    let request = CallRequest::new("buy_interleaved")
+        .arg("id", text("o1"))
+        .arg("a", int(3))
+        .arg("b", int(5))
+        .arg("c", int(4));
+    let outcome = host
+        .call_multi(&request, &mut generator())
+        .expect("no engine fault");
+
+    assert!(
+        matches!(outcome, CallOutcome::Committed { .. }),
+        "the interleaved transition commits: {outcome:?}"
+    );
+    assert_eq!(
+        instance_balance(&host, "bank"),
+        int(3),
+        "both bank dispatches accumulate on one prospective (10 - 3 - 4)"
+    );
+    assert_eq!(
+        instance_balance(&host, "vault"),
+        int(5),
+        "vault composed independently on its own index (10 - 5)"
+    );
+}
+
+/// §13.10 nested re-entry (the residual lost-update the fix closes): an
+/// `interface_call(acct.a.outer)` over a finite `acct ⇄ mid` cycle re-enters `acct`'s
+/// own `inner` WHILE `outer` is still mid-staging on the active dispatch stack. That
+/// in-flight change lives OUTSIDE `scratch`, so it cannot be composed by the overlay
+/// — the coordinator must REFUSE the re-entry LOUDLY rather than stage `inner` against
+/// committed state and double-commit `acct` (which committed balance 7, one spend
+/// silently lost, before the fix). Nothing commits: `acct` keeps its prior balance.
+#[test]
+fn nested_reentry_to_an_in_flight_engine_is_refused() {
+    let mut host = host_with_acct_mid_cycle();
+    assert_eq!(acct_balance(&host), int(10), "acct starts with 10");
+
+    // outer spends 3, then dispatches mid.bounce, which dispatches back into acct.inner
+    // WHILE outer is still staging — a re-entry to an in-flight engine.
+    let request = CallRequest::new("outer").arg("amount", int(3));
+    let outcome = host
+        .interface_call(&space(), "acct", "a", "outer", &request, &mut generator())
+        .expect("no engine fault — the nested re-entry is a rejection, not a crash");
+
+    assert!(
+        matches!(outcome, CallOutcome::Rejected(_)),
+        "the nested re-entry to an in-flight engine is refused loudly: {outcome:?}"
+    );
+    // The prohibited outcome (double-commit) would have left balance 7 (10 committed
+    // twice: outer's 10-3 then inner's 10-3 clobbering it). The transition rejects, so
+    // acct keeps its prior committed balance — NOT the doubled 7.
+    let balance = acct_balance(&host);
+    assert_ne!(
+        balance,
+        int(7),
+        "the double-commit (silent lost update) must NOT stand"
+    );
+    assert_eq!(
+        balance,
+        int(10),
+        "acct is left at its prior committed state — nothing committed"
+    );
+}
 
 /// §13.10 depth cap: a cyclic cross-engine dispatch graph (`a` ⇄ `b`, each `ping`
 /// dispatching the other's `ping`) is refused LOUDLY after a bounded number of
