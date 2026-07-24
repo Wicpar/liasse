@@ -54,6 +54,12 @@ const ROOT: &str = r#"{
         "assert(false, 'the parent rejects after a successful child dispatch')"
         "return o { id }"
       ]
+      "buy_twice": [
+        "o = .orders + { id: @id, cost: @cost }"
+        "r1 = #bank.consume({ amount: @cost })"
+        "r2 = #bank.consume({ amount: @cost })"
+        "return o { id }"
+      ]
     }
   }
   "$data": { "companies": { "acme": {} } }
@@ -194,6 +200,46 @@ fn cross_engine_dispatch_commits_parent_and_child_together() {
     assert_eq!(bank_balance(&host), int(6), "the child meter spend committed (10 - 4)");
     let root_head_after = host.root().store().head().expect("head");
     assert_ne!(root_head_before, root_head_after, "the root head advanced with the child");
+}
+
+/// §13.10 same-engine re-entrancy: two `#bank.consume(6)` in ONE transition against
+/// a balance of 10 compose — the second spend reads the first's write (balance 4),
+/// asserts 4 >= 6, and REJECTS, rolling the whole transition back. Before the
+/// composition fix each dispatch re-read committed state (10), both passed, and the
+/// second's absolute write silently clobbered the first (final balance 4 — a 12-unit
+/// spend committed against a 10 budget, one spend lost).
+#[test]
+fn same_engine_reentrancy_composes_and_rejects_the_overspend() {
+    let mut host = host_with_bank();
+    assert_eq!(bank_balance(&host), int(10), "the bank starts with 10 credits");
+
+    // Two spends of 6 against balance 10: the composed second spend over-draws.
+    let request = CallRequest::new("buy_twice").arg("id", text("o1")).arg("cost", int(6));
+    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+
+    assert!(
+        matches!(outcome, CallOutcome::Rejected(_)),
+        "the second composed spend over-draws and rejects the whole transition: {outcome:?}"
+    );
+    assert_eq!(bank_balance(&host), int(10), "no spend committed — the composed over-draw rolled back (not 4)");
+    assert!(root_order_ids(&host).is_empty(), "the parent's own order did not commit either");
+}
+
+/// §13.10 same-engine re-entrancy: two spends that TOGETHER fit the budget both
+/// commit as ONE composed change on the reached engine (10 - 3 - 3 = 4), proving the
+/// composition applies both writes rather than only the last.
+#[test]
+fn same_engine_reentrancy_composes_two_fitting_spends() {
+    let mut host = host_with_bank();
+    assert_eq!(bank_balance(&host), int(10));
+
+    // Two spends of 3 against balance 10: both fit, composed to 10 - 3 - 3 = 4.
+    let request = CallRequest::new("buy_twice").arg("id", text("o1")).arg("cost", int(3));
+    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+
+    assert!(matches!(outcome, CallOutcome::Committed { .. }), "both composed spends commit: {outcome:?}");
+    assert_eq!(bank_balance(&host), int(4), "both spends applied (10 - 3 - 3), not just the last (7)");
+    assert_eq!(root_order_ids(&host), vec!["o1".to_owned()], "the parent order committed with them");
 }
 
 /// §13.10: a parent mutation that rejects AFTER a successful child dispatch leaves

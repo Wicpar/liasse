@@ -81,6 +81,15 @@ impl StagedChange {
     pub(crate) fn response_cell(&self) -> Cell {
         response_to_cell(self.response.as_ref())
     }
+
+    /// The cumulative row changes this staged admission would commit, from the
+    /// committed base (§22.2). A coordinator lends these back as an overlay so a
+    /// repeat dispatch to the same engine within one transition composes on top of
+    /// them rather than re-reading committed state (§13.10 same-engine
+    /// re-entrancy).
+    pub(crate) fn changes(&self) -> &[Change] {
+        &self.changes
+    }
 }
 
 /// A staged admission's response as a value cell (§13.10): the wrapped
@@ -1555,7 +1564,7 @@ impl<S: InstanceStore> Engine<S> {
         // dispatch handle) and commits it immediately — the exact pipeline as before
         // the stage/commit split, so single-engine behaviour is unchanged.
         let seed = generator.next_seed();
-        match self.stage_admission(request, ingresses, backing, seed, None)? {
+        match self.stage_admission(request, ingresses, backing, seed, &[], None)? {
             StagedAdmission::Rejected(rejection) => Ok(CallOutcome::Rejected(rejection)),
             StagedAdmission::Unchanged { response } => Ok(CallOutcome::Unchanged { response }),
             StagedAdmission::Changed(change) => self.commit_staged(change, None),
@@ -1579,6 +1588,7 @@ impl<S: InstanceStore> Engine<S> {
         ingresses: Vec<BlobIngress>,
         backing: BlobBacking,
         seed: u64,
+        overlay: &[Change],
         dispatch: Option<&dyn crate::dispatch::Dispatch>,
     ) -> Result<StagedAdmission, EngineError> {
         let Some(mutation) = self.compiled.mutation(request.mutation()) else {
@@ -1653,6 +1663,13 @@ impl<S: InstanceStore> Engine<S> {
         };
 
         let mut prospective = Prospective::gather(&self.store, schema)?;
+        // §13.10 same-engine re-entrancy: when this engine was already reached
+        // earlier in the SAME multi-engine transition, its accumulated staged
+        // change is lent back as an overlay so this admission reads the running
+        // prospective (the earlier writes), composing on top of them instead of
+        // re-reading committed state — a single-engine admission passes an empty
+        // overlay and is unaffected.
+        prospective.apply_overlay(overlay);
         // §11.1: an authenticated admission binds `$actor` (and `$session`, when
         // the authenticator declared one) to the row the request resolved, so the
         // program reads them. The row is re-materialized from committed state by

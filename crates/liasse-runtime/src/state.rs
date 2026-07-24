@@ -168,6 +168,27 @@ impl Prospective {
         Ok(Self { committed, working, incarnations, created, next_generation: 0 })
     }
 
+    /// Overlay an already-staged engine's changes onto this freshly-gathered
+    /// working copy (§13.10 same-engine re-entrancy): a repeat cross-engine
+    /// dispatch to an engine already touched in this transition stages ON TOP of
+    /// that engine's accumulated change, so its second admission reads the first's
+    /// writes — composing exactly like nested single-engine mutations (§8.11)
+    /// rather than each re-reading committed state and silently clobbering. The
+    /// committed base is untouched, so [`Self::diff`] still yields the ONE
+    /// cumulative change from committed state the engine commits once.
+    pub(crate) fn apply_overlay(&mut self, changes: &[Change]) {
+        for change in changes {
+            match change {
+                Change::Insert(address, value) | Change::Update(address, value) => {
+                    self.working.insert(address.clone(), materialize::fields_of(value));
+                }
+                Change::Delete(address) => {
+                    self.working.remove(address);
+                }
+            }
+        }
+    }
+
     /// An empty prospective state (genesis, before any seed).
     pub(crate) fn empty() -> Self {
         Self {

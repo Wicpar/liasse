@@ -20,6 +20,7 @@ use crate::modules::peer::{self, ResolvedPeer, SiblingInterface};
 use crate::modules::{AggregatedInstance, InterfaceRow, ModuleAggregate, ModuleError, ModuleSpace};
 use crate::outcome::CallOutcome;
 use crate::request::{CallRequest, ViewQuery};
+use crate::state::Change;
 use crate::view::ViewResult;
 
 /// One installed child module instance mounted in a space.
@@ -77,10 +78,18 @@ struct StagedChild {
 /// the whole parent transition, so nothing commits. Every reached engine is
 /// borrowed only immutably here (staging is read-only), so the parent and every
 /// child stage side by side; the coordinator commits them mutably afterwards.
+///
+/// The `scratch` accumulates ONE running staged change per reached engine, keyed
+/// by its index in `children`: a repeat dispatch to an engine already touched this
+/// transition re-stages ON TOP of that engine's accumulated change (§13.10
+/// same-engine re-entrancy), so a second spend sees the first's write and the
+/// engine's cross-row invariants are validated once over the composed change and
+/// committed once — never two independent stages that each read committed state and
+/// silently clobber.
 struct MultiDispatch<'a, S: InstanceStore, G: Generators> {
     children: &'a [Child<S>],
     generator: RefCell<&'a mut G>,
-    scratch: RefCell<Vec<StagedChild>>,
+    scratch: RefCell<BTreeMap<usize, StagedChange>>,
 }
 
 impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, S, G> {
@@ -113,13 +122,19 @@ impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, S, G> {
         for (name, value) in args {
             request = request.arg(name, value);
         }
-        // Stage the child against its own state, lending THIS handle so the child
-        // may itself reach further instances in turn (§13.10). A fresh seed keeps
-        // each engine's generation stream distinct.
+        // §13.10 same-engine re-entrancy: if this engine was already reached in this
+        // transition, lend its accumulated change as an overlay so this dispatch
+        // composes on top of the running prospective (reading the earlier writes).
+        // The borrow is dropped before staging, which may itself re-enter dispatch.
+        let overlay: Vec<Change> =
+            self.scratch.borrow().get(&index).map_or_else(Vec::new, |change| change.changes().to_vec());
+        // Stage the child against its own (composed) state, lending THIS handle so
+        // the child may itself reach further instances in turn (§13.10). A fresh
+        // seed keeps each engine's generation stream distinct.
         let seed = self.generator.borrow_mut().next_seed();
         let staged = child
             .engine
-            .stage_admission(&request, Vec::new(), BlobBacking::External, seed, Some(self as &dyn Dispatch))
+            .stage_admission(&request, Vec::new(), BlobBacking::External, seed, &overlay, Some(self as &dyn Dispatch))
             .map_err(|error| {
                 Rejection::new(
                     RejectionReason::Evaluation,
@@ -132,7 +147,9 @@ impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, S, G> {
             StagedAdmission::Unchanged { response } => Ok(response_to_cell(response.as_ref())),
             StagedAdmission::Changed(change) => {
                 let response = change.response_cell();
-                self.scratch.borrow_mut().push(StagedChild { index, change });
+                // Replace this engine's running change with the composed one, so a
+                // further dispatch reads it and the engine commits exactly once.
+                self.scratch.borrow_mut().insert(index, change);
                 Ok(response)
             }
         }
@@ -582,13 +599,21 @@ impl<F: StoreFactory> ModuleHost<F> {
             let handle = MultiDispatch {
                 children: &self.children,
                 generator: RefCell::new(generator),
-                scratch: RefCell::new(Vec::new()),
+                scratch: RefCell::new(BTreeMap::new()),
             };
             let engine = self.primary_engine(primary)?;
             let staged = engine
-                .stage_admission(request, Vec::new(), BlobBacking::External, seed, Some(&handle as &dyn Dispatch))
+                .stage_admission(request, Vec::new(), BlobBacking::External, seed, &[], Some(&handle as &dyn Dispatch))
                 .map_err(ModuleError::Engine)?;
-            (staged, handle.scratch.into_inner())
+            // One running change per reached engine, in index order — a deterministic
+            // commit sequence for the folded transition (§13.10).
+            let children: Vec<StagedChild> = handle
+                .scratch
+                .into_inner()
+                .into_iter()
+                .map(|(index, change)| StagedChild { index, change })
+                .collect();
+            (staged, children)
         };
         match staged {
             StagedAdmission::Rejected(rejection) => Ok(CallOutcome::Rejected(rejection)),
