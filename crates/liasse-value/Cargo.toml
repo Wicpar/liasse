@@ -24,6 +24,10 @@ jiff = { version = "0.2", default-features = false, features = ["std"] }
 # Canonical padded base64 (`bytes`) and lowercase hex (`blob $sha512`) from one
 # crate, RFC 4648, no config surprises.
 data-encoding = "2.11"
+# The §18.1 content hash of a byte stream (`Sha512::of`). It lives beside the
+# `Sha512` type so every producer of content-addressed bytes — the memory and
+# PostgreSQL blob stores, a `.liasse` extract — computes one digest one way.
+sha2 = "0.10"
 # Wire JSON. arbitrary_precision keeps `json` numbers exact on decode. The
 # encoder sorts object keys explicitly (see `Value::canonical_object`) rather
 # than rely on the Map backing: workspace feature unification can turn on

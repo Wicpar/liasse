@@ -1091,10 +1091,8 @@ name = "liasse-store"
 version = "0.0.1"
 dependencies = [
  "criterion",
- "data-encoding",
  "liasse-ident",
  "liasse-value",
- "sha2 0.10.9",
  "thiserror",
 ]
 
@@ -1160,6 +1158,7 @@ dependencies = [
  "data-encoding",
  "jiff",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "uuid",
 ]

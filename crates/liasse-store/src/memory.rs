@@ -14,10 +14,8 @@
 
 use std::collections::BTreeMap;
 
-use data_encoding::HEXLOWER;
 use liasse_ident::{HistoryPoint, InstanceId, RowIncarnation, TransactionId};
 use liasse_value::{Sha512, Timestamp};
-use sha2::{Digest as _, Sha512 as Sha512Hasher};
 
 use crate::commit::{CommitOutcome, CommitSeq, CommittedRowOp, CommittedTransition};
 use crate::contract::{InstanceStore, PendingCommit, StoreFactory};
@@ -236,12 +234,9 @@ impl InstanceStore for MemoryStore {
     }
 
     fn put_blob(&mut self, bytes: &[u8]) -> Result<Sha512, StoreError> {
-        let mut hasher = Sha512Hasher::new();
-        hasher.update(bytes);
-        let hex = HEXLOWER.encode(&hasher.finalize());
-        let digest = Sha512::parse(&hex).map_err(|error| StoreError::Corruption {
-            detail: format!("computed SHA-512 did not round-trip: {error}"),
-        })?;
+        // §18.1: one shared content hasher on `Sha512` (see `liasse-pg`'s
+        // `put_blob`), so the reference and the durable backend cannot drift.
+        let digest = Sha512::of(bytes);
         self.blobs.entry(digest).or_insert_with(|| bytes.to_vec());
         Ok(digest)
     }

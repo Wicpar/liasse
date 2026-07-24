@@ -12,6 +12,18 @@ use crate::value::cmp_optional_none_last;
 pub struct Sha512([u8; 64]);
 
 impl Sha512 {
+    /// The content hash of `bytes` — the one place the canonical §18.1 SHA-512 of a
+    /// byte stream is computed, so a blob store, a `.liasse` extract, and an upload
+    /// verifier all address the same content by the same digest instead of each
+    /// hashing its own way. Infallible by construction: the digest IS 64 bytes.
+    #[must_use]
+    pub fn of(bytes: &[u8]) -> Self {
+        use sha2::Digest as _;
+        let mut array = [0u8; 64];
+        array.copy_from_slice(&sha2::Sha512::digest(bytes));
+        Self(array)
+    }
+
     /// Decode a hex SHA-512.
     ///
     /// The canonical form is exactly 128 lowercase-hex characters (Blobs §18.1).

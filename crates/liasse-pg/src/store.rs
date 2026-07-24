@@ -35,7 +35,6 @@ use postgres::{Client, NoTls, Transaction};
 use r2d2::Pool;
 use r2d2_postgres::PostgresConnectionManager;
 use serde_json::Value as J;
-use sha2::{Digest as _, Sha512 as Sha512Hasher};
 
 use crate::backend::{backend, cell, corrupt, pool};
 use crate::jsonb_text;
@@ -529,11 +528,10 @@ impl InstanceStore for PgStore {
     }
 
     fn put_blob(&mut self, bytes: &[u8]) -> Result<Sha512, StoreError> {
-        let mut hasher = Sha512Hasher::new();
-        hasher.update(bytes);
-        let hex = data_encoding::HEXLOWER.encode(&hasher.finalize());
-        let digest = Sha512::parse(&hex)
-            .map_err(|error| corrupt(format!("computed SHA-512 did not round-trip: {error}")))?;
+        // §18.1: the content digest comes from the one shared hasher on `Sha512`,
+        // so this backend and the memory reference address identical bytes by an
+        // identical digest by construction rather than by two matching copies.
+        let digest = Sha512::of(bytes);
         self.writer
             .execute(
                 &format!(
