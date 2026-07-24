@@ -308,9 +308,9 @@ impl TreeChecker<'_, '_> {
 /// Whether a *typed* expression result is assignable to a declared field type.
 ///
 /// This adds the one value-sensitive rule on top of [`assignable`]: a literal
-/// `none` is the absent value of *every* `optional<T>` (A.1), so it is accepted
+/// `none` is the absent value of *every* `T?` (A.1), so it is accepted
 /// against any optional target even though its static type is the widest
-/// optional (`optional<json>`, A.7 — liasse-expr types the bare literal at its
+/// optional (`json?`, A.7 — liasse-expr types the bare literal at its
 /// widest and leaves this narrowing to the model layer).
 pub(crate) fn value_assignable(value: &liasse_expr::TypedExpr, target: &Type) -> bool {
     if value.is_none_literal() && matches!(target, Type::Optional(_)) {
@@ -323,7 +323,7 @@ pub(crate) fn value_assignable(value: &liasse_expr::TypedExpr, target: &Type) ->
 ///
 /// Assignment typing follows §5.3/§8: optionality is meaningful (a `none` is
 /// absence, A.1), so it widens but never silently narrows. A definite `T`
-/// assigns to `optional<T>`, but an `optional<T>` does **not** assign to a
+/// assigns to `T?`, but an `T?` does **not** assign to a
 /// required `T` — that would let a `none` flow into a field the state model
 /// requires to be present (§8.3: a parameter "inherits … optionality"). Wrapped
 /// types are assignable only when their inner types are.
@@ -340,12 +340,12 @@ fn scalar_assignable(value: &Type, target: &Type) -> bool {
         return true;
     }
     match (value, target) {
-        // An `optional<T>` never narrows to a non-optional target: the value may
+        // An `T?` never narrows to a non-optional target: the value may
         // be `none`, which a required field cannot hold (§8.3, A.1).
         (Type::Optional(_), other) if !matches!(other, Type::Optional(_)) => false,
-        // Optional widens: a definite `T` (or an `optional<T>`) is assignable to
-        // `optional<U>` exactly when its value type is assignable to `U`. This
-        // also governs `optional<T> -> optional<U>`, whose inners must match.
+        // Optional widens: a definite `T` (or an `T?`) is assignable to
+        // `U?` exactly when its value type is assignable to `U`. This
+        // also governs `T? -> U?`, whose inners must match.
         (_, Type::Optional(target_inner)) => {
             let value_inner = match value {
                 Type::Optional(inner) => inner.as_ref(),

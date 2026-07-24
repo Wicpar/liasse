@@ -12,9 +12,9 @@
     $liasse: 1
     $app: "t.mut.prototype@1.0.0"
     $model: {
-      metadata: "map<text, json>?"
+      metadata: "{ $key: text, $value: json }?"
       $mut: {
-        "set_metadata({ metadata: optional<map<text, json>> })": ".metadata = @metadata"
+        "set_metadata({ metadata?: { $key: text, $value: json } })": ".metadata = @metadata"
       }
     }
   }

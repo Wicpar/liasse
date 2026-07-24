@@ -571,7 +571,7 @@ enum NameResolution {
     Field(ExprType),
 }
 
-/// The permissive static type of a bare `none` literal: `optional<json>`, the
+/// The permissive static type of a bare `none` literal: `json?`, the
 /// widest optional (A.7). A more specific optional type flows from the field or
 /// operand a `none` is compared or assigned against; this crate types the bare
 /// literal at its widest and leaves narrowing to the model layer.

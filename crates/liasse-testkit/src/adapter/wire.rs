@@ -15,7 +15,7 @@
 //! inferred — the legitimate inference, not a swallowed rejection. And a set
 //! operand (`set_field + values` / `- values`, §8.5) accepts EITHER a set (its
 //! canonical JSON-array wire form) OR a single member: a non-array wire value for
-//! a `set<T>` parameter decodes against the element type `T` as a one-member
+//! a `{ $set: T }` parameter decodes against the element type `T` as a one-member
 //! operand, exactly as the runtime's set add/remove takes "a member or a set"
 //! and as a set ref member is named by its target's typed key (§5.5/§A.9). A
 //! wrong-typed member (a scalar that does not decode against `T`) still rejects.
@@ -84,8 +84,8 @@ pub fn decode_args(
 }
 
 /// Decode one argument against its declared type, honoring the §8.5 set-operand
-/// rule: a `set<T>` parameter accepts either a set (its canonical JSON-array wire
-/// form) or a single member. A non-array wire value for a `set<T>` decodes
+/// rule: a `{ $set: T }` parameter accepts either a set (its canonical JSON-array wire
+/// form) or a single member. A non-array wire value for a `{ $set: T }` decodes
 /// against the element type `T` as a one-member operand — the form the runtime's
 /// set add/remove takes ("a member or a set"), and by which a set ref member is
 /// named by its target's typed key (§5.5/§A.9). Every other type, and a set given

@@ -13,7 +13,7 @@
 //!   selectors, projections, view combinators, CEL operators, and mutation
 //!   statement forms. It resolves no name and checks no type.
 //! - [`parse_type_expression`] parses one Annex A.2 *type expression*
-//!   (`optional<map<text, json>>`, `text?`, a `{ field: T }` struct) into a
+//!   (`{ $key: text, $value: json }?`, `text?`, a `{ field: T }` struct) into a
 //!   [`SpannedType`]. It fixes the A.2 shape only; the model layer maps the tree
 //!   to a canonical `liasse_value::Type` and resolves `$types` names.
 //!

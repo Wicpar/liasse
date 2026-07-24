@@ -5,7 +5,7 @@
   spec: ["#annex-b", "§B.1", "§A.9"]
   tags: ["ordering"]
   note: '''
-    §B.1 ref<T>: ascending order is "target key order". A ref's sort position
+    §B.1 ref: ascending order is "target key order". A ref's sort position
     is determined by the value of the key it points at (A.9: a scalar ref is
     its target's scalar key value), not by anything about the referencing row.
     Attack: hope a ref sorts by the referencing row's insertion order, its

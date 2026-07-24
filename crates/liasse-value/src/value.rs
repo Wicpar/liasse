@@ -145,7 +145,7 @@ pub enum Value {
     /// Carried through evaluation in a `Cell::Scalar`; never persisted as field data
     /// (a module can never be decoded from wire — see [`Type::decode`](crate::Type::decode)).
     Module(ModuleHandle),
-    /// The Liasse `none` — the *absence* of an `optional<T>` value (A.1). It is
+    /// The Liasse `none` — the *absence* of an `T?` value (A.1). It is
     /// not a value that can be a member of a set, a map value, or a positional
     /// key component; it is represented by not being there (an omitted struct
     /// member, a non-member of a set, an absent map key) and has no wire sentinel.

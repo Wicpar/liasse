@@ -22,7 +22,7 @@ use crate::clamp;
 /// - **This prescan**, at every parse entry point (document, expression,
 ///   type-expression), rejects input whose *delimiters* nest past the cap before
 ///   a single grammar rule fires — so `pest`'s recursive descent (and, for a
-///   generic type tower `optional<…>`, the model's recursive type lowering) never
+///   nested type tower `{ $set: … }`, the model's recursive type lowering) never
 ///   overflows. The delimiters that drive that recursion differ by surface: `([{`
 ///   everywhere, plus `<`/`>` in a type expression ([`Lexis::Type`]).
 /// - **A post-parse node-depth guard** ([`crate::expr`]) rejects a parsed
@@ -48,10 +48,13 @@ pub(crate) const MAX_NESTING_DEPTH: usize = 32;
 /// Which surface's lexis the scanner assumes. The surfaces differ in `#` (a
 /// line comment in the Hjson document form, but the import sigil `#name` in
 /// expression and type source) and in whether `<`/`>` nest: they are the
-/// comparison operators `a < b` in an expression but the generic delimiters of
-/// `map<K, V>` / `optional<T>` in a type expression, where — like `([{` — a deep
-/// run of them drives `pest`'s recursive descent (and the model's recursive
-/// type lowering) and so must be depth-bounded.
+/// comparison operators `a < b` in an expression but the delimiters of the
+/// REMOVED parametric type spellings (`{ $key: K, $value: V }`, `T?`, …) in a type
+/// expression, where — like `([{` — a deep run of them drives `pest`'s recursive
+/// descent (and the model's recursive type lowering) and so must be
+/// depth-bounded. Those spellings are rejected by name once parsed (Annex A.2),
+/// but the rejection happens *after* the descent, so the guard still counts
+/// them.
 #[derive(Clone, Copy)]
 pub(crate) enum Lexis {
     /// The Hjson document form: `//`, `#`, and `/* */` all begin comments; only

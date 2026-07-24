@@ -366,7 +366,7 @@ fn input_narrows(active: &ExprType, cand: &ExprType) -> bool {
     }
 }
 
-/// The `(inner, is_optional)` of a scalar type, peeling one `optional<T>` layer.
+/// The `(inner, is_optional)` of a scalar type, peeling one `T?` layer.
 fn strip_optional(ty: &Type) -> (&Type, bool) {
     match ty {
         Type::Optional(inner) => (inner.as_ref(), true),
@@ -382,7 +382,7 @@ fn enum_labels(ty: &Type) -> Option<&[String]> {
     }
 }
 
-/// Whether an expression result type is an `optional<T>` scalar.
+/// Whether an expression result type is an `T?` scalar.
 fn is_optional(ty: &ExprType) -> bool {
     matches!(ty.as_scalar(), Some(Type::Optional(_)))
 }

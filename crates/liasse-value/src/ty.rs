@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use crate::enumeration::EnumType;
 use crate::temporal::Precision;
 
-/// The declared key type a `ref<T>` points at (A.9).
+/// The declared key type a `ref` points at (A.9).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RefTarget {
     /// A scalar key: a single wire value.

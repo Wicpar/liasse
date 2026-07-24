@@ -52,7 +52,7 @@ impl TypeConformance for Type {
                 }
             }
 
-            // A.1: `none` is the absent `optional<T>`; a present value must
+            // A.1: `none` is the absent `T?`; a present value must
             // conform to the inner type.
             (Type::Optional(_), Value::None) => Ok(()),
             (Type::Optional(inner), present) => inner
@@ -134,7 +134,7 @@ impl TypeConformance for Type {
     }
 }
 
-/// A declared `ref<T>` target key type checked against a runtime ref key (A.9).
+/// A declared `ref` target key type checked against a runtime ref key (A.9).
 trait RefTargetConformance {
     fn conforms(&self, key: &RefKey) -> Result<(), TypeMismatch>;
 }

@@ -1,9 +1,9 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
-//! §optional-membership: an `optional<T>` needle against a `set<T>` (or a view).
+//! §optional-membership: an `T?` needle against a `{ $set: T }` (or a view).
 //!
 //! Since an `$optional` `$ref` field now types as `optional<ref<..>>` (symmetric
 //! with optional scalars), a membership test such as a G5 aux-role check
-//! `.role in v.roles` puts an `optional<T>` needle on the left of `in` while the
+//! `.role in v.roles` puts an `T?` needle on the left of `in` while the
 //! set element stays a bare `T`. `check_in` peels the leading `optional` for the
 //! membership TYPE-check; at RUNTIME an absent (`none`) needle is simply not a
 //! member (it never equals a present element), a present needle is the ordinary
@@ -91,7 +91,7 @@ fn boolean(cell: Cell) -> Option<Value> {
 
 #[test]
 fn optional_text_needle_in_text_set() {
-    // Test 1: `optional<text> in set<text>` type-checks AND evaluates — present
+    // Test 1: `text? in set<text>` type-checks AND evaluates — present
     // member → true, present non-member → false, absent → false.
     let (scope, env, dot) = fixture();
     assert_eq!(

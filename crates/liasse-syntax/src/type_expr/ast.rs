@@ -3,8 +3,8 @@
 //! [`parse_type_expression`](super::parse_type_expression) produces a
 //! [`SpannedType`]: the A.2 shape of a declared type with every node spanned, but
 //! no commitment to meaning. Whether `text` is a primitive, `company` a `$types`
-//! reference, or `ref<...>` a deferred seam is decided by the model layer, which
-//! maps this tree to a `liasse_value::Type`.
+//! reference, or `{ $ref: ... }` a deferred seam is decided by the model layer,
+//! which maps this tree to a `liasse_value::Type`.
 
 use liasse_diag::ByteSpan;
 
@@ -23,25 +23,27 @@ pub enum TypeExprKind {
     /// A bare, possibly dotted name: a primitive keyword (`text`, `json`, …) or a
     /// `$types` reference (`company`, `accounting.money`). The model resolves it.
     Name(String),
-    /// A postfix `T?` optional (A.2 shorthand for `optional<T>`). Kept distinct
-    /// from [`Optional`](TypeExprKind::Optional) so the model can reject a
-    /// redundant `optional<T>?`.
+    /// A postfix `T?` optional — one of A.2's two optionality spellings, the
+    /// other being `field?: T` inside an object ([`TypeField::optional`]). There
+    /// is no parametric `T?` and no `$optional` marker, so this is the
+    /// only optional node the parser produces.
     OptionalSuffix(Box<SpannedType>),
-    /// The generic `optional<T>` form.
-    Optional(Box<SpannedType>),
-    /// `set<T>`.
+    /// `{ $set: T }`.
     Set(Box<SpannedType>),
-    /// `view<T>`.
+    /// `{ $view: T }` at a type location, carrying the view's row type. In a
+    /// *declaration* `$view` carries an expression instead (A.2: position
+    /// disambiguates), which never reaches this parser.
     View(Box<SpannedType>),
-    /// `map<K, V>`.
+    /// `{ $key: K, $value: V }` — a map (§5.4).
     Map(Box<SpannedType>, Box<SpannedType>),
-    /// `ref<target>`, carrying the raw target-path text (the model defers the
-    /// string `ref` form to the object `{ "$ref": ... }` form).
+    /// `{ $ref: target }`, carrying the raw target-path text; the model resolves
+    /// the target against the model tree.
     Ref { target: String },
     /// An A.2 key-path reference — `collection.$key`, `/absolute.col.$key`, or
     /// `#surface.$key` — carrying the raw path text.
     KeyPath(String),
-    /// A static-struct type `{ field: T, optional_field?: U }`.
+    /// A static-struct type `{ field: T, optional_field?: U }` — an object
+    /// bearing no kind marker (§5.3).
     Struct(Vec<TypeField>),
 }
 

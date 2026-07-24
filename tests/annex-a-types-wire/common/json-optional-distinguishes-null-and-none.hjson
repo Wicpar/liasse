@@ -4,7 +4,7 @@
   suite: scenario
   spec: ["§A.1", "§A.7"]
   tags: ["wire", "json", "none"]
-  note: "Annex A.7: 'A Liasse optional JSON value has type json?, allowing both null and none.' Annex A.1: `none` is 'absent optional<T> value', rendered as an omitted optional field; JSON null is a distinct present value. Row `a` holds json null (present); row `b` omits the field (none). The projection must keep null on `a` and omit the member on `b` — the two are not interchangeable."
+  note: "Annex A.7: 'A Liasse optional JSON value has type json?, allowing both null and none.' Annex A.1: `none` is the 'absence of an optional (`T?`) value', rendered as an omitted optional field; JSON null is a distinct present value. Row `a` holds json null (present); row `b` omits the field (none). The projection must keep null on `a` and omit the member on `b` — the two are not interchangeable."
 
   package: {
     $liasse: 1

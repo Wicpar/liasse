@@ -5,7 +5,7 @@
 //! §18.1: a `blob` field holds a descriptor whose members an expression reads
 //! directly. `$sha512` is the content hash as canonical lowercase-hex `text`,
 //! `$bytes` the non-negative `int` byte count, `$media` the canonical media type
-//! (`text`), and `$name` the optional file name (`optional<text>`). Expected
+//! (`text`), and `$name` the optional file name (`text?`). Expected
 //! read values are the descriptor's own components, so nothing is tautological.
 
 mod common;
@@ -42,7 +42,7 @@ fn world(name: Option<&str>) -> Cell {
 }
 
 /// §18.1 typing: `$bytes` is `int`, `$sha512`/`$media` are `text`, `$name` is
-/// `optional<text>`.
+/// `text?`.
 #[test]
 fn descriptor_members_type_as_declared() {
     let scope = scope();

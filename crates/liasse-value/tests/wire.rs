@@ -213,7 +213,7 @@ fn none_sentinel_object_is_now_an_ordinary_json_value() -> Result<(), ValueError
     let value = Type::Json.decode(&object)?;
     assert_ne!(value, Value::None);
     assert_eq!(value.to_canonical_json_string(), "{\"$none\":true}");
-    // Under `optional<json>`, a present `{ "$none": true }` object decodes to that
+    // Under `json?`, a present `{ "$none": true }` object decodes to that
     // object, not to `none`.
     let opt = Type::Optional(Box::new(Type::Json)).decode(&object)?;
     assert_eq!(opt, value);
@@ -230,7 +230,7 @@ fn json_null_is_preserved_and_distinct_from_none() -> Result<(), ValueError> {
 
 #[test]
 fn optional_json_present_null_is_json_null_not_none() -> Result<(), ValueError> {
-    // A.7 / item 29: under `optional<json>`, a present JSON `null` is the JSON
+    // A.7 / item 29: under `json?`, a present JSON `null` is the JSON
     // value `null` (a present value), never `none`. `none` there is absence, and
     // absence is an omitted member (exercised by the corpus), never a wire value.
     let value = Type::Optional(Box::new(Type::Json)).decode(&serde_json::json!(null))?;

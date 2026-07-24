@@ -4,7 +4,7 @@
   suite: scenario
   spec: ["#views", "§7.5", "§5.5", "§B.1"]
   tags: ["identity"]
-  note: "§7.5: 'distinct(view.field) -> set<field type>.' §5.5: sets collapse repeated input values to one member and 'have canonical read order from the element type's total order.' §B.1: text order is Unicode scalar order. Inputs { b, a, b, a } distinct to the set { a, b } read in text-ascending order."
+  note: "§7.5: 'distinct(view.field) -> { $set: field type }.' §5.5: sets collapse repeated input values to one member and 'have canonical read order from the element type's total order.' §B.1: text order is Unicode scalar order. Inputs { b, a, b, a } distinct to the set { a, b } read in text-ascending order."
 
   package: {
     $liasse: 1

@@ -7,7 +7,7 @@
   note: '''
     §12.3: "a request's identity for this deduplication is its fully-decoded
     set of declared arguments: two submissions of one operation identifier are
-    equivalent exactly when those decoded argument sets are equal." A `set<T>`
+    equivalent exactly when those decoded argument sets are equal." A `{ $set: T }`
     argument is an unordered value (Annex A), so sending the SAME set members
     in a different wire order is the SAME decoded argument. The two submissions
     therefore form ONE operation: the retry is accepted (not rejected as a
@@ -22,7 +22,7 @@
       docs: {
         $key: "id"
         id: "text"
-        tags: "set<text>"
+        tags: "{ $set: text }"
         version: "int = 0"
       }
       $mut: {

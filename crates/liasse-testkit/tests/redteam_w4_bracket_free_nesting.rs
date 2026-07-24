@@ -92,16 +92,16 @@ fn unary_chain_view_at_pathological_depth_rejects_without_crashing() {
 }
 
 #[test]
-fn generic_type_tower_rejected_at_load() {
-    // A deep `optional<…>` field type nests through `<`/`>`, driving `pest` and
-    // the model's recursive type lowering; it must be rejected before either runs.
-    let ty = format!("{}text{}", "optional<".repeat(40), ">".repeat(40));
+fn nested_type_tower_rejected_at_load() {
+    // A deep object field type nests through `{`/`}`, driving `pest` and the
+    // model's recursive type lowering; it must be rejected before either runs.
+    let ty = format!("{}text{}", "{ $set: ".repeat(40), " }".repeat(40));
     let package = serde_json::json!({
         "$liasse": 1, "$app": "t.w4type@1.0.0",
         "$model": { "items": { "$key": "id", "id": "text", "f": ty } }
     });
     match load_diagnostics("w4-type", &package) {
-        Ok(()) => panic!("w4-type: a depth-{{cap+}} generic type must be rejected"),
+        Ok(()) => panic!("w4-type: a depth-{{cap+}} nested type must be rejected"),
         Err(msgs) => assert!(
             msgs.iter().any(|m| m.contains("nests") && m.contains("32")),
             "w4-type: expected a nesting-depth rejection (no crash), got {msgs:?}"

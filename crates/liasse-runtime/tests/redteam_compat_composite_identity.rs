@@ -9,7 +9,7 @@
 //! that could catch it.
 //!
 //! Spec chain (all normative, Annex E is normative):
-//!   * A.9 (SPEC.md line 4479): "`ref<T>` has the exact key type of its target
+//!   * A.9 (SPEC.md line 4479): "`ref` has the exact key type of its target
 //!     collection or keyed view. ... A composite key uses an array of component
 //!     wire values in `$key` order". The composite key is a *typed tuple*;
 //!     changing a component's type changes that tuple's type — the exposed

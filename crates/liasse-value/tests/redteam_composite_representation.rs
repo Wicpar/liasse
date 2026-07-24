@@ -200,7 +200,7 @@ fn composite_decode_rejects_wrong_arity_and_bad_members() {
     ));
 }
 
-/// B.1 `ref<T>`: "ascending is target-key order"; A.9: a composite ref's key is
+/// B.1 `ref`: "ascending is target-key order"; A.9: a composite ref's key is
 /// the component array in `$key` order. So refs sort by their target's composite
 /// key components positionally, and the ref's wire value is that same array.
 /// `$key: [region:text, code:int]`.

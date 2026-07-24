@@ -136,7 +136,7 @@ fn scalar_compatible(x: &Type, y: &Type) -> bool {
         // the same `@param` used as a `$ref:/coll` field value infers a `ref` to
         // that target. Both denote one value domain — the target's key — so they
         // are one compatible type, not a `text`-vs-`ref` conflict. A genuine
-        // mismatch (a `ref<accounts>` against an unrelated `int` key) still fails
+        // mismatch (a `{ $ref: /accounts }` against an unrelated `int` key) still fails
         // here because the ref's own key type differs.
         (Type::Ref(target), other) | (other, Type::Ref(target)) => ref_key_compatible(target, other),
         _ => false,

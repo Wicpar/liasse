@@ -5,7 +5,7 @@
   spec: ["#annex-b", "§B.2"]
   tags: ["ordering", "optional"]
   note: '''
-    §B.2 optional<T> ascending: all present T values in ascending order, then
+    §B.2 optional (`T?`) ascending: all present T values in ascending order, then
     none ("this matches PostgreSQL's default absence placement"). Sorting an
     optional int field ascending places the present values 1, 2, 3 first, then
     every none row. A row whose value is none renders with the field omitted

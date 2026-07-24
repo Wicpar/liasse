@@ -5,7 +5,7 @@
 //! handles the `$type` member ONLY when its value is a string
 //! (`member.value.as_string()`); an object-valued `$type` such as
 //! `{ $enum: [...] }` never matches, so `base_ty` keeps its `Type::Json` default
-//! (fields.rs:113) and the field compiles to `json` (or `optional<json>` when
+//! (fields.rs:113) and the field compiles to `json` (or `json?` when
 //! `$optional` is set). §5.9 ("An enum is a closed set of checked labels ...
 //! Enum values are checked labels") is therefore never enforced on the field: an
 //! undeclared label is admitted and stored as an ordinary `json` string.
@@ -24,7 +24,7 @@
 //! | `{ $enum: [...] }`                             | object_node/$enum   | `enum`  (OK)    |
 //! | `"Status"` / `{ $type: "Status" }` (named)     | string `$type` path | `enum`  (OK)    |
 //! | `{ $type: { $enum: [...] } }`                  | expanded_field      | `json`  (BUG)   |
-//! | `{ $type: { $enum: [...] }, $optional: true }` | expanded_field      | `optional<json>`|
+//! | `{ $type: { $enum: [...] }, $optional: true }` | expanded_field      | `json?`|
 //!
 //! The two control spellings enforce §5.9 (an out-of-set label rejects); the two
 //! inline-`$type` spellings admit it. The only difference between control and bug
@@ -152,7 +152,7 @@ fn inline_type_enum_required_rejects_out_of_set_label() {
 }
 
 /// BUG — the flagged form `{ $type: { $enum: [...] }, $optional: true }`. The
-/// object-valued `$type` is dropped and the field compiles to `optional<json>`,
+/// object-valued `$type` is dropped and the field compiles to `json?`,
 /// so an optional enum silently loses its closed-set validation (and its §5.9 /
 /// §B.1 declaration ordering). CURRENTLY FAILS at step 0 (actual `ok`).
 #[test]

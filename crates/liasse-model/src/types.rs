@@ -8,12 +8,12 @@
 //! declared in `$types` (§5.8). A produced [`Type`] is proof the spelling was a
 //! well-formed A.2 type expression whose names all resolve.
 //!
-//! Scope note (CORE pass): the string form `ref<target>` is deferred to the
-//! object form `{ "$ref": target }` (§5.6), which the state builder resolves
-//! against the model tree; the A.2 `collection.$key` key-path form is a
-//! documented seam for a later pass. Named references resolve only to
-//! *scalar-shaped* reusable types (enums and static structs); a named
-//! collection shape is resolved at the node layer, not here.
+//! Scope note (CORE pass): a `{ $ref: target }` at a TYPE location is deferred
+//! to the declaration form (§5.6), which the state builder resolves against the
+//! model tree; the A.2 `collection.$key` key-path form is a documented seam for
+//! a later pass. Named references resolve only to *scalar-shaped* reusable types
+//! (enums and static structs); a named collection shape is resolved at the node
+//! layer, not here.
 
 use std::collections::BTreeMap;
 
@@ -91,23 +91,23 @@ fn syntax_reason(diags: &Diagnostics, text: &str) -> String {
 fn map_type(node: &SpannedType, named: &NamedTypes) -> Result<Type, String> {
     match &node.kind {
         TypeExprKind::Name(word) => map_name(word, named),
-        // A postfix `T?` (A.2). `optional<T>?` would nest optionals, which the
-        // type system does not represent — reject the redundant spelling.
+        // A postfix `T?` (A.2) — with `field?: T`, one of optionality's only two
+        // spellings. A `T?` whose base is already optional (through a `$types`
+        // name) would nest optionals, which the type system does not represent.
         TypeExprKind::OptionalSuffix(inner) => {
             let inner = map_type(inner, named)?;
             if matches!(inner, Type::Optional(_)) {
-                return Err("`optional<T>?` doubly declares an optional".to_owned());
+                return Err("`T?` over an already-optional type doubly declares an optional".to_owned());
             }
             Ok(Type::Optional(Box::new(inner)))
         }
-        TypeExprKind::Optional(inner) => Ok(Type::Optional(Box::new(map_type(inner, named)?))),
         TypeExprKind::Set(inner) => {
             let inner = map_type(inner, named)?;
             // §5.5 / A.1: `none` is absence, not a value, so it is never a set
             // member — a missing member is how absence is expressed. A set
-            // element type is therefore never `optional<T>`. (A set OF a struct
-            // that merely carries an optional member is fine; only a direct
-            // `optional` element is rejected.)
+            // element type is therefore never optional. (A set OF a struct that
+            // merely carries an optional member is fine; only a directly
+            // optional element is rejected.)
             if matches!(inner, Type::Optional(_)) {
                 return Err(set_optional_reason());
             }
@@ -118,14 +118,14 @@ fn map_type(node: &SpannedType, named: &NamedTypes) -> Result<Type, String> {
             let key = map_type(key, named)?;
             let value = map_type(value, named)?;
             // A.1: `none` is absence, never a value, so it is never carried as a
-            // map key — an `optional<K>` key would key an entry on `none`, which is
+            // map key — a `K?` key would key an entry on `none`, which is
             // nonsensical. Symmetric to the optional-value/optional-set-element
             // rejections, this is a static error at model build.
             if matches!(key, Type::Optional(_)) {
                 return Err(map_key_optional_reason());
             }
             // A.1: a map never stores a `none` value — absence is the key not
-            // being present — so a map value type is never `optional<V>`.
+            // being present — so a map value type is never optional.
             if matches!(value, Type::Optional(_)) {
                 return Err(map_value_optional_reason());
             }
@@ -160,9 +160,15 @@ fn map_name(word: &str, named: &NamedTypes) -> Result<Type, String> {
         // is constructed by the module-space and interface layers; a refined surface
         // spelling (`module<pkg@^1>`) is a later grammar extension.
         "module" => Ok(Type::Module(ModuleType::Any)),
-        // A generic keyword spelled without its `<...>` argument.
-        "optional" | "set" | "view" => Err(format!("`{word}` requires a `<T>` argument")),
-        "map" => Err("`map` requires a `<K, V>` argument".to_owned()),
+        // A removed parametric constructor spelled as a bare name (A.2: there is
+        // no `<>` type form left, so these words name nothing).
+        "optional" => Err(
+            "`optional` is not a type: optionality is the `?` suffix — `T?`, or `field?: T` inside an object (A.2)"
+                .to_owned(),
+        ),
+        "set" => Err(marker_reason("set", "{ $set: T }")),
+        "view" => Err(marker_reason("view", "{ $view: T }")),
+        "map" => Err(marker_reason("map", "{ $key: K, $value: V }")),
         "ref" => Err(ref_reason()),
         other => named
             .get(other)
@@ -172,7 +178,7 @@ fn map_name(word: &str, named: &NamedTypes) -> Result<Type, String> {
 }
 
 /// Map a `{ field: T, optional_field?: U }` struct type (§5.3, A.2). A field
-/// marked optional with a `?` after its name wraps its type in `optional<T>`.
+/// marked optional with a `?` after its name wraps its type in `T?`.
 fn map_struct(fields: &[TypeField], named: &NamedTypes) -> Result<Type, String> {
     let mut mapped: Vec<(String, Type)> = Vec::with_capacity(fields.len());
     for field in fields {
@@ -187,24 +193,29 @@ fn map_struct(fields: &[TypeField], named: &NamedTypes) -> Result<Type, String> 
     Ok(Type::Struct(StructType::new(mapped)))
 }
 
+/// A removed parametric constructor written as a bare name (A.2).
+fn marker_reason(word: &str, form: &str) -> String {
+    format!("`{word}` is not a type on its own; write the object form `{form}` (A.2)")
+}
+
 fn ref_reason() -> String {
-    "declare a reference with the object form `{ \"$ref\": target }` (§5.6) rather than the `ref<...>` string form".to_owned()
+    "declare a reference with the object form `{ \"$ref\": target }` (§5.6) rather than naming it at a type location".to_owned()
 }
 
-/// A set element type spelled `optional<T>` (§5.5 / A.1). Shared with the inline
-/// `{ $set: "optional<T>" }` element form (build/shapes.rs).
+/// A set element type spelled `T?` (§5.5 / A.1). Shared with the inline
+/// `{ $set: "T?" }` element form (build/shapes.rs).
 pub(crate) fn set_optional_reason() -> String {
-    "a set element type is never `optional<T>`: `none` is absence, not a set member (§5.5, A.1) — declare the element as `T`, and a missing member expresses absence".to_owned()
+    "a set element type is never optional: `none` is absence, not a set member (§5.5, A.1) — declare the element as `T`, and a missing member expresses absence".to_owned()
 }
 
-/// A map value type spelled `optional<V>` (A.1).
+/// A map `$value` type spelled `V?` (A.1).
 fn map_value_optional_reason() -> String {
-    "a map value type is never `optional<V>`: a map never stores a `none` value; absence is the key being absent (A.1) — declare the value as `V`".to_owned()
+    "a map `$value` type is never optional: a map never stores a `none` value; absence is the key being absent (A.1) — declare the value as `V`".to_owned()
 }
 
-/// A map key type spelled `optional<K>` (§5.5 / A.1). Symmetric to the
-/// optional-value and optional-set-element rejections: `none` is absence, never a
-/// value, so it can never be carried as a map key.
+/// A map `$key` type spelled `K?` (§5.5 / A.1). Symmetric to the optional-value
+/// and optional-set-element rejections: `none` is absence, never a value, so it
+/// can never be carried as a map key.
 fn map_key_optional_reason() -> String {
-    "a map key type is never `optional<K>`: `none` is absence, not a value, so it is never a map key (§5.5, A.1) — declare the key as `K`".to_owned()
+    "a map `$key` type is never optional: `none` is absence, not a value, so it is never a map key (§5.5, A.1) — declare the key as `K`".to_owned()
 }

@@ -47,14 +47,14 @@ fn long_expression(terms: usize) -> String {
 }
 
 /// A wide struct type over nested generics, stressing the A.2 grammar's two
-/// recursion axes (field lists and `wrapper<...>` nesting) together.
+/// recursion axes (field lists and object-type nesting) together.
 fn wide_type_expression(fields: usize) -> String {
     let mut out = String::from("{ ");
     for i in 0..fields {
         if i > 0 {
             out.push_str(", ");
         }
-        out.push_str(&format!("field_{i}?: optional<map<text, set<json>>>"));
+        out.push_str(&format!("field_{i}?: {{ $key: text, $value: {{ $set: json }} }}"));
     }
     out.push_str(" }");
     out

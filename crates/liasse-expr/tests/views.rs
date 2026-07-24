@@ -74,7 +74,7 @@ fn projection_members_cross_reference_in_dependency_order() {
 #[test]
 fn keys_selector_yields_the_set_of_a_collections_keys() {
     // §13.16: `collection.$keys` is the set of a keyed collection's identity keys —
-    // `.modules.$keys` is the set of installed instance keys. Typed `set<K>`,
+    // `.modules.$keys` is the set of installed instance keys. Typed `{ $set: K }`,
     // evaluated deduplicated and ordered by Value (B.2).
     let ty = people_type(vec![]);
     let rows = vec![krow(1, "b", vec![]), krow(2, "a", vec![]), krow(3, "c", vec![])];

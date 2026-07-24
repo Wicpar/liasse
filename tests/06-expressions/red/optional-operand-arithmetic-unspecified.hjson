@@ -4,7 +4,7 @@
   suite: static
   spec: ["#expressions", "§6.1", "§A.6"]
   tags: ["absence"]
-  note: "Pinned (SPEC-ISSUES #3). Annex A.6 now requires present (non-optional) numeric operands for the arithmetic and remainder operators; an optional<T> operand is a static type error at load. `total: = .price - .discount` with `discount: int?` is therefore rejected at load — the author must coalesce (`.discount ?? 0`) or narrow first. Operators do not propagate or zero-fill none (contrast §7.5 aggregates and Annex B.2 ordering)."
+  note: "Pinned (SPEC-ISSUES #3). Annex A.6 now requires present (non-optional) numeric operands for the arithmetic and remainder operators; an optional (`T?`) operand is a static type error at load. `total: = .price - .discount` with `discount: int?` is therefore rejected at load — the author must coalesce (`.discount ?? 0`) or narrow first. Operators do not propagate or zero-fill none (contrast §7.5 aggregates and Annex B.2 ordering)."
 
   package: {
     $liasse: 1

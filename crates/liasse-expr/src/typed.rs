@@ -97,8 +97,8 @@ impl TypedExpr {
 
     /// Whether this expression is the literal `none`.
     ///
-    /// The bare literal types as the widest optional (`optional<json>`, A.7);
-    /// per A.1 it is the absent value of *every* `optional<T>`, so the model
+    /// The bare literal types as the widest optional (`json?`, A.7);
+    /// per A.1 it is the absent value of *every* `T?`, so the model
     /// layer — which owns assignment typing — narrows it against the target
     /// field's optional type. This query is what lets it recognise the literal.
     #[must_use]
@@ -347,7 +347,7 @@ pub(crate) enum TypedKind {
     Key(Box<TypedExpr>),
     /// `base.$keys` — the SET of identity keys of a keyed collection/view (§13.16:
     /// `.modules.$keys` is the set of installed instance keys). The base is a keyed
-    /// view; the result is a `set<K>` of its rows' key values. Boxed so the node
+    /// view; the result is a `{ $set: K }` of its rows' key values. Boxed so the node
     /// stays finite-sized.
     Keys(Box<TypedExpr>),
     /// A keyring public version selector over a keyring's version view (§17.2):
@@ -384,7 +384,7 @@ pub(crate) enum BlobMember {
     Bytes,
     /// `$media` — the canonical media type, as `text` (§18.1).
     Media,
-    /// `$name` — the optional file name (`optional<text>`, §18.1).
+    /// `$name` — the optional file name (`text?`, §18.1).
     Name,
     /// `$satisfied` — whether the current placement policy is satisfied over the
     /// verified stores (`bool`, §18.5).

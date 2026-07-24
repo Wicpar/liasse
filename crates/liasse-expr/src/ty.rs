@@ -16,7 +16,7 @@ use liasse_value::Type;
 #[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub enum ExprType {
     /// A scalar or structured value of a canonical [`Type`] (includes
-    /// `optional<T>`, `set<T>`, `map<K,V>`, `ref<T>`, and static structs).
+    /// `T?`, `{ $set: T }`, `{ $key: K, $value: V }`, `ref`, and static structs).
     Scalar(#[cfg_attr(feature = "eval-wire", serde(with = "crate::wire::type_serde"))] Type),
     /// Exactly one row of a collection or view.
     Row(RowType),

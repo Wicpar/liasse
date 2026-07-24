@@ -4,6 +4,7 @@
 //! layer maps the resulting [`SpannedType`] to a canonical `liasse_value::Type`.
 
 pub mod ast;
+mod object;
 
 use liasse_diag::{ByteSpan, Diagnostic, Diagnostics, SourceId, Span};
 use pest::Parser;
@@ -25,10 +26,11 @@ struct TypeGrammar;
 /// `source` is the [`SourceId`] the caller registered `text` under in a
 /// `liasse_diag::SourceMap`; it is used only to locate diagnostics.
 pub fn parse_type_expression(source: SourceId, text: &str) -> Result<SpannedType, Diagnostics> {
-    // A struct type nests braces and generic forms (`map<…>`, `optional<…>`)
-    // nest angle brackets; both drive the recursive descent here and the model's
-    // recursive type lowering, so guard the depth before either runs. The `Type`
-    // lexis counts `<`/`>` alongside `{` for exactly this reason.
+    // An object type nests braces, and the removed parametric spellings (kept
+    // only to be rejected by name) nest angle brackets; both drive the recursive
+    // descent here and the model's recursive type lowering, so guard the depth
+    // before either runs. The `Type` lexis counts `<`/`>` alongside `{` for
+    // exactly this reason.
     check_nesting_depth(source, text, Lexis::Type)?;
     match TypeGrammar::parse(Rule::type_program, text) {
         Ok(mut pairs) => {
@@ -49,6 +51,9 @@ pub fn parse_type_expression(source: SourceId, text: &str) -> Result<SpannedType
     }
 }
 
+/// Lowers the pest tree to a [`SpannedType`], accumulating every rejection.
+/// The object-type classification and the removed-spelling rejections live in
+/// [`object`], which continues this impl.
 struct TypeBuilder {
     source: SourceId,
     diags: Diagnostics,
@@ -79,62 +84,34 @@ impl TypeBuilder {
         let kind = match inner.as_rule() {
             Rule::named => TypeExprKind::Name(inner.as_str().to_owned()),
             Rule::key_path => TypeExprKind::KeyPath(inner.as_str().to_owned()),
-            Rule::optional_type => TypeExprKind::Optional(Box::new(self.one_arg(inner)?)),
-            Rule::set_type => TypeExprKind::Set(Box::new(self.one_arg(inner)?)),
-            Rule::view_type => TypeExprKind::View(Box::new(self.one_arg(inner)?)),
-            Rule::map_type => {
-                let (key, value) = self.two_args(inner)?;
-                TypeExprKind::Map(Box::new(key), Box::new(value))
-            }
-            Rule::ref_type => {
-                let target = self.first_inner(&inner)?;
-                TypeExprKind::Ref { target: target.as_str().to_owned() }
-            }
-            Rule::struct_type => TypeExprKind::Struct(self.struct_fields(inner)?),
+            Rule::object_type => self.object_type(inner)?,
+            Rule::legacy_generic => self.reject_legacy(&inner)?,
             _ => return self.internal(span),
         };
         Some(SpannedType { span, kind })
     }
 
-    fn one_arg(&mut self, pair: Pair<'_, Rule>) -> Option<SpannedType> {
-        let arg = self.first_inner(&pair)?;
-        self.type_expr(arg)
-    }
-
-    fn two_args(&mut self, pair: Pair<'_, Rule>) -> Option<(SpannedType, SpannedType)> {
-        let mut inner = pair.into_inner();
-        let key = self.type_expr(inner.next()?)?;
-        let value = self.type_expr(inner.next()?)?;
-        Some((key, value))
-    }
-
-    fn struct_fields(&mut self, pair: Pair<'_, Rule>) -> Option<Vec<TypeField>> {
-        let mut fields = Vec::new();
-        for field in pair.into_inner() {
-            if field.as_rule() != Rule::struct_field {
-                continue;
-            }
-            let span = self.span(&field);
-            let mut parts = field.into_inner();
-            let name_pair = parts.next()?;
-            let name_span = self.span(&name_pair);
-            let name = name_pair.as_str().to_owned();
-            let mut optional = false;
-            let mut ty_pair = parts.next()?;
-            if ty_pair.as_rule() == Rule::optional_suffix {
-                optional = true;
-                ty_pair = parts.next()?;
-            }
-            let ty = self.type_expr(ty_pair)?;
-            fields.push(TypeField {
-                name,
-                name_span,
-                optional,
-                ty,
-                span,
-            });
+    /// One `field: T` / `field?: T` member of an object type.
+    fn struct_field(&mut self, pair: Pair<'_, Rule>) -> Option<TypeField> {
+        let span = self.span(&pair);
+        let mut parts = pair.into_inner();
+        let name_pair = parts.next()?;
+        let name_span = self.span(&name_pair);
+        let name = name_pair.as_str().to_owned();
+        let mut optional = false;
+        let mut ty_pair = parts.next()?;
+        if ty_pair.as_rule() == Rule::optional_suffix {
+            optional = true;
+            ty_pair = parts.next()?;
         }
-        Some(fields)
+        let ty = self.type_expr(ty_pair)?;
+        Some(TypeField {
+            name,
+            name_span,
+            optional,
+            ty,
+            span,
+        })
     }
 
     fn first_inner<'p>(&mut self, pair: &Pair<'p, Rule>) -> Option<Pair<'p, Rule>> {
@@ -175,12 +152,14 @@ impl RuleLabel for Rule {
     fn label(self) -> Option<&'static str> {
         Some(match self {
             Rule::type_program | Rule::type_expr | Rule::base => "a type expression",
-            Rule::struct_type => "a `{ field: type }` struct",
+            Rule::object_type => "a `{ ... }` object type",
+            Rule::object_member => "an object-type member",
             Rule::struct_field => "a `name: type` field",
+            Rule::typed_marker => "a `$marker: type` member",
+            Rule::ref_marker => "a `$ref: target` member",
+            Rule::marker_name | Rule::ref_key => "a `$` type marker",
             Rule::named | Rule::field_name => "a type name",
-            Rule::map_type => "a `map<K, V>`",
-            Rule::optional_type | Rule::set_type | Rule::view_type => "a `wrapper<T>`",
-            Rule::ref_type => "a `ref<target>`",
+            Rule::ref_target => "a target path",
             Rule::key_path => "a `collection.$key` reference",
             Rule::EOI => "end of input",
             _ => return None,

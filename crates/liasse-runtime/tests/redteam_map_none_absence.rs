@@ -7,7 +7,7 @@
 //! not a value: it cannot be a member of a set, a **map value**, or a distinct
 //! thing carried by a wire marker." Line 4400: "**map value**: `none` is the
 //! **key absent**. A map never stores a `none` value." The clean enforcement is a
-//! STATIC error: a `map<K, optional<V>>` field cannot be declared, so no `none`
+//! STATIC error: a map with an optional `$value` cannot be declared, so no `none`
 //! ever reaches a map value (verified at the runtime boundary here, and unit-wise
 //! in redteam_optional_container_inner_reachability).
 //!
@@ -45,7 +45,7 @@ fn meta_field(engine: &Engine<MemoryStore>, view: &str) -> Option<Value> {
 }
 
 // ---------------------------------------------------------------------------
-// A `map<K, optional<V>>` field cannot be declared: the map-value `none` path is
+// A map with an optional `$value` cannot be declared: the map-value `none` path is
 // closed at the type level (A.1 line 4400).
 // ---------------------------------------------------------------------------
 
@@ -56,7 +56,7 @@ const OPT_VALUE_MAP: &str = r#"{
     "docs": {
       "$key": "id",
       "id": "text",
-      "meta": "map<text, optional<text>>"
+      "meta": "{ $key: text, $value: text? }"
     }
   }
 }"#;
@@ -64,7 +64,7 @@ const OPT_VALUE_MAP: &str = r#"{
 #[test]
 fn optional_map_value_type_is_rejected_at_load() {
     // A.1 line 4400: a map never stores a `none` value; the value type is never
-    // `optional<V>`, so this model is a static error at the runtime boundary. (The
+    // `V?`, so this model is a static error at the runtime boundary. (The
     // rustc-like diagnostic wording is asserted at the model layer, where the
     // message is accessible — see liasse-model `redteam_optional_container_inner`;
     // `Engine::load` surfaces only a summary error.)
@@ -72,12 +72,12 @@ fn optional_map_value_type_is_rejected_at_load() {
     let result = Engine::load(store("mapnone-optval"), OPT_VALUE_MAP, &mut generator);
     assert!(
         result.is_err(),
-        "A.1 line 4400: `map<text, optional<text>>` must be rejected at load, but it succeeded"
+        "A.1 line 4400: `{{ $key: text, $value: text? }}` must be rejected at load, but it succeeded"
     );
 }
 
 // ---------------------------------------------------------------------------
-// A valid `map<text, text>` field: present values round-trip, and an OMITTED
+// A valid `{ $key: text, $value: text }` field: present values round-trip, and an OMITTED
 // field defaults to the empty map (not `none`).
 // ---------------------------------------------------------------------------
 
@@ -88,12 +88,12 @@ const TEXT_VALUE_MAP: &str = r#"{
     "docs": {
       "$key": "id",
       "id": "text",
-      "meta": "map<text, text>"
+      "meta": "{ $key: text, $value: text }"
     },
     "docs_view": { "$view": ".docs { id, meta }" },
     "$mut": {
       "add({ id: text })": ".docs + { id: @id }",
-      "add_full({ id: text, meta: map<text, text> })": ".docs + { id: @id, meta: @meta }"
+      "add_full({ id: text, meta: { $key: text, $value: text } })": ".docs + { id: @id, meta: @meta }"
     }
   }
 }"#;

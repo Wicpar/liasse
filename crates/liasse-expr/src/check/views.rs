@@ -748,7 +748,7 @@ impl Checker<'_> {
 
 /// Whether a supplied component value type satisfies a declared composite-key
 /// component. Beyond exact equality, a `ref` component (§D.1/A.9) is satisfied by a
-/// value of the row-key type it targets: a `ref</logins>` component whose target has
+/// value of the row-key type it targets: a `{ $ref: /logins }` component whose target has
 /// a composite key accepts that composite key (`login.$key`), and a scalar-key ref
 /// accepts its scalar key — the referenced row's identity IS that key.
 fn component_matches(supplied: &Type, declared: &Type) -> bool {
@@ -849,8 +849,8 @@ fn arg_value(arg: &Arg) -> &Expr {
 
 /// Whether an argument of type `actual` satisfies a pinned parameter type
 /// `declared` (§16.2). Exact type identity, plus the two widenings assignment
-/// already allows: the bare `none` literal fills any `optional<T>`, and a present
-/// value fills an `optional<T>` whose inner type it matches (A.1).
+/// already allows: the bare `none` literal fills any `T?`, and a present
+/// value fills an `T?` whose inner type it matches (A.1).
 fn arg_conforms(actual: &Type, declared: &Type, checked: &TypedExpr) -> bool {
     if actual == declared {
         return true;

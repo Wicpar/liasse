@@ -1,8 +1,16 @@
 // Liasse type-expression grammar (SPEC.md Annex A.2). Syntax only: it fixes the
 // A.2 *shape* of a field's declared type and takes no position on which bare
 // names are primitives, which resolve against `$types`, or which forms are
-// deferred seams (`ref<...>`, `collection.$key`). That mapping from this spanned
-// tree to a `liasse_value::Type` is the model layer's concern.
+// deferred seams (`{ $ref: ... }`, `collection.$key`). That mapping from this
+// spanned tree to a `liasse_value::Type` is the model layer's concern.
+//
+// A.2 has ONE type syntax: a primitive keyword, a named shape, a `?` suffix for
+// optionality, and an OBJECT bearing exactly one kind marker for every composite
+// (`{ $set: T }`, `{ $key: K, $value: V }`, `{ $view: T }`, `{ $ref: target }`),
+// a marker-free object being a struct. There is no parametric `<>` form:
+// `legacy_generic` below exists ONLY so the removed spellings parse far enough to
+// be rejected by name, with their replacement, never to be accepted or quietly
+// re-read as anything else.
 //
 // A type expression carries no comments and no string/`#` sigils beyond the A.2
 // `#surface.$key` path form, so only whitespace is implicit.
@@ -10,35 +18,46 @@ WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 
 type_program = { SOI ~ type_expr ~ EOI }
 
-// A postfix `?` makes any base optional — A.2: `T?` is shorthand for
-// `optional<T>`.
+// A postfix `?` makes any base optional — A.2: optionality has exactly two
+// spellings, `T?` at a bare type location and `field?: T` inside an object.
 type_expr       = { base ~ optional_suffix? }
 optional_suffix = { "?" }
 
-// Ordered choice: the `<...>`-taking generic forms and the `{...}` struct are
-// tried before a bare `named`/`key_path`, so a name that merely shares a keyword
-// prefix (`setting`, `mapper`) still falls through to `named`.
+// Ordered choice: the object form and the removed parametric forms are tried
+// before a bare `named`/`key_path`, so a name that merely shares a keyword prefix
+// (`setting`, `mapper`) still falls through to `named`.
 base = {
-    struct_type
-  | optional_type
-  | set_type
-  | view_type
-  | map_type
-  | ref_type
+    object_type
+  | legacy_generic
   | key_path
   | named
 }
 
-optional_type = { "optional" ~ "<" ~ type_expr ~ ">" }
-set_type      = { "set" ~ "<" ~ type_expr ~ ">" }
-view_type     = { "view" ~ "<" ~ type_expr ~ ">" }
-map_type      = { "map" ~ "<" ~ type_expr ~ "," ~ type_expr ~ ">" }
-ref_type      = { "ref" ~ "<" ~ ref_target ~ ">" }
-ref_target    = @{ ("/" | "#")? ~ ident ~ ("." ~ ident)* }
+// One production for every object type. Which composite it is — struct, map,
+// set, view, or ref — is decided by the markers it carries, so the whole A.2
+// classification and its diagnostics live in one place instead of being spread
+// over five near-identical productions.
+object_type   = { "{" ~ (object_member ~ ("," ~ object_member)* ~ ","?)? ~ "}" }
+object_member = { ref_marker | typed_marker | struct_field }
 
-struct_type  = { "{" ~ (struct_field ~ ("," ~ struct_field)* ~ ","?)? ~ "}" }
+// `$ref` alone carries a target PATH rather than a type (§5.6, A.2).
+ref_marker = { ref_key ~ ":" ~ ref_target }
+ref_key    = @{ "$ref" ~ !ident_cont }
+ref_target = @{ ("/" | "#")? ~ ident ~ ("." ~ ident)* }
+
+typed_marker = { marker_name ~ ":" ~ type_expr }
+marker_name  = @{ "$" ~ ident }
+
 struct_field = { field_name ~ optional_suffix? ~ ":" ~ type_expr }
 field_name   = @{ ident }
+
+// The REMOVED parametric spellings (`optional<T>`, `set<T>`, `map<K, V>`,
+// `view<T>`, `ref<target>`). Kept in the grammar solely so the lowering step can
+// reject each by name with its object-form replacement; nothing here ever
+// produces a type.
+legacy_generic = { legacy_ctor ~ "<" ~ legacy_arg ~ ("," ~ legacy_arg)* ~ ">" }
+legacy_ctor    = @{ ("optional" | "set" | "view" | "map" | "ref") ~ !ident_cont }
+legacy_arg     = { legacy_generic | type_expr | ref_target }
 
 // A.2 key-path type references: `collection.$key`, `/absolute.collection.$key`,
 // `#surface.$key`. The `.$key` suffix is what distinguishes a key path from a

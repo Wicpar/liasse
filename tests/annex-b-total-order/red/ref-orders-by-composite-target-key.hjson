@@ -6,7 +6,7 @@
   tags: ["ordering", "ref", "composite"]
   note: '''
     §B.4 composite key: "lexicographic components in $key order" — DISTINCT from a
-    struct's field-name order. §B.1 ref<T>: ascending is target-key order (A.9: a
+    struct's field-name order. §B.1 ref: ascending is target-key order (A.9: a
     composite ref's key is the component array in $key order). So sorting items by
     their composite `loc` ref must order them by the referenced region's key
     COMPONENTS in $key order (region, then code).

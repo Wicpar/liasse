@@ -3,7 +3,7 @@
   name: sort-optional-ascending-none-last
   suite: scenario
   spec: ["#views", "§7.3", "§B.2", "§A.1"]
-  note: "§7.3 and §B.2: ascending optional order is 'present values in ascending order, then none' (PostgreSQL-style absence placement). §A.1: none is 'absent optional<T> value' represented as an omitted optional field, so s2's omitted score is none and is absent in the result. Ascending by score gives s3(1), s1(2), then the none row s2 with score absent."
+  note: "§7.3 and §B.2: ascending optional order is 'present values in ascending order, then none' (PostgreSQL-style absence placement). §A.1: none is the 'absence of an optional (`T?`) value' represented as an omitted optional field, so s2's omitted score is none and is absent in the result. Ascending by score gives s3(1), s1(2), then the none row s2 with score absent."
 
   package: {
     $liasse: 1

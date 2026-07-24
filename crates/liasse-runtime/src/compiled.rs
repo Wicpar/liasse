@@ -75,7 +75,7 @@ pub(crate) struct CompiledField {
     pub(crate) reference: Option<RefInfo>,
     /// The reference target when this field is a `$set` of `$ref` (§5.5): each
     /// set member is a reference that must resolve (§5.6). The model flattens a
-    /// set element to a bare `ref<T>` type and drops the target relation, so the
+    /// set element to a bare `ref` type and drops the target relation, so the
     /// target is recovered from the definition document at compile time and kept
     /// here — the set analogue of [`Self::reference`] for member-level integrity
     /// and atomic-rekey rewrite (§5.4).
@@ -2456,11 +2456,14 @@ fn lower_scalar_type(text: &str) -> Option<Type> {
                 "blob" => Some(Type::Blob),
                 _ => None,
             },
-            TypeExprKind::OptionalSuffix(inner) | TypeExprKind::Optional(inner) => {
+            TypeExprKind::OptionalSuffix(inner) => {
                 let inner = lower(inner)?;
                 (!matches!(inner, Type::Optional(_))).then(|| Type::Optional(Box::new(inner)))
             }
             TypeExprKind::Set(inner) => Some(Type::Set(Box::new(lower(inner)?))),
+            TypeExprKind::Map(key, value) => {
+                Some(Type::Map(Box::new(lower(key)?), Box::new(lower(value)?)))
+            }
             _ => None,
         }
     }

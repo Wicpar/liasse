@@ -33,15 +33,18 @@ fn a_module_is_move_only() {
 
 #[test]
 fn a_container_of_a_module_is_move_only_by_delegation() {
-    assert!(!Type::Set(Box::new(any())).is_copyable(), "set<module>");
     assert!(
-        !Type::Optional(Box::new(any())).is_copyable(),
-        "optional<module>"
+        !Type::Set(Box::new(any())).is_copyable(),
+        "{{ $set: module }}"
     );
-    assert!(!Type::View(Box::new(any())).is_copyable(), "view<module>");
+    assert!(!Type::Optional(Box::new(any())).is_copyable(), "module?");
+    assert!(
+        !Type::View(Box::new(any())).is_copyable(),
+        "{{ $view: module }}"
+    );
     assert!(
         !Type::Map(Box::new(Type::Text), Box::new(any())).is_copyable(),
-        "map<text, module>"
+        "{{ $key: text, $value: module }}"
     );
     assert!(
         !Type::Struct(StructType::new([

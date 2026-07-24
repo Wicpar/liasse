@@ -303,9 +303,9 @@ impl<'a> Builder<'a> {
             );
             return Type::Json;
         };
-        // §5.5 / A.1: a set element type is never `optional<T>`. The string
-        // `set<optional<T>>` is rejected in `map_type`; this catches the inline
-        // `{ $set: "optional<T>" }` element, whose optional is a top-level
+        // §5.5 / A.1: a set element type is never `T?`. The string
+        // `{ $set: T? }` is rejected in `map_type`; this catches the inline
+        // `{ $set: "T?" }` element, whose optional is a top-level
         // `optional` that `map_type` cannot see as a set member.
         if matches!(element, Type::Optional(_)) {
             reporter.reject(value.span, code::TYPE, crate::types::set_optional_reason());

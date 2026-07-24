@@ -34,7 +34,7 @@ fn vtext(v: &str) -> Value {
 }
 
 /// The `items` row type: a text key `id`, an `int` amount, a `decimal` price, and
-/// an `optional<int>` maybe (so absent-skipping is testable).
+/// an `int?` maybe (so absent-skipping is testable).
 fn items_type() -> RowType {
     row_type(
         vec![

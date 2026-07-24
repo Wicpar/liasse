@@ -114,7 +114,7 @@ impl Checker<'_> {
 
     /// `base.$keys` (§13.16): the SET of identity keys of a keyed collection/view —
     /// e.g. `.modules.$keys` is the set of installed instance keys. The base is a
-    /// keyed *view* (a stream of keyed rows); the result is a `set<K>` over its
+    /// keyed *view* (a stream of keyed rows); the result is a `{ $set: K }` over its
     /// rows' key values. A single row (use `.$key`) or a keyless / non-scalar-keyed
     /// view is a static error, kept loud rather than guessing an element type.
     fn check_keys_selector(&mut self, expr: &Expr, base: &Expr) -> Option<TypedExpr> {

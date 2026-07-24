@@ -12,7 +12,7 @@
 //!   the dropped set membership may re-attach to it.
 //! - §5.4 × §5.6 × §5.5/§B.1: an atomic rekey keeps refs attached to the
 //!   incarnation, so a set of refs must READ the new key and RE-SORT by it
-//!   (`ref<T>` orders by target key, B.1) — and a rekey is not a deletion, so no
+//!   (`ref` orders by target key, B.1) — and a rekey is not a deletion, so no
 //!   `$on_delete` may fire.
 //! - §21.2 step 1 × §21.1: `erase(row)` plans "the same live removal and
 //!   `$on_delete` effects as ordinary deletion" — so erasure of a shared target
@@ -357,7 +357,7 @@ fn delete_and_reinsert_same_key_in_one_program_is_new_incarnation() {
 
 /// §5.4 × §5.6 × §5.5/§B.1 × §12.2: an atomic rekey keeps every ref attached to
 /// the incarnation, so the scalar ref READS the new key and the set of refs both
-/// reads it and RE-SORTS by it (`ref<T>` orders by target key order, B.1: text
+/// reads it and RE-SORTS by it (`ref` orders by target key order, B.1: text
 /// "z9" sorts after "a2"). A rekey is not a deletion (§5.4), so neither
 /// `$on_delete` fires: both members remain.
 #[test]

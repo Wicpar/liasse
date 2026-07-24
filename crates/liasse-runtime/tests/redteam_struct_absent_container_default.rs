@@ -7,7 +7,7 @@
 //!
 //! SPEC.md §5.5 (line 493): "When a containing row **or struct** is created, an
 //! omitted child set or keyed collection starts empty; an omitted non-optional
-//! `map<K, V>` field likewise starts as the **empty map**, never `none` — the
+//! map-valued field likewise starts as the **empty map**, never `none` — the
 //! set-analogous default, so the field's declared shape holds in every committed
 //! state." §22.1 requires the declared shape to hold in every committed state.
 //!
@@ -29,7 +29,7 @@
 //!
 //! ## Impact
 //!
-//! `meta: {}` over a struct `{ tags: set<text>, labels: map<text, text> }` committed
+//! `meta: {}` over a struct `{ tags: { $set: text }, labels: { $key: text, $value: text } }` committed
 //! a struct whose declared `set`/`map` members were absent (project as `none`)
 //! rather than empty — the declared shape did NOT hold (§22.1). A later `+`/`-` set
 //! write or map-entry write then acts against `none` instead of the existing (empty)
@@ -60,9 +60,9 @@ const MODEL: &str = r#"{
     "docs": {
       "$key": "id",
       "id": "text",
-      "top_tags": "set<text>",
-      "top_labels": "map<text, text>",
-      "meta": { "tags": "set<text>", "labels": "map<text, text>", "inner": "{ nested_tags: set<text> }" }
+      "top_tags": "{ $set: text }",
+      "top_labels": "{ $key: text, $value: text }",
+      "meta": { "tags": "{ $set: text }", "labels": "{ $key: text, $value: text }", "inner": "{ nested_tags: { $set: text } }" }
     },
     "all": { "$view": ".docs { id, top_tags, top_labels, meta }" },
     "$mut": { "add": ".docs + { id: @id, meta: { inner: {} } }" }

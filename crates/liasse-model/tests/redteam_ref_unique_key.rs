@@ -5,7 +5,7 @@
 //!   * §10.3 shows `members: { $key: ["company", "account"], company:
 //!     { $ref: "/companies" }, account: { $ref: "/accounts" } }` — a `$ref`
 //!     field IS a valid *primary* key component.
-//!   * A.9: "`ref<T>` has the exact key type of its target collection or keyed
+//!   * A.9: "`ref` has the exact key type of its target collection or keyed
 //!     view." A required ref therefore contributes its target's (eligible) base
 //!     key type wherever it is used as a key component.
 //!   * A.8: "Candidate-key components use the same eligible base types" as

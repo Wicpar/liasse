@@ -113,16 +113,16 @@ impl Type {
             // wire sentinel. A wire `null` disambiguates by the inner type, which is
             // the sole type whose value space could collide with it:
             //
-            // - `optional<json>` — JSON `null` is a *present* `json` value (A.7:
+            // - `json?` — JSON `null` is a *present* `json` value (A.7:
             //   "a Liasse optional JSON value has type `json?`, allowing both `null`
             //   and `none`"). Here `none` is expressed only by absence (an omitted
             //   struct member), never by a wire value, so `null` decodes to the
             //   present JSON `null`.
-            // - every other `optional<T>` — the inner type has no `null` value, so a
+            // - every other `T?` — the inner type has no `null` value, so a
             //   wire `null` is unambiguously `none`. This is also what a `= none`
             //   value expression round-trips to (its wire form is `null`).
             //
-            // A present value (non-`null`, or any value under `optional<json>`)
+            // A present value (non-`null`, or any value under `json?`)
             // decodes against the inner type.
             Type::Optional(inner) => {
                 if wire.is_null() && !matches!(**inner, Type::Json) {
@@ -373,7 +373,7 @@ impl Type {
         let mut members = BTreeSet::new();
         for item in items {
             // A.1 / SPEC-ISSUES item 29: `none` is not a valid set member. A set
-            // element type is never `optional<T>` (rejected at model build), so an
+            // element type is never `T?` (rejected at model build), so an
             // authored element never decodes to `none`. A stray `none` off the wire
             // / an import is dropped defensively here — absence is a non-member,
             // expressed by the member simply not appearing.
@@ -408,7 +408,7 @@ impl Type {
                 });
             };
             // A.1 / SPEC-ISSUES item 29: a map never stores a `none` value; absence
-            // is the key not being present. A map value type is never `optional<V>`
+            // is the key not being present. A map value type is never `V?`
             // (rejected at model build), so an authored value never decodes to
             // `none`. A stray `none` off the wire / an import drops the entry
             // defensively here — the key is simply absent.
@@ -437,7 +437,7 @@ impl Type {
     /// meaning). Either form yields the components in the declared `$key` order.
     ///
     /// A composite *key*'s components are key-eligible (A.8), which excludes
-    /// `optional<T>`, so a composite key never has a `none` slot. A general
+    /// `T?`, so a composite key never has a `none` slot. A general
     /// positional composite value MAY carry an optional component; because a
     /// position cannot be omitted, its `none` is JSON `null` (SPEC-ISSUES item 29),
     /// decoded back to `none` by [`Self::decode_component`].
@@ -489,7 +489,7 @@ impl Type {
     /// an optional component's `none` is JSON `null` (SPEC-ISSUES item 29): `null`
     /// is unambiguous here because it is not a canonical wire form for any scalar
     /// type. A present value decodes against the component type. For a positional
-    /// `optional<json>` slot `null` is therefore `none`; a *present* JSON `null`
+    /// `json?` slot `null` is therefore `none`; a *present* JSON `null`
     /// cannot be placed positionally (it must be object/array-wrapped) — the one
     /// residual corner A.1 resolves in favor of `none`.
     fn decode_component(ty: &Type, item: &J, mode: DecodeMode) -> Result<Value, ValueError> {
@@ -515,7 +515,7 @@ impl Type {
             match object.get(name) {
                 Some(member) => {
                     // A present optional member is a present value: decode it against
-                    // the member's declared type. For `optional<json>` a present
+                    // the member's declared type. For `json?` a present
                     // `null` is the JSON value `null` (A.7), not `none` — `none` is
                     // absence, and absence is the member being omitted (below).
                     decoded.push((Text::new(name.clone()), field_type.decode_as(member, mode)?));

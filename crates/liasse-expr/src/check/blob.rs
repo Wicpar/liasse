@@ -6,7 +6,7 @@
 //! expression reads directly. `$sha512` is the content hash as its canonical
 //! lowercase-hexadecimal `text`, `$bytes` the non-negative `int` byte count,
 //! `$media` the canonical media type (`text`), and `$name` the optional file
-//! name (`optional<text>`, the one member §18.1 marks optional).
+//! name (`text?`, the one member §18.1 marks optional).
 //!
 //! §18.5: a committed blob occurrence additionally exposes its logical placement
 //! state. `$satisfied` is a `bool` — whether the current placement policy holds
