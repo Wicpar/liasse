@@ -118,6 +118,18 @@ pub(crate) struct PreparedCommit {
     pub(crate) response: Option<ResponseValue>,
 }
 
+/// The target artefacts a staged migration adopts once its pending has committed
+/// (§20, §13.10): the migrated instance's new model, sources, keyrings, and compiled
+/// program. Held between [`Engine::stage_migration`] and [`Engine::finalize_migration`]
+/// so the model swap happens only after the shared commit lands — never before, so a
+/// rejected transition leaves the instance on its prior model.
+pub(crate) struct StagedMigration {
+    model: Model,
+    sources: SourceMap,
+    compiled: Compiled,
+    provisioned_keyrings: BTreeMap<String, Keyring<EngineKeyProvider>>,
+}
+
 /// A staged admission's response as a value cell (§13.10): the wrapped
 /// [`ResponseValue`]'s cell, or `none` when there is no response.
 pub(crate) fn response_to_cell(response: Option<&ResponseValue>) -> Cell {
@@ -656,6 +668,41 @@ impl<S: InstanceStore> Engine<S> {
         Ok(engine)
     }
 
+    /// Load a child module instance and STAGE its genesis WITHOUT committing, for a
+    /// module install folded into a §13.10 multi-engine transition. Same assemble +
+    /// `$config` bind + genesis validation as [`Engine::install_load`], but the
+    /// genesis rows and the active-definition load are extracted as a
+    /// [`PendingCommit`] (tagged with the shared `transaction`) the coordinator
+    /// commits together with the parent — all touched instances or none. The
+    /// returned engine borrows nothing durable yet; the caller commits the pending
+    /// via [`InstanceStore::commit_pending_group`] and then keeps the engine as the
+    /// mounted instance. A compile/config/genesis failure is a
+    /// [`ConfigBindError`], so a malformed package rejects the whole transition
+    /// before any commit.
+    pub(crate) fn install_load_staged<G: Generators>(
+        store: S,
+        definition: &str,
+        config: &BTreeMap<String, liasse_value::Value>,
+        imports: &crate::imports::ParentImports,
+        generator: &mut G,
+        transaction: TransactionId,
+    ) -> Result<(Self, PendingCommit), crate::config::ConfigBindError> {
+        use crate::config::ConfigBindError;
+        let (mut engine, genesis) = Self::assemble(store, definition, imports.types(), generator)
+            .map_err(ConfigBindError::Engine)?;
+        engine.bind_config(config, generator)?;
+        let (changes, now) = engine.genesis_changes(&genesis, imports, generator).map_err(ConfigBindError::Engine)?;
+        let mut txn = engine.store.begin();
+        txn.set_now(now);
+        stage(&mut txn, changes).map_err(ConfigBindError::Engine)?;
+        // §9.3/§13.3: the child's genesis records its active definition (D.4) on the
+        // same commit, so the decoded package identity is a durable fact of it (§5.1).
+        txn.set_definition(DefinitionText::new(definition.to_owned()));
+        txn.set_transaction(transaction);
+        let pending = txn.into_pending();
+        Ok((engine, pending))
+    }
+
     /// Load `definition` into `store` against a host [`Registry`], resolving the
     /// package's `$requires` host-namespace declarations before activation (§16.2,
     /// §9.2 step 4). A missing, incompatible, or ambiguous requirement returns
@@ -921,6 +968,26 @@ impl<S: InstanceStore> Engine<S> {
         target: Compilation,
         migrated: BTreeMap<RowAddress, crate::materialize::FieldMap>,
     ) -> Result<CommitSeq, EngineError> {
+        let (pending, staged) = self.stage_migration(definition, target, migrated, None)?;
+        let committed = self.store.commit_pending(pending)?;
+        self.finalize_migration(committed, staged)
+    }
+
+    /// Stage a migration WITHOUT committing (§20, §13.10): re-resolve the target's
+    /// `$requires`, provision its new keyrings, build the migrated prospective, and
+    /// extract a [`PendingCommit`] (tagged with the shared `transaction`) plus the
+    /// [`StagedMigration`] the coordinator commits together with the parent — all
+    /// touched instances or none. The migrated rows were already validated by the
+    /// caller (`build_migrated`), so a failure here is an unmet requirement/keyring
+    /// (§16.2/§17.5) that refuses the whole transition before any commit, leaving the
+    /// instance at its prior version.
+    pub(crate) fn stage_migration(
+        &mut self,
+        definition: &str,
+        target: Compilation,
+        migrated: BTreeMap<RowAddress, crate::materialize::FieldMap>,
+        transaction: Option<TransactionId>,
+    ) -> Result<(PendingCommit, StagedMigration), EngineError> {
         // §16.2/§20: the target keeps the context's registered components but
         // declares its own `$requires`; re-resolve them before staging, so an
         // unmet requirement fails the migration before any effect.
@@ -948,7 +1015,32 @@ impl<S: InstanceStore> Engine<S> {
         txn.set_now(now);
         stage(&mut txn, changes)?;
         txn.set_definition(DefinitionText::new(definition.to_owned()));
-        let seq = match txn.commit()? {
+        if let Some(transaction) = transaction {
+            txn.set_transaction(transaction);
+        }
+        let pending = txn.into_pending();
+        Ok((
+            pending,
+            StagedMigration {
+                model: target.model,
+                sources: target.sources,
+                compiled: target.compiled,
+                provisioned_keyrings,
+            },
+        ))
+    }
+
+    /// Adopt a staged migration's target artefacts AFTER its pending has committed
+    /// (§20, §13.10): a state-changing commit advances the active lineage; the
+    /// target model, sources, keyrings, and compiled program then become active. A
+    /// migration always records a new active definition, so the commit is never
+    /// `Unchanged` in practice — that branch reports the current head.
+    pub(crate) fn finalize_migration(
+        &mut self,
+        committed: CommitOutcome,
+        staged: StagedMigration,
+    ) -> Result<CommitSeq, EngineError> {
+        let seq = match committed {
             // §20/§19.2: a migration is a linear continuation, so it takes a fresh
             // point on the active lineage.
             CommitOutcome::Committed(seq) => {
@@ -957,10 +1049,10 @@ impl<S: InstanceStore> Engine<S> {
             }
             CommitOutcome::Unchanged => self.store.head()?,
         };
-        self.model = target.model;
-        self.sources = target.sources;
-        self.keyrings = assemble_keyrings(&target.compiled, std::mem::take(&mut self.keyrings), provisioned_keyrings);
-        self.compiled = target.compiled;
+        self.model = staged.model;
+        self.sources = staged.sources;
+        self.keyrings = assemble_keyrings(&staged.compiled, std::mem::take(&mut self.keyrings), staged.provisioned_keyrings);
+        self.compiled = staged.compiled;
         Ok(seq)
     }
 
@@ -1350,6 +1442,29 @@ impl<S: InstanceStore> Engine<S> {
         imports: &crate::imports::ParentImports,
         generator: &mut G,
     ) -> Result<(), EngineError> {
+        let (changes, now) = self.genesis_changes(genesis, imports, generator)?;
+        let mut txn = self.store.begin();
+        txn.set_now(now);
+        stage(&mut txn, changes)?;
+        // §9.3: a definition load creates a commit even when state is unchanged.
+        txn.set_definition(DefinitionText::new(definition.to_owned()));
+        txn.commit()?;
+        Ok(())
+    }
+
+    /// Build and validate the genesis state change WITHOUT committing (§9.1/§13.13):
+    /// admit `$seed`/`$bundle` (or the singleton defaults), run the whole rule /
+    /// source-series / meter / connector pipeline, and return the resolved row
+    /// changes plus the admission instant. This is the read-only core `genesis`
+    /// commits directly and a staged module install (§13.10) folds into a shared
+    /// transaction — a genesis rejection is an [`EngineError::Seed`], surfaced
+    /// identically on both paths.
+    fn genesis_changes<G: Generators>(
+        &self,
+        genesis: &Genesis,
+        imports: &crate::imports::ParentImports,
+        generator: &mut G,
+    ) -> Result<(Vec<Change>, Timestamp), EngineError> {
         let data = genesis.data.as_ref();
         let bundle = genesis.bundle.as_ref();
         let schema = Schema::new(&self.model);
@@ -1423,14 +1538,7 @@ impl<S: InstanceStore> Engine<S> {
         let changes = prospective.diff();
         // §22.5/§22.6: fix the transition's admission instant to the engine clock, so
         // every row it inserts records this `now` as its `$created` (§14.1).
-        let now = self.clock;
-        let mut txn = self.store.begin();
-        txn.set_now(now);
-        stage(&mut txn, changes)?;
-        // §9.3: a definition load creates a commit even when state is unchanged.
-        txn.set_definition(DefinitionText::new(definition.to_owned()));
-        txn.commit()?;
-        Ok(())
+        Ok((changes, self.clock))
     }
 
     /// Overlay an installation `$data` object (§13.3) onto this instance's already

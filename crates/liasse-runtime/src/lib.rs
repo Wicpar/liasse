@@ -207,8 +207,8 @@ pub use history::{
 };
 pub use migrate::{UpdateError, UpdateReport};
 pub use modules::{
-    AdmittedBindings, DepSpec, InstallRequest, InterfaceRow, ModuleError, ModuleHost, ModuleSpace,
-    ModuleUpdateReport, SeedMerge, UseSpec,
+    AdmittedBindings, DecodedPackageId, DepSpec, InstallRequest, InterfaceRow, ModuleError,
+    ModuleHost, ModuleSpace, ModuleUpdateReport, SeedMerge, UseSpec,
 };
 
 /// The Annex E version relationship an [`UpdateReport`] carries (§20.3).

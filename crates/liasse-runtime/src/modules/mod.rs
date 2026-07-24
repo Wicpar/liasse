@@ -49,7 +49,7 @@ mod peer;
 mod space;
 
 pub(crate) use aggregate::{AggregatedInstance, ModuleAggregate};
-pub use host::ModuleHost;
+pub use host::{DecodedPackageId, ModuleHost};
 pub use install::{AdmittedBindings, DepSpec, InstallRequest, UseSpec};
 pub use merge::SeedMerge;
 pub use space::ModuleSpace;

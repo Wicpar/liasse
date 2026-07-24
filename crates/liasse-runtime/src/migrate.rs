@@ -82,6 +82,18 @@ pub struct UpdateReport {
     pub seeded: Vec<String>,
 }
 
+/// The validated, not-yet-committed result of the §20 update pre-checks: the target
+/// compilation, the Annex-E relation, the migrated rows to stage, and the §13.15
+/// per-item `$migrated`/`$seeded` paths. Shared by [`Engine::update`] (commits
+/// directly) and [`Engine::stage_update`] (folds into a §13.10 transition).
+struct PreparedUpdate {
+    compilation: Compilation,
+    relation: UpdateRelation,
+    rows: BTreeMap<RowAddress, FieldMap>,
+    migrated: Vec<String>,
+    seeded: Vec<String>,
+}
+
 impl<S: InstanceStore> Engine<S> {
     /// Update this instance to a target definition (§20). Builds the migrated
     /// state through the §20.1 order, verifies reversible transforms, admits the
@@ -92,8 +104,51 @@ impl<S: InstanceStore> Engine<S> {
         target: &str,
         generator: &mut G,
     ) -> Result<UpdateReport, UpdateError> {
+        let prepared = self.prepare_update(target, generator)?;
+        let PreparedUpdate { compilation, relation, rows, migrated, seeded } = prepared;
+        let commit = self.apply_migration(target, compilation, rows).map_err(UpdateError::Engine)?;
+        Ok(UpdateReport { relation, commit, migrated, seeded })
+    }
+
+    /// Update this instance to a target definition WITHIN a §13.10 multi-engine
+    /// transition, STAGING the migration WITHOUT committing. Runs the exact same
+    /// §20 pre-checks and §20.1 migration build as [`Engine::update`] — a rejected
+    /// migration is a [`UpdateError::Rejected`] that refuses the whole transition —
+    /// then extracts a [`PendingCommit`] (tagged with the shared `transaction`) and
+    /// the [`StagedMigration`] the coordinator commits together with the parent. On
+    /// a rejected transition nothing commits and the instance stays at its prior
+    /// version; the caller adopts the target model only after the shared commit lands
+    /// via [`Engine::finalize_migration`].
+    pub(crate) fn stage_update<G: crate::generator::Generators>(
+        &mut self,
+        target: &str,
+        generator: &mut G,
+        transaction: liasse_ident::TransactionId,
+    ) -> Result<(liasse_store::PendingCommit, crate::engine::StagedMigration, UpdateReport), UpdateError> {
+        let prepared = self.prepare_update(target, generator)?;
+        let PreparedUpdate { compilation, relation, rows, migrated, seeded } = prepared;
+        let (pending, staged) = self
+            .stage_migration(target, compilation, rows, Some(transaction))
+            .map_err(UpdateError::Engine)?;
+        // §13.15: the commit position is assigned only when the shared group commit
+        // lands; the caller fills it into the returned report after finalizing.
+        let report = UpdateReport { relation, commit: self.head().unwrap_or(CommitSeq::GENESIS), migrated, seeded };
+        Ok((pending, staged, report))
+    }
+
+    /// Run the §20 update pre-checks and build the validated migrated state WITHOUT
+    /// touching durable state — the read-only core [`Engine::update`] commits
+    /// directly and [`Engine::stage_update`] folds into a §13.10 shared transaction.
+    /// A compatibility, connectivity, boundary-narrowing, capture, or migration-build
+    /// failure is surfaced identically on both paths, so a rejected migration never
+    /// reaches a commit.
+    fn prepare_update<G: crate::generator::Generators>(
+        &self,
+        target: &str,
+        generator: &mut G,
+    ) -> Result<PreparedUpdate, UpdateError> {
         // §16.2/§20: the target keeps the context's registered components but
-        // declares its own `$requires`, re-resolved by [`apply_migration`]. The
+        // declares its own `$requires`, re-resolved by [`stage_migration`]. The
         // target compilation itself does not re-type its host-call views/defaults
         // against the live registry here — a target whose views call an unregistered
         // namespace fails to compile as an unknown function, which is the correct
@@ -202,10 +257,7 @@ impl<S: InstanceStore> Engine<S> {
         // consumed by the commit.
         let migrated = staged.migrated.iter().map(RowAddress::render).collect();
         let seeded = staged.seeded.iter().map(RowAddress::render).collect();
-        let commit = self
-            .apply_migration(target, compilation, staged.rows)
-            .map_err(UpdateError::Engine)?;
-        Ok(UpdateReport { relation: decision.relation, commit, migrated, seeded })
+        Ok(PreparedUpdate { compilation, relation: decision.relation, rows: staged.rows, migrated, seeded })
     }
 
     /// The first boundary-contract narrowing the `target` release makes relative

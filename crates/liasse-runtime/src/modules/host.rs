@@ -4,13 +4,16 @@
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
+use liasse_artifact::decode_package_from_blob;
 use liasse_expr::{Cell, ExprType};
-use liasse_ident::{InstanceId, TransactionId};
+use liasse_ident::{DefinitionId, InstanceId, TransactionId};
+use liasse_model::LifecycleOp;
 use liasse_store::{GroupMember, InstanceStore, PendingCommit, StoreFactory};
-use liasse_value::{Type, Value};
+use liasse_value::{BlobDescriptor, MediaType, Sha512, Type, Value};
 
 use crate::blobs::StagedBlob;
-use crate::dispatch::{Dispatch, Handles};
+use crate::dispatch::{Dispatch, Handles, Lifecycle};
+use crate::engine::StagedMigration;
 use crate::engine::{
     response_to_cell, BlobBacking, Engine, PrepareOutcome, PreparedCommit, StagedAdmission,
     StagedChange,
@@ -49,6 +52,11 @@ struct Child<S> {
     /// Whether the child's active boundary occurrences are available (§13.3/§13.12
     /// disable/enable). A disabled child keeps its private state and history.
     enabled: bool,
+    /// The decoded package identity a §13.10 lifecycle op mounted or migrated this
+    /// instance from (§5.1): the D.4 definition id and the blob content id. `None`
+    /// for an instance installed through the ordinary [`ModuleHost::install`] path
+    /// (no blob decode). Recorded as a fact of the lifecycle commit, re-read in audit.
+    package: Option<DecodedPackageId>,
 }
 
 impl<S> Child<S> {
@@ -304,6 +312,144 @@ fn unreachable_handle(handle: &str) -> Rejection {
     )
 }
 
+/// The decoded package identity a lifecycle op records as a fact of its commit
+/// (§5.1, §13.10): the D.4 definition identity and the content id (SHA-512) of the
+/// `.liasse` blob it decoded from. The `name@version` is carried by the child's own
+/// active definition (its `DefinitionText`), so this pins WHICH bytes were mounted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedPackageId {
+    /// The D.4 definition identity recomputed from the decoded `liasse.json`.
+    pub definition: DefinitionId,
+    /// The content id (SHA-512) of the `.liasse` blob the package was decoded from.
+    pub content: Sha512,
+}
+
+/// A lifecycle intent recorded during staging (§13.10): the host-privileged
+/// `module.<op>` builtin decodes the blob (install/update) and records what to
+/// mount/migrate/remove; the module host performs it in the commit phase, folding it
+/// into the same atomic transition as the parent's own change.
+enum LifecycleIntent {
+    /// Install a new instance from the decoded package definition.
+    Install { space: String, name: String, definition: String, package: DecodedPackageId },
+    /// Update an existing instance to the decoded package definition (§20.1 chain).
+    Update { space: String, name: String, definition: String, package: DecodedPackageId },
+    /// Remove an existing instance (§13.12).
+    Remove { space: String, name: String },
+}
+
+/// The host-privileged lifecycle handle lent into the root/host-scope program
+/// (§13.10). It DECODES the blob argument (failing LOUDLY on a malformed or
+/// unfetchable package) and records a [`LifecycleIntent`]; the module host performs
+/// the mount/migration/removal in the commit phase, so the lifecycle change folds
+/// into the same atomic transition. It borrows the root store read-only to fetch the
+/// package bytes (§18.3), so staging touches no durable state.
+struct LifecycleRecorder<'a, S: InstanceStore> {
+    blobs: &'a S,
+    intents: RefCell<Vec<LifecycleIntent>>,
+}
+
+impl<S: InstanceStore> LifecycleRecorder<'_, S> {
+    /// The value of a required text member of the lifecycle call's argument object.
+    fn text_arg(args: &[(String, Value)], key: &str, op: LifecycleOp) -> Result<String, Rejection> {
+        match args.iter().find(|(name, _)| name == key).map(|(_, value)| value) {
+            Some(Value::Text(text)) => Ok(text.as_str().to_owned()),
+            _ => Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!("`module.{}` requires a text `{key}` argument (§13.10)", op.member()),
+            )),
+        }
+    }
+
+    /// Decode the package definition from the `blob` argument's bytes (§13.10,
+    /// §18.3): resolve the blob descriptor, fetch its bytes from the store, and
+    /// decode the artifact. A missing blob or a malformed/incompatible package is a
+    /// LOUD rejection that unwinds the whole transition.
+    fn decode(&self, args: &[(String, Value)], op: LifecycleOp) -> Result<(String, DecodedPackageId), Rejection> {
+        let Some(Value::Blob(descriptor)) = args.iter().find(|(name, _)| name == "blob").map(|(_, value)| value) else {
+            return Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!("`module.{}` requires a `blob` argument carrying the package (§13.10)", op.member()),
+            ));
+        };
+        let sha512 = *descriptor.sha512();
+        let bytes = self
+            .blobs
+            .get_blob(&sha512)
+            .map_err(|error| Rejection::new(RejectionReason::Evaluation, format!("blob store error: {error}")))?
+            .ok_or_else(|| {
+                Rejection::new(
+                    RejectionReason::Malformed,
+                    "the package `blob` is not held by the store, so its bytes cannot be decoded (§18.3)",
+                )
+            })?;
+        let decoded = decode_package_from_blob(&bytes).map_err(|error| {
+            Rejection::new(RejectionReason::Malformed, format!("malformed module package blob: {error} (§13.10)"))
+        })?;
+        let (definition, definition_id) = decoded.into_parts();
+        Ok((definition, DecodedPackageId { definition: definition_id, content: sha512 }))
+    }
+}
+
+impl<S: InstanceStore> Lifecycle for LifecycleRecorder<'_, S> {
+    fn perform(&self, op: LifecycleOp, args: Vec<(String, Value)>) -> Result<Cell, Rejection> {
+        let space = Self::text_arg(&args, "space", op)?;
+        let name = Self::text_arg(&args, "name", op)?;
+        let cell = match op {
+            LifecycleOp::Install | LifecycleOp::Update => {
+                let (definition, package) = self.decode(&args, op)?;
+                // §5.1/§13.10: the decoded package identity is the intent's fact — the
+                // caller reads it as the call's result (the D.4 identity text).
+                let identity = Cell::Scalar(Value::Text(liasse_value::Text::new(package.definition.to_canonical_text())));
+                let intent = match op {
+                    LifecycleOp::Install => LifecycleIntent::Install { space, name, definition, package },
+                    _ => LifecycleIntent::Update { space, name, definition, package },
+                };
+                self.intents.borrow_mut().push(intent);
+                identity
+            }
+            LifecycleOp::Remove => {
+                let identity = Cell::Scalar(Value::Text(liasse_value::Text::new(name.clone())));
+                self.intents.borrow_mut().push(LifecycleIntent::Remove { space, name });
+                identity
+            }
+        };
+        Ok(cell)
+    }
+}
+
+/// One staged module install held between the group commit and the finalize
+/// (§13.10): the freshly-loaded instance engine (its genesis staged, not committed),
+/// its extracted genesis payload, and the boundary metadata to record on the mounted
+/// [`Child`] once the shared commit lands.
+struct PendingInstall<S: InstanceStore> {
+    engine: Engine<S>,
+    pending: Option<PendingCommit>,
+    space: ModuleSpace,
+    name: String,
+    incarnation: InstanceId,
+    bindings: AdmittedBindings,
+    resolved_peers: Vec<ResolvedPeer>,
+    package: DecodedPackageId,
+}
+
+/// One staged module update held between the group commit and the finalize
+/// (§13.10): the installed child's index, its extracted migration payload, and the
+/// target artefacts to adopt once the shared commit lands.
+struct PendingUpdate {
+    index: usize,
+    pending: Option<PendingCommit>,
+    staged: Option<StagedMigration>,
+    package: DecodedPackageId,
+}
+
+/// Which participant of a lifecycle transition an outcome maps back to (§13.10),
+/// in the order they were handed to the group commit.
+enum LifecycleParticipant {
+    Root,
+    Update(usize),
+    Install,
+}
+
 /// A root application together with the module instances installed in its
 /// row-scoped module spaces (§13.2). Each child is an independently loaded
 /// [`Engine`] over a store the host's [`StoreFactory`] mints, so two installs of
@@ -410,6 +556,9 @@ impl<F: StoreFactory> ModuleHost<F> {
             bindings,
             resolved_peers,
             enabled: true,
+            // The ordinary install path takes a parsed definition string, not a blob,
+            // so it records no decoded-package provenance (§13.10 is the blob path).
+            package: None,
         });
         Ok(incarnation)
     }
@@ -722,6 +871,323 @@ impl<F: StoreFactory> ModuleHost<F> {
         generator: &mut G,
     ) -> Result<CallOutcome, ModuleError> {
         self.admit_folding(Primary::Root, request, generator)
+    }
+
+    /// Admit a **root** host-privileged lifecycle mutation as a §13.10 transition.
+    ///
+    /// The root program runs with the host/root-scope [`Lifecycle`] handle lent, so a
+    /// `module.install`/`module.update`/`module.remove(args)` call it makes decodes
+    /// the package from its blob (failing LOUDLY on a malformed/incompatible package)
+    /// and stages the mount/migration/removal. The parent's OWN change and every
+    /// lifecycle change then commit together as ONE atomic transition — the mounted,
+    /// migrated, or removed instance is one of the engines committed under one shared
+    /// transaction — or the whole transition rejects and every instance is left at
+    /// its prior committed state. The decoded package identity becomes a fact of the
+    /// commit (§5.1). A root program that performs no lifecycle op is an ordinary
+    /// single-engine admission.
+    ///
+    /// # Errors
+    /// An engine/store fault, or [`EngineError::Unsupported`] when a touched store
+    /// cannot commit an all-or-none multi-instance transition. A rejected transition
+    /// (a bad decode, a duplicate name, an incompatible migration) is a
+    /// [`CallOutcome::Rejected`], not an error.
+    pub fn call_root_lifecycle<G: Generators>(
+        &mut self,
+        request: &CallRequest,
+        generator: &mut G,
+    ) -> Result<CallOutcome, ModuleError> {
+        let seed = generator.next_seed();
+        let (staged, intents) = {
+            // The recorder decodes each lifecycle op's blob against the root store's
+            // §18.3 blobs during staging (read-only), recording an intent to perform.
+            let recorder = LifecycleRecorder { blobs: self.root.store(), intents: RefCell::new(Vec::new()) };
+            let staged = self
+                .root
+                .stage_admission(
+                    request,
+                    Vec::new(),
+                    BlobBacking::External,
+                    seed,
+                    &[],
+                    Handles { dispatch: None, lifecycle: Some(&recorder) },
+                )
+                .map_err(ModuleError::Engine)?;
+            (staged, recorder.intents.into_inner())
+        };
+        // No lifecycle op: an ordinary single-engine root admission (the parent's own
+        // change commits on its own, valid on any store).
+        if intents.is_empty() {
+            return match staged {
+                StagedAdmission::Rejected(rejection) => Ok(CallOutcome::Rejected(rejection)),
+                StagedAdmission::Unchanged { response } => Ok(CallOutcome::Unchanged { response }),
+                StagedAdmission::Changed(change) => self.root.commit_staged(change, None).map_err(ModuleError::Engine),
+            };
+        }
+        // A lifecycle op was recorded: fold every lifecycle change and the parent's
+        // own change into one atomic transition. A rejected staging commits nothing.
+        match staged {
+            StagedAdmission::Rejected(rejection) => Ok(CallOutcome::Rejected(rejection)),
+            StagedAdmission::Unchanged { response } => self.commit_lifecycle(None, response, intents, seed, generator),
+            StagedAdmission::Changed(change) => self.commit_lifecycle(Some(change), None, intents, seed, generator),
+        }
+    }
+
+    /// Perform the recorded lifecycle intents and commit them together with the
+    /// parent's own change as ONE atomic transition (§13.10): stage each install's
+    /// genesis and each update's migration WITHOUT committing, then commit the parent
+    /// and every lifecycle participant under one shared transaction via
+    /// [`InstanceStore::commit_pending_group`]. A rejected migration or a duplicate
+    /// name unwinds the whole transition before any commit. Removes are applied only
+    /// after the shared commit lands, so a rejected transition leaves every instance
+    /// exactly as it was.
+    fn commit_lifecycle<G: Generators>(
+        &mut self,
+        parent: Option<StagedChange>,
+        unchanged_response: Option<ResponseValue>,
+        intents: Vec<LifecycleIntent>,
+        seed: u64,
+        generator: &mut G,
+    ) -> Result<CallOutcome, ModuleError> {
+        // §19.1: one shared transaction identity tags every touched instance's commit.
+        let transaction = TransactionId::new(format!("{}::mtx::{seed}", self.root.instance().as_str()));
+
+        // Phase A — stage each lifecycle op WITHOUT committing. A rejected migration
+        // or duplicate name unwinds here, before any prepare/commit, so nothing lands.
+        let mut installs: Vec<PendingInstall<F::Store>> = Vec::new();
+        let mut updates: Vec<PendingUpdate> = Vec::new();
+        let mut removes: Vec<usize> = Vec::new();
+        for intent in intents {
+            match intent {
+                LifecycleIntent::Install { space, name, definition, package } => {
+                    let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
+                    installs.push(self.stage_install(&space, &name, &definition, package, &transaction, generator)?);
+                }
+                LifecycleIntent::Update { space, name, definition, package } => {
+                    let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
+                    let index = self.enabled_child_index(&space, &name)?;
+                    let child = self
+                        .children
+                        .get_mut(index)
+                        .ok_or_else(|| ModuleError::Engine(EngineError::Internal("update child index out of range".to_owned())))?;
+                    match child.engine.stage_update(&definition, generator, transaction.clone()) {
+                        Ok((pending, staged, _report)) => {
+                            updates.push(PendingUpdate { index, pending: Some(pending), staged: Some(staged), package });
+                        }
+                        // §20.3: a rejected migration (incompatible, off-lineage,
+                        // failed check) rejects the WHOLE transition — nothing commits,
+                        // the instance stays at its prior version.
+                        Err(crate::migrate::UpdateError::Rejected(rejection)) => return Ok(CallOutcome::Rejected(rejection)),
+                        Err(crate::migrate::UpdateError::Incompatible(message)) => {
+                            return Ok(CallOutcome::Rejected(Rejection::new(RejectionReason::Compatibility, message)));
+                        }
+                        Err(crate::migrate::UpdateError::Engine(engine)) => return Err(ModuleError::Engine(engine)),
+                    }
+                }
+                LifecycleIntent::Remove { space, name } => {
+                    let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
+                    removes.push(self.enabled_child_index(&space, &name)?);
+                }
+            }
+        }
+
+        // §13.10 store-agnostic seam: refuse unless every touched store commits an
+        // all-or-none multi-instance transition atomically (a durable backend that
+        // cannot is the deferred follow-up — never a silent partial commit).
+        if !self.lifecycle_atomic(&updates, &removes) {
+            return Err(ModuleError::Engine(EngineError::Unsupported(
+                "multi-engine lifecycle commit (§13.10) needs every touched store to support an \
+                 all-or-none multi-instance commit; at least one does not."
+                    .to_owned(),
+            )));
+        }
+
+        // Phase B — prepare the parent participant (land its blobs, extract payload).
+        let mut root_final: Option<(Vec<StagedBlob>, Option<ResponseValue>)> = None;
+        let mut root_pending: Option<PendingCommit> = None;
+        if let Some(change) = parent {
+            match self.root.prepare_commit(change, Some(transaction.clone())).map_err(ModuleError::Engine)? {
+                PrepareOutcome::Rejected(rejection) => return Ok(CallOutcome::Rejected(rejection)),
+                PrepareOutcome::Prepared(PreparedCommit { pending, staged_blobs, response }) => {
+                    root_pending = Some(pending);
+                    root_final = Some((staged_blobs, response));
+                }
+            }
+        }
+
+        // Phase C — build the group (disjoint `&mut` stores) and commit all-or-none.
+        let mut update_pendings: BTreeMap<usize, PendingCommit> = BTreeMap::new();
+        for update in &mut updates {
+            if let Some(pending) = update.pending.take() {
+                update_pendings.insert(update.index, pending);
+            }
+        }
+        let mut members: Vec<GroupMember<'_, F::Store>> = Vec::new();
+        let mut order: Vec<LifecycleParticipant> = Vec::new();
+        if let Some(pending) = root_pending {
+            members.push(GroupMember { store: self.root.store_mut(), pending });
+            order.push(LifecycleParticipant::Root);
+        }
+        for (index, child) in self.children.iter_mut().enumerate() {
+            if let Some(pending) = update_pendings.remove(&index) {
+                members.push(GroupMember { store: child.engine.store_mut(), pending });
+                order.push(LifecycleParticipant::Update(index));
+            }
+        }
+        for install in &mut installs {
+            if let Some(pending) = install.pending.take() {
+                members.push(GroupMember { store: install.engine.store_mut(), pending });
+                order.push(LifecycleParticipant::Install);
+            }
+        }
+        let outcomes = match <F::Store as InstanceStore>::commit_pending_group(members) {
+            Ok(outcomes) => outcomes,
+            Err(error) => {
+                if let Some((blobs, _)) = root_final {
+                    self.root.rollback_blobs(blobs);
+                }
+                return Err(ModuleError::Engine(error.into()));
+            }
+        };
+
+        // Phase D — finalize each participant with its outcome. Only after the shared
+        // commit lands do the target models swap, the new instances mount, and the
+        // removed instances drop — so a rejected transition would have left all intact.
+        let mut result = CallOutcome::Unchanged { response: unchanged_response };
+        for (participant, committed) in order.into_iter().zip(outcomes) {
+            match participant {
+                LifecycleParticipant::Root => {
+                    let (blobs, response) = root_final.take().ok_or_else(|| {
+                        ModuleError::Engine(EngineError::Internal("missing root finalize metadata".to_owned()))
+                    })?;
+                    result = self.root.finalize_commit(committed, blobs, response).map_err(ModuleError::Engine)?;
+                }
+                LifecycleParticipant::Update(index) => {
+                    let update = updates
+                        .iter_mut()
+                        .find(|update| update.index == index)
+                        .ok_or_else(|| ModuleError::Engine(EngineError::Internal("staged update missing".to_owned())))?;
+                    let staged = update
+                        .staged
+                        .take()
+                        .ok_or_else(|| ModuleError::Engine(EngineError::Internal("staged migration missing".to_owned())))?;
+                    let package = update.package.clone();
+                    let child = self.children.get_mut(index).ok_or_else(|| {
+                        ModuleError::Engine(EngineError::Internal("update child index out of range".to_owned()))
+                    })?;
+                    child.engine.finalize_migration(committed, staged).map_err(ModuleError::Engine)?;
+                    child.package = Some(package);
+                }
+                LifecycleParticipant::Install => {}
+            }
+        }
+        // Mount the freshly-installed instances (their genesis committed above) and
+        // drop the removed ones. Removes are applied by descending index so earlier
+        // removals do not shift a later index.
+        for install in installs {
+            let PendingInstall { engine, space, name, incarnation, bindings, resolved_peers, package, pending: _ } = install;
+            self.children.push(Child {
+                space,
+                name,
+                incarnation,
+                engine,
+                bindings,
+                resolved_peers,
+                enabled: true,
+                package: Some(package),
+            });
+        }
+        removes.sort_unstable();
+        for index in removes.into_iter().rev() {
+            if index < self.children.len() {
+                self.children.remove(index);
+            }
+        }
+        Ok(result)
+    }
+
+    /// Stage a module install WITHOUT committing (§13.3/§13.10): validate the space
+    /// and instance name, resolve peers/imports, mint the incarnation and store, and
+    /// STAGE the child genesis as a [`PendingCommit`] tagged with the shared
+    /// `transaction`. The child's `$expose` must satisfy the space contract before
+    /// it may mount. The returned [`PendingInstall`] holds the loaded engine (its
+    /// genesis not yet committed); the caller commits it in the group and then mounts
+    /// it. A lifecycle install carries the package's own `$seed`/`$bundle` only — an
+    /// install-time `$config`/`$data` overlay through the builtin is a follow-on.
+    fn stage_install<G: Generators>(
+        &mut self,
+        space: &ModuleSpace,
+        name: &str,
+        definition: &str,
+        package: DecodedPackageId,
+        transaction: &TransactionId,
+        generator: &mut G,
+    ) -> Result<PendingInstall<F::Store>, ModuleError> {
+        self.check_containing_row(space)?;
+        if self.find(space, name).is_some() {
+            return Err(ModuleError::DuplicateName(name.to_owned()));
+        }
+        let bindings = AdmittedBindings::default();
+        let resolved_peers = peer::resolve(space, &bindings, &self.siblings(space))?;
+        let imports = self.child_imports(space, &bindings, &resolved_peers)?;
+        let incarnation = self.mint_incarnation(space, name);
+        let store =
+            self.factory.create(incarnation.clone()).map_err(|error| ModuleError::Engine(EngineError::Store(error)))?;
+        let (engine, pending) =
+            Engine::install_load_staged(store, definition, &bindings.config, &imports, generator, transaction.clone())
+                .map_err(|error| match error {
+                    crate::config::ConfigBindError::Mismatch(mismatch) => ModuleError::ConfigMismatch(mismatch.to_string()),
+                    crate::config::ConfigBindError::Engine(engine) => ModuleError::Engine(engine),
+                })?;
+        self.check_interface_contracts(space, &engine)?;
+        Ok(PendingInstall {
+            engine,
+            pending: Some(pending),
+            space: space.clone(),
+            name: name.to_owned(),
+            incarnation,
+            bindings,
+            resolved_peers,
+            package,
+        })
+    }
+
+    /// Whether every store a lifecycle transition touches — the root, each updated
+    /// child, each removed child, and the freshly-minted install stores (same store
+    /// type as the root) — can commit an all-or-none multi-instance transition
+    /// (§13.10). The install stores share the root's backend, so the root's
+    /// capability answers for them.
+    fn lifecycle_atomic(&self, updates: &[PendingUpdate], removes: &[usize]) -> bool {
+        if !self.root.store().multi_instance_atomic_commit() {
+            return false;
+        }
+        updates
+            .iter()
+            .map(|update| update.index)
+            .chain(removes.iter().copied())
+            .all(|index| {
+                self.children.get(index).is_some_and(|child| child.engine.store().multi_instance_atomic_commit())
+            })
+    }
+
+    /// The decoded package identity a §13.10 lifecycle op mounted or migrated the
+    /// named instance from (§5.1), or `None` for an ordinary install. A durable audit
+    /// fact re-read verbatim (never re-generated).
+    #[must_use]
+    pub fn mounted_package(&self, space: &ModuleSpace, name: &str) -> Option<&DecodedPackageId> {
+        self.find(space, name).and_then(|child| child.package.as_ref())
+    }
+
+    /// Store a `.liasse` package's bytes in the root instance's §18.3 blob storage
+    /// and return the content-addressed descriptor a `module.install`/`module.update`
+    /// mutation passes as its `blob` argument. The lifecycle handle fetches these
+    /// bytes back by content id to decode the package (§13.10).
+    pub fn store_package_blob(
+        &mut self,
+        bytes: &[u8],
+        name: Option<String>,
+    ) -> Result<BlobDescriptor, ModuleError> {
+        let sha512 = self.root.store_mut().put_blob(bytes).map_err(|error| ModuleError::Engine(EngineError::Store(error)))?;
+        Ok(BlobDescriptor::new(sha512, bytes.len() as u64, MediaType::new("application/vnd.liasse+zip"), name))
     }
 
     /// Admit `request` against the `primary` engine (the root, or an installed
