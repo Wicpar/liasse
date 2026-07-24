@@ -150,6 +150,48 @@ const ROGUE: &str = r#"{
   }
 }"#;
 
+/// A `bank` variant that declares an `$auth` actor collection and, in `consume`,
+/// RECORDS the admitting `$actor` into a receipt it exposes — so a dispatched
+/// transition reveals whether the child observed the parent's `$actor` (§13.11). The
+/// `consume` faults on an unbound `$actor`, so without propagation the transition
+/// rejects; with it, the receipt carries the parent's actor key.
+const BANK_AUTH: &str = r#"{
+  "$liasse": 1
+  "$module": "t.multi.bank@1.0.0"
+  "$model": {
+    "pools": { "$key": "id", "id": "text", "balance": "int" }
+    "accounts": { "$key": "id", "id": "text", "name": "text" }
+    "receipts": { "$key": "id", "id": "text", "who": { "$ref": "/accounts" } }
+    "credits_view": { "$view": ".pools { id, balance }" }
+    "$mut": {
+      "consume": [
+        "assert(.pools['main'].balance >= @amount, 'insufficient credits')"
+        ".pools['main'].balance = .pools['main'].balance - @amount"
+        "rec = .receipts + { id: $actor.id, who: $actor }"
+        "return { remaining: .pools['main'].balance }"
+      ]
+    }
+    "$auth": {
+      "session": {
+        "$credential": "text"
+        "$verify": "$credential"
+        "$actor": "/accounts[$proof.account]"
+      }
+    }
+  }
+  "$data": {
+    "pools": { "main": { "balance": "10" } }
+    "accounts": { "alice": { "name": "Alice" } }
+  }
+  "$expose": {
+    "credits": {
+      "$view": ".pools { id, balance }"
+      "$mut": { "consume": ".consume" }
+    }
+    "receipts": { "$view": ".receipts { id, who }" }
+  }
+}"#;
+
 fn text(value: &str) -> Value {
     Value::Text(Text::new(value))
 }
@@ -432,4 +474,50 @@ fn dispatch_to_a_non_imported_sibling_is_refused() {
     );
     assert!(child_order_ids(&host, "rogue").is_empty(), "the over-reaching order did not commit");
     assert_eq!(bank_balance(&host), int(10), "the non-imported sibling was never reached");
+}
+
+/// §13.11 actor propagation: the folded/dispatched child admits under the external
+/// request's `$actor`, so a child mutation reading `$actor` resolves the caller's
+/// identity (against the child's own actor collection) rather than an unbound actor.
+/// Here the root `buy` carries `$actor = alice` and dispatches `#bank.consume`; the
+/// bank records a receipt whose `who` is the propagated actor.
+#[test]
+fn dispatched_child_observes_the_parents_actor() {
+    let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
+    let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
+    host.install(&space(), InstallRequest::new("bank", BANK_AUTH), &mut generator())
+        .expect("the bank child installs");
+
+    let request = CallRequest::new("buy").arg("id", text("o1")).arg("cost", int(4)).actor(text("alice"));
+    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+
+    assert!(
+        matches!(outcome, CallOutcome::Committed { .. }),
+        "the child bound the propagated `$actor` and committed: {outcome:?}"
+    );
+    // The dispatched child recorded the PARENT's actor key in its receipt.
+    let receipts = host.interface_read(&space(), "bank", "receipts").expect("read").expect("receipts exposed");
+    let who = receipts.rows()[0].field("who").expect("who is projected");
+    assert_eq!(who, &text("alice"), "the child observed the parent's `$actor` (alice)");
+}
+
+/// §13.11 fail-closed contrast: the SAME dispatch with NO actor bound leaves the
+/// child's `$actor` unbound, so its `$actor`-reading mutation faults and the whole
+/// transition rejects — proving the child genuinely reads the propagated identity
+/// (the commit above was not vacuous).
+#[test]
+fn dispatched_child_without_actor_faults_closed() {
+    let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
+    let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
+    host.install(&space(), InstallRequest::new("bank", BANK_AUTH), &mut generator())
+        .expect("the bank child installs");
+
+    let request = CallRequest::new("buy").arg("id", text("o1")).arg("cost", int(4));
+    let outcome = host.call_multi(&request, &mut generator()).expect("no engine fault");
+
+    assert!(
+        matches!(outcome, CallOutcome::Rejected(_)),
+        "an unbound `$actor` in the reached child fails closed and rejects the transition: {outcome:?}"
+    );
+    assert!(root_order_ids(&host).is_empty(), "nothing committed");
 }

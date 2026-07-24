@@ -85,6 +85,14 @@ struct MultiCoordinator<'a, S: InstanceStore, G: Generators> {
     children: &'a [Child<S>],
     generator: RefCell<&'a mut G>,
     scratch: RefCell<BTreeMap<usize, StagedChange>>,
+    /// §13.11: the external request's established `$actor`/`$session` identity.
+    /// Module execution introduces no new actor — every cross-engine dispatch
+    /// carries the caller's, matching how §8.11 internal calls preserve them — so a
+    /// reached child mutation reading `$actor`/`$session` resolves the SAME identity
+    /// the transition was admitted under (against the child's own actor/session
+    /// collection), never an unbound actor.
+    actor: Option<Value>,
+    session: Option<Value>,
 }
 
 impl<S: InstanceStore, G: Generators> MultiCoordinator<'_, S, G> {
@@ -165,6 +173,17 @@ impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, '_, S, G> {
                 )
             })?;
         let mut request = CallRequest::new(private);
+        // §13.11: the reached child admits under the transition's established
+        // identity — module execution creates no new actor, it preserves the
+        // caller's, so a child mutation reading `$actor`/`$session` resolves the same
+        // identity (against its own actor/session collection) rather than admitting
+        // unbound.
+        if let Some(actor) = &self.coordinator.actor {
+            request = request.actor(actor.clone());
+        }
+        if let Some(session) = &self.coordinator.session {
+            request = request.session(session.clone());
+        }
         for (name, value) in args {
             request = request.arg(name, value);
         }
@@ -657,6 +676,9 @@ impl<F: StoreFactory> ModuleHost<F> {
                 children: &self.children,
                 generator: RefCell::new(generator),
                 scratch: RefCell::new(BTreeMap::new()),
+                // §13.11: carry the external request's identity into every dispatch.
+                actor: request.actor_key().cloned(),
+                session: request.session_key().cloned(),
             };
             let staged = {
                 // The primary holds a handle scoped to ITSELF, so its `#handle`
