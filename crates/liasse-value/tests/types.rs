@@ -79,3 +79,44 @@ fn struct_key_eligibility_follows_its_fields() {
     ]));
     assert!(!has_optional_field.is_key_eligible());
 }
+
+#[test]
+fn every_value_type_today_is_copyable() {
+    // SPEC §8.5: no move-only type exists yet, so every constructible value type is
+    // copyable — `=` may duplicate it. This pins the baseline the forthcoming
+    // move-only `module` type will break by returning `false` from `is_copyable`.
+    let scalars = [
+        Type::Text,
+        Type::Bool,
+        Type::Int,
+        Type::Decimal,
+        Type::Bytes,
+        Type::Uuid,
+        Type::Date,
+        Type::timestamp(),
+        Type::Duration,
+        Type::Period,
+        Type::Json,
+        Type::Blob,
+        Type::Ref(RefTarget::Scalar(Box::new(Type::Uuid))),
+    ];
+    for ty in scalars {
+        assert!(ty.is_copyable(), "{} must be copyable today", ty.name());
+    }
+}
+
+#[test]
+fn compound_copyability_delegates_to_components() {
+    // A struct, set, map, optional, and view are copyable exactly when their
+    // components are — the delegation that will make any container of a future
+    // move-only value move-only automatically.
+    let struct_of_copyables = Type::Struct(StructType::new([
+        ("name".to_owned(), Type::Text),
+        ("count".to_owned(), Type::Int),
+    ]));
+    assert!(struct_of_copyables.is_copyable());
+    assert!(Type::Set(Box::new(Type::Uuid)).is_copyable());
+    assert!(Type::Map(Box::new(Type::Text), Box::new(Type::Int)).is_copyable());
+    assert!(Type::Optional(Box::new(Type::Decimal)).is_copyable());
+    assert!(Type::View(Box::new(Type::Text)).is_copyable());
+}

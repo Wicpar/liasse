@@ -171,4 +171,42 @@ impl Type {
             | Self::View(_) => false,
         }
     }
+
+    /// SPEC §8.5 copyability: whether `=` may COPY a value of this type. A copyable
+    /// value duplicates freely; a **move-only** (affine) value never duplicates and
+    /// is only transferred with the move operator `<-`/`->`.
+    ///
+    /// Every value type Liasse has today is copyable — scalars, immutable content
+    /// and identity references (`blob`, `ref`), enums, and structs, sets, maps,
+    /// optionals, and views built from copyable values. Compound types delegate to
+    /// their components, so this method is the single classification hook a
+    /// forthcoming move-only type opts into: a `module` value (a later task) owns
+    /// live mutable state, so when its `Type` variant is added its arm here returns
+    /// `false`, and any struct, set, map, optional, or view carrying one then
+    /// reports move-only automatically. The scalar arms are enumerated (no
+    /// wildcard) precisely so that adding that variant is a compile error until its
+    /// copyability is decided here.
+    #[must_use]
+    pub fn is_copyable(&self) -> bool {
+        match self {
+            Self::Text
+            | Self::Bool
+            | Self::Int
+            | Self::Decimal
+            | Self::Bytes
+            | Self::Uuid
+            | Self::Date
+            | Self::Timestamp(_)
+            | Self::Duration
+            | Self::Period
+            | Self::Json
+            | Self::Blob
+            | Self::Enum(_)
+            | Self::Ref(_) => true,
+            Self::Optional(inner) | Self::Set(inner) | Self::View(inner) => inner.is_copyable(),
+            Self::Map(key, value) => key.is_copyable() && value.is_copyable(),
+            Self::Struct(fields) => fields.fields().all(|(_, ty)| ty.is_copyable()),
+            Self::Composite(components) => components.iter().all(|(_, ty)| ty.is_copyable()),
+        }
+    }
 }
