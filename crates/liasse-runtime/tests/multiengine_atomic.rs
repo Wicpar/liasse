@@ -84,6 +84,32 @@ const BANK: &str = r#"{
   }
 }"#;
 
+/// A `shop` module whose EXPOSED `place` mutation inserts its own order and then
+/// reaches the `bank` peer's `consume` in the same transition (§13.10). Dispatching
+/// it through `interface_call` exercises the child-transition FOLD: the shop's
+/// transition and the bank's meter spend commit together or none do.
+const SHOP: &str = r#"{
+  "$liasse": 1
+  "$module": "t.multi.shop@1.0.0"
+  "$model": {
+    "orders": { "$key": "id", "id": "text", "cost": "int" }
+    "orders_view": { "$view": ".orders { id, cost }" }
+    "$mut": {
+      "place": [
+        "o = .orders + { id: @id, cost: @cost }"
+        "r = #bank.consume({ amount: @cost })"
+        "return o { id }"
+      ]
+    }
+  }
+  "$expose": {
+    "orders": {
+      "$view": ".orders { id, cost }"
+      "$mut": { "place": ".place" }
+    }
+  }
+}"#;
+
 fn text(value: &str) -> Value {
     Value::Text(Text::new(value))
 }
@@ -113,6 +139,26 @@ fn bank_balance(host: &ModuleHost<MemoryStoreFactory>) -> Value {
         .expect("credits is exposed");
     let row = &view.rows()[0];
     row.field("balance").expect("balance is projected").clone()
+}
+
+/// A host with `bank` and `shop` children installed in `acme`'s module space.
+fn host_with_shop_and_bank() -> ModuleHost<MemoryStoreFactory> {
+    let mut host = host_with_bank();
+    host.install(&space(), InstallRequest::new("shop", SHOP), &mut generator())
+        .expect("the shop child installs");
+    host
+}
+
+/// The order ids committed in a named child instance's exposed `orders` interface.
+fn child_order_ids(host: &ModuleHost<MemoryStoreFactory>, name: &str) -> Vec<String> {
+    let view = host.interface_read(&space(), name, "orders").expect("read").expect("orders is exposed");
+    view.rows()
+        .iter()
+        .map(|row| match row.field("id").expect("id is projected") {
+            Value::Text(t) => t.as_str().to_owned(),
+            other => panic!("id is not text: {other:?}"),
+        })
+        .collect()
 }
 
 /// The root order ids currently committed.
@@ -204,4 +250,46 @@ fn child_reject_rejects_the_whole_parent_transition() {
     );
     assert_eq!(bank_balance(&host), int(10), "the child meter is unchanged");
     assert!(root_order_ids(&host).is_empty(), "the parent's order insert did not commit");
+}
+
+/// §13.10 fold: an `interface_call` on a child whose exposed mutation reaches a peer
+/// folds the two transitions into ONE atomic commit — the shop order and the bank
+/// meter spend commit together.
+#[test]
+fn interface_call_folds_a_peer_reaching_child_transition() {
+    let mut host = host_with_shop_and_bank();
+    assert_eq!(bank_balance(&host), int(10));
+
+    let request = CallRequest::new("place").arg("id", text("s1")).arg("cost", int(3));
+    let outcome = host
+        .interface_call(&space(), "shop", "orders", "place", &request, &mut generator())
+        .expect("no engine fault");
+
+    assert!(
+        matches!(outcome, CallOutcome::Committed { .. }),
+        "the folded shop+bank transition commits: {outcome:?}"
+    );
+    assert_eq!(child_order_ids(&host, "shop"), vec!["s1".to_owned()], "the shop order committed");
+    assert_eq!(bank_balance(&host), int(7), "the bank meter spend committed (10 - 3)");
+}
+
+/// §13.10 fold: when the reached peer rejects, the child's own transition rejects
+/// with it — the shop order does not commit either.
+#[test]
+fn interface_call_fold_rejects_when_the_peer_rejects() {
+    let mut host = host_with_shop_and_bank();
+    assert_eq!(bank_balance(&host), int(10));
+
+    // cost 20 > balance 10: the bank peer's `consume` assertion fails.
+    let request = CallRequest::new("place").arg("id", text("s1")).arg("cost", int(20));
+    let outcome = host
+        .interface_call(&space(), "shop", "orders", "place", &request, &mut generator())
+        .expect("no engine fault");
+
+    assert!(
+        matches!(outcome, CallOutcome::Rejected(_)),
+        "the peer's over-spend rejects the whole folded transition: {outcome:?}"
+    );
+    assert!(child_order_ids(&host, "shop").is_empty(), "the shop order did not commit");
+    assert_eq!(bank_balance(&host), int(10), "the bank meter is unchanged");
 }

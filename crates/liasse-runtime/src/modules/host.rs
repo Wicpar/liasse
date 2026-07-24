@@ -52,6 +52,15 @@ impl<S> Child<S> {
     }
 }
 
+/// The engine a folded transition (§13.10) admits its top-level request against —
+/// the root application, or an installed child addressed through its interface. The
+/// reached instances (each a `#handle.mutation` dispatch) are always children.
+#[derive(Clone, Copy)]
+enum Primary {
+    Root,
+    Child(usize),
+}
+
 /// One reached child instance's staged change within a multi-engine transition
 /// (§13.10): which installed child it belongs to (its index in `children`) and the
 /// validated change to commit together with the parent.
@@ -458,12 +467,18 @@ impl<F: StoreFactory> ModuleHost<F> {
 
     /// Dispatch an interface-addressed mutation to a child's `$expose`d mutation
     /// (§13.10): resolve `interface.mutation` on the enabled instance in `space` to
-    /// the private mutation it binds and admit it against the child atomically,
-    /// returning the child mutation's response (the §13.8 `$return` shape). This is
-    /// the "a parent routes a call to a child's exposed mutation" boundary; the
-    /// binding must be a simple root-mutation reference (`.create_template`) — a
-    /// row-scoped or inline binding, and folding the child transition into the same
-    /// atomic *parent* transition (§13.10/§13.11), remain documented seams.
+    /// the private mutation it binds and admit it against the child, returning the
+    /// child mutation's response (the §13.8 `$return` shape). This is the "a parent
+    /// routes a call to a child's exposed mutation" boundary.
+    ///
+    /// The child transition is admitted as a FOLDED transition (§13.10): the child
+    /// program runs with a dispatch handle over the installed instances, so a
+    /// `#handle.mutation(...)` it reaches stages that instance into the SAME atomic
+    /// commit — the child transition and every instance it reaches commit together
+    /// or none do. A child that reaches no other instance commits on its own,
+    /// exactly the single-engine admission as before. The bare `.create_template`
+    /// root-mutation binding is folded here; a row-scoped binding remains a
+    /// documented seam, and the inline / parent-surface bindings commit standalone.
     ///
     /// # Errors
     /// [`ModuleError::Unknown`]/[`ModuleError::Disabled`] for an absent or disabled
@@ -480,12 +495,17 @@ impl<F: StoreFactory> ModuleHost<F> {
         generator: &mut G,
     ) -> Result<CallOutcome, ModuleError> {
         let child = self.enabled_child(space, name)?;
-        // §13.8: an exposed mutation binding a private child mutation (`.create`)
-        // routes to the child engine.
+        // §13.8/§13.10: an exposed mutation binding a private child mutation
+        // (`.create`) routes to the child engine. It is admitted as a FOLDED
+        // transition: the child program runs with a dispatch handle over the
+        // installed instances, so a `#handle.mutation(...)` it makes stages that
+        // instance into the SAME atomic commit (the child transition folds with the
+        // reached ones). A child that reaches no other instance commits on its own —
+        // exactly the single-engine admission as before the fold seam was filled.
         if let Some(child_mutation) = child.engine.exposed_mutation(interface, mutation) {
+            let index = self.enabled_child_index(space, name)?;
             let routed = request.clone().with_mutation(child_mutation);
-            let child = self.enabled_child_mut(space, name)?;
-            return child.engine.call(&routed, generator).map_err(ModuleError::Engine);
+            return self.admit_folding(Primary::Child(index), &routed, generator);
         }
         // §13.4: an exposed mutation binding a parent surface (`#company.rename(…)`)
         // delegates to the parent capability, whose effect lands on the parent row
@@ -536,8 +556,27 @@ impl<F: StoreFactory> ModuleHost<F> {
         request: &CallRequest,
         generator: &mut G,
     ) -> Result<CallOutcome, ModuleError> {
-        // Draw the parent's admission seed before lending the generator for child
-        // seeds, so parent and each child draw distinct generation streams.
+        self.admit_folding(Primary::Root, request, generator)
+    }
+
+    /// Admit `request` against the `primary` engine (the root, or an installed
+    /// child) as a transition that MAY reach further installed instances (§13.10).
+    ///
+    /// The primary program runs with a dispatch handle lent over the installed
+    /// children, so a `#handle.mutation(args)` it makes stages that child into a
+    /// shared scratch. If it reached NO other engine, the primary commits on its own
+    /// — an ordinary single-engine admission, valid on any store. If it DID, the
+    /// primary and every reached engine fold into one all-or-none commit under a
+    /// shared transaction (the store-agnostic guard refuses a durable backend that
+    /// cannot commit multi-instance atomically — the deferred follow-up).
+    fn admit_folding<G: Generators>(
+        &mut self,
+        primary: Primary,
+        request: &CallRequest,
+        generator: &mut G,
+    ) -> Result<CallOutcome, ModuleError> {
+        // Draw the primary's admission seed before lending the generator for child
+        // seeds, so the primary and each reached child draw distinct streams.
         let seed = generator.next_seed();
         let (staged, children) = {
             let handle = MultiDispatch {
@@ -545,30 +584,88 @@ impl<F: StoreFactory> ModuleHost<F> {
                 generator: RefCell::new(generator),
                 scratch: RefCell::new(Vec::new()),
             };
-            let staged = self
-                .root
+            let engine = self.primary_engine(primary)?;
+            let staged = engine
                 .stage_admission(request, Vec::new(), BlobBacking::External, seed, Some(&handle as &dyn Dispatch))
                 .map_err(ModuleError::Engine)?;
             (staged, handle.scratch.into_inner())
         };
         match staged {
             StagedAdmission::Rejected(rejection) => Ok(CallOutcome::Rejected(rejection)),
-            StagedAdmission::Unchanged { response } => self.commit_multi(None, response, children, seed),
-            StagedAdmission::Changed(change) => self.commit_multi(Some(change), None, children, seed),
+            StagedAdmission::Unchanged { response } if children.is_empty() => {
+                Ok(CallOutcome::Unchanged { response })
+            }
+            // A primary that changed nothing but reached a child that DID still folds.
+            StagedAdmission::Unchanged { response } => {
+                self.commit_folded(primary, None, response, children, seed)
+            }
+            // A single-engine change (reached no other engine) commits on its own —
+            // the pre-fold behaviour, valid on any store.
+            StagedAdmission::Changed(change) if children.is_empty() => {
+                self.commit_primary(primary, change, None)
+            }
+            StagedAdmission::Changed(change) => {
+                self.commit_folded(primary, Some(change), None, children, seed)
+            }
         }
     }
 
-    /// Commit a staged multi-engine transition all-or-none (§13.10).
+    /// The engine a [`Primary`] designates, borrowed immutably for staging.
+    fn primary_engine(&self, primary: Primary) -> Result<&Engine<F::Store>, ModuleError> {
+        match primary {
+            Primary::Root => Ok(&self.root),
+            Primary::Child(index) => self
+                .children
+                .get(index)
+                .map(|child| &child.engine)
+                .ok_or_else(|| ModuleError::Engine(EngineError::Internal("primary child index out of range".to_owned()))),
+        }
+    }
+
+    /// Commit one [`Primary`]'s staged change to its own store, tagging it with
+    /// `transaction` when it is one participant of a folded multi-engine commit.
+    fn commit_primary(
+        &mut self,
+        primary: Primary,
+        change: StagedChange,
+        transaction: Option<TransactionId>,
+    ) -> Result<CallOutcome, ModuleError> {
+        match primary {
+            Primary::Root => self.root.commit_staged(change, transaction).map_err(ModuleError::Engine),
+            Primary::Child(index) => {
+                let child = self.children.get_mut(index).ok_or_else(|| {
+                    ModuleError::Engine(EngineError::Internal("primary child index out of range".to_owned()))
+                })?;
+                child.engine.commit_staged(change, transaction).map_err(ModuleError::Engine)
+            }
+        }
+    }
+
+    /// Whether the store of a [`Primary`] can commit a multi-instance transition
+    /// atomically (§13.10) — the in-memory reference does; a durable backend does
+    /// not until it implements a shared-transaction two-phase commit.
+    fn primary_atomic(&self, primary: Primary) -> bool {
+        match primary {
+            Primary::Root => self.root.store().multi_instance_atomic_commit(),
+            Primary::Child(index) => self
+                .children
+                .get(index)
+                .is_some_and(|child| child.engine.store().multi_instance_atomic_commit()),
+        }
+    }
+
+    /// Commit a folded multi-engine transition all-or-none (§13.10).
     ///
     /// Every participant was already staged and validated, so committing here does
-    /// not re-run admission. The store-agnostic all-or-none guard first refuses if
-    /// any touched store cannot commit a multi-instance transition atomically (the
-    /// durable follow-up), rather than commit some instances and not others. On the
+    /// not re-run admission. The store-agnostic guard first refuses if any touched
+    /// store cannot commit a multi-instance transition atomically (the durable
+    /// follow-up), rather than commit some instances and not others. On the
     /// in-memory store — single-writer, in-process, a validated commit cannot fail —
-    /// committing the root then each child in turn under one shared transaction is
-    /// indivisible in practice. The response is the root program's own `return`.
-    fn commit_multi(
+    /// committing the primary then each reached child under one shared transaction is
+    /// indivisible in practice. The response is the primary program's own `return`.
+    fn commit_folded(
         &mut self,
+        primary: Primary,
         parent: Option<StagedChange>,
         unchanged_response: Option<ResponseValue>,
         children: Vec<StagedChild>,
@@ -582,7 +679,7 @@ impl<F: StoreFactory> ModuleHost<F> {
         // store supports it. A durable backend that needs a shared-transaction
         // two-phase commit does not (the default), so refuse loudly rather than
         // fake atomicity by committing some instances and not others.
-        let atomic = self.root.store().multi_instance_atomic_commit()
+        let atomic = self.primary_atomic(primary)
             && children.iter().all(|child| {
                 self.children
                     .get(child.index)
@@ -599,12 +696,10 @@ impl<F: StoreFactory> ModuleHost<F> {
         // §19.1: one shared transaction identity tags every touched instance's
         // commit, so audit/replay reads them as one atomic cross-instance grouping.
         let transaction = TransactionId::new(format!("{}::xtx::{seed}", self.root.instance().as_str()));
-        // Commit the root first (its outcome, with the program's `return`, is the
+        // Commit the primary first (its outcome, with the program's `return`, is the
         // transition's outcome), then each reached child, all under `transaction`.
         let outcome = match parent {
-            Some(change) => {
-                self.root.commit_staged(change, Some(transaction.clone())).map_err(ModuleError::Engine)?
-            }
+            Some(change) => self.commit_primary(primary, change, Some(transaction.clone()))?,
             None => CallOutcome::Unchanged { response: unchanged_response },
         };
         for child in children {
@@ -968,6 +1063,20 @@ impl<F: StoreFactory> ModuleHost<F> {
             Ok(child)
         } else {
             Err(ModuleError::Disabled(name.to_owned()))
+        }
+    }
+
+    /// The index of the enabled child instance in `space` named `name`, for a folded
+    /// admission that commits it as the transition primary (§13.10).
+    fn enabled_child_index(&self, space: &ModuleSpace, name: &str) -> Result<usize, ModuleError> {
+        let index = self
+            .children
+            .iter()
+            .position(|child| child.is(space, name))
+            .ok_or_else(|| ModuleError::Unknown(name.to_owned()))?;
+        match self.children.get(index) {
+            Some(child) if child.enabled => Ok(index),
+            _ => Err(ModuleError::Disabled(name.to_owned())),
         }
     }
 
