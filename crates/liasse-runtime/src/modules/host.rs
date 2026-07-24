@@ -808,10 +808,6 @@ impl<F: StoreFactory> ModuleHost<F> {
         children: Vec<StagedChild>,
         seed: u64,
     ) -> Result<CallOutcome, ModuleError> {
-        if parent.is_none() && children.is_empty() {
-            // Nothing anywhere changed — a query-shaped transition (§8.9).
-            return Ok(CallOutcome::Unchanged { response: unchanged_response });
-        }
         // §13.10 store-agnostic seam: only commit all-or-none when every touched
         // store supports it. A durable backend that needs a shared-transaction
         // two-phase commit does not (the default), so refuse loudly rather than
