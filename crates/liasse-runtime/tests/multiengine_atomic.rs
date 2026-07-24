@@ -13,9 +13,14 @@
 //! - a child dispatch that over-spends its meter rejects the WHOLE parent
 //!   transition (the parent's own order insert never commits).
 //!
-//! These prove the in-memory coordinator's atomicity directly; the corpus
-//! `cross-module-atomic-transition` case stays debt-gated because the store gate is
-//! shared with PostgreSQL, whose multi-instance commit is the deferred follow-up.
+//! These prove the in-memory coordinator's atomicity directly, INCLUDING the
+//! canonical §13.10 form — an in-program `$use` peer-alias dispatch (`#credits`,
+//! resolved through the caller's §13.5 peer bindings, not a raw instance name) —
+//! which commits atomically with the caller on memory. The corpus
+//! `cross-module-atomic-transition` case stays debt-gated (the shared memory+PG
+//! gate): its peer alias now resolves, but the scenario adapter forwards its
+//! child-mutation argument untyped and the durable PostgreSQL multi-instance commit
+//! is the deferred Part-B follow-up.
 
 mod support;
 
@@ -91,12 +96,41 @@ const BANK: &str = r#"{
 }"#;
 
 /// A `shop` module whose EXPOSED `place` mutation inserts its own order and then
-/// reaches the `bank` peer's `consume` in the same transition (§13.10). Dispatching
-/// it through `interface_call` exercises the child-transition FOLD: the shop's
-/// transition and the bank's meter spend commit together or none do.
+/// reaches the bank through the CANONICAL §13.5 `$use` peer alias `credits` — a
+/// handle name DISTINCT from the installed instance name (`bank`), so the dispatch
+/// exercises peer-alias resolution, not a raw instance-name match. Dispatching it
+/// through `interface_call` exercises the child-transition FOLD: the shop's
+/// transition and the bank's meter spend commit together or none do (§13.10).
 const SHOP: &str = r#"{
   "$liasse": 1
   "$module": "t.multi.shop@1.0.0"
+  "$use": { "credits": "t.multi.bank/credits@1" }
+  "$model": {
+    "orders": { "$key": "id", "id": "text", "cost": "int" }
+    "orders_view": { "$view": ".orders { id, cost }" }
+    "$mut": {
+      "place": [
+        "o = .orders + { id: @id, cost: @cost }"
+        "r = #credits.consume({ amount: @cost })"
+        "return o { id }"
+      ]
+    }
+  }
+  "$expose": {
+    "orders": {
+      "$view": ".orders { id, cost }"
+      "$mut": { "place": ".place" }
+    }
+  }
+}"#;
+
+/// A `rogue` module whose EXPOSED `place` mutation hard-codes `#bank.consume` even
+/// though it declares NO `$use` import for it — an over-reach at a non-imported
+/// sibling by raw instance name. §13.10 import scope must refuse the dispatch loudly
+/// rather than let it reach the sibling.
+const ROGUE: &str = r#"{
+  "$liasse": 1
+  "$module": "t.multi.rogue@1.0.0"
   "$model": {
     "orders": { "$key": "id", "id": "text", "cost": "int" }
     "orders_view": { "$view": ".orders { id, cost }" }
@@ -147,11 +181,22 @@ fn bank_balance(host: &ModuleHost<MemoryStoreFactory>) -> Value {
     row.field("balance").expect("balance is projected").clone()
 }
 
-/// A host with `bank` and `shop` children installed in `acme`'s module space.
+/// A host with `bank` and `shop` children installed in `acme`'s module space. The
+/// shop declares its `credits` peer against the bank (§13.5), so `#credits` resolves
+/// to the bank instance at dispatch.
 fn host_with_shop_and_bank() -> ModuleHost<MemoryStoreFactory> {
     let mut host = host_with_bank();
-    host.install(&space(), InstallRequest::new("shop", SHOP), &mut generator())
+    host.install(&space(), InstallRequest::new("shop", SHOP).use_handle("credits", "t.multi.bank/credits@1"), &mut generator())
         .expect("the shop child installs");
+    host
+}
+
+/// A host with `bank` and a `rogue` child that hard-codes `#bank` without declaring
+/// it under `$use` (§13.10 import-scope over-reach).
+fn host_with_rogue_and_bank() -> ModuleHost<MemoryStoreFactory> {
+    let mut host = host_with_bank();
+    host.install(&space(), InstallRequest::new("rogue", ROGUE), &mut generator())
+        .expect("the rogue child installs (its over-reach is caught at dispatch, not install)");
     host
 }
 
@@ -338,4 +383,53 @@ fn interface_call_fold_rejects_when_the_peer_rejects() {
     );
     assert!(child_order_ids(&host, "shop").is_empty(), "the shop order did not commit");
     assert_eq!(bank_balance(&host), int(10), "the bank meter is unchanged");
+}
+
+/// §13.10 canonical form: an in-program `$use` PEER-ALIAS dispatch (`#credits`, a
+/// handle name DISTINCT from the installed instance name `bank`) resolves through
+/// the caller's §13.5 peer bindings to the bank instance and commits atomically with
+/// the caller — the exact form §13.10's own example uses, proven on the in-memory
+/// store. Before the peer-alias fix, `#credits` matched no installed child NAME and
+/// the dispatch rejected as "no reachable module instance".
+#[test]
+fn peer_alias_dispatch_resolves_to_the_peer_and_commits_atomically() {
+    let mut host = host_with_shop_and_bank();
+    assert_eq!(bank_balance(&host), int(10), "the bank starts with 10 credits");
+    assert!(child_order_ids(&host, "shop").is_empty(), "no shop order before the transition");
+
+    let request = CallRequest::new("place").arg("id", text("s1")).arg("cost", int(4));
+    let outcome = host
+        .interface_call(&space(), "shop", "orders", "place", &request, &mut generator())
+        .expect("no engine fault");
+
+    assert!(
+        matches!(outcome, CallOutcome::Committed { .. }),
+        "the canonical `#credits` peer-alias transition commits atomically on memory: {outcome:?}"
+    );
+    // The alias `credits` resolved to the `bank` instance: its meter spend committed
+    // together with the caller's own order — one atomic cross-module transition.
+    assert_eq!(child_order_ids(&host, "shop"), vec!["s1".to_owned()], "the caller's order committed");
+    assert_eq!(bank_balance(&host), int(6), "the aliased peer's meter spend committed (10 - 4)");
+}
+
+/// §13.10 import scope: a module that hard-codes `#bank` on a sibling it never
+/// declared under `$use` is refused LOUDLY at dispatch — it cannot over-reach a
+/// non-imported sibling by raw instance name, so neither its own order nor the
+/// bank's meter changes.
+#[test]
+fn dispatch_to_a_non_imported_sibling_is_refused() {
+    let mut host = host_with_rogue_and_bank();
+    assert_eq!(bank_balance(&host), int(10));
+
+    let request = CallRequest::new("place").arg("id", text("r1")).arg("cost", int(3));
+    let outcome = host
+        .interface_call(&space(), "rogue", "orders", "place", &request, &mut generator())
+        .expect("no engine fault");
+
+    assert!(
+        matches!(outcome, CallOutcome::Rejected(_)),
+        "reaching a non-imported sibling is refused (import scope): {outcome:?}"
+    );
+    assert!(child_order_ids(&host, "rogue").is_empty(), "the over-reaching order did not commit");
+    assert_eq!(bank_balance(&host), int(10), "the non-imported sibling was never reached");
 }

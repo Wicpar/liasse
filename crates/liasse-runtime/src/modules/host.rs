@@ -70,14 +70,9 @@ struct StagedChild {
     change: StagedChange,
 }
 
-/// The cross-instance dispatch handle the coordinator lends into a multi-engine
-/// transition (§13.10). It resolves `#handle.mutation(args)` to an installed child
-/// by name, stages that child's exposed mutation into the shared `scratch`, and
-/// returns the child mutation's `$return` to the caller. Each staged child joins
-/// the parent's atomic commit; a rejected child dispatch is an `Err` that unwinds
-/// the whole parent transition, so nothing commits. Every reached engine is
-/// borrowed only immutably here (staging is read-only), so the parent and every
-/// child stage side by side; the coordinator commits them mutably afterwards.
+/// The shared state a multi-engine transition threads across every reached engine
+/// (§13.10): the installed children, the generator lent for each engine's seed, and
+/// the running staged change accumulated per reached engine.
 ///
 /// The `scratch` accumulates ONE running staged change per reached engine, keyed
 /// by its index in `children`: a repeat dispatch to an engine already touched this
@@ -86,26 +81,77 @@ struct StagedChild {
 /// engine's cross-row invariants are validated once over the composed change and
 /// committed once — never two independent stages that each read committed state and
 /// silently clobber.
-struct MultiDispatch<'a, S: InstanceStore, G: Generators> {
+struct MultiCoordinator<'a, S: InstanceStore, G: Generators> {
     children: &'a [Child<S>],
     generator: RefCell<&'a mut G>,
     scratch: RefCell<BTreeMap<usize, StagedChange>>,
 }
 
-impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, S, G> {
+impl<S: InstanceStore, G: Generators> MultiCoordinator<'_, S, G> {
+    /// Resolve `#handle` in `caller`'s import scope to a reachable (enabled) child
+    /// index (§13.5/§13.10). The ROOT reaches its own installed children by instance
+    /// name (§13.9). A CHILD reaches ONLY the peers it declared under `$use`,
+    /// resolved through its `resolved_peers` (§13.5) to the concrete enabled sibling
+    /// in the same space — a handle it does not import is refused LOUDLY (import
+    /// scope, §13.10 property 3), so it can never over-reach a sibling by raw name.
+    fn resolve(&self, caller: Primary, handle: &str) -> Result<usize, Rejection> {
+        match caller {
+            Primary::Root => self
+                .children
+                .iter()
+                .position(|child| child.enabled && child.name == handle)
+                .ok_or_else(|| unreachable_handle(handle)),
+            Primary::Child(index) => {
+                let caller = self.children.get(index).ok_or_else(|| {
+                    Rejection::new(RejectionReason::Malformed, "the dispatching module instance is no longer installed")
+                })?;
+                // §13.5: `#handle` MUST be one of this module's declared `$use` peers.
+                let Some(peer) = caller.resolved_peers.iter().find(|peer| peer.handle == handle) else {
+                    return Err(Rejection::new(
+                        RejectionReason::Malformed,
+                        format!(
+                            "`#{handle}` is not a `$use` import of this module, so its mutation cannot be \
+                             reached across the boundary (§13.5/§13.10 import scope)"
+                        ),
+                    ));
+                };
+                // §13.5: an optional peer that resolved absent binds no instance.
+                let Some(sibling) = peer.instance.as_deref() else {
+                    return Err(Rejection::new(
+                        RejectionReason::Malformed,
+                        format!("optional peer `#{handle}` resolved absent, so no instance can be dispatched (§13.5)"),
+                    ));
+                };
+                self.children
+                    .iter()
+                    .position(|child| child.enabled && child.space == caller.space && child.name == sibling)
+                    .ok_or_else(|| unreachable_handle(handle))
+            }
+        }
+    }
+}
+
+/// The cross-instance dispatch handle lent into ONE engine's running program
+/// (§13.10), scoped to that engine as the `caller`: a `#handle.mutation(args)` it
+/// makes resolves `handle` in the caller's import scope (§13.5), stages the reached
+/// instance's exposed mutation into the shared coordinator's `scratch`, and returns
+/// the child mutation's `$return`. Each reached engine is lent its OWN handle (with
+/// itself as `caller`) so nested dispatch resolves against the reached module's
+/// imports, not the originator's. A rejected dispatch is an `Err` that unwinds the
+/// whole parent transition, so nothing commits.
+struct MultiDispatch<'a, 'c, S: InstanceStore, G: Generators> {
+    coordinator: &'c MultiCoordinator<'a, S, G>,
+    /// The engine whose program holds this handle — the import scope `#handle`
+    /// resolves against.
+    caller: Primary,
+}
+
+impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, '_, S, G> {
     fn dispatch(&self, handle: &str, mutation: &str, args: Vec<(String, Value)>) -> Result<Cell, Rejection> {
-        // §13.10: resolve the import handle to a reachable (enabled) child instance.
-        let (index, child) = self
-            .children
-            .iter()
-            .enumerate()
-            .find(|(_, child)| child.enabled && child.name == handle)
-            .ok_or_else(|| {
-                Rejection::new(
-                    RejectionReason::Malformed,
-                    format!("`#{handle}` resolves to no reachable module instance in this transition (§13.10)"),
-                )
-            })?;
+        // §13.5/§13.10: resolve the handle in the caller's import scope (a `$use`
+        // peer alias, or a root's own installed child), refusing an over-reach.
+        let index = self.coordinator.resolve(self.caller, handle)?;
+        let child = self.coordinator.children.get(index).ok_or_else(|| unreachable_handle(handle))?;
         // §13.8: the addressed contract resolves to the private mutation the child
         // exposes for it, across the child's exposed interfaces.
         let private = child
@@ -127,14 +173,15 @@ impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, S, G> {
         // composes on top of the running prospective (reading the earlier writes).
         // The borrow is dropped before staging, which may itself re-enter dispatch.
         let overlay: Vec<Change> =
-            self.scratch.borrow().get(&index).map_or_else(Vec::new, |change| change.changes().to_vec());
-        // Stage the child against its own (composed) state, lending THIS handle so
-        // the child may itself reach further instances in turn (§13.10). A fresh
-        // seed keeps each engine's generation stream distinct.
-        let seed = self.generator.borrow_mut().next_seed();
+            self.coordinator.scratch.borrow().get(&index).map_or_else(Vec::new, |change| change.changes().to_vec());
+        // Stage the child against its own (composed) state, lending a handle scoped
+        // to the REACHED child so it resolves its OWN `$use` peers in turn (§13.10).
+        // A fresh seed keeps each engine's generation stream distinct.
+        let seed = self.coordinator.generator.borrow_mut().next_seed();
+        let nested = MultiDispatch { coordinator: self.coordinator, caller: Primary::Child(index) };
         let staged = child
             .engine
-            .stage_admission(&request, Vec::new(), BlobBacking::External, seed, &overlay, Some(self as &dyn Dispatch))
+            .stage_admission(&request, Vec::new(), BlobBacking::External, seed, &overlay, Some(&nested as &dyn Dispatch))
             .map_err(|error| {
                 Rejection::new(
                     RejectionReason::Evaluation,
@@ -149,11 +196,21 @@ impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, S, G> {
                 let response = change.response_cell();
                 // Replace this engine's running change with the composed one, so a
                 // further dispatch reads it and the engine commits exactly once.
-                self.scratch.borrow_mut().insert(index, change);
+                self.coordinator.scratch.borrow_mut().insert(index, change);
                 Ok(response)
             }
         }
     }
+}
+
+/// The loud refusal when `#handle` resolves to no reachable enabled instance in the
+/// transition (§13.10) — an unbound peer, a disabled sibling, or a name no installed
+/// child carries.
+fn unreachable_handle(handle: &str) -> Rejection {
+    Rejection::new(
+        RejectionReason::Malformed,
+        format!("`#{handle}` resolves to no reachable module instance in this transition (§13.10)"),
+    )
 }
 
 /// A root application together with the module instances installed in its
@@ -596,18 +653,24 @@ impl<F: StoreFactory> ModuleHost<F> {
         // seeds, so the primary and each reached child draw distinct streams.
         let seed = generator.next_seed();
         let (staged, children) = {
-            let handle = MultiDispatch {
+            let coordinator = MultiCoordinator {
                 children: &self.children,
                 generator: RefCell::new(generator),
                 scratch: RefCell::new(BTreeMap::new()),
             };
-            let engine = self.primary_engine(primary)?;
-            let staged = engine
-                .stage_admission(request, Vec::new(), BlobBacking::External, seed, &[], Some(&handle as &dyn Dispatch))
-                .map_err(ModuleError::Engine)?;
+            let staged = {
+                // The primary holds a handle scoped to ITSELF, so its `#handle`
+                // resolves in its own import scope (§13.5) — the root by installed
+                // child name, a child through its `$use` peers.
+                let handle = MultiDispatch { coordinator: &coordinator, caller: primary };
+                let engine = self.primary_engine(primary)?;
+                engine
+                    .stage_admission(request, Vec::new(), BlobBacking::External, seed, &[], Some(&handle as &dyn Dispatch))
+                    .map_err(ModuleError::Engine)?
+            };
             // One running change per reached engine, in index order — a deterministic
             // commit sequence for the folded transition (§13.10).
-            let children: Vec<StagedChild> = handle
+            let children: Vec<StagedChild> = coordinator
                 .scratch
                 .into_inner()
                 .into_iter()
