@@ -2260,6 +2260,95 @@ A successful update reports its observable plan and committed result:
 
 A rejected update returns the same planning context plus diagnostics and no commit.
 
+### 13.16 Module values
+
+A `module` is a value: a unique handle to an installed module instance. A module value owns its instance — at most one handle denotes a given instance, so a `module` is **move-only** (§8.5). A module transfers by move; reading it, dispatching into it, or passing it as an argument borrows it without transferring ownership. Copying a module value with `=` is a static error, and a second handle to one instance is never created — reading a moved-from handle is a use-after-move (§8.5). When the last handle to an instance is dropped — overwritten, moved away, or removed — the instance is uninstalled and its owned subtree released (§13.12).
+
+A module value's type is its definition. A package definition is a schema, so a `module` refined by a package reference (`t.accounting@^1.2`) admits an instance of that package at a compatible version (§20.3), a `module` refined by an interface admits any instance whose definition exposes that interface (structural, §13.8), and an unrefined `module` admits any instance.
+
+#### Modules in collections
+
+Modules are held in ordinary collections. A keyed collection whose member type is `module` selects one instance by key and enumerates its instances by ordinary projection:
+
+```hjson
+"modules": { "$modules": {} }       // a module space: a collection of module values
+".modules[@id]"                     // one instance (a module value; a read borrows it)
+".modules.$keys"                    // the set of installed keys
+".modules[:m] { m.$key }"           // enumerate
+```
+
+A module reachable in state is read and dispatched through the value, reusing the module-space interface contracts (§13.8):
+
+```hjson
+".modules[@id].invoices.create({ … })"    // dispatch an exposed mutation
+"count(.modules[@id].invoices)"            // read an exposed view
+```
+
+Scope follows reach: a program names only the modules it owns (`self.modules…`) or those exposed to it (§13.8/§13.9), never another scope's private collection.
+
+#### The blob boundary
+
+`pack` and `unpack` cross between a module and a `.liasse` blob. Both are host-privileged.
+
+`pack(m, { model: @version, data: @time, history: @range })` serializes any combination of a module's three axes, each addressed by its own coordinate on the timeline: the **definition by version**, the **state by a point in time**, the **history by a time range**. Each axis is optional and defaults to the current value — current version, current state, full retained history. A coherent historical extract is time-anchored: the state at a time `@t` pairs with the model version in effect at `@t`, and the history range bounds the span carried along; addressing the three independently is admitted only when they refer to the same point or span of the timeline. Extraction is **lazy**: `pack` computes only the axes requested, never eagerly materializing an axis the result does not carry. Blob-typed fields serialize inline or by reference (`blobs: inline | ref`).
+
+`unpack(b)` reads a blob into a module value. Materialization is **deferred**: `unpack` reads no more than the operation that consumes its result requires, and decode, mount, and state reconstruction occur when the value is applied or read — never before. The non-final, not-yet-materialized nature of an unpacked handle is an internal property of the runtime, not an exposed type: the value's type is `module` (or its refinement), exactly as any other module value. A blob whose declared sizes exceed the decode bounds is refused before materialization (§18.2).
+
+#### Lifecycle through the value surface
+
+A module's lifecycle is expressed through ordinary writes plus host-privileged operations. Writing into a module collection is host-privileged; reading and dispatching are not. Every operation here drives the same runtime as the declarative `modules.install`/`modules.update`/`modules.remove` lifecycle (§13.3, §13.10): the value surface is the typed, move-checked expression of that lifecycle, not a second mechanism.
+
+**Install / override.** Moving a module value into a slot installs it, replacing any instance already there. The move consumes its source, so the installed instance keeps its single owner:
+
+```hjson
+".modules[@id] <- unpack(@package)"     // install; an occupant is dropped and uninstalled
+```
+
+**Remove.** Deleting a member drops its handle and uninstalls the instance (§13.12):
+
+```hjson
+".modules - [@id]"
+```
+
+**Move.** Moving a handle between slots relocates the instance, emptying the source:
+
+```hjson
+".modules[@to] <- .modules[@from]"
+```
+
+**Update.** `update_module(m, u, { migrate })` applies a module value `u` onto the live instance `m`, keeping `m`'s identity and appending a version (§20):
+
+- `migrate: model` migrates `m`'s schema to `u`'s definition and carries `m`'s current data forward (§20.1).
+- `migrate: model+data` additionally forwards `u`'s history and data. The two histories reconcile by lineage: when `m`'s history is an ancestor of `u`'s, the update fast-forwards to `u`'s state; when the histories have diverged, the update is refused loudly. Reconciling a divergent history is performed outside the engine — the engine offers no in-language merge.
+
+**Rollback.** `rollback_module(m, @time)` reconstructs `m`'s definition and state at `@time` from its retained history and makes them current — from history alone, requiring no package and no inverse migration. History reaches back as far as retention holds it (§18.10). A rollback **forks** the timeline: the versions after `@time` are retained and the timeline continues from `@time`; reconciling the fork is performed outside the engine.
+
+#### Provenance and atomicity
+
+Every lifecycle operation records the decoded definition identity as a fact of its commit (§5.1) and folds into the enclosing transition (§13.10): a mutation that touches several modules commits them together or rejects entirely — every touched instance advances on the transition, or none does.
+
+#### Delegation
+
+A module owning submodules delegates their lifecycle through a host-exposed procedure. The host exposes a mutation taking a `module` parameter; a submodule invokes it with a module it owns, and the host applies its policy — rate, entitlement, verification — before performing the operation. The parameter admits only a module the caller can name (structural scoping, §13.8), so a caller reaches only its own subtree.
+
+```hjson
+"provision({ at: module, package: blob })": { … }     // host interface contract
+"provision": [
+  "meter(@at)",
+  "update_module(@at, unpack(@package), { migrate: model+data })"
+]
+```
+
+#### Reconciliation with the declarative module surface
+
+The module-value model is the typed value surface over the runtime the declarative sections already define; it supersedes their spelling of the lifecycle, not their semantics:
+
+- A **module space** (`$modules`, §13.2) is a collection whose member type is `module`. Its instances are the module values selected, enumerated, and dispatched above. The `$modules` declaration remains the way a space is declared; the value model gives its members a first-class type.
+- The **install / update / remove** requests (`modules.install`, §13.3; the host-privileged lifecycle builtin, §13.10) remain the runtime that mounts, migrates, seeds, and removes an instance. The value-surface operators (`<-`, `-`, `update_module`, `rollback_module`) drive exactly that runtime; the mount, migration (§20), seed and bundle (§13.13), deletion (§13.12), and atomic-commit (§13.10) rules apply unchanged.
+- **Interfaces** (`$interfaces`/`$expose`, §13.8) remain the boundary contracts; dispatch through a module value reuses them.
+
+Rewriting §13.2–§13.3 and §13.8 to present the declarative forms purely in terms of module values is a documentation migration deferred to a later pass; until then the declarative sections and this value model describe one runtime from two vantage points.
+
 ---
 
 <a id="buckets"></a>
