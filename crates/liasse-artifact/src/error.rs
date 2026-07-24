@@ -196,6 +196,37 @@ pub enum ArtifactError {
         limit: usize,
     },
 
+    /// A single archive entry's uncompressed bytes exceed the per-entry decode
+    /// cap (§4.1 container). The central-directory declared size is
+    /// attacker-controlled and a DEFLATE member can inflate far past its
+    /// compressed bytes, so the decoder bounds the *actual* inflated bytes and
+    /// rejects an over-cap entry before it is fully materialized — closing the
+    /// decompression-bomb (zip-bomb) vector.
+    #[error("archive entry `{name}` exceeds the per-entry decode limit of {limit} bytes")]
+    EntryTooLarge {
+        /// The offending entry name.
+        name: String,
+        /// The per-entry uncompressed-byte cap that was exceeded.
+        limit: u64,
+    },
+
+    /// The total uncompressed bytes across all archive entries exceed the decode
+    /// cap (§4.1 container). Bounds the whole `.liasse` a hostile blob can inflate
+    /// to, even when no single entry alone exceeds the per-entry cap.
+    #[error("archive total uncompressed size exceeds the decode limit of {limit} bytes")]
+    ArchiveTooLarge {
+        /// The total uncompressed-byte cap that was exceeded.
+        limit: u64,
+    },
+
+    /// The archive declares more file entries than the decode cap (§4.1
+    /// container). Bounds the work and allocation an entry-padded archive forces.
+    #[error("archive declares more than the {limit} permitted entries")]
+    TooManyEntries {
+        /// The maximum permitted entry count.
+        limit: usize,
+    },
+
     /// A `name@version` package identity failed the §2.5/§4.3/E.1 grammar.
     #[error("invalid package identity: {detail}")]
     PackageIdentity {

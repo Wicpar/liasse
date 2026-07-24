@@ -30,7 +30,10 @@ thiserror = "2"
 # Tests and benches construct manifests and points directly from the identity
 # types, so the dependency is needed at the integration-test crate boundary too.
 liasse-ident = { path = "../liasse-ident" }
-zip = { version = "2.4", default-features = false }
+# `deflate` so a test can WRITE a compressed member — the decompression-bomb
+# (zip-bomb) fixture a tiny archive whose one DEFLATE entry inflates past the
+# decode caps. Reading DEFLATE is already enabled by the normal dependency.
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
 criterion = { version = "0.5", default-features = false }
 
 [[bench]]

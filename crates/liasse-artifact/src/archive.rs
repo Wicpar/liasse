@@ -22,6 +22,30 @@ use zip::{CompressionMethod, DateTime, ZipArchive, ZipWriter};
 use crate::error::ArtifactError;
 use crate::raw;
 
+/// The largest uncompressed size a single archive entry may inflate to (§4.1).
+/// A nested child module artifact is itself one entry, so this also bounds a
+/// nested `.liasse`. Generous for a package definition/state section, but firm:
+/// the *actual* inflated bytes are held under it regardless of the declared size.
+const MAX_ENTRY_UNCOMPRESSED: u64 = 32 * 1024 * 1024;
+
+/// The largest total uncompressed size across every entry of one archive (§4.1).
+/// Bounds the whole `.liasse` a hostile blob can inflate to even when no single
+/// entry exceeds the per-entry cap.
+const MAX_TOTAL_UNCOMPRESSED: u64 = 64 * 1024 * 1024;
+
+/// The largest number of file entries one archive may declare (§4.1). Rejected
+/// from the raw central-directory record count, before the ZIP is parsed. Sized
+/// generously above the ZIP64 count-overflow point (a container legitimately
+/// carries >65535 entries) yet firm enough to bound the entry structs a hostile
+/// central directory of empty records — which no size cap catches — can force.
+const MAX_ENTRY_COUNT: usize = 131_072;
+
+/// The initial per-entry read buffer: a modest, fixed hint the reader grows
+/// incrementally. The attacker-declared central-directory size is NEVER
+/// pre-allocated, so a tiny member declaring gigabytes cannot force a giant
+/// up-front allocation (nor a `capacity overflow` panic).
+const INITIAL_ENTRY_CAPACITY: usize = 16 * 1024;
+
 /// One file entry read from an archive.
 #[derive(Debug, Clone)]
 pub struct ArchiveEntry {
@@ -65,8 +89,11 @@ impl Archive {
     /// collapses two records that share a name — the duplicate-entry attack
     /// Annex D.5 rejects.
     pub fn read(bytes: &[u8]) -> Result<Self, ArtifactError> {
-        let mut seen: HashSet<&str> = HashSet::new();
         let names = raw::central_directory_names(bytes)?;
+        if names.len() > MAX_ENTRY_COUNT {
+            return Err(ArtifactError::TooManyEntries { limit: MAX_ENTRY_COUNT });
+        }
+        let mut seen: HashSet<&str> = HashSet::new();
         for name in &names {
             if name.ends_with('/') {
                 continue; // a directory marker, not a content entry
@@ -83,6 +110,7 @@ impl Archive {
             detail: e.to_string(),
         })?;
         let mut entries: Vec<ArchiveEntry> = Vec::with_capacity(zip.len());
+        let mut total: u64 = 0;
         for index in 0..zip.len() {
             let mut file = zip.by_index(index).map_err(|e| ArtifactError::NotZip {
                 detail: e.to_string(),
@@ -95,10 +123,7 @@ impl Archive {
                 return Err(ArtifactError::EntryOutsideRoot { name });
             }
             let stored = file.compression() == CompressionMethod::Stored;
-            let mut data = Vec::with_capacity(usize::try_from(file.size()).unwrap_or(0));
-            file.read_to_end(&mut data).map_err(|e| ArtifactError::NotZip {
-                detail: format!("reading entry `{name}`: {e}"),
-            })?;
+            let data = read_entry_bounded(&name, &mut file, &mut total)?;
             entries.push(ArchiveEntry { name, data, stored });
         }
         Ok(Self { entries })
@@ -121,6 +146,41 @@ impl Archive {
     pub fn get(&self, name: &str) -> Option<&ArchiveEntry> {
         self.entries.iter().find(|entry| entry.name == name)
     }
+}
+
+/// Read one archive entry, bounding the *actual* inflated bytes against a
+/// decompression bomb. The central-directory `size()` is attacker-controlled and
+/// a DEFLATE member can inflate far past its compressed bytes, so it is neither
+/// trusted nor pre-allocated: the entry is read through a [`Read::take`]-bounded
+/// reader that stops one byte past [`MAX_ENTRY_UNCOMPRESSED`], and the running
+/// `total` is held under [`MAX_TOTAL_UNCOMPRESSED`]. Either cap exceeded fails
+/// LOUDLY, having materialized at most the per-entry cap — never the declared size.
+fn read_entry_bounded(
+    name: &str,
+    reader: impl Read,
+    total: &mut u64,
+) -> Result<Vec<u8>, ArtifactError> {
+    let mut data = Vec::with_capacity(INITIAL_ENTRY_CAPACITY);
+    reader
+        .take(MAX_ENTRY_UNCOMPRESSED + 1)
+        .read_to_end(&mut data)
+        .map_err(|e| ArtifactError::NotZip {
+            detail: format!("reading entry `{name}`: {e}"),
+        })?;
+    let read = u64::try_from(data.len()).unwrap_or(u64::MAX);
+    if read > MAX_ENTRY_UNCOMPRESSED {
+        return Err(ArtifactError::EntryTooLarge {
+            name: name.to_owned(),
+            limit: MAX_ENTRY_UNCOMPRESSED,
+        });
+    }
+    *total = total.saturating_add(read);
+    if *total > MAX_TOTAL_UNCOMPRESSED {
+        return Err(ArtifactError::ArchiveTooLarge {
+            limit: MAX_TOTAL_UNCOMPRESSED,
+        });
+    }
+    Ok(data)
 }
 
 /// Whether an archive entry name escapes the artifact root: an absolute path, a
