@@ -1,0 +1,65 @@
+{
+  format: 1
+  name: string-search-needle-length-boundaries
+  suite: scenario
+  spec: ["#expressions", "§6.5"]
+  tags: ["boundary"]
+  note: '''
+    The two length boundaries §6.5 forces from its decomposition definitions,
+    with the needle supplied as state so no expectation depends on a literal
+    being special-cased:
+
+      - the EMPTY needle decomposes every subject (`s = "" ++ s`, `s = s ++ ""`,
+        `s = "" ++ "" ++ s`), so all three predicates are true — including on the
+        empty subject, where p, n and r are all empty (rows e1, e2);
+      - a needle LONGER than the subject admits no decomposition at all, so all
+        three are false (rows e3, e4); §6.5 states the contrapositive: any true
+        predicate implies size(n) <= size(s).
+
+    Row e5 is the equality boundary between them: n = s decomposes with an empty
+    p and r, so all three are true.
+
+    Empty `text` is used only as a FIELD value, never as a `$key` (an empty text
+    key is refused, §D.2), so the boundary under test is the predicate's, not the
+    key encoder's.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.strbounds@1.0.0"
+    $model: {
+      pairs: {
+        $key: "id"
+        id: "text"
+        subject: "text"
+        needle: "text"
+        starts: "= string.starts_with(.subject, .needle)"
+        ends: "= string.ends_with(.subject, .needle)"
+        holds: "= string.contains(.subject, .needle)"
+      }
+      $public: {
+        pairs: { $view: ".pairs { id, starts, ends, holds, $sort: [id] }" }
+      }
+    }
+    $data: {
+      pairs: {
+        e1: { subject: "512100", needle: "" }
+        e2: { subject: "", needle: "" }
+        e3: { subject: "512", needle: "512100" }
+        e4: { subject: "", needle: "5" }
+        e5: { subject: "512100", needle: "512100" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.pairs", id: "w1",
+      expect_init: { value: [
+        { id: "e1", starts: true, ends: true, holds: true }
+        { id: "e2", starts: true, ends: true, holds: true }
+        { id: "e3", starts: false, ends: false, holds: false }
+        { id: "e4", starts: false, ends: false, holds: false }
+        { id: "e5", starts: true, ends: true, holds: true }
+      ] } }
+  ]
+}

@@ -18,10 +18,10 @@
 //! The artifact/export path does not. Root cause is in the runtime's portable
 //! state codec `crates/liasse-runtime/src/portable.rs`:
 //!
-//!   * `StateSection::capture` (portable.rs:49-51) iterates `model.root().members`
-//!     and `continue`s past every member that is not a `Node::Collection`. The
-//!     §8.2 singleton reserved row is a set of `Node::Field`/struct members, never
-//!     a collection, so it is never captured.
+//!   * `StateSection::capture` iterated `model.root().members` and `continue`d
+//!     past every member that is not a collection. The §8.2 singleton reserved row
+//!     is a set of `Node::Field`/struct members, never a collection, so it was
+//!     never captured.
 //!   * `to_bytes` / `from_bytes` / `working` / `Engine::install_state` likewise
 //!     handle only the captured collections, so nothing re-materializes the
 //!     singleton row on restore.
@@ -32,12 +32,13 @@
 //! boundary ... reproduces the same definitions, resources, owned logical states,
 //! ...".
 //!
-//! This is distinct from the acknowledged nested-collection CORE seam (portable.rs
-//! documents nested *collections* as out of scope): a root singleton is
-//! TOP-LEVEL, non-nested state, and the top-level `notes` collection here restores
-//! correctly — the control assertion isolates the loss to the singleton row, not
-//! the restore machinery. The value is externally deducible: `flag` was mutated to
-//! `changed` and `company.name` seeded to `Acme`; both must read back identically.
+//! This is distinct from the nested keyed-collection loss the capture also once
+//! had (since fixed — it carries the whole committed row tree): a root singleton
+//! is TOP-LEVEL, non-nested state, and the top-level `notes` collection here
+//! restores correctly — the control assertion isolates the loss to the singleton
+//! row, not the restore machinery. The value is externally deducible: `flag` was
+//! mutated to `changed` and `company.name` seeded to `Acme`; both must read back
+//! identically.
 
 mod support;
 
@@ -112,10 +113,10 @@ fn export_restore_preserves_root_singleton_state() {
     // machinery works — the loss below is specific to the §8.2 singleton row.
     assert_eq!(notes(&restored), vec![text("n1")], "the top-level collection round-trips (restore works)");
 
-    // §19.10 / §8.2: the root singleton state MUST survive the round trip. It does
-    // not — `StateSection::capture` (portable.rs:49-51) skips every non-collection
-    // root member, so the singleton reserved row is never written to the artifact
-    // and reads back absent after restore.
+    // §19.10 / §8.2: the root singleton state MUST survive the round trip. It did
+    // not — `StateSection::capture` skipped every non-collection root member, so the
+    // singleton reserved row was never written to the artifact and read back absent
+    // after restore.
     assert_eq!(
         singleton(&restored, "flag"),
         Some(text("changed")),
@@ -127,6 +128,6 @@ fn export_restore_preserves_root_singleton_state() {
         singleton(&restored, "cname"),
         Some(text("Acme")),
         "§19.10/§8.2: the seeded root singleton struct member `company.name` must survive \
-         export/restore; it too is dropped by the collection-only state capture",
+         export/restore; it too was dropped by the collection-only state capture",
     );
 }

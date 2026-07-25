@@ -257,10 +257,10 @@ impl<S: InstanceStore> Engine<S> {
     /// (§19.5, §19.7): the active definition, the selected state, and a minimal
     /// history index naming the selected `(lineage, point)`.
     pub fn export(&self) -> Result<Vec<u8>, EngineError> {
-        // §19.5/§20.1/§22.1 fail-closed: refuse to export an instance holding nested
-        // keyed-collection rows (§5.4) this build cannot carry, rather than emit an
-        // artifact with that live data dropped — an [`EngineError::Unsupported`].
-        let state = StateSection::capture(self.schema(), self.store()).map_err(EngineError::from)?;
+        // §19.5/§22.1: the capture carries the WHOLE committed row tree — every
+        // nested keyed collection (§5.4) under a top-level row included — so the
+        // artifact describes the instance completely, not only its top level.
+        let state = StateSection::capture(self.schema(), self.store()).map_err(EngineError::Store)?;
         let definition = self
             .definition_source()?
             .ok_or_else(|| EngineError::Internal("instance has no active definition".to_owned()))?;
@@ -403,24 +403,20 @@ impl<S: InstanceStore> Engine<S> {
         let incoming = decode_sections(&Artifact::open(incoming)?)?.1;
         let schema = self.schema();
         let base = base.working(schema).map_err(ImportError::Engine)?;
-        // §19.9/§22.1 fail-closed: the local side of a merge is captured through the
-        // same portable path, so refuse when it holds nested keyed-collection rows
-        // (§5.4) this build cannot carry rather than merge a lossy local snapshot.
+        // §19.9/§22.1: the local side is captured through the same portable path, so
+        // it carries its nested keyed-collection rows (§5.4) into the merge — the
+        // three sides are compared by row ADDRESS, which is depth-agnostic.
         let local = StateSection::capture(schema, self.store())
-            .map_err(|error| ImportError::Engine(EngineError::from(error)))?
+            .map_err(|error| ImportError::Engine(EngineError::Store(error)))?
             .working(schema)
             .map_err(ImportError::Engine)?;
         let incoming = incoming.working(schema).map_err(ImportError::Engine)?;
         // §19.9: re-validating the combined composition needs the ordinary
-        // uniqueness constraints, so carry each top-level collection's `$unique`
-        // groups (a single `$unique` scalar is a one-member group) into the merge.
-        let unique: Vec<(String, Vec<Vec<String>>)> = self
-            .compiled()
-            .collections
-            .iter()
-            .filter(|collection| !collection.unique.is_empty())
-            .map(|collection| (collection.name.clone(), collection.unique.clone()))
-            .collect();
+        // uniqueness constraints, so carry every collection's `$unique` groups (a
+        // single `$unique` scalar is a one-member group) into the merge, keyed by
+        // declaration path so a NESTED collection's constraint travels too.
+        let mut unique = Vec::new();
+        collect_unique(&self.compiled().collections, &mut Vec::new(), &mut unique);
         Ok(ThreeWayMerge { base, local, incoming, schema, unique }.resolve())
     }
 }
@@ -471,19 +467,24 @@ struct ThreeWayMerge<'a> {
     local: BTreeMap<RowAddress, FieldMap>,
     incoming: BTreeMap<RowAddress, FieldMap>,
     schema: Schema<'a>,
-    /// Each top-level collection carrying `$unique` constraints, paired with its
-    /// unique groups (a single `$unique` scalar is a one-member group), for the
-    /// §19.9 combined-composition re-validation.
-    unique: Vec<(String, Vec<Vec<String>>)>,
+    /// Each collection carrying `$unique` constraints — at any depth — as its
+    /// declaration path paired with its unique groups (a single `$unique` scalar is
+    /// a one-member group), for the §19.9 combined-composition re-validation.
+    unique: Vec<(Vec<String>, Vec<Vec<String>>)>,
 }
 
 impl ThreeWayMerge<'_> {
-    /// The D.3-addressable coordinate of a conflicted `address` (§D.3). A keyed
-    /// collection row resolves to `/collection/key[/field]`: the top-level
-    /// collection name and the row's application-visible key (§5.4), with the field
-    /// for a field-level conflict. The key resolves through the schema so a
-    /// single-field key is its scalar and a composite key its component struct — the
-    /// form the surface renders as an escaped key-text segment.
+    /// The D.3-addressable coordinate of a conflicted `address` (§D.3). A top-level
+    /// keyed collection row resolves to `/collection/key[/field]`: the collection
+    /// name and the row's application-visible key (§5.4), with the field for a
+    /// field-level conflict. The key resolves through the schema so a single-field
+    /// key is its scalar and a composite key its component struct — the form the
+    /// surface renders as an escaped key-text segment.
+    ///
+    /// A NESTED row (§5.4) is named the way §A.9 names one: the `/`-separated
+    /// declaration path (`companies/offices`) and the FULL ancestor-then-local
+    /// identity. Its local key alone would be ambiguous — the same child key exists
+    /// under every parent — so a host correction could not tell which row to fix.
     ///
     /// The §8.2 singleton reserved row is internal storage, not a collection: a
     /// conflict on one of its members is reported at that member's name-only
@@ -491,16 +492,21 @@ impl ThreeWayMerge<'_> {
     /// placeholder empty key — which §D.3 forbids as an empty path segment and §D.1
     /// gives no ancestor key.
     fn coordinate(&self, address: &RowAddress, field: Option<String>) -> ConflictCoordinate {
-        // A merged row is a top-level collection row, so its final step names the
-        // collection and carries the key (nested-collection merge is a seam). A
-        // `RowAddress` is non-empty by construction, so the step is always present.
+        // A `RowAddress` is non-empty by construction, so the step is always present.
         let Some(step) = last_step(address) else {
             return ConflictCoordinate::Row { collection: String::new(), key: Value::None, field };
         };
-        let collection = step.name().as_str();
-        if collection == crate::singleton::ROOT_NAME {
+        if step.name().as_str() == crate::singleton::ROOT_NAME {
             return ConflictCoordinate::RootSingleton { member: field };
         }
+        if address.depth() > 1 {
+            let components: Vec<Value> =
+                address.steps().flat_map(|step| step.key().components().cloned()).collect();
+            let key = liasse_store::key_from_components(components)
+                .map_or(Value::None, |key| materialize::key_value_identity(&key));
+            return ConflictCoordinate::Row { collection: decl_path(address).join("/"), key, field };
+        }
+        let collection = step.name().as_str();
         let key = match self.schema.top_collection(collection) {
             Some(model) => materialize::key_identity(model, step.key()),
             None => step.key().components().next().cloned().unwrap_or(Value::None),
@@ -545,18 +551,20 @@ impl ThreeWayMerge<'_> {
         merged: &BTreeMap<RowAddress, FieldMap>,
         conflicts: &mut Vec<MergeConflict>,
     ) {
-        for (name, groups) in &self.unique {
+        for (path, groups) in &self.unique {
             for group in groups {
-                let mut seen: Vec<Vec<Value>> = Vec::new();
+                // §5.4: a nested collection's uniqueness is scoped to its PARENT row
+                // ("a collection key is unique within its parent row"), so the seen
+                // set is per parent address. A top-level collection has no parent, so
+                // its single `None` scope is the whole-collection check unchanged.
+                let mut seen: BTreeMap<Option<RowAddress>, Vec<Vec<Value>>> = BTreeMap::new();
                 for (address, fields) in merged {
-                    // The merge carries only top-level rows (nested-collection merge
-                    // is a seam), so a merged row of this collection is a depth-1
-                    // address whose sole step names it.
-                    if address.depth() != 1 || last_step(address).map(|step| step.name().as_str()) != Some(name) {
+                    if &decl_path(address) != path {
                         continue;
                     }
                     let Some(tuple) = unique_tuple(group, fields) else { continue };
-                    if seen.contains(&tuple) {
+                    let scope = seen.entry(address.parent()).or_default();
+                    if scope.contains(&tuple) {
                         let field = match group.as_slice() {
                             [single] => Some(single.clone()),
                             _ => None,
@@ -566,7 +574,7 @@ impl ThreeWayMerge<'_> {
                             kind: ConflictKind::Uniqueness,
                         });
                     } else {
-                        seen.push(tuple);
+                        scope.push(tuple);
                     }
                 }
             }
@@ -677,6 +685,31 @@ impl ThreeWayMerge<'_> {
 /// address; the `Option` keeps the coordinate builder total without a panic.
 fn last_step(address: &RowAddress) -> Option<&AddressStep> {
     address.steps().last()
+}
+
+/// The declaration-name path of a row address (`["companies", "offices"]`) — the
+/// identity a compiled collection is looked up by, at any depth (§5.4).
+fn decl_path(address: &RowAddress) -> Vec<String> {
+    address.steps().map(|step| step.name().as_str().to_owned()).collect()
+}
+
+/// Every collection carrying `$unique` constraints in the tree rooted at
+/// `collections`, as its declaration path paired with its groups (§5.7/§5.4). A
+/// nested collection's constraints are collected under its full path, so the §19.9
+/// re-validation can scope them to the parent row they belong to.
+fn collect_unique(
+    collections: &[crate::compiled::CompiledCollection],
+    path: &mut Vec<String>,
+    out: &mut Vec<(Vec<String>, Vec<Vec<String>>)>,
+) {
+    for collection in collections {
+        path.push(collection.name.clone());
+        if !collection.unique.is_empty() {
+            out.push((path.clone(), collection.unique.clone()));
+        }
+        collect_unique(&collection.children, path, out);
+        path.pop();
+    }
 }
 
 /// The candidate-key tuple of a row for a unique `group`, or `None` when any

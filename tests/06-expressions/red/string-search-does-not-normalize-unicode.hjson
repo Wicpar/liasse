@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: string-search-does-not-normalize-unicode
+  suite: scenario
+  spec: ["#expressions", "§6.5", "#annex-a", "§A.1"]
+  tags: ["unicode"]
+  note: '''
+    Attack: feed the search predicates canonically-equivalent but differently
+    encoded text — an NFC needle (c, a, f, U+00E9) against an NFD subject
+    (c, a, f, e, U+0301, s) — hoping the engine normalizes and reports a match
+    the stored scalars do not support (or, in the other direction, hoping a
+    normalizing engine reports a match a prefix-sensitive accounting rule would
+    then trust).
+
+    §6.5 pins the answer: comparison is over Unicode scalar values, with no
+    normalization, so a predicate holds exactly when the needle's scalar
+    sequence decomposes the subject's. Annex A.1: a `text` value is a Unicode
+    scalar sequence, preserved exactly. Writing the two encodings as
+
+      nfd = c a f e U+0301 s        nfc = c a f U+00E9 s
+      nfd_needle = c a f e U+0301   nfc_needle = c a f U+00E9
+
+    the six expectations follow from the scalar sequences alone:
+
+      starts_with(nfd, nfc_needle) = false — nfd's 4th scalar is e, not U+00E9
+      starts_with(nfc, nfc_needle) = true
+      starts_with(nfd, nfd_needle) = true  — nfd matches its own encoding
+      starts_with(nfc, nfd_needle) = false
+      contains(nfd, U+0301)        = true  — the combining acute is a scalar of nfd
+      contains(nfc, U+0301)        = false — nfc carries no combining acute
+
+    Every Unicode value below is written with explicit \uXXXX escapes so no
+    editor or tool can silently renormalize the case file.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.strnfc@1.0.0"
+    $model: {
+      words: {
+        $key: "id"
+        id: "text"
+        word: "text"
+        nfc_prefix: "= string.starts_with(.word, 'caf\u00e9')"
+        nfd_prefix: "= string.starts_with(.word, 'cafe\u0301')"
+        has_combining: "= string.contains(.word, '\u0301')"
+      }
+      $public: {
+        words: { $view: ".words { id, nfc_prefix, nfd_prefix, has_combining, $sort: [id] }" }
+      }
+    }
+    $data: {
+      words: {
+        nfc: { word: "caf\u00e9s" }
+        nfd: { word: "cafe\u0301s" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.words", id: "w1",
+      expect_init: { value: [
+        { id: "nfc", nfc_prefix: true, nfd_prefix: false, has_combining: false }
+        { id: "nfd", nfc_prefix: false, nfd_prefix: true, has_combining: true }
+      ] } }
+  ]
+}

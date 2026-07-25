@@ -578,6 +578,10 @@ pub(crate) enum CombineOp {
 }
 
 /// A resolved built-in function from the language surface or a namespace (§6.5).
+///
+/// Variant ORDER is wire-visible: the `eval-wire` postcard encoding (§7.7) tags a
+/// variant by its declaration index, so a new built-in is appended here rather
+/// than inserted beside its relatives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "eval-wire", derive(serde::Serialize, serde::Deserialize))]
 pub(crate) enum BuiltinFn {
@@ -617,5 +621,12 @@ pub(crate) enum BuiltinFn {
     /// §13.8 boundary (§13.16). HOST-PRIVILEGED, and admitted only in that
     /// position: with no destination there is no admission to re-run.
     ReinstallModule,
+    /// `string.starts_with(subject, needle)` — prefix test over Unicode scalar
+    /// values, no normalization or folding (§6.5).
+    StringStartsWith,
+    /// `string.ends_with(subject, needle)` — suffix test (§6.5).
+    StringEndsWith,
+    /// `string.contains(subject, needle)` — substring test (§6.5).
+    StringContains,
 }
 

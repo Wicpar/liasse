@@ -809,6 +809,26 @@ time       Unix time, date, duration, and period utilities
 
 `string.trim` removes the leading and trailing Unicode scalar values that carry the Unicode `White_Space` property (equivalently, the scalars Rust's `str::trim` removes); `string.lower`, `string.upper`, and `string.casefold` apply the corresponding Unicode default case and casefold operations. Non-ASCII whitespace — including U+00A0 NO-BREAK SPACE — is therefore trimmed, and a value consisting solely of `White_Space` scalars normalizes to the empty string; because `$normalize` runs before a `$check` (§8.8), such a value fails a `size(.) > 0` check.
 
+The `string` namespace also carries three search predicates:
+
+```text
+string.starts_with(subject, needle) -> bool
+string.ends_with(subject, needle)   -> bool
+string.contains(subject, needle)    -> bool
+```
+
+Each takes two `text` arguments — the subject first, the searched-for `needle` second — and returns `bool`. Writing a `text` value as the Unicode scalar sequence it is (Annex A.1) and `++` for concatenation, `string.starts_with(s, n)` is true exactly when `s = n ++ r` for some scalar sequence `r`; `string.ends_with(s, n)` exactly when `s = p ++ n` for some `p`; `string.contains(s, n)` exactly when `s = p ++ n ++ r` for some `p` and `r`. Three consequences follow from those definitions alone, and every conforming engine answers them this way:
+
+- an **empty needle** is a prefix, a suffix, and a substring of every subject, including the empty subject: all three predicates are true, taking the whole subject as `r` (or as `p`, or as `p` with an empty `r`);
+- a **needle longer than the subject** admits no such decomposition, so all three are false; conversely, any of the three being true implies `size(n) <= size(s)`;
+- a subject is a prefix, a suffix, and a substring **of itself**: all three are true for `n = s`. Each predicate together with `size(n) == size(s)` is equivalent to `n == s`.
+
+Comparison is over Unicode **scalar values**, exactly as `text` equality is (Annex A.1: a `text` value is a Unicode scalar sequence, preserved exactly): no Unicode normalization, no case folding, no whitespace trimming, no locale, and no collation. Canonically equivalent but differently encoded text therefore does not match: with the subject `"cafe\u0301s"` (NFD) and the needle `"caf\u00e9"` (NFC), `string.starts_with` is false, while the same needle against the subject `"caf\u00e9s"` (NFC) is true, because `text` is preserved exactly (Annex A.1) and no expression position normalizes it implicitly. A model that must compare text arriving from several producers stores an already-normalized form: a `$normalize` composed from this namespace, or a value the application normalized to a chosen form (typically NFC) before the mutation that stored it. A case-insensitive search composes explicitly — `string.starts_with(string.casefold(s), string.casefold(n))` — which is well defined because the Unicode default full case fold maps each scalar independently and so distributes over concatenation.
+
+Defining the three predicates over the UTF-8 encoding of the two values instead yields the identical answer for every pair of `text` values, so an engine MAY implement them as byte searches: UTF-8 is self-synchronizing, so the encoding of a valid needle occurs in the encoding of a valid subject only at scalar boundaries, and the encoding is injective.
+
+Every argument must be a **present** `text`. An absent (`none`) or non-`text` argument is a typed evaluation error that rejects the containing evaluation — computed value, check, filter, projection, sort key, or mutation statement — with a diagnostic, exactly as a zero divisor does (Annex A.6); the predicates never answer `false` for an argument they could not compare, and never treat `none` as the empty string. An `optional<text>` operand is therefore guarded — `!has(.parent) || string.starts_with(.code, .parent)`, where `||` never evaluates an unreached right operand (Annex A.6) — or coalesced (`.parent ?? ''`). A call supplying other than two arguments is a static (load-time) error: the arity is part of the signature package loading validates.
+
 Packages MAY require additional typed namespaces from the Rust context, as described in [Host namespaces](#host-namespaces). Package loading validates every function name, type, determinism class, and namespace contract.
 
 The compact grammar index is in Annex C.
@@ -2951,7 +2971,9 @@ language     arithmetic, logic, selectors, views, aggregates, assertions,
 hex          byte/text hex conversion
 base64       byte/text base64 conversion
 sha          standard cryptographic hashes
-string       Unicode-safe text utilities
+string       Unicode-safe text utilities (§6.5): case (`lower`/`upper`/
+             `casefold`), `trim`, the search predicates `starts_with`/
+             `ends_with`/`contains`, and the `bytes`/`from_bytes` UTF-8 codec
 convert      checked value conversions
 time         Unix time, dates, durations, periods, and time-zone operations
 ```

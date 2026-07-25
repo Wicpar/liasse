@@ -136,6 +136,7 @@
 
 mod blobs;
 mod bucket;
+mod captured;
 mod cascade;
 mod codec;
 mod compiled;

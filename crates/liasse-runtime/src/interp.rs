@@ -879,23 +879,8 @@ impl<'a> Interp<'a> {
     /// row touched for re-validation. Used for a direct nested rekey and for each
     /// descendant re-rooted by an ancestor rekey.
     fn rewrite_inbound_refs_nested_move(&mut self, old_addr: &RowAddress, new_addr: &RowAddress) {
-        let target = old_addr
-            .steps()
-            .map(|step| step.name().as_str().to_owned())
-            .collect::<Vec<_>>()
-            .join("/");
-        let old_components: Vec<Value> =
-            old_addr.steps().flat_map(|step| step.key().components().cloned()).collect();
-        let new_components: Vec<Value> =
-            new_addr.steps().flat_map(|step| step.key().components().cloned()).collect();
-        let (Ok(old_key), Ok(new_key)) = (
-            liasse_store::key_from_components(old_components),
-            liasse_store::key_from_components(new_components),
-        ) else {
-            return;
-        };
         for address in
-            rewrite_inbound_refs_across(self.compiled, self.prospective, &target, &old_key, &new_key)
+            rewrite_inbound_refs_to_moved_nested(self.compiled, self.prospective, old_addr, new_addr)
         {
             self.mark(address);
         }
@@ -2616,6 +2601,35 @@ pub(crate) fn rewrite_inbound_refs_across(
         }
     }
     rewritten
+}
+
+/// Rewrite every inbound reference to a NESTED-collection row that moved from
+/// `old_addr` to `new_addr` — a direct nested rekey, or a descendant re-rooted by
+/// an ancestor rekey — and return the rows rewritten (§5.4/§D.1/§A.9).
+///
+/// A `$ref` to a nested collection targets the row's `/`-separated declaration
+/// path and carries its FULL ancestor-then-local identity, so both the target path
+/// and the matched identity are derived from the address itself. Shared by the
+/// ordinary mutation rekey ([`Interp::rewrite_inbound_refs_nested_move`]) and the
+/// §20.1 migration-internal rekey ([`crate::migrate`]), so the two agree.
+pub(crate) fn rewrite_inbound_refs_to_moved_nested(
+    compiled: &Compiled,
+    prospective: &mut Prospective,
+    old_addr: &RowAddress,
+    new_addr: &RowAddress,
+) -> Vec<RowAddress> {
+    let target = old_addr.steps().map(|step| step.name().as_str().to_owned()).collect::<Vec<_>>().join("/");
+    let old_components: Vec<Value> =
+        old_addr.steps().flat_map(|step| step.key().components().cloned()).collect();
+    let new_components: Vec<Value> =
+        new_addr.steps().flat_map(|step| step.key().components().cloned()).collect();
+    let (Ok(old_key), Ok(new_key)) = (
+        liasse_store::key_from_components(old_components),
+        liasse_store::key_from_components(new_components),
+    ) else {
+        return Vec::new();
+    };
+    rewrite_inbound_refs_across(compiled, prospective, &target, &old_key, &new_key)
 }
 
 /// The nested-target analogue of [`rewrite_inbound_refs_across`] (§5.4/§D.1/§A.9).

@@ -1,0 +1,69 @@
+{
+  format: 1
+  name: string-search-predicates-decompose-the-subject
+  suite: scenario
+  spec: ["#expressions", "§6.5", "#host-namespaces", "§16.1"]
+  note: '''
+    §6.5 defines the three core `string` search predicates by decomposition over
+    the Unicode scalar sequence a `text` value is (Annex A.1):
+    `string.starts_with(s, n)` is true exactly when `s = n ++ r`,
+    `string.ends_with(s, n)` exactly when `s = p ++ n`, and
+    `string.contains(s, n)` exactly when `s = p ++ n ++ r`.
+
+    Each expected value below is read off that definition alone, on plan-comptable
+    account codes:
+
+      "512100" = "512" ++ "100"          -> starts_with(., "512") = true
+      "512100" = "5121" ++ "00"          -> ends_with(., "00")    = true
+      "512100" = "51" ++ "21" ++ "00"    -> contains(., "21")     = true
+      "601000" has no decomposition "512" ++ r, no p ++ "21" ++ r,
+                 but does end in "00"    -> false / true / false
+      "512"    = "512" ++ ""             -> starts_with true; it does NOT end in
+                 "00" and does not contain "21"
+      "51"     is shorter than "512"     -> starts_with false (see the sibling
+                 length-boundary case), ends_with "00" false, contains "21" false
+
+    The `self` column applies the same definition with `n = s`: every value is its
+    own prefix (`s = s ++ ""`), so `self` is true on every row.
+
+    The predicates are core `string` utilities (§16.1), so they need no
+    `$requires` and are legal in the database-evaluated computed-value position
+    (§16.5); the results are read from a public view.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.strsearch@1.0.0"
+    $model: {
+      accounts: {
+        $key: "code"
+        code: "text"
+        starts: "= string.starts_with(.code, '512')"
+        ends: "= string.ends_with(.code, '00')"
+        holds: "= string.contains(.code, '21')"
+        self: "= string.starts_with(.code, .code)"
+      }
+      $public: {
+        accounts: { $view: ".accounts { code, starts, ends, holds, self, $sort: [code] }" }
+      }
+    }
+    $data: {
+      accounts: {
+        "51": {}
+        "512": {}
+        "512100": {}
+        "601000": {}
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.accounts", id: "w1",
+      expect_init: { value: [
+        { code: "51", starts: false, ends: false, holds: false, self: true }
+        { code: "512", starts: true, ends: false, holds: false, self: true }
+        { code: "512100", starts: true, ends: true, holds: true, self: true }
+        { code: "601000", starts: false, ends: true, holds: false, self: true }
+      ] } }
+  ]
+}

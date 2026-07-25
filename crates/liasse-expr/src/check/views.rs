@@ -300,8 +300,13 @@ impl Checker<'_> {
         args: &[Arg],
     ) -> Option<TypedExpr> {
         // §16.1: the core `string` utilities resolve before any host namespace.
-        if let Some(func) = core_string_fn(namespace, function) {
-            return self.check_builtin(expr, func, args, ExprType::scalar(Type::Text));
+        // §6.5: their arity is part of the signature loading validates, so a call
+        // supplying another count is rejected here rather than at evaluation.
+        if let Some(builtin) = CoreStringFn::resolve(namespace, function) {
+            if args.len() != builtin.arity {
+                return self.arity_error(expr, namespace, function, builtin.arity, args.len());
+            }
+            return self.check_builtin(expr, builtin.func, args, ExprType::scalar(builtin.result));
         }
         // §16.1: `time.duration(text)` parses an ISO-8601 duration literal to a
         // `duration` value (the §11.5 `now() + time.duration('P30D')` session TTL).
@@ -366,14 +371,7 @@ impl Checker<'_> {
         // §16.2: the argument count and each argument's type must match the
         // pinned signature — a mismatch is a static type error, not a runtime one.
         if args.len() != op.params().len() {
-            return self.error(
-                expr,
-                format!(
-                    "`{namespace}.{function}` takes {} argument(s), but {} were supplied",
-                    op.params().len(),
-                    args.len(),
-                ),
-            );
+            return self.arity_error(expr, namespace, function, op.params().len(), args.len());
         }
         let mut typed = Vec::with_capacity(args.len());
         for (arg, param) in args.iter().zip(op.params()) {
@@ -465,6 +463,25 @@ impl Checker<'_> {
             ExprType::scalar(Type::Int),
             TypedKind::Builtin { func: BuiltinFn::Size, args: vec![checked] },
         ))
+    }
+
+    /// The shared "wrong number of arguments" rejection for a call whose callee
+    /// carries a pinned arity — a core `string` utility (§6.5) or a host-namespace
+    /// signature (§16.2).
+    fn arity_error(
+        &mut self,
+        expr: &Expr,
+        namespace: &str,
+        function: &str,
+        expected: usize,
+        supplied: usize,
+    ) -> Option<TypedExpr> {
+        self.error(
+            expr,
+            format!(
+                "`{namespace}.{function}` takes {expected} argument(s), but {supplied} were supplied"
+            ),
+        )
     }
 
     fn check_builtin(
@@ -791,14 +808,36 @@ fn composite_key_conforms(
     Ok(())
 }
 
-/// The core `string` utility (§16.1) a `namespace.function` names, if any.
-fn core_string_fn(namespace: &str, function: &str) -> Option<BuiltinFn> {
-    match (namespace, function) {
-        ("string", "lower") => Some(BuiltinFn::StringLower),
-        ("string", "upper") => Some(BuiltinFn::StringUpper),
-        ("string", "casefold") => Some(BuiltinFn::StringCasefold),
-        ("string", "trim") => Some(BuiltinFn::StringTrim),
-        _ => None,
+/// One core `string` utility (§6.5/§16.1): the built-in a `namespace.function`
+/// resolves to, together with the signature package loading validates — the
+/// argument count and the result type.
+///
+/// The roster is the single place the core `string` names are listed: the checker
+/// resolves calls through it, and [`is_core_string_call`](super::is_core_string_call)
+/// lets the model layer classify a mutation-program call by the same list, so the
+/// two never drift.
+pub(crate) struct CoreStringFn {
+    func: BuiltinFn,
+    arity: usize,
+    result: Type,
+}
+
+impl CoreStringFn {
+    /// The core `string` utility `namespace.function` names, if any.
+    pub(crate) fn resolve(namespace: &str, function: &str) -> Option<Self> {
+        let (func, arity, result) = match (namespace, function) {
+            ("string", "lower") => (BuiltinFn::StringLower, 1, Type::Text),
+            ("string", "upper") => (BuiltinFn::StringUpper, 1, Type::Text),
+            ("string", "casefold") => (BuiltinFn::StringCasefold, 1, Type::Text),
+            ("string", "trim") => (BuiltinFn::StringTrim, 1, Type::Text),
+            // §6.5: the search predicates take `(subject, needle)` and answer
+            // `bool` over Unicode scalar values.
+            ("string", "starts_with") => (BuiltinFn::StringStartsWith, 2, Type::Bool),
+            ("string", "ends_with") => (BuiltinFn::StringEndsWith, 2, Type::Bool),
+            ("string", "contains") => (BuiltinFn::StringContains, 2, Type::Bool),
+            _ => return None,
+        };
+        Some(Self { func, arity, result })
     }
 }
 
@@ -809,8 +848,8 @@ fn core_string_fn(namespace: &str, function: &str) -> Option<BuiltinFn> {
 /// [`HostOrigin::Core`] and its effect [`HostEffect::Pure`] — legal in every
 /// database-evaluated position (§16.5), unlike an app-registered `$requires`
 /// namespace. The `string.bytes`/`from_bytes` entries coexist with the language
-/// `string.lower`/`upper`/`casefold`/`trim` built-ins (resolved by
-/// [`core_string_fn`] before this), which never collide by function name.
+/// `string` built-ins of [`CoreStringFn`] (resolved before this), which never
+/// collide by function name.
 fn core_codec_op(namespace: &str, function: &str) -> Option<HostOp> {
     let (param, result) = match (namespace, function) {
         ("base64" | "hex", "encode") => (Type::Bytes, Type::Text),

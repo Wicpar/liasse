@@ -34,6 +34,18 @@ use crate::typed::{TypedExpr, TypedKind};
 /// diagnostics an auth/actor seam defers to admission.
 pub(crate) const HOST_POSITION_CODE: &str = "E-HOST";
 
+/// Whether `namespace.function` names a core `string` utility this checker
+/// resolves by name (§6.5) — `lower`/`upper`/`casefold`/`trim` and the
+/// `starts_with`/`ends_with`/`contains` search predicates — rather than a
+/// `$requires` host-namespace call (§16.4).
+///
+/// The model layer classifies a mutation-program call against this same roster,
+/// so the two views of "what is a built-in" cannot drift apart.
+#[must_use]
+pub fn is_core_string_call(namespace: &str, function: &str) -> bool {
+    views::CoreStringFn::resolve(namespace, function).is_some()
+}
+
 /// Type-check one value/view statement (`return e` or a bare expression),
 /// yielding a [`TypedExpr`] or the diagnostics that reject it.
 ///

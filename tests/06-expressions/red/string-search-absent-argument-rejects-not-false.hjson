@@ -1,0 +1,51 @@
+{
+  format: 1
+  name: string-search-absent-argument-rejects-not-false
+  suite: scenario
+  spec: ["#expressions", "§6.5", "#annex-a", "§A.6"]
+  tags: ["boundary"]
+  note: '''
+    Attack: hand a search predicate an ABSENT `optional<text>` and see whether the
+    engine invents an answer. A `false` here would be silently wrong in both
+    directions — a guard `string.starts_with(.code, .parent)` on a row with no
+    parent would read as "the invariant is violated", while a rule spelled
+    `!string.starts_with(...)` would read as "satisfied" — so the engine must not
+    guess.
+
+    §6.5: every argument must be a PRESENT `text`; an absent (`none`) argument is
+    a typed evaluation error that rejects the containing evaluation with a
+    diagnostic, and the predicates never answer `false` for an argument they
+    could not compare, nor treat `none` as the empty string. The `none` is read
+    from state (`parent` is absent in $data), so the fault is detected at
+    evaluation and the call is rejected — the same shape Annex A.6 gives a zero
+    divisor read from state.
+
+    The guarded spelling remains admissible and is covered by the sibling common
+    case; this case is only about the UNGUARDED call.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.strnone@1.0.0"
+    $model: {
+      code: "text"
+      parent: "text?"
+      $mut: {
+        probe: "return string.starts_with(.code, .parent)"
+      }
+      $public: {
+        chart: {
+          $mut: { probe: ".probe" }
+        }
+      }
+    }
+    $data: {
+      code: "512100"
+    }
+  }
+
+  steps: [
+    { call: "public.chart.probe", args: {},
+      expect: { outcome: rejected, violates: ["#expressions", "§6.5"] } }
+  ]
+}
