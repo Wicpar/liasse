@@ -55,6 +55,32 @@ pub const SCHEMA_VERSION: i32 = 6;
 /// failing later, mid-query, on a missing column.
 pub const MIN_COMPATIBLE_VERSION: i32 = 6;
 
+/// The single order in which every actor takes relation locks, so two of them can
+/// never form a wait cycle.
+///
+/// It is the order an **admission** touches relations, because that one is not free
+/// to change: the residual, then the node tree, then the instance singletons (and
+/// those only when the transition changes one). Reconciliation emits its DDL in this
+/// order for that reason alone — `CREATE INDEX IF NOT EXISTS` takes a `ShareLock` on
+/// its table and holds it for the rest of the transaction *even when the index
+/// already exists*, so an opener reconciling an instance while another connection
+/// admits to it is two parties each taking two locks, and only a shared order keeps
+/// that safe. Declaration order in [`Schema::tables`]/[`Schema::indexes`] is
+/// deliberately NOT the contract; this is, and [`Schema::create_ddl`] sorts by it.
+///
+/// `schema_version` is last here and is nonetheless created first, by
+/// [`Schema::version_ddl`], before the stamp can be read. That is not an exception:
+/// no admission ever touches `schema_version`, so it can never be one end of a cycle
+/// with one, and two concurrent reconcilers take it in the same order as each other.
+const LOCK_ORDER: [&str; 6] =
+    ["commit_log", "nodes", "instance_meta", "blobs", "history_points", "schema_version"];
+
+/// Where `table` sits in [`LOCK_ORDER`]. An unlisted table sorts last, which keeps
+/// the ordering total without a panic; every table this crate declares is listed.
+fn lock_rank(table: &str) -> usize {
+    LOCK_ORDER.iter().position(|listed| *listed == table).unwrap_or(LOCK_ORDER.len())
+}
+
 /// A per-instance schema namespace: a validated PostgreSQL identifier.
 #[derive(Debug, Clone)]
 pub struct Schema {
@@ -387,10 +413,19 @@ impl Schema {
     /// index this schema owns, built from the same [`tables`](Schema::tables),
     /// [`sequences`](Schema::sequences) and [`indexes`](Schema::indexes) data the
     /// reconciler diffs against.
+    ///
+    /// Tables and indexes are emitted in [`LOCK_ORDER`], never in declaration order.
+    /// That is a correctness requirement, not tidiness: this DDL runs in one
+    /// transaction and each `CREATE INDEX IF NOT EXISTS` holds a `ShareLock` on its
+    /// table to the end of it, so emitting them in any order that disagrees with the
+    /// order an admission writes those same tables lets a reconciling opener and a
+    /// concurrent admission deadlock.
     #[must_use]
     pub fn create_ddl(&self) -> String {
         let mut ddl = format!("CREATE SCHEMA IF NOT EXISTS {};\n", self.quoted());
-        for table in self.tables() {
+        let mut tables = self.tables();
+        tables.sort_by_key(|table| lock_rank(table.name()));
+        for table in tables {
             ddl.push_str(&table.create_sql(self));
             ddl.push('\n');
         }
@@ -398,7 +433,9 @@ impl Schema {
             ddl.push_str(&sequence.create_sql(self));
             ddl.push('\n');
         }
-        for index in self.indexes() {
+        let mut indexes = self.indexes();
+        indexes.sort_by_key(|index| lock_rank(index.table()));
+        for index in indexes {
             ddl.push_str(&index.create_sql(self));
             ddl.push('\n');
         }

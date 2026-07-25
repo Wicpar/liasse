@@ -14,6 +14,15 @@
 //! a folded multi-instance commit (§13.10) runs [`commit_body`] once per touched
 //! schema on ONE shared transaction so every instance commits together or none does.
 //!
+//! # The write order below is a lock-order contract
+//!
+//! `commit_log`, then `nodes`, then `instance_meta` — the order `LOCK_ORDER` in
+//! [`crate::schema`] records and the schema DDL is emitted in. It matters because an
+//! admission is not the only thing that locks these tables: an opener reconciling
+//! the same instance takes a `ShareLock` on each for the whole of its DDL
+//! transaction. Two parties each taking two locks deadlock unless their orders
+//! agree, so reordering the writes below means reordering `LOCK_ORDER` with them.
+//!
 //! [`PgStore`]: crate::store::PgStore
 
 use liasse_ident::TransactionId;
