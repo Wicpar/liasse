@@ -2,8 +2,10 @@
 //!
 //! A factory carries the DSN and a namespace token that isolates a family of
 //! instances (a test run's unique suffix, a deployment's fixed prefix). Each
-//! store gets its own connection — one writer per instance means one connection
-//! is enough — pointed at the instance's own PostgreSQL schema.
+//! store gets its own writer connection, pointed at the instance's own PostgreSQL
+//! schema. Opening a second store over the same instance is supported and gives a
+//! second, independent writer: admission takes no instance-wide lock, so two of them
+//! overlap rather than queue.
 
 use std::time::Duration;
 
@@ -116,8 +118,8 @@ impl PgStoreFactory {
         client
             .execute(
                 &format!(
-                    "INSERT INTO {}.instance_meta (id, head, next_incarnation, instance_id) \
-                     VALUES (1, 0, 0, $1) ON CONFLICT (id) DO NOTHING",
+                    "INSERT INTO {}.instance_meta (id, instance_id) VALUES (1, $1) \
+                     ON CONFLICT (id) DO NOTHING",
                     schema.quoted()
                 ),
                 &[&instance_id],
