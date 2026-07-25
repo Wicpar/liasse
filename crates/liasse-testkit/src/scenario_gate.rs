@@ -154,9 +154,8 @@ pub const SKIP: &[(&str, &str)] = &[
     // Tamper ops needing machinery beyond archive byte/JSON surgery.
     ("19-history-artifacts/forged-state-consistent-checksums-accepted", "the `edit_cbor` tamper needs schema-owned resolution of a keyed-collection logical pointer into the state section, beyond byte surgery"),
     ("19-history-artifacts/history-index-overlapping-ranges-invalid", "the runtime emits an empty history-index `ranges` object (CORE), so `duplicate_json_member` has nothing to duplicate and §19.6 range verification is unlanded"),
-    // §13 non-absolute module space / child-artifact embedding (same seam as the
-    // child-* cases below).
-    ("19-history-artifacts/merge-competing-module-mounts-conflict", "§13 the case mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects, so mount competition never reaches the merge"),
+    // §13 child-artifact embedding (same seam as the child-* cases below).
+    ("19-history-artifacts/merge-competing-module-mounts-conflict", "§19 competing child mounts need the child-module `.liasse` artifact embedding the child-* cases below are blocked on, so mount competition never reaches the merge"),
     // --- §20 `host_load` / migration ---
     // `host_load` drives `Engine::update` end to end (adapter/runtime.rs
     // `apply_host_load`). The §20.1 package-level `$migrations` program, the §20.2
@@ -267,9 +266,9 @@ pub const SKIP: &[(&str, &str)] = &[
     // bound to a keyed row is a live write target. `update-bundle-three-way-merge`
     // passes and its entry was pruned as stale.)
     // --- §13 module lifecycle used by other chapters (same seams) ---
-    ("19-history-artifacts/child-export-matches-embedded-artifact", "§19 child-module `.liasse` artifact export/embedding is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
-    ("19-history-artifacts/child-module-artifact-embedded-and-extractable", "§19 child-module `.liasse` artifact export/embedding is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
-    ("19-history-artifacts/tampered-child-artifact-invalid", "§19 child-module `.liasse` artifact embedding/verification is unlanded; the case also mounts a non-absolute module space `mods` the runtime `ModuleSpace` rejects"),
+    ("19-history-artifacts/child-export-matches-embedded-artifact", "§19 child-module `.liasse` artifact export/embedding is unlanded"),
+    ("19-history-artifacts/child-module-artifact-embedded-and-extractable", "§19 child-module `.liasse` artifact export/embedding is unlanded"),
+    ("19-history-artifacts/tampered-child-artifact-invalid", "§19 child-module `.liasse` artifact embedding/verification is unlanded"),
     ("w-worked-examples/w4-host-imports-exposed-template-across-boundary", "§13.9 the §13.4 parent surface now resolves so the child installs and its exposed template aggregates; the residual is module-aware root-MUTATION admission — the host `import_template` mutation reads `.modules[@module]::templates[@template]` inside its program, but a root mutation admits with no module aggregate (only root VIEW reads fold it), and the adapter routes the plain root-mutation call and its `.templates` read to the base host (no children) rather than the deployment, so `source` selects zero and the insert rejects (§6.3)"),
     // --- `operator` step ---
     // Root-mutation operator transitions now drive through a synthetic public

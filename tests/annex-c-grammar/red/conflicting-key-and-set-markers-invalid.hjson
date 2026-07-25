@@ -6,7 +6,7 @@
   // Attack: put two contradictory shape markers on one object to see which one
   // wins (or whether the object is smuggled past validation). SPEC-ISSUES #25
   // (pinned): an object's node kind is fixed by EXACTLY ONE kind marker among
-  // $key, $set, $view, $ref, $enum, $type, $keyring, $modules, $like ($bucket
+  // $key, $set, $view, $ref, $enum, $type, $keyring, $like ($bucket
   // composes with $key). An object bearing two mutually-exclusive kind markers
   // ($key and $set) is a static error that names both — neither marker silently
   // wins.

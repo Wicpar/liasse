@@ -5,7 +5,7 @@
   spec: ["#loading"]
   note: '''
     §9.1: "$data mirrors writable state" and "Computed values, views,
-    source-backed bucket rows, module spaces, and keyring-managed versions
+    source-backed bucket rows, module collections, and keyring-managed versions
     cannot be seeded directly." Supplying the computed member 'upper' in $data
     is a definition-level misuse, statically invalid.
   '''

@@ -1,20 +1,21 @@
 //! Module lifecycle as driver-facing host operations (SPEC.md §13).
 //!
 //! The runtime [`ModuleHost`] owns a root [`Engine`](liasse_runtime::Engine) and
-//! the child instances installed in its **row-scoped module spaces**
-//! ([`ModuleSpace`], e.g. `/companies/acme/modules`), each an independently loaded
-//! engine over a store the host's [`StoreFactory`](liasse_store::StoreFactory)
-//! mints — that is the whole §13.3 isolation model. Its lifecycle operations
-//! thread a [`Generators`](liasse_runtime) seam for the seeds an install or update
-//! rolls and for a child mutation's generated `uuid()`.
+//! the child instances mounted in its **module collections** — ordinary maps of
+//! `module` values, one instance per entry — each an independently loaded engine
+//! over a store the host's [`StoreFactory`](liasse_store::StoreFactory) mints,
+//! which is the whole §13.3 isolation model. An instance is addressed by the
+//! [`RowAddress`] of its entry: the same address every other row has, so there is
+//! no module-space coordinate to construct. Its lifecycle operations thread a
+//! [`Generators`](liasse_runtime) seam for the seeds an install or update rolls and
+//! for a child mutation's generated `uuid()`.
 //!
 //! [`ModuleDeployment`] bundles that host with a single owned [`VirtualClock`] and
 //! an [`Entropy`] source, so a driver runs
 //! `install`/`enable`/`disable`/`uninstall`/`rename`/`update`, the
 //! `child_call`/`interface_call` mutation admissions, and the interface-addressed
-//! reads (`interface_read`/`aggregate`) over a space without threading a generator,
-//! and returns the §13.3 rejections
-//! (`EmptyName`/`DuplicateName`/`Unknown`/`Disabled`/`InvalidSpace`/
+//! read (`interface_read`) without threading a generator, and returns the §13.3
+//! rejections (`EmptyName`/`DuplicateName`/`Unknown`/`Disabled`/
 //! `MissingContainingRow`/`InvalidBinding`) as [`ModuleObservation`]s rather than
 //! errors — mirroring how
 //! the surface layer treats every spec refusal as a successful observation,
@@ -25,46 +26,50 @@
 
 use liasse_ident::InstanceId;
 use liasse_runtime::{
-    AdmittedBindings, CallOutcome, CallRequest, Engine, InstallRequest, InterfaceRow, ModuleError,
-    ModuleHost, ModuleSpace, ModuleUpdateReport, ViewQuery, ViewResult,
+    AdmittedBindings, CallOutcome, CallRequest, Engine, InstallRequest, ModuleError, ModuleHost,
+    ModuleUpdateReport, ViewQuery, ViewResult,
 };
-use liasse_store::StoreFactory;
+use liasse_store::{CollectionPath, RowAddress, StoreFactory};
 use liasse_value::BlobDescriptor;
 
 use crate::clock::VirtualClock;
 use crate::entropy::Entropy;
 
 /// The result of a §13.3 lifecycle operation that either applies or is refused by
-/// a module-space invariant. A refusal is a successful observation, not a fault.
+/// a module-collection invariant. A refusal is a successful observation, not a
+/// fault.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModuleObservation {
     /// The operation applied.
     Applied,
     /// The instance name is empty (§13.3).
     EmptyName,
-    /// The instance name already names a live instance in this space (§13.3).
+    /// The instance name already names a live instance in this module collection
+    /// (§13.3). Bad input, so it is an observation here and a `rejected` outcome on
+    /// the in-language path — never an error.
     DuplicateName(String),
     /// No installed instance of that name (§13.3).
     Unknown(String),
     /// The addressed instance is disabled, so its surfaces are unavailable
     /// (§13.3, §13.12).
     Disabled(String),
-    /// The mount path is not a well-formed module-space location (§13.2).
-    InvalidSpace(String),
-    /// The module space's containing row is not live in root state, so the space
-    /// does not exist and there is nothing to install into (§13.2/§13.3).
+    /// The module collection's containing row is not live in root state, so the
+    /// collection does not exist and there is nothing to install into (§13.2/§13.3).
+    /// Bad input, so it is an observation here and a `rejected` outcome on the
+    /// in-language path — never an error.
     MissingContainingRow(String),
     /// A `$use`/`$deps` binding spec is malformed (§13.5/§13.6).
     InvalidBinding(String),
     /// A required peer `$use` handle could not be resolved against the sibling set at
     /// install (§13.5): zero/several/incompatible/disabled candidates, or an explicit
-    /// binding naming a cross-space instance. An admission refusal, not a fault.
+    /// binding naming a non-sibling instance. An admission refusal, not a fault.
     PeerUnresolved(String),
 }
 
 impl ModuleObservation {
-    /// Classify a lifecycle result: `Ok` applied, a module-space rejection is an
-    /// observation, and only an engine/store fault escapes as a [`ModuleFault`].
+    /// Classify a lifecycle result: `Ok` applied, a module-collection rejection is
+    /// an observation, and only an engine/store fault escapes as a
+    /// [`ModuleFault`].
     fn of(result: Result<(), ModuleError>) -> Result<Self, ModuleFault> {
         match result {
             Ok(()) => Ok(Self::Applied),
@@ -72,15 +77,14 @@ impl ModuleObservation {
         }
     }
 
-    /// Map a §13.3 module-space refusal to its observation; only an engine/store
-    /// fault escapes as a [`ModuleFault`].
+    /// Map a §13.3 module-collection refusal to its observation; only an
+    /// engine/store fault escapes as a [`ModuleFault`].
     fn refusal(error: ModuleError) -> Result<Self, ModuleFault> {
         match error {
             ModuleError::EmptyName => Ok(Self::EmptyName),
             ModuleError::DuplicateName(name) => Ok(Self::DuplicateName(name)),
             ModuleError::Unknown(name) => Ok(Self::Unknown(name)),
             ModuleError::Disabled(name) => Ok(Self::Disabled(name)),
-            ModuleError::InvalidSpace(path) => Ok(Self::InvalidSpace(path)),
             ModuleError::MissingContainingRow(path) => Ok(Self::MissingContainingRow(path)),
             ModuleError::InvalidBinding(spec) => Ok(Self::InvalidBinding(spec)),
             ModuleError::PeerUnresolved(handle, _reason) => Ok(Self::PeerUnresolved(handle)),
@@ -124,7 +128,7 @@ pub enum ModuleUpdate {
 }
 
 /// A genuine store/engine fault from a module lifecycle operation — never a spec
-/// outcome. A duplicate name, unknown instance, disabled instance, malformed space
+/// outcome. A duplicate name, unknown instance, disabled instance, absent containing row
 /// or binding is returned as a [`ModuleObservation`]; only a broken store or a
 /// failed child load is a [`ModuleFault`].
 #[derive(Debug, thiserror::Error)]
@@ -132,7 +136,7 @@ pub enum ModuleUpdate {
 pub struct ModuleFault(ModuleError);
 
 /// A root application together with the module instances installed in its
-/// row-scoped module spaces, driven over a single owned virtual clock (§13).
+/// row-scoped module collections, driven over a single owned virtual clock (§13).
 ///
 /// Every module transition the deployment admits — an install/update genesis or
 /// migration, a §13.11 direct-surface `child_call`, a §13.10 interface-routed
@@ -184,23 +188,25 @@ impl<F: StoreFactory> ModuleDeployment<F> {
         self.host.root_mut()
     }
 
-    /// Install a new instance into `space` from an install `request` (§13.3),
-    /// admitting its `$config`/`$use`/`$deps` boundary bindings: mint a fresh
-    /// incarnation, create the child's private store, and load its engine (applying
-    /// its own `$data` seed). An empty/duplicate name, malformed space or binding is
-    /// a [`ModuleObservation`], not a fault.
+    /// Install a new instance into the module collection `collection` from an
+    /// install `request` (§13.3), admitting its `$config`/`$use`/`$deps` boundary
+    /// bindings: mint a fresh incarnation, create the child's private store, and
+    /// load its engine (applying its own `$data` seed). The instance is mounted at
+    /// the collection entry keyed by the request's name. An empty/duplicate name, a
+    /// containing row that is not live, or a malformed binding is a
+    /// [`ModuleObservation`], not a fault.
     ///
     /// # Errors
     /// [`ModuleFault`] if the child store could not be created or its definition
     /// did not load.
     pub fn install(
         &mut self,
-        space: &ModuleSpace,
+        collection: &CollectionPath,
         request: InstallRequest,
     ) -> Result<ModuleObservation, ModuleFault> {
         let now = self.clock.instant();
         let mut generators = self.entropy.generators(now);
-        match self.host.install(space, request, &mut generators) {
+        match self.host.install(collection, request, &mut generators) {
             Ok(_incarnation) => Ok(ModuleObservation::Applied),
             Err(error) => ModuleObservation::refusal(error),
         }
@@ -209,7 +215,7 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     /// Admit a **host/root-scope** transition that carries module instances through
     /// their lifecycle (§13.10, §13.16): the root program is lent the host-privileged
     /// handle, so a `module.install`/`update`/`remove` call, a §13.16 operator, or a
-    /// `<-` move into a `$modules` slot stages into the very same atomic transition
+    /// `<-` move into a module-collection entry stages into the very same transition
     /// as the root's own change.
     ///
     /// This is the host lifecycle entry, not a client one. §13.10 lends the privilege
@@ -246,8 +252,8 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     ///
     /// # Errors
     /// [`ModuleFault`] on an engine/store fault.
-    pub fn disable(&mut self, space: &ModuleSpace, name: &str) -> Result<ModuleObservation, ModuleFault> {
-        ModuleObservation::of(self.host.disable(space, name))
+    pub fn disable(&mut self, at: &RowAddress) -> Result<ModuleObservation, ModuleFault> {
+        ModuleObservation::of(self.host.disable(at))
     }
 
     /// Enable a disabled instance (§13.3): restore its boundary over the exact
@@ -255,29 +261,29 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     ///
     /// # Errors
     /// [`ModuleFault`] on an engine/store fault.
-    pub fn enable(&mut self, space: &ModuleSpace, name: &str) -> Result<ModuleObservation, ModuleFault> {
-        ModuleObservation::of(self.host.enable(space, name))
+    pub fn enable(&mut self, at: &RowAddress) -> Result<ModuleObservation, ModuleFault> {
+        ModuleObservation::of(self.host.enable(at))
     }
 
     /// Uninstall an instance and its owned subtree (§13.3, §13.12).
     ///
     /// # Errors
     /// [`ModuleFault`] on an engine/store fault.
-    pub fn uninstall(&mut self, space: &ModuleSpace, name: &str) -> Result<ModuleObservation, ModuleFault> {
-        ModuleObservation::of(self.host.uninstall(space, name))
+    pub fn uninstall(&mut self, at: &RowAddress) -> Result<ModuleObservation, ModuleFault> {
+        ModuleObservation::of(self.host.uninstall(at))
     }
 
-    /// Rename an instance within its space (§13.3): a rekey that preserves the
-    /// incarnation and therefore the durable identity (D.1). Rejects a name already
-    /// in use.
+    /// Rename an instance within its module collection (§13.3): a rekey that
+    /// preserves the incarnation and therefore the durable identity (D.1). Rejects a
+    /// name already in use.
     ///
     /// # Errors
     /// [`ModuleFault`] on an engine/store fault.
-    pub fn rename(&mut self, space: &ModuleSpace, from: &str, to: &str) -> Result<ModuleObservation, ModuleFault> {
-        ModuleObservation::of(self.host.rename(space, from, to))
+    pub fn rename(&mut self, at: &RowAddress, to: &str) -> Result<ModuleObservation, ModuleFault> {
+        ModuleObservation::of(self.host.rename(at, to))
     }
 
-    /// Update a single instance in `space` to a `target` definition (§13.14/§13.15):
+    /// Update the instance at `at` to a `target` definition (§13.14/§13.15):
     /// rechecks the target's exposed compatibility surface, then runs the §20
     /// migration over the child's own engine, affecting that instance only. A
     /// successful update carries the assembled §13.15 report; a §13.14 narrowing
@@ -286,10 +292,10 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     ///
     /// # Errors
     /// [`ModuleFault`] only for a genuine engine/store fault while migrating.
-    pub fn update(&mut self, space: &ModuleSpace, name: &str, target: &str) -> Result<ModuleUpdate, ModuleFault> {
+    pub fn update(&mut self, at: &RowAddress, target: &str) -> Result<ModuleUpdate, ModuleFault> {
         let now = self.clock.instant();
         let mut generators = self.entropy.generators(now);
-        match self.host.update(space, name, target, &mut generators) {
+        match self.host.update(at, target, &mut generators) {
             Ok(report) => Ok(ModuleUpdate::Updated(report)),
             Err(ModuleError::Unknown(name)) => Ok(ModuleUpdate::Unknown(name)),
             Err(ModuleError::Disabled(name)) => Ok(ModuleUpdate::Disabled(name)),
@@ -313,21 +319,10 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     /// occurred.
     pub fn interface_read(
         &self,
-        space: &ModuleSpace,
-        name: &str,
+        at: &RowAddress,
         interface: &str,
     ) -> Result<Option<ViewResult>, ModuleError> {
-        self.host.interface_read(space, name, interface)
-    }
-
-    /// Aggregate one exposed interface across every enabled instance in `space`
-    /// (§13.9). Each row carries its inherited identity (instance name + exposed
-    /// row); a disabled instance is skipped (§13.12).
-    ///
-    /// # Errors
-    /// [`ModuleError`] on a store fault.
-    pub fn aggregate(&self, space: &ModuleSpace, interface: &str) -> Result<Vec<InterfaceRow>, ModuleError> {
-        self.host.aggregate(space, interface)
+        self.host.interface_read(at, interface)
     }
 
     /// Admit a mutation call against an enabled child instance (§13.11 direct
@@ -336,15 +331,10 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     /// # Errors
     /// [`ModuleError`] if the instance is unknown, disabled, or a store fault
     /// occurred; a rejected transition is an outcome, not an error.
-    pub fn child_call(
-        &mut self,
-        space: &ModuleSpace,
-        name: &str,
-        request: &CallRequest,
-    ) -> Result<CallOutcome, ModuleError> {
+    pub fn child_call(&mut self, at: &RowAddress, request: &CallRequest) -> Result<CallOutcome, ModuleError> {
         let now = self.clock.instant();
         let mut generators = self.entropy.generators(now);
-        self.host.child_call(space, name, request, &mut generators)
+        self.host.child_call(at, request, &mut generators)
     }
 
     /// Evaluate a named child view at head — the §13.11 *direct* module surface,
@@ -353,17 +343,17 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     /// # Errors
     /// [`ModuleError`] if the instance is unknown, disabled, or a store fault
     /// occurred.
-    pub fn child_view(&self, space: &ModuleSpace, name: &str, view: &str) -> Result<Option<ViewResult>, ModuleError> {
-        self.host.child_view(space, name, view)
+    pub fn child_view(&self, at: &RowAddress, view: &str) -> Result<Option<ViewResult>, ModuleError> {
+        self.host.child_view(at, view)
     }
 
-    /// Evaluate a **root** package view that reads its installed children through
-    /// `.modules::iface` (§13.9), with the enabled instances folded into the root
-    /// engine's evaluation — the aggregation a parent surface serves. Only the
-    /// interface-projected fields cross the boundary (§13.8 isolation). This is the
-    /// entry a `watch`/`view` on a root surface reading `.modules::iface` routes
-    /// through so the installed children become visible. `None` when no view of that
-    /// name is declared.
+    /// Evaluate a **root** package view that reads its mounted children through a
+    /// module collection, with the enabled instances materialized into the root
+    /// engine's evaluation. `.modules::iface` there is the §6.4 nested traversal
+    /// every collection has, and only the interface-projected fields cross the
+    /// boundary (§13.8 isolation). This is the entry a `watch`/`view` on such a root
+    /// surface routes through so the mounted children become visible. `None` when no
+    /// view of that name is declared.
     ///
     /// # Errors
     /// [`ModuleError`] on a store or view fault while aggregating or evaluating.
@@ -372,8 +362,8 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     }
 
     /// Dispatch an interface-addressed mutation to a child's `$expose`d mutation
-    /// (§13.10): route `interface.mutation` on the enabled instance in `space` to
-    /// the private mutation it binds and admit it against the child atomically.
+    /// (§13.10): route `interface.mutation` on the enabled instance at `at` to the
+    /// private mutation it binds and admit it against the child atomically.
     ///
     /// # Errors
     /// [`ModuleError`] if the instance is unknown or disabled, the interface binds
@@ -381,39 +371,37 @@ impl<F: StoreFactory> ModuleDeployment<F> {
     /// transition is a [`CallOutcome`], not an error.
     pub fn interface_call(
         &mut self,
-        space: &ModuleSpace,
-        name: &str,
+        at: &RowAddress,
         interface: &str,
         mutation: &str,
         request: &CallRequest,
     ) -> Result<CallOutcome, ModuleError> {
         let now = self.clock.instant();
         let mut generators = self.entropy.generators(now);
-        self.host.interface_call(space, name, interface, mutation, request, &mut generators)
+        self.host.interface_call(at, interface, mutation, request, &mut generators)
     }
 
-    /// Whether an instance of that name is installed in `space` (enabled or
-    /// disabled).
+    /// Whether an instance is mounted at `at` (enabled or disabled).
     #[must_use]
-    pub fn is_installed(&self, space: &ModuleSpace, name: &str) -> bool {
-        self.host.is_installed(space, name)
+    pub fn is_installed(&self, at: &RowAddress) -> bool {
+        self.host.is_installed(at)
     }
 
-    /// Whether the named instance in `space` is installed and enabled.
+    /// Whether the instance at `at` is mounted and enabled.
     #[must_use]
-    pub fn is_enabled(&self, space: &ModuleSpace, name: &str) -> bool {
-        self.host.is_enabled(space, name)
+    pub fn is_enabled(&self, at: &RowAddress) -> bool {
+        self.host.is_enabled(at)
     }
 
-    /// The incarnation of the named instance in `space`, if installed (§13.3, D.1).
+    /// The incarnation of the instance at `at`, if mounted (§13.3, D.1).
     #[must_use]
-    pub fn incarnation(&self, space: &ModuleSpace, name: &str) -> Option<&InstanceId> {
-        self.host.incarnation(space, name)
+    pub fn incarnation(&self, at: &RowAddress) -> Option<&InstanceId> {
+        self.host.incarnation(at)
     }
 
-    /// The admitted boundary bindings of the named instance in `space` (§13.3).
+    /// The admitted boundary bindings of the instance at `at` (§13.3).
     #[must_use]
-    pub fn bindings(&self, space: &ModuleSpace, name: &str) -> Option<&AdmittedBindings> {
-        self.host.bindings(space, name)
+    pub fn bindings(&self, at: &RowAddress) -> Option<&AdmittedBindings> {
+        self.host.bindings(at)
     }
 }

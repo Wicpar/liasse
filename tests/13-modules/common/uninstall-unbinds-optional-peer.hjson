@@ -21,11 +21,11 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                summary: { $view: { $key: "id", id: "text" } }
-                flags: { $view: { $key: "id", id: "text", billed: "bool" } }
-              }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              summary: { $view: { $key: "id", id: "text" } }
+              flags: { $view: { $key: "id", id: "text", billed: "bool" } }
             }
           }
         }
@@ -65,10 +65,10 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { $name: "billing", $module: "t.billing@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "billing", $module: "t.billing@1.0.0" } }
       expect: { outcome: ok } }
     // single candidate: the optional handle binds at install
-    { module_install: { space: "/companies/acme/modules", request: { $name: "report", $module: "t.report@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "report", $module: "t.report@1.0.0" } }
       expect: { outcome: ok } }
     { watch: "public.flags", id: "w1"
       expect_init: { value: [ { id: "f1", billed: true } ] } }

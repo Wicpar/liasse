@@ -1,7 +1,7 @@
 //! Driving the §13 module lifecycle op families over a [`ModuleDeployment`].
 //!
 //! The corpus's §13 cases install child module packages into the root's
-//! row-scoped module spaces (`/companies/acme/modules`) and drive the lifecycle
+//! row-scoped module collections (`/companies/acme/modules`) and drive the lifecycle
 //! verbs — `module_install`/`module_disable`/`module_enable`/`module_uninstall`/
 //! `module_rename`/`module_update` — against them. This module builds a
 //! [`ModuleDeployment`] over the case's root package and drives those verbs into
@@ -43,10 +43,10 @@ use liasse_artifact::ArtifactBuilder;
 use liasse_diag::SourceMap;
 use liasse_ident::{HistoryPoint, InstanceId, LineageId, PointId};
 use liasse_runtime::{
-    CallOutcome, CallRequest, Engine, InstallRequest, ModuleError, ModuleHost, ModuleSpace,
+    CallOutcome, CallRequest, Engine, InstallRequest, ModuleError, ModuleHost,
     Precision, ViewQuery,
 };
-use liasse_store::{InstanceStore, MemoryStore, MemoryStoreFactory};
+use liasse_store::{CollectionPath, InstanceStore, KeyValue, MemoryStore, MemoryStoreFactory, RowAddress};
 use liasse_surface::{
     Entropy, ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate, ModuleUpdateReport,
     VirtualClock as SurfaceClock,
@@ -75,7 +75,7 @@ pub(super) struct ModuleWatch {
 }
 
 /// The live §13 module deployment for one case: a root engine plus the child
-/// instances installed into its module spaces, together with the case's package
+/// instances installed into its module collections, together with the case's package
 /// map so an install/update can resolve a `$module` line to its child definition.
 pub(super) struct ModuleState {
     deployment: ModuleDeployment<MemoryStoreFactory>,
@@ -127,9 +127,9 @@ impl ModuleState {
     /// §13.3 `modules.install`: resolve the child `$module` package, build an
     /// [`InstallRequest`] from the step's `request` block (`$name`/`$module`/
     /// `$config`/`$use`, plus the child package's declared `$use`/`$deps`), and
-    /// admit it into the named module space.
+    /// admit it into the named module collection.
     pub(super) fn install(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
-        let space = self.space(target)?;
+        let collection = self.collection(target)?;
         let Some(request) = target.get("request").and_then(serde_json::Value::as_object) else {
             return Err(AdapterError::unsupported("`module_install` step carries no `request` block"));
         };
@@ -152,7 +152,7 @@ impl ModuleState {
         // package `$data` seed; every resulting value passes ordinary insertion and
         // load validation, so a row whose field fails a `$check` refuses the install.
         install = record_data(install, request.get("$data"));
-        match self.deployment.install(&space, install) {
+        match self.deployment.install(&collection, install) {
             Ok(observation) => Ok(observe(observation)),
             Err(fault) => Ok(Observation::outcome(install_fault_outcome(&fault))),
         }
@@ -160,8 +160,8 @@ impl ModuleState {
 
     /// §13.3/§13.12 `modules.disable`.
     pub(super) fn disable(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
-        let (space, name) = self.instance(target)?;
-        match self.deployment.disable(&space, &name) {
+        let at = self.instance(target)?;
+        match self.deployment.disable(&at) {
             Ok(observation) => Ok(observe(observation)),
             Err(fault) => Err(AdapterError::Host(format!("module disable fault: {fault}"))),
         }
@@ -169,8 +169,8 @@ impl ModuleState {
 
     /// §13.3 `modules.enable`.
     pub(super) fn enable(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
-        let (space, name) = self.instance(target)?;
-        match self.deployment.enable(&space, &name) {
+        let at = self.instance(target)?;
+        match self.deployment.enable(&at) {
             Ok(observation) => Ok(observe(observation)),
             Err(fault) => Err(AdapterError::Host(format!("module enable fault: {fault}"))),
         }
@@ -178,8 +178,8 @@ impl ModuleState {
 
     /// §13.3/§13.12 `modules.uninstall`.
     pub(super) fn uninstall(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
-        let (space, name) = self.instance(target)?;
-        match self.deployment.uninstall(&space, &name) {
+        let at = self.instance(target)?;
+        match self.deployment.uninstall(&at) {
             Ok(observation) => Ok(observe(observation)),
             Err(fault) => Err(AdapterError::Host(format!("module uninstall fault: {fault}"))),
         }
@@ -187,11 +187,11 @@ impl ModuleState {
 
     /// §13.3 `modules.rename`: a rekey preserving the incarnation (D.1).
     pub(super) fn rename(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
-        let (space, name) = self.instance(target)?;
+        let at = self.instance(target)?;
         let Some(to) = target.get("to").and_then(serde_json::Value::as_str) else {
             return Err(AdapterError::unsupported("`module_rename` step names no `to` instance name"));
         };
-        match self.deployment.rename(&space, &name, to) {
+        match self.deployment.rename(&at, to) {
             Ok(observation) => Ok(observe(observation)),
             Err(fault) => Err(AdapterError::Host(format!("module rename fault: {fault}"))),
         }
@@ -204,7 +204,7 @@ impl ModuleState {
     /// self-narrowing by package loading (`invalid`) or a withdrawn interface binding
     /// (`rejected`) — leaving the current release active (E.9).
     pub(super) fn update(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
-        let (space, name) = self.instance(target)?;
+        let at = self.instance(target)?;
         let instance = target.get("instance").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
         let Some(to) = target.get("to").and_then(serde_json::Value::as_str) else {
             return Err(AdapterError::unsupported("`module_update` step names no `to` package line"));
@@ -212,7 +212,7 @@ impl ModuleState {
         let package = self.child_package(to)?;
         let definition =
             serde_json::to_string(&package).map_err(|err| AdapterError::Host(err.to_string()))?;
-        match self.deployment.update(&space, &name, &definition) {
+        match self.deployment.update(&at, &definition) {
             // §13.15: assemble the update-report shape, adding the instance display
             // path the driver knows.
             Ok(ModuleUpdate::Updated(report)) => Ok(Observation::ok(Some(update_report_value(&instance, &report)))),
@@ -345,7 +345,7 @@ impl ModuleState {
     }
 
     /// Dispatch an interface-addressed call to a child's `$expose`d mutation
-    /// (§13.10): resolve the module space and instance from the call `args`, forward
+    /// (§13.10): resolve the module collection and instance from the call `args`, forward
     /// the child mutation's own arguments, and admit it against the enabled child.
     pub(super) fn interface_call(
         &mut self,
@@ -354,12 +354,14 @@ impl ModuleState {
     ) -> Result<Observation, AdapterError> {
         let Some(resolved) = iface.resolve(args) else {
             return Err(AdapterError::unsupported(
-                "an interface-addressed call could not resolve its module space/instance from the \
-                 call arguments",
+                "an interface-addressed call could not resolve its module collection/instance from \
+                 the call arguments",
             ));
         };
+        let at = self.entry(&resolved.steps, &resolved.collection, &resolved.instance)?;
         // §13.10: the child mutation receives every argument the selector did not
-        // consume (the space/instance `@param`s address the instance, not the child).
+        // consume (the collection/instance `@param`s address the instance, not the
+        // child).
         let forwarded = forward_args(args, &resolved.consumed);
         // §12.1 step 3 / Annex A.1: a forwarded child-mutation argument that does
         // not decode against its declared type is a malformed request, rejected
@@ -375,13 +377,7 @@ impl ModuleState {
         for (name, value) in forwarded_args {
             request = request.arg(name, value);
         }
-        match self.deployment.interface_call(
-            &resolved.space,
-            &resolved.instance,
-            &resolved.interface,
-            &resolved.mutation,
-            &request,
-        ) {
+        match self.deployment.interface_call(&at, &resolved.interface, &resolved.mutation, &request) {
             Ok(outcome) => Ok(observe_call_outcome(&outcome)),
             // §13.3/§13.12: an absent/disabled instance, or an interface that binds
             // no such routable mutation, refuses the addressed transition — an
@@ -393,26 +389,59 @@ impl ModuleState {
         }
     }
 
-    /// The module space the `space` member of an install step names (§13.2).
-    fn space(&self, target: &serde_json::Value) -> Result<ModuleSpace, AdapterError> {
-        let Some(path) = target.get("space").and_then(serde_json::Value::as_str) else {
-            return Err(AdapterError::unsupported("`module_install` step names no `space`"));
+    /// The module collection an install step's `at` display path names: the path's
+    /// last component is the collection, the pairs before it address its containing
+    /// row. Resolved against LIVE root state, so an address is built from the rows'
+    /// own typed keys rather than parsed out of the text.
+    fn collection(&self, target: &serde_json::Value) -> Result<CollectionPath, AdapterError> {
+        let Some(path) = target.get("at").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`module_install` step names no `at` collection path"));
         };
-        ModuleSpace::new(path).map_err(|_| AdapterError::Host(format!("malformed module space `{path}`")))
+        let (steps, name) = display_path(path)
+            .ok_or_else(|| AdapterError::Host(format!("malformed module collection path `{path}`")))?;
+        // A containing row that is NOT live still yields an address: whether the
+        // module collection exists there is the HOST's §13.2 judgement, and it
+        // answers with a `MissingContainingRow` rejection. Resolving it away here
+        // would turn that rejection into a driver error.
+        Ok(self
+            .deployment
+            .root()
+            .resolve_collection_path(&steps, &name)
+            .map_err(|error| AdapterError::Host(format!("module collection path `{path}`: {error}")))?
+            .unwrap_or_else(|| textual_collection(&steps, &name)))
     }
 
-    /// The `(space, instance name)` a lifecycle step's `instance` display path names
-    /// (§13.3): the trailing component is the instance name, the prefix its space.
-    fn instance(&self, target: &serde_json::Value) -> Result<(ModuleSpace, String), AdapterError> {
+    /// The module-collection entry a lifecycle step's `instance` display path names
+    /// (§13.3): the trailing component is the instance name, the prefix addresses
+    /// the collection.
+    fn instance(&self, target: &serde_json::Value) -> Result<RowAddress, AdapterError> {
         let Some(path) = target.get("instance").and_then(serde_json::Value::as_str) else {
             return Err(AdapterError::unsupported("module lifecycle step names no `instance` path"));
         };
-        let Some((space, name)) = split_instance(path) else {
+        let Some((collection, name)) = path.rsplit_once('/').filter(|(c, n)| !c.is_empty() && !n.is_empty()) else {
             return Err(AdapterError::Host(format!("malformed instance path `{path}`")));
         };
-        let space = ModuleSpace::new(space)
-            .map_err(|_| AdapterError::Host(format!("malformed module space in `{path}`")))?;
-        Ok((space, name.to_owned()))
+        let (steps, member) = display_path(collection)
+            .ok_or_else(|| AdapterError::Host(format!("malformed instance path `{path}`")))?;
+        self.entry(&steps, &member, name)
+    }
+
+    /// The address of entry `name` in the module collection `member` under the row
+    /// `steps` addresses. §13.3 makes an instance name a text value, so the entry
+    /// key is that text — no key parsing is involved.
+    fn entry(
+        &self,
+        steps: &[(String, String)],
+        member: &str,
+        name: &str,
+    ) -> Result<RowAddress, AdapterError> {
+        let collection = self
+            .deployment
+            .root()
+            .resolve_collection_path(steps, member)
+            .map_err(|error| AdapterError::Host(format!("module collection `{member}`: {error}")))?
+            .unwrap_or_else(|| textual_collection(steps, member));
+        Ok(collection.row(KeyValue::single(Value::Text(Text::new(name)))))
     }
 
     /// The child package whose declared `$module` line is `module`.
@@ -431,7 +460,8 @@ impl ModuleState {
 
 /// Map a §13.3 lifecycle observation to the harness outcome vocabulary. `EmptyName`
 /// and a malformed binding are static-validation failures (`invalid`); a duplicate
-/// name, unknown/disabled instance, or malformed space is an admission `rejected`.
+/// name, unknown/disabled instance, or absent containing row is an admission
+/// `rejected` — bad input, never an error.
 fn observe(observation: ModuleObservation) -> Observation {
     match observation {
         ModuleObservation::Applied => Observation::ok(None),
@@ -441,7 +471,6 @@ fn observe(observation: ModuleObservation) -> Observation {
         ModuleObservation::DuplicateName(_)
         | ModuleObservation::Unknown(_)
         | ModuleObservation::Disabled(_)
-        | ModuleObservation::InvalidSpace(_)
         | ModuleObservation::MissingContainingRow(_)
         // §13.5: an unresolvable required peer binding is an admission-time refusal.
         | ModuleObservation::PeerUnresolved(_) => Observation::outcome(Outcome::Rejected),
@@ -473,11 +502,50 @@ fn update_report_value(instance: &str, report: &ModuleUpdateReport) -> serde_jso
     })
 }
 
-/// Split a module instance display path into `(space, name)`: the trailing path
-/// component is the instance name, the prefix is its module space.
-fn split_instance(path: &str) -> Option<(&str, &str)> {
-    let (space, name) = path.rsplit_once('/')?;
-    (!space.is_empty() && !name.is_empty()).then_some((space, name))
+/// Read a flat `[collection, key, collection, key, …]` walk as its `(collection,
+/// key)` steps. `None` for an odd count — that names no single row, so it is
+/// refused rather than silently truncated.
+fn pairs(components: &[impl AsRef<str>]) -> Option<Vec<(String, String)>> {
+    let mut steps = Vec::with_capacity(components.len() / 2);
+    let mut walk = components.iter();
+    loop {
+        let Some(collection) = walk.next() else { return Some(steps) };
+        let key = walk.next()?;
+        steps.push((collection.as_ref().to_owned(), key.as_ref().to_owned()));
+    }
+}
+
+/// The module collection `steps`/`name` address when no live containing row backs
+/// it: every step key read as the `text` value it is written as. §13.2 makes the
+/// existence of that containing row the host's judgement, so this builds the
+/// address the host then rejects by name rather than deciding here.
+fn textual_collection(steps: &[(String, String)], name: &str) -> CollectionPath {
+    use liasse_ident::NameSegment;
+    use liasse_store::AddressStep;
+    let segment = NameSegment::new(name);
+    if steps.is_empty() {
+        return CollectionPath::top(segment);
+    }
+    CollectionPath::nested(
+        steps.iter().map(|(collection, key)| {
+            AddressStep::new(NameSegment::new(collection), KeyValue::single(Value::Text(Text::new(key.clone()))))
+        }),
+        segment,
+    )
+}
+
+/// Split a collection display path (`/companies/acme/modules`) into the
+/// `(collection, key)` steps of its containing row and the collection's own
+/// declaration name. `None` when the path is not an absolute, alternating
+/// collection/key walk ending in a collection name.
+fn display_path(path: &str) -> Option<(Vec<(String, String)>, String)> {
+    let body = path.strip_prefix('/')?;
+    let mut components: Vec<&str> = body.split('/').collect();
+    if components.iter().any(|c| c.is_empty()) {
+        return None;
+    }
+    let name = components.pop()?.to_owned();
+    Some((pairs(&components)?, name))
 }
 
 /// Record a `$use` object's handles onto an install request (§13.5), including the
@@ -588,7 +656,7 @@ fn observe_call_outcome(outcome: &CallOutcome) -> Observation {
     }
 }
 
-/// The call `args` restricted to the members the space/instance selectors did not
+/// The call `args` restricted to the members the collection/instance selectors did not
 /// consume — the arguments forwarded to the child mutation (§13.10).
 fn forward_args(args: &serde_json::Value, consumed: &BTreeSet<String>) -> serde_json::Value {
     let Some(map) = args.as_object() else {
@@ -607,7 +675,7 @@ fn interface_call_bindings(package: &serde_json::Value) -> BTreeMap<String, Inte
     let Some(model) = package.get("$model").and_then(serde_json::Value::as_object) else {
         return map;
     };
-    // The module space's `$interfaces` contracts declare each routed mutation's
+    // The module collection's `$interfaces` contracts declare each routed mutation's
     // parameter types (§13.8); a forwarded dispatch argument decodes against them.
     let contracts = interface_contracts(package);
     if let Some(public) = model.get("$public").and_then(serde_json::Value::as_object) {
@@ -668,9 +736,9 @@ fn root_mutation_params(package: &serde_json::Value) -> BTreeMap<String, BTreeMa
     out
 }
 
-/// The declared parameter types of every module-space interface mutation in a root
-/// package, keyed by `(interface, mutation)` (§13.8/§13.10). A `$modules` node's
-/// `$interfaces.<name>.$mut` keys carry the mutation's typed signature
+/// The declared parameter types of every module-collection interface mutation in a
+/// root package, keyed by `(interface, mutation)` (§13.8/§13.10). A module
+/// collection's `$interfaces.<name>.$mut` keys carry the mutation's typed signature
 /// (`consume({ amount: decimal })`), so a cross-module dispatch's forwarded arguments
 /// can be typed against the contract rather than shape-inferred.
 fn interface_contracts(package: &serde_json::Value) -> BTreeMap<(String, String), BTreeMap<String, Type>> {
@@ -681,9 +749,9 @@ fn interface_contracts(package: &serde_json::Value) -> BTreeMap<(String, String)
     out
 }
 
-/// Recursively harvest every `$modules.$interfaces` contract's declared mutation
-/// parameter types from a model subtree (a `$modules` space can be nested on any
-/// collection row, §13.2).
+/// Recursively harvest every module collection's `$interfaces` contract's declared
+/// mutation parameter types from a model subtree (a module collection can be nested
+/// under any row, §13.2).
 fn collect_interface_contracts(
     node: &serde_json::Value,
     out: &mut BTreeMap<(String, String), BTreeMap<String, Type>>,
@@ -691,9 +759,7 @@ fn collect_interface_contracts(
     let Some(object) = node.as_object() else {
         return;
     };
-    if let Some(interfaces) =
-        object.get("$modules").and_then(|modules| modules.get("$interfaces")).and_then(serde_json::Value::as_object)
-    {
+    if let Some(interfaces) = object.get("$interfaces").and_then(serde_json::Value::as_object) {
         for (interface, definition) in interfaces {
             let Some(muts) = definition.get("$mut").and_then(serde_json::Value::as_object) else {
                 continue;
@@ -730,7 +796,7 @@ fn parse_interface_signature(key: &str) -> (String, BTreeMap<String, Type>) {
     (name, types)
 }
 
-/// A component of an interface-addressed reference's module-space/instance path:
+/// A component of an interface-addressed reference's collection/instance path:
 /// either a literal key or a `@param` resolved from the call arguments.
 #[derive(Debug, Clone)]
 enum PathSeg {
@@ -739,16 +805,17 @@ enum PathSeg {
 }
 
 /// A parsed interface-addressed surface `$mut` reference (§13.10), e.g.
-/// `/companies[@company].modules[@module]::templates.create`: the module-space path
-/// template, the instance-name selector, the interface, and the routed mutation.
+/// `/companies[@company].modules[@module]::templates.create`: the module-collection
+/// path template, the instance-name selector, the interface, and the routed
+/// mutation.
 #[derive(Debug, Clone)]
 pub(super) struct InterfaceRef {
-    space: Vec<PathSeg>,
+    collection: Vec<PathSeg>,
     instance: PathSeg,
     interface: String,
     mutation: String,
     /// The declared parameter types of the routed mutation, taken from the module
-    /// space's `$interfaces` contract (§13.8/§13.10). A forwarded cross-module
+    /// collection's `$interfaces` contract (§13.8/§13.10). A forwarded cross-module
     /// dispatch argument decodes against its declared type here — so a `decimal`
     /// parameter fed a JSON string (`"4"`) becomes a `decimal`, not a `text`, and
     /// the owner mutation's typed metered assert sees the value it declared. Empty
@@ -758,11 +825,15 @@ pub(super) struct InterfaceRef {
 
 /// An [`InterfaceRef`] resolved against a call's arguments.
 struct ResolvedInterfaceCall {
-    space: ModuleSpace,
+    /// The `(collection, key)` steps addressing the module collection's containing
+    /// row.
+    steps: Vec<(String, String)>,
+    /// The module collection's own declaration name.
+    collection: String,
     instance: String,
     interface: String,
     mutation: String,
-    /// The argument names the space/instance selectors consumed.
+    /// The argument names the collection/instance selectors consumed.
     consumed: BTreeSet<String>,
 }
 
@@ -796,7 +867,7 @@ impl InterfaceRef {
             return None;
         };
         Some(Self {
-            space: walk_space(space_expr)?,
+            collection: walk_space(space_expr)?,
             instance: key_seg(instance_key)?,
             interface: interface.text.clone(),
             mutation: mutation.text.clone(),
@@ -806,18 +877,19 @@ impl InterfaceRef {
         })
     }
 
-    /// Resolve the module space and instance name against the call `args`.
+    /// Resolve the module collection and instance name against the call `args`.
     fn resolve(&self, args: &serde_json::Value) -> Option<ResolvedInterfaceCall> {
         let mut consumed = BTreeSet::new();
-        let mut path = String::new();
-        for seg in &self.space {
-            path.push('/');
-            path.push_str(&resolve_seg(seg, args, &mut consumed)?);
+        let mut components = Vec::new();
+        for seg in &self.collection {
+            components.push(resolve_seg(seg, args, &mut consumed)?);
         }
+        let collection = components.pop()?;
+        let steps = pairs(&components)?;
         let instance = resolve_seg(&self.instance, args, &mut consumed)?;
-        let space = ModuleSpace::new(&path).ok()?;
         Some(ResolvedInterfaceCall {
-            space,
+            steps,
+            collection,
             instance,
             interface: self.interface.clone(),
             mutation: self.mutation.clone(),

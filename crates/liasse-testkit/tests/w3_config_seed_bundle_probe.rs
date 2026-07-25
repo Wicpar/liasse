@@ -73,7 +73,7 @@ fn config_seed_default_read_rejects_genesis() {
       $app: "t.mod.host@1.0.0"
       $model: {
         companies: { $key: "id", id: "text", name: "text",
-          modules: { $modules: { $interfaces: { templates: { $view: { $key: "id", id: "text", stored_ccy: "text" } } } } },
+          modules: { $key: "text", $value: "module", $interfaces: { templates: { $view: { $key: "id", id: "text", stored_ccy: "text" } } } },
           catalog: { $view: ".modules::templates { module: modules.$key, id, stored_ccy, $sort: [module, id] }" }
         },
         $public: { catalog: { $params: { company: "text" }, $view: "/companies[@company].catalog" } }
@@ -91,7 +91,7 @@ fn config_seed_default_read_rejects_genesis() {
   }
   root: host
   steps: [
-    { module_install: { space: "/companies/acme/modules",
+    { module_install: { at: "/companies/acme/modules",
         request: { $name: "kit_eur", $module: "t.tplc@1.0.0", $config: { currency: "EUR" } } },
       expect: { outcome: ok } }
     { watch: "public.catalog", args: { company: "acme" }, id: "w1",
@@ -120,7 +120,7 @@ fn config_seed_default_read_rejects_with_default_config() {
       $app: "t.mod.host@1.0.0"
       $model: {
         companies: { $key: "id", id: "text", name: "text",
-          modules: { $modules: { $interfaces: { templates: { $view: { $key: "id", id: "text", stored_ccy: "text" } } } } },
+          modules: { $key: "text", $value: "module", $interfaces: { templates: { $view: { $key: "id", id: "text", stored_ccy: "text" } } } },
           catalog: { $view: ".modules::templates { module: modules.$key, id, stored_ccy, $sort: [module, id] }" }
         },
         $public: { catalog: { $params: { company: "text" }, $view: "/companies[@company].catalog" } }
@@ -138,7 +138,7 @@ fn config_seed_default_read_rejects_with_default_config() {
   }
   root: host
   steps: [
-    { module_install: { space: "/companies/acme/modules",
+    { module_install: { at: "/companies/acme/modules",
         request: { $name: "kit_def", $module: "t.tplc@1.0.0" } },
       expect: { outcome: ok } }
     { watch: "public.catalog", args: { company: "acme" }, id: "w1",
@@ -165,7 +165,7 @@ fn control_config_read_in_view_resolves() {
       $app: "t.mod.host@1.0.0"
       $model: {
         companies: { $key: "id", id: "text", name: "text",
-          modules: { $modules: { $interfaces: { templates: { $view: { $key: "id", id: "text", direct_ccy: "text" } } } } },
+          modules: { $key: "text", $value: "module", $interfaces: { templates: { $view: { $key: "id", id: "text", direct_ccy: "text" } } } },
           catalog: { $view: ".modules::templates { module: modules.$key, id, direct_ccy, $sort: [module, id] }" }
         },
         $public: { catalog: { $params: { company: "text" }, $view: "/companies[@company].catalog" } }
@@ -183,7 +183,7 @@ fn control_config_read_in_view_resolves() {
   }
   root: host
   steps: [
-    { module_install: { space: "/companies/acme/modules",
+    { module_install: { at: "/companies/acme/modules",
         request: { $name: "kit_eur", $module: "t.tplc@1.0.0", $config: { currency: "EUR" } } },
       expect: { outcome: ok } }
     { watch: "public.catalog", args: { company: "acme" }, id: "w1",
@@ -209,7 +209,7 @@ fn control_config_read_in_computed_resolves() {
       $app: "t.mod.host@1.0.0"
       $model: {
         companies: { $key: "id", id: "text", name: "text",
-          modules: { $modules: { $interfaces: { templates: { $view: { $key: "id", id: "text", shown_ccy: "text" } } } } },
+          modules: { $key: "text", $value: "module", $interfaces: { templates: { $view: { $key: "id", id: "text", shown_ccy: "text" } } } },
           catalog: { $view: ".modules::templates { module: modules.$key, id, shown_ccy, $sort: [module, id] }" }
         },
         $public: { catalog: { $params: { company: "text" }, $view: "/companies[@company].catalog" } }
@@ -227,7 +227,7 @@ fn control_config_read_in_computed_resolves() {
   }
   root: host
   steps: [
-    { module_install: { space: "/companies/acme/modules",
+    { module_install: { at: "/companies/acme/modules",
         request: { $name: "kit_eur", $module: "t.tplc@1.0.0", $config: { currency: "EUR" } } },
       expect: { outcome: ok } }
     { watch: "public.catalog", args: { company: "acme" }, id: "w1",
@@ -254,7 +254,7 @@ fn control_noconfig_seed_default_commits() {
       $app: "t.mod.host@1.0.0"
       $model: {
         companies: { $key: "id", id: "text", name: "text",
-          modules: { $modules: { $interfaces: { templates: { $view: { $key: "id", id: "text", stored_ccy: "text" } } } } },
+          modules: { $key: "text", $value: "module", $interfaces: { templates: { $view: { $key: "id", id: "text", stored_ccy: "text" } } } },
           catalog: { $view: ".modules::templates { module: modules.$key, id, stored_ccy, $sort: [module, id] }" }
         },
         $public: { catalog: { $params: { company: "text" }, $view: "/companies[@company].catalog" } }
@@ -272,7 +272,7 @@ fn control_noconfig_seed_default_commits() {
   }
   root: host
   steps: [
-    { module_install: { space: "/companies/acme/modules",
+    { module_install: { at: "/companies/acme/modules",
         request: { $name: "kit_eur", $module: "t.tplc@1.0.0", $config: { currency: "EUR" } } },
       expect: { outcome: ok } }
     { watch: "public.catalog", args: { company: "acme" }, id: "w1",

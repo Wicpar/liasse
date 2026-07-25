@@ -170,12 +170,12 @@ is a prebuilt `.liasse` artifact rather than a definition.
 ### `module_install` — owning chapter §13
 
 ```hjson
-{ module_install: { space: "<display path of the module space>",
+{ module_install: { at: "<display path of the module collection>",
     request: { $name, $module, $config?, $data?, $use? } },
   expect: { outcome: ok } }
 ```
 
-Performs the §13.3 `modules.install` into the named module space. `$module`
+Performs the §13.3 `modules.install` into one entry of the named module collection. `$module`
 names a package `name@version`, resolved against the case's `packages` map by
 each entry's declared `$module` value. `$use` bindings are display paths of
 sibling instances (§13.3). A successful install is a composition change and

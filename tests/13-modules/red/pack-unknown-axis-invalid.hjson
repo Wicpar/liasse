@@ -20,7 +20,7 @@
       companies: {
         $key: "id"
         id: "text"
-        modules: { $modules: {} }
+        modules: { $key: "text", $value: "module" }
       }
       $mut: {
         "archive({ at: module, when: timestamp })": [

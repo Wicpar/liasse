@@ -59,7 +59,7 @@ pub mod code {
     pub const KEYRING: &str = "M-KEYRING";
     /// A blob accepted-type or `$blob_storage` placement is invalid (§18).
     pub const BLOB: &str = "M-BLOB";
-    /// A `$modules`/`$use`/`$deps`/`$expose`/`$config` module composition
+    /// A module-collection/`$use`/`$deps`/`$expose`/`$config` module composition
     /// declaration is statically invalid (§13).
     pub const MODULE: &str = "M-MODULE";
     /// A `$history` policy declaration is malformed (§19).

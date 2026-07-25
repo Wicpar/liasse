@@ -12,7 +12,7 @@ commit). The cases in this chapter use:
 
 | step | semantics |
 |---|---|
-| `module_install` | `{ module_install: { space: "<display path of the module space>", request: { $name, $module, $config?, $data?, $use? } }, expect: {...} }`. Performs the §13.3 install into the named space. `$module` names a package `name@version`; it resolves against the case's `packages` map by each entry's declared `$module` value. Explicit `$use` bindings are display paths of sibling instances (§13.3). **Canonical registry step owned by this chapter** (see the Extended step registry in `tests/FORMAT.md`); other chapters (e.g. §19 child-module cases) reference it. |
+| `module_install` | `{ module_install: { at: "<display path of the module collection>", request: { $name, $module, $config?, $data?, $use? } }, expect: {...} }`. Performs the §13.3 install into one entry of the named module collection. `$module` names a package `name@version`; it resolves against the case's `packages` map by each entry's declared `$module` value. Explicit `$use` bindings name a sibling instance by NAME (§13.3/§13.5: peer lookup stays within the sibling set, which is that collection). **Canonical registry step owned by this chapter** (see the Extended step registry in `tests/FORMAT.md`); other chapters (e.g. §19 child-module cases) reference it. |
 | `module_uninstall` | `{ module_uninstall: { instance: "<display path>" }, expect }` — §13.3/§13.12 uninstall through the ordinary cross-module deletion plan. |
 | `module_disable` | `{ module_disable: { instance: "<path>" }, expect }` — §13.3/§13.12 disable. |
 | `module_enable` | `{ module_enable: { instance: "<path>" }, expect }` — §13.3 enable (revalidate and restore). |
@@ -84,7 +84,7 @@ plain-English sense of "the release is refused").
   `.modules["<name>"]::<interface>.<mutation>` (grounded in §13.9, §13.10
   `#credits.consume`, §13.11 `#billing.invoices.create`, and the W4 worked
   example `.modules[@module]::templates[@template]`).
-- An `$expose` (or `$modules.$expose`) `$mut` binding value MAY be an inline
+- An `$expose` (or a module collection's `$expose`) `$mut` binding value MAY be an inline
   single-statement mutation expression, not only a named-`$mut` reference.
   §13.8 says a module "binds that contract to private views and mutations",
   and §3.2 / §8 show a bare insert such as `.tasks + { title: @title }` as a

@@ -201,3 +201,38 @@ pub const SEEDED_INVALID: &str = r#"{
     }
   }
 }"#;
+
+/// The module collection a display path names (`/companies/acme/modules`), built
+/// structurally from its alternating `(collection, key)` steps and its trailing
+/// collection name. Every fixture keys its containing rows by text, which is what
+/// the corpus does too, so the address is exact rather than approximated.
+#[must_use]
+pub fn collection_at(path: &str) -> liasse_store::CollectionPath {
+    use liasse_ident::NameSegment;
+    use liasse_store::{AddressStep, CollectionPath, KeyValue};
+    use liasse_value::{Text, Value};
+    let mut components: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    let name = NameSegment::new(components.pop().unwrap_or_default());
+    let mut steps: Vec<AddressStep> = Vec::with_capacity(components.len() / 2);
+    let mut walk = components.iter();
+    while let (Some(collection), Some(key)) = (walk.next(), walk.next()) {
+        steps.push(AddressStep::new(
+            NameSegment::new(*collection),
+            KeyValue::single(Value::Text(Text::new(*key))),
+        ));
+    }
+    if steps.is_empty() {
+        CollectionPath::top(name)
+    } else {
+        CollectionPath::nested(steps, name)
+    }
+}
+
+/// The address of the module-collection entry `name` under the collection the
+/// display path `path` names — the identity of one mounted instance (§13.3).
+#[must_use]
+pub fn mount_at(path: &str, name: &str) -> liasse_store::RowAddress {
+    use liasse_store::KeyValue;
+    use liasse_value::{Text, Value};
+    collection_at(path).row(KeyValue::single(Value::Text(Text::new(name))))
+}

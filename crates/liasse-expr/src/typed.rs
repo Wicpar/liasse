@@ -612,5 +612,10 @@ pub(crate) enum BuiltinFn {
     /// `rollback_module(m, point)` — fork `m`'s timeline back to a retained point
     /// (§13.16). HOST-PRIVILEGED.
     RollbackModule,
+    /// `reinstall_module(m)` — the source of a `<-` that moves `m` into a DIFFERENT
+    /// module collection, re-admitting it against that collection's §13.4/§13.5/
+    /// §13.8 boundary (§13.16). HOST-PRIVILEGED, and admitted only in that
+    /// position: with no destination there is no admission to re-run.
+    ReinstallModule,
 }
 

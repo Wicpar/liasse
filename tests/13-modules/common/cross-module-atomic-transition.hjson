@@ -21,22 +21,22 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                credits: {
-                  $view: { $key: "id", id: "text", balance: "decimal" }
-                  $mut: {
-                    "consume({ amount: decimal })": {
-                      $return: { remaining: "decimal" }
-                    }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              credits: {
+                $view: { $key: "id", id: "text", balance: "decimal" }
+                $mut: {
+                  "consume({ amount: decimal })": {
+                    $return: { remaining: "decimal" }
                   }
                 }
-                orders: {
-                  $view: { $key: "id", id: "text", cost: "decimal" }
-                  $mut: {
-                    "place({ id: text, cost: decimal })": {
-                      $return: { id: "text" }
-                    }
+              }
+              orders: {
+                $view: { $key: "id", id: "text", cost: "decimal" }
+                $mut: {
+                  "place({ id: text, cost: decimal })": {
+                    $return: { id: "text" }
                   }
                 }
               }
@@ -101,9 +101,9 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { $name: "bank", $module: "t.bank@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "bank", $module: "t.bank@1.0.0" } }
       expect: { outcome: ok } }
-    { module_install: { space: "/companies/acme/modules", request: { $name: "shop", $module: "t.shop@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "shop", $module: "t.shop@1.0.0" } }
       expect: { outcome: ok } }
     { watch: "public.orders", id: "wo", expect_init: { value: [] } }
     { watch: "public.pools", id: "wp", expect_init: { value: [ { id: "main", balance: "10" } ] } }

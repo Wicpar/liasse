@@ -20,10 +20,10 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                templates: { $view: { $key: "id", id: "text", label: "text" } }
-              }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: { $view: { $key: "id", id: "text", label: "text" } }
             }
           }
         }
@@ -45,7 +45,7 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: { $name: "kit", $module: "t.tplc@1.0.0", $config: { currency: true } } }
       expect: { outcome: invalid, violates: ["§13.1", "§13.3"]
                 detail: "installation $config value does not match the declared typed struct" } }

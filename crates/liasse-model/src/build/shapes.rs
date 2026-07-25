@@ -1,9 +1,9 @@
 //! Object-form member dispatch (SPEC.md Annex C.2) and the non-scalar node
 //! forms: static structs, sets, views, refs, `$like` recursion, the `$keyring`
-//! version-view and `$modules` instance-space declarations (each projected as a
-//! typed view for its feature phase), and the `$bucket` source-collection
-//! declaration. Scalar-field forms live in [`super::fields`], keyed collections
-//! in [`super::keys`]. Continues the same [`Builder`] impl.
+//! version-view declaration (projected as a typed view for its feature phase),
+//! and the `$bucket` source-collection declaration. Scalar-field forms live in
+//! [`super::fields`], keyed collections — including the map form a module
+//! collection takes — in [`super::keys`]. Continues the same [`Builder`] impl.
 
 use liasse_syntax::{DocMember, DocValue};
 use liasse_value::Type;
@@ -21,7 +21,7 @@ impl<'a> Builder<'a> {
     /// absent because it COMPOSES with `$key` (a keyed lifecycle collection) and
     /// otherwise declares a source-backed bucket, so it never conflicts here.
     const KIND_MARKERS: &'static [&'static str] =
-        &["$key", "$set", "$view", "$ref", "$enum", "$type", "$keyring", "$modules", "$like"];
+        &["$key", "$set", "$view", "$ref", "$enum", "$type", "$keyring", "$like"];
 
     /// Dispatch an object-valued member on its shape marker (Annex C.2).
     pub(super) fn object_node(
@@ -82,9 +82,6 @@ impl<'a> Builder<'a> {
         }
         if value.member("$keyring").is_some() {
             return self.keyring_node(reporter, value);
-        }
-        if value.member("$modules").is_some() {
-            return self.modules_node(reporter, value, path);
         }
         // §5.3/§14.4/§14.6: a source-backed bucket (its `$bucket` object declares
         // a `$source`) derives its rows and MAY carry a custom `$key` built from
@@ -210,63 +207,25 @@ impl<'a> Builder<'a> {
         })
     }
 
-    /// A `$modules` module space (§13.2, C.15). The composition grammar
-    /// (`$expose`/`$interfaces`/`$auth`) is validated for shape; instance
-    /// installation and cross-package resolution are runtime seams.
+    /// Add one read member per declared `$interfaces` entry to a module
+    /// collection's row shape (§13.8): the interface name, its node the
+    /// interface's `$view` row shape. The `$mut` contracts are boundary *call*
+    /// contracts, not readable state, so only `$view` contributes to the read
+    /// shape.
     ///
-    /// §13.8/§13.9: an installed module space is a *keyed view of instances*.
-    /// Each instance exposes the space's declared `$interfaces` (§13.8) as nested
-    /// collections of their `$view` row shape, so `.modules::iface` interface
-    /// aggregation (§13.9), `modules.$key` (the instance name), and a whole
-    /// `.modules` view all type-check. The node is therefore projected as a view;
-    /// the instance shape (its interface members) is built here, and its
-    /// instance-name key plus the interface row types are attached in the
-    /// deferred [`crate::module::type_module_spaces`] pass, which runs with the
-    /// resolver so a nested-collection `$view` referencing a `$types` shape
-    /// resolves. Where an interface's exposed rows are only knowable from the
-    /// runtime composition set, the declared `$interfaces` `$view` is the typed
-    /// contract (§13.8: "A module space declares complete boundary contracts").
-    fn modules_node(&mut self, reporter: &mut Reporter, value: &'a DocValue, path: &[String]) -> Node {
-        let space = value.member("$modules");
-        if let Some(space) = space {
-            crate::module::check_space(reporter, &space.value);
-        }
-        for member in value.as_object().unwrap_or(&[]) {
-            if member.name.text != "$modules" {
-                reporter.reject(
-                    member.span,
-                    code::RESERVED_MEMBER,
-                    format!("`{}` may not accompany a `$modules` space", member.name.text),
-                );
-            }
-        }
-        let instance = self.module_instance_shape(reporter, space, path);
-        self.module_spaces.push((path.to_vec(), instance));
-        Node::View(crate::state::ViewDecl {
-            expr: ExprSource {
-                text: ".".to_owned(),
-                span: value.span,
-            },
-            row: liasse_expr::RowType::keyless(std::iter::empty::<(String, liasse_expr::ExprType)>()),
-        })
-    }
-
-    /// Build the per-instance shape of a module space (§13.8): one member per
-    /// declared `$interfaces` entry, its node the interface's `$view` row shape.
-    /// The `$mut` contracts are boundary *call* contracts, not readable state, so
-    /// only `$view` contributes to the instance's read shape.
-    fn module_instance_shape(
+    /// The row this lands on is the ordinary `{ $key, $value }` map row of the
+    /// module collection, so `modules.$key` is the map key, `.modules[@id].$value`
+    /// is the module value, and `.modules::iface` is the §6.4 nested traversal
+    /// every collection has — no separate addressing scheme of its own.
+    pub(super) fn module_interface_members(
         &mut self,
         reporter: &mut Reporter,
-        space: Option<&'a DocMember>,
+        interfaces: Option<&'a DocMember>,
         path: &[String],
-    ) -> Shape {
-        let mut shape = Shape::default();
-        let interfaces = space
-            .and_then(|space| space.value.member("$interfaces"))
-            .and_then(|m| m.value.as_object());
-        let Some(interfaces) = interfaces else {
-            return shape;
+        shape: &mut Shape,
+    ) {
+        let Some(interfaces) = interfaces.and_then(|m| m.value.as_object()) else {
+            return;
         };
         for interface in interfaces {
             let Ok(name) = DeclName::parse(&interface.name.text) else {
@@ -284,12 +243,11 @@ impl<'a> Builder<'a> {
                 node,
             });
         }
-        shape
     }
 
-    /// The node of one module-space interface's `$view` shape (§13.8). With a
-    /// `$key` it is a keyed collection of interface rows (what `.modules::iface`
-    /// aggregates); without one it is a single struct row.
+    /// The node of one module-collection interface's `$view` shape (§13.8). With
+    /// a `$key` it is a keyed collection of interface rows; without one it is a
+    /// single struct row.
     fn interface_node(&mut self, reporter: &mut Reporter, view: &'a DocValue, path: &[String]) -> Node {
         if view.member("$key").is_some() {
             Node::Collection(Box::new(self.collection(reporter, view, path)))

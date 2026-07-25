@@ -22,19 +22,19 @@
           name: "text"
           $mut: { rename: ".name = @name" }
           modules: {
-            $modules: {
-              $expose: {
-                company: {
-                  $view: ". { id, name }"
-                  $mut: { rename: ".rename" }
-                }
+            $key: "text"
+            $value: "module"
+            $expose: {
+              company: {
+                $view: ". { id, name }"
+                $mut: { rename: ".rename" }
               }
-              $interfaces: {
-                info: {
-                  $view: { $key: "id", id: "text", company: "text", org: "text" }
-                  $mut: {
-                    "rename_company({ name: text })": {}
-                  }
+            }
+            $interfaces: {
+              info: {
+                $view: { $key: "id", id: "text", company: "text", org: "text" }
+                $mut: {
+                  "rename_company({ name: text })": {}
                 }
               }
             }
@@ -81,9 +81,9 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { $name: "brand", $module: "t.brand@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "brand", $module: "t.brand@1.0.0" } }
       expect: { outcome: ok } }
-    { module_install: { space: "/companies/globex/modules", request: { $name: "brand", $module: "t.brand@1.0.0" } }
+    { module_install: { at: "/companies/globex/modules", request: { $name: "brand", $module: "t.brand@1.0.0" } }
       expect: { outcome: ok } }
     { watch: "public.info", args: { company: "acme" }, id: "wa"
       expect_init: { value: [ { id: "s1", company: "Acme", org: "Acme" } ] } }

@@ -112,8 +112,8 @@ pub use liasse_expr::RowId;
 pub use liasse_runtime::{
     AcceptedType, AdmittedBindings, Blob, BlobEngine, CommitSeq, ConflictKind, CopyState,
     DeclaredDescriptor, DeleteError, DepSpec, Engine, Erasure, Extract, FetchError, ImportError,
-    ImportRelation, ImportReport, InstallRequest, InterfaceRow, KeyState, KeyVersion, Keyring,
-    KeyringError, KeyringPolicy, MergeConflict, MergeOutcome, ModuleError, ModuleHost, ModuleSpace,
+    ImportRelation, ImportReport, InstallRequest, KeyState, KeyVersion, Keyring,
+    KeyringError, KeyringPolicy, MergeConflict, MergeOutcome, ModuleError, ModuleHost,
     ModuleUpdateReport, Occurrence, PatchOp, Placement, PlacementPolicy, PlacementState, Precision, Rejection,
     ResponseValue, RotationMode,
     RotationOutcome, RotationSchedule, SeedMerge, SessionToken, Store, StoreId, Timestamp,

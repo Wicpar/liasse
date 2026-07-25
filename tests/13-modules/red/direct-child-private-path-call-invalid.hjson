@@ -23,14 +23,14 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                templates: {
-                  $view: { $key: "id", id: "text", label: "text" }
-                  $mut: {
-                    "create({ id: text, label: text })": {
-                      $return: { id: "text", label: "text" }
-                    }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: {
+                $view: { $key: "id", id: "text", label: "text" }
+                $mut: {
+                  "create({ id: text, label: text })": {
+                    $return: { id: "text", label: "text" }
                   }
                 }
               }

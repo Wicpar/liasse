@@ -158,7 +158,7 @@ fn ref_key_compatible(target: &RefTarget, key: &Type) -> bool {
 /// Parse a `$mut` member name into its base name and optional §8.3 prototype,
 /// or explain why the prototype is malformed. The prototype object is parsed by
 /// the shared A.2 type grammar ([`crate::types::parse_prototype`]). Shared with
-/// the module phase, which validates a `$modules` interface `$mut` contract name
+/// the module phase, which validates a module collection's interface `$mut` contract name
 /// against the same prototype grammar (§13.8).
 pub(crate) fn parse_name(raw: &str) -> Result<(String, Option<BTreeMap<String, ExprType>>), String> {
     let Some((base, rest)) = raw.split_once('(') else {

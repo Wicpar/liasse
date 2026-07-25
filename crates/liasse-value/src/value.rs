@@ -98,15 +98,16 @@ impl Struct {
 /// A move-only handle to a module instance (SPEC §13.16). It is physically
 /// `Clone` — an *identifier*, not the instance — but the affine type layer forbids
 /// duplicating it with `=` ([`Type::is_copyable`](crate::Type::is_copyable) is
-/// `false` for a `module`), and it is never a persisted field value: a module
-/// space is the module host's live children plus the durable composition, not an
-/// ordinary stored collection. Aliasing (a second owner) is a static error.
+/// `false` for a `module`), and it is never a persisted field value: the mounted
+/// instances are the module host's live children plus the durable composition,
+/// not ordinary stored rows. Aliasing (a second owner) is a static error.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ModuleHandle {
-    /// A reference to an instance already mounted in a module space, addressed by
-    /// its `(space declaration path, instance name)` key — the key the module host
-    /// mounts it under.
-    Mounted { space: String, name: String },
+    /// A reference to a mounted instance, addressed by the rendered address of the
+    /// module-collection entry it occupies (`/companies/"acme"/modules/"kit"`) —
+    /// the ordinary row address of that entry, which is the key the module host
+    /// mounts it under and the key its durable composition records.
+    Mounted(String),
     /// A not-yet-materialized module produced by `unpack`: the source `.liasse`
     /// blob descriptor, with decode, mount, and state reconstruction DEFERRED to
     /// apply or read (SPEC §13.16). Boxed to keep [`Value`] small.
@@ -273,10 +274,9 @@ impl Value {
     fn module_to_wire(handle: &ModuleHandle) -> serde_json::Value {
         use serde_json::Value as J;
         let inner = match handle {
-            ModuleHandle::Mounted { space, name } => Self::canonical_object([
-                ("name".to_owned(), J::String(name.clone())),
-                ("space".to_owned(), J::String(space.clone())),
-            ]),
+            ModuleHandle::Mounted(at) => {
+                Self::canonical_object([("at".to_owned(), J::String(at.clone()))])
+            }
             ModuleHandle::Pending(descriptor) => Self::canonical_object([(
                 "pending".to_owned(),
                 J::String(descriptor.sha512().to_canonical_text()),

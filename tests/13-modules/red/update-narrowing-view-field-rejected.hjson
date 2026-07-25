@@ -23,13 +23,13 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                // permissive contract: only "id" is required, so the drop of
-                // "label" is not a contract-satisfaction failure — it is a
-                // narrowing of the module's own exposed surface (§13.14).
-                templates: { $view: { $key: "id", id: "text" } }
-              }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              // permissive contract: only "id" is required, so the drop of
+              // "label" is not a contract-satisfaction failure — it is a
+              // narrowing of the module's own exposed surface (§13.14).
+              templates: { $view: { $key: "id", id: "text" } }
             }
           }
           catalog: {
@@ -72,7 +72,7 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.tplw@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "kit", $module: "t.tplw@1.0.0" } }
       expect: { outcome: ok } }
     { module_update: { instance: "/companies/acme/modules/kit", to: "t.tplw@1.1.0" }
       expect: { outcome: invalid, violates: ["§13.14"]

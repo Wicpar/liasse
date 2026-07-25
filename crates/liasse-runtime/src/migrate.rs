@@ -657,7 +657,7 @@ fn build_migrated<G: crate::generator::Generators>(
     // source). Spend re-funding over NESTED spend collections is inert here because
     // migration stages only top-level rows in CORE (the documented nested-collection
     // seam); a nested-spend re-fund under prospective migrated state, and the
-    // module/interface aggregate enforcement (`EvalCtx.modules` is `None` on this
+    // module/interface enforcement (`EvalCtx.modules` is `None` on this
     // path), remain flagged follow-on holes rather than a subsystem-crossing change.
     crate::meter::admit::enforce(&ctx, &target.compiled.meters, &mut prospective, &addresses)?;
     let rows: BTreeMap<RowAddress, FieldMap> = addresses

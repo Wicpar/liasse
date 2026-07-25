@@ -20,13 +20,13 @@
 mod support;
 
 use liasse_runtime::{
-    Engine, InstallRequest, ModuleHost, ModuleSpace, PatchOp, Value, ViewDelta, ViewQuery,
+    Engine, InstallRequest, ModuleHost, PatchOp, Value, ViewDelta, ViewQuery,
 };
 use liasse_store::{MemoryStore, MemoryStoreFactory};
 use liasse_value::Text;
 use support::generator;
 
-/// Root package: a root-level `$modules` space `modules` declaring a `templates`
+/// Root package: a root-level module collection `modules` declaring a `templates`
 /// interface, and a `catalog` view that aggregates it across every installed
 /// instance (§13.9) — the canonical corpus shape `.modules::templates { module:
 /// modules.$key, id, label, $sort: [module, id] }`.
@@ -35,10 +35,10 @@ const ROOT_LEVEL: &str = r#"{
   "$app": "t.mod.host@1.0.0"
   "$model": {
     "modules": {
-      "$modules": {
-        "$interfaces": {
-          "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
-        }
+      "$key": "text"
+      "$value": "module"
+      "$interfaces": {
+        "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
       }
     }
     "catalog": {
@@ -77,8 +77,8 @@ fn host() -> ModuleHost<MemoryStoreFactory> {
 
 /// Install two instances into the same space, each exposing a template keyed
 /// `dup` (same exposed row key, distinct instance and distinct label).
-fn host_with_two_dup_instances() -> (ModuleHost<MemoryStoreFactory>, ModuleSpace) {
-    let space = ModuleSpace::new("/modules").expect("mount");
+fn host_with_two_dup_instances() -> (ModuleHost<MemoryStoreFactory>, liasse_store::CollectionPath) {
+    let space = support::collection_at("/modules");
     let mut host = host();
     host.install(
         &space,
@@ -126,12 +126,12 @@ fn live_view_delta_distinguishes_rows_of_distinct_instances() {
     // row from the aggregation (§13.12); the correct patch is exactly one `remove`
     // of an identity distinct from kit_a's, and NOTHING touching kit_a (no insert,
     // move, or update).
-    let (mut host, space) = host_with_two_dup_instances();
+    let (mut host, _space) = host_with_two_dup_instances();
 
     let before = host.root_view("catalog", &ViewQuery::new()).expect("view").expect("declared");
     assert_eq!(before.len(), 2);
 
-    host.disable(&space, "kit_b").expect("disable kit_b");
+    host.disable(&support::mount_at("/modules", "kit_b")).expect("disable kit_b");
     let after = host.root_view("catalog", &ViewQuery::new()).expect("view").expect("declared");
     assert_eq!(after.len(), 1, "only kit_a's row remains after disabling kit_b");
     assert_eq!(after.rows()[0].field("module"), Some(&text("kit_a")));

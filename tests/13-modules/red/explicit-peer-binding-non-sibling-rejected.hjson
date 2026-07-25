@@ -1,15 +1,19 @@
 {
   format: 1
-  name: peer-lookup-stays-in-sibling-space-rejected
+  name: explicit-peer-binding-non-sibling-rejected
   suite: scenario
-  spec: ["#modules", "§13.5", "§13.2"]
+  spec: ["#modules", "§13.3", "§13.5"]
   note: '''
-    §13.5: peer lookup stays within the sibling space; §13.2: installing the
-    same package in each space creates independent instances. A "people"
-    instance exists in Globex's space, and "sales" is installed in Acme's
-    space requiring t.people/people@1. Resolution considers only Acme's
-    siblings, finds zero candidates there, and rejects the required binding
-    even though a compatible instance exists in another space.
+    §13.3: an explicit $use binding names one concrete SIBLING instance and
+    exposed interface. §13.5: peer lookup stays within the sibling set, which is
+    the module collection being installed into — and a module collection under a
+    different containing row is a DIFFERENT collection, by ordinary nesting.
+
+    The install request for "sales" in Acme's collection names `peopleG`, which
+    is installed in Globex's. It is not a member of Acme's collection, so the
+    explicit binding resolves to nothing and the install is rejected. There is no
+    spelling that would have reached across: the binding names an instance within
+    the sibling set, so an out-of-set name is simply absent from it.
   '''
 
   packages: {
@@ -62,14 +66,16 @@
   root: host
 
   steps: [
-    // the only compatible candidate lives in a DIFFERENT space
     { module_install: { at: "/companies/globex/modules"
-        request: { $name: "people", $module: "t.people@1.0.0"
+        request: { $name: "peopleG", $module: "t.people@1.0.0"
                    $data: { members: { p1: { name: "Alice" } } } } }
       expect: { outcome: ok } }
-    // Acme's space has no people sibling: peer lookup does not cross spaces
-    { module_install: { at: "/companies/acme/modules", request: { $name: "sales", $module: "t.sales@1.0.0" } }
+    // The explicit binding names an instance of ANOTHER company's module
+    // collection, so it is not in Acme's sibling set.
+    { module_install: { at: "/companies/acme/modules"
+        request: { $name: "sales", $module: "t.sales@1.0.0"
+                   $use: { people: "peopleG" } } }
       expect: { outcome: rejected, violates: ["§13.5"]
-                detail: "required peer binding has zero candidates in the instance's own module collection; peer lookup stays within the sibling space" } }
+                detail: "an explicit peer binding must name a sibling instance in the same module collection" } }
   ]
 }

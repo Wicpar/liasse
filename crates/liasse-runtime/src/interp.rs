@@ -528,7 +528,7 @@ impl<'a> Interp<'a> {
     /// `dest <- dest` (an identity move) leaves the rebound destination in place
     /// rather than unsetting it.
     ///
-    /// §13.16: a move into a `$modules` slot — or of a `module` value anywhere else
+    /// §13.16: a move into a module-collection entry — or of a `module` value anywhere else
     /// — is not a binding transfer at all; it carries an instance through the §13.10
     /// lifecycle. [`Interp::module_move`](crate::module_install) classifies and
     /// performs it, refusing loudly for every destination it cannot resolve to
@@ -1122,12 +1122,27 @@ impl<'a> Interp<'a> {
         };
         let current = self.current()?;
         let mut values = Vec::new();
+        // §13.2/§13.10: `at` names the module-collection entry the operation writes.
+        // It is a PATH, resolved by the interpreter's ordinary collection addressing
+        // — the same resolution `.modules[@id] <- …` uses — never a coordinate
+        // string the host would have to parse back into an address.
+        let mut slot = None;
         for arg in args {
             match arg {
                 Arg::Positional(Expr { kind: ExprKind::Object(members), .. }) => {
                     for member in members {
-                        values.push(self.dispatch_member(member, source, &current)?);
+                        match member.kind {
+                            BlockMemberKind::Named { ref name, value: Some(ref value) }
+                                if name.text == liasse_model::lifecycle_arg::AT =>
+                            {
+                                slot = self.module_slot_arg(value, op, source)?;
+                            }
+                            _ => values.push(self.dispatch_member(member, source, &current)?),
+                        }
                     }
+                }
+                Arg::Named { name, value } if name.text == liasse_model::lifecycle_arg::AT => {
+                    slot = self.module_slot_arg(value, op, source)?;
                 }
                 Arg::Named { name, value } => {
                     values.push((name.text.clone(), self.scalar_value(value, source, &current)?));
@@ -1135,13 +1150,38 @@ impl<'a> Interp<'a> {
                 Arg::Positional(_) => {
                     return Err(Rejection::new(
                         RejectionReason::Malformed,
-                        "a module lifecycle call takes an argument object `{ blob, space, name }` \
-                         (§13.10)",
+                        "a module lifecycle call takes an argument object `{ at, blob }` or \
+                         `{ module }` (§13.10)",
                     ));
                 }
             }
         }
-        lifecycle.perform(op, values)
+        lifecycle.perform(op, slot, values)
+    }
+
+    /// Resolve an `at:` lifecycle argument to the module-collection entry it names,
+    /// refusing a destination that is not one. A destination the resolution cannot
+    /// account for would otherwise reach the host as "no slot", which the recorder
+    /// refuses — this reports the reason the caller can act on.
+    fn module_slot_arg(
+        &self,
+        value: &Expr,
+        op: LifecycleOp,
+        source: SourceId,
+    ) -> Result<Option<RowAddress>, Rejection> {
+        let target = self.row_target(value, source)?.filter(|t| self.compiled.module_collection(&t.path).is_some());
+        match target {
+            Some(target) => Ok(Some(target.address)),
+            None => Err(Rejection::new(
+                RejectionReason::Malformed,
+                format!(
+                    "`module.{}`'s `at` names one entry of a module collection — a map declared \
+                     `{{ $key: text, $value: module }}` — written as `.<collection>[<name>]` \
+                     (§13.2/§13.10). This destination is not one.",
+                    op.member()
+                ),
+            )),
+        }
     }
 
     /// Run a declared mutation as an internal call (§8.11): its program executes
@@ -2350,19 +2390,27 @@ impl<'a> Interp<'a> {
         match &expr.kind {
             ExprKind::Name(id) => Ok(self.top_loc(&id.text)),
             ExprKind::Field { base, member } => {
-                if let Some(loc) = self.top_loc(&member.text) {
+                // A base that names ONE row (`.companies[@c]`, a bound local) is an
+                // explicit containment: `member` is that row's child collection, and
+                // a top-level collection of the same declaration name is a different
+                // collection the author did not write. Resolving the top-level one
+                // here would address a real, different collection while every call
+                // reported success — so the explicit reading is tried first, and the
+                // bare `.name` / `/name` forms keep the top-level reading they have.
+                let explicit = !matches!(base.kind, ExprKind::Current | ExprKind::Root);
+                if !explicit && let Some(loc) = self.top_loc(&member.text) {
                     return Ok(Some(loc));
                 }
                 // Nested: the base resolves to a parent row whose compiled shape
                 // declares `member` as a child collection.
                 let Some(parent) = self.row_target(base, source)? else {
-                    return Ok(None);
+                    return Ok(if explicit { self.top_loc(&member.text) } else { None });
                 };
                 let Some(parent_collection) = self.compiled.collection_at(&parent.path) else {
-                    return Ok(None);
+                    return Ok(if explicit { self.top_loc(&member.text) } else { None });
                 };
                 if parent_collection.child(&member.text).is_none() {
-                    return Ok(None);
+                    return Ok(if explicit { self.top_loc(&member.text) } else { None });
                 }
                 let mut decl = parent.path.clone();
                 decl.push(member.text.clone());

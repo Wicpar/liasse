@@ -1,12 +1,14 @@
 //! The module composition host: a root engine plus the child instances mounted in
-//! its row-scoped module spaces (§13).
+//! its row-scoped module collections (§13).
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 
 use liasse_expr::{Cell, ExprType};
 use liasse_ident::{DefinitionId, InstanceId, TransactionId};
-use liasse_store::{Composition, GroupMember, InstanceStore, Mount, PackagePin, PendingCommit, StoreFactory};
+use liasse_store::{
+    Composition, GroupMember, InstanceStore, Mount, PackagePin, PendingCommit, RowAddress, StoreFactory,
+};
 use liasse_value::{BlobDescriptor, MediaType, Sha512, Type, Value};
 
 use crate::blobs::StagedBlob;
@@ -24,19 +26,21 @@ use crate::imports::ParentImports;
 use crate::modules::install::{AdmittedBindings, InstallRequest, UseSpec};
 use crate::modules::peer::{self, ResolvedPeer, SiblingInterface};
 use crate::modules::recorder::{LifecycleIntent, LifecycleRecorder, MountedInstance, Occupant};
-use crate::modules::{AggregatedInstance, InterfaceRow, ModuleAggregate, ModuleError, ModuleSpace};
+use crate::modules::address;
+use crate::modules::{MountedModules, ModuleError};
 use crate::outcome::CallOutcome;
 use crate::request::{CallRequest, ViewQuery};
 use crate::state::Change;
 use crate::view::ViewResult;
 
-/// One installed child module instance mounted in a space.
+/// One installed child module instance, mounted at one entry of a module
+/// collection.
 struct Child<S> {
-    /// The module space this instance is mounted in (§13.2).
-    space: ModuleSpace,
-    /// The instance name, the local component of its identity within the space
-    /// (§13.3). Mutable: a rename is a rekey (§13.3).
-    name: String,
+    /// The address of the module-collection entry this instance is mounted at
+    /// (§13.2/§13.3) — an ordinary row address, so the containing rows are
+    /// whatever the containing collections give. Mutable: a rename or a relocate
+    /// is a rekey of that entry (§13.3).
+    at: RowAddress,
     /// The immutable incarnation, preserved across rename (D.1).
     incarnation: InstanceId,
     /// The child's own loaded engine over its private store — a wholly separate
@@ -60,8 +64,21 @@ struct Child<S> {
 }
 
 impl<S> Child<S> {
-    fn is(&self, space: &ModuleSpace, name: &str) -> bool {
-        &self.space == space && self.name == name
+    fn is(&self, at: &RowAddress) -> bool {
+        &self.at == at
+    }
+
+    /// The instance name — the entry's own map key (§13.3). Every mount is
+    /// admitted through [`address::require_instance_name`], so the key is a
+    /// non-empty text value by construction.
+    fn name(&self) -> &str {
+        address::instance_name(&self.at).unwrap_or_default()
+    }
+
+    /// Whether `other` is installed in the SAME module collection — the §13.5
+    /// sibling set, which is ordinary collection membership.
+    fn sibling_of(&self, at: &RowAddress) -> bool {
+        self.at.collection() == at.collection()
     }
 }
 
@@ -122,14 +139,14 @@ impl<S: InstanceStore, G: Generators> MultiCoordinator<'_, S, G> {
     /// index (§13.5/§13.10). The ROOT reaches its own installed children by instance
     /// name (§13.9). A CHILD reaches ONLY the peers it declared under `$use`,
     /// resolved through its `resolved_peers` (§13.5) to the concrete enabled sibling
-    /// in the same space — a handle it does not import is refused LOUDLY (import
+    /// in the same collection — a handle it does not import is refused LOUDLY (import
     /// scope, §13.10 property 3), so it can never over-reach a sibling by raw name.
     fn resolve(&self, caller: Primary, handle: &str) -> Result<usize, Rejection> {
         match caller {
             Primary::Root => self
                 .children
                 .iter()
-                .position(|child| child.enabled && child.name == handle)
+                .position(|child| child.enabled && child.name() == handle)
                 .ok_or_else(|| unreachable_handle(handle)),
             Primary::Child(index) => {
                 let caller = self.children.get(index).ok_or_else(|| {
@@ -154,7 +171,7 @@ impl<S: InstanceStore, G: Generators> MultiCoordinator<'_, S, G> {
                 };
                 self.children
                     .iter()
-                    .position(|child| child.enabled && child.space == caller.space && child.name == sibling)
+                    .position(|child| child.enabled && child.sibling_of(&caller.at) && child.name() == sibling)
                     .ok_or_else(|| unreachable_handle(handle))
             }
         }
@@ -278,7 +295,7 @@ impl<S: InstanceStore, G: Generators> Dispatch for MultiDispatch<'_, '_, S, G> {
             // A reached child is lent the dispatch handle so it may reach further
             // peers; it is NOT the host/root scope, so it is lent no lifecycle
             // authority (§13.10 privilege).
-            Handles { dispatch: Some(&nested as &dyn Dispatch), lifecycle: None },
+            Handles { dispatch: Some(&nested as &dyn Dispatch), lifecycle: None, modules: None },
         );
         self.coordinator.active.borrow_mut().pop();
         let staged = staged.map_err(|error| {
@@ -331,8 +348,7 @@ pub struct DecodedPackageId {
 struct PendingInstall<S: InstanceStore> {
     engine: Engine<S>,
     pending: Option<PendingCommit>,
-    space: ModuleSpace,
-    name: String,
+    at: RowAddress,
     incarnation: InstanceId,
     bindings: AdmittedBindings,
     resolved_peers: Vec<ResolvedPeer>,
@@ -370,7 +386,12 @@ struct PendingMovement {
 /// and therefore the durable identity, is preserved).
 struct PendingRelocation {
     index: usize,
-    to: String,
+    to: RowAddress,
+    /// The §13.5 peer handles re-resolved against the DESTINATION's sibling set,
+    /// for a §13.16 `reinstall_module` re-admission. `None` for a plain relocate
+    /// within one collection, whose sibling set — and therefore whose resolved
+    /// peers — is unchanged (§13.3 rekey).
+    peers: Option<Vec<ResolvedPeer>>,
 }
 
 impl DecodedPackageId {
@@ -384,6 +405,31 @@ impl DecodedPackageId {
 /// to record (or roll back) and the program's evaluated response.
 type FinalizeMeta = (Vec<StagedBlob>, Option<ResponseValue>);
 
+/// Everything one §13.10 phase-A staging accumulates, before anything commits: the
+/// freshly-loaded install engines, the staged migrations, the instances to drop, the
+/// packed bytes to land, the classified history movements, and the entries to rekey.
+struct StagedLifecycle<S: InstanceStore> {
+    installs: Vec<PendingInstall<S>>,
+    updates: Vec<PendingUpdate>,
+    removes: Vec<usize>,
+    packs: Vec<Vec<u8>>,
+    movements: Vec<PendingMovement>,
+    relocations: Vec<PendingRelocation>,
+}
+
+impl<S: InstanceStore> Default for StagedLifecycle<S> {
+    fn default() -> Self {
+        Self {
+            installs: Vec::new(),
+            updates: Vec::new(),
+            removes: Vec::new(),
+            packs: Vec::new(),
+            movements: Vec::new(),
+            relocations: Vec::new(),
+        }
+    }
+}
+
 /// Which participant of a lifecycle transition an outcome maps back to (§13.10),
 /// in the order they were handed to the group commit.
 enum LifecycleParticipant {
@@ -393,9 +439,9 @@ enum LifecycleParticipant {
 }
 
 /// A root application together with the module instances installed in its
-/// row-scoped module spaces (§13.2). Each child is an independently loaded
+/// row-scoped module collections (§13.2). Each child is an independently loaded
 /// [`Engine`] over a store the host's [`StoreFactory`] mints, so two installs of
-/// the same package — in the same space under different names, or in two spaces —
+/// the same package — at two entries of one collection, or in two collections —
 /// are isolated instances (§13.1/§13.2).
 pub struct ModuleHost<F: StoreFactory> {
     factory: F,
@@ -421,7 +467,7 @@ impl<F: StoreFactory> ModuleHost<F> {
         &mut self.root
     }
 
-    /// Install a new instance into `space` from an install `request` (§13.3),
+    /// Install a new instance into `collection` from an install `request` (§13.3),
     /// admitting its `$config`/`$use`/`$deps` boundary bindings. Rejects an empty or
     /// duplicate name and a malformed binding; otherwise mints a fresh incarnation,
     /// creates the child's private store, loads its engine (applying its own `$data`
@@ -432,35 +478,35 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// recorded so a later pass can apply them.
     pub fn install<G: Generators>(
         &mut self,
-        space: &ModuleSpace,
+        collection: &liasse_store::CollectionPath,
         request: InstallRequest,
         generator: &mut G,
     ) -> Result<InstanceId, ModuleError> {
         let admitted = request.admit()?;
-        let name = admitted.name;
+        let at = address::entry(collection, &admitted.name);
         // §13.2/§13.3: an install creates an instance "inside an existing module
-        // space", and a `$modules` space exists only at the location of its
+        // collection", and a module collection exists only at the location of its
         // containing row. Reject an install whose containing row is not live in root
-        // state (a ghost-row space like `/companies/ghost/modules`) before minting an
-        // incarnation or a store — nothing may be installed into a space that does
+        // state (a ghost row like `/companies/ghost`) before minting an
+        // incarnation or a store — nothing may be installed into a collection that does
         // not exist.
-        self.check_containing_row(space)?;
-        if self.find(space, &name).is_some() {
-            return Err(ModuleError::DuplicateName(name));
+        self.check_containing_row(&at)?;
+        if self.find(&at).is_some() {
+            return Err(ModuleError::DuplicateName(admitted.name));
         }
         // §13.5: resolve every peer `$use` handle against the enabled sibling set in
-        // this space BEFORE loading the child — one candidate auto-binds, several
+        // this collection BEFORE loading the child — one candidate auto-binds, several
         // require an explicit `$use` binding, zero rejects a required binding — so an
         // unresolvable required peer refuses the install before an incarnation or
         // store is minted. An optional peer with no candidate resolves as absent.
-        let resolved_peers = peer::resolve(space, &admitted.bindings, &self.siblings(space))?;
+        let resolved_peers = peer::resolve(&admitted.bindings, &self.siblings(&at))?;
         // §13.4/§13.5: resolve the parent surfaces this child imports (`company:
-        // "$parent"`) row-local against the space's containing row, and bind each
+        // "$parent"`) row-local against the collection's containing row, and bind each
         // resolved peer handle to its sibling's exposed interface, BEFORE loading the
         // child — so its compile types `#company`/`#people` and its genesis seed
         // evaluates against the projected parent row and the bound peer view.
-        let imports = self.child_imports(space, &admitted.bindings, &resolved_peers)?;
-        let incarnation = self.mint_incarnation(space, &name);
+        let imports = self.child_imports(&at, &admitted.bindings, &resolved_peers)?;
+        let incarnation = self.mint_incarnation(&at);
         let store = self
             .factory
             .create(incarnation.clone())
@@ -480,10 +526,10 @@ impl<F: StoreFactory> ModuleHost<F> {
                     crate::config::ConfigBindError::Engine(engine) => ModuleError::Engine(engine),
                 })?;
         // §13.8/§13.3: the child's `$expose` must structurally satisfy the module
-        // space's declared `$interfaces` contract before the instance activates. The
+        // collection's declared `$interfaces` contract before the instance activates. The
         // contract check reads only the compiled exposed views, so it is unaffected by
         // whether genesis has run.
-        self.check_interface_contracts(space, &engine)?;
+        self.check_interface_contracts(&at, &engine)?;
         // §13.3: package `$data` was applied by the load; the installation `$data`
         // now overlays onto the child genesis, passing ordinary insertion validation.
         if let Some(data) = &admitted.data {
@@ -491,8 +537,7 @@ impl<F: StoreFactory> ModuleHost<F> {
         }
         let bindings = admitted.bindings;
         self.children.push(Child {
-            space: space.clone(),
-            name,
+            at,
             incarnation: incarnation.clone(),
             engine,
             bindings,
@@ -505,67 +550,68 @@ impl<F: StoreFactory> ModuleHost<F> {
         Ok(incarnation)
     }
 
-    /// Whether an instance of that name is installed in `space` (enabled or
+    /// Whether an instance is mounted at `at` (enabled or
     /// disabled).
     #[must_use]
-    pub fn is_installed(&self, space: &ModuleSpace, name: &str) -> bool {
-        self.find(space, name).is_some()
+    pub fn is_installed(&self, at: &RowAddress) -> bool {
+        self.find(at).is_some()
     }
 
-    /// Whether the named instance in `space` is installed and enabled.
+    /// Whether the instance at `at` is mounted and enabled.
     #[must_use]
-    pub fn is_enabled(&self, space: &ModuleSpace, name: &str) -> bool {
-        self.find(space, name).is_some_and(|child| child.enabled)
+    pub fn is_enabled(&self, at: &RowAddress) -> bool {
+        self.find(at).is_some_and(|child| child.enabled)
     }
 
-    /// The incarnation of the named instance in `space`, if installed.
+    /// The incarnation of the instance at `at`, if mounted.
     #[must_use]
-    pub fn incarnation(&self, space: &ModuleSpace, name: &str) -> Option<&InstanceId> {
-        self.find(space, name).map(|child| &child.incarnation)
+    pub fn incarnation(&self, at: &RowAddress) -> Option<&InstanceId> {
+        self.find(at).map(|child| &child.incarnation)
     }
 
-    /// The admitted boundary bindings of the named instance in `space` (§13.3).
+    /// The admitted boundary bindings of the instance at `at` (§13.3).
     #[must_use]
-    pub fn bindings(&self, space: &ModuleSpace, name: &str) -> Option<&AdmittedBindings> {
-        self.find(space, name).map(|child| &child.bindings)
+    pub fn bindings(&self, at: &RowAddress) -> Option<&AdmittedBindings> {
+        self.find(at).map(|child| &child.bindings)
     }
 
     /// Disable an instance (§13.3, §13.12): remove its active boundary occurrences,
     /// external surfaces, and peer availability while retaining its private stored
     /// state and history. The child engine and store are kept intact, so a later
     /// [`ModuleHost::enable`] restores the exact preserved state.
-    pub fn disable(&mut self, space: &ModuleSpace, name: &str) -> Result<(), ModuleError> {
-        self.child_mut(space, name)?.enabled = false;
+    pub fn disable(&mut self, at: &RowAddress) -> Result<(), ModuleError> {
+        self.child_mut(at)?.enabled = false;
         Ok(())
     }
 
     /// Enable a disabled instance (§13.3): revalidate and restore its boundary
     /// occurrences over the exact preserved private state.
-    pub fn enable(&mut self, space: &ModuleSpace, name: &str) -> Result<(), ModuleError> {
-        self.child_mut(space, name)?.enabled = true;
+    pub fn enable(&mut self, at: &RowAddress) -> Result<(), ModuleError> {
+        self.child_mut(at)?.enabled = true;
         Ok(())
     }
 
     /// Uninstall an instance (§13.3, §13.12): remove the instance incarnation and
     /// its owned subtree.
-    pub fn uninstall(&mut self, space: &ModuleSpace, name: &str) -> Result<(), ModuleError> {
-        match self.children.iter().position(|child| child.is(space, name)) {
+    pub fn uninstall(&mut self, at: &RowAddress) -> Result<(), ModuleError> {
+        match self.children.iter().position(|child| child.is(at)) {
             Some(index) => {
                 self.children.remove(index);
                 Ok(())
             }
-            None => Err(ModuleError::Unknown(name.to_owned())),
+            None => Err(ModuleError::Unknown(at.render())),
         }
     }
 
-    /// Rename an instance within its space (§13.3): a rekey that preserves the
-    /// incarnation and therefore the durable identity (D.1). Rejects a name already
-    /// in use in the same space.
-    pub fn rename(&mut self, space: &ModuleSpace, from: &str, to: &str) -> Result<(), ModuleError> {
-        if self.find(space, to).is_some() {
+    /// Rename an instance within its module collection (§13.3): a rekey that
+    /// preserves the incarnation and therefore the durable identity (D.1). Rejects a
+    /// name already in use in the same collection.
+    pub fn rename(&mut self, at: &RowAddress, to: &str) -> Result<(), ModuleError> {
+        let destination = address::sibling_named(at, to);
+        if self.find(&destination).is_some() {
             return Err(ModuleError::DuplicateName(to.to_owned()));
         }
-        self.child_mut(space, from)?.name = to.to_owned();
+        self.child_mut(at)?.at = destination;
         Ok(())
     }
 
@@ -582,14 +628,13 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// the child's own engine and returns the assembled §13.15 report.
     pub fn update<G: Generators>(
         &mut self,
-        space: &ModuleSpace,
-        name: &str,
+        at: &RowAddress,
         target: &str,
         generator: &mut G,
     ) -> Result<crate::modules::ModuleUpdateReport, ModuleError> {
         // §13.14: read the ACTIVE child definition and version for the exposed-surface
         // recheck and the §13.15 `$from`, before any migration mutates the child.
-        let child = self.find(space, name).ok_or_else(|| ModuleError::Unknown(name.to_owned()))?;
+        let child = self.find(at).ok_or_else(|| ModuleError::Unknown(at.render()))?;
         let active_definition = child.engine.definition_source()?.ok_or_else(|| {
             ModuleError::Engine(EngineError::Internal("active child definition unavailable for update".to_owned()))
         })?;
@@ -610,7 +655,7 @@ impl<F: StoreFactory> ModuleHost<F> {
         // across this (non-narrowing) update.
         let grouping = super::compat::exposed_grouping(&active_definition, target);
         // §13.14: run the §20 migration over the child's own engine.
-        let child = self.child_mut(space, name)?;
+        let child = self.child_mut(at)?;
         let report = child.engine.update(target, generator).map_err(|error| match error {
             crate::migrate::UpdateError::Engine(engine) => ModuleError::Engine(engine),
             other => ModuleError::Engine(EngineError::Internal(other.to_string())),
@@ -638,12 +683,11 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// module surface). A disabled instance has no active surfaces.
     pub fn child_call<G: Generators>(
         &mut self,
-        space: &ModuleSpace,
-        name: &str,
+        at: &RowAddress,
         request: &CallRequest,
         generator: &mut G,
     ) -> Result<CallOutcome, ModuleError> {
-        let child = self.enabled_child_mut(space, name)?;
+        let child = self.enabled_child_mut(at)?;
         child.engine.call(request, generator).map_err(ModuleError::Engine)
     }
 
@@ -654,53 +698,24 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// readable interface of that name.
     pub fn interface_read(
         &self,
-        space: &ModuleSpace,
-        name: &str,
+        at: &RowAddress,
         interface: &str,
     ) -> Result<Option<ViewResult>, ModuleError> {
-        let child = self.enabled_child(space, name)?;
+        let child = self.enabled_child(at)?;
         // §13.7/§13.12: a guarded interface with an unsatisfied handle exposes no
         // boundary occurrence, so it reads as an absent interface.
         if !self.interface_guard_active(child, interface) {
             return Ok(None);
         }
-        let imports = self.child_imports(space, &child.bindings, &child.resolved_peers)?;
+        let imports = self.child_imports(at, &child.bindings, &child.resolved_peers)?;
         child.engine.interface_read(interface, &imports).map_err(ModuleError::Engine)
-    }
-
-    /// Aggregate one exposed interface across every enabled instance in `space`
-    /// (§13.9 "The parent reads every instance exposing an interface"). Each row
-    /// carries its inherited identity — the instance name plus the exposed row
-    /// (§13.9). A disabled instance is skipped, so disabling removes it from the
-    /// aggregation (§13.12); instances are visited in installation order.
-    pub fn aggregate(
-        &self,
-        space: &ModuleSpace,
-        interface: &str,
-    ) -> Result<Vec<InterfaceRow>, ModuleError> {
-        let mut rows = Vec::new();
-        for child in self.children.iter().filter(|c| &c.space == space && c.enabled) {
-            // §13.7/§13.12: skip a `$if_module`-guarded interface whose guard handle
-            // is not bound to an enabled instance (no active boundary occurrence).
-            if !self.interface_guard_active(child, interface) {
-                continue;
-            }
-            let imports = self.child_imports(&child.space, &child.bindings, &child.resolved_peers)?;
-            let Some(result) = child.engine.interface_read(interface, &imports).map_err(ModuleError::Engine)? else {
-                continue;
-            };
-            for row in result.rows() {
-                rows.push(InterfaceRow { instance: child.name.clone(), row: row.clone() });
-            }
-        }
-        Ok(rows)
     }
 
     /// Evaluate a named child view at head — the §13.11 *direct* module surface a
     /// host mounts, distinct from the [`ModuleHost::interface_read`] boundary read.
     /// Only an enabled instance exposes its surfaces (§13.12).
-    pub fn child_view(&self, space: &ModuleSpace, name: &str, view: &str) -> Result<Option<ViewResult>, ModuleError> {
-        let child = self.enabled_child(space, name)?;
+    pub fn child_view(&self, at: &RowAddress, view: &str) -> Result<Option<ViewResult>, ModuleError> {
+        let child = self.enabled_child(at)?;
         child.engine.view_at_head(view).map_err(ModuleError::Engine)
     }
 
@@ -710,19 +725,19 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// host aggregates each enabled child's exposed interface `$view` through the
     /// boundary (§13.8 — only projected fields cross, so a private field stays
     /// unreachable) and evaluates the named root view over the resulting module
-    /// spaces, so a `catalog: ".modules::iface { module: modules.$key, … }"`
+    /// collections, so a `catalog: ".modules::iface { module: modules.$key, … }"`
     /// aggregation resolves against the actual children. Serves a plain `$view`, a
     /// `$public`/role surface `$view` (bind `$params`/`$actor` via `query`), and a
     /// nested `/collection[k].catalog` view. `None` when no view of that name is
     /// declared.
     pub fn root_view(&self, name: &str, query: &ViewQuery) -> Result<Option<ViewResult>, ModuleError> {
-        let aggregate = self.aggregate_snapshot()?;
+        let mounted = self.mounted_rows()?;
         let frontier = self.root.head().map_err(ModuleError::Engine)?;
-        self.root.view_with_modules(name, frontier, query, &aggregate).map_err(ModuleError::Engine)
+        self.root.view_with_modules(name, frontier, query, &mounted).map_err(ModuleError::Engine)
     }
 
     /// Dispatch an interface-addressed mutation to a child's `$expose`d mutation
-    /// (§13.10): resolve `interface.mutation` on the enabled instance in `space` to
+    /// (§13.10): resolve `interface.mutation` on the enabled instance at `at` to
     /// the private mutation it binds and admit it against the child, returning the
     /// child mutation's response (the §13.8 `$return` shape). This is the "a parent
     /// routes a call to a child's exposed mutation" boundary.
@@ -743,14 +758,13 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// transition is a [`CallOutcome::Rejected`], not an error.
     pub fn interface_call<G: Generators>(
         &mut self,
-        space: &ModuleSpace,
-        name: &str,
+        at: &RowAddress,
         interface: &str,
         mutation: &str,
         request: &CallRequest,
         generator: &mut G,
     ) -> Result<CallOutcome, ModuleError> {
-        let child = self.enabled_child(space, name)?;
+        let child = self.enabled_child(at)?;
         // §13.8/§13.10: an exposed mutation binding a private child mutation
         // (`.create`) routes to the child engine. It is admitted as a FOLDED
         // transition: the child program runs with a dispatch handle over the
@@ -759,14 +773,14 @@ impl<F: StoreFactory> ModuleHost<F> {
         // reached ones). A child that reaches no other instance commits on its own —
         // exactly the single-engine admission as before the fold seam was filled.
         if let Some(child_mutation) = child.engine.exposed_mutation(interface, mutation) {
-            let index = self.enabled_child_index(space, name)?;
+            let index = self.enabled_child_index(at)?;
             let routed = request.clone().with_mutation(child_mutation);
             return self.admit_folding(Primary::Child(index), &routed, generator);
         }
         // §13.4: an exposed mutation binding a parent surface (`#company.rename(…)`)
         // delegates to the parent capability, whose effect lands on the parent row
-        // the space is scoped to — admitted against the root engine.
-        if let Some(routed) = self.parent_mutation_request(space, name, interface, mutation, request)? {
+        // the collection is scoped to — admitted against the root engine.
+        if let Some(routed) = self.parent_mutation_request(at, interface, mutation, request)? {
             return self.root.call(&routed, generator).map_err(ModuleError::Engine);
         }
         // §13.8/§13.10: an exposed mutation binding a child-local inline program
@@ -779,7 +793,7 @@ impl<F: StoreFactory> ModuleHost<F> {
             && is_inline_child_binding(binding)
         {
             let binding = binding.to_owned();
-            let child = self.enabled_child_mut(space, name)?;
+            let child = self.enabled_child_mut(at)?;
             return child
                 .engine
                 .call_inline_exposed(interface, mutation, &binding, request, generator)
@@ -839,6 +853,11 @@ impl<F: StoreFactory> ModuleHost<F> {
         generator: &mut G,
     ) -> Result<CallOutcome, ModuleError> {
         let seed = generator.next_seed();
+        // §13.2: the host lends its module-collection entries into the staging, so a
+        // host/root-scope program READS them — `.modules[@id].$value` is the handle a
+        // `module.update`/`module.remove` call addresses, and it is an ordinary keyed
+        // read of an ordinary collection.
+        let mounted = self.mounted_rows()?;
         let (staged, intents) = {
             // The recorder decodes each lifecycle op's blob against the root store's
             // §18.3 blobs and reads each addressed instance's engine during staging
@@ -853,7 +872,7 @@ impl<F: StoreFactory> ModuleHost<F> {
                     BlobBacking::External,
                     seed,
                     &[],
-                    Handles { dispatch: None, lifecycle: Some(&recorder) },
+                    Handles { dispatch: None, lifecycle: Some(&recorder), modules: Some(&mounted) },
                 )
                 .map_err(ModuleError::Engine)?;
             (staged, recorder.into_intents())
@@ -880,10 +899,13 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// parent's own change as ONE atomic transition (§13.10): stage each install's
     /// genesis and each update's migration WITHOUT committing, then commit the parent
     /// and every lifecycle participant under one shared transaction via
-    /// [`InstanceStore::commit_pending_group`]. A rejected migration or a duplicate
-    /// name unwinds the whole transition before any commit. Removes are applied only
-    /// after the shared commit lands, so a rejected transition leaves every instance
-    /// exactly as it was.
+    /// [`InstanceStore::commit_pending_group`]. A rejected migration, a duplicate
+    /// name or a module collection whose containing row is not live unwinds the whole
+    /// transition before any commit, as a [`CallOutcome::Rejected`] — they are BAD
+    /// INPUT, not internal faults, and the two classes are kept apart: an error is
+    /// something the engine got wrong, a rejection is something the caller asked for
+    /// that it may not have. Removes are applied only after the shared commit lands,
+    /// so a rejected transition leaves every instance exactly as it was.
     fn commit_lifecycle<G: Generators>(
         &mut self,
         parent: Option<StagedChange>,
@@ -897,69 +919,19 @@ impl<F: StoreFactory> ModuleHost<F> {
 
         // Phase A — stage each lifecycle op WITHOUT committing. A rejected migration
         // or duplicate name unwinds here, before any prepare/commit, so nothing lands.
-        let mut installs: Vec<PendingInstall<F::Store>> = Vec::new();
-        let mut updates: Vec<PendingUpdate> = Vec::new();
-        let mut removes: Vec<usize> = Vec::new();
-        let mut packs: Vec<Vec<u8>> = Vec::new();
-        let mut movements: Vec<PendingMovement> = Vec::new();
-        let mut relocations: Vec<PendingRelocation> = Vec::new();
-        for intent in intents {
-            match intent {
-                LifecycleIntent::Install { space, name, definition, package, occupant } => {
-                    let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
-                    removes.extend(self.vacate(&space, &name, occupant)?);
-                    installs.push(self.stage_install(&space, &name, &definition, package, &transaction, generator)?);
-                }
-                // §13.16 "Move": relocating within one space is the §13.3 rekey.
-                // Resolve the source now so an unreachable mount rejects before any
-                // commit, and vacate the destination on the same rule an install
-                // does — a move into a slot replaces its occupant.
-                LifecycleIntent::Relocate { space, from, to, occupant } => {
-                    let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
-                    let index = self.enabled_child_index(&space, &from)?;
-                    removes.extend(self.vacate(&space, &to, occupant)?);
-                    relocations.push(PendingRelocation { index, to });
-                }
-                LifecycleIntent::Update { space, name, definition, package } => {
-                    let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
-                    let index = self.enabled_child_index(&space, &name)?;
-                    let child = self
-                        .children
-                        .get_mut(index)
-                        .ok_or_else(|| ModuleError::Engine(EngineError::Internal("update child index out of range".to_owned())))?;
-                    match child.engine.stage_update(&definition, generator, transaction.clone()) {
-                        Ok((pending, staged, _report)) => {
-                            updates.push(PendingUpdate { index, pending: Some(pending), staged: Some(staged), package });
-                        }
-                        // §20.3: a rejected migration (incompatible, off-lineage,
-                        // failed check) rejects the WHOLE transition — nothing commits,
-                        // the instance stays at its prior version.
-                        Err(crate::migrate::UpdateError::Rejected(rejection)) => return Ok(CallOutcome::Rejected(rejection)),
-                        Err(crate::migrate::UpdateError::Incompatible(message)) => {
-                            return Ok(CallOutcome::Rejected(Rejection::new(RejectionReason::Compatibility, message)));
-                        }
-                        Err(crate::migrate::UpdateError::Engine(engine)) => return Err(ModuleError::Engine(engine)),
-                    }
-                }
-                LifecycleIntent::Remove { space, name } => {
-                    let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
-                    removes.push(self.enabled_child_index(&space, &name)?);
-                }
-                // §13.16: the packed bytes are landed after the shared commit, so a
-                // rejected transition stores nothing. The descriptor the caller
-                // already holds is a pure function of these bytes, so it addresses
-                // exactly what lands.
-                LifecycleIntent::Pack { bytes } => packs.push(bytes),
-                // §13.16/§19.8: the movement was CLASSIFIED during staging, so a
-                // divergence had already rejected the transition. Resolve the
-                // instance now so an unreachable mount rejects before any commit.
-                LifecycleIntent::Movement { space, name, artifact, relation } => {
-                    let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
-                    let index = self.enabled_child_index(&space, &name)?;
-                    movements.push(PendingMovement { index, artifact, relation });
-                }
-            }
+        let mut staged = StagedLifecycle::default();
+        match self.stage_intents(intents, &mut staged, &transaction, generator) {
+            Ok(None) => {}
+            Ok(Some(outcome)) => return Ok(outcome),
+            // §13.2/§13.3: a duplicate instance name and a module collection whose
+            // containing row is not live are BAD INPUT — what the caller asked for,
+            // not something the engine got wrong — so they reject the transition
+            // instead of faulting it. Classified in ONE place, so the declarative
+            // `module.install` path and the §13.16 `<-` path cannot report the same
+            // refusal differently.
+            Err(error) => return error.into_rejection().map(CallOutcome::Rejected),
         }
+        let StagedLifecycle { mut installs, mut updates, mut removes, packs, movements, relocations } = staged;
 
         // §13.10 store-agnostic seam: refuse unless every touched store commits an
         // all-or-none multi-instance transition atomically (a durable backend that
@@ -1072,10 +1044,9 @@ impl<F: StoreFactory> ModuleHost<F> {
         // drop the removed ones. Removes are applied by descending index so earlier
         // removals do not shift a later index.
         for install in installs {
-            let PendingInstall { engine, space, name, incarnation, bindings, resolved_peers, package, pending: _ } = install;
+            let PendingInstall { engine, at, incarnation, bindings, resolved_peers, package, pending: _ } = install;
             self.children.push(Child {
-                space,
-                name,
+                at,
                 incarnation,
                 engine,
                 bindings,
@@ -1092,7 +1063,10 @@ impl<F: StoreFactory> ModuleHost<F> {
             let child = self.children.get_mut(relocation.index).ok_or_else(|| {
                 ModuleError::Engine(EngineError::Internal("relocated child index out of range".to_owned()))
             })?;
-            child.name = relocation.to;
+            child.at = relocation.to;
+            if let Some(peers) = relocation.peers {
+                child.resolved_peers = peers;
+            }
         }
         removes.sort_unstable();
         for index in removes.into_iter().rev() {
@@ -1107,6 +1081,87 @@ impl<F: StoreFactory> ModuleHost<F> {
         self.land_packs(packs)?;
         self.apply_movements(movements)?;
         Ok(result)
+    }
+
+
+    /// Stage every recorded lifecycle intent into `staged`, WITHOUT committing
+    /// (§13.10 phase A). `Ok(Some(outcome))` is an early refusal that must be
+    /// returned as the transition's outcome (a rejected migration); `Err` is a
+    /// lifecycle refusal the caller classifies as bad input or a fault.
+    fn stage_intents<G: Generators>(
+        &mut self,
+        intents: Vec<LifecycleIntent>,
+        staged: &mut StagedLifecycle<F::Store>,
+        transaction: &TransactionId,
+        generator: &mut G,
+    ) -> Result<Option<CallOutcome>, ModuleError> {
+        let StagedLifecycle { installs, updates, removes, packs, movements, relocations } = staged;
+        for intent in intents {
+            match intent {
+                LifecycleIntent::Install { at, definition, package, occupant } => {
+                    removes.extend(self.vacate(&at, occupant)?);
+                    installs.push(self.stage_install(&at, &definition, package, transaction, generator)?);
+                }
+                // §13.16 "Move": relocating within one module collection is the §13.3
+                // rekey. Resolve the source now so an unreachable mount rejects
+                // before any commit, and vacate the destination on the same rule an
+                // install does — a move into a slot replaces its occupant.
+                LifecycleIntent::Relocate { from, to, occupant } => {
+                    let index = self.enabled_child_index(&from)?;
+                    removes.extend(self.vacate(&to, occupant)?);
+                    relocations.push(PendingRelocation { index, to, peers: None });
+                }
+                // §13.16 `reinstall_module`: moving into a DIFFERENT module
+                // collection is a re-admission, so the destination's admission runs
+                // NOW — during staging, before anything commits — and a failure
+                // rejects the whole transition. What lands afterwards is a rekey of
+                // an instance that has passed the destination's checks, never a
+                // rekey underneath checks that were skipped.
+                LifecycleIntent::Reinstall { from, to, occupant } => {
+                    let index = self.enabled_child_index(&from)?;
+                    removes.extend(self.vacate(&to, occupant)?);
+                    let peers = self.readmit(index, &to)?;
+                    relocations.push(PendingRelocation { index, to, peers: Some(peers) });
+                }
+                LifecycleIntent::Update { at, definition, package } => {
+                    let index = self.enabled_child_index(&at)?;
+                    let child = self
+                        .children
+                        .get_mut(index)
+                        .ok_or_else(|| ModuleError::Engine(EngineError::Internal("update child index out of range".to_owned())))?;
+                    match child.engine.stage_update(&definition, generator, transaction.clone()) {
+                        Ok((pending, staged, _report)) => {
+                            updates.push(PendingUpdate { index, pending: Some(pending), staged: Some(staged), package });
+                        }
+                        // §20.3: a rejected migration (incompatible, off-lineage,
+                        // failed check) rejects the WHOLE transition — nothing commits,
+                        // the instance stays at its prior version.
+                        Err(crate::migrate::UpdateError::Rejected(rejection)) => return Ok(Some(CallOutcome::Rejected(rejection))),
+                        Err(crate::migrate::UpdateError::Incompatible(message)) => {
+                            return Ok(Some(CallOutcome::Rejected(Rejection::new(RejectionReason::Compatibility, message))));
+                        }
+                        Err(crate::migrate::UpdateError::Engine(engine)) => return Err(ModuleError::Engine(engine)),
+                    }
+                }
+                LifecycleIntent::Remove { at } => {
+                    removes.push(self.enabled_child_index(&at)?);
+                }
+                // §13.16: the packed bytes are landed after the shared commit, so a
+                // rejected transition stores nothing. The descriptor the caller
+                // already holds is a pure function of these bytes, so it addresses
+                // exactly what lands.
+                LifecycleIntent::Pack { bytes } => packs.push(bytes),
+                // §13.16/§19.8: the movement was CLASSIFIED during staging, so a
+                // divergence had already rejected the transition. Resolve the
+                // instance now so an unreachable mount rejects before any commit.
+                LifecycleIntent::Movement { at, artifact, relation } => {
+                    let index = self.enabled_child_index(&at)?;
+                    movements.push(PendingMovement { index, artifact, relation });
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     /// Land freshly packed `.liasse` bytes in the root's §18.3 blob storage, so the
@@ -1165,11 +1220,11 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// [`ModuleError::Unknown`] when the mount names no enabled instance, or an
     /// [`EngineError::Unsupported`] when the instance holds state this build cannot
     /// carry — never an artifact that silently drops it.
-    pub fn pack_instance(&self, space: &ModuleSpace, name: &str) -> Result<Vec<u8>, ModuleError> {
+    pub fn pack_instance(&self, at: &RowAddress) -> Result<Vec<u8>, ModuleError> {
         let child = self
-            .find(space, name)
+            .find(at)
             .filter(|child| child.enabled)
-            .ok_or_else(|| ModuleError::Unknown(name.to_owned()))?;
+            .ok_or_else(|| ModuleError::Unknown(at.render()))?;
         child.engine.export().map_err(ModuleError::Engine)
     }
 
@@ -1179,58 +1234,55 @@ impl<F: StoreFactory> ModuleHost<F> {
         self.children
             .iter()
             .map(|child| MountedInstance {
-                space: &child.space,
-                name: &child.name,
+                at: &child.at,
                 engine: &child.engine,
                 enabled: child.enabled,
             })
             .collect()
     }
 
-    /// Make the slot `(space, name)` free for a write, or refuse (§13.3/§13.16).
+    /// Make the module-collection entry `at` free for a write, or refuse
+    /// (§13.3/§13.16).
     ///
     /// `Ok(Some(index))` is an occupant the caller must drop once the shared commit
-    /// lands, `Ok(None)` an already-empty slot. Which of the two rules applies is the
-    /// intent's, not this method's: §13.3 makes an instance name "unique within its
-    /// module space", so `module.install` refuses; §13.16's move "replaces any
-    /// instance already there", so `<-` drops. Resolving the occupant HERE — during
+    /// lands, `Ok(None)` an already-empty entry. Which of the two rules applies is
+    /// the intent's, not this method's: §13.3 makes an instance name "unique within
+    /// its module collection", so `module.install` refuses; §13.16's move "replaces
+    /// any instance already there", so `<-` drops. Resolving the occupant HERE — during
     /// staging, before anything commits — is what keeps a replaced instance from
     /// being dropped by a transition that later rejects.
-    fn vacate(
-        &self,
-        space: &ModuleSpace,
-        name: &str,
-        occupant: Occupant,
-    ) -> Result<Option<usize>, ModuleError> {
-        match (self.children.iter().position(|child| child.is(space, name)), occupant) {
+    fn vacate(&self, at: &RowAddress, occupant: Occupant) -> Result<Option<usize>, ModuleError> {
+        match (self.children.iter().position(|child| child.is(at)), occupant) {
             (None, _) => Ok(None),
             (Some(index), Occupant::Drop) => Ok(Some(index)),
-            (Some(_), Occupant::Refuse) => Err(ModuleError::DuplicateName(name.to_owned())),
+            (Some(_), Occupant::Refuse) => {
+                Err(ModuleError::DuplicateName(address::instance_name(at).unwrap_or_default().to_owned()))
+            }
         }
     }
 
-    /// Stage a module install WITHOUT committing (§13.3/§13.10): validate the space
+    /// Stage a module install WITHOUT committing (§13.3/§13.10): validate the entry
     /// and instance name, resolve peers/imports, mint the incarnation and store, and
     /// STAGE the child genesis as a [`PendingCommit`] tagged with the shared
-    /// `transaction`. The child's `$expose` must satisfy the space contract before
+    /// `transaction`. The child's `$expose` must satisfy the collection's contract before
     /// it may mount. The returned [`PendingInstall`] holds the loaded engine (its
     /// genesis not yet committed); the caller commits it in the group and then mounts
     /// it. A lifecycle install carries the package's own `$seed`/`$bundle` only — an
     /// install-time `$config`/`$data` overlay through the builtin is a follow-on.
     fn stage_install<G: Generators>(
         &mut self,
-        space: &ModuleSpace,
-        name: &str,
+        at: &RowAddress,
         definition: &str,
         package: DecodedPackageId,
         transaction: &TransactionId,
         generator: &mut G,
     ) -> Result<PendingInstall<F::Store>, ModuleError> {
-        self.check_containing_row(space)?;
+        address::require_instance_name(at)?;
+        self.check_containing_row(at)?;
         let bindings = AdmittedBindings::default();
-        let resolved_peers = peer::resolve(space, &bindings, &self.siblings(space))?;
-        let imports = self.child_imports(space, &bindings, &resolved_peers)?;
-        let incarnation = self.mint_incarnation(space, name);
+        let resolved_peers = peer::resolve(&bindings, &self.siblings(at))?;
+        let imports = self.child_imports(at, &bindings, &resolved_peers)?;
+        let incarnation = self.mint_incarnation(at);
         let store =
             self.factory.create(incarnation.clone()).map_err(|error| ModuleError::Engine(EngineError::Store(error)))?;
         let (engine, pending) =
@@ -1239,12 +1291,11 @@ impl<F: StoreFactory> ModuleHost<F> {
                     crate::config::ConfigBindError::Mismatch(mismatch) => ModuleError::ConfigMismatch(mismatch.to_string()),
                     crate::config::ConfigBindError::Engine(engine) => ModuleError::Engine(engine),
                 })?;
-        self.check_interface_contracts(space, &engine)?;
+        self.check_interface_contracts(at, &engine)?;
         Ok(PendingInstall {
             engine,
             pending: Some(pending),
-            space: space.clone(),
-            name: name.to_owned(),
+            at: at.clone(),
             incarnation,
             bindings,
             resolved_peers,
@@ -1274,8 +1325,8 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// named instance from (§5.1), or `None` for an ordinary install. A durable audit
     /// fact re-read verbatim (never re-generated).
     #[must_use]
-    pub fn mounted_package(&self, space: &ModuleSpace, name: &str) -> Option<&DecodedPackageId> {
-        self.find(space, name).and_then(|child| child.package.as_ref())
+    pub fn mounted_package(&self, at: &RowAddress) -> Option<&DecodedPackageId> {
+        self.find(at).and_then(|child| child.package.as_ref())
     }
 
     /// The root instance's DURABLE composition of mounted children (§19.5) as
@@ -1288,7 +1339,7 @@ impl<F: StoreFactory> ModuleHost<F> {
 
     /// The composition to record as a fact of the lifecycle commit (§5.1, §19.5): the
     /// full set of mounts AFTER this transition — every current child except the
-    /// removed ones (each keyed by its space/name, pinned to its decoded package where
+    /// removed ones (each keyed by its entry address, pinned to its decoded package where
     /// one is known), an updated child re-pinned to its target version, plus each
     /// freshly-installed instance.
     fn lifecycle_composition(
@@ -1302,7 +1353,7 @@ impl<F: StoreFactory> ModuleHost<F> {
             if removes.contains(&index) {
                 continue;
             }
-            let key = mount_key(&child.space, &child.name);
+            let key = child.at.render();
             let selected = child.engine.cursor().point();
             let mount = if let Some(update) = updates.iter().find(|update| update.index == index) {
                 Mount::pinned(child.incarnation.clone(), selected, update.package.pin(update.target_version()))
@@ -1314,7 +1365,7 @@ impl<F: StoreFactory> ModuleHost<F> {
             composition = composition.with(key, mount);
         }
         for install in installs {
-            let key = mount_key(&install.space, &install.name);
+            let key = install.at.render();
             let selected = install.engine.cursor().point();
             let pin = install.package.pin(install.engine.package_version());
             composition = composition.with(key, Mount::pinned(install.incarnation.clone(), selected, pin));
@@ -1385,7 +1436,7 @@ impl<F: StoreFactory> ModuleHost<F> {
                         BlobBacking::External,
                         seed,
                         &[],
-                        Handles { dispatch: Some(&handle as &dyn Dispatch), lifecycle: None },
+                        Handles { dispatch: Some(&handle as &dyn Dispatch), lifecycle: None, modules: None },
                     )
                     .map_err(ModuleError::Engine)?
             };
@@ -1648,21 +1699,20 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// Build the root [`CallRequest`] a §13.4 parent-surface-delegating exposed
     /// mutation routes to (`#company.rename({ name: @name })`): resolve the imported
     /// handle to its parent surface, map the parent mutation contract to the
-    /// containing-row mutation it binds (`.rename`), address the space's containing
+    /// containing-row mutation it binds (`.rename`), address the collection's containing
     /// row as the receiver, and feed each parent parameter from the child call's
     /// arguments. `None` when the exposed mutation is not a parent-surface
     /// delegation, its handle resolves to no parent surface, or its argument form is
     /// outside the CORE route.
     fn parent_mutation_request(
         &self,
-        space: &ModuleSpace,
-        name: &str,
+        at: &RowAddress,
         interface: &str,
         mutation: &str,
         request: &CallRequest,
     ) -> Result<Option<CallRequest>, ModuleError> {
         use crate::modules::parent::{ArgSource, ParentMutationBinding};
-        let child = self.enabled_child(space, name)?;
+        let child = self.enabled_child(at)?;
         let Some(binding) = child.engine.exposed_mutation_binding(interface, mutation) else {
             return Ok(None);
         };
@@ -1677,14 +1727,14 @@ impl<F: StoreFactory> ModuleHost<F> {
             match spec {
                 UseSpec::Parent => Some(handle.as_str()),
                 UseSpec::ParentSurface(surface) => Some(surface.as_str()),
-                UseSpec::Path(_) | UseSpec::Peer { .. } => None,
+                UseSpec::Sibling(_) | UseSpec::Peer { .. } => None,
             }
         });
         let Some(surface) = surface else {
             return Ok(None);
         };
-        let declaration = space.declaration_path();
-        let steps = space.containing_row_steps().unwrap_or_default();
+        let declaration = address::declaration_path(at);
+        let steps = address::containing_row_steps(at).unwrap_or_default();
         let Some(resolved) = self.root.parent_surface_projection(&declaration, &steps, surface)? else {
             return Ok(None);
         };
@@ -1699,7 +1749,7 @@ impl<F: StoreFactory> ModuleHost<F> {
         else {
             return Ok(None);
         };
-        // The receiver is the space's containing row (`/companies/globex`).
+        // The receiver is the module collection's containing row (`/companies/globex`).
         let mut routed = CallRequest::new(root_mutation);
         for (_, key) in &steps {
             routed = routed.receiver(liasse_value::Value::Text(liasse_value::Text::new(key.clone())));
@@ -1714,18 +1764,19 @@ impl<F: StoreFactory> ModuleHost<F> {
         Ok(Some(routed))
     }
 
-    /// Aggregate every enabled child's exposed interface rows into the snapshot the
-    /// root engine folds into a `.modules::iface` read (§13.9). Each instance is
-    /// grouped under its module-space display path, carrying one entry per readable
-    /// interface it exposes (its boundary-projected rows). A disabled instance is
-    /// skipped, so it leaves the aggregation (§13.12).
-    fn aggregate_snapshot(&self) -> Result<ModuleAggregate, ModuleError> {
-        let mut spaces: BTreeMap<String, Vec<AggregatedInstance>> = BTreeMap::new();
+    /// The entries of every module collection, as the rows the root engine
+    /// materializes them into (§13.2). One row per enabled instance, addressed by
+    /// the entry's own [`RowAddress`], carrying its `$value` module handle and one
+    /// cell per readable interface it exposes (its boundary-projected rows). A
+    /// disabled instance exposes no boundary occurrence (§13.12), so it contributes
+    /// no entry.
+    fn mounted_rows(&self) -> Result<MountedModules, ModuleError> {
+        let mut mounted = MountedModules::default();
         for child in self.children.iter().filter(|c| c.enabled) {
             // §13.4/§13.5: re-resolve this child's parent-surface and peer imports
             // live, so an `$expose` `$view` reading `#company`/`#people` reflects the
             // parent's current state and each bound peer's current interface rows.
-            let imports = self.child_imports(&child.space, &child.bindings, &child.resolved_peers)?;
+            let imports = self.child_imports(&child.at, &child.bindings, &child.resolved_peers)?;
             let names: Vec<String> = child.engine.exposed_interface_names().map(str::to_owned).collect();
             let mut interfaces = Vec::new();
             for interface in names {
@@ -1738,24 +1789,21 @@ impl<F: StoreFactory> ModuleHost<F> {
                     interfaces.push((interface, rows));
                 }
             }
-            spaces
-                .entry(child.space.as_str().to_owned())
-                .or_default()
-                .push(AggregatedInstance { name: child.name.clone(), interfaces });
+            mounted.push(&child.at, interfaces);
         }
-        Ok(ModuleAggregate::new(spaces))
+        Ok(mounted)
     }
 
     /// Check the `child` engine's `$expose` satisfies every interface contract the
-    /// module space at `space` declares in the root package (§13.8/§13.10): the
+    /// module collection `at` belongs to declares in the root package (§13.8/§13.10): the
     /// exposed `$view` output must carry each declared field with a matching type
     /// (view satisfaction is structural), and every bound `$mut` must satisfy its
     /// declared parameter and response contracts — reading only the parameters the
     /// interface prototype supplies and projecting every `$return` field with the
-    /// declared type. A space the root declares no contract for (an undeclared
-    /// space, a documented §13.2 seam) imposes none.
-    fn check_interface_contracts(&self, space: &ModuleSpace, child: &Engine<F::Store>) -> Result<(), ModuleError> {
-        let Some(contracts) = self.root.module_space_interfaces(&space.declaration_path()) else {
+    /// declared type. A collection the root declares no contract for (a documented
+    /// §13.2 seam) imposes none.
+    fn check_interface_contracts(&self, at: &RowAddress, child: &Engine<F::Store>) -> Result<(), ModuleError> {
+        let Some(contracts) = self.root.module_collection_interfaces(&address::declaration_path(at)) else {
             return Ok(());
         };
         for contract in contracts {
@@ -1834,29 +1882,29 @@ impl<F: StoreFactory> ModuleHost<F> {
         Ok(())
     }
 
-    /// §13.2/§13.3: a `$modules` space exists only where its containing row is live
-    /// in root state, so an install targets an existing space only when that row is
-    /// present. When the root package declares the `$modules` space at this space's
+    /// §13.2/§13.3: a module collection exists only where its containing row is live
+    /// in root state, so an install targets an existing collection only when that row is
+    /// present. When the root package declares a module collection at this entry's
     /// declaration path (`companies.…​.modules`), the containing row (`/companies/acme`)
-    /// MUST be a live root row; a ghost-row space (`/companies/ghost/modules`) has no
-    /// space to install into and is rejected with [`ModuleError::MissingContainingRow`].
-    /// A space the root package declares no `$modules` mount for imposes no
-    /// containing-row requirement — the same documented §13.2 undeclared-space seam
-    /// [`check_interface_contracts`](Self::check_interface_contracts) already tolerates
-    /// (an interface-less space contributes no contract either), so a host wrapping a
-    /// root that does not model this mount is unaffected.
-    fn check_containing_row(&self, space: &ModuleSpace) -> Result<(), ModuleError> {
-        if self.root.module_space_interfaces(&space.declaration_path()).is_none() {
+    /// MUST be a live root row; a ghost row (`/companies/ghost`) leaves no module
+    /// collection to install into and is rejected with
+    /// [`ModuleError::MissingContainingRow`]. A collection the root package declares
+    /// no contract for imposes no containing-row requirement — the same documented
+    /// §13.2 seam [`check_interface_contracts`](Self::check_interface_contracts)
+    /// already tolerates (an interface-less collection contributes no contract
+    /// either), so a host wrapping a root that does not model it is unaffected.
+    fn check_containing_row(&self, at: &RowAddress) -> Result<(), ModuleError> {
+        if self.root.module_collection_interfaces(&address::declaration_path(at)).is_none() {
             return Ok(());
         }
-        let present = match space.containing_row_steps() {
+        let present = match address::containing_row_steps(at) {
             Some(steps) => self.root.contains_row(&steps)?,
             None => false,
         };
         if present {
             Ok(())
         } else {
-            Err(ModuleError::MissingContainingRow(space.as_str().to_owned()))
+            Err(ModuleError::MissingContainingRow(at.render()))
         }
     }
 
@@ -1866,33 +1914,33 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// a change in a bound peer's interface state is reflected.
     fn child_imports(
         &self,
-        space: &ModuleSpace,
+        at: &RowAddress,
         bindings: &AdmittedBindings,
         resolved_peers: &[ResolvedPeer],
     ) -> Result<ParentImports, ModuleError> {
-        let mut imports = self.parent_imports(space, bindings)?;
+        let mut imports = self.parent_imports(at, bindings)?;
         for peer in resolved_peers {
-            self.bind_peer(space, peer, &mut imports)?;
+            self.bind_peer(at, peer, &mut imports)?;
         }
         Ok(imports)
     }
 
     /// Resolve the §13.4 parent surfaces a child imports (`company: "$parent"`,
     /// `org: "$parent.company"`) into a [`ParentImports`], each handle bound to its
-    /// parent surface projected row-local against the space's containing row from the
-    /// root engine's current state. A `$use` handle that is not a parent capability
-    /// (a sibling path or peer spec) contributes no import; a surface the space does
-    /// not declare, or a missing containing row, binds nothing (the child's `#handle`
-    /// read then faults, §6.3).
-    fn parent_imports(&self, space: &ModuleSpace, bindings: &AdmittedBindings) -> Result<ParentImports, ModuleError> {
+    /// parent surface projected row-local against the collection's containing row
+    /// from the root engine's current state. A `$use` handle that is not a parent
+    /// capability (a sibling name or peer spec) contributes no import; a surface the
+    /// collection does not declare, or a missing containing row, binds nothing (the
+    /// child's `#handle` read then faults, §6.3).
+    fn parent_imports(&self, at: &RowAddress, bindings: &AdmittedBindings) -> Result<ParentImports, ModuleError> {
         let mut imports = ParentImports::default();
-        let declaration = space.declaration_path();
-        let steps = space.containing_row_steps().unwrap_or_default();
+        let declaration = address::declaration_path(at);
+        let steps = address::containing_row_steps(at).unwrap_or_default();
         for (handle, spec, _optional) in &bindings.uses {
             let surface = match spec {
                 UseSpec::Parent => handle.as_str(),
                 UseSpec::ParentSurface(name) => name.as_str(),
-                UseSpec::Path(_) | UseSpec::Peer { .. } => continue,
+                UseSpec::Sibling(_) | UseSpec::Peer { .. } => continue,
             };
             if let Some(resolved) = self.root.parent_surface_projection(&declaration, &steps, surface)? {
                 imports.bind(handle.clone(), resolved.ty, resolved.value);
@@ -1912,14 +1960,15 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// nothing, so its `#handle` read faults (§6.3).
     fn bind_peer(
         &self,
-        space: &ModuleSpace,
+        at: &RowAddress,
         peer: &ResolvedPeer,
         imports: &mut ParentImports,
     ) -> Result<(), ModuleError> {
         let live = peer
             .instance
             .as_deref()
-            .and_then(|name| self.find(space, name))
+            .map(|name| address::sibling_named(at, name))
+            .and_then(|sibling| self.find(&sibling))
             .filter(|sibling| sibling.enabled);
         if peer.optional {
             let present = live.is_some();
@@ -1930,7 +1979,7 @@ impl<F: StoreFactory> ModuleHost<F> {
         let Some(sibling) = live else {
             return Ok(());
         };
-        let sibling_imports = self.parent_imports(&sibling.space, &sibling.bindings)?;
+        let sibling_imports = self.parent_imports(&sibling.at, &sibling.bindings)?;
         let ty = sibling.engine.exposed_view_type(&peer.interface);
         let value = sibling.engine.interface_collection(&peer.interface, &sibling_imports).map_err(ModuleError::Engine)?;
         if let (Some(ty), Some(value)) = (ty, value) {
@@ -1939,17 +1988,66 @@ impl<F: StoreFactory> ModuleHost<F> {
         Ok(())
     }
 
-    /// The enabled sibling instances in `space`, reduced to the interface facts §13.5
+    /// Put the instance at `index` through the admission of the module collection
+    /// `to` belongs to (§13.16 `reinstall_module`), returning its re-resolved §13.5
+    /// peer handles.
+    ///
+    /// This is the whole difference between a re-admission and a rekey: every check
+    /// an install runs at the destination runs here, against the DESTINATION's
+    /// boundary — the containing row must be live (§13.2), the `$use` peers must
+    /// resolve in the destination's sibling set (§13.5), the parent surfaces it
+    /// imports must bind there (§13.4), and its `$expose` must satisfy the
+    /// destination's interface contracts (§13.8). Any failure is an error that
+    /// rejects the whole transition before anything commits, so an instance is never
+    /// carried under a boundary it was not checked against.
+    ///
+    /// The instance keeps its private store, data and history — its incarnation IS
+    /// that store's identity (D.1) — so what the re-admission changes is the
+    /// boundary it is bound to, and that boundary is checked rather than assumed.
+    fn readmit(&self, index: usize, to: &RowAddress) -> Result<Vec<ResolvedPeer>, ModuleError> {
+        address::require_instance_name(to)?;
+        self.check_containing_row(to)?;
+        let child = self
+            .children
+            .get(index)
+            .ok_or_else(|| ModuleError::Engine(EngineError::Internal("re-admitted child index out of range".to_owned())))?;
+        // §13.5: the destination's sibling set, minus the instance itself — it is
+        // never its own peer, and it is not yet a member there.
+        let siblings: Vec<SiblingInterface> = self
+            .children
+            .iter()
+            .enumerate()
+            .filter(|(other, sibling)| *other != index && sibling.sibling_of(to) && sibling.enabled)
+            .map(|(_, sibling)| {
+                let (line, major) = sibling.engine.package_line_major();
+                SiblingInterface {
+                    name: sibling.name().to_owned(),
+                    line: line.to_owned(),
+                    major,
+                    interfaces: sibling.engine.exposed_interface_names().map(str::to_owned).collect(),
+                }
+            })
+            .collect();
+        let peers = peer::resolve(&child.bindings, &siblings)?;
+        // §13.4: the parent surfaces this child imports must bind at the
+        // destination's containing row, so a `#company` it reads resolves there.
+        self.child_imports(to, &child.bindings, &peers)?;
+        // §13.8: the destination declares its own interface contracts.
+        self.check_interface_contracts(to, &child.engine)?;
+        Ok(peers)
+    }
+
+    /// The enabled sibling instances of `at`'s collection, reduced to the interface facts §13.5
     /// peer resolution matches against (§13.12: a disabled sibling exposes no peer
     /// availability, so it is omitted). Visited in installation order.
-    fn siblings(&self, space: &ModuleSpace) -> Vec<SiblingInterface> {
+    fn siblings(&self, at: &RowAddress) -> Vec<SiblingInterface> {
         self.children
             .iter()
-            .filter(|child| &child.space == space && child.enabled)
+            .filter(|child| child.sibling_of(at) && child.enabled && !child.is(at))
             .map(|child| {
                 let (line, major) = child.engine.package_line_major();
                 SiblingInterface {
-                    name: child.name.clone(),
+                    name: child.name().to_owned(),
                     line: line.to_owned(),
                     major,
                     interfaces: child.engine.exposed_interface_names().map(str::to_owned).collect(),
@@ -1975,60 +2073,63 @@ impl<F: StoreFactory> ModuleHost<F> {
                 && peer
                     .instance
                     .as_deref()
-                    .and_then(|name| self.find(&child.space, name))
+                    .map(|name| address::sibling_named(&child.at, name))
+                    .and_then(|sibling| self.find(&sibling))
                     .is_some_and(|sibling| sibling.enabled)
         })
     }
 
-    fn find(&self, space: &ModuleSpace, name: &str) -> Option<&Child<F::Store>> {
-        self.children.iter().find(|child| child.is(space, name))
+    fn find(&self, at: &RowAddress) -> Option<&Child<F::Store>> {
+        self.children.iter().find(|child| child.is(at))
     }
 
-    fn child_mut(&mut self, space: &ModuleSpace, name: &str) -> Result<&mut Child<F::Store>, ModuleError> {
+    fn child_mut(&mut self, at: &RowAddress) -> Result<&mut Child<F::Store>, ModuleError> {
         self.children
             .iter_mut()
-            .find(|child| child.is(space, name))
-            .ok_or_else(|| ModuleError::Unknown(name.to_owned()))
+            .find(|child| child.is(at))
+            .ok_or_else(|| ModuleError::Unknown(at.render()))
     }
 
-    fn enabled_child(&self, space: &ModuleSpace, name: &str) -> Result<&Child<F::Store>, ModuleError> {
-        let child = self.find(space, name).ok_or_else(|| ModuleError::Unknown(name.to_owned()))?;
+    fn enabled_child(&self, at: &RowAddress) -> Result<&Child<F::Store>, ModuleError> {
+        let child = self.find(at).ok_or_else(|| ModuleError::Unknown(at.render()))?;
         if child.enabled {
             Ok(child)
         } else {
-            Err(ModuleError::Disabled(name.to_owned()))
+            Err(ModuleError::Disabled(child.name().to_owned()))
         }
     }
 
-    /// The index of the enabled child instance in `space` named `name`, for a folded
+    /// The index of the enabled child instance mounted at `at`, for a folded
     /// admission that commits it as the transition primary (§13.10).
-    fn enabled_child_index(&self, space: &ModuleSpace, name: &str) -> Result<usize, ModuleError> {
+    fn enabled_child_index(&self, at: &RowAddress) -> Result<usize, ModuleError> {
         let index = self
             .children
             .iter()
-            .position(|child| child.is(space, name))
-            .ok_or_else(|| ModuleError::Unknown(name.to_owned()))?;
+            .position(|child| child.is(at))
+            .ok_or_else(|| ModuleError::Unknown(at.render()))?;
         match self.children.get(index) {
             Some(child) if child.enabled => Ok(index),
-            _ => Err(ModuleError::Disabled(name.to_owned())),
+            Some(child) => Err(ModuleError::Disabled(child.name().to_owned())),
+            None => Err(ModuleError::Unknown(at.render())),
         }
     }
 
-    fn enabled_child_mut(&mut self, space: &ModuleSpace, name: &str) -> Result<&mut Child<F::Store>, ModuleError> {
-        let child = self.child_mut(space, name)?;
+    fn enabled_child_mut(&mut self, at: &RowAddress) -> Result<&mut Child<F::Store>, ModuleError> {
+        let child = self.child_mut(at)?;
         if child.enabled {
             Ok(child)
         } else {
-            Err(ModuleError::Disabled(name.to_owned()))
+            let name = child.name().to_owned();
+            Err(ModuleError::Disabled(name))
         }
     }
 
-    fn mint_incarnation(&mut self, space: &ModuleSpace, name: &str) -> InstanceId {
+    fn mint_incarnation(&mut self, at: &RowAddress) -> InstanceId {
         let token = format!(
-            "{}#m{}-{}-{name}",
+            "{}#m{}-{}",
             self.root.instance().as_str(),
             self.next_incarnation,
-            space.as_str().trim_start_matches('/').replace('/', "."),
+            at.render().trim_start_matches('/').replace('/', "."),
         );
         self.next_incarnation += 1;
         InstanceId::new(token)
@@ -2044,12 +2145,6 @@ fn is_inline_child_binding(binding: &str) -> bool {
     let text = binding.trim();
     let text = text.strip_prefix('=').map_or(text, str::trim);
     text.starts_with('.')
-}
-
-/// The composition mount key for an instance (§19.5): its module-space path and
-/// instance name, unique per installed instance.
-fn mount_key(space: &ModuleSpace, name: &str) -> String {
-    format!("{}/{name}", space.as_str())
 }
 
 /// The `major.minor.patch` version string of a package model (§13.15 `$from`/`$to`).

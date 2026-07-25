@@ -13,7 +13,7 @@ Grounding: SPEC.md §19 (history, artifacts, reconciliation) and Annex D
 ```hjson
 { export: { as: "a1" } }
 { export: { as: "a1", lineages: "all" } }
-{ export: { as: "a1", instance: "mods/m1" } }
+{ export: { as: "a1", instance: "/mods/m1" } }
 ```
 
 - `as` labels the produced artifact for later steps. Labels are case-global.
@@ -21,7 +21,7 @@ Grounding: SPEC.md §19 (history, artifacts, reconciliation) and Annex D
   retained history (§19.7 lets the host select; `$history` defaults to `all`,
   §19.3). `lineages: "all"` makes the inclusion of every retained lineage
   explicit where a case asserts on alternate lineages.
-- `instance` exports one child instance by `<module-space>/<instance-name>`
+- `instance` exports one child instance by `<module-collection display path>/<instance-name>`
   (§19.7 "Exporting one child").
 
 ### `import` and `reconcile`
@@ -161,8 +161,8 @@ match; a glob that matches nothing is a corpus error.
 
 Registry step (canonical name `module_install`, owned by §13); see the
 **Extended step registry** in `tests/FORMAT.md`. This chapter's child-module
-cases install into a module space with
-`{ module_install: { space: "mods", request: { $name, $module } } }`.
+cases install into a module collection with
+`{ module_install: { at: "/mods", request: { $name, $module } } }`.
 
 ### `apply_correction`
 
