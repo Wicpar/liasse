@@ -373,11 +373,13 @@ fn is_builtin_call(callee: &Expr) -> bool {
                         | "max" | "distinct" | "unpack"
                 )
         }
-        // `string.lower/upper/trim` are the only namespace builtins the checker
-        // resolves; every other `ns.fn` is a host-namespace call (§16.4).
+        // The core `string` utilities (§6.5) are the namespace builtins the
+        // expression checker resolves by name; every other `ns.fn` is a
+        // host-namespace call (§16.4). The roster is asked of the checker itself,
+        // so a utility added there is never misread here as a host call.
         ExprKind::Field { base, member } if !member.structural => {
-            matches!(&base.kind, ExprKind::Name(ns) if ns.text == "string")
-                && matches!(member.text.as_str(), "lower" | "upper" | "trim")
+            matches!(&base.kind, ExprKind::Name(ns)
+                if liasse_expr::is_core_string_call(&ns.text, &member.text))
         }
         _ => false,
     }

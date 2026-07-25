@@ -60,6 +60,7 @@ pub mod wire;
 pub use affine::{Affinity, MoveTracker, assignment_rejects_move_only, place_key, read_places};
 pub use check::{
     audit_host_position, check_composite_delete_operand, check_expression, check_statement,
+    is_core_string_call,
 };
 pub use env::{
     BlobPlacement, CallSite, Cell, Environment, KeyringSelector, Row, RowId, RowIdPart,

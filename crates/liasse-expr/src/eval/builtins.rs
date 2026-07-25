@@ -7,6 +7,10 @@
 //! `string.casefold` is the Unicode *default full* case fold (`caseless`,
 //! CaseFolding.txt C+F), which §6.5 names and B.1 uses for its case-insensitive
 //! `$sort` key — a different operation from lowercasing.
+//! `string.starts_with`/`ends_with`/`contains` are the §6.5 search predicates:
+//! exact scalar-sequence tests, so a canonically-equivalent-but-differently-
+//! encoded needle does NOT match — normalization is the model's job, never an
+//! implicit step here.
 
 use liasse_value::{Integer, ModuleHandle, Text, Value};
 
@@ -36,6 +40,19 @@ impl Evaluator<'_> {
                 self.eval_string(args, caseless::default_case_fold_str)
             }
             BuiltinFn::StringTrim => self.eval_string(args, |text| text.trim().to_owned()),
+            // §6.5: the search predicates decide over Unicode scalar values. Rust's
+            // `str` searches compare the UTF-8 encodings, which §6.5 states yields
+            // the identical answer (UTF-8 is self-synchronizing and injective), and
+            // they perform no normalization, folding, or trimming of their own.
+            BuiltinFn::StringStartsWith => {
+                self.eval_string_search(args, |subject, needle| subject.starts_with(needle))
+            }
+            BuiltinFn::StringEndsWith => {
+                self.eval_string_search(args, |subject, needle| subject.ends_with(needle))
+            }
+            BuiltinFn::StringContains => {
+                self.eval_string_search(args, |subject, needle| subject.contains(needle))
+            }
             BuiltinFn::TimeDuration => self.eval_time_duration(args),
             BuiltinFn::Unpack => self.eval_unpack(args),
             // §13.16/§13.10: the lifecycle operators are host-privileged transition
@@ -121,10 +138,42 @@ impl Evaluator<'_> {
         args: &[TypedExpr],
         transform: impl Fn(&str) -> String,
     ) -> Result<Cell, EvalError> {
-        match self.first(args)? {
-            Cell::Scalar(Value::Text(text)) => {
-                Ok(Cell::Scalar(Value::Text(Text::new(transform(text.as_str())))))
-            }
+        let text = self.text_arg(Self::sole_arg(args)?)?;
+        Ok(Cell::Scalar(Value::Text(Text::new(transform(text.as_str())))))
+    }
+
+    /// §6.5: one search predicate — `string.starts_with`/`ends_with`/`contains`.
+    /// `test` receives `(subject, needle)` as `&str`, so the decision is made over
+    /// the exact stored scalar sequence: no normalization, folding, or trimming,
+    /// and no locale. Both arguments must be a PRESENT `text`; an absent
+    /// (`none`) or non-`text` argument is refused loudly here rather than
+    /// answered `false`, exactly as the spec requires.
+    fn eval_string_search(
+        &mut self,
+        args: &[TypedExpr],
+        test: impl Fn(&str, &str) -> bool,
+    ) -> Result<Cell, EvalError> {
+        let [subject, needle] = args else {
+            return Err(EvalError::ShapeMismatch { expected: "two text arguments" });
+        };
+        let subject = self.text_arg(subject)?;
+        let needle = self.text_arg(needle)?;
+        Ok(Cell::Scalar(Value::Bool(test(subject.as_str(), needle.as_str()))))
+    }
+
+    /// The sole argument of a one-argument builtin. The checker pins every core
+    /// arity (§6.5), so a different count is an eval-wire contract breach.
+    fn sole_arg(args: &[TypedExpr]) -> Result<&TypedExpr, EvalError> {
+        match args {
+            [sole] => Ok(sole),
+            _ => Err(EvalError::ShapeMismatch { expected: "one text argument" }),
+        }
+    }
+
+    /// Evaluate `arg` to a present `text` value.
+    fn text_arg(&mut self, arg: &TypedExpr) -> Result<Text, EvalError> {
+        match self.eval(arg)? {
+            Cell::Scalar(Value::Text(text)) => Ok(text),
             _ => Err(EvalError::ShapeMismatch { expected: "a text argument" }),
         }
     }
