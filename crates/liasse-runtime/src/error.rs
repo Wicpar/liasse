@@ -44,12 +44,20 @@ pub enum EngineError {
     /// genesis over populated state or attaching the wrong shape.
     Mismatch(String),
     /// A well-formed request the current build cannot serve without silent data
-    /// loss, so it is refused rather than completed partially (fail-closed). The
-    /// standing case is an export (§19.5) of an instance holding committed rows in
-    /// a nested keyed collection (§5.4) the portable state capture does not carry
-    /// through: emitting the artifact anyway would drop that live data (§20.1 "the
-    /// compatible value is copied", §22.1 committed-state integrity). Carrying
-    /// nested collections faithfully is a tracked feature, not a bug.
+    /// loss, so it is refused rather than completed partially (fail-closed).
+    ///
+    /// The remaining cases are environmental, not model-shaped: a §13.10
+    /// multi-engine transition whose touched stores cannot commit all-or-none, a
+    /// `module` value moved across a boundary that cannot carry it (§13.16), and a
+    /// `$blob` placement whose declared connector capability the registry does not
+    /// provide (§18). Each names the specific missing capability in its detail.
+    ///
+    /// No shape the spec permits belongs here. A nested keyed collection (§5.4) once
+    /// did — the portable capture carried top-level rows only, so an export or
+    /// migration of an instance holding child rows was refused. The spec grants no
+    /// such carve-out (§20 migrates the model as declared), so the capture now
+    /// carries the whole committed row tree and that refusal is gone rather than
+    /// merely documented.
     Unsupported(String),
 }
 
@@ -116,15 +124,18 @@ pub enum RejectionReason {
     /// required parameter, or a narrowed accepted input domain. `load` and update
     /// reject the narrowing release before activation (E.1, E.9).
     Compatibility,
-    /// A migration would need a §20 state carry the current build does not
-    /// implement, so it is refused rather than committed with silent data loss
-    /// (fail-closed). The standing case is an instance holding committed rows in a
-    /// nested keyed collection (§5.4): the CORE portable capture carries top-level
-    /// collections and the §8.2 singleton only, so a migration cannot copy those
-    /// nested rows forward. Refusing keeps §20.1 ("the compatible value is copied")
-    /// and §22.1 (committed-state integrity) rather than dropping live rows and
-    /// reporting `committed`. Faithful nested-collection carry-through is a tracked
-    /// feature.
+    /// A transition the current build cannot serve without silent data loss, so it
+    /// is refused rather than committed partially (fail-closed) — the admission-side
+    /// counterpart of [`EngineError::Unsupported`], whose detail it carries.
+    ///
+    /// The remaining cases are environmental, not model-shaped: a §13.10 lifecycle
+    /// transition whose touched stores cannot commit all-or-none, and a §13.16
+    /// module move a boundary cannot carry.
+    ///
+    /// A migration of an instance holding nested keyed-collection rows (§5.4) is NOT
+    /// among them any more. The portable capture carries the whole committed row
+    /// tree, so §20.1 ("the compatible value is copied") reaches every row at every
+    /// depth and the update commits with the data intact.
     Unsupported,
 }
 

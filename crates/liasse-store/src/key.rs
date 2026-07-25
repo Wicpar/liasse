@@ -150,6 +150,15 @@ impl RowAddress {
         1 + self.rest.len()
     }
 
+    /// The address of the row this one is nested under (§5.4), or `None` when it
+    /// is a top-level row. The inverse of [`Self::child`]: a nested row's parent
+    /// is its address minus the final collection/key step.
+    #[must_use]
+    pub fn parent(&self) -> Option<Self> {
+        let (_, ancestors) = self.rest.split_last()?;
+        Some(Self { first: self.first.clone(), rest: ancestors.to_vec() })
+    }
+
     /// The collection this row belongs to: its address minus the final key.
     #[must_use]
     pub fn collection(&self) -> CollectionPath {
