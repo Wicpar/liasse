@@ -30,9 +30,9 @@
 mod support;
 
 use liasse_runtime::{
-    CallOutcome, CallRequest, Engine, InstallRequest, ModuleHost, ModuleSpace, Value,
+    CallOutcome, CallRequest, Engine, InstallRequest, ModuleHost, Value,
 };
-use liasse_store::{InstanceStore, MemoryStore, MemoryStoreFactory};
+use liasse_store::{CollectionPath, InstanceStore, MemoryStore, MemoryStoreFactory, RowAddress};
 use liasse_value::{Integer, Text};
 use support::generator;
 
@@ -40,7 +40,7 @@ use support::generator;
 /// `bank` child's exposed `consume` mutation in the same transition (§13.10), plus a
 /// `buy_then_fail` variant that rejects with a false assertion AFTER the child
 /// dispatch. `companies/acme` is seeded live so the `bank` instance mounts in its
-/// module space.
+/// module collection.
 const ROOT: &str = r#"{
   "$liasse": 1
   "$app": "t.multi.host@1.0.0"
@@ -49,7 +49,7 @@ const ROOT: &str = r#"{
     "companies": {
       "$key": "id"
       "id": "text"
-      "modules": { "$modules": {} }
+      "modules": { "$key": "text", "$value": "module" }
     }
     "orders_view": { "$view": ".orders { id, cost }" }
     "$mut": {
@@ -219,16 +219,23 @@ fn int(value: i64) -> Value {
     Value::Int(Integer::from(value))
 }
 
-fn space() -> ModuleSpace {
-    ModuleSpace::new("/companies/acme/modules").expect("well-formed mount path")
+/// The module collection the fixture mounts its instances in.
+fn collection() -> CollectionPath {
+    support::collection_at("/companies/acme/modules")
 }
 
-/// A host with the `bank` child installed in `acme`'s module space.
+/// The address of the module-collection entry `name` — one mounted instance's
+/// identity (§13.3), an ordinary row address.
+fn at(name: &str) -> RowAddress {
+    support::mount_at("/companies/acme/modules", name)
+}
+
+/// A host with the `bank` child installed in `acme`'s module collection.
 fn host_with_bank() -> ModuleHost<MemoryStoreFactory> {
     let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
     let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("bank", BANK),
         &mut generator(),
     )
@@ -239,20 +246,20 @@ fn host_with_bank() -> ModuleHost<MemoryStoreFactory> {
 /// The `bank` pool balance as read through its exposed `credits` interface.
 fn bank_balance(host: &ModuleHost<MemoryStoreFactory>) -> Value {
     let view = host
-        .interface_read(&space(), "bank", "credits")
+        .interface_read(&at("bank"), "credits")
         .expect("read")
         .expect("credits is exposed");
     let row = &view.rows()[0];
     row.field("balance").expect("balance is projected").clone()
 }
 
-/// A host with `bank` and `shop` children installed in `acme`'s module space. The
+/// A host with `bank` and `shop` children installed in `acme`'s module collection. The
 /// shop declares its `credits` peer against the bank (§13.5), so `#credits` resolves
 /// to the bank instance at dispatch.
 fn host_with_shop_and_bank() -> ModuleHost<MemoryStoreFactory> {
     let mut host = host_with_bank();
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("shop", SHOP).use_handle("credits", "t.multi.bank/credits@1"),
         &mut generator(),
     )
@@ -265,7 +272,7 @@ fn host_with_shop_and_bank() -> ModuleHost<MemoryStoreFactory> {
 fn host_with_rogue_and_bank() -> ModuleHost<MemoryStoreFactory> {
     let mut host = host_with_bank();
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("rogue", ROGUE),
         &mut generator(),
     )
@@ -276,7 +283,7 @@ fn host_with_rogue_and_bank() -> ModuleHost<MemoryStoreFactory> {
 /// The order ids committed in a named child instance's exposed `orders` interface.
 fn child_order_ids(host: &ModuleHost<MemoryStoreFactory>, name: &str) -> Vec<String> {
     let view = host
-        .interface_read(&space(), name, "orders")
+        .interface_read(&at(name), "orders")
         .expect("read")
         .expect("orders is exposed");
     view.rows()
@@ -514,8 +521,7 @@ fn interface_call_folds_a_peer_reaching_child_transition() {
         .arg("cost", int(3));
     let outcome = host
         .interface_call(
-            &space(),
-            "shop",
+            &at("shop"),
             "orders",
             "place",
             &request,
@@ -552,8 +558,7 @@ fn interface_call_fold_rejects_when_the_peer_rejects() {
         .arg("cost", int(20));
     let outcome = host
         .interface_call(
-            &space(),
-            "shop",
+            &at("shop"),
             "orders",
             "place",
             &request,
@@ -596,8 +601,7 @@ fn peer_alias_dispatch_resolves_to_the_peer_and_commits_atomically() {
         .arg("cost", int(4));
     let outcome = host
         .interface_call(
-            &space(),
-            "shop",
+            &at("shop"),
             "orders",
             "place",
             &request,
@@ -637,8 +641,7 @@ fn dispatch_to_a_non_imported_sibling_is_refused() {
         .arg("cost", int(3));
     let outcome = host
         .interface_call(
-            &space(),
-            "rogue",
+            &at("rogue"),
             "orders",
             "place",
             &request,
@@ -671,7 +674,7 @@ fn dispatched_child_observes_the_parents_actor() {
     let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
     let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("bank", BANK_AUTH),
         &mut generator(),
     )
@@ -691,7 +694,7 @@ fn dispatched_child_observes_the_parents_actor() {
     );
     // The dispatched child recorded the PARENT's actor key in its receipt.
     let receipts = host
-        .interface_read(&space(), "bank", "receipts")
+        .interface_read(&at("bank"), "receipts")
         .expect("read")
         .expect("receipts exposed");
     let who = receipts.rows()[0].field("who").expect("who is projected");
@@ -711,7 +714,7 @@ fn dispatched_child_without_actor_faults_closed() {
     let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
     let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("bank", BANK_AUTH),
         &mut generator(),
     )
@@ -827,7 +830,7 @@ const MID: &str = r#"{
 fn host_with_bank_and_vault() -> ModuleHost<MemoryStoreFactory> {
     let mut host = host_with_bank();
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("vault", BANK),
         &mut generator(),
     )
@@ -844,20 +847,20 @@ fn host_with_acct_mid_cycle() -> ModuleHost<MemoryStoreFactory> {
     let root: Engine<MemoryStore> = support::load("t.multi.host", ROOT);
     let mut host = ModuleHost::new(MemoryStoreFactory::new(), root);
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("mid", MID).optional_use("back", "t.acct/b@1"),
         &mut generator(),
     )
     .expect("mid installs (optional back resolves absent)");
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("acct", ACCT).optional_use("mid", "t.mid/hop@1"),
         &mut generator(),
     )
     .expect("acct installs, binding mid");
-    host.uninstall(&space(), "mid").expect("mid uninstalls");
+    host.uninstall(&at("mid")).expect("mid uninstalls");
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("mid", MID).optional_use("back", "t.acct/b@1"),
         &mut generator(),
     )
@@ -868,7 +871,7 @@ fn host_with_acct_mid_cycle() -> ModuleHost<MemoryStoreFactory> {
 /// The `acct` pool balance as read through its exposed `a` interface.
 fn acct_balance(host: &ModuleHost<MemoryStoreFactory>) -> Value {
     let view = host
-        .interface_read(&space(), "acct", "a")
+        .interface_read(&at("acct"), "a")
         .expect("read")
         .expect("interface a is exposed");
     view.rows()[0]
@@ -880,7 +883,7 @@ fn acct_balance(host: &ModuleHost<MemoryStoreFactory>) -> Value {
 /// The named metered instance's pool balance, read through its `credits` interface.
 fn instance_balance(host: &ModuleHost<MemoryStoreFactory>, name: &str) -> Value {
     let view = host
-        .interface_read(&space(), name, "credits")
+        .interface_read(&at(name), "credits")
         .expect("read")
         .expect("credits is exposed");
     view.rows()[0]
@@ -976,7 +979,7 @@ fn nested_reentry_to_an_in_flight_engine_is_refused() {
     // WHILE outer is still staging — a re-entry to an in-flight engine.
     let request = CallRequest::new("outer").arg("amount", int(3));
     let outcome = host
-        .interface_call(&space(), "acct", "a", "outer", &request, &mut generator())
+        .interface_call(&at("acct"), "a", "outer", &request, &mut generator())
         .expect("no engine fault — the nested re-entry is a rejection, not a crash");
 
     assert!(
@@ -1012,22 +1015,22 @@ fn cyclic_cross_engine_dispatch_is_refused_without_overflow() {
     let peer = "t.multi.loop/hop@1";
     // a: optional peer resolves absent (no sibling yet).
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("a", LOOPER).optional_use("peer", peer),
         &mut generator(),
     )
     .expect("a installs");
     // b: its optional peer auto-binds to the only candidate, a.
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("b", LOOPER).optional_use("peer", peer),
         &mut generator(),
     )
     .expect("b installs");
     // Re-install a so its optional peer now binds to b — closing the a ⇄ b cycle.
-    host.uninstall(&space(), "a").expect("a uninstalls");
+    host.uninstall(&at("a")).expect("a uninstalls");
     host.install(
-        &space(),
+        &collection(),
         InstallRequest::new("a", LOOPER).optional_use("peer", peer),
         &mut generator(),
     )
@@ -1035,7 +1038,7 @@ fn cyclic_cross_engine_dispatch_is_refused_without_overflow() {
 
     let request = CallRequest::new("ping").arg("id", text("x"));
     let outcome = host
-        .interface_call(&space(), "a", "hop", "ping", &request, &mut generator())
+        .interface_call(&at("a"), "hop", "ping", &request, &mut generator())
         .expect("no engine fault — the cycle is a rejection, not a crash");
 
     assert!(
@@ -1044,7 +1047,7 @@ fn cyclic_cross_engine_dispatch_is_refused_without_overflow() {
     );
     // Nothing committed: an aborted transition leaves every engine at its prior state.
     let marks = host
-        .interface_read(&space(), "b", "hop")
+        .interface_read(&at("b"), "hop")
         .expect("read")
         .expect("hop exposed");
     assert!(

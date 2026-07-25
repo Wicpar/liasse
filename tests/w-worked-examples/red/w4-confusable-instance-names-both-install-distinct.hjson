@@ -6,7 +6,7 @@
   tags: [modules, unicode, identity]
   note: '''
     Identity-aliasing probe on instance names. §13.3: an instance name "is unique
-    within its module space, and forms the local component of instance identity."
+    within its module collection, and forms the local component of instance identity."
     Two names that look alike but differ by code point — ASCII "sales" (U+0073
     LATIN s) and "ѕales" (leading U+0455 CYRILLIC ѕ) — are distinct text, so both
     installs succeed and produce two independent instances (no confusable
@@ -27,11 +27,11 @@
           name: "text"
           plan: "text"
           modules: {
-            $modules: {
-              $expose: { company: { $view: ". { id, name, plan }" } }
-              $interfaces: {
-                templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
-              }
+            $key: "text"
+            $value: "module"
+            $expose: { company: { $view: ". { id, name, plan }" } }
+            $interfaces: {
+              templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
             }
           }
           available_templates: {
@@ -67,11 +67,11 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: { $name: "sales", $module: "acme.fr_sales_templates@1.0.0" } }
       expect: { outcome: ok } }
     // leading char is U+0455 CYRILLIC SMALL LETTER DZE, not ASCII 's' -> distinct instance name
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: { $name: "ѕales", $module: "acme.fr_sales_templates@1.0.0" } }
       expect: { outcome: ok } }
     { watch: "public.companies", args: { company: "acme" }, id: "w1"

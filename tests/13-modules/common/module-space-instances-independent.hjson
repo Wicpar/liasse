@@ -21,14 +21,14 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                templates: {
-                  $view: { $key: "id", id: "text", label: "text" }
-                  $mut: {
-                    "create({ id: text, label: text })": {
-                      $return: { id: "text", label: "text" }
-                    }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: {
+                $view: { $key: "id", id: "text", label: "text" }
+                $mut: {
+                  "create({ id: text, label: text })": {
+                    $return: { id: "text", label: "text" }
                   }
                 }
               }
@@ -78,9 +78,9 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.tpl@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "kit", $module: "t.tpl@1.0.0" } }
       expect: { outcome: ok } }
-    { module_install: { space: "/companies/globex/modules", request: { $name: "kit", $module: "t.tpl@1.0.0" } }
+    { module_install: { at: "/companies/globex/modules", request: { $name: "kit", $module: "t.tpl@1.0.0" } }
       expect: { outcome: ok } }
     // write through Acme's instance only
     { call: "public.admin.create", args: { company: "acme", module: "kit", id: "t1", label: "Alpha" }

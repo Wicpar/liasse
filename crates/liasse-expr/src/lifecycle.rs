@@ -27,14 +27,21 @@ pub const MOVE_OPERATOR: &str = "<-";
 pub enum LifecycleOp {
     /// Install a new instance from a blob-decoded package (§13.3).
     Install,
-    /// Move a module VALUE into a slot of a `$modules` space (§13.16 `<-`).
+    /// Move a module VALUE into one entry of a module collection (§13.16 `<-`).
     ///
     /// Distinct from [`Self::Install`] on both halves of §13.16's "Install /
     /// override" rule: it addresses the package by module value rather than by a
     /// `blob` argument, and moving into an **occupied** slot replaces its occupant
     /// ("an occupant is dropped and uninstalled") where `module.install` refuses a
-    /// duplicate name (§13.3 "unique within its module space").
+    /// duplicate name (§13.3 "unique within its module collection").
     InstallModule,
+    /// Move a mounted module into an entry of a DIFFERENT module collection, by
+    /// re-admitting it there (§13.16 `reinstall_module`). A plain move across
+    /// collections is refused, because the destination declares its own §13.4
+    /// parent surfaces, §13.5 peer set and §13.8 interface contracts; this operator
+    /// is the explicit request to put the instance through that admission rather
+    /// than rekey it underneath a boundary that was never checked.
+    Reinstall,
     /// Update an existing instance to a blob-decoded package, walking the §20.1
     /// migration chain to the target version (§13.14).
     Update,
@@ -77,6 +84,7 @@ impl LifecycleOp {
             Self::Update => "update",
             Self::Remove => "remove",
             Self::InstallModule => MOVE_OPERATOR,
+            Self::Reinstall => ModuleOperator::Reinstall.name(),
             Self::Pack => ModuleOperator::Pack.name(),
             Self::UpdateModule => ModuleOperator::UpdateModule.name(),
             Self::Rollback => ModuleOperator::Rollback.name(),
@@ -104,6 +112,11 @@ pub enum ModuleOperator {
     UpdateModule,
     /// `rollback_module(m, @point)` → the selected point identity (§13.16).
     Rollback,
+    /// `reinstall_module(m)` → the module value, re-admitted at the destination
+    /// (§13.16). Admitted ONLY as the source of a `<-` into a module-collection
+    /// entry: it names the destination's admission, so it has no meaning where
+    /// there is no destination.
+    Reinstall,
 }
 
 impl ModuleOperator {
@@ -114,6 +127,7 @@ impl ModuleOperator {
             "pack" => Some(Self::Pack),
             "update_module" => Some(Self::UpdateModule),
             "rollback_module" => Some(Self::Rollback),
+            "reinstall_module" => Some(Self::Reinstall),
             _ => None,
         }
     }
@@ -125,6 +139,7 @@ impl ModuleOperator {
             Self::Pack => "pack",
             Self::UpdateModule => "update_module",
             Self::Rollback => "rollback_module",
+            Self::Reinstall => "reinstall_module",
         }
     }
 
@@ -136,6 +151,7 @@ impl ModuleOperator {
             Self::Pack => LifecycleOp::Pack,
             Self::UpdateModule => LifecycleOp::UpdateModule,
             Self::Rollback => LifecycleOp::Rollback,
+            Self::Reinstall => LifecycleOp::Reinstall,
         }
     }
 }
@@ -154,6 +170,10 @@ pub mod arg {
     pub const MIGRATE: &str = "migrate";
     /// The module operand every §13.16 operator takes first.
     pub const MODULE: &str = "module";
+    /// The module-collection entry a slot-addressed lifecycle call writes
+    /// (`module.install({ at: .modules[@name], … })`). Its value is a path the
+    /// interpreter resolves to an ordinary row address, not a coordinate string.
+    pub const AT: &str = "at";
     /// `update_module`'s second module operand — the definition applied onto the
     /// live instance.
     pub const ONTO: &str = "onto";

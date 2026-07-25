@@ -24,13 +24,10 @@ use std::thread;
 use liasse_ident::{InstanceId, NameSegment};
 use liasse_pg::{PgStore, PgStoreFactory};
 use liasse_runtime::{
-    CallOutcome, CallRequest, Engine, FixedGenerators, InstallRequest, ModuleHost, ModuleSpace,
+    CallOutcome, CallRequest, Engine, FixedGenerators, InstallRequest, ModuleHost,
     Precision,
 };
-use liasse_store::{
-    AddressStep, CollectionPath, CommitSeq, GroupMember, InstanceStore, KeyValue, RowAddress,
-    StoreFactory, Transition,
-};
+use liasse_store::{AddressStep, CollectionPath, CommitSeq, GroupMember, InstanceStore, KeyValue, RowAddress, StoreFactory, Transition};
 use liasse_value::{Integer, Text, Value};
 
 /// A fixed micro-precision instant used as the deterministic `now()` sample.
@@ -48,8 +45,15 @@ fn int(value: i64) -> Value {
     Value::Int(Integer::from(value))
 }
 
-fn space() -> ModuleSpace {
-    ModuleSpace::new("/companies/acme/modules").expect("well-formed mount path")
+/// The module collection the fixture mounts its instances in.
+fn collection() -> CollectionPath {
+    support::collection_at("/companies/acme/modules")
+}
+
+/// The address of the module-collection entry `name` — one mounted instance's
+/// identity (§13.3), an ordinary row address.
+fn at(name: &str) -> RowAddress {
+    support::mount_at("/companies/acme/modules", name)
 }
 
 /// A root application whose `buy` inserts its own order and then dispatches the
@@ -60,7 +64,7 @@ const ROOT: &str = r#"{
   "$app": "t.pg.host@1.0.0"
   "$model": {
     "orders": { "$key": "id", "id": "text", "cost": "int" }
-    "companies": { "$key": "id", "id": "text", "modules": { "$modules": {} } }
+    "companies": { "$key": "id", "id": "text", "modules": { "$key": "text", "$value": "module" } }
     "orders_view": { "$view": ".orders { id, cost }" }
     "$mut": {
       "buy": [
@@ -116,9 +120,9 @@ fn build(handle: &support::PgHandle, seed: &str) -> Fixture {
     let root_store = factory.create(root_id.clone()).expect("create root schema");
     let root = Engine::load(root_store, ROOT, &mut generator()).expect("root loads");
     let mut host = ModuleHost::new(factory.clone(), root);
-    host.install(&space(), InstallRequest::new("bank", BANK), &mut generator())
+    host.install(&collection(), InstallRequest::new("bank", BANK), &mut generator())
         .expect("the bank child installs");
-    let bank_id = host.incarnation(&space(), "bank").expect("bank installed").clone();
+    let bank_id = host.incarnation(&at("bank")).expect("bank installed").clone();
     Fixture { host, factory, root_id, bank_id }
 }
 
@@ -126,7 +130,7 @@ fn build(handle: &support::PgHandle, seed: &str) -> Fixture {
 /// host — a durable SQL read (the PostgreSQL store holds no projection).
 fn live_bank_balance(host: &ModuleHost<PgStoreFactory>) -> Value {
     let view =
-        host.interface_read(&space(), "bank", "credits").expect("read").expect("credits exposed");
+        host.interface_read(&at("bank"), "credits").expect("read").expect("credits exposed");
     view.rows()[0].field("balance").expect("balance projected").clone()
 }
 

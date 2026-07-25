@@ -71,7 +71,7 @@ defined and documented by the topic chapters, repeated here for locality:
   subscribed surface (§10.1, §12.1).
 - `module_install` / `module_uninstall` / `module_disable` / `module_enable`
   (from §13 NOTES): host-level module lifecycle. `module_install` carries
-  `space` (the display path of the target module space) and a `request`
+  `at` (the display path of the target module collection) and a `request`
   object holding the §13.3 install request (`$name`, `$module`, optional
   `$config`/`$data`/`$use`). `module_uninstall` / `module_disable` /
   `module_enable` carry `instance`: the display path of an existing installed

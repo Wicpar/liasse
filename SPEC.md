@@ -85,7 +85,7 @@ A Liasse model is a logical tree. Its nodes may contain:
 - computed values and views;
 - mutation declarations;
 - public surfaces and authenticated roles;
-- module spaces, buckets, meters, blobs, keyrings, and history policy.
+- module collections, buckets, meters, blobs, keyrings, and history policy.
 
 The tree defines observable paths, scopes, identity, constraints, and results. An implementation chooses physical tables, documents, indexes, partitions, caches, compiled queries, and node placement.
 
@@ -422,7 +422,7 @@ A plain object is a static struct:
 
 Struct members are unordered named fields. Their dependency relationships determine evaluation where expressions refer to one another. Structs MAY contain fields, structs, sets, views, and nested keyed collections.
 
-An object's node kind is fixed by exactly one kind marker among `$key`, `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$modules`, and `$like` (Annex C.2); `$bucket` composes with `$key` (§14) and otherwise declares a source-backed bucket, and `$value` composes with `$key` to put the declaration in map form (§5.4). A plain object bearing none of these markers is a static struct. An object bearing two mutually-exclusive kind markers — for example both `$key` and `$set` — has no uniquely determined node kind and is a static (load-time) error that names both conflicting markers; no marker silently wins. A composing marker next to a mutually-exclusive one it does not compose with — `$value` beside `$set`, say — is the same error, named the same way.
+An object's node kind is fixed by exactly one kind marker among `$key`, `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, and `$like` (Annex C.2); `$bucket` composes with `$key` (§14) and otherwise declares a source-backed bucket, and `$value` composes with `$key` to put the declaration in map form (§5.4). A plain object bearing none of these markers is a static struct. An object bearing two mutually-exclusive kind markers — for example both `$key` and `$set` — has no uniquely determined node kind and is a static (load-time) error that names both conflicting markers; no marker silently wins. A composing marker next to a mutually-exclusive one it does not compose with — `$value` beside `$set`, say — is the same error, named the same way.
 
 ### 5.4 Keyed collections
 
@@ -491,7 +491,7 @@ table:  { $key: "id", id: "uuid", title: "text" }
 map:    { $key: "text", $value: "module" }
 ```
 
-`$value` is not a kind marker of its own: it **composes** with `$key` the way `$bucket` does (§14, Annex C.2). A `$value` next to a mutually-exclusive kind marker — `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$modules`, `$like` — has no uniquely determined node kind and is a static (load-time) error that names both conflicting markers. A `$value` with no `$key` is likewise a static error: a map's entries are keyed, so the key type is not optional.
+`$value` is not a kind marker of its own: it **composes** with `$key` the way `$bucket` does (§14, Annex C.2). A `$value` next to a mutually-exclusive kind marker — `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$like` — has no uniquely determined node kind and is a static (load-time) error that names both conflicting markers. A `$value` with no `$key` is likewise a static error: a map's entries are keyed, so the key type is not optional.
 
 A map entry is a **real row**. Its row shape is `{ $key, $value }`: `$key` is the row identity, `$value` the entry payload. Entries are addressable, writable, deletable, referenceable, and incrementally observable one at a time exactly as any keyed-collection row is — one row per entry in storage, one delta per changed entry. That per-entry ownership slot is what lets a map value be a **move-only** value (§8.5) such as a `module` (§13.16): each entry owns its value, and moving an entry's value out empties that entry rather than duplicating a handle. A map's canonical read order is the total order of its key type (Annex B), the keyed-collection order.
 
@@ -1319,7 +1319,7 @@ A keyed collection is a map from canonical encoded key text to row data:
 
 The map member supplies the local key. A repeated key field MUST agree with it. Nested keyed collections use the same map form. Sets use JSON arrays of member values and collapse duplicates. Omitted child sets and keyed collections start empty.
 
-Computed values, views, source-backed bucket rows, module spaces, and keyring-managed versions cannot be seeded directly. Their values derive from writable state, installed packages, or provider transitions.
+Computed values, views, source-backed bucket rows, module collections, and keyring-managed versions cannot be seeded directly. Their values derive from writable state, installed packages, or provider transitions.
 
 Seed rows pass through the same defaults, normalization, checks, key, ref, uniqueness, bucket, and meter rules as mutation inserts. All seeded row identities and supplied values form one prospective state before defaults resolve. Defaults are then evaluated by dependency; source-object member order and field order have no semantic effect.
 
@@ -1791,7 +1791,7 @@ Each module scope MAY declare its own `$auth`.
 
 - A child surface exposed directly to clients uses the child's authenticator selection.
 - A parent role wrapping a child mutation authenticates at the parent surface. The child call is internal and receives the parent's `$actor` and `$session`.
-- A child MAY alias an authenticator explicitly exposed by its parent module space when both APIs SHOULD share one session system.
+- A child MAY alias an authenticator explicitly exposed by its parent when both APIs SHOULD share one session system.
 - Installing a module alone creates no external endpoint; the host explicitly exposes a surface.
 
 Authenticator names resolve in the scope of the targeted external role. Qualification handles shared or colliding names.
@@ -1904,7 +1904,7 @@ Before returning `committed`, the runtime advances every still-authorized active
 
 ## 13. Modules
 
-A module is a versioned package that owns private state and the mutations over that state. A module space is an application location where independently configured module instances MAY be installed. Explicit bindings preserve ownership, authority, identity, and upgrade boundaries while allowing reusable behavior.
+A module is a versioned package that owns private state and the mutations over that state. A **module collection** is an application collection whose entries are installed module instances. Explicit bindings preserve ownership, authority, identity, and upgrade boundaries while allowing reusable behavior.
 
 ### 13.1 Module packages
 
@@ -1927,9 +1927,9 @@ A module is a versioned package that owns private state and the mutations over t
 
 Each installed instance owns its private model, data, history, configuration, and dependency bindings. `$config` declares an immutable typed struct for installation values; defaults use the ordinary field rules, and module expressions read it through `$config`. Reconfiguration is an explicit module update and passes compatibility and migration checks.
 
-### 13.2 Module spaces
+### 13.2 Module collections
 
-`$modules` creates an installation space at its exact location:
+A module collection is a **map whose value type is `module`** (§5.4). It is an ordinary collection — there is no module-space node kind and no addressing scheme of its own:
 
 ```hjson
 "companies": {
@@ -1937,23 +1937,28 @@ Each installed instance owns its private model, data, history, configuration, an
   "id": "text"
 
   "modules": {
-    "$modules": {}
+    "$key": "text"
+    "$value": "module"
   }
 }
 ```
 
-This creates independent spaces such as:
+Because it is an ordinary collection, containment is whatever the containing collections already give, to any depth. The declaration above yields one collection per company row:
 
 ```text
 /companies/acme/modules
 /companies/globex/modules
 ```
 
-Installing the same package in each space creates two independent instances.
+Installing the same package in each creates two independent instances.
+
+`.modules[@id]` is plain map indexing: it selects one entry, whose `$key` is the instance name and whose `$value` is the move-only `module` handle (§13.16). `modules.$key` is the map key, and `.modules::iface` is the ordinary nested traversal every collection has (§6.4) — a module collection introduces no read form of its own.
+
+A module collection's entries are NOT ordinary stored rows: they are the host's mounted instances, derived at read the way a source-backed bucket's rows are (§14.4). An ordinary insert, patch or delete addressed at one is therefore a static error; the only write is the §13.16 move that installs a `module` value into an entry.
 
 ### 13.3 Installation and instance identity
 
-`modules.install` creates one named instance inside an existing module space. The request supplies the instance name, exact `.liasse` artifact or compatible package requirement, configuration, optional initial data, and any explicit dependency bindings:
+`modules.install` creates one named instance at one entry of an existing module collection. The request supplies the instance name, exact `.liasse` artifact or compatible package requirement, configuration, optional initial data, and any explicit dependency bindings:
 
 ```hjson
 {
@@ -1962,12 +1967,12 @@ Installing the same package in each space creates two independent instances.
   "$config": { "currency": "EUR" }
   "$data": { ... }
   "$use": {
-    "people": "/companies/acme/modules/people"
+    "people": "people"
   }
 }
 ```
 
-The instance name is a non-empty text value, is unique within its module space, and forms the local component of instance identity. Its complete identity is the containing row identity, module-space declaration path, and instance name. Renaming an instance is a rekey and updates refs and bindings under the ordinary key-mutation rule.
+The instance name is a non-empty text value, is unique within its module collection, and is the entry's map key. Its complete identity is therefore the **row address of that entry** — the containing rows' keys interleaved with the collection names, exactly as for any other row. An explicit `$use` binding names a sibling by instance name: §13.5 keeps peer lookup within the sibling set, which is that collection, so a name is the whole coordinate. Renaming an instance is a rekey and updates refs and bindings under the ordinary key-mutation rule.
 
 Package seed and bundle data (`$seed`/`$data` and `$bundle`, §4.1) are applied first. Installation `$data` then overlays writable scalar and struct fields, merges keyed child collections by key, and unions sets; every resulting value passes ordinary insertion and load validation. An omitted installation `$config` or `$data` uses package defaults and seed data only.
 
@@ -1997,27 +2002,27 @@ Disabling an instance removes its direct surfaces, exports, and peer availabilit
 
 ### 13.4 Parent-provided surfaces
 
-A module space MAY expose a projected parent capability to its children:
+A module collection MAY expose a projected parent capability to its children:
 
 ```hjson
 "modules": {
-  "$modules": {
-    "$expose": {
-      "company": {
-        "$view": ". { id, name, plan }"
-        "$mut": {
-          "rename": ".rename"
-          "set_plan": ".set_plan"
-        }
+  "$key": "text"
+  "$value": "module"
+  "$expose": {
+    "company": {
+      "$view": ". { id, name, plan }"
+      "$mut": {
+        "rename": ".rename"
+        "set_plan": ".set_plan"
       }
     }
   }
 }
 ```
 
-The surface is row-local. Under Acme's module space it refers to Acme; under Globex it refers to Globex.
+The surface is row-local. Under Acme's module collection it refers to Acme; under Globex it refers to Globex.
 
-The module-space `$expose` object maps child-visible handle names to parent-defined surfaces.
+The module collection's `$expose` object maps child-visible handle names to parent-defined surfaces.
 
 A child imports it explicitly:
 
@@ -2041,7 +2046,7 @@ Renaming the handle:
 
 `$use` maps local handles to bindings supplied by the parent or by sibling module instances. Ordinary members are required; the `$optional` object groups handles whose absence is valid.
 
-A peer dependency binds to a sibling instance in the same module space:
+A peer dependency binds to a sibling instance in the same module collection:
 
 ```hjson
 "$use": {
@@ -2057,7 +2062,7 @@ The module uses `#people`. Usage sites define the structural contract:
 #people.members { id, name }
 ```
 
-Resolution considers compatible siblings in exactly the same module space:
+Resolution considers compatible siblings in exactly the same module collection — a collection under a different containing row is a different collection:
 
 ```text
 one candidate      bind automatically
@@ -2110,26 +2115,26 @@ State owned solely by an inactive guarded declaration remains preserved with the
 
 ### 13.8 Module-space interfaces
 
-A module space declares complete boundary contracts. `$interfaces` maps interface names to a view shape and optional callable mutation contracts:
+A module collection declares complete boundary contracts beside its map markers. `$interfaces` maps interface names to a view shape and optional callable mutation contracts:
 
 ```hjson
 "modules": {
-  "$modules": {
-    "$interfaces": {
-      "templates": {
-        "$view": {
-          "$key": "id"
-          "id": "text"
-          "label": "text"
-          "lines": "json"
+  "$key": "text"
+  "$value": "module"
+  "$interfaces": {
+    "templates": {
+      "$view": {
+        "$key": "id"
+        "id": "text"
+        "label": "text"
+        "lines": "json"
+      }
+      "$mut": {
+        "create({ label: text, lines: json })": {
+          "$return": { "$ref": ".templates" }
         }
-        "$mut": {
-          "create({ label: text, lines: json })": {
-            "$return": { "$ref": ".templates" }
-          }
-          "disable({ template: text })": {
-            "$return": "bool"
-          }
+        "disable({ template: text })": {
+          "$return": "bool"
         }
       }
     }
@@ -2155,9 +2160,9 @@ View satisfaction is structural. Mutation bindings MUST satisfy their declared p
 
 A view may carry bound mutation names at the same interface boundary. Selecting one exposed row binds its row-scoped mutation receiver through that interface, following the ordinary receiver rule.
 
-### 13.9 Aggregating module data
+### 13.9 Reading across a module collection
 
-The parent reads every instance exposing an interface:
+A module collection is an ordinary collection, so reading every instance exposing an interface is the ordinary §6.4 nested traversal — there is no module-specific aggregation:
 
 ```hjson
 "available_templates": {
@@ -2178,7 +2183,7 @@ Inherited identity is:
 module instance identity + exposed row identity
 ```
 
-The parent MAY select one instance or a configured subset using ordinary selectors.
+which is what the traversal already carries: `modules.$key` is the collection's own map key (the instance name) and `templates.$key` the exposed row's. The parent MAY select one instance or a configured subset using ordinary selectors — `.modules[@id]::templates` reads one entry's interface, and an entry contributes no rows while it is disabled (§13.12).
 
 <a id="1310-stateful-services-across-module-boundaries"></a>
 
@@ -2231,20 +2236,20 @@ A parent surface calls a mutation bound by the child interface. The parent surfa
 }
 ```
 
-The handle and interface name resolve through `$use` or the containing module-space binding. Direct calls to a child's private model path are invalid.
+The handle and interface name resolve through `$use` or the containing module collection's binding. Direct calls to a child's private model path are invalid.
 
 #### Direct module surface
 
 The host mounts a child public or role surface directly through the runtime surface registry. That surface uses the child's authenticator scope. Installing the module does not mount it automatically.
 
-A parent module space MAY expose selected authenticators to children. Its `$auth` object maps each child-visible authenticator name to one authenticator in the parent scope:
+A parent MAY expose selected authenticators to children through the module collection's `$auth` object, mapping each child-visible authenticator name to one authenticator in the parent scope:
 
 ```hjson
 "modules": {
-  "$modules": {
-    "$auth": {
-      "host_session": "session"
-    }
+  "$key": "text"
+  "$value": "module"
+  "$auth": {
+    "host_session": "session"
   }
 }
 ```
@@ -2295,7 +2300,7 @@ An update supplies any compatible full package — its head `$model` and declare
 - the instance's model and migrations;
 - parent and peer usage sites;
 - private dependency interfaces;
-- module-space exposures;
+- module-collection exposures;
 - external surfaces and auth contracts;
 - meter, blob, and namespace contracts.
 
@@ -2337,13 +2342,13 @@ A module value's type is its definition. A package definition is a schema, so a 
 Modules are held in ordinary collections. A keyed collection whose member type is `module` selects one instance by key and enumerates its instances by ordinary projection:
 
 ```hjson
-"modules": { "$modules": {} }       // a module space: a collection of module values
+"modules": { "$key": "text", "$value": "module" }   // a module collection
 ".modules[@id]"                     // one instance (a module value; a read borrows it)
 ".modules { $key }"                 // the set of installed keys (§5.4)
 ".modules[:m] { m.$key }"           // enumerate
 ```
 
-A module reachable in state is read and dispatched through the value, reusing the module-space interface contracts (§13.8):
+A module reachable in state is read and dispatched through the value, reusing the module collection's interface contracts (§13.8):
 
 ```hjson
 ".modules[@id].invoices.create({ … })"    // dispatch an exposed mutation
@@ -2382,9 +2387,17 @@ A module's lifecycle is expressed through ordinary writes plus host-privileged o
 ".modules[@to] <- .modules[@from]"
 ```
 
-A relocation **within** one space is a rekey: the instance keeps its identity (§13.3, D.1). Moving a handle into a **different** space is not, because a space is a boundary and not a folder — the destination declares its own parent surfaces (§13.4), resolves peers against its own sibling set (§13.5), and imposes its own interface contracts (§13.8), and the moved instance was admitted against none of them. An implementation that does not re-admit the instance under the destination's boundary refuses the move rather than re-keying it into a space whose contracts it was never checked against; extracting and reinstalling (`pack`, then install) is the path that does re-admit.
+A relocation **within** one module collection is a rekey: the instance keeps its identity (§13.3, D.1). Moving a handle into a **different** collection is not, because a module collection is a boundary and not a folder — the destination declares its own parent surfaces (§13.4), resolves peers against its own sibling set (§13.5), and imposes its own interface contracts (§13.8), and the moved instance was admitted against none of them. A plain move across collections is therefore **refused**, naming the destination.
 
-**Addressing a slot.** A written slot names **one** space. Where the spelling admits more than one declared `$modules` space — a bare `.name` reachable both as the package root's space and as the receiving row's, for instance — the write is **refused**, naming each candidate space. An implementation MUST NOT resolve the choice by a precedence rule: §13.2 makes the candidates genuinely distinct ("installing the same package in each space creates two independent instances"), so a default installs into a real, different space while reporting success. The unambiguous spellings are the rooted `/name[…]` and the containing-row path `.collection[key].name[…]`.
+**Re-admission.** `reinstall_module(m)` is the explicit form of that move:
+
+```hjson
+".other[@id] <- reinstall_module(m)"
+```
+
+It performs no rekey. The destination's admission runs in full and before anything commits — the containing row must be live (§13.2), the `$use` peers must resolve in the destination's sibling set (§13.5), the parent surfaces the instance imports must bind there (§13.4), and its `$expose` must satisfy the destination's interface contracts (§13.8) — and any failure rejects the whole transition. The instance keeps its private state and history; what changes is the boundary it is bound to, and that boundary is checked rather than assumed. An implementation MUST NOT offer a spelling that moves an instance across collections without re-running that admission.
+
+**Addressing a slot.** A module collection is an ordinary collection, so a written slot is resolved by the language's ordinary collection references and nothing about modules is special. A base that names one row (`.companies[@c].modules[@n]`, a bound local) is an explicit containment: the member is that row's child collection, and a top-level collection of the same declaration name is a different collection the author did not write. An implementation MUST resolve the explicit reading there rather than the top-level one, because §13.2 makes the two genuinely distinct ("installing the same package in each creates two independent instances") and preferring the top-level one would install into a real, different collection while reporting success. The rooted `/name[…]` addresses the package-root collection.
 
 **Update.** `update_module(m, u, { migrate })` applies a module value `u` onto the live instance `m`, keeping `m`'s identity and appending a version (§20):
 
@@ -2427,11 +2440,11 @@ A module owning submodules delegates their lifecycle through a host-exposed proc
 
 The module-value model is the typed value surface over the runtime the declarative sections already define; it supersedes their spelling of the lifecycle, not their semantics:
 
-- A **module space** (`$modules`, §13.2) is a collection whose member type is `module`. Its instances are the module values selected, enumerated, and dispatched above. The `$modules` declaration remains the way a space is declared; the value model gives its members a first-class type.
+- A **module collection** (§13.2) is a map whose value type is `module`. Its entries are the module values selected, enumerated, and dispatched above — an ordinary collection of a move-only value type, with no declaration form and no addressing scheme of its own.
 - The **install / update / remove** requests (`modules.install`, §13.3; the host-privileged lifecycle builtin, §13.10) remain the runtime that mounts, migrates, seeds, and removes an instance. The value-surface operators (`<-`, `-`, `update_module`, `rollback_module`) drive exactly that runtime; the mount, migration (§20), seed and bundle (§13.13), deletion (§13.12), and atomic-commit (§13.10) rules apply unchanged.
-- **Interfaces** (`$interfaces`/`$expose`, §13.8) remain the boundary contracts; dispatch through a module value reuses them.
+- **Interfaces** (`$interfaces`/`$expose`, §13.8) remain the boundary contracts a module collection declares beside its map markers; dispatch through a module value reuses them.
 
-Rewriting §13.2–§13.3 and §13.8 to present the declarative forms purely in terms of module values is a documentation migration deferred to a later pass; until then the declarative sections and this value model describe one runtime from two vantage points.
+The declarative sections and this value model describe one runtime from two vantage points, over one addressing: an instance is the entry of a module collection that holds it, and that entry is an ordinary row.
 
 ---
 
@@ -4216,7 +4229,7 @@ modules.list / install / bind / update / enable / disable / uninstall
 erase / reinsert
 ```
 
-`create` establishes genesis from a `.liasse` artifact with fresh instance incarnations. `open` restores the active composition recorded by a store. `load` applies a compatible package to one existing instance under an explicit §9.2 action, defaulting to `fast-forward`. `export` produces the same recursive artifact type. Module `install` creates one module instance inside an existing module space.
+`create` establishes genesis from a `.liasse` artifact with fresh instance incarnations. `open` restores the active composition recorded by a store. `load` applies a compatible package to one existing instance under an explicit §9.2 action, defaulting to `fast-forward`. `export` produces the same recursive artifact type. Module `install` creates one module instance at one entry of an existing module collection.
 
 ---
 
@@ -4556,23 +4569,23 @@ At admission, a spend sees all subscription periods active at its `occurred_at`.
   }
 
   "modules": {
-    "$modules": {
-      "$expose": {
-        "company": {
-          "$view": ". { id, name, plan }"
-          "$mut": { "rename": ".rename" }
-        }
+    "$key": "text"
+    "$value": "module"
+    "$expose": {
+      "company": {
+        "$view": ". { id, name, plan }"
+        "$mut": { "rename": ".rename" }
       }
+    }
 
-      "$interfaces": {
-        "templates": {
-          "$view": {
-            "$key": "id"
-            "id": "text"
-            "label": "text"
-            "journal": "text"
-            "lines": "json"
-          }
+    "$interfaces": {
+      "templates": {
+        "$view": {
+          "$key": "id"
+          "id": "text"
+          "label": "text"
+          "journal": "text"
+          "lines": "json"
         }
       }
     }
@@ -4725,7 +4738,7 @@ Keyed collections represent application row sequences through explicit `$sort`. 
 | object with `$key` | keyed collection |
 | object with `$key` and `$value` | map collection (§5.4) |
 | object with `$view` | computed view |
-| object with `$modules` | module space |
+| map with `$value: module` | module collection |
 | object with `$keyring` | keyring |
 
 Expanded field keys include:
@@ -5037,7 +5050,6 @@ $key        keyed collection (a key type when `$value` is present)
 $value      map entry value — composes with `$key` (§5.4)
 $set        unique set
 $view       computed view
-$modules    module space
 $keyring    managed keyring
 $bucket     lifecycle/period collection behavior
 $limits     meter declaration
@@ -5050,7 +5062,7 @@ $history    minimum recoverable-history policy
 $blob_storage blob placement policy
 ```
 
-A plain object without a shape marker is a static struct. An object's node kind is fixed by exactly one kind marker among `$key`, `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, `$modules`, and `$like`; `$bucket` and `$value` compose with `$key`. An object bearing two mutually-exclusive kind markers is a static error that names both (§5.3), as is a composing marker beside a kind marker it does not compose with. `$value` is what puts a `$key` declaration in map form, and only then is `$key` a type expression rather than a list of declared field names (§5.4); a `$value` with no `$key` is a static error.
+A plain object without a shape marker is a static struct. An object's node kind is fixed by exactly one kind marker among `$key`, `$set`, `$view`, `$ref`, `$enum`, `$type`, `$keyring`, and `$like`; `$bucket` and `$value` compose with `$key`. An object bearing two mutually-exclusive kind markers is a static error that names both (§5.3), as is a composing marker beside a kind marker it does not compose with. `$value` is what puts a `$key` declaration in map form, and only then is `$key` a type expression rather than a list of declared field names (§5.4); a `$value` with no `$key` is a static error.
 
 ### C.3 Field forms
 
@@ -5307,7 +5319,9 @@ $amount, $time
 ```text
 module-package.$config?: shape
 
-$modules: {
+module-collection: {
+  $key: "text"
+  $value: "module"
   $expose?: { name: surface }
   $interfaces?: {
     name: {
@@ -5612,7 +5626,7 @@ Compatibility is defined at boundaries used by independently versioned clients o
 - view parameter, output-shape, identity, and explicit ordering contracts;
 - mutation parameter, response, and receiver contracts;
 - accepted authenticator names and credential or proof shapes;
-- module-space `$interfaces` and the view and mutation contracts bound through `$expose`;
+- module-collection `$interfaces` and the view and mutation contracts bound through `$expose`;
 - parent, peer, and private dependency requirements;
 - blob, namespace, provider, and keyring capabilities required to use those contracts;
 - migrations required to activate the release over an existing instance;

@@ -41,7 +41,7 @@ use host_args::HostArgInference;
 // Re-exported for the surface phase's inline-program check (§10.1), which walks a
 // statement's expressions to reject a public `$actor`/`$session` reference.
 pub(crate) use helpers::stmt_exprs;
-// Re-exported for the module phase (§13.8): validating a `$modules` interface
+// Re-exported for the module phase (§13.8): validating a module collection's interface
 // `$mut` contract name against the same `name({ proto })` prototype grammar.
 pub(crate) use helpers::parse_name;
 
@@ -69,6 +69,7 @@ pub(crate) fn check_mutations(
     root: &Shape,
     raw: &[RawMut],
     source_buckets: &[String],
+    module_collections: &[String],
     config: Option<&ExprType>,
     hosts: &HostDescriptors,
 ) -> Vec<Mutation> {
@@ -81,6 +82,7 @@ pub(crate) fn check_mutations(
                 root,
                 root_row: root_row.clone(),
                 source_buckets,
+                module_collections,
                 config,
                 hosts,
             };
@@ -108,6 +110,10 @@ struct MutPhase<'a, 'b> {
     root_row: ExprType,
     /// Absolute paths of source-backed bucket collections (read-only, §14.4).
     source_buckets: &'a [String],
+    /// Absolute paths of module collections (§13.2): maps of `module` values whose
+    /// entries are the host's mounted instances. Their rows are never ordinary
+    /// stored state, so the only write to one is the §13.16 `<-` install.
+    module_collections: &'a [String],
     /// A module package's `$config` struct row (§13.1), bound as the `$config`
     /// structural so a module mutation body reads it; `None` outside a module.
     config: Option<&'a ExprType>,
@@ -696,6 +702,15 @@ impl MutPhase<'_, '_> {
         if !self.admits_move_source(src, &scope, source) {
             return scope;
         }
+        // §13.16: `.modules[@id] <- m` writes a `module` value into one slot of a
+        // module collection. The destination is a map entry whose value type is
+        // `module`, so the write is well-typed by the collection's own declaration;
+        // what an ordinary assignment check cannot express is that the whole entry —
+        // key and mounted instance — is written at once. Check it here by name.
+        if self.writes_module_slot(dest, receiver_shape) {
+            self.check_module_slot_move(dest, src, &scope, source);
+            return scope;
+        }
         if let Some(local) = local_binding_name(dest) {
             // `dest <- source`: `dest` takes the source's type.
             if references_deferred(src, deferred) {
@@ -828,6 +843,48 @@ impl MutPhase<'_, '_> {
                 target.span,
                 "a source-backed bucket collection is read-only (§14.4)",
                 "change the bucket's source rows or the tables they reference instead",
+            );
+        }
+        // §13.2/§13.16: a module collection's entries are the host's mounted
+        // instances, not stored rows. `<-` installs one; every other write form
+        // would stage nothing at all, so it is refused by name rather than
+        // committing a transition that silently did nothing.
+        if self.module_collections.contains(&path) && !matches!(stmt.kind, StmtKind::Move { .. }) {
+            self.reject_at(
+                source,
+                target.span,
+                "a module collection holds mounted module instances, which are not ordinary stored rows (§13.2)",
+                "install one by moving a `module` value into a slot — `.modules[@name] <- unpack(@package)` (§13.16)",
+            );
+        }
+    }
+
+    /// Whether `dest` addresses one slot of a declared module collection — the
+    /// destination §13.16's `<-` install writes.
+    fn writes_module_slot(&self, dest: &Expr, receiver_shape: &Shape) -> bool {
+        let ExprKind::Select { base, selector: Selector::Keys(keys) } = &dest.kind else { return false };
+        if keys.len() != 1 {
+            return false;
+        }
+        matches!(
+            resolve_node(base, receiver_shape, self.root),
+            Some(Node::Collection(collection)) if self.module_collections.contains(&collection.path)
+        )
+    }
+
+    /// §13.16: the source of a module-slot write is a `module` value. Anything else
+    /// names no instance to mount, so it is refused rather than written into a slot
+    /// the host would then have to interpret.
+    fn check_module_slot_move(&mut self, dest: &Expr, src: &Expr, scope: &ModelScope, source: SourceId) {
+        let is_module = self
+            .type_value(src, scope, source)
+            .is_some_and(|typed| matches!(typed.ty().as_scalar(), Some(Type::Module(_))));
+        if !is_module {
+            self.reject_at(
+                source,
+                dest.span,
+                "a module collection's entries are `module` values (§13.2), and this move source is not one",
+                "produce one with `unpack(@package)`, or move a `module`-typed binding or parameter",
             );
         }
     }

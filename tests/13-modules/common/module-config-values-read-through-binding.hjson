@@ -21,11 +21,11 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                templates: {
-                  $view: { $key: "id", id: "text", label: "text", currency: "text" }
-                }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: {
+                $view: { $key: "id", id: "text", label: "text", currency: "text" }
               }
             }
           }
@@ -60,10 +60,10 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: { $name: "kit_def", $module: "t.tplc@1.0.0" } }
       expect: { outcome: ok } }
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: { $name: "kit_eur", $module: "t.tplc@1.0.0", $config: { currency: "EUR" } } }
       expect: { outcome: ok } }
     { watch: "public.catalog", args: { company: "acme" }, id: "w1"

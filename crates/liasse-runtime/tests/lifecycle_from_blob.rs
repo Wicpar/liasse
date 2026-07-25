@@ -14,9 +14,9 @@ mod support;
 use liasse_artifact::ArtifactBuilder;
 use liasse_ident::{HistoryPoint, InstanceId, LineageId, PointId};
 use liasse_runtime::{
-    CallOutcome, CallRequest, Engine, ModuleHost, ModuleSpace, Value,
+    CallOutcome, CallRequest, Engine, ModuleHost, Value,
 };
-use liasse_store::{MemoryStore, MemoryStoreFactory};
+use liasse_store::{MemoryStore, MemoryStoreFactory, RowAddress};
 use liasse_value::{BlobDescriptor, Text};
 use support::generator;
 
@@ -32,22 +32,22 @@ const ROOT: &str = r#"{
     "companies": {
       "$key": "id"
       "id": "text"
-      "modules": { "$modules": {} }
+      "modules": { "$key": "text", "$value": "module" }
     }
     "$mut": {
       "provision({ id: text, blob: blob })": [
         "e = .log + { id: @id }"
-        "p = module.install({ blob: @blob, space: '/companies/acme/modules', name: 'sales' })"
+        "p = module.install({ blob: @blob, at: .companies['acme'].modules['sales'] })"
         "return e { id }"
       ]
       "revise({ id: text, blob: blob })": [
         "e = .log + { id: @id }"
-        "module.update({ blob: @blob, space: '/companies/acme/modules', name: 'sales' })"
+        "module.update({ blob: @blob, module: .companies['acme'].modules['sales'].$value })"
         "return e { id }"
       ]
       "retire({ id: text })": [
         "e = .log + { id: @id }"
-        "module.remove({ space: '/companies/acme/modules', name: 'sales' })"
+        "module.remove({ module: .companies['acme'].modules['sales'].$value })"
         "return e { id }"
       ]
     }
@@ -110,12 +110,12 @@ const ROOT_UNKNOWN_ARG: &str = r#"{
     "companies": {
       "$key": "id"
       "id": "text"
-      "modules": { "$modules": {} }
+      "modules": { "$key": "text", "$value": "module" }
     }
     "$mut": {
       "provision({ id: text, blob: blob })": [
         "e = .log + { id: @id }"
-        "module.install({ blob: @blob, space: '/companies/acme/modules', name: 'sales', config: 'x' })"
+        "module.install({ blob: @blob, at: .companies['acme'].modules['sales'], config: 'x' })"
         "return e { id }"
       ]
     }
@@ -123,8 +123,10 @@ const ROOT_UNKNOWN_ARG: &str = r#"{
   "$data": { "companies": { "acme": {} } }
 }"#;
 
-fn space() -> ModuleSpace {
-    ModuleSpace::new("/companies/acme/modules").expect("well-formed mount path")
+/// The address of the module-collection entry `name` — one mounted instance's
+/// identity (§13.3), an ordinary row address.
+fn at(name: &str) -> RowAddress {
+    support::mount_at("/companies/acme/modules", name)
 }
 
 /// Serialize a module definition into a minimal `.liasse` blob (empty state/history
@@ -170,7 +172,7 @@ fn root_log_ids(host: &ModuleHost<MemoryStoreFactory>) -> Vec<String> {
 /// The `qty` of the `sales` instance's item `a`, read through its exposed interface,
 /// as its canonical decimal text.
 fn sales_qty(host: &ModuleHost<MemoryStoreFactory>) -> Option<String> {
-    let view = host.interface_read(&space(), "sales", "items").expect("read")?;
+    let view = host.interface_read(&at("sales"), "items").expect("read")?;
     let row = view.rows().iter().find(|r| matches!(r.field("id"), Some(Value::Text(t)) if t.as_str() == "a"))?;
     match row.field("qty")? {
         Value::Int(v) => Some(v.to_canonical_text()),
@@ -184,7 +186,7 @@ fn install_from_blob_commits_parent_change_and_new_instance_atomically() {
     let blob = blob_of(&mut host, SALES_V1);
 
     assert!(root_log_ids(&host).is_empty(), "no log row before");
-    assert!(!host.is_installed(&space(), "sales"), "sales not installed before");
+    assert!(!host.is_installed(&at("sales")), "sales not installed before");
 
     let request = CallRequest::new("provision").arg("id", text("first")).arg("blob", Value::Blob(Box::new(blob)));
     let outcome = host.call_root_lifecycle(&request, &mut generator()).expect("no engine fault");
@@ -193,7 +195,7 @@ fn install_from_blob_commits_parent_change_and_new_instance_atomically() {
     // BOTH persist: the parent's own log row AND the freshly-installed instance, as
     // one atomic transition — a fresh read sees both.
     assert_eq!(root_log_ids(&host), vec!["first".to_owned()], "the parent's own change committed");
-    assert!(host.is_enabled(&space(), "sales"), "the module instance mounted");
+    assert!(host.is_enabled(&at("sales")), "the module instance mounted");
     assert_eq!(sales_qty(&host), Some("5".to_owned()), "the installed instance carries its package seed");
 }
 
@@ -208,7 +210,7 @@ fn a_malformed_install_blob_rolls_back_the_whole_transition() {
 
     assert!(matches!(outcome, CallOutcome::Rejected(_)), "a malformed package rejects, got {outcome:?}");
     // No half-mounted instance, and the parent's own change did NOT commit.
-    assert!(!host.is_installed(&space(), "sales"), "no instance was half-mounted");
+    assert!(!host.is_installed(&at("sales")), "no instance was half-mounted");
     assert!(root_log_ids(&host).is_empty(), "the parent's own change rolled back");
 }
 
@@ -272,7 +274,9 @@ fn the_decoded_package_identity_is_recorded_and_reproduced() {
     // composition pins the sales mount to the blob content id, the D.4 definition id,
     // and the version (§5.1) — read back from committed state, not re-derived.
     let composition = host.durable_composition().expect("read composition").expect("a composition was recorded");
-    let mount = composition.mount("/companies/acme/modules/sales").expect("the sales mount is recorded");
+    // §19.5: the mount key IS the entry's own row address, so the composition is
+    // keyed by ordinary collection addressing rather than a separate mount path.
+    let mount = composition.mount(&at("sales").render()).expect("the sales mount is recorded");
     let pin = mount.package().expect("the mount carries package provenance");
     assert_eq!(pin.content(), &expected_content, "the mount pins the decoded blob content id");
     assert_eq!(pin.definition(), &expected_definition, "the mount pins the D.4 definition id");
@@ -282,13 +286,13 @@ fn the_decoded_package_identity_is_recorded_and_reproduced() {
     // identical pin — it is stored and reused verbatim, never re-generated (§5.1).
     let again = host.durable_composition().expect("re-read").expect("still recorded");
     assert_eq!(
-        again.mount("/companies/acme/modules/sales").and_then(liasse_store::Mount::package),
+        again.mount(&at("sales").render()).and_then(liasse_store::Mount::package),
         Some(pin),
         "the recorded provenance is reproduced verbatim on a fresh read"
     );
 
     // The in-memory audit accessor agrees with the durable fact.
-    let mounted = host.mounted_package(&space(), "sales").expect("mounted package");
+    let mounted = host.mounted_package(&at("sales")).expect("mounted package");
     assert_eq!(mounted.definition, expected_definition);
     assert_eq!(mounted.content, expected_content);
 }
@@ -312,7 +316,7 @@ fn an_unsupported_lifecycle_argument_is_refused_loudly() {
     }
 
     // The unsupported argument aborted the whole transition: nothing half-applied.
-    assert!(!host.is_installed(&space(), "sales"), "no instance mounted when the arg is refused");
+    assert!(!host.is_installed(&at("sales")), "no instance mounted when the arg is refused");
     assert!(root_log_ids(&host).is_empty(), "the parent's own change rolled back");
 }
 
@@ -322,12 +326,12 @@ fn remove_within_a_transition_commits_atomically() {
     let v1 = blob_of(&mut host, SALES_V1);
     let install = CallRequest::new("provision").arg("id", text("install")).arg("blob", Value::Blob(Box::new(v1)));
     host.call_root_lifecycle(&install, &mut generator()).expect("install");
-    assert!(host.is_installed(&space(), "sales"), "installed before removal");
+    assert!(host.is_installed(&at("sales")), "installed before removal");
 
     let retire = CallRequest::new("retire").arg("id", text("retire"));
     let outcome = host.call_root_lifecycle(&retire, &mut generator()).expect("no engine fault");
     assert!(matches!(outcome, CallOutcome::Committed { .. }), "the removal commits, got {outcome:?}");
 
-    assert!(!host.is_installed(&space(), "sales"), "the instance was removed");
+    assert!(!host.is_installed(&at("sales")), "the instance was removed");
     assert_eq!(root_log_ids(&host), vec!["install".to_owned(), "retire".to_owned()], "the parent's own change committed");
 }

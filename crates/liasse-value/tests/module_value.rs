@@ -93,7 +93,7 @@ fn a_module_has_no_wire_decode_form() {
     );
     assert!(
         any()
-            .decode(&serde_json::json!({ "$module": { "name": "a", "space": "s" } }))
+            .decode(&serde_json::json!({ "$module": { "at": "/m/\"a\"" } }))
             .is_err(),
         "not even its own tagged debug form decodes back into a module"
     );
@@ -102,10 +102,7 @@ fn a_module_has_no_wire_decode_form() {
 // --- value ordering / equality -------------------------------------------------
 
 fn mounted(name: &str) -> Value {
-    Value::Module(ModuleHandle::Mounted {
-        space: "s".to_owned(),
-        name: name.to_owned(),
-    })
+    Value::Module(ModuleHandle::Mounted(format!("/modules/\"{name}\"")))
 }
 
 #[test]
@@ -122,9 +119,9 @@ fn module_handles_order_and_compare_coherently() -> Result<(), String> {
     ))));
     let zero = Value::Int(Integer::parse("0").map_err(|e| e.to_string())?);
 
-    assert_eq!(a, a2, "same (space, name) mounted handles are equal");
+    assert_eq!(a, a2, "handles addressing the same entry are equal");
     assert_ne!(a, b, "different names are distinct");
-    assert!(a < b, "mounted handles order by (space, name)");
+    assert!(a < b, "mounted handles order by entry address");
     assert_eq!(pending.cmp(&pending), std::cmp::Ordering::Equal);
     assert_ne!(a, pending, "a mounted handle differs from a pending one");
     // A module ranks after every ordinary value and before `none` (the maximum).
@@ -142,11 +139,11 @@ fn a_module_renders_a_faithful_module_tag() {
     let text = mounted("a").to_canonical_json_string();
     assert!(text.contains("\"$module\""), "tagged under $module: {text}");
     assert!(
-        text.contains("\"name\":\"a\""),
-        "carries the instance name: {text}"
+        text.contains("\\\"a\\\""),
+        "carries the entry's instance-name key: {text}"
     );
     assert!(
-        text.contains("\"space\":\"s\""),
-        "carries the space: {text}"
+        text.contains("\"at\":"),
+        "carries the entry address: {text}"
     );
 }

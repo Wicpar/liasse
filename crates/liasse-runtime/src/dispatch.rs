@@ -13,6 +13,7 @@
 
 use liasse_expr::Cell;
 use liasse_model::LifecycleOp;
+use liasse_store::RowAddress;
 use liasse_value::Value;
 
 use crate::error::Rejection;
@@ -29,6 +30,13 @@ pub(crate) struct Handles<'a> {
     /// The host/root-scope lifecycle handle, when this is the primary of a
     /// lifecycle transition.
     pub(crate) lifecycle: Option<&'a dyn Lifecycle>,
+    /// The module-collection entries the host currently holds (§13.2), so a
+    /// host/root-scope program READS its own module collections — `.modules[@id]`
+    /// is an ordinary keyed read, and `.$value` is the handle a lifecycle call
+    /// addresses. `None` for a transition that is not lent the module set; the
+    /// collections then materialize empty, exactly as they do in a child engine
+    /// that has none.
+    pub(crate) modules: Option<&'a crate::modules::MountedModules>,
 }
 
 /// A cross-instance dispatch target the interpreter reaches while running a parent
@@ -67,10 +75,20 @@ pub(crate) trait Dispatch {
 /// enforced by lending, exactly as the cross-engine [`Dispatch`] is.
 pub(crate) trait Lifecycle {
     /// Perform lifecycle operation `op` with the evaluated `(member, value)` pairs
-    /// of the call's argument object (`{ blob: @pkg, space: "…", name: "…" }`).
-    /// Decodes the blob (install/update), staging the mount/migration/removal into
-    /// the transition, and returns the decoded package identity as a value the
-    /// caller may bind or return. A refusal (malformed blob, unknown instance, …)
-    /// is an `Err(Rejection)` that unwinds the WHOLE transition — nothing commits.
-    fn perform(&self, op: LifecycleOp, args: Vec<(String, Value)>) -> Result<Cell, Rejection>;
+    /// of the call's argument object (`{ blob: @pkg, module: m }`).
+    ///
+    /// `at` is the module-collection entry the operation writes, already resolved by
+    /// the interpreter's ordinary collection addressing — the install and re-install
+    /// operations take one; every other addresses its instance by the `module` VALUE
+    /// it is given, so they take `None`. The handle decodes the blob (install /
+    /// update), stages the mount/migration/removal into the transition, and returns
+    /// the decoded package identity as a value the caller may bind or return. A
+    /// refusal (malformed blob, unknown instance, …) is an `Err(Rejection)` that
+    /// unwinds the WHOLE transition — nothing commits.
+    fn perform(
+        &self,
+        op: LifecycleOp,
+        at: Option<RowAddress>,
+        args: Vec<(String, Value)>,
+    ) -> Result<Cell, Rejection>;
 }

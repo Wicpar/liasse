@@ -1,5 +1,5 @@
 //! Module composition (SPEC.md §13): the grammar of `$config`, `$use`, `$deps`,
-//! `$expose`, and a `$modules` space. Cross-package resolution is a runtime seam.
+//! `$expose`, and a module collection. Cross-package resolution is a runtime seam.
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -136,18 +136,18 @@ fn module_composition_loads() {
     built.expect_ok();
 }
 
-/// §13.2/§13.4/§13.8 — a `$modules` space with an interface and an exposure.
+/// §13.2/§13.4/§13.8 — a module collection with an interface and an exposure.
 #[test]
-fn module_space_loads() {
+fn module_collection_loads() {
     let built = build(
         r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text",
               "modules": {
-                "$modules": {
-                  "$expose": { "company": { "$view": ". { id }", "$mut": { "rename": ".rename" } } }
-                  "$interfaces": { "templates": { "$view": { "$key": "id", "id": "text" }, "$mut": { "create({ label: text })": { "$return": "bool" } } } }
-                }
+                "$key": "text"
+                "$value": "module"
+                "$expose": { "company": { "$view": ". { id }", "$mut": { "rename": ".rename" } } }
+                "$interfaces": { "templates": { "$view": { "$key": "id", "id": "text" }, "$mut": { "create({ label: text })": { "$return": "bool" } } } }
               }
             }
         } }"#,
@@ -155,18 +155,20 @@ fn module_space_loads() {
     built.expect_ok();
 }
 
-/// §13.8 / §2.5 — an unknown module-space member is rejected.
+/// §13.8 / §2.5 — an unknown reserved member of a module collection is rejected.
+/// A module collection is an ordinary map, so the refusal is the map's own
+/// reserved-member rule; nothing about modules relaxes it.
 #[test]
-fn unknown_space_member_rejected() {
+fn unknown_module_collection_member_rejected() {
     let built = build(
         r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text",
-              "modules": { "$modules": { "$plugins": {} } }
+              "modules": { "$key": "text", "$value": "module", "$plugins": {} }
             }
         } }"#,
     );
-    assert!(built.has_code("M-MODULE"));
+    assert!(built.has_code("M-RESERVED"), "expected a reserved-member rejection, got: {}", built.rendered());
     assert!(built.points_at("$plugins"));
 }
 
@@ -177,7 +179,7 @@ fn unknown_interface_member_rejected() {
         r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text",
-              "modules": { "$modules": { "$interfaces": { "t": { "$view": { "$key": "id", "id": "text" }, "$secret": "x" } } } }
+              "modules": { "$key": "text", "$value": "module", "$interfaces": { "t": { "$view": { "$key": "id", "id": "text" }, "$secret": "x" } } }
             }
         } }"#,
     );
@@ -208,10 +210,10 @@ fn module_space_interface_aggregation_types() {
             "companies": {
               "$key": "id", "id": "text",
               "modules": {
-                "$modules": {
-                  "$interfaces": {
-                    "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
-                  }
+                "$key": "text"
+                "$value": "module"
+                "$interfaces": {
+                  "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
                 }
               },
               "catalog": {
@@ -231,7 +233,7 @@ fn module_space_whole_aggregation_types() {
         r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text",
-              "modules": { "$modules": { "$interfaces": { "templates": { "$view": { "$key": "id", "id": "text" } } } } },
+              "modules": { "$key": "text", "$value": "module", "$interfaces": { "templates": { "$view": { "$key": "id", "id": "text" } } } },
               "installed": { "$view": "= count(.modules)" }
             }
         } }"#,
@@ -247,7 +249,7 @@ fn module_space_unknown_interface_rejected() {
         r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text",
-              "modules": { "$modules": { "$interfaces": { "templates": { "$view": { "$key": "id", "id": "text" } } } } },
+              "modules": { "$key": "text", "$value": "module", "$interfaces": { "templates": { "$view": { "$key": "id", "id": "text" } } } },
               "catalog": { "$view": ".modules::billing { id }" }
             }
         } }"#,
@@ -268,9 +270,9 @@ fn interface_projection_of_unbound_field_rejected() {
         r#"{ "$liasse": 1, "$app": "t.mod.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text", "name": "text",
-              "modules": { "$modules": { "$interfaces": {
+              "modules": { "$key": "text", "$value": "module",  "$interfaces": {
                 "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
-              } } },
+              } },
               "catalog": { "$view": ".modules::templates { module: modules.$key, id, label, secret, $sort: [module, id] }" }
             }
         } }"#,
@@ -343,12 +345,12 @@ fn surface_binding_into_private_child_path_rejected() {
         r#"{ "$liasse": 1, "$app": "t.mod.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text", "name": "text",
-              "modules": { "$modules": { "$interfaces": {
+              "modules": { "$key": "text", "$value": "module",  "$interfaces": {
                 "templates": {
                   "$view": { "$key": "id", "id": "text", "label": "text" },
                   "$mut": { "create({ id: text, label: text })": { "$return": { "id": "text", "label": "text" } } }
                 }
-              } } }
+              } }
             },
             "$public": {
               "admin": { "$mut": { "create": "/companies[\"acme\"].modules[\"kit\"].create_template" } }
@@ -401,10 +403,10 @@ fn interface_mut_contract_malformed_prototype_rejected() {
         r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text",
-              "modules": { "$modules": { "$interfaces": { "t": {
+              "modules": { "$key": "text", "$value": "module",  "$interfaces": { "t": {
                 "$view": { "$key": "id", "id": "text" },
                 "$mut": { "create({ id: notatype })": { "$return": "bool" } }
-              } } } }
+              } } }
             }
         } }"#,
     );
@@ -420,10 +422,10 @@ fn interface_mut_contract_unknown_body_member_rejected() {
         r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text",
-              "modules": { "$modules": { "$interfaces": { "t": {
+              "modules": { "$key": "text", "$value": "module",  "$interfaces": { "t": {
                 "$view": { "$key": "id", "id": "text" },
                 "$mut": { "create({ id: text })": { "$reply": "bool" } }
-              } } } }
+              } } }
             }
         } }"#,
     );
@@ -439,10 +441,10 @@ fn interface_mut_contract_non_shape_return_rejected() {
         r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text",
-              "modules": { "$modules": { "$interfaces": { "t": {
+              "modules": { "$key": "text", "$value": "module",  "$interfaces": { "t": {
                 "$view": { "$key": "id", "id": "text" },
                 "$mut": { "create({ id: text })": { "$return": 5 } }
-              } } } }
+              } } }
             }
         } }"#,
     );
@@ -458,7 +460,7 @@ fn interface_mut_contract_well_formed_loads() {
         r#"{ "$liasse": 1, "$app": "t.host@1.0.0", "$model": {
             "companies": {
               "$key": "id", "id": "text",
-              "modules": { "$modules": { "$interfaces": { "templates": {
+              "modules": { "$key": "text", "$value": "module",  "$interfaces": { "templates": {
                 "$view": { "$key": "id", "id": "text", "label": "text" },
                 "$mut": {
                   "disable({ template: text })": { "$return": "bool" },
@@ -466,7 +468,7 @@ fn interface_mut_contract_well_formed_loads() {
                   "clone({ id: text })": { "$return": { "$ref": ".templates" } },
                   "remove({ id: text })": {}
                 }
-              } } } }
+              } } }
             }
         } }"#,
     );

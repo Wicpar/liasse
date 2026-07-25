@@ -29,7 +29,7 @@
       companies: {
         $key: "id"
         id: "text"
-        modules: { $modules: {} }
+        modules: { $key: "text", $value: "module" }
       }
       $mut: {
         "provision({ company: text, name: text, from: text })": [

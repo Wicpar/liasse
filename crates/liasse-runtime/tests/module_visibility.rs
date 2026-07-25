@@ -1,7 +1,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic, clippy::indexing_slicing)]
 //! §13.8–§13.10 module composition made visible to the **root** engine: a root
 //! package's `.modules::iface` view aggregates the installed children through the
-//! boundary; a root-level and a company-nested module space both resolve; a
+//! boundary; a root-level and a company-nested module collection both resolve; a
 //! private child field never crosses the interface (isolation); and an
 //! interface-addressed mutation routes to a child's exposed mutation and commits.
 //!
@@ -13,14 +13,14 @@
 mod support;
 
 use liasse_runtime::{
-    CallOutcome, CallRequest, Engine, InstallRequest, ModuleHost, ModuleSpace, Value, ViewQuery,
+    CallOutcome, CallRequest, Engine, InstallRequest, ModuleHost, Value, ViewQuery,
     ViewResult,
 };
 use liasse_store::{MemoryStore, MemoryStoreFactory};
 use liasse_value::Text;
 use support::generator;
 
-/// A root package with a **root-level** module space `modules` declaring a
+/// A root package with a **root-level** module collection `modules` declaring a
 /// `templates` interface, plus a `catalog` view that aggregates it across every
 /// installed instance (§13.9), and a public surface over the catalog.
 const ROOT_LEVEL: &str = r#"{
@@ -28,10 +28,10 @@ const ROOT_LEVEL: &str = r#"{
   "$app": "t.mod.host@1.0.0"
   "$model": {
     "modules": {
-      "$modules": {
-        "$interfaces": {
-          "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
-        }
+      "$key": "text"
+      "$value": "module"
+      "$interfaces": {
+        "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
       }
     }
     "catalog": {
@@ -40,7 +40,7 @@ const ROOT_LEVEL: &str = r#"{
   }
 }"#;
 
-/// A root package with a **company-nested** module space (`companies.*.modules`)
+/// A root package with a **company-nested** module collection (`companies.*.modules`)
 /// and a nested `catalog` view read through a public surface — the canonical §13.9
 /// corpus shape.
 const NESTED: &str = r#"{
@@ -52,10 +52,10 @@ const NESTED: &str = r#"{
       "id": "text"
       "name": "text"
       "modules": {
-        "$modules": {
-          "$interfaces": {
-            "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
-          }
+        "$key": "text"
+        "$value": "module"
+        "$interfaces": {
+          "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
         }
       }
       "catalog": {
@@ -70,6 +70,43 @@ const NESTED: &str = r#"{
     }
   }
   "$data": { "companies": { "acme": { "name": "Acme" } } }
+}"#;
+
+/// Two module collections that share a trailing declaration name (`modules`) under
+/// DIFFERENT parents, whose containing rows share a key (`acme`). This is the shape
+/// that distinguishes matching a materialized entry on its containing KEYS alone
+/// from matching on the whole address: under the weaker rule, an instance mounted in
+/// one collection would be folded into the other's read.
+const TWIN: &str = r#"{
+  "$liasse": 1
+  "$app": "t.mod.twin@1.0.0"
+  "$model": {
+    "companies": {
+      "$key": "id"
+      "id": "text"
+      "modules": {
+        "$key": "text"
+        "$value": "module"
+        "$interfaces": { "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } } }
+      }
+      "catalog": { "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }" }
+    }
+    "teams": {
+      "$key": "id"
+      "id": "text"
+      "modules": {
+        "$key": "text"
+        "$value": "module"
+        "$interfaces": { "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } } }
+      }
+      "catalog": { "$view": ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }" }
+    }
+    "$public": {
+      "company_catalog": { "$params": { "id": "text" }, "$view": "/companies[@id].catalog" }
+      "team_catalog": { "$params": { "id": "text" }, "$view": "/teams[@id].catalog" }
+    }
+  }
+  "$data": { "companies": { "acme": {} }, "teams": { "acme": {} } }
 }"#;
 
 /// A child module: private `templates` with a `secret` field the `$expose` view
@@ -106,16 +143,21 @@ fn host(definition: &str) -> ModuleHost<MemoryStoreFactory> {
     ModuleHost::new(MemoryStoreFactory::new(), root)
 }
 
-fn install(host: &mut ModuleHost<MemoryStoreFactory>, space: &ModuleSpace, name: &str) {
+/// The address of entry `name` in `collection` — one mounted instance's identity.
+fn entry(collection: &liasse_store::CollectionPath, name: &str) -> liasse_store::RowAddress {
+    collection.row(liasse_store::KeyValue::single(text(name)))
+}
+
+fn install(host: &mut ModuleHost<MemoryStoreFactory>, space: &liasse_store::CollectionPath, name: &str) {
     host.install(space, InstallRequest::new(name, CHILD), &mut generator()).expect("install");
 }
 
-fn create(host: &mut ModuleHost<MemoryStoreFactory>, space: &ModuleSpace, name: &str, id: &str, label: &str, secret: &str) {
+fn create(host: &mut ModuleHost<MemoryStoreFactory>, space: &liasse_store::CollectionPath, name: &str, id: &str, label: &str, secret: &str) {
     let request = CallRequest::new("create_template")
         .arg("id", text(id))
         .arg("label", text(label))
         .arg("secret", text(secret));
-    match host.interface_call(space, name, "templates", "create", &request, &mut generator()) {
+    match host.interface_call(&entry(space, name), "templates", "create", &request, &mut generator()) {
         Ok(CallOutcome::Committed { .. }) => {}
         other => panic!("interface_call must commit, got {other:?}"),
     }
@@ -140,7 +182,7 @@ fn root_view_aggregates_two_installed_children() {
     // §13.9: a root view over `.modules::templates` reads every enabled instance
     // exposing the interface; inherited identity is the instance name plus the
     // exposed row, so the projection carries `modules.$key` and the child fields.
-    let space = ModuleSpace::new("/modules").expect("mount");
+    let space = support::collection_at("/modules");
     let mut host = host(ROOT_LEVEL);
     install(&mut host, &space, "kit_a");
     install(&mut host, &space, "kit_b");
@@ -161,10 +203,10 @@ fn root_view_aggregates_two_installed_children() {
 }
 
 #[test]
-fn root_view_over_company_nested_module_space_resolves() {
+fn root_view_over_company_nested_module_collection_resolves() {
     // The canonical §13.9 corpus shape: `.modules::templates` nested under a
     // company row, read through a `$params`-bound public surface.
-    let space = ModuleSpace::new("/companies/acme/modules").expect("mount");
+    let space = support::collection_at("/companies/acme/modules");
     let mut host = host(NESTED);
     install(&mut host, &space, "kit_a");
     install(&mut host, &space, "kit_b");
@@ -179,7 +221,7 @@ fn root_view_over_company_nested_module_space_resolves() {
             ("kit_a".to_owned(), "a2".to_owned(), "Zeta".to_owned()),
             ("kit_b".to_owned(), "a1".to_owned(), "Mid".to_owned()),
         ],
-        "the company-scoped module space aggregates its own installed children"
+        "the company-scoped module collection aggregates its own installed children"
     );
 }
 
@@ -189,7 +231,7 @@ fn installation_data_overlay_seeds_child_rows_visible_in_the_aggregation() {
     // rows then appear in the parent's `.modules::templates` aggregation. This is
     // the shape the §13.9 corpus cases seed their children with (no child mutation
     // required).
-    let space = ModuleSpace::new("/modules").expect("mount");
+    let space = support::collection_at("/modules");
     let mut host = host(ROOT_LEVEL);
     host.install(
         &space,
@@ -218,7 +260,7 @@ fn private_child_field_is_unreachable_through_a_root_view() {
     // §13.8 isolation: the boundary grants access only to the exposed `$view`
     // fields, so a root read of `.modules::templates` never sees the child's
     // private `secret` — the interface row carries only `id`/`label`.
-    let space = ModuleSpace::new("/modules").expect("mount");
+    let space = support::collection_at("/modules");
     let mut host = host(ROOT_LEVEL);
     install(&mut host, &space, "kit");
     create(&mut host, &space, "kit", "t1", "Invoice", "top-secret");
@@ -235,7 +277,7 @@ fn interface_mutation_routes_to_the_childs_exposed_mutation() {
     // §13.10: a parent routes `templates.create` to the child's bound
     // `create_template`; the child admits it atomically, and the new row is then
     // visible in the parent's `.modules::templates` aggregation.
-    let space = ModuleSpace::new("/modules").expect("mount");
+    let space = support::collection_at("/modules");
     let mut host = host(ROOT_LEVEL);
     install(&mut host, &space, "kit");
 
@@ -244,7 +286,7 @@ fn interface_mutation_routes_to_the_childs_exposed_mutation() {
         .arg("label", text("Alpha"))
         .arg("secret", text("hush"));
     let outcome = host
-        .interface_call(&space, "kit", "templates", "create", &request, &mut generator())
+        .interface_call(&entry(&space, "kit"), "templates", "create", &request, &mut generator())
         .expect("interface call");
     // §13.8: the bound mutation returns exactly the declared `$return` shape.
     match outcome {
@@ -271,30 +313,52 @@ const THIN_CHILD: &str = r#"{
 
 #[test]
 fn install_rejects_a_child_that_does_not_satisfy_the_interface_contract() {
-    // §13.8: view satisfaction is structural — the module space's `templates`
+    // §13.8: view satisfaction is structural — the module collection's `templates`
     // interface requires `{ id, label }`, but the child's exposed view projects
     // `{ id }` only, so the install is refused before the instance activates.
     use liasse_runtime::ModuleError;
-    let space = ModuleSpace::new("/modules").expect("mount");
+    let space = support::collection_at("/modules");
     let mut host = host(ROOT_LEVEL);
     match host.install(&space, InstallRequest::new("kit", THIN_CHILD), &mut generator()) {
         Err(ModuleError::InterfaceContract(interface, _)) => assert_eq!(interface, "templates"),
         other => panic!("a contract-violating `$expose` must be rejected, got {other:?}"),
     }
-    assert!(!host.is_installed(&space, "kit"), "the rejected instance never activated");
+    assert!(!host.is_installed(&entry(&space, "kit")), "the rejected instance never activated");
 }
 
 #[test]
 fn unknown_interface_mutation_is_rejected() {
     // §13.8: the boundary routes only bound contracts; an unbound name is refused.
-    let space = ModuleSpace::new("/modules").expect("mount");
+    let space = support::collection_at("/modules");
     let mut host = host(ROOT_LEVEL);
     install(&mut host, &space, "kit");
     let request = CallRequest::new("x").arg("id", text("t1"));
     assert!(
-        host.interface_call(&space, "kit", "templates", "nope", &request, &mut generator()).is_err(),
+        host.interface_call(&entry(&space, "kit"), "templates", "nope", &request, &mut generator()).is_err(),
         "an unbound interface mutation is not routable"
     );
+}
+
+#[test]
+fn two_module_collections_of_the_same_name_under_equally_keyed_rows_do_not_bleed() {
+    let mut host = host(TWIN);
+    let companies = support::collection_at("/companies/acme/modules");
+    install(&mut host, &companies, "kit");
+    create(&mut host, &companies, "kit", "t1", "Company", "x");
+
+    // Both containing rows are keyed `acme` and both collections are declared
+    // `modules`, so matching an entry on its containing KEYS alone would fold the
+    // company's instance into the team's read. The whole address is compared, so
+    // the team's collection is empty and the company's holds exactly its own.
+    let company = host.root_view("public.company_catalog", &ViewQuery::new().param("id", text("acme")))
+        .expect("view")
+        .expect("declared");
+    assert_eq!(rows(&company), vec![("kit".to_owned(), "t1".to_owned(), "Company".to_owned())]);
+
+    let team = host.root_view("public.team_catalog", &ViewQuery::new().param("id", text("acme")))
+        .expect("view")
+        .expect("declared");
+    assert!(rows(&team).is_empty(), "the equally-keyed sibling collection reads empty, got {:?}", rows(&team));
 }
 
 /// A root whose `installed` view reads `.modules.$keys` — the set of installed
@@ -305,10 +369,10 @@ const KEYS_ROOT: &str = r#"{
   "$app": "t.mod.keys@1.0.0"
   "$model": {
     "modules": {
-      "$modules": {
-        "$interfaces": {
-          "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
-        }
+      "$key": "text"
+      "$value": "module"
+      "$interfaces": {
+        "templates": { "$view": { "$key": "id", "id": "text", "label": "text" } }
       }
     }
     "installed": { "$view": ". { keys: .modules { $key } }" }
@@ -318,8 +382,8 @@ const KEYS_ROOT: &str = r#"{
 #[test]
 fn modules_key_projection_reads_the_set_of_installed_instance_keys() {
     // §5.4/§13.16: `.modules { $key }` is the set of installed instance keys, resolved
-    // through the root engine's module-aware evaluation (the folded module space).
-    let space = ModuleSpace::new("/modules").expect("mount");
+    // through the root engine's module-aware evaluation (the folded module collection).
+    let space = support::collection_at("/modules");
     let mut host = host(KEYS_ROOT);
     install(&mut host, &space, "kit_b");
     install(&mut host, &space, "kit_a");

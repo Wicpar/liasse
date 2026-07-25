@@ -89,12 +89,28 @@ impl<'a> Builder<'a> {
                 "a map entry is absent by having no key, never by holding `none`",
             );
         }
+        let is_module = matches!(&node, Node::Scalar(field) if matches!(field.ty, Type::Module(_)));
         shape.members.push(Member {
             name: DeclName::map_member(liasse_expr::MAP_VALUE),
             span: entry.value.span,
             node,
         });
-        self.map_declarations(reporter, value, path, &mut shape);
+        // §13.2/§13.8: a map whose entries are `module` values is a MODULE
+        // collection — the host mounts one instance per entry. It declares its
+        // boundary contracts alongside the map form: `$interfaces` (what a child
+        // must expose to be admitted, §13.8) and `$expose` (the parent surfaces a
+        // child imports, §13.4). Each readable interface becomes a read member of
+        // the ordinary map row, so `.modules::iface` is the §6.4 nested traversal
+        // every collection has rather than an addressing scheme of its own, and
+        // `modules.$key` is the map's own key.
+        if is_module {
+            crate::module::check_boundary(reporter, value);
+            self.module_interface_members(reporter, value.member("$interfaces"), path, &mut shape);
+            self.module_collections.push(super::absolute_path(path));
+        } else {
+            crate::module::reject_boundary_on_non_module(reporter, value);
+        }
+        self.map_declarations(reporter, value, path, is_module, &mut shape);
         let mut unique = value
             .member("$unique")
             .map(|m| self.unique_keys(reporter, &m.value, &shape))
@@ -130,9 +146,16 @@ impl<'a> Builder<'a> {
         reporter: &mut Reporter,
         value: &'a DocValue,
         path: &[String],
+        is_module: bool,
         shape: &mut Shape,
     ) {
         for member in value.as_object().unwrap_or(&[]) {
+            // §13.4/§13.8: a module collection's boundary declarations are
+            // consumed by [`Self::map_collection`] above; a non-module map that
+            // carries one was already rejected by name there.
+            if is_module && matches!(member.name.text.as_str(), "$interfaces" | "$expose") {
+                continue;
+            }
             if crate::names::is_reserved(&member.name.text) {
                 // `$key`/`$value` are already consumed above; the dispatch treats
                 // both as no-ops, so the map form needs no exception here.

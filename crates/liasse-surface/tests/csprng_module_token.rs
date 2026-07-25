@@ -28,21 +28,23 @@
 
 use liasse_ident::InstanceId;
 use liasse_runtime::{CallOutcome, CallRequest, InstallRequest};
-use liasse_store::{MemoryStore, MemoryStoreFactory};
+use liasse_store::{CollectionPath, MemoryStore, MemoryStoreFactory, RowAddress};
 use liasse_surface::{
-    Engine, Entropy, ModuleDeployment, ModuleHost, ModuleObservation, ModuleSpace, Precision,
+    Engine, Entropy, ModuleDeployment, ModuleHost, ModuleObservation, Precision,
     Value, VirtualClock,
 };
 use liasse_value::Text;
 
+mod support;
+
 const NOW: i128 = 1_700_000_000_000_000;
 
-/// A minimal root exposing one row-scoped module space `/orgs/acme/modules`.
+/// A minimal root exposing one row-scoped module collection `/orgs/acme/modules`.
 const ROOT: &str = r#"{
   "$liasse": 1
   "$app": "example.root@1.0.0"
   "$model": {
-    "orgs": { "$key": "id", "id": "text", "modules": { "$modules": {} } }
+    "orgs": { "$key": "id", "id": "text", "modules": { "$key": "text", "$value": "module" } }
   }
   "$data": { "orgs": { "acme": {} } }
 }"#;
@@ -64,8 +66,15 @@ fn text(value: &str) -> Value {
     Value::Text(Text::new(value))
 }
 
-fn space() -> ModuleSpace {
-    ModuleSpace::new("/orgs/acme/modules").expect("mount path")
+/// The module collection the fixture mounts its instances in.
+fn collection() -> CollectionPath {
+    support::collection_at("/orgs/acme/modules")
+}
+
+/// The address of the module-collection entry `name` — one mounted instance's
+/// identity (§13.3), an ordinary row address.
+fn at(name: &str) -> RowAddress {
+    support::mount_at("/orgs/acme/modules", name)
 }
 
 /// Build a deployment over [`ROOT`] with `entropy` as its module-admission seed
@@ -81,16 +90,15 @@ fn deployment(instance: &str, entropy: Entropy) -> ModuleDeployment<MemoryStoreF
 /// Install `example.grants` as `svc`, mint one grant for `label`, and return the
 /// generated `token` read back from committed state via the §13.11 direct surface.
 fn mint_token(deployment: &mut ModuleDeployment<MemoryStoreFactory>, label: &str) -> Value {
-    let space = space();
     assert_eq!(
-        deployment.install(&space, InstallRequest::new("svc", GRANTS)).expect("install"),
+        deployment.install(&collection(), InstallRequest::new("svc", GRANTS)).expect("install"),
         ModuleObservation::Applied,
     );
     let request = CallRequest::new("mint").arg("label", text(label));
-    let outcome = deployment.child_call(&space, "svc", &request).expect("child call");
+    let outcome = deployment.child_call(&at("svc"), &request).expect("child call");
     assert!(matches!(outcome, CallOutcome::Committed { .. }), "mint commits: {outcome:?}");
 
-    let view = deployment.child_view(&space, "svc", "all").expect("view").expect("declared");
+    let view = deployment.child_view(&at("svc"), "all").expect("view").expect("declared");
     let row = view
         .rows()
         .iter()

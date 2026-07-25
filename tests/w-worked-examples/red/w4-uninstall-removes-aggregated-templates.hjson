@@ -25,11 +25,11 @@
           name: "text"
           plan: "text"
           modules: {
-            $modules: {
-              $expose: { company: { $view: ". { id, name, plan }" } }
-              $interfaces: {
-                templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
-              }
+            $key: "text"
+            $value: "module"
+            $expose: { company: { $view: ". { id, name, plan }" } }
+            $interfaces: {
+              templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
             }
           }
           available_templates: {
@@ -65,7 +65,7 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: { $name: "fr_sales", $module: "acme.fr_sales_templates@1.0.0" } }
       expect: { outcome: ok } }
     { watch: "public.companies", args: { company: "acme" }, id: "w1"

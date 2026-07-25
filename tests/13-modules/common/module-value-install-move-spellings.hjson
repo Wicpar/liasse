@@ -17,8 +17,12 @@
       error.
     - "Move": `.modules[@to] <- @at`, relocating a module the host lent as a
       `module` parameter (§13.16 "Delegation"), which empties the source slot.
+    - "Re-admission": `.other[@id] <- reinstall_module(@at)` — the same move into
+      a DIFFERENT module collection, written as the explicit request to re-run
+      that collection's admission (§13.16). It types as a move source, since that
+      is the only position it has.
 
-    An unambiguous destination is spelled either through the containing row
+    A destination is spelled either through the containing row
     (`.companies[@company].modules[@name]`) or rooted (`/modules[@name]`); both
     appear here so both resolve at load.
   '''
@@ -27,11 +31,11 @@
     $liasse: 1
     $app: "t.modinstall.spellings@1.0.0"
     $model: {
-      modules: { $modules: {} }
+      modules: { $key: "text", $value: "module" }
       companies: {
         $key: "id"
         id: "text"
-        modules: { $modules: {} }
+        modules: { $key: "text", $value: "module" }
       }
       $mut: {
         // §13.16 "Install / override".
@@ -50,6 +54,10 @@
         // §13.16 "Move": relocate a module the host lent.
         "relocate({ company: text, to: text, at: module })": [
           ".companies[@company].modules[@to] <- @at"
+        ]
+        // §13.16 "Re-admission": the explicit cross-collection move.
+        "readmit({ name: text, at: module })": [
+          "/modules[@name] <- reinstall_module(@at)"
         ]
       }
     }

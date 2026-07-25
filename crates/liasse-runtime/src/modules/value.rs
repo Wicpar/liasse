@@ -35,7 +35,6 @@ use liasse_value::{BlobDescriptor, MediaType, ModuleHandle, Period, Sha512, Time
 
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::history::ImportRelation;
-use crate::modules::ModuleSpace;
 
 /// The media type a packed `.liasse` artifact carries, the same one a package blob
 /// is stored under.
@@ -44,15 +43,16 @@ pub(crate) const LIASSE_MEDIA_TYPE: &str = "application/vnd.liasse+zip";
 /// What a [`Value::Module`] operand denotes at the lifecycle boundary (§13.16).
 ///
 /// The two arms are the two halves of the blob boundary: a handle produced by
-/// `unpack` carries undecoded bytes and has no instance yet; a handle to an
-/// installed instance addresses one by its mount.
+/// `unpack` carries undecoded bytes and has no instance yet; a handle to a
+/// mounted instance addresses one by the rendered address of the
+/// module-collection entry it occupies.
 #[derive(Debug, Clone)]
 pub(crate) enum ModuleOperand {
     /// A not-yet-materialized module (`unpack(blob)`): the source `.liasse` blob.
     /// Materialization stays DEFERRED — nothing here decodes it.
     Pending(Box<BlobDescriptor>),
-    /// A live instance, addressed by the mount its handle carries.
-    Mounted { space: ModuleSpace, name: String },
+    /// A live instance, addressed by the rendered address of its entry.
+    Mounted(String),
 }
 
 impl ModuleOperand {
@@ -63,15 +63,7 @@ impl ModuleOperand {
     pub(crate) fn read(args: &[(String, Value)], key: &str, operator: &str) -> Result<Self, Rejection> {
         match args.iter().find(|(name, _)| name == key).map(|(_, value)| value) {
             Some(Value::Module(ModuleHandle::Pending(descriptor))) => Ok(Self::Pending(descriptor.clone())),
-            Some(Value::Module(ModuleHandle::Mounted { space, name })) => {
-                let space = ModuleSpace::new(space.clone()).map_err(|error| {
-                    Rejection::new(
-                        RejectionReason::Malformed,
-                        format!("`{operator}`'s `{key}` module handle names no module space: {error}"),
-                    )
-                })?;
-                Ok(Self::Mounted { space, name: name.clone() })
-            }
+            Some(Value::Module(ModuleHandle::Mounted(at))) => Ok(Self::Mounted(at.clone())),
             _ => Err(Rejection::new(
                 RejectionReason::Malformed,
                 format!("`{operator}` requires a `module` value as its `{key}` operand (§13.16)"),
@@ -83,9 +75,9 @@ impl ModuleOperand {
     /// handle. `update_module` and `rollback_module` act on a LIVE instance: a
     /// pending handle has no identity, no history and no mount, so there is nothing
     /// to update or roll back — refused rather than silently installing one.
-    pub(crate) fn mount(&self, operator: &str) -> Result<(&ModuleSpace, &str), Rejection> {
+    pub(crate) fn mount(&self, operator: &str) -> Result<&str, Rejection> {
         match self {
-            Self::Mounted { space, name } => Ok((space, name.as_str())),
+            Self::Mounted(at) => Ok(at.as_str()),
             Self::Pending(_) => Err(Rejection::new(
                 RejectionReason::Malformed,
                 format!(
@@ -242,10 +234,8 @@ impl RollbackPoint {
 pub struct AncestryDivergence {
     /// How the incoming history related to the live instance's (§19.8).
     pub relation: ImportRelation,
-    /// The module space the live instance is mounted in.
-    pub space: String,
-    /// The live instance's name within that space.
-    pub name: String,
+    /// The address of the module-collection entry the live instance is mounted at.
+    pub at: String,
     /// The live instance's selected point.
     pub local: HistoryPoint,
     /// The incoming artifact's selected point.
@@ -287,12 +277,11 @@ impl std::fmt::Display for AncestryDivergence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "`update_module(… {{ migrate: model+data }})` on `{}` in `{}` is refused: {} \
+            "`update_module(… {{ migrate: model+data }})` on `{}` is refused: {} \
              (relation {:?}; live point `{}/{}`, incoming point `{}/{}`). §13.16 reconciles a \
              divergent history OUTSIDE the engine — there is no in-language merge, and the \
              update is never applied silently.",
-            self.name,
-            self.space,
+            self.at,
             self.cause(),
             self.relation,
             self.local.lineage().as_str(),

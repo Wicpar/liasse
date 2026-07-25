@@ -20,27 +20,25 @@ use liasse_artifact::{decode_package_from_blob, Artifact};
 use liasse_expr::Cell;
 use liasse_ident::HistoryPoint;
 use liasse_model::{lifecycle_arg as arg, LifecycleOp, MigrateAxis};
-use liasse_store::InstanceStore;
+use liasse_store::{InstanceStore, RowAddress};
 use liasse_value::{Text, Value};
 
 use crate::dispatch::Lifecycle;
 use crate::engine::Engine;
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::history::ImportRelation;
+use crate::modules::address;
 use crate::modules::host::DecodedPackageId;
 use crate::modules::value::{
     blob_bytes, liasse_descriptor, AncestryDivergence, ModuleOperand, PackAxes, RollbackPoint,
 };
-use crate::modules::ModuleSpace;
 
 /// One live instance a §13.16 operator may address while staging: its mount and its
 /// engine, borrowed read-only. The host builds this view over its mounted children
 /// so the recorder reads instances without owning the host's own row type.
 pub(super) struct MountedInstance<'a, S: InstanceStore> {
-    /// The space the instance is mounted in.
-    pub(super) space: &'a ModuleSpace,
-    /// The instance name within that space.
-    pub(super) name: &'a str,
+    /// The module-collection entry the instance is mounted at (§13.2/§13.3).
+    pub(super) at: &'a RowAddress,
     /// The instance's own engine.
     pub(super) engine: &'a Engine<S>,
     /// Whether the instance's boundary is active (§13.3/§13.12).
@@ -55,20 +53,25 @@ pub(super) enum LifecycleIntent {
     /// the instance already there, where a declarative `module.install` refuses the
     /// duplicate name (§13.3).
     Install {
-        space: String,
-        name: String,
+        at: RowAddress,
         definition: String,
         package: DecodedPackageId,
         occupant: Occupant,
     },
-    /// Relocate an installed instance to another slot of the SAME space (§13.16
-    /// "Move"): a §13.3 rekey that preserves the incarnation, and therefore the
-    /// durable identity, while emptying the source slot.
-    Relocate { space: String, from: String, to: String, occupant: Occupant },
+    /// Relocate an installed instance to another entry of the SAME module
+    /// collection (§13.16 "Move"): a §13.3 rekey that preserves the incarnation,
+    /// and therefore the durable identity, while emptying the source entry.
+    Relocate { from: RowAddress, to: RowAddress, occupant: Occupant },
+    /// Re-admit an installed instance at an entry of a DIFFERENT module collection
+    /// (§13.16 `reinstall_module`): the destination declares its own §13.4 parent
+    /// surfaces, §13.5 peer set and §13.8 interface contracts, so the instance is
+    /// put through admission against them exactly as an install is. It is never a
+    /// rekey underneath a boundary that was not checked.
+    Reinstall { from: RowAddress, to: RowAddress, occupant: Occupant },
     /// Update an existing instance to the decoded package definition (§20.1 chain).
-    Update { space: String, name: String, definition: String, package: DecodedPackageId },
+    Update { at: RowAddress, definition: String, package: DecodedPackageId },
     /// Remove an existing instance (§13.12).
-    Remove { space: String, name: String },
+    Remove { at: RowAddress },
     /// Land freshly packed `.liasse` bytes in the root's §18.3 blob storage. The
     /// descriptor was handed to the caller during staging (its digest is a pure
     /// function of the bytes), so this only makes those bytes fetchable — and only
@@ -78,15 +81,15 @@ pub(super) enum LifecycleIntent {
     /// fast-forward half of `update_module(… { migrate: model+data })`, or the fork
     /// of `rollback_module`. The classification was established during staging, so a
     /// divergence had already rejected the transition before anything committed.
-    Movement { space: String, name: String, artifact: Vec<u8>, relation: ImportRelation },
+    Movement { at: RowAddress, artifact: Vec<u8>, relation: ImportRelation },
 }
 
 /// What a write into an already-occupied module slot does to the instance already
 /// there (§13.3 vs §13.16).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Occupant {
-    /// §13.3: an instance name is "unique within its module space", so
-    /// `module.install` refuses a name already in use.
+    /// §13.3: an instance name is "unique within its module collection", so the
+    /// declarative `module.install` refuses a name already in use.
     Refuse,
     /// §13.16: "Moving a module value into a slot installs it, replacing any
     /// instance already there … an occupant is dropped and uninstalled."
@@ -121,9 +124,11 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
     /// operators address a module VALUE and carry their own axes instead.
     fn supported_args(op: LifecycleOp) -> &'static [&'static str] {
         match op {
-            LifecycleOp::Install | LifecycleOp::Update => &["space", "name", "blob"],
-            LifecycleOp::Remove => &["space", "name"],
-            LifecycleOp::InstallModule => &["space", "name", arg::MODULE],
+            LifecycleOp::Install => &[arg::AT, "blob"],
+            LifecycleOp::Update => &[arg::MODULE, "blob"],
+            LifecycleOp::Remove => &[arg::MODULE],
+            LifecycleOp::InstallModule => &[arg::MODULE],
+            LifecycleOp::Reinstall => &[arg::MODULE],
             LifecycleOp::Pack => &[arg::MODULE, arg::MODEL, arg::DATA, arg::HISTORY],
             LifecycleOp::UpdateModule => &[arg::MODULE, arg::ONTO, arg::MIGRATE],
             LifecycleOp::Rollback => &[arg::MODULE, arg::POINT],
@@ -149,22 +154,6 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
             }
         }
         Ok(())
-    }
-
-    /// The `(space, name)` mount a declarative lifecycle call addresses (§13.10).
-    fn mount_args(args: &[(String, Value)], op: LifecycleOp) -> Result<(String, String), Rejection> {
-        Ok((Self::text_arg(args, "space", op)?, Self::text_arg(args, "name", op)?))
-    }
-
-    /// The value of a required text member of the lifecycle call's argument object.
-    fn text_arg(args: &[(String, Value)], key: &str, op: LifecycleOp) -> Result<String, Rejection> {
-        match args.iter().find(|(name, _)| name == key).map(|(_, value)| value) {
-            Some(Value::Text(text)) => Ok(text.as_str().to_owned()),
-            _ => Err(Rejection::new(
-                RejectionReason::Malformed,
-                format!("`module.{}` requires a text `{key}` argument (§13.10)", op.member()),
-            )),
-        }
     }
 
     /// Decode a package definition from `.liasse` bytes (§13.10). A malformed or
@@ -194,21 +183,31 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
 
     /// The enabled instance a module handle addresses, or a LOUD refusal naming the
     /// mount that resolved to nothing — never a silently skipped operation.
-    fn instance(&self, space: &ModuleSpace, name: &str, operator: &str) -> Result<&Engine<S>, Rejection> {
+    fn mounted(&self, at: &str, operator: &str) -> Result<&MountedInstance<'a, S>, Rejection> {
         self.instances
             .iter()
-            .find(|instance| instance.space == space && instance.name == name && instance.enabled)
-            .map(|instance| instance.engine)
+            .find(|instance| instance.at.render() == at && instance.enabled)
             .ok_or_else(|| {
                 Rejection::new(
                     RejectionReason::Malformed,
                     format!(
-                        "`{operator}` addresses `{name}` in `{}`, which resolves to no enabled \
-                         module instance in this transition (§13.10)",
-                        space.as_str()
+                        "`{operator}` addresses `{at}`, which resolves to no enabled module \
+                         instance in this transition (§13.10)"
                     ),
                 )
             })
+    }
+
+    /// The engine of the enabled instance a module handle addresses.
+    fn instance(&self, at: &str, operator: &str) -> Result<&Engine<S>, Rejection> {
+        Ok(self.mounted(at, operator)?.engine)
+    }
+
+    /// The ADDRESS of the enabled instance a module handle addresses — the
+    /// structured row address the intent carries, resolved from the live mount set
+    /// rather than parsed out of the handle's rendering.
+    fn address(&self, at: &str, operator: &str) -> Result<RowAddress, Rejection> {
+        Ok(self.mounted(at, operator)?.at.clone())
     }
 
     /// The `.liasse` bytes a module operand carries: a pending handle's source blob,
@@ -216,8 +215,8 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
     fn artifact_of(&self, operand: &ModuleOperand, operator: &str) -> Result<Vec<u8>, Rejection> {
         match operand {
             ModuleOperand::Pending(descriptor) => blob_bytes(self.blobs, descriptor),
-            ModuleOperand::Mounted { space, name } => {
-                let engine = self.instance(space, name, operator)?;
+            ModuleOperand::Mounted(at) => {
+                let engine = self.instance(at, operator)?;
                 engine.export().map_err(|error| {
                     Rejection::new(RejectionReason::Evaluation, format!("the instance could not be exported: {error}"))
                 })
@@ -273,13 +272,15 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
                 // undecoded, exactly as `unpack` received it.
                 descriptor.clone()
             }
-            ModuleOperand::Mounted { space, name } => {
-                let engine = self.instance(space, name, operator)?;
+            ModuleOperand::Mounted(at) => {
+                let mounted = self.mounted(at, operator)?;
+                let engine = mounted.engine;
                 axes.admit(engine.package_version(), &engine.cursor().point())
                     .map_err(Self::unsupported)?;
                 let bytes = engine.export().map_err(|error| {
                     Rejection::new(RejectionReason::Evaluation, format!("the instance could not be packed: {error}"))
                 })?;
+                let name = address::instance_name(mounted.at).unwrap_or_default();
                 let descriptor = liasse_descriptor(&bytes, Some(format!("{name}.liasse")));
                 self.intents.borrow_mut().push(LifecycleIntent::Pack { bytes });
                 Box::new(descriptor)
@@ -297,62 +298,102 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
     ///   decoded and mounted through the very same [`LifecycleIntent::Install`] the
     ///   declarative `module.install` records — one runtime, two spellings;
     /// - a **mounted** module is already installed somewhere, so the move
-    ///   *relocates* it. Within one space that is the §13.3 rekey
-    ///   ([`ModuleHost::rename`](crate::ModuleHost::rename)), which preserves the
-    ///   incarnation and therefore the durable identity. ACROSS spaces it is not:
-    ///   the destination space has its own §13.4 parent surfaces, §13.5 peer set and
-    ///   §13.8 interface contracts, all of which the instance was neither loaded
-    ///   under nor re-admitted against — so that case is REFUSED by name rather than
-    ///   re-keyed into a space whose boundary it was never checked against.
+    ///   *relocates* it. Within one module collection that is the §13.3 rekey,
+    ///   which preserves the incarnation and therefore the durable identity. Into a
+    ///   DIFFERENT collection it is not: that collection declares its own §13.4
+    ///   parent surfaces, §13.5 peer set and §13.8 interface contracts, all of which
+    ///   the instance was neither loaded under nor re-admitted against — so a bare
+    ///   `<-` is REFUSED by name, and `reinstall_module(m)` is the explicit operator
+    ///   that performs the re-admission. A silent rekey across a boundary that was
+    ///   never checked stays unrepresentable.
     ///
     /// Either way the slot's occupant is dropped: §13.16 says a move into a slot
     /// replaces any instance already there.
-    fn install_module(&self, args: &[(String, Value)]) -> Result<Cell, Rejection> {
-        let op = LifecycleOp::InstallModule;
-        let operator = op.member();
-        let (space, name) = Self::mount_args(args, op)?;
+    fn install_module(&self, at: RowAddress, args: &[(String, Value)]) -> Result<Cell, Rejection> {
+        let operator = LifecycleOp::InstallModule.member();
         match ModuleOperand::read(args, arg::MODULE, operator)? {
             ModuleOperand::Pending(descriptor) => {
                 let (definition, package) = Self::decode_bytes(&blob_bytes(self.blobs, &descriptor)?)?;
                 let identity = Cell::Scalar(Value::Text(Text::new(package.definition.to_canonical_text())));
                 self.intents.borrow_mut().push(LifecycleIntent::Install {
-                    space,
-                    name,
+                    at,
                     definition,
                     package,
                     occupant: Occupant::Drop,
                 });
                 Ok(identity)
             }
-            ModuleOperand::Mounted { space: from, name: source } => {
-                if from.as_str() != space {
+            ModuleOperand::Mounted(source) => {
+                let from = self.address(&source, operator)?;
+                let identity = Cell::Scalar(Value::Text(Text::new(
+                    address::instance_name(&at).unwrap_or_default().to_owned(),
+                )));
+                if from.collection() != at.collection() {
                     return Err(Rejection::new(
                         RejectionReason::Unsupported,
                         format!(
-                            "`{operator}` would relocate `{source}` from `{}` into `{space}`, but a \
-                             module space is a boundary, not a folder: the destination declares its \
-                             own §13.4 parent surfaces, §13.5 peer set and §13.8 interface \
-                             contracts, and this instance was loaded under the source space's and \
-                             re-admitted against none of them. Refused rather than re-keyed into a \
-                             space whose boundary it was never checked against — pack it \
-                             (`pack(m)`) and install the artifact into the destination instead. \
-                             Relocation WITHIN one space (§13.3 rekey) is supported.",
-                            from.as_str(),
+                            "`{operator}` would move `{source}` into `{}`, a DIFFERENT module \
+                             collection: a module collection is a boundary, not a folder — it \
+                             declares its own §13.4 parent surfaces, §13.5 peer set and §13.8 \
+                             interface contracts, and this instance was admitted against the \
+                             source's and against none of the destination's. Refused rather than \
+                             re-keyed under a boundary it was never checked against. Write \
+                             `<- reinstall_module(m)` to put it through that admission \
+                             explicitly (§13.16).",
+                            at.render(),
                         ),
                     ));
                 }
-                let identity = Cell::Scalar(Value::Text(Text::new(name.clone())));
-                if source != name {
+                if from != at {
                     self.intents.borrow_mut().push(LifecycleIntent::Relocate {
-                        space,
-                        from: source,
-                        to: name,
+                        from,
+                        to: at,
                         occupant: Occupant::Drop,
                     });
                 }
                 Ok(identity)
             }
         }
+    }
+
+    /// `.other[@id] <- reinstall_module(m)` (§13.16) — move a mounted instance into
+    /// a different module collection by RE-ADMITTING it there.
+    ///
+    /// This is the explicit form of the move `install_module` refuses. It performs
+    /// no rekey: the host re-runs the destination's admission — the containing row
+    /// must be live, the §13.5 peers must resolve in the destination's sibling set,
+    /// the §13.4 parent surfaces must bind, and the instance's `$expose` must
+    /// satisfy the destination's §13.8 interface contracts — and refuses the whole
+    /// transition if any of them fails. The instance keeps its private store, data
+    /// and history (its incarnation is its store identity); what changes is the
+    /// boundary it is bound to, and that boundary is checked, never assumed.
+    ///
+    /// A pending module has no admission to re-run, so `reinstall_module(unpack(b))`
+    /// is refused by name: the plain move already installs it.
+    fn reinstall_module(&self, at: RowAddress, args: &[(String, Value)]) -> Result<Cell, Rejection> {
+        let operator = LifecycleOp::Reinstall.member();
+        let source = match ModuleOperand::read(args, arg::MODULE, operator)? {
+            ModuleOperand::Mounted(source) => source,
+            ModuleOperand::Pending(_) => {
+                return Err(Rejection::new(
+                    RejectionReason::Malformed,
+                    format!(
+                        "`{operator}` re-admits an instance that is already mounted, but its \
+                         operand is a module `unpack` has not yet materialized: there is no \
+                         admission to re-run. Move it in directly — a plain `<-` installs it \
+                         (§13.16)."
+                    ),
+                ));
+            }
+        };
+        let from = self.address(&source, operator)?;
+        let identity =
+            Cell::Scalar(Value::Text(Text::new(address::instance_name(&at).unwrap_or_default().to_owned())));
+        if from == at {
+            return Ok(identity);
+        }
+        self.intents.borrow_mut().push(LifecycleIntent::Reinstall { from, to: at, occupant: Occupant::Drop });
+        Ok(identity)
     }
 
     /// `update_module(m, u, { migrate })` (§13.16) — apply the module `u` onto the
@@ -370,7 +411,7 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
     fn update_module(&self, args: &[(String, Value)]) -> Result<Cell, Rejection> {
         let operator = LifecycleOp::UpdateModule.member();
         let target = ModuleOperand::read(args, arg::MODULE, operator)?;
-        let (space, name) = target.mount(operator)?;
+        let mount = target.mount(operator)?;
         let onto = ModuleOperand::read(args, arg::ONTO, operator)?;
         let migrate = Self::migrate_axis(args)?;
         let artifact = self.artifact_of(&onto, operator)?;
@@ -379,15 +420,14 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
                 let (definition, package) = Self::decode_bytes(&artifact)?;
                 let identity = Cell::Scalar(Value::Text(Text::new(package.definition.to_canonical_text())));
                 self.intents.borrow_mut().push(LifecycleIntent::Update {
-                    space: space.as_str().to_owned(),
-                    name: name.to_owned(),
+                    at: self.address(mount, operator)?,
                     definition,
                     package,
                 });
                 Ok(identity)
             }
             MigrateAxis::ModelAndData => {
-                let engine = self.instance(space, name, operator)?;
+                let engine = self.instance(mount, operator)?;
                 let relation = engine.classify(&artifact).map_err(|error| {
                     Rejection::new(
                         RejectionReason::Malformed,
@@ -398,8 +438,7 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
                 if !AncestryDivergence::is_fast_forward(relation) {
                     return Err(AncestryDivergence {
                         relation,
-                        space: space.as_str().to_owned(),
-                        name: name.to_owned(),
+                        at: mount.to_owned(),
                         local: engine.cursor().point(),
                         incoming,
                     }
@@ -408,8 +447,7 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
                 let identity = Cell::Scalar(Value::Text(Text::new(incoming.point().as_str())));
                 if relation == ImportRelation::FastForward {
                     self.intents.borrow_mut().push(LifecycleIntent::Movement {
-                        space: space.as_str().to_owned(),
-                        name: name.to_owned(),
+                        at: self.address(mount, operator)?,
                         artifact,
                         relation,
                     });
@@ -432,8 +470,8 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
     fn rollback_module(&self, args: &[(String, Value)]) -> Result<Cell, Rejection> {
         let operator = LifecycleOp::Rollback.member();
         let target = ModuleOperand::read(args, arg::MODULE, operator)?;
-        let (space, name) = target.mount(operator)?;
-        let engine = self.instance(space, name, operator)?;
+        let mount = target.mount(operator)?;
+        let engine = self.instance(mount, operator)?;
         let descriptor = match RollbackPoint::read(args)? {
             RollbackPoint::Instant(at) => {
                 return Err(Self::unsupported(RollbackPoint::unsupported_instant(at, &engine.cursor().point())));
@@ -454,8 +492,7 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
             ImportRelation::SamePoint => Ok(identity),
             ImportRelation::Rollback => {
                 self.intents.borrow_mut().push(LifecycleIntent::Movement {
-                    space: space.as_str().to_owned(),
-                    name: name.to_owned(),
+                    at: self.address(mount, operator)?,
                     artifact,
                     relation,
                 });
@@ -505,34 +542,70 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
 }
 
 impl<S: InstanceStore> Lifecycle for LifecycleRecorder<'_, S> {
-    fn perform(&self, op: LifecycleOp, args: Vec<(String, Value)>) -> Result<Cell, Rejection> {
+    fn perform(
+        &self,
+        op: LifecycleOp,
+        at: Option<RowAddress>,
+        args: Vec<(String, Value)>,
+    ) -> Result<Cell, Rejection> {
         Self::reject_unsupported_args(&args, op)?;
         match op {
-            LifecycleOp::Install | LifecycleOp::Update => {
-                let (space, name) = Self::mount_args(&args, op)?;
+            // The declarative `module.install({ at: .modules[@n], blob: @pkg })`
+            // addresses its slot the way every other write does — the interpreter
+            // resolved `at` to an ordinary row address before this is reached.
+            LifecycleOp::Install => {
+                let at = Self::slot(at, op)?;
                 let (definition, package) = self.decode(&args, op)?;
                 // §5.1/§13.10: the decoded package identity is the intent's fact — the
                 // caller reads it as the call's result (the D.4 identity text).
                 let identity = Cell::Scalar(Value::Text(Text::new(package.definition.to_canonical_text())));
-                let intent = match op {
-                    LifecycleOp::Install => {
-                        LifecycleIntent::Install { space, name, definition, package, occupant: Occupant::Refuse }
-                    }
-                    _ => LifecycleIntent::Update { space, name, definition, package },
-                };
-                self.intents.borrow_mut().push(intent);
+                self.intents
+                    .borrow_mut()
+                    .push(LifecycleIntent::Install { at, definition, package, occupant: Occupant::Refuse });
                 Ok(identity)
             }
-            LifecycleOp::InstallModule => self.install_module(&args),
+            // `module.update`/`module.remove` address the instance by the `module`
+            // VALUE the caller holds (§13.16) — the same operand the value-surface
+            // operators take, so one addressing serves both spellings.
+            LifecycleOp::Update => {
+                let target = ModuleOperand::read(&args, arg::MODULE, op.member())?;
+                let at = self.address(target.mount(op.member())?, op.member())?;
+                let (definition, package) = self.decode(&args, op)?;
+                let identity = Cell::Scalar(Value::Text(Text::new(package.definition.to_canonical_text())));
+                self.intents.borrow_mut().push(LifecycleIntent::Update { at, definition, package });
+                Ok(identity)
+            }
             LifecycleOp::Remove => {
-                let (space, name) = Self::mount_args(&args, op)?;
-                let identity = Cell::Scalar(Value::Text(Text::new(name.clone())));
-                self.intents.borrow_mut().push(LifecycleIntent::Remove { space, name });
+                let target = ModuleOperand::read(&args, arg::MODULE, op.member())?;
+                let at = self.address(target.mount(op.member())?, op.member())?;
+                let identity =
+                    Cell::Scalar(Value::Text(Text::new(address::instance_name(&at).unwrap_or_default().to_owned())));
+                self.intents.borrow_mut().push(LifecycleIntent::Remove { at });
                 Ok(identity)
             }
+            LifecycleOp::InstallModule => self.install_module(Self::slot(at, op)?, &args),
+            LifecycleOp::Reinstall => self.reinstall_module(Self::slot(at, op)?, &args),
             LifecycleOp::Pack => self.pack(&args),
             LifecycleOp::UpdateModule => self.update_module(&args),
             LifecycleOp::Rollback => self.rollback_module(&args),
         }
+    }
+}
+
+impl<S: InstanceStore> LifecycleRecorder<'_, S> {
+    /// The module-collection entry a slot-addressed operation writes. An operation
+    /// that reached the handle without one is an interpreter contract breach: it is
+    /// reported as such rather than defaulted to some entry.
+    fn slot(at: Option<RowAddress>, op: LifecycleOp) -> Result<RowAddress, Rejection> {
+        at.ok_or_else(|| {
+            Rejection::new(
+                RejectionReason::Malformed,
+                format!(
+                    "`{}` writes one entry of a module collection, but the call addressed no slot \
+                     (§13.2/§13.16)",
+                    op.member()
+                ),
+            )
+        })
     }
 }

@@ -1,11 +1,11 @@
 //! §13.5 peer-dependency resolution against the sibling instance set.
 //!
 //! A peer `$use` handle (`people: "acme.people/people@1"`) binds to a **sibling**
-//! module instance in the *same* module space (§13.5): the part before `/` names
-//! the package line, the part after names the exposed interface, and `@N` selects
-//! a compatible major (§13.14 — breaking changes use a new major, so a candidate
-//! is compatible with `@N` only when its major equals `N`). Resolution considers
-//! compatible siblings in exactly the same space:
+//! module instance in the *same* module collection (§13.5): the part before `/`
+//! names the package line, the part after names the exposed interface, and `@N`
+//! selects a compatible major (§13.14 — breaking changes use a new major, so a
+//! candidate is compatible with `@N` only when its major equals `N`). Resolution
+//! considers compatible siblings in exactly the same collection:
 //!
 //! ```text
 //! one candidate      bind automatically
@@ -14,16 +14,16 @@
 //! ```
 //!
 //! A disabled sibling exposes no peer availability (§13.12), so it is not a
-//! candidate. An explicit `$use` binding (`people: "/companies/acme/modules/people2"`)
-//! MUST name a sibling in the same space; a cross-space path is rejected. Peer
-//! lookup never leaves the sibling space — a compatible instance in another space
-//! does not count.
+//! candidate. An explicit `$use` binding names a sibling by INSTANCE NAME
+//! (`people2`); since the sibling set is exactly the module collection being
+//! installed into, a name is the whole coordinate and there is no cross-collection
+//! spelling to get wrong. A compatible instance in another collection is not a
+//! candidate.
 
 use crate::modules::install::{AdmittedBindings, UseSpec};
-use crate::modules::space::ModuleSpace;
 use crate::modules::ModuleError;
 
-/// One enabled sibling instance in a module space, reduced to what peer resolution
+/// One enabled sibling instance in a module collection, reduced to what peer resolution
 /// needs: its local name, its package compatibility line and major (§13.5/§13.14),
 /// and the interfaces it exposes readably (§13.8). A disabled sibling is omitted by
 /// the caller, so every entry is an available candidate.
@@ -53,7 +53,7 @@ pub(crate) struct ResolvedPeer {
     pub(crate) handle: String,
     /// The exposed interface the handle reads through (`people`).
     pub(crate) interface: String,
-    /// The resolved sibling instance name in the same space, or `None` for an
+    /// The resolved sibling instance name in the same collection, or `None` for an
     /// absent optional peer.
     pub(crate) instance: Option<String>,
     /// Whether the handle is an optional peer (§13.5 `$optional`): its absence is
@@ -61,14 +61,13 @@ pub(crate) struct ResolvedPeer {
     pub(crate) optional: bool,
 }
 
-/// Resolve every peer `$use` requirement of a child being installed into `space`
-/// against the enabled `siblings` already present there (§13.5). A required
+/// Resolve every peer `$use` requirement of a child being installed against the
+/// enabled `siblings` already present in its module collection (§13.5). A required
 /// requirement with zero, several, or only incompatible candidates — or an explicit
 /// binding naming a non-sibling — is rejected as [`ModuleError::PeerUnresolved`]; an
 /// optional requirement with no candidate resolves as absent. A non-peer handle
 /// (`$parent`, a private `$deps`) contributes no resolution here.
 pub(crate) fn resolve(
-    space: &ModuleSpace,
     bindings: &AdmittedBindings,
     siblings: &[SiblingInterface],
 ) -> Result<Vec<ResolvedPeer>, ModuleError> {
@@ -80,7 +79,7 @@ pub(crate) fn resolve(
         // §13.3: when peer resolution finds several candidates the operator supplies
         // an explicit `$use` path binding for the handle; it overrides auto-resolution.
         let instance = match explicit_binding(bindings, handle) {
-            Some(path) => Some(resolve_explicit(space, handle, path, line, interface, *major, siblings)?),
+            Some(name) => Some(resolve_explicit(handle, name, line, interface, *major, siblings)?),
             None => resolve_auto(handle, line, interface, *major, *optional, siblings)?,
         };
         resolved.push(ResolvedPeer {
@@ -94,35 +93,28 @@ pub(crate) fn resolve(
 }
 
 /// The explicit sibling-path binding an operator supplied for `handle` under the
-/// install request's `$use` (§13.3), if any: a [`UseSpec::Path`] recorded for the
-/// same handle name as the peer requirement.
+/// install request's `$use` (§13.3), if any: a [`UseSpec::Sibling`] recorded for
+/// the same handle name as the peer requirement.
 fn explicit_binding<'a>(bindings: &'a AdmittedBindings, handle: &str) -> Option<&'a str> {
     bindings.uses.iter().find_map(|(name, spec, _)| match spec {
-        UseSpec::Path(path) if name == handle => Some(path.as_str()),
+        UseSpec::Sibling(sibling) if name == handle => Some(sibling.as_str()),
         _ => None,
     })
 }
 
-/// Resolve an explicit `$use` path binding (§13.3): the path MUST name a sibling in
-/// the same module space (§13.5 "peer lookup stays within the sibling space"), so a
-/// cross-space path is rejected. The named sibling must exist, be enabled, and be a
-/// compatible candidate for the requirement.
+/// Resolve an explicit `$use` sibling binding (§13.3): the named instance must be
+/// one of `siblings` — the enabled instances of the very collection being installed
+/// into — and a compatible candidate for the requirement. The candidate set IS the
+/// collection, so a name that is not in it resolves to nothing rather than reaching
+/// out of the sibling set.
 fn resolve_explicit(
-    space: &ModuleSpace,
     handle: &str,
-    path: &str,
+    name: &str,
     line: &str,
     interface: &str,
     major: u64,
     siblings: &[SiblingInterface],
 ) -> Result<String, ModuleError> {
-    let prefix = format!("{}/", space.as_str());
-    let Some(name) = path.strip_prefix(&prefix).filter(|name| !name.is_empty() && !name.contains('/')) else {
-        return Err(ModuleError::PeerUnresolved(
-            handle.to_owned(),
-            format!("explicit binding `{path}` must name a sibling instance in the same module space `{}`", space.as_str()),
-        ));
-    };
     match siblings.iter().find(|s| s.name == name) {
         Some(sibling) if sibling.satisfies(line, interface, major) => Ok(name.to_owned()),
         Some(_) => Err(ModuleError::PeerUnresolved(
@@ -131,7 +123,7 @@ fn resolve_explicit(
         )),
         None => Err(ModuleError::PeerUnresolved(
             handle.to_owned(),
-            format!("explicit binding names `{name}`, which is not an installed sibling in this space"),
+            format!("explicit binding names `{name}`, which is not an installed sibling in this module collection"),
         )),
     }
 }
@@ -155,7 +147,7 @@ fn resolve_auto(
         } else {
             Err(ModuleError::PeerUnresolved(
                 handle.to_owned(),
-                format!("no enabled sibling in the module space exposes interface `{interface}` at major {major} on line `{line}`"),
+                format!("no enabled sibling in the module collection exposes interface `{interface}` at major {major} on line `{line}`"),
             ))
         };
     };
