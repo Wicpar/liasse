@@ -1,18 +1,18 @@
 //! RED-TEAM probe of the §19.5 portable-state capture at the EXACT boundary the
 //! convergence coordinator flagged: a depth-1 top-level collection whose row
-//! carries a nested §5.3 STATIC STRUCT must still export and restore, even though
-//! the `capture` path fails closed on genuine depth>1 nested KEYED collections
-//! (`portable.rs`, `StateSection::capture` guard `address.depth() > 1`).
+//! carries a nested §5.3 STATIC STRUCT must export and restore exactly.
 //!
 //! A static struct is part of the row VALUE (a `Node::Struct`, never a
 //! `Node::Collection`), so `Prospective::gather_tree` does NOT address it as a
-//! separate row — every such row stays at `depth() == 1`. The guard must not fire,
-//! and `StateSection::row_type` must chain `collection.structs` into the decode
-//! type so the struct member (and its OMITTED OPTIONAL member, dropped from the
-//! wire by absence, A.1) round-trips exactly. This is the acknowledged
-//! fail-closed boundary's PASSING side — a regression here (guard over-fires, or
-//! the struct member is dropped/mis-decoded) is a real §19.10 restore bug, not the
-//! acknowledged nested-collection refusal.
+//! separate row — every such row stays at `depth() == 1`, and the struct travels
+//! INSIDE its row rather than as a child of it. That distinction is what
+//! `CapturedRow` encodes: child collections are lifted into their own captured
+//! subtrees, while a struct member stays a member of the row, so
+//! `CapturedRow::row_type` must chain `collection.structs` into the decode type or
+//! the struct member (and its OMITTED OPTIONAL member, dropped from the wire by
+//! absence, A.1) is rejected as an undeclared member. A regression here — the
+//! struct mistaken for a child collection, dropped, or mis-decoded — is a real
+//! §19.10 restore bug.
 //!
 //! Every expectation is externally deducible from SPEC.md: §5.3 (a static struct
 //! shares the row's identity/lifecycle), §5.1 (defaults resolve during the insert),
