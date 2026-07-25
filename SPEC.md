@@ -3851,6 +3851,18 @@ Within one package major, minor and patch releases MUST preserve or widen the co
 
 The full compatibility algorithm is specified in Annex E.
 
+### 20.4 Prepared updates and dry runs
+
+An implementation MAY expose an update as two steps. **Prepare** computes the update in full and produces a **prepared update**; **apply** commits a prepared update. Preparing performs the whole of §20.1 — route resolution, the migration order, the §20.2 round-trip verification, the §13.13 reconciliation, and the complete admission suite over the whole prospective target — and commits nothing. A **dry run** is a prepare whose prepared update is discarded: it applies no part of the update, and the active package remains in force exactly as after a rejected one (§20.3).
+
+Prepare and apply MUST NOT be separate computations of the update. An update that commits is a prepare followed by the apply of that same prepared update. A dry run therefore reports what the update does: an update the runtime would reject is rejected at prepare with that same diagnostic, and one it would accept prepares successfully.
+
+A prepared update carries the Annex E relation of the target to the active package; the **proposed result**, the complete prospective target state its apply would commit; the conflicts the §13.13 `$bundle` reconciliation reports, each named the way §19.9 names one (its §D.3 coordinate and its kind) — §13.13 resolves every such conflict in the instance's favour, so they report which package-authored values a local edit overrides rather than blocking the update; the per-item report of §13.15; and its **basis**.
+
+**Basis and staleness.** The basis is the state position the prepare computed against: the instance, its active package version, its committed position, and the instant `now()` samples (§14). A prepared update is faithful only as of its basis. An apply MUST compare the prepared update's basis with the instance's current basis, and MUST refuse a prepared update whose basis has moved — committing nothing and reporting the mismatch. A concurrent commit, a history movement (§19.8), or a clock move consequently invalidates a prepared update instead of letting it commit a computation that no longer describes the instance.
+
+**What a prepared update guarantees.** For its basis: the whole migration computes, every §20.1 invariant holds over the complete prospective target, and exactly the reported conflicts arise. It guarantees nothing about a *separate* run of the same update: generated values resolve at admission (§8.12), so preparing the same target again draws fresh `uuid()` values — and `now()` from whatever instant that later prepare samples — and so proposes a different result. Applying a prepared update commits the values that prepared update computed, not values re-derived at apply time. An effect a prepare cannot evaluate without performing it — provisioning a newly declared keyring against a registered provider (§17.5) — lies outside the guarantee and is reported by the apply.
+
 ---
 
 <a id="deletion"></a>

@@ -405,10 +405,17 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
     /// active instance through [`Engine::update`], migrating committed state (§20.1)
     /// and rebinding the router. A rejected migration leaves the instance unchanged
     /// and reports the refusal class.
+    ///
+    /// `dry_run: true` selects the §20.4 dry run instead: the very same update is
+    /// computed in full and discarded, so the step reports the outcome the load
+    /// would have and the instance is left exactly as it was.
     fn drive_host_load(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
         let Some(package) = request.target.get("package").cloned() else {
             return Err(AdapterError::unsupported("`host_load` step carries no `package` to load"));
         };
+        if request.target.get("dry_run").and_then(serde_json::Value::as_bool) == Some(true) {
+            return self.active().host_load_dry_run(&package);
+        }
         self.active().host_load(&package)
     }
 

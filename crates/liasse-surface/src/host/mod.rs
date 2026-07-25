@@ -22,7 +22,7 @@ pub use correction::{
     ChooseMap, ChooseSide, ConflictCoordinate, CorrectionError, CorrectionOutcome,
 };
 pub use erasure::EraseOutcome;
-pub use update::UpdateOutcome;
+pub use update::{UpdateOutcome, UpdatePreview};
 
 use std::collections::BTreeMap;
 

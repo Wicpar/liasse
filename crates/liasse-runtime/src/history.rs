@@ -473,45 +473,57 @@ struct ThreeWayMerge<'a> {
     unique: Vec<(Vec<String>, Vec<Vec<String>>)>,
 }
 
+/// The D.3-addressable coordinate of a conflicted `address` (§D.3). A top-level
+/// keyed collection row resolves to `/collection/key[/field]`: the collection
+/// name and the row's application-visible key (§5.4), with the field for a
+/// field-level conflict. The key resolves through the schema so a single-field
+/// key is its scalar and a composite key its component struct — the form the
+/// surface renders as an escaped key-text segment.
+///
+/// A NESTED row (§5.4) is named the way §A.9 names one: the `/`-separated
+/// declaration path (`companies/offices`) and the FULL ancestor-then-local
+/// identity. Its local key alone would be ambiguous — the same child key exists
+/// under every parent — so a host correction could not tell which row to fix.
+///
+/// The §8.2 singleton reserved row is internal storage, not a collection: a
+/// conflict on one of its members is reported at that member's name-only
+/// application address (`/flag`), never the reserved `$root` name or its
+/// placeholder empty key — which §D.3 forbids as an empty path segment and §D.1
+/// gives no ancestor key.
+///
+/// Shared by the §19.9 three-way merge and by the §13.13 `$bundle` merge a §20.4
+/// prepared update reports through, so both name a coordinate the same way.
+pub(crate) fn conflict_coordinate(
+    schema: Schema<'_>,
+    address: &RowAddress,
+    field: Option<String>,
+) -> ConflictCoordinate {
+    // A `RowAddress` is non-empty by construction, so the step is always present.
+    let Some(step) = last_step(address) else {
+        return ConflictCoordinate::Row { collection: String::new(), key: Value::None, field };
+    };
+    if step.name().as_str() == crate::singleton::ROOT_NAME {
+        return ConflictCoordinate::RootSingleton { member: field };
+    }
+    if address.depth() > 1 {
+        let components: Vec<Value> =
+            address.steps().flat_map(|step| step.key().components().cloned()).collect();
+        let key = liasse_store::key_from_components(components)
+            .map_or(Value::None, |key| materialize::key_value_identity(&key));
+        return ConflictCoordinate::Row { collection: decl_path(address).join("/"), key, field };
+    }
+    let collection = step.name().as_str();
+    let key = match schema.top_collection(collection) {
+        Some(model) => materialize::key_identity(model, step.key()),
+        None => step.key().components().next().cloned().unwrap_or(Value::None),
+    };
+    ConflictCoordinate::Row { collection: collection.to_owned(), key, field }
+}
+
 impl ThreeWayMerge<'_> {
-    /// The D.3-addressable coordinate of a conflicted `address` (§D.3). A top-level
-    /// keyed collection row resolves to `/collection/key[/field]`: the collection
-    /// name and the row's application-visible key (§5.4), with the field for a
-    /// field-level conflict. The key resolves through the schema so a single-field
-    /// key is its scalar and a composite key its component struct — the form the
-    /// surface renders as an escaped key-text segment.
-    ///
-    /// A NESTED row (§5.4) is named the way §A.9 names one: the `/`-separated
-    /// declaration path (`companies/offices`) and the FULL ancestor-then-local
-    /// identity. Its local key alone would be ambiguous — the same child key exists
-    /// under every parent — so a host correction could not tell which row to fix.
-    ///
-    /// The §8.2 singleton reserved row is internal storage, not a collection: a
-    /// conflict on one of its members is reported at that member's name-only
-    /// application address (`/flag`), never the reserved `$root` name or its
-    /// placeholder empty key — which §D.3 forbids as an empty path segment and §D.1
-    /// gives no ancestor key.
+    /// This merge's D.3 coordinate for `address`, resolved through its own schema.
     fn coordinate(&self, address: &RowAddress, field: Option<String>) -> ConflictCoordinate {
-        // A `RowAddress` is non-empty by construction, so the step is always present.
-        let Some(step) = last_step(address) else {
-            return ConflictCoordinate::Row { collection: String::new(), key: Value::None, field };
-        };
-        if step.name().as_str() == crate::singleton::ROOT_NAME {
-            return ConflictCoordinate::RootSingleton { member: field };
-        }
-        if address.depth() > 1 {
-            let components: Vec<Value> =
-                address.steps().flat_map(|step| step.key().components().cloned()).collect();
-            let key = liasse_store::key_from_components(components)
-                .map_or(Value::None, |key| materialize::key_value_identity(&key));
-            return ConflictCoordinate::Row { collection: decl_path(address).join("/"), key, field };
-        }
-        let collection = step.name().as_str();
-        let key = match self.schema.top_collection(collection) {
-            Some(model) => materialize::key_identity(model, step.key()),
-            None => step.key().components().next().cloned().unwrap_or(Value::None),
-        };
-        ConflictCoordinate::Row { collection: collection.to_owned(), key, field }
+        conflict_coordinate(self.schema, address, field)
     }
 
     /// Resolve the merge coordinate by coordinate (§19.9): accept a change made on

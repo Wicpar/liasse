@@ -92,7 +92,7 @@ pub use entropy::Entropy;
 pub use host::{
     AuthResult, ChooseMap, ChooseSide, ConflictCoordinate, CorrectionError, CorrectionOutcome,
     EraseOutcome, HostComponentError, KeyringErrorOr, Subscription, SurfaceError, SurfaceHost,
-    UpdateOutcome, VerifyErrorOr,
+    UpdateOutcome, UpdatePreview, VerifyErrorOr,
 };
 pub use operation::{OperationKey, OperationLog, OperationStatus, RequestModel};
 pub use outcome::{Completion, Denial, DenialReason, SurfaceOutcome};

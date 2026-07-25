@@ -140,6 +140,26 @@ impl SurfaceLift {
         self.views.is_empty() && self.muts.is_empty()
     }
 
+    /// The lifts a §9.2 `load(target)` tries, richest first: the full lift, then
+    /// views only, then none — falling back to fewer synthetic declarations until
+    /// one migrates cleanly, exactly as the initial load does.
+    ///
+    /// Shared by the effecting load and its §20.4 dry run, so both walk the same
+    /// definitions in the same order: a dry run that tried a different sequence
+    /// could report a different outcome than the load it models.
+    #[must_use]
+    pub fn load_attempts(package: &J) -> Vec<Self> {
+        let lift = Self::derive(package);
+        let mut attempts = vec![lift.clone()];
+        if !lift.views_only().is_empty() {
+            attempts.push(lift.views_only());
+        }
+        if !lift.is_empty() {
+            attempts.push(Self::default());
+        }
+        attempts
+    }
+
     /// The synthetic view bound to surface `address` (`<prefix>.<surface>`).
     #[must_use]
     pub fn view_name(&self, address: &str) -> Option<&str> {

@@ -29,7 +29,7 @@
 //! [`Engine`]: liasse_runtime::Engine
 //! [`Engine::update`]: liasse_runtime::Engine::update
 
-use liasse_runtime::{Engine, Rejection, UpdateError, UpdateReport};
+use liasse_runtime::{Engine, PreparedUpdate, Rejection, UpdateError, UpdateReport};
 use liasse_store::InstanceStore;
 
 use crate::router::SurfaceRouter;
@@ -61,6 +61,28 @@ pub enum UpdateOutcome {
     Invalid(String),
     /// The target is on a different compatibility line, so no update relation
     /// exists (§19.8) — the instance is unchanged.
+    Incompatible(String),
+}
+
+/// The observable result of a §20.4 **dry run**: the same in-place update computed
+/// in full, then discarded.
+///
+/// Its refusal variants are the refusal variants of [`UpdateOutcome`], produced by
+/// the same computation, so a dry run reports the outcome the update would have.
+/// The success variant carries the [`PreparedUpdate`] instead of a commit, because
+/// a dry run takes none: the update is described, not applied, and neither the
+/// instance, its router, nor its subscriptions are touched.
+#[derive(Debug)]
+pub enum UpdatePreview {
+    /// The update computes and every §20.1 invariant holds; the plan describes
+    /// what it would do, against the state position it names.
+    Ready(Box<PreparedUpdate>),
+    /// The migration would be refused by the admission pipeline or a narrowing
+    /// boundary contract (§20.3, Annex E).
+    Rejected(Rejection),
+    /// The target definition is statically invalid (§9.4).
+    Invalid(String),
+    /// The target is on a different compatibility line (§19.8).
     Incompatible(String),
 }
 
@@ -104,6 +126,12 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
                 return Ok(UpdateOutcome::Incompatible(message))
             }
             Err(UpdateError::Engine(engine)) => return Ok(UpdateOutcome::Invalid(engine.to_string())),
+            // §20.4: `Engine::update` prepares and applies in one breath, so its
+            // plan's basis cannot have moved under it. Report the refusal rather
+            // than assuming it away — the instance is untouched either way.
+            Err(stale @ UpdateError::Stale { .. }) => {
+                return Ok(UpdateOutcome::Invalid(stale.to_string()))
+            }
         };
         // §20.3: the migrated definition is now active. Rebind the exposed router to
         // the migrated model so resolution — and the completion barrier's authority
@@ -119,5 +147,36 @@ impl<S: InstanceStore, P: liasse_host::KeyProvider> SurfaceHost<S, P> {
         // surface closes (§12.2) and every survivor advances coherently.
         self.sweep_all()?;
         Ok(UpdateOutcome::Committed(report))
+    }
+
+    /// Compute an in-place update in full WITHOUT applying it (§20.4) — the
+    /// driver-facing **dry run**.
+    ///
+    /// This runs [`Engine::prepare_update`], the very computation
+    /// [`update`](Self::update) runs before it commits, and drops the resulting
+    /// plan into the returned [`UpdatePreview`] instead of committing it. Nothing
+    /// is applied: no commit, no router rebind, no §12.2 subscription sweep. A
+    /// refusal here is the refusal `update` would report, because it is the same
+    /// call producing it.
+    ///
+    /// The returned plan is faithful only as of its own basis (§20.4); it is a
+    /// description of the update, not a reservation of it.
+    ///
+    /// # Errors
+    /// [`SurfaceError::Engine`] from a store fault while reading the instance. A
+    /// rejected, invalid, or incompatible migration is an [`UpdatePreview`], not an
+    /// error.
+    pub fn dry_run_update(&mut self, target: &str) -> Result<UpdatePreview, SurfaceError> {
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        Ok(match self.engine.prepare_update(target, &mut generators) {
+            Ok(prepared) => UpdatePreview::Ready(Box::new(prepared)),
+            Err(UpdateError::Rejected(rejection)) => UpdatePreview::Rejected(rejection),
+            Err(UpdateError::Incompatible(message)) => UpdatePreview::Incompatible(message),
+            Err(UpdateError::Engine(engine)) => UpdatePreview::Invalid(engine.to_string()),
+            // A prepare takes no basis to be stale against; `Engine::prepare_update`
+            // never returns it. Reported, not assumed away.
+            Err(stale @ UpdateError::Stale { .. }) => UpdatePreview::Invalid(stale.to_string()),
+        })
     }
 }

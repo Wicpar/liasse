@@ -25,6 +25,9 @@
 //! in [`BoundaryContract`].
 
 mod plan;
+mod prepared;
+
+pub use prepared::{PreparedUpdate, UpdateBasis};
 
 use std::collections::BTreeMap;
 
@@ -69,6 +72,20 @@ pub enum UpdateError {
     /// exists (§19.8 unrelated; an update is not an install).
     #[error("incompatible update: {0}")]
     Incompatible(String),
+    /// A [`PreparedUpdate`] was offered for commit after the state it was computed
+    /// against had moved (§20.4). Nothing was committed: a plan describes one
+    /// position, and committing it against another would commit a computation that
+    /// no longer holds. Re-prepare against the current position.
+    #[error(
+        "stale prepared update: computed against {prepared}, but the instance is now at {current} — \
+         nothing was committed; re-prepare the update against the current state (§20.4)"
+    )]
+    Stale {
+        /// The basis the refused plan was computed against.
+        prepared: Box<UpdateBasis>,
+        /// The instance's basis at the moment the commit was attempted.
+        current: Box<UpdateBasis>,
+    },
 }
 
 /// The observable result of a successful update (§20.3, §13.15 shape).
@@ -90,32 +107,24 @@ pub struct UpdateReport {
     pub seeded: Vec<String>,
 }
 
-/// The validated, not-yet-committed result of the §20 update pre-checks: the target
-/// compilation, the Annex-E relation, the migrated rows to stage, and the §13.15
-/// per-item `$migrated`/`$seeded` paths. Shared by [`Engine::update`] (commits
-/// directly) and [`Engine::stage_update`] (folds into a §13.10 transition).
-struct PreparedUpdate {
-    compilation: Compilation,
-    relation: UpdateRelation,
-    rows: BTreeMap<RowAddress, FieldMap>,
-    migrated: Vec<String>,
-    seeded: Vec<String>,
-}
-
 impl<S: InstanceStore> Engine<S> {
     /// Update this instance to a target definition (§20). Builds the migrated
     /// state through the §20.1 order, verifies reversible transforms, admits the
     /// result through the ordinary rule pipeline, and commits it atomically as the
     /// new active definition. A rejected migration leaves the instance unchanged.
+    ///
+    /// This is exactly [`prepare_update`](Self::prepare_update) followed by
+    /// [`apply_update`](Self::apply_update) — the whole computation, then the
+    /// commit. There is no dry-run flag and no second implementation: a §20.4 dry
+    /// run is this same `prepare_update` with the plan dropped, so what a dry run
+    /// reports is what an update does.
     pub fn update<G: crate::generator::Generators>(
         &mut self,
         target: &str,
         generator: &mut G,
     ) -> Result<UpdateReport, UpdateError> {
         let prepared = self.prepare_update(target, generator)?;
-        let PreparedUpdate { compilation, relation, rows, migrated, seeded } = prepared;
-        let commit = self.apply_migration(target, compilation, rows).map_err(UpdateError::Engine)?;
-        Ok(UpdateReport { relation, commit, migrated, seeded })
+        self.apply_update(prepared)
     }
 
     /// Update this instance to a target definition WITHIN a §13.10 multi-engine
@@ -134,9 +143,9 @@ impl<S: InstanceStore> Engine<S> {
         transaction: liasse_ident::TransactionId,
     ) -> Result<(liasse_store::PendingCommit, crate::engine::StagedMigration, UpdateReport), UpdateError> {
         let prepared = self.prepare_update(target, generator)?;
-        let PreparedUpdate { compilation, relation, rows, migrated, seeded } = prepared;
+        let PreparedUpdate { compilation, relation, reconciliation, migrated, seeded, .. } = prepared;
         let (pending, staged) = self
-            .stage_migration(target, compilation, rows, Some(transaction))
+            .stage_migration(target, compilation, reconciliation.merged, Some(transaction))
             .map_err(UpdateError::Engine)?;
         // §13.15: the commit position is assigned only when the shared group commit
         // lands; the caller fills it into the returned report after finalizing.
@@ -144,17 +153,37 @@ impl<S: InstanceStore> Engine<S> {
         Ok((pending, staged, report))
     }
 
-    /// Run the §20 update pre-checks and build the validated migrated state WITHOUT
-    /// touching durable state — the read-only core [`Engine::update`] commits
-    /// directly and [`Engine::stage_update`] folds into a §13.10 shared transaction.
-    /// A compatibility, connectivity, boundary-narrowing, capture, or migration-build
-    /// failure is surfaced identically on both paths, so a rejected migration never
-    /// reaches a commit.
-    fn prepare_update<G: crate::generator::Generators>(
+    /// Compute a §20 package update IN FULL without applying any part of it
+    /// (§20.4), returning the [`PreparedUpdate`] that describes it.
+    ///
+    /// This is the whole update: route resolution (§20.1, Annex E.9), the
+    /// boundary-contract gate (§13.14/Annex E.2), the §20.1 migration order over
+    /// every collection at every depth, the reversible round trips (§20.2), the
+    /// §13.13 seed and `$bundle` reconciliation, the §16.2 requirement gate and
+    /// §17.6 keyring-policy gate, and the complete §20.1 admission suite — keys,
+    /// refs, uniqueness, checks, buckets, meters — over the whole prospective
+    /// target. It takes `&self`, so nothing it does can touch the instance.
+    ///
+    /// A **dry run is this call with the returned plan dropped**; a real update is
+    /// this call followed by [`apply_update`](Self::apply_update), which is what
+    /// [`update`](Self::update) is. The two cannot diverge, because they are the
+    /// same computation with no branch inside it: a rejection reported here is
+    /// byte-for-byte the one the effecting update reports.
+    ///
+    /// The plan is faithful only as of its [`UpdateBasis`]; see there and §20.4 for
+    /// exactly what it does and does not guarantee.
+    ///
+    /// # Errors
+    /// The same [`UpdateError`] an effecting [`update`](Self::update) would return.
+    pub fn prepare_update<G: crate::generator::Generators>(
         &self,
         target: &str,
         generator: &mut G,
     ) -> Result<PreparedUpdate, UpdateError> {
+        // §20.4: the position this plan is faithful as of, sampled BEFORE the
+        // computation reads any state, so a basis a later apply accepts is one the
+        // whole computation ran against.
+        let basis = self.update_basis().map_err(UpdateError::Engine)?;
         // §16.2/§20: the target keeps the context's registered components but
         // declares its own `$requires`, re-resolved by [`stage_migration`]. The
         // target compilation itself does not re-type its host-call views/defaults
@@ -256,12 +285,36 @@ impl<S: InstanceStore> Engine<S> {
             self.now(),
         )
         .map_err(UpdateError::Rejected)?;
+        // §16.2/§17.6: the two remaining pre-commit gates the effecting path runs,
+        // probed here read-only through the SAME predicates — a target adding an
+        // unregistered `$requires`, or changing a live ring's policy, is refused by a
+        // §20.4 dry run exactly as by an update. `stage_migration` still runs the
+        // effecting `rebind`/provisioning; only PROVISIONING a newly-declared ring
+        // (which consumes a registered provider, §17.5 F1a) is inherently
+        // apply-time and stays outside a plan's guarantee.
+        self.host_binding().probe_rebind(&compilation.requires).map_err(UpdateError::Engine)?;
+        self.keyring_policy_change(&compilation.compiled).map_err(UpdateError::Engine)?;
         // §13.15: the per-item `$migrated`/`$seeded` paths are captured from the
         // build in canonical (`BTreeMap`/sorted) path order before the rows are
         // consumed by the commit.
         let migrated = staged.migrated.iter().map(RowAddress::render).collect();
         let seeded = staged.seeded.iter().map(RowAddress::render).collect();
-        Ok(PreparedUpdate { compilation, relation: decision.relation, rows: staged.rows, migrated, seeded })
+        Ok(PreparedUpdate {
+            compilation,
+            definition: target.to_owned(),
+            relation: decision.relation,
+            basis,
+            // §19.9 shape: the proposed result is the complete prospective target,
+            // and the reported conflicts are the §13.13 coordinates both the release
+            // and the instance moved (resolved in the instance's favour, never
+            // blocking).
+            reconciliation: crate::history::MergeOutcome {
+                merged: staged.rows,
+                conflicts: staged.divergent,
+            },
+            migrated,
+            seeded,
+        })
     }
 
     /// The first boundary-contract narrowing the `target` release makes relative
@@ -410,6 +463,11 @@ struct MigratedState {
     rows: BTreeMap<RowAddress, FieldMap>,
     migrated: Vec<RowAddress>,
     seeded: Vec<RowAddress>,
+    /// The §13.13 `$bundle` coordinates the release and the instance BOTH moved,
+    /// in the §19.9 conflict shape. §13.13 resolves each in the instance's favour,
+    /// so they never block the migration; they are what a §20.4 prepared update
+    /// reports so a host sees which package values its own edits override.
+    divergent: Vec<crate::history::MergeConflict>,
 }
 
 /// Build the prospective migrated state in the §20.1 order — compatible copy and
@@ -621,8 +679,17 @@ fn build_migrated<G: crate::generator::Generators>(
     // addresses are checked by the ordinary pipeline below alongside the migrated
     // rows; a removed row leaves `prospective`, so the final `rows` (and the
     // whole-state migration commit) no longer carries it.
+    let mut divergent = Vec::new();
     if let Some(new_bundle) = &target.bundle {
-        crate::seed::merge_bundle(&target.compiled, &ctx, &mut prospective, &mut seeded_addrs, old_bundle, new_bundle)?;
+        crate::seed::merge_bundle(
+            &target.compiled,
+            &ctx,
+            &mut prospective,
+            &mut seeded_addrs,
+            old_bundle,
+            new_bundle,
+            &mut divergent,
+        )?;
         // A bundle merge inserts, replaces, or removes rows, so the finalize/commit
         // set is exactly the prospective state after it.
         addresses = prospective.working().keys().cloned().collect();
@@ -652,7 +719,7 @@ fn build_migrated<G: crate::generator::Generators>(
     // resolves is not a committed migrated row.
     let migrated = report_paths(&migrated_addrs, &rows);
     let seeded = report_paths(&seeded_addrs, &rows);
-    Ok(MigratedState { rows, migrated, seeded })
+    Ok(MigratedState { rows, migrated, seeded, divergent })
 }
 
 /// The §20.1 order-(1/2) copy applied to one collection's source rows and, by the

@@ -167,6 +167,18 @@ or a label from the case's `packages` map) against the active root instance
 application remains active). Distinct from `load_artifact` (§04), whose input
 is a prebuilt `.liasse` artifact rather than a definition.
 
+The optional member `dry_run: true` selects the §20.4 **dry run** of that same
+load:
+
+```hjson
+{ host_load: { package: "v2", dry_run: true }, expect: { outcome: ok } }
+```
+
+The update is computed in full and then discarded. The step reports the outcome
+the load would have — same vocabulary, same mapping — and applies nothing: no
+commit, no definition change, no frontier. Later steps therefore assert against
+the state and the package that were active before it.
+
 ### `module_install` — owning chapter §13
 
 ```hjson

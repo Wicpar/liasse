@@ -176,6 +176,16 @@ impl HostBinding {
         Ok(())
     }
 
+    /// Whether [`rebind`](Self::rebind) would accept `requires`, WITHOUT adopting
+    /// the resolved binding — the read-only half of the §16.2 update gate a §20.4
+    /// prepared update runs, so a target that adds an unregistered requirement is
+    /// refused by a dry run exactly as it is by the effecting update. It is the very
+    /// same [`bind`](Self::bind) call under the same strict discipline; only the
+    /// assignment is dropped.
+    pub(crate) fn probe_rebind(&self, requires: &[(String, String)]) -> Result<(), EngineError> {
+        Self::bind(&self.registry, requires, true).map(drop)
+    }
+
     /// Bind each `(local, "name@major")` requirement to its resolved contract
     /// (§16.2). Under `strict`, an unparseable or unresolvable requirement is an
     /// [`EngineError::Requirement`]; otherwise it is deferred (skipped).

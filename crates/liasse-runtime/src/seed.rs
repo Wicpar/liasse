@@ -17,6 +17,7 @@ use crate::compiled::{Compiled, CompiledCollection, CompiledDefault};
 use crate::doc;
 use crate::error::{Rejection, RejectionReason};
 use crate::eval::EvalCtx;
+use crate::history::{conflict_coordinate, ConflictKind, MergeConflict};
 use crate::materialize::FieldMap;
 use crate::rules;
 use crate::state::Prospective;
@@ -156,6 +157,12 @@ pub(crate) fn admit(
 /// decoded, inserted, field-merged, and dropped by exactly the same three-way
 /// comparison as a top-level one, because both are identified by row ADDRESS and
 /// the recursion below produces addresses at any depth.
+///
+/// `divergent` collects the §19.9-shaped coordinates where BOTH sides moved the
+/// same bundled value — the release changed it and the instance changed it too, to
+/// something else. §13.13 resolves each by keeping the instance's value, so these
+/// never block the update; they are reported so a §20.4 prepared update can tell a
+/// host exactly which package-authored values its own edits will override.
 pub(crate) fn merge_bundle(
     compiled: &Compiled,
     ctx: &EvalCtx<'_>,
@@ -163,6 +170,7 @@ pub(crate) fn merge_bundle(
     touched: &mut Vec<RowAddress>,
     old_bundle: Option<&DocValue>,
     new_bundle: &DocValue,
+    divergent: &mut Vec<MergeConflict>,
 ) -> Result<(), Rejection> {
     // A row newly present in the new bundle is inserted; a row already present is
     // left in place here and reconciled field-by-field below (never overwritten
@@ -181,7 +189,15 @@ pub(crate) fn merge_bundle(
         // §13.13: replace each present row's bundled fields under the three-way rule.
         for (address, new_fields) in &new_rows {
             let Some(current) = prospective.get(address) else { continue };
-            let merged = merge_row_fields(current, old_rows.get(address), new_fields);
+            let old_fields = old_rows.get(address);
+            divergent.extend(
+                divergent_fields(current, old_fields, new_fields)
+                    .map(|field| MergeConflict {
+                        coordinate: conflict_coordinate(ctx.schema, address, Some(field)),
+                        kind: ConflictKind::IncompatibleValue,
+                    }),
+            );
+            let merged = merge_row_fields(current, old_fields, new_fields);
             prospective.replace(address, merged);
             touched.push(address.clone());
         }
@@ -193,13 +209,42 @@ pub(crate) fn merge_bundle(
         // surviving descendant (locally added, or retained because it was locally
         // edited) keeps its ancestors alive rather than orphaning them.
         for (address, old_fields) in old_rows.iter().rev() {
+            if new_rows.contains_key(address) {
+                continue;
+            }
             let unchanged = prospective.get(address) == Some(old_fields);
-            if !new_rows.contains_key(address) && unchanged && !has_live_descendant(prospective, address) {
+            if unchanged && !has_live_descendant(prospective, address) {
                 prospective.remove(address);
+            } else if prospective.get(address).is_some() && !unchanged {
+                // The release dropped this bundled row while the instance still holds
+                // a locally modified one: §19.9's delete-versus-modify shape, resolved
+                // by §13.13 in favour of the retained local row.
+                divergent.push(MergeConflict {
+                    coordinate: conflict_coordinate(ctx.schema, address, None),
+                    kind: ConflictKind::DeleteVsModify,
+                });
             }
         }
     }
     Ok(())
+}
+
+/// The bundled fields of one row where the release and the instance BOTH moved to
+/// different values (§13.13/§19.9): the old bundle held one value, the new bundle
+/// holds another, and the current state holds a third. A field only one side moved
+/// is an accepted one-sided change and is not reported.
+fn divergent_fields<'a>(
+    current: &'a FieldMap,
+    old: Option<&'a FieldMap>,
+    new: &'a FieldMap,
+) -> impl Iterator<Item = String> + 'a {
+    new.iter()
+        .filter(move |(field, new_value)| {
+            let old_value = old.and_then(|fields| fields.get(*field));
+            let current_value = current.get(*field);
+            current_value != old_value && Some(*new_value) != old_value && current_value != Some(*new_value)
+        })
+        .map(|(field, _)| field.clone())
 }
 
 /// Whether any live row in the prospective state is nested under `address` (§5.4).

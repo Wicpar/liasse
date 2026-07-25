@@ -1141,6 +1141,16 @@ impl<F: StoreFactory> ModuleHost<F> {
                             return Ok(Some(CallOutcome::Rejected(Rejection::new(RejectionReason::Compatibility, message))));
                         }
                         Err(crate::migrate::UpdateError::Engine(engine)) => return Err(ModuleError::Engine(engine)),
+                        // §20.4: `stage_update` prepares and stages in one breath, so
+                        // its plan's basis cannot have moved under it. Reject the whole
+                        // transition rather than assume that away — nothing has
+                        // committed at this point either way.
+                        Err(stale @ crate::migrate::UpdateError::Stale { .. }) => {
+                            return Ok(Some(CallOutcome::Rejected(Rejection::new(
+                                RejectionReason::Compatibility,
+                                stale.to_string(),
+                            ))));
+                        }
                     }
                 }
                 LifecycleIntent::Remove { at } => {
