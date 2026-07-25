@@ -1,0 +1,67 @@
+{
+  format: 1
+  name: string-search-applies-no-implicit-case-or-space-folding
+  suite: scenario
+  spec: ["#expressions", "§6.5"]
+  tags: ["unicode"]
+  note: '''
+    Attack: hand the search predicates text that differs from the needle only by
+    case or by surrounding whitespace, hoping the engine "helpfully" folds or
+    trims and reports a match the stored scalars do not support — the way a
+    locale-aware SQL collation or a case-insensitive LIKE would.
+
+    §6.5: comparison is over Unicode scalar values with no case folding, no
+    whitespace trimming, and no locale. Each expectation is read off the scalar
+    sequences:
+
+      subject "Ma" U+00DF "e", needle "MASSE"
+        starts_with = false — "M" then "a" vs "A": the second scalars differ,
+                      and U+00DF is not "SS"
+        the case-insensitive test is COMPOSED, and §6.5 states why it is well
+        defined: the Unicode default full case fold maps each scalar
+        independently, so it distributes over concatenation. casefold("Ma" U+00DF
+        "e") = "masse" and casefold("MASSE") = "masse", hence
+        starts_with(casefold(subject), casefold(needle)) = true.
+
+      subject " 512" (SPACE, 5, 1, 2), needle "512"
+        starts_with = false — the subject's first scalar is SPACE
+        contains    = true  — " 512" = " " ++ "512" ++ ""
+        starts_with(trim(subject), needle) = true — the trim is explicit
+
+    The ß value is written with an explicit escape so no tool can rewrite it.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.strfold@1.0.0"
+    $model: {
+      probes: {
+        $key: "id"
+        id: "text"
+        subject: "text"
+        needle: "text"
+        raw: "= string.starts_with(.subject, .needle)"
+        folded: "= string.starts_with(string.casefold(.subject), string.casefold(.needle))"
+        held: "= string.contains(.subject, .needle)"
+        trimmed: "= string.starts_with(string.trim(.subject), .needle)"
+      }
+      $public: {
+        probes: { $view: ".probes { id, raw, folded, held, trimmed, $sort: [id] }" }
+      }
+    }
+    $data: {
+      probes: {
+        case: { subject: "Ma\u00dfe", needle: "MASSE" }
+        space: { subject: " 512", needle: "512" }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.probes", id: "w1",
+      expect_init: { value: [
+        { id: "case", raw: false, folded: true, held: false, trimmed: false }
+        { id: "space", raw: false, folded: false, held: true, trimmed: true }
+      ] } }
+  ]
+}
