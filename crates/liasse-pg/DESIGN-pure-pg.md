@@ -9,7 +9,7 @@ not implemented**. Mandates, in force together:
    Every contract read must be served by a PostgreSQL query; the backend may hold
    **no** in-memory read model of durable state.
 2. *"IF PERSISTED → POSTGRES ONLY. IF SESSION-RELATIVE → IN RUST SESSION CODE."*
-   Persisted/durable state (rows, the tree, the `next_incarnation` counter) lives
+   Persisted/durable state (rows, the tree, the incarnation counter) lives
    in and is read from Postgres — no in-memory copy or cache, allocator cursors
    included (this **overrules** the earlier §6.3 judgment call). Session-relative
    state (a computed `Snapshot` result, window/anchor state, the *values* of
@@ -27,7 +27,7 @@ not implemented**. Mandates, in force together:
    `liasse_text_key` schema function** — v2's §7.4/§7.5/§7.7 machinery and its
    §10.5 SPEC-change proposal are **replaced** by §7 and §12 below. Everything
    else in v2 stands: the SQL read path (§4), the r2d2 pool (§5), the write path
-   incl. durable `next_incarnation` (§6), `scan_subtree` and the §7.2 coverage
+   incl. the durable incarnation counter (§6), `scan_subtree` and the §7.2 coverage
    semantics, the §12-watch treatment (§8), the parity/gate discipline (§9), and
    the phase plan structure (§10).
 5. **Maintainer scope expansion, revising this document (v4)**: *"pgrx extension
@@ -156,8 +156,8 @@ PgStore {
 
 - **No field holds durable state — and no allocator cursor either.** No row map,
   no log copy, no blob cache, no point map, no cached head/definition/composition,
-  and (revised, mandate 2) no `next_incarnation` field: incarnation tokens are
-  allocated transactionally from the durable `instance_meta.next_incarnation`
+  and no `next_incarnation` field: incarnation tokens are
+  drawn from the durable `incarnations` sequence
   counter (§6.3).
 - Every `&self` read checks a connection out of `reads`, runs **one SQL statement**
   (or, for `snapshot`, one statement plus a Rust fold), and returns it.
@@ -447,10 +447,12 @@ pools for external resources, so the rule and the code stop disagreeing.
 
 ### 5.2 Writer vs pool
 
-- **Writer**: the one `postgres::Client` the store owns (one writer per instance is
-  a given). Used by: the admission SQL transaction (`commit_transition`, including
-  `NodeWriter`), `alloc_incarnation` (§6.3), `put_blob`, `record_point`, and
-  open-time reconcile/DDL. Unchanged otherwise.
+- **Writer**: the one `postgres::Client` a store handle owns. Used by: the admission
+  SQL transaction (`commit_transition`, including `NodeWriter`), the history pass
+  that follows it (§6.4), `alloc_incarnation` (§6.3), `put_blob`, `record_point`, and
+  open-time reconcile/DDL. **One writer per handle, not per instance**: the factory
+  will open as many handles onto one instance as asked, and admission takes no
+  instance-wide lock, so their admissions overlap.
 - **Pool**: read-only in usage (not enforced by role — same DSN, same rights). Every
   `&self` read: `self.reads.get()` → run statement(s) → drop guard (auto-return).
 
@@ -481,22 +483,23 @@ where a pooled read sees a *partial* commit (single SQL txn, atomic visibility).
    `head`, `log_from`, `point_position`, `get_blob`, `has_blob`, `definition`,
    `composition`: one SQL statement = one MVCC statement snapshot. Internally
    consistent on any pooled connection, autocommit. Nothing to pin.
-2. **Logically pinned reads** — `snapshot(frontier)`: reads only the append-only,
-   immutable `commit_log` prefix `≤ frontier`. Interleaved commits append *past* the
-   frontier and are invisible by construction. No SQL transaction needed. (The Phase-6
-   head fast path is again a single statement over `nodes` → case 1; its
-   `frontier == head` precondition is checked in the same statement's CTE by reading
-   `instance_meta.head`, falling back to the log fold on mismatch.)
+2. **Pinned multi-statement reads** — `snapshot(frontier)`. Its positioned
+   `commit_log` prefix `≤ frontier` is immutable, but the *head* it compares against
+   and the `nodes` tree its fast path materializes are not, so the whole read runs on
+   one `REPEATABLE READ READ ONLY` transaction: head, the unpositioned-admission
+   check, and the materialization or fold all come from one MVCC snapshot. The
+   `nodes` fast path is taken only when that snapshot sees **no unpositioned
+   admission** — state can be briefly ahead of built history (§6.4), and a snapshot
+   must not show state its own frontier does not cover.
 3. **Multi-statement sequences above the contract** — `Prospective::gather` issues
-   many `scan`s expecting one coherent state. In-process, coherence is guaranteed by
-   Rust exclusivity: a commit needs `&mut Engine` while a reader holds `&Engine`, so
-   no commit can interleave; out-of-process writers are excluded by
-   one-writer-per-instance. **Defence-in-depth seam** (designed now, wired only if the
-   one-writer premise is ever relaxed): `PgStore::read_session()` checks out a pooled
-   connection, opens `BEGIN READ ONLY ISOLATION LEVEL REPEATABLE READ`, serves a
-   whole multi-read sequence on one MVCC snapshot, then commits and returns the
-   connection. The §12 path additionally *prefers* `snapshot(head)`-based hydration
-   (case 2) over N live scans — see §8.
+   many `scan`s expecting one coherent state, and it runs *outside* the admission
+   transaction, on a pooled connection. With overlapping admissions this is the
+   backend's remaining isolation gap: PostgreSQL is never shown the read set, so it
+   cannot detect a read-write conflict, and the durable write path catches only what
+   it can see by itself (§6.5). Closing it means opening the admission transaction
+   before the first read and serving the gather through it — the `read_session()` /
+   transaction-boundary work, which is **not** done. The §12 path additionally
+   *prefers* `snapshot(head)`-based hydration (case 2) over N live scans — see §8.
 
 ## 6. Write-path changes
 
@@ -511,36 +514,39 @@ are visible; results memoized in the existing per-transaction `staged` map. The
 deleted. Tombstone auto-creation (`resolve_or_create`) is unchanged in behavior —
 it already runs SQL; only its map lookups change source.
 
-### 6.2 `commit_transition` trusts the durable head
+### 6.2 `commit_transition` takes no position and no lock
 
-Today it locks `instance_meta.head FOR UPDATE` and cross-checks the projection.
-Pure PG: the locked durable head **is** the truth; `seq = head + 1`. The
-projection-divergence corruption check disappears (there is no second head to
-disagree). `record_point`/`put_blob` drop their projection mirrors. The commit's
-`instance_meta` update **stops writing `next_incarnation`** — the counter is
-advanced at allocation time (§6.3), not at commit.
+The admission transaction writes **state only**: the ops into the `nodes` tree, and a
+*residual* into `commit_log` — a row with no `seq`, keyed by `pg_current_xact_id()`.
+It reads no counter, locks no row, and touches `instance_meta` only when the
+transition actually changes the definition or composition. There is no head counter
+left to lock: the head is the built history's tip (§6.4). `record_point`/`put_blob`
+have no projection mirrors.
 
-### 6.3 Incarnation allocation — durable, burn-on-allocate (revised per mandate 2)
+### 6.3 Incarnation allocation — durable, burn-on-allocate, lock-free
 
-The earlier revision of this document kept `next_incarnation: u64` as an in-memory
-allocator cursor. **Overruled**: the counter is persisted state, so it lives in and
-is read from Postgres only. `alloc_incarnation` becomes one autocommit statement on
-the writer connection:
+The counter is persisted state, so it lives in and is read from Postgres only.
+`alloc_incarnation` is one autocommit statement on the writer connection:
 
 ```sql
-UPDATE {s}.instance_meta SET next_incarnation = next_incarnation + 1
-WHERE id = 1 RETURNING next_incarnation - 1
+SELECT nextval('{s}."incarnations"')
 ```
 
 — the token is `row-{returned}`. Staging is a pure in-memory overlay
 (`transition.rs`: "Nothing touches PostgreSQL until commit"), so this statement
 never runs inside an open SQL transaction; it commits by itself, immediately.
 
+It is a **`SEQUENCE`, not a counter row**, and the reason is the same one that
+governs §6.2: a counter row is a per-instance meeting point, and every staged insert
+would queue on it. A sequence has none of that — `nextval` takes no row lock — and it
+loses nothing, because the property this counter must have is *no reuse*, not *no
+gaps*. `nextval` is non-transactional, which delivers no-reuse exactly.
+
 **Abort-visibility parity — why burn-on-allocate is the correct form.**
 `MemoryStore::alloc_incarnation` advances its counter *at allocation time*; an
 aborted staging does not roll it back, so in-process tokens are never reused
-("gaps from aborted transitions are harmless; only serial positions must be
-gapless" — `memory.rs`). Two durable designs were considered:
+("gaps from aborted transitions are harmless" — `memory.rs`). Two durable designs
+were considered:
 
 - *Allocate inside the admission transaction* — rolls the counter back on abort,
   **reusing** tokens the oracle would not reuse: an observable divergence on any
@@ -553,15 +559,83 @@ gapless" — `memory.rs`). Two durable designs were considered:
 
 Cost: one extra round trip per allocated token during staging (per staged insert).
 A **batching seam** is designed but not built: when staging knows it needs *k*
-tokens, `SET next_incarnation = next_incarnation + $k RETURNING …` allocates the
-range in one statement. The returned range is *consumed durable state* handed to
-the session — not a cached read model — so it stays mandate-compatible; wire it
-only if the Phase-6 benches show allocation dominating admission. The single-row
-`instance_meta` update plans as an `Index Scan using instance_meta_pkey`
-(prototyped; pinned under the existing single-row exemption). Prototyped end to
-end: tokens `0`, `1`, `2` allocated across an interleaved `BEGIN …
-FOR UPDATE … ROLLBACK` admission — the aborted transaction did not return token
-`1`; monotone, no reuse.
+tokens, `nextval('…', $k)` — or a `setval`-free `SELECT nextval FROM
+generate_series(1, $k)` — allocates the range in one statement. The returned range is
+*consumed durable state* handed to the session, not a cached read model, so it stays
+mandate-compatible; wire it only if the benches show allocation dominating admission.
+
+### 6.4 History construction — where serial positions come from
+
+§22.1: *"History construction follows committed transitions independently of write
+admission. Independent writes may be captured concurrently."* So positions are not
+part of writing. A **history pass** (`history.rs`) stamps them afterwards:
+
+```sql
+WITH settled AS (
+  SELECT xid, row_number() OVER (ORDER BY xid) AS offset_from_tip
+  FROM {s}.commit_log
+  WHERE seq IS NULL AND xid < pg_snapshot_xmin(pg_current_snapshot())
+), tip AS (SELECT coalesce(max(seq), 0) AS at FROM {s}.commit_log)
+UPDATE {s}.commit_log AS log SET seq = tip.at + settled.offset_from_tip
+FROM settled, tip WHERE log.xid = settled.xid
+```
+
+**The watermark is the correctness.** `pg_snapshot_xmin` is the oldest transaction id
+still running; every transaction below it has ended and no future one can be numbered
+below it. A pass therefore positions a *complete final prefix* in `xid` order, and
+stops dead at the first still-in-flight admission — so history never publishes a
+later admission ahead of an earlier one that has not settled. That is the anomaly a
+`nextval`-during-admission design would introduce, removed by construction rather
+than mitigated.
+
+**Where it runs.** Inline at the end of every admission (`PgStore::settle`), which
+also resolves that admission's own position before `commit_transition` returns — so
+`CommitOutcome::Committed` still carries a final position, never a reservation. It is
+also callable on its own (`PgStore::build_history`) for a background builder. If an
+older admission is in flight, `settle` waits for it: not a lock, and not a wait any
+*state write* is behind — every concurrent admission's writing has already happened
+in parallel by then.
+
+**Its one lock.** A pass takes a transaction-scoped advisory lock on the schema, so
+two passes cannot both read the same tip and hand out the same positions. It
+serializes *history construction*, which is the building of one linear order and is
+inherently serial. No admission ever takes it.
+
+**Gaps.** Positions come out gapless because a residual is written inside the
+admitting transaction, so an aborted admission leaves nothing to skip. That is a
+consequence, not a requirement — §22.3 asks only for monotonicity, and nothing here
+works to preserve contiguity.
+
+**The observable gap.** Between an admission committing and a pass positioning it,
+its state is live (`row`/`scan` see it) while history does not carry it (`head`,
+`log_from`, `snapshot` do not). This is deliberate and §22.1 is what makes it legal.
+Every read states which side it is on: current-state reads are head-independent;
+positional reads are built history; and `snapshot`'s head fast path checks for
+unpositioned admissions rather than assume the tree matches the head (§5.4 case 2).
+
+### 6.5 What the durable write path can and cannot catch
+
+Admission's occupancy and identity checks run during staging, against a read taken
+before the transaction opens and on another connection (§5.4 case 3). With
+overlapping admissions those reads can go stale, so the durable write re-checks what
+it is able to see for itself:
+
+- **Placing a row** (`Insert`, and a `Rekey`'s target) is `INSERT … ON CONFLICT DO
+  UPDATE … WHERE nodes.value IS NULL`: it revives a tombstone and refuses a live row.
+  A conflicting live row returns no row, and the admission fails
+  `StoreError::Conflict`.
+- **Rewriting or removing a row** (`Update`, `Delete`, a `Rekey`'s source) matches on
+  the incarnation the op carries: `WHERE id = $1 AND incarnation = $2`. Zero rows
+  touched means the row named is no longer the row that is there, and the admission
+  fails `StoreError::Conflict`.
+
+**Not caught: two concurrent updates of the same row.** §22.6 makes an update
+preserve the row's incarnation, so both writers' guards match and the later one wins
+silently — and because the engine materializes the whole row, a concurrent write to a
+*different field* is what gets lost. Catching it needs a per-row version observed by
+the read and asserted by the write, which requires the read set to be inside the
+admission transaction (§5.4 case 3). Until that lands, this backend does not detect
+update/update conflicts and must not be described as if it does.
 
 ## 7. The general in-PG evaluator: ANY read-side expression over persisted rows
 
@@ -2185,7 +2259,7 @@ regression (§7.3 "frontier scope").
 |---|---|---|
 | **0** | Contract surgery (§3 signature table) in `liasse-store`; MemoryStore + battery + runtime/surface/testkit ripple; add `r2d2`/`r2d2_postgres`; `PgStore` gains the pool (built post-reconcile) — **reads still projection-served**; AGENTS.md pool clarification | workspace compiles; all gates green; zero behavior change |
 | **1** | Leaf reads → pooled SQL: `head`, `get_blob`, `has_blob`, `point_position`, `definition`, `composition`, `log_from`; delete projection fields `blobs`, `points`, `definition`, `composition`, `head` | parity + corpus green; gate (10) added |
-| **2** | `row`/`scan` → §4.1/§4.2 SQL; `PgTransition` overlays the SQL base; `NodeWriter` resolves via in-txn SQL (§6.1); commit trusts durable head and stops writing `next_incarnation` (§6.2); **`alloc_incarnation` → durable burn-on-allocate `UPDATE … RETURNING` (§6.3)**; delete `by_id`, the `new_ids` plumbing, and the projection's incarnation counter | gates (7)(8) added and green; parity green incl. abort-then-commit token scenarios |
+| **2** | `row`/`scan` → §4.1/§4.2 SQL; `PgTransition` overlays the SQL base; `NodeWriter` resolves via in-txn SQL (§6.1); commit stops writing any counter (§6.2); **`alloc_incarnation` → durable burn-on-allocate `nextval` (§6.3)**; delete `by_id`, the `new_ids` plumbing, and the projection's incarnation counter | gates (7)(8) added and green; parity green incl. abort-then-commit token scenarios |
 | **3** | `snapshot` → §4.3 log fold; delete `projection.log`; **delete `projection.rs`**; gut `node_load.rs` to the address-reconstruction helper Phase 6 will reuse; `PgStore` fields = §2 exactly | grep-provable: no durable-state field on `PgStore`; reopen test still passes (now trivially) |
 | **4** | §12/read-path hygiene: hydrate once per (instance, frontier), share across watches; engine read paths prefer `snapshot(head)` hydration over N live `scan`s where committed-state reads suffice | parity + corpus green; watch tests green |
 | **5** | `scan_subtree`: contract (**with the §3 `steps` parameter — shape-directed per §7.6; the `parent_id`-only join is a pinned anti-pattern**) + MemoryStore range impl + PG CTE + adoption in `gather_tree`/`rows_at`/`materialize_row_cell` (semantics-free hydration: admission gathers, receiver walks, fallback-path views); depth guard | gate (9) green (incl. the `= ANY` Index Cond pin); hydration round trips measured before/after |
@@ -2443,8 +2517,8 @@ already exists.
   the contract itself is *more* semantics-free than v2's, while serving
   strictly more of the read path.
 - The Phase-6 head fast path deliberately full-scans `nodes` (exempted, pinned).
-- **Incarnation burn-on-allocate** (§6.3) — unchanged; gapless tokens would be a
-  spec change, not a storage one.
+- **Incarnation burn-on-allocate** (§6.3) — unchanged; gap-free tokens are not a
+  property anything needs, which is what lets it be a `SEQUENCE`.
 - AGENTS.md's interior-mutability rule vs pooled reads: resolved by maintainer
   directive; Phase 0 lands the clarifying sentence. Phase 8 lands the analogous
   sentence for the extension crate's lint carve-out (risk 3).

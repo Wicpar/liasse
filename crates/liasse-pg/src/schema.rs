@@ -13,21 +13,22 @@
 //!
 //! # Enumerable objects
 //!
-//! Both the fixed tables ([`Schema::tables`]) and the secondary indexes a schema
-//! needs ([`Schema::indexes`]) are held as *data* rather than baked into one
-//! opaque DDL blob, so each set is enumerable. Opening creates every table and
-//! index idempotently (`CREATE … IF NOT EXISTS`), and because the sets are data a
-//! later reconciliation round (see [`crate::reconcile`]) can diff the live objects
+//! The fixed tables ([`Schema::tables`]), the secondary indexes ([`Schema::indexes`])
+//! and the sequences ([`Schema::sequences`]) a schema needs are held as *data* rather
+//! than baked into one opaque DDL blob, so each set is enumerable. Opening creates
+//! every object idempotently (`CREATE … IF NOT EXISTS`), and because the sets are data
+//! a later reconciliation round (see [`crate::reconcile`]) can diff the live objects
 //! against them and drop any orphan the active model no longer declares — no
 //! migration leaves orphaned structures behind. Primary-key indexes and `UNIQUE`
 //! *table constraints* are intrinsic to their table declarations (they vanish with
 //! the table) and so are not part of the derived index set; a bare
 //! `CREATE UNIQUE INDEX` — like the node lookup — is a managed secondary index and
-//! is in the set.
+//! is in the set. Identity-column sequences are likewise intrinsic and excluded.
 
 /// The schema version this build writes and understands. Opening a schema with a
-/// higher stamp is refused rather than guessed at; opening an older one applies
-/// the current DDL (idempotently) and bumps the stamp forward.
+/// higher stamp is refused rather than guessed at, and opening one stamped below
+/// [`MIN_COMPATIBLE_VERSION`] is refused too — this backend has no in-place column
+/// migration, so a physical layout change is a re-create, never a silent mismatch.
 ///
 /// Bumped to 2 when a model-derived key-order index was added; to 3 when the
 /// node-adjacency `nodes` table and its `node_key_lookup` unique index became the
@@ -38,8 +39,21 @@
 /// subtree cascade; to 5 when a `created` column was added to `nodes` (per-row
 /// recorded admission instant, §14.1 `$created`/§22.6) and to `commit_log` (the
 /// commit's fixed `now()`, §22.5), so a lifecycle bucket's `$created`-defaulted
-/// `$from` reads the instant a row was admitted.
-pub const SCHEMA_VERSION: i32 = 5;
+/// `$from` reads the instant a row was admitted; to **6** when admission stopped
+/// assigning serial positions (§22.1: history construction follows committed
+/// transitions independently of write admission) — `commit_log` became keyed by the
+/// admitting transaction id (`xid`) with a NULLABLE `seq` the history builder
+/// ([`crate::history`]) stamps after settlement, `instance_meta` lost both its
+/// write-side `head` counter (the built history's tip is now the sole head) and its
+/// `next_incarnation` counter (an opaque token, so it moved to a lock-free
+/// `SEQUENCE`).
+pub const SCHEMA_VERSION: i32 = 6;
+
+/// The oldest stamp this build can open. Versions below it were written with a
+/// different physical column layout and this backend carries no `ALTER TABLE`
+/// migration path, so opening one is refused with an actionable message instead of
+/// failing later, mid-query, on a missing column.
+pub const MIN_COMPATIBLE_VERSION: i32 = 6;
 
 /// A per-instance schema namespace: a validated PostgreSQL identifier.
 #[derive(Debug, Clone)]
@@ -60,6 +74,9 @@ pub struct IndexSpec {
     table: &'static str,
     key: &'static str,
     unique: bool,
+    /// The `WHERE` body of a partial index, when the index only covers a subset of
+    /// the table's rows. `None` builds a full index.
+    predicate: Option<&'static str>,
 }
 
 impl IndexSpec {
@@ -91,8 +108,9 @@ impl IndexSpec {
     #[must_use]
     pub fn create_sql(&self, schema: &Schema) -> String {
         let unique = if self.unique { "UNIQUE " } else { "" };
+        let predicate = self.predicate.map_or_else(String::new, |body| format!(" WHERE {body}"));
         format!(
-            "CREATE {unique}INDEX IF NOT EXISTS {} ON {}.{} ({});",
+            "CREATE {unique}INDEX IF NOT EXISTS {} ON {}.{} ({}){predicate};",
             quote(self.name),
             schema.quoted(),
             quote(self.table),
@@ -105,6 +123,45 @@ impl IndexSpec {
     #[must_use]
     pub fn drop_sql(&self, schema: &Schema) -> String {
         format!("DROP INDEX IF EXISTS {}.{};", schema.quoted(), quote(self.name))
+    }
+}
+
+/// A sequence a [`Schema`] owns, held as data so the declared set is enumerable and
+/// the reconciliation lifecycle can create what is missing and drop what has fallen
+/// out of the model.
+///
+/// A sequence is the right shape for a counter whose **gaps carry no meaning**:
+/// `nextval` is non-transactional, so a value drawn by an attempt that later rolls
+/// back is burned rather than reused, and it takes no row lock, so drawing one never
+/// serializes concurrent writers.
+#[derive(Debug, Clone, Copy)]
+pub struct SequenceSpec {
+    name: &'static str,
+}
+
+impl SequenceSpec {
+    /// The bare sequence name — its identity within the schema and the key the
+    /// reconciler diffs the live catalog against.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        self.name
+    }
+
+    /// Idempotent creation DDL, scoped to `schema`. Starts at zero so the first
+    /// drawn value is `0`, matching the reference store's first incarnation token.
+    #[must_use]
+    pub fn create_sql(&self, schema: &Schema) -> String {
+        format!(
+            "CREATE SEQUENCE IF NOT EXISTS {}.{} AS BIGINT MINVALUE 0 START WITH 0;",
+            schema.quoted(),
+            quote(self.name)
+        )
+    }
+
+    /// The schema-qualified, quoted name a `nextval` call names it by.
+    #[must_use]
+    pub fn qualified(&self, schema: &Schema) -> String {
+        format!("{}.{}", schema.quoted(), quote(self.name))
     }
 }
 
@@ -195,8 +252,36 @@ impl Schema {
                 table: "nodes",
                 key: "parent_id, step_name, key_enc",
                 unique: true,
+                predicate: None,
+            },
+            // The history builder's work queue ([`crate::history`]): the settled
+            // admissions that still carry no serial position, in admitting-transaction
+            // order. Partial on `seq IS NULL`, so it holds only the (normally tiny)
+            // unpositioned tail rather than the whole log, and the builder's scan is an
+            // index scan over exactly that tail.
+            IndexSpec {
+                name: "commit_log_unpositioned",
+                table: "commit_log",
+                key: "xid",
+                unique: false,
+                predicate: Some("seq IS NULL"),
             },
         ]
+    }
+
+    /// The sequences this schema owns, as data so the same list drives the creating
+    /// DDL and the reconciler's desired-set.
+    ///
+    /// One entry: the opaque row-incarnation counter (D.1). It is a `SEQUENCE`
+    /// rather than a counter column precisely because incarnations are **opaque
+    /// tokens whose gaps are meaningless** — a `nextval` never rolls back, so a
+    /// token burned by an aborted staging is never reused (the durable
+    /// burn-on-allocate the contract promises), and it takes no row lock, so
+    /// allocating one does not serialize concurrent admissions the way the
+    /// `instance_meta` counter row it replaced did.
+    #[must_use]
+    pub fn sequences(&self) -> [SequenceSpec; 1] {
+        [SequenceSpec { name: "incarnations" }]
     }
 
     /// The fixed tables every instance schema owns, as data so the same list
@@ -231,6 +316,19 @@ impl Schema {
     /// preserved, matching the reference store. `commit_log.created` records the same
     /// per-commit `now` (§22.5) so a log-fold replay reconstructs each inserted row's
     /// `$created` identically to the head-state read.
+    ///
+    /// # `commit_log`: a settled admission, then a position
+    ///
+    /// An admission writes its `commit_log` row with **no serial position** — `seq`
+    /// is NULLABLE and starts NULL — because §22.1 makes history construction follow
+    /// committed transitions rather than take part in write admission. The row is
+    /// keyed by `xid`, the id of the transaction that admitted it
+    /// (`pg_current_xact_id()`, a never-reused 64-bit epoch-extended id), which is
+    /// both its identity and the order the history builder ([`crate::history`])
+    /// positions it in. `seq` is `UNIQUE` so two positions can never collide, and the
+    /// builder stamps it only once the admitting transaction can no longer be beaten
+    /// by an older one still in flight. `history_points.seq` and `commit_log.seq`
+    /// therefore both name *built* history.
     #[must_use]
     pub fn tables(&self) -> [TableSpec; 6] {
         [
@@ -241,8 +339,6 @@ impl Schema {
             TableSpec {
                 name: "instance_meta",
                 columns: "id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1), \
-                          head BIGINT NOT NULL, \
-                          next_incarnation BIGINT NOT NULL, \
                           instance_id TEXT NOT NULL, \
                           definition_source TEXT, \
                           definition_id TEXT, \
@@ -263,7 +359,9 @@ impl Schema {
             },
             TableSpec {
                 name: "commit_log",
-                columns: "seq BIGINT PRIMARY KEY, transaction_id TEXT, ops JSONB NOT NULL, \
+                columns: "xid XID8 PRIMARY KEY DEFAULT pg_current_xact_id(), \
+                          seq BIGINT UNIQUE, \
+                          transaction_id TEXT, ops JSONB NOT NULL, \
                           created JSONB NOT NULL",
             },
             TableSpec {
@@ -275,14 +373,29 @@ impl Schema {
         ]
     }
 
-    /// The DDL that (idempotently) creates every fixed table and derived index
-    /// this schema owns, built from the same [`tables`](Schema::tables) and
-    /// [`indexes`](Schema::indexes) data the reconciler diffs against.
+    /// The minimal DDL that materializes the schema and its `schema_version` stamp
+    /// table, and nothing else. The reconciler runs this first so it can read the
+    /// stamp — and refuse an incompatible one — *before* applying DDL that assumes
+    /// the current column layout.
+    #[must_use]
+    pub(crate) fn version_ddl(&self) -> String {
+        let [version, ..] = self.tables();
+        format!("CREATE SCHEMA IF NOT EXISTS {};\n{}", self.quoted(), version.create_sql(self))
+    }
+
+    /// The DDL that (idempotently) creates every fixed table, sequence and derived
+    /// index this schema owns, built from the same [`tables`](Schema::tables),
+    /// [`sequences`](Schema::sequences) and [`indexes`](Schema::indexes) data the
+    /// reconciler diffs against.
     #[must_use]
     pub fn create_ddl(&self) -> String {
         let mut ddl = format!("CREATE SCHEMA IF NOT EXISTS {};\n", self.quoted());
         for table in self.tables() {
             ddl.push_str(&table.create_sql(self));
+            ddl.push('\n');
+        }
+        for sequence in self.sequences() {
+            ddl.push_str(&sequence.create_sql(self));
             ddl.push('\n');
         }
         for index in self.indexes() {
@@ -306,6 +419,15 @@ impl Schema {
     #[must_use]
     pub(crate) fn drop_index_sql(&self, index: &str) -> String {
         format!("DROP INDEX IF EXISTS {}.{};", self.quoted(), quote(index))
+    }
+
+    /// Idempotent DDL dropping a stray `sequence` by its live catalog name — the
+    /// reconciler's tool for retiring a sequence that has fallen out of the declared
+    /// set. Identity-column sequences are intrinsic to their table and are excluded
+    /// from the live set, so this never reaches one.
+    #[must_use]
+    pub(crate) fn drop_sequence_sql(&self, sequence: &str) -> String {
+        format!("DROP SEQUENCE IF EXISTS {}.{};", self.quoted(), quote(sequence))
     }
 
     /// Idempotent DDL dropping a stray `table` by its live catalog name — a

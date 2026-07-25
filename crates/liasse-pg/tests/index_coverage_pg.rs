@@ -64,6 +64,11 @@ const POP: i64 = 20_000;
 /// is decisively preferred over a full scan of the table.
 const COLLECTION: i64 = 64;
 
+/// Settled-but-unpositioned admissions to seed alongside the built log — the history
+/// builder's work queue. A handful against `POP` built rows, which is the real shape
+/// (the tail is tiny) and makes the partial index decisively cheaper than a scan.
+const UNPOSITIONED: i64 = 4;
+
 /// Provision the real schema DDL over a raw connection, returning the client and
 /// the schema so a gate can populate its tables and `EXPLAIN` its patterns. A
 /// [`SchemaGuard`] on the returned instance drops everything at end of test.
@@ -229,9 +234,13 @@ fn populate(client: &mut Client, schema: &Schema) -> i64 {
                SELECT 0, 'noise', int8send(g::int8), '{{}}'::jsonb, 'row-' || g, \
                       jsonb_build_object('s', g::text) \
                FROM generate_series(1, {pop}) AS g;\n\
-             INSERT INTO {s}.commit_log (seq, transaction_id, ops, created) \
-               SELECT g, NULL, '[]'::jsonb, '{{\"ts\": [\"0\", \"us\"]}}'::jsonb \
+             INSERT INTO {s}.commit_log (xid, seq, transaction_id, ops, created) \
+               SELECT g::text::xid8, g, NULL, '[]'::jsonb, '{{\"ts\": [\"0\", \"us\"]}}'::jsonb \
                FROM generate_series(1, {pop}) AS g;\n\
+             INSERT INTO {s}.commit_log (xid, seq, transaction_id, ops, created) \
+               SELECT (g + {pop})::text::xid8, NULL, NULL, '[]'::jsonb, \
+                      '{{\"ts\": [\"0\", \"us\"]}}'::jsonb \
+               FROM generate_series(1, {unpositioned}) AS g;\n\
              INSERT INTO {s}.history_points (lineage, point, seq) \
                SELECT 'lin-' || (g % 50), 'pt-' || g, g FROM generate_series(1, {pop}) AS g;\n\
              INSERT INTO {s}.blobs (digest, bytes) \
@@ -241,6 +250,7 @@ fn populate(client: &mut Client, schema: &Schema) -> i64 {
              ANALYZE {s}.history_points; ANALYZE {s}.blobs;",
             collection_last = COLLECTION - 1,
             pop = POP,
+            unpositioned = UNPOSITIONED,
         ))
         .expect("populate and analyze");
     parent
@@ -405,6 +415,26 @@ fn every_query_pattern_is_index_served() {
         &[&frontier],
     );
     assert_index_ordered(&plan, "snapshot-at-frontier fold");
+
+    // (4b) The head — the built history's tip. There is no counter row to read any
+    // more, so `head` is `max(seq)` over the log and MUST ride the `seq` index
+    // backwards rather than aggregate the whole table.
+    let plan = explain(&mut client, &format!("SELECT coalesce(max(seq), 0) FROM {s}.commit_log"), &[]);
+    assert_index_only(&plan, "head as the built history tip");
+
+    // (4c) The history builder's work queue — the settled admissions still carrying
+    // no position, in admitting-transaction order. The partial `commit_log_unpositioned`
+    // index holds exactly that tail, so a pass reads only the tail rather than
+    // scanning a log that grows without bound.
+    let plan = explain(
+        &mut client,
+        &format!(
+            "SELECT xid FROM {s}.commit_log \
+             WHERE seq IS NULL AND xid < pg_snapshot_xmin(pg_current_snapshot()) ORDER BY xid"
+        ),
+        &[],
+    );
+    assert_index_ordered(&plan, "history builder work queue");
 
     // (5) Blob lookup by digest — served by the `blobs` primary key.
     let digest = format!("{:0>128}", POP / 2);

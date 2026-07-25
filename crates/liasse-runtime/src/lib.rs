@@ -24,7 +24,7 @@
 //!
 //! # Determinism and replay
 //!
-//! The store guarantees a gapless, replayable commit log; the engine guarantees
+//! The store guarantees a monotone, replayable commit log; the engine guarantees
 //! that admission writes every generated and sampled value into the committed
 //! ops. Rebuilding an engine over the same store therefore reproduces state
 //! exactly, and re-running the same request sequence under the same

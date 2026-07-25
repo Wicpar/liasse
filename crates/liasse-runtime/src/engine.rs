@@ -2,7 +2,7 @@
 //! mutation calls as atomic commits, evaluates views at a frontier, and replays
 //! deterministically (§8, §9, §22).
 //!
-//! The store provides the durability, gapless ordering, and replayable log; the
+//! The store provides the durability, monotone ordering, and replayable log; the
 //! engine provides the semantics on top. Determinism is a consequence: every
 //! generated and sampled value an admission needs is written into the committed
 //! ops, so rebuilding an engine over the same store — or replaying the same

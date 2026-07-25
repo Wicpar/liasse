@@ -2,10 +2,10 @@
 //! memory-vs-pg divergence across ABORTS, and for the durable no-reuse guarantee
 //! across a REOPEN (SPEC-ISSUES item 32: a backend disagreement is always a fix).
 //!
-//! `PgStore::alloc_incarnation` is an AUTOCOMMIT `UPDATE instance_meta SET
-//! next_incarnation = next_incarnation + 1 … RETURNING next_incarnation - 1`, so a
-//! token is burned the instant it is handed out — whether or not the staging that
-//! requested it later commits. The reference `MemoryStore::alloc_incarnation`
+//! `PgStore::alloc_incarnation` is an AUTOCOMMIT `nextval` on the schema's
+//! `incarnations` sequence, and `nextval` is non-transactional, so a token is burned
+//! the instant it is handed out — whether or not the staging that requested it later
+//! commits. The reference `MemoryStore::alloc_incarnation`
 //! mutates its in-process counter through the transition's exclusive `&mut store`,
 //! so an abort ALSO leaves the counter advanced. The two must therefore hand out
 //! the IDENTICAL `row-N` sequence op-for-op even when transitions abort between

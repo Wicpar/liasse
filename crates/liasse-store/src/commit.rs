@@ -7,10 +7,17 @@ use crate::key::RowAddress;
 
 /// A serial position in one instance's execution order (§22.3).
 ///
-/// Positions are gapless and strictly monotone: [`CommitSeq::GENESIS`] is the
-/// empty pre-history state, and each admitted commit takes the immediate
-/// successor of the current head. The linear sequence of positions is the
-/// implementation's declared acyclic precedence relation.
+/// Positions are **strictly monotone** — that, and only that, is the guarantee:
+/// [`CommitSeq::GENESIS`] is the empty pre-history state, and each position history
+/// hands out is the successor of the last one. The linear sequence of positions is
+/// the implementation's declared acyclic precedence relation.
+///
+/// Positions are not taken during admission. History construction is a separate job
+/// (§22.1) that positions transitions once they have settled, so a position exists
+/// only for a transition that has definitely committed — which is what lets the order
+/// be monotone without writers waiting on each other. Nothing may rely on positions
+/// being contiguous: they come out that way today only because an aborted admission
+/// records nothing for history to skip over.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitSeq(u64);
 
@@ -28,11 +35,11 @@ impl CommitSeq {
     /// reloading its own durable positions.
     ///
     /// A position is normally reachable only through [`CommitSeq::GENESIS`] and
-    /// [`CommitSeq::next`], which is what makes the sequence gapless and monotone
-    /// by construction. Reconstruction is the sole exception, and it carries an
+    /// [`CommitSeq::next`], which is what makes the sequence monotone by
+    /// construction. Reconstruction is the sole exception, and it carries an
     /// invariant the caller owns: every `n` passed here was minted by `next` on a
-    /// prior run and persisted as a gapless serial (§22.3), so rebuilding it
-    /// directly is faithful to that provenance. It exists so a reload is O(1) per
+    /// prior run and persisted (§22.3), so rebuilding it directly is faithful to
+    /// that provenance. It exists so a reload is O(1) per
     /// position — the exact inverse of [`CommitSeq::get`] — instead of replaying
     /// `next` `n` times, which would make loading a store quadratic in its commit
     /// count. Code that mints *new* positions must still use `next`; this is only

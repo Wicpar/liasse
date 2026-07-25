@@ -113,24 +113,31 @@ impl<'a> NodeWriter<'a> {
             }
             CommittedRowOp::Update { address, incarnation, value } => {
                 // §22.6: an update rewrites value/incarnation but leaves `created`, so
-                // the row keeps its first-recorded `$created`.
+                // the row keeps its first-recorded `$created`. The op carries the
+                // incarnation staging read, and the write REQUIRES it to still be
+                // there: an update whose target was deleted, rekeyed away, or
+                // re-inserted under a new identity since the read must not land.
                 let id = self.resolve_id(txn, address)?;
-                txn.execute(
-                    &format!(
-                        "UPDATE {}.nodes SET value = $1, incarnation = $2 WHERE id = $3",
-                        self.schema
-                    ),
-                    &[
-                        &jsonb_text::to_jsonb(&value_codec::encode(value)),
-                        &incarnation.as_str(),
-                        &id,
-                    ],
-                )
-                .map_err(backend)?;
+                let touched = txn
+                    .execute(
+                        &format!(
+                            "UPDATE {}.nodes SET value = $1, incarnation = $2 \
+                             WHERE id = $3 AND incarnation = $4",
+                            self.schema
+                        ),
+                        &[
+                            &jsonb_text::to_jsonb(&value_codec::encode(value)),
+                            &incarnation.as_str(),
+                            &id,
+                            &incarnation.as_str(),
+                        ],
+                    )
+                    .map_err(backend)?;
+                expect_touched(touched, address, "update")?;
             }
-            CommittedRowOp::Delete { address, .. } => {
+            CommittedRowOp::Delete { address, incarnation } => {
                 let id = self.resolve_id(txn, address)?;
-                self.tombstone(txn, id)?;
+                self.tombstone(txn, id, incarnation, address, "delete")?;
                 self.staged.remove(address);
             }
             CommittedRowOp::Rekey { from, to, incarnation, value } => {
@@ -148,7 +155,7 @@ impl<'a> NodeWriter<'a> {
                 let from_id = self.resolve_id(txn, from)?;
                 let created = self.node_created(txn, from_id)?.unwrap_or(self.now);
                 self.place(txn, to, incarnation, created, value)?;
-                self.tombstone(txn, from_id)?;
+                self.tombstone(txn, from_id, incarnation, from, "rekey source")?;
                 self.staged.remove(from);
             }
         }
@@ -177,9 +184,17 @@ impl<'a> NodeWriter<'a> {
     /// creating a fresh node — and record its surrogate id. The unique
     /// `node_key_lookup` index is the `ON CONFLICT` arbiter, so a re-place at a
     /// tombstoned address updates that same node in place, keeping its id and with it
-    /// any descendants it retained. A valid op stream never places over a *live* row
-    /// (admission staging rejects an insert/rekey onto an occupied address), so the
-    /// conflict target is always either free or a tombstone.
+    /// any descendants it retained.
+    ///
+    /// The `DO UPDATE` is guarded by `WHERE nodes.value IS NULL`, so it revives a
+    /// **tombstone** and nothing else. Staging rejects an insert or rekey onto an
+    /// occupied address, but it does so against a read taken before this transaction
+    /// opened: if the address went live in between, the guard makes the conflicting
+    /// update do nothing, no row comes back, and the admission fails as a
+    /// [`StoreError::Conflict`] instead of overwriting the live row that is there.
+    /// PostgreSQL resolves the conflict against the latest committed version of the
+    /// row — waiting for a concurrent inserter of the same key to settle first — so
+    /// the guard sees what is actually there, not a stale copy.
     fn place(
         &mut self,
         txn: &mut Transaction<'_>,
@@ -191,7 +206,7 @@ impl<'a> NodeWriter<'a> {
         let parent = self.resolve_parent(txn, address)?;
         let step = last_step(address)?;
         let row = txn
-            .query_one(
+            .query_opt(
                 &format!(
                     "INSERT INTO {}.nodes \
                      (parent_id, step_name, key_enc, key_wire, incarnation, value, created) \
@@ -199,6 +214,7 @@ impl<'a> NodeWriter<'a> {
                      ON CONFLICT (parent_id, step_name, key_enc) \
                      DO UPDATE SET incarnation = EXCLUDED.incarnation, value = EXCLUDED.value, \
                      created = EXCLUDED.created \
+                     WHERE nodes.value IS NULL \
                      RETURNING id",
                     self.schema
                 ),
@@ -212,7 +228,8 @@ impl<'a> NodeWriter<'a> {
                     &jsonb_text::to_jsonb(&value_codec::encode_created(created)),
                 ],
             )
-            .map_err(backend)?;
+            .map_err(backend)?
+            .ok_or(StoreError::Conflict { address: address.render(), context: "place" })?;
         let id = cell::<i64>(&row, "nodes", "id")?;
         self.staged.insert(address.clone(), id);
         Ok(id)
@@ -224,16 +241,30 @@ impl<'a> NodeWriter<'a> {
     /// its ancestor's deletion, addressable through the tombstone. A fully-dead
     /// subtree (a tombstone with no live descendant) is inert and a future GC
     /// opportunity; retaining it is correctness-neutral.
-    fn tombstone(&self, txn: &mut Transaction<'_>, id: i64) -> Result<(), StoreError> {
-        txn.execute(
-            &format!(
-                "UPDATE {}.nodes SET value = NULL, incarnation = NULL, created = NULL WHERE id = $1",
-                self.schema
-            ),
-            &[&id],
-        )
-        .map_err(backend)?;
-        Ok(())
+    ///
+    /// Guarded by the `expected` incarnation the op carries, for the reason
+    /// [`Self::place`] is guarded: the op was resolved against a read taken before
+    /// this transaction opened, so the row it names must still be the row that is
+    /// there.
+    fn tombstone(
+        &self,
+        txn: &mut Transaction<'_>,
+        id: i64,
+        expected: &RowIncarnation,
+        address: &RowAddress,
+        context: &'static str,
+    ) -> Result<(), StoreError> {
+        let touched = txn
+            .execute(
+                &format!(
+                    "UPDATE {}.nodes SET value = NULL, incarnation = NULL, created = NULL \
+                     WHERE id = $1 AND incarnation = $2",
+                    self.schema
+                ),
+                &[&id, &expected.as_str()],
+            )
+            .map_err(backend)?;
+        expect_touched(touched, address, context)
     }
 
     /// The node id of `address`: the per-transaction memo first, then an
@@ -354,6 +385,28 @@ impl<'a> NodeWriter<'a> {
         self.staged.insert(address.clone(), id);
         Ok(id)
     }
+}
+
+/// Require that a guarded write actually landed.
+///
+/// Every op that rewrites or removes an existing row carries the incarnation staging
+/// read, and its `UPDATE` matches on that token. Zero rows touched means the row it
+/// named is no longer the row that is there — deleted, rekeyed away, or re-inserted
+/// under a fresh identity since the read — so the admission is refused as a
+/// [`StoreError::Conflict`] and rolls back whole, instead of overwriting whatever
+/// took its place.
+///
+/// **What this does not cover, deliberately and loudly:** two concurrent *updates* of
+/// the same row both preserve its incarnation (§22.6 — an update keeps the row's
+/// identity), so the guard matches for both and the later write wins with no
+/// conflict. Catching that needs a per-row version observed by the read and asserted
+/// by the write, which means the read set has to reach inside the admission
+/// transaction — the read/write transaction-boundary work, not this one.
+fn expect_touched(touched: u64, address: &RowAddress, context: &'static str) -> Result<(), StoreError> {
+    if touched == 0 {
+        return Err(StoreError::Conflict { address: address.render(), context });
+    }
+    Ok(())
 }
 
 /// The final (own-collection) level of an address — the step this node stores.

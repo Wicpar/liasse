@@ -87,17 +87,21 @@ impl HistoryCursor {
     /// sits at, so a reopened engine continues from the head instead of
     /// restarting at genesis and re-seeding.
     ///
-    /// The store persists the committed serial position (its `head`), not the
-    /// engine's logical cursor. On the genesis lineage the two advance in
-    /// lockstep — genesis commits at point 1 = head 1, and every state-changing
-    /// commit steps both by one — so the head's number IS the current point and
-    /// the next fresh position is `head + 1`. A lineage that diverged through a
-    /// rollback or reconciliation that was never exported is not recoverable from
-    /// a bare store (that identity lives in the §19 artifact, not the store), so a
-    /// reopen adopts the linear genesis-lineage position: exact for a same-version
-    /// process restart (the case this serves), and it never re-seeds nor misreads
-    /// committed state — only a *future* export's lineage label would differ after
-    /// an unexported divergence, which same-version reopen does not perform.
+    /// The store persists built history's tip (its `head`), not the engine's logical
+    /// cursor. What the cursor needs from it is only that it is **monotone and at
+    /// least as far along as the last point minted**: adopting `head` as the current
+    /// point and `head + 1` as the next fresh one then reuses no position and moves
+    /// no point backwards, whatever the store's positions look like. On the genesis
+    /// lineage the two in fact advance in step, so the adopted point is the exact one
+    /// — but the identity guarantee does not rest on that.
+    ///
+    /// A lineage that diverged through a rollback or reconciliation that was never
+    /// exported is not recoverable from a bare store (that identity lives in the §19
+    /// artifact, not the store), so a reopen adopts the linear genesis-lineage
+    /// position: exact for a same-version process restart (the case this serves), and
+    /// it never re-seeds nor misreads committed state — only a *future* export's
+    /// lineage label would differ after an unexported divergence, which same-version
+    /// reopen does not perform.
     pub(crate) fn at_head(instance: &InstanceId, head: CommitSeq) -> Self {
         let point = head.get();
         Self {
