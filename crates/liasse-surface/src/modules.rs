@@ -12,7 +12,8 @@
 //!
 //! [`ModuleDeployment`] bundles that host with a single owned [`VirtualClock`] and
 //! an [`Entropy`] source, so a driver runs
-//! `install`/`enable`/`disable`/`uninstall`/`rename`/`update`, the
+//! `install`/`enable`/`disable`/`uninstall`/`rename`/`update` (and the §20.4
+//! `dry_run_update`, the same update computed and discarded), the
 //! `child_call`/`interface_call` mutation admissions, and the interface-addressed
 //! read (`interface_read`) without threading a generator, and returns the §13.3
 //! rejections (`EmptyName`/`DuplicateName`/`Unknown`/`Disabled`/
@@ -27,7 +28,7 @@
 use liasse_ident::InstanceId;
 use liasse_runtime::{
     AdmittedBindings, CallOutcome, CallRequest, Engine, InstallRequest, ModuleError, ModuleHost,
-    ModuleUpdateReport, ViewQuery, ViewResult,
+    ModuleUpdateReport, PreparedModuleUpdate, ViewQuery, ViewResult,
 };
 use liasse_store::{CollectionPath, RowAddress, StoreFactory};
 use liasse_value::BlobDescriptor;
@@ -95,14 +96,15 @@ impl ModuleObservation {
             // that matches it exhaustively) grows a case, they surface as a
             // [`ModuleFault`]; a driver still classifies that as `invalid`. Giving
             // each its own first-class observation is a surface seam.
-            // The §13.14 update-narrowing refusals never reach this §13.3 lifecycle
-            // mapping — they arise only on the [`ModuleDeployment::update`] path,
-            // classified there — so if one somehow does it is a fault, not a
-            // lifecycle observation.
+            // The §13.14 update-narrowing refusals and the §20.4 stale-plan refusal
+            // never reach this §13.3 lifecycle mapping — they arise only on the
+            // [`ModuleDeployment::update`] path, classified there — so if one
+            // somehow does it is a fault, not a lifecycle observation.
             fault @ (ModuleError::InterfaceContract(..)
             | ModuleError::ConfigMismatch(_)
             | ModuleError::ExposedNarrowed(_)
             | ModuleError::InterfaceBindingWithdrawn(_)
+            | ModuleError::Stale { .. }
             | ModuleError::Engine(_)) => Err(ModuleFault(fault)),
         }
     }
@@ -125,6 +127,85 @@ pub enum ModuleUpdate {
     /// implementation remains (§13.14) — an admission refusal (`rejected`): the
     /// current binding stays active (E.9).
     Rejected(String),
+}
+
+/// The observable result of a §20.4 **dry run** of a §13.14 single-instance update:
+/// the same update computed in full, then discarded.
+///
+/// Its refusal variants are the refusal variants of [`ModuleUpdate`], produced by
+/// the same computation and classified by the same function, so a dry run reports
+/// the outcome the update would have. The success variant carries the
+/// [`PreparedModuleUpdate`] instead of a report, because a dry run takes no commit:
+/// the update is described, not applied, and the mounted instance is untouched.
+#[derive(Debug)]
+pub enum ModuleUpdatePreview {
+    /// The update computes and every §13.14/§20.1 invariant holds; the plan
+    /// describes what it would do, against the mount position it names.
+    Ready(Box<PreparedModuleUpdate>),
+    /// No installed instance of that name (§13.3).
+    Unknown(String),
+    /// The addressed instance is disabled (§13.3, §13.12).
+    Disabled(String),
+    /// The update definitionally narrows the module's own exposed compatibility
+    /// surface (§13.14) — a static "package loading" refusal (`invalid`).
+    Narrowed(String),
+    /// The update withdraws a previously accepted interface binding whose private
+    /// implementation remains (§13.14) — an admission refusal (`rejected`).
+    Rejected(String),
+}
+
+/// A §13.14/§13.3 refusal of a single-instance update that is a spec OBSERVATION
+/// rather than a fault.
+///
+/// The effecting [`ModuleDeployment::update`] and its §20.4
+/// [`dry_run_update`](ModuleDeployment::dry_run_update) classify a refusal through
+/// this one function, so the two cannot disagree about what a refusal is — the same
+/// guarantee at the surface that one shared prepare gives at the runtime.
+enum UpdateRefusal {
+    Unknown(String),
+    Disabled(String),
+    Narrowed(String),
+    Rejected(String),
+}
+
+impl UpdateRefusal {
+    /// Classify a module update failure: a §13.3/§13.14 refusal is an observation,
+    /// and only a genuine engine/store fault escapes as a [`ModuleFault`].
+    fn classify(error: ModuleError) -> Result<Self, ModuleFault> {
+        match error {
+            ModuleError::Unknown(name) => Ok(Self::Unknown(name)),
+            ModuleError::Disabled(name) => Ok(Self::Disabled(name)),
+            // §13.14: a definitional exposed-surface narrowing is a static "package
+            // loading" refusal (`invalid`); a withdrawn-but-implemented interface
+            // binding is an admission refusal (`rejected`). Both are spec
+            // observations, not faults.
+            ModuleError::ExposedNarrowed(reason) => Ok(Self::Narrowed(reason)),
+            ModuleError::InterfaceBindingWithdrawn(reason) => Ok(Self::Rejected(reason)),
+            fault => Err(ModuleFault(fault)),
+        }
+    }
+}
+
+impl From<UpdateRefusal> for ModuleUpdate {
+    fn from(refusal: UpdateRefusal) -> Self {
+        match refusal {
+            UpdateRefusal::Unknown(name) => Self::Unknown(name),
+            UpdateRefusal::Disabled(name) => Self::Disabled(name),
+            UpdateRefusal::Narrowed(reason) => Self::Narrowed(reason),
+            UpdateRefusal::Rejected(reason) => Self::Rejected(reason),
+        }
+    }
+}
+
+impl From<UpdateRefusal> for ModuleUpdatePreview {
+    fn from(refusal: UpdateRefusal) -> Self {
+        match refusal {
+            UpdateRefusal::Unknown(name) => Self::Unknown(name),
+            UpdateRefusal::Disabled(name) => Self::Disabled(name),
+            UpdateRefusal::Narrowed(reason) => Self::Narrowed(reason),
+            UpdateRefusal::Rejected(reason) => Self::Rejected(reason),
+        }
+    }
 }
 
 /// A genuine store/engine fault from a module lifecycle operation — never a spec
@@ -297,15 +378,34 @@ impl<F: StoreFactory> ModuleDeployment<F> {
         let mut generators = self.entropy.generators(now);
         match self.host.update(at, target, &mut generators) {
             Ok(report) => Ok(ModuleUpdate::Updated(report)),
-            Err(ModuleError::Unknown(name)) => Ok(ModuleUpdate::Unknown(name)),
-            Err(ModuleError::Disabled(name)) => Ok(ModuleUpdate::Disabled(name)),
-            // §13.14: a definitional exposed-surface narrowing is a static
-            // "package loading" refusal (`invalid`); a withdrawn-but-implemented
-            // interface binding is an admission refusal (`rejected`). Both are spec
-            // observations, not faults.
-            Err(ModuleError::ExposedNarrowed(reason)) => Ok(ModuleUpdate::Narrowed(reason)),
-            Err(ModuleError::InterfaceBindingWithdrawn(reason)) => Ok(ModuleUpdate::Rejected(reason)),
-            Err(fault) => Err(ModuleFault(fault)),
+            Err(error) => UpdateRefusal::classify(error).map(Into::into),
+        }
+    }
+
+    /// Compute the §13.14 update of the instance at `at` in full WITHOUT applying it
+    /// (§20.4) — the driver-facing **dry run** of a module update.
+    ///
+    /// This runs [`ModuleHost::prepare_update`], the very computation
+    /// [`update`](Self::update) runs before it commits, and hands back the resulting
+    /// plan in a [`ModuleUpdatePreview`] instead of committing it. Nothing is
+    /// applied: no migration, no commit, no version movement. A refusal here is the
+    /// refusal `update` would report, because it is the same call producing it.
+    ///
+    /// The returned plan is faithful only as of its own mount basis (§20.4); it is a
+    /// description of the update, not a reservation of it.
+    ///
+    /// # Errors
+    /// [`ModuleFault`] only for a genuine engine/store fault while preparing.
+    pub fn dry_run_update(
+        &mut self,
+        at: &RowAddress,
+        target: &str,
+    ) -> Result<ModuleUpdatePreview, ModuleFault> {
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        match self.host.prepare_update(at, target, &mut generators) {
+            Ok(prepared) => Ok(ModuleUpdatePreview::Ready(Box::new(prepared))),
+            Err(error) => UpdateRefusal::classify(error).map(Into::into),
         }
     }
 

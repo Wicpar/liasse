@@ -211,7 +211,7 @@ pub use history::{
 pub use migrate::{PreparedUpdate, UpdateBasis, UpdateError, UpdateReport};
 pub use modules::{
     AdmittedBindings, AncestryDivergence, DecodedPackageId, DepSpec, InstallRequest, ModuleError,
-    ModuleHost, ModuleUpdateReport, SeedMerge, UseSpec,
+    ModuleHost, ModuleUpdateBasis, ModuleUpdateReport, PreparedModuleUpdate, SeedMerge, UseSpec,
 };
 
 /// The Annex E version relationship an [`UpdateReport`] carries (§20.3).

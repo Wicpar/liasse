@@ -36,7 +36,7 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             StepKind::ModuleEnable => self.module_state()?.enable(&request.target),
             StepKind::ModuleUninstall => self.module_state()?.uninstall(&request.target),
             StepKind::ModuleRename => self.module_state()?.rename(&request.target),
-            StepKind::ModuleUpdate => self.module_state()?.update(&request.target),
+            StepKind::ModuleUpdate => self.drive_module_update(request),
             StepKind::ModuleLifecycleCall => self.module_state()?.lifecycle_call(&request.target),
             StepKind::BuildArtifact => self.drive_build_artifact(request),
             StepKind::RepackArtifact => self.drive_repack_artifact(request),
@@ -417,6 +417,19 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             return self.active().host_load_dry_run(&package);
         }
         self.active().host_load(&package)
+    }
+
+    /// §13.14/§13.15 `modules.update`: migrate one mounted instance to the step's
+    /// `to` package line.
+    ///
+    /// `dry_run: true` selects the §20.4 dry run of that same update: the very same
+    /// computation, its plan discarded, so the step reports the outcome the update
+    /// would have and the instance stays on the release it was already running.
+    fn drive_module_update(&mut self, request: &OpRequest) -> Result<Observation, AdapterError> {
+        if request.target.get("dry_run").and_then(serde_json::Value::as_bool) == Some(true) {
+            return self.module_state()?.dry_run_update(&request.target);
+        }
+        self.module_state()?.update(&request.target)
     }
 
     /// The `.liasse` bytes the step's `from` label names, or a precise skip when no

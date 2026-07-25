@@ -1,0 +1,121 @@
+{
+  format: 1
+  name: dry-run-module-update-applies-nothing
+  suite: scenario
+  spec: ["#modules", "§20.4", "§13.14", "§13.15"]
+  note: '''
+    §20.4 on the §13.14 module path: a dry run is a prepare whose prepared
+    update is discarded — "it applies no part of the update, and the active
+    package remains in force exactly as after a rejected one (§20.3)". A module
+    update has no dry-run flag and no second implementation: `modules.update` IS
+    prepare followed by apply, so `dry_run: true` runs the very same computation
+    and drops its plan.
+
+    The 1.0.0 -> 1.1.0 move seeds a second template and preserves the exposed
+    surface (Annex E: a compatible minor). The dry run of it reports `ok`,
+    because the update computes and every §13.14/§20.1 invariant holds. It must
+    leave the instance on 1.0.0, and two later reads bracket exactly what it did
+    not do: the aggregation still projects the single 1.0.0 row, and the SAME
+    update run for real then reports $from "1.0.0" — the version it would have
+    reported as $from only if nothing had migrated in between.
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.mod.dryrun@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: { $view: { $key: "id", id: "text", label: "text" } }
+            }
+          }
+          catalog: {
+            $view: ".modules::templates { module: modules.$key, id, label, $sort: [module, id] }"
+          }
+        }
+        $public: {
+          catalog: {
+            $params: { company: "text" }
+            $view: "/companies[@company].catalog"
+          }
+        }
+      }
+      $data: { companies: { acme: { name: "Acme" } } }
+    }
+    tpld1: {
+      $liasse: 1
+      $module: "t.tpld@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+      }
+      $data: { templates: { std: { label: "Standard" } } }
+      $expose: {
+        templates: { $view: ".templates { id, label }" }
+      }
+    }
+    tpld2: {
+      $liasse: 1
+      $module: "t.tpld@1.1.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+      }
+      $data: {
+        templates: {
+          std: { label: "Standard" }
+          extra: { label: "Extra" }
+        }
+      }
+      $expose: {
+        templates: { $view: ".templates { id, label }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { at: "/companies/acme/modules", request: { $name: "kit", $module: "t.tpld@1.0.0" } }
+      expect: { outcome: ok } }
+
+    { watch: "public.catalog", args: { company: "acme" }, id: "w0"
+      expect_init: { value: [ { module: "kit", id: "std", label: "Standard" } ] } }
+
+    // §20.4: computed in full, applied not at all.
+    { module_update: { instance: "/companies/acme/modules/kit", to: "t.tpld@1.1.0", dry_run: true }
+      expect: { outcome: ok } }
+
+    // Nothing was applied: the 1.0.0 instance is still the mounted one, so the
+    // aggregation still reads its single seeded row.
+    { watch: "public.catalog", args: { company: "acme" }, id: "w1"
+      expect_init: { value: [ { module: "kit", id: "std", label: "Standard" } ] } }
+
+    // The same update, run for real, migrates — and reports 1.0.0 as its $from,
+    // which it could not do had the dry run moved the instance.
+    { module_update: { instance: "/companies/acme/modules/kit", to: "t.tpld@1.1.0" }
+      expect: {
+        outcome: ok
+        value: {
+          $instance: "/companies/acme/modules/kit"
+          $from: "1.0.0"
+          $to: "1.1.0"
+          $migrated: []
+          $seeded: "$any"
+          $exposed: { $unchanged: ["templates"], $changed: [], $removed: [] }
+          $imports: { $rebound: [], $broken: [] }
+          $commit: "$any"
+        }
+      } }
+
+    { watch: "public.catalog", args: { company: "acme" }, id: "w2"
+      expect_init: { value: [
+        { module: "kit", id: "extra", label: "Extra" }
+        { module: "kit", id: "std", label: "Standard" }
+      ] } }
+  ]
+}

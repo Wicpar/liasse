@@ -106,6 +106,7 @@ pub(crate) struct Narrowing {
 /// The `$exposed` grouping of a successful update (§13.15): every exposed
 /// interface bucketed by how its contract moved, each bucket in canonical text
 /// order.
+#[derive(Debug)]
 pub(crate) struct ExposedGrouping {
     pub(crate) unchanged: Vec<String>,
     pub(crate) changed: Vec<String>,

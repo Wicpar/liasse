@@ -48,8 +48,8 @@ use liasse_runtime::{
 };
 use liasse_store::{CollectionPath, InstanceStore, KeyValue, MemoryStore, MemoryStoreFactory, RowAddress};
 use liasse_surface::{
-    Entropy, ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate, ModuleUpdateReport,
-    VirtualClock as SurfaceClock,
+    Entropy, ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate, ModuleUpdatePreview,
+    ModuleUpdateReport, VirtualClock as SurfaceClock,
 };
 use liasse_syntax::{parse_expression, Expr, ExprKind, Selector, StmtKind};
 use liasse_value::{BlobDescriptor, Json, Text, Type, Value};
@@ -206,12 +206,7 @@ impl ModuleState {
     pub(super) fn update(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
         let at = self.instance(target)?;
         let instance = target.get("instance").and_then(serde_json::Value::as_str).unwrap_or_default().to_owned();
-        let Some(to) = target.get("to").and_then(serde_json::Value::as_str) else {
-            return Err(AdapterError::unsupported("`module_update` step names no `to` package line"));
-        };
-        let package = self.child_package(to)?;
-        let definition =
-            serde_json::to_string(&package).map_err(|err| AdapterError::Host(err.to_string()))?;
+        let definition = self.update_definition(target)?;
         match self.deployment.update(&at, &definition) {
             // §13.15: assemble the update-report shape, adding the instance display
             // path the driver knows.
@@ -226,6 +221,39 @@ impl ModuleState {
             }
             Err(fault) => Err(AdapterError::Host(format!("module update fault: {fault}"))),
         }
+    }
+
+    /// §20.4 `modules.update` with `dry_run: true`: the very same §13.14/§13.15
+    /// computation, its prepared plan discarded. Nothing migrates, so a later step
+    /// still observes the release the instance was already running — and the
+    /// reported outcome is mapped from the same refusal classes
+    /// [`update`](Self::update) maps, because the same computation produced them.
+    pub(super) fn dry_run_update(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
+        let at = self.instance(target)?;
+        let definition = self.update_definition(target)?;
+        match self.deployment.dry_run_update(&at, &definition) {
+            // A dry run takes no commit, so it reports the outcome alone: the
+            // §13.15 report is what the effecting update returns.
+            Ok(ModuleUpdatePreview::Ready(_)) => Ok(Observation::ok(None)),
+            Ok(ModuleUpdatePreview::Narrowed(_)) => Ok(Observation::outcome(Outcome::Invalid)),
+            Ok(
+                ModuleUpdatePreview::Rejected(_)
+                | ModuleUpdatePreview::Unknown(_)
+                | ModuleUpdatePreview::Disabled(_),
+            ) => Ok(Observation::outcome(Outcome::Rejected)),
+            Err(fault) => Err(AdapterError::Host(format!("module dry-run update fault: {fault}"))),
+        }
+    }
+
+    /// The child definition the step's `to` package line names — resolved
+    /// identically for an effecting `module_update` and its §20.4 dry run, so the
+    /// two run over the same target bytes.
+    fn update_definition(&self, target: &serde_json::Value) -> Result<String, AdapterError> {
+        let Some(to) = target.get("to").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`module_update` step names no `to` package line"));
+        };
+        let package = self.child_package(to)?;
+        serde_json::to_string(&package).map_err(|err| AdapterError::Host(err.to_string()))
     }
 
     /// §13.10/§13.16 `module_lifecycle_call`: admit a HOST/ROOT-SCOPE transition
