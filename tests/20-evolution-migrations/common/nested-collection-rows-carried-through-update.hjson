@@ -1,0 +1,134 @@
+{
+  format: 1
+  name: nested-collection-rows-carried-through-update
+  suite: scenario
+  spec: ["#evolution", "§20.1", "#state-model", "§5.4", "§22.1"]
+  note: '''
+    §20.1 defines the compatible same-identity copy over the package's committed
+    rows, and §5.4 makes a nested keyed collection real row state living under its
+    parent ("Nested collections therefore have row identity plus ancestor
+    identity"). A migration must therefore carry a CHILD row exactly as it carries
+    a top-level one — at every depth — and §22.1 (committed-state integrity)
+    forbids an update from committing with live rows dropped.
+
+    Version 1.0.0 seeds one company, two offices under it, and two desks under
+    those offices. Version 1.1.0 is a compatible minor release that adds a
+    defaulted field at each nested level and changes nothing else. After the
+    update every nested row is still present with its original value, and each
+    added field carries its §5.1 insertion default.
+
+    The `offices` count is projected from a parent computed value
+    (`n = count(.offices)`), so a dropped child row is observable even though the
+    parent row itself survives: the count would read 0 while the office rows were
+    gone.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.nestcarry@1.0.0"
+    $model: {
+      companies: {
+        $key: "id"
+        id: "text"
+        n: "= count(.offices)"
+        offices: {
+          $key: "id"
+          id: "text"
+          city: "text"
+          desks: {
+            $key: "id"
+            id: "text"
+            label: "text"
+          }
+        }
+      }
+      $public: {
+        companies: { $view: ".companies { id, n, $sort: [id] }" }
+        offices: {
+          $view: ".companies[:c].offices[:o] { company: c.id, office: o.id, city: o.city, $sort: [company, office] }"
+        }
+        desks: {
+          $view: ".companies[:c].offices[:o].desks[:d] { office: o.id, desk: d.id, label: d.label, $sort: [office, desk] }"
+        }
+      }
+    }
+    $data: {
+      companies: {
+        acme: {
+          offices: {
+            hq: { city: "Paris", desks: { d1: { label: "north" }, d2: { label: "south" } } }
+            lab: { city: "Lyon", desks: { d1: { label: "bench" } } }
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { watch: "public.offices", id: "w0", expect_init: { value: [
+      { company: "acme", office: "hq", city: "Paris" }
+      { company: "acme", office: "lab", city: "Lyon" }
+    ] } }
+    { watch: "public.desks", id: "w1", expect_init: { value: [
+      { office: "hq", desk: "d1", label: "north" }
+      { office: "hq", desk: "d2", label: "south" }
+      { office: "lab", desk: "d1", label: "bench" }
+    ] } }
+
+    // §20.1: a compatible minor update adding a defaulted field at each nested
+    // level. The copy is over committed ROWS, so every depth is carried.
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.nestcarry@1.1.0"
+          $model: {
+            companies: {
+              $key: "id"
+              id: "text"
+              n: "= count(.offices)"
+              offices: {
+                $key: "id"
+                id: "text"
+                city: "text"
+                floor: "int = 7"
+                desks: {
+                  $key: "id"
+                  id: "text"
+                  label: "text"
+                  seats: "int = 1"
+                }
+              }
+            }
+            $public: {
+              companies: { $view: ".companies { id, n, $sort: [id] }" }
+              offices: {
+                $view: ".companies[:c].offices[:o] { company: c.id, office: o.id, city: o.city, floor: o.floor, $sort: [company, office] }"
+              }
+              desks: {
+                $view: ".companies[:c].offices[:o].desks[:d] { office: o.id, desk: d.id, label: d.label, seats: d.seats, $sort: [office, desk] }"
+              }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+
+    // Every depth-2 row survives with its value, and the added field takes its
+    // §5.1 insertion default.
+    { watch: "public.offices", id: "w2", expect_init: { value: [
+      { company: "acme", office: "hq", city: "Paris", floor: "7" }
+      { company: "acme", office: "lab", city: "Lyon", floor: "7" }
+    ] } }
+    // Every depth-3 row survives too — the carry is not limited to one level.
+    { watch: "public.desks", id: "w3", expect_init: { value: [
+      { office: "hq", desk: "d1", label: "north", seats: "1" }
+      { office: "hq", desk: "d2", label: "south", seats: "1" }
+      { office: "lab", desk: "d1", label: "bench", seats: "1" }
+    ] } }
+    // The parent computed re-derives from the carried children: a dropped child
+    // would read 0 here even though the parent row itself survived.
+    { watch: "public.companies", id: "w4", expect_init: { value: [
+      { id: "acme", n: "2" }
+    ] } }
+  ]
+}

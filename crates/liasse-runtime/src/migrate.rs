@@ -16,21 +16,28 @@
 //! transforms resolve the built-in codec namespaces (§16.1) — `base64`,
 //! `string.bytes`, and their inverses — seeded like the built-in cose contract.
 //!
-//! CORE scope: top-level keyed collections. `$old` is materialized as the source
-//! model's stored collections (its computed values and views are a documented
-//! seam); the Annex E contract-narrowing check (§20.3) uses the typed
-//! effective-contract comparison in [`BoundaryContract`].
+//! Scope: every keyed collection the package declares, at every depth — a nested
+//! keyed collection's rows (§5.4) are committed state living under their parent,
+//! so they are copied, mapped, re-keyed and re-checked exactly as top-level rows
+//! are. `$old` is materialized as the source model's stored collections (its
+//! computed values and views are a documented seam); the Annex E
+//! contract-narrowing check (§20.3) uses the typed effective-contract comparison
+//! in [`BoundaryContract`].
+
+mod plan;
 
 use std::collections::BTreeMap;
 
 use liasse_artifact::{CompatibilityDecision, PackageIdentity, PackageName, UpdateRelation, Version};
 use liasse_diag::SourceMap;
 use liasse_expr::{check_statement, Cell, DbReadPosition, ExprType, HostPosition, Row, RowType, TypedExpr};
+use liasse_ident::NameSegment;
 use liasse_model::{nondeterministic_call, Model, PackageId};
-use liasse_store::{CommitSeq, InstanceStore, RowAddress};
+use liasse_store::{CollectionPath, CommitSeq, InstanceStore, RowAddress};
 use liasse_syntax::{parse_document, parse_expression};
 use liasse_value::{Timestamp, Type, Value};
 
+use crate::captured::CapturedRow;
 use crate::compiled::{Compiled, CompiledCollection, CompiledMutation, CompiledStmt};
 use crate::contract::BoundaryContract;
 use crate::doc;
@@ -38,9 +45,10 @@ use crate::engine::{compile_definition, Compilation, Engine};
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::eval::EvalCtx;
 use crate::host::{HostBinding, HostDispatch, HostSignatures};
-use crate::interp::{rewrite_inbound_refs_across, Interp};
+use crate::interp::{rewrite_inbound_refs_across, rewrite_inbound_refs_to_moved_nested, Interp};
 use crate::materialize::{self, FieldMap};
-use crate::portable::{CaptureError, StateSection};
+use crate::migrate::plan::{downgrade_plan, CollectionMigration, FieldMigration, MigrationPlan};
+use crate::portable::StateSection;
 use crate::rules;
 use crate::schema::Schema;
 use crate::scope::RuntimeScope;
@@ -195,16 +203,12 @@ impl<S: InstanceStore> Engine<S> {
                 format!("update narrows the boundary contract: {reason}"),
             )));
         }
-        // §20.1/§22.1 fail-closed: a nested keyed collection (§5.4) holding committed
-        // rows cannot be carried through this build's capture, so refuse the whole
-        // migration rather than commit with those rows silently dropped. Every other
-        // capture failure is a store fault.
-        let old_state = StateSection::capture(self.schema(), self.store()).map_err(|error| match error {
-            CaptureError::Store(error) => UpdateError::Engine(EngineError::Store(error)),
-            CaptureError::NestedRows(message) => {
-                UpdateError::Rejected(Rejection::new(RejectionReason::Unsupported, message))
-            }
-        })?;
+        // §20.1/§22.1: the source state is the COMPLETE committed row tree — every
+        // nested keyed collection (§5.4) under a top-level row included — so the
+        // compatible same-identity copy below reaches every committed row at every
+        // depth. A capture failure is a store fault.
+        let old_state = StateSection::capture(self.schema(), self.store())
+            .map_err(|error| UpdateError::Engine(EngineError::Store(error)))?;
         // §20.2: a downgrade loads the older package and applies an explicit direct
         // migration or the available exact inverses the *active* package declared
         // (`$from`/`$back`). Build that combined plan and reject the downgrade when a
@@ -485,48 +489,27 @@ fn build_migrated<G: crate::generator::Generators>(
     let mut migrated_addrs: Vec<RowAddress> = Vec::new();
 
     // §20.1 order (1/2): the compatible same-identity copy and the local `$from`
-    // field mappings (with their `$as` transforms), in declaration order.
-    for collection in &target.compiled.collections {
-        let migration = plan.collections.get(&collection.name);
-        let transformed = migration.is_some_and(|m| !m.fields.is_empty());
-        let source_name = migration
-            .and_then(|m| m.from.clone())
-            .unwrap_or_else(|| collection.name.clone());
-        let Some(old_rows) = old_state
-            .collections()
-            .iter()
-            .find(|(name, _)| *name == source_name)
-            .map(|(_, rows)| rows)
-        else {
-            continue;
+    // field mappings (with their `$as` transforms), in declaration order — over the
+    // whole committed row tree, so a nested keyed collection's rows (§5.4) carry
+    // forward exactly as a top-level collection's do.
+    {
+        let mut copy = CopyPass {
+            schema,
+            ctx: &ctx,
+            root_ty: &root_ty,
+            codec_sigs: &codec_sigs,
+            sources: &mut sources,
+            prospective: &mut prospective,
+            touched: &mut touched,
+            migrated: &mut migrated_addrs,
         };
-        let old_collection = old_compiled.collection(&source_name);
-        for old_row in old_rows {
-            let mut fields =
-                map_row(collection, migration, old_row, old_collection, &ctx, &mut sources, &root_ty, &codec_sigs)?;
-            // §5.1/§8.12: each migrated row draws its own generation, so a newly
-            // added field defaulted from `uuid()` is fresh per row (SPEC-ISSUES
-            // item 4).
-            let generation = prospective.next_generation();
-            // The migrated row is not yet staged (its address depends on the
-            // possibly-defaulted key resolved just below), so a default resolves
-            // against its own scalar/struct fields only (§5.1) — the same shape the
-            // insert path uses.
-            rules::apply_defaults(collection, &mut fields, &ctx, &prospective, generation, None)?;
-            rules::normalize_all(collection, &mut fields, &ctx, &prospective)?;
-            let address = key_address(schema, collection, &fields)?;
-            if prospective.contains(&address) {
-                return Err(Rejection::new(RejectionReason::DuplicateKey, "migration produced a duplicate key")
-                    .at(address.render()));
-            }
-            // §13.15: a row of a collection carrying a declared `$from`/`$as` mapping
-            // went through the migration transform, so it is a `$migrated` item; a
-            // plain compatible copy is not.
-            if transformed {
-                migrated_addrs.push(address.clone());
-            }
-            prospective.insert(address.clone(), fields);
-            touched.push(address);
+        for collection in &target.compiled.collections {
+            let migration = plan.collections.get(&collection.name);
+            let source_name = migration.and_then(|m| m.from.as_deref()).unwrap_or(&collection.name);
+            let Some(old_rows) = old_state.collection(source_name) else { continue };
+            let old_collection = old_compiled.collection(source_name);
+            let mut path = vec![collection.name.clone()];
+            copy.rows(&mut path, collection, migration, old_collection, old_rows, None)?;
         }
     }
 
@@ -654,11 +637,11 @@ fn build_migrated<G: crate::generator::Generators>(
     // migration when eligible capacity is insufficient (§15.2) or a migrated pool
     // projects a negative `$quantity` (§15.1) — the pool-`$quantity` check covers
     // top-level enforcing rows and root-derived pools (e.g. a `/credit_periods`
-    // source). Spend re-funding over NESTED spend collections is inert here because
-    // migration stages only top-level rows in CORE (the documented nested-collection
-    // seam); a nested-spend re-fund under prospective migrated state, and the
+    // source). The migration now stages the whole row tree, so a NESTED spend/pool
+    // arrangement re-funds here like a top-level one — a migration that would
+    // over-draw or negate a nested pool is rejected rather than committed. The
     // module/interface aggregate enforcement (`EvalCtx.modules` is `None` on this
-    // path), remain flagged follow-on holes rather than a subsystem-crossing change.
+    // path) remains a flagged follow-on hole.
     crate::meter::admit::enforce(&ctx, &target.compiled.meters, &mut prospective, &addresses)?;
     let rows: BTreeMap<RowAddress, FieldMap> = addresses
         .into_iter()
@@ -670,6 +653,109 @@ fn build_migrated<G: crate::generator::Generators>(
     let migrated = report_paths(&migrated_addrs, &rows);
     let seeded = report_paths(&seeded_addrs, &rows);
     Ok(MigratedState { rows, migrated, seeded })
+}
+
+/// The §20.1 order-(1/2) copy applied to one collection's source rows and, by the
+/// same recursion, to every nested keyed collection under them (§5.4).
+///
+/// §20.1 defines the compatible same-identity copy over the package's committed
+/// rows, and §5.4 makes a nested row committed state living under its parent — so
+/// the copy is depth-uniform by construction, not a top-level pass with a nested
+/// special case. Each level takes its own declared `$from`/`$as` mappings and its
+/// own collection rename, and each child row is addressed under the MIGRATED
+/// address of its parent, so a parent whose key the migration changed carries its
+/// whole subtree with it.
+struct CopyPass<'a, 'b> {
+    schema: Schema<'a>,
+    ctx: &'b EvalCtx<'b>,
+    root_ty: &'b ExprType,
+    codec_sigs: &'b HostSignatures,
+    sources: &'b mut SourceMap,
+    prospective: &'b mut Prospective,
+    touched: &'b mut Vec<RowAddress>,
+    /// §13.15 `$migrated`: the addresses a declared migration transform produced.
+    migrated: &'b mut Vec<RowAddress>,
+}
+
+impl CopyPass<'_, '_> {
+    /// Copy `old_rows` into the prospective target as rows of `collection`, then
+    /// recurse into each nested keyed collection declared under it. `path` is the
+    /// TARGET declaration path of `collection`; `parent` is the migrated address the
+    /// copied rows hang under (`None` at top level).
+    fn rows(
+        &mut self,
+        path: &mut Vec<String>,
+        collection: &CompiledCollection,
+        migration: Option<&CollectionMigration>,
+        old_collection: Option<&CompiledCollection>,
+        old_rows: &[CapturedRow],
+        parent: Option<&RowAddress>,
+    ) -> Result<(), Rejection> {
+        // §13.15: a row of a collection carrying a declared `$from`/`$as` mapping went
+        // through the migration transform, so it is a `$migrated` item; a plain
+        // compatible copy is not.
+        let transformed = migration.is_some_and(|m| !m.fields.is_empty());
+        for old_row in old_rows {
+            let mut fields = map_row(
+                collection,
+                migration,
+                old_row.fields(),
+                old_collection,
+                self.ctx,
+                self.sources,
+                self.root_ty,
+                self.codec_sigs,
+            )?;
+            // §5.1/§8.12: each migrated row draws its own generation, so a newly
+            // added field defaulted from `uuid()` is fresh per row (SPEC-ISSUES
+            // item 4).
+            let generation = self.prospective.next_generation();
+            // The migrated row is not yet staged (its address depends on the
+            // possibly-defaulted key resolved just below), so a default resolves
+            // against its own scalar/struct fields only (§5.1) — the same shape the
+            // insert path uses.
+            rules::apply_defaults(collection, &mut fields, self.ctx, self.prospective, generation, None)?;
+            rules::normalize_all(collection, &mut fields, self.ctx, self.prospective)?;
+            let address = key_address(self.schema, path, &fields, parent)?;
+            if self.prospective.contains(&address) {
+                return Err(Rejection::new(RejectionReason::DuplicateKey, "migration produced a duplicate key")
+                    .at(address.render()));
+            }
+            if transformed {
+                self.migrated.push(address.clone());
+            }
+            self.prospective.insert(address.clone(), fields);
+            self.touched.push(address.clone());
+            self.children(path, collection, migration, old_collection, old_row, &address)?;
+        }
+        Ok(())
+    }
+
+    /// Copy every nested keyed collection declared under `collection` from the
+    /// source row's captured subtree, under the migrated `address` of the row just
+    /// staged (§5.4/§20.1). A child takes its own `$from` collection rename and its
+    /// own field mappings, exactly as a top-level collection does.
+    fn children(
+        &mut self,
+        path: &mut Vec<String>,
+        collection: &CompiledCollection,
+        migration: Option<&CollectionMigration>,
+        old_collection: Option<&CompiledCollection>,
+        old_row: &CapturedRow,
+        address: &RowAddress,
+    ) -> Result<(), Rejection> {
+        for child in &collection.children {
+            let child_migration = migration.and_then(|m| m.children.get(&child.name));
+            let source_name = child_migration.and_then(|m| m.from.as_deref()).unwrap_or(&child.name);
+            let old_child = old_collection.and_then(|c| c.child(source_name));
+            path.push(child.name.clone());
+            let copied =
+                self.rows(path, child, child_migration, old_child, old_row.child(source_name), Some(address));
+            path.pop();
+            copied?;
+        }
+        Ok(())
+    }
 }
 
 /// The subset of `candidates` present in the committed `rows`, deduplicated and
@@ -920,29 +1006,41 @@ fn is_required(ty: &Type) -> bool {
 /// reordered rows; a coerced key that lands on a DIFFERENT surviving row (a
 /// program-produced overlap, never a pure reorder) is a genuine §20.1 uniqueness
 /// violation and rejects rather than silently overwriting.
+///
+/// A NESTED row (§5.4) rekeys the same way, and additionally FOLLOWS a moved
+/// ancestor: its address is rebuilt on its parent's already-decided one, so a
+/// rekeyed parent carries its whole subtree instead of stranding it at an address
+/// whose parent row no longer exists.
 fn rekey_coerced(
     schema: Schema<'_>,
     compiled: &Compiled,
     prospective: &mut Prospective,
     addresses: Vec<RowAddress>,
 ) -> Result<Vec<RowAddress>, Rejection> {
-    // The intended moves: a row whose coerced key addresses it elsewhere. Migration
-    // stages only top-level rows (nested collections are a documented §20.1 seam),
-    // so a moved row is always a top-level reference target.
+    // The intended moves: a row whose coerced key — or whose ancestor's coerced key
+    // — addresses it elsewhere. Ancestors are resolved first (depth-ascending), so a
+    // descendant's new address is built on its parent's already-decided one and a
+    // moved parent re-roots its whole subtree (§5.4).
     let mut relocations: BTreeMap<RowAddress, RowAddress> = BTreeMap::new();
     let singleton_address = crate::singleton::address();
-    for address in &addresses {
+    let mut by_depth = addresses.clone();
+    by_depth.sort_by_key(RowAddress::depth);
+    for address in &by_depth {
         // §8.2: the singleton reserved row has no key and a fixed reserved address,
         // so it never rekeys. It resolves to the keyless `root_singleton` pseudo-
-        // collection, which `key_address` (a keyed top-collection lookup) cannot
+        // collection, which `key_address` (a keyed collection lookup) cannot
         // address — skip it here, exactly as the coercion/rekey passes leave it alone.
         if address == &singleton_address {
             continue;
         }
         let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
-        let Some(collection) = compiled.collection_at(&decl) else { continue };
+        if compiled.collection_at(&decl).is_none() {
+            continue;
+        }
         let Some(fields) = prospective.get(address) else { continue };
-        let coerced_address = key_address(schema, collection, fields)?;
+        let parent = address.parent();
+        let moved_parent = parent.as_ref().map(|parent| relocations.get(parent).unwrap_or(parent));
+        let coerced_address = key_address(schema, &decl, fields, moved_parent)?;
         if &coerced_address != address {
             relocations.insert(address.clone(), coerced_address);
         }
@@ -977,40 +1075,23 @@ fn rekey_coerced(
     // row set makes every referrer — scalar `$ref` and `$set`-of-`$ref` alike
     // ([`rewrite_inbound_refs_across`]) — follow its target regardless of sort order.
     for (old, new, _fields) in &detached {
-        if let (Some(name), Some(old_step), Some(new_step)) =
-            (new.steps().last().map(|s| s.name().as_str().to_owned()), old.steps().last(), new.steps().last())
+        // §5.4/§D.1/§A.9: a top-level target is referenced by its own key; a NESTED
+        // target by its full ancestor-then-local identity, which also moved when an
+        // ancestor rekeyed. Both carriers are rewritten by the same primitives the
+        // ordinary rekey uses, so a migration rekey and a mutation rekey agree.
+        if let (Some(old_step), Some(new_step)) = (old.steps().last(), new.steps().last())
+            && old.depth() == 1
         {
-            rewrite_inbound_refs_across(compiled, prospective, &name, old_step.key(), new_step.key());
+            rewrite_inbound_refs_across(compiled, prospective, new_step.name().as_str(), old_step.key(), new_step.key());
+        }
+        if old.depth() >= 2 {
+            rewrite_inbound_refs_to_moved_nested(compiled, prospective, old, new);
         }
     }
     Ok(addresses
         .into_iter()
         .map(|address| relocations.get(&address).cloned().unwrap_or(address))
         .collect())
-}
-
-/// Build the downgrade migration plan (§20.2): the older target's own declared
-/// mappings, augmented with the exact inverses the *active* package's field
-/// transforms provide. An active field declared `$from: X` with an exact inverse
-/// `$back: B` reconstructs the older field `X` as `B(<active field>)`; the
-/// target's own mapping for `X` (an explicit direct downgrade migration) wins over
-/// the inferred inverse. A collection rename on downgrade is a documented seam, so
-/// an inverse is attributed to the same-named target collection.
-fn downgrade_plan(active_definition: &str, target: &str) -> Result<MigrationPlan, EngineError> {
-    let mut plan = MigrationPlan::read(target)?;
-    let active = MigrationPlan::read(active_definition)?;
-    for (collection, migration) in active.collections {
-        for (active_field, mapping) in migration.fields {
-            let Some(back) = mapping.back else { continue };
-            let target_collection = plan.collections.entry(collection.clone()).or_default();
-            target_collection.fields.entry(mapping.from).or_insert(FieldMigration {
-                from: active_field,
-                transform: Some(back),
-                back: None,
-            });
-        }
-    }
-    Ok(plan)
 }
 
 /// §20.2 downgrade representability: reject the downgrade when the older shape
@@ -1032,58 +1113,14 @@ fn downgrade_representable(
 ) -> Result<(), Rejection> {
     for (name, rows) in active_state.collections() {
         let Some(active_collection) = active_compiled.collection(name) else { continue };
-        let target_collection = target.compiled.collection(name);
-        let migration = plan.collections.get(name);
-        for field in &active_collection.fields {
-            let populated = rows.iter().any(|row| row.get(&field.name).is_some_and(|value| *value != Value::None));
-            if !populated {
-                continue;
-            }
-            let kept = target_collection.is_some_and(|collection| collection.field(&field.name).is_some());
-            let reconstructed =
-                migration.is_some_and(|migration| migration.fields.values().any(|f| f.from == field.name));
-            if !kept && !reconstructed {
-                return Err(Rejection::new(
-                    RejectionReason::Compatibility,
-                    format!(
-                        "downgrade drops populated field `{}` of `{name}`: the older shape cannot represent \
-                         it and no declared downgrade transform preserves it",
-                        field.name
-                    ),
-                ));
-            }
-        }
-        // §5.3/§20.2: a static struct member (§5.3) is a live value of the row, but
-        // it compiles into `CompiledCollection::structs`, not `fields`, so the field
-        // loop above never inspects it. A downgrade that drops a populated struct the
-        // older shape cannot represent — no same-named target struct or field carries
-        // it, no declared mapping reconstructs it — silently discards live data,
-        // exactly the §20.2 loss the field loop rejects. Apply the identical gate to
-        // struct members so the two travel on the same footing (a struct kept under
-        // the same name is re-decoded against the target struct type by
-        // `coerce_and_require`, which rejects an inner-shape mismatch there).
-        for structure in &active_collection.structs {
-            let populated =
-                rows.iter().any(|row| row.get(&structure.name).is_some_and(|value| *value != Value::None));
-            if !populated {
-                continue;
-            }
-            let kept = target_collection.is_some_and(|collection| {
-                collection.struct_type(&structure.name).is_some() || collection.field(&structure.name).is_some()
-            });
-            let reconstructed =
-                migration.is_some_and(|migration| migration.fields.values().any(|f| f.from == structure.name));
-            if !kept && !reconstructed {
-                return Err(Rejection::new(
-                    RejectionReason::Compatibility,
-                    format!(
-                        "downgrade drops populated struct `{}` of `{name}`: the older shape cannot represent \
-                         it and no declared downgrade transform preserves it",
-                        structure.name
-                    ),
-                ));
-            }
-        }
+        let rows: Vec<&CapturedRow> = rows.iter().collect();
+        representable_rows(
+            active_collection,
+            target.compiled.collection(name),
+            plan.collections.get(name),
+            name,
+            &rows,
+        )?;
     }
     // §8.2/§20.2: the root singleton reserved row is live state too, but it is not a
     // keyed collection, so `active_state.collections()` never yields it and the loop
@@ -1119,6 +1156,71 @@ fn downgrade_representable(
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+/// The §20.2 representability gate over one collection's live rows and — through
+/// the same recursion — every nested keyed collection beneath them (§5.4).
+///
+/// A nested row is live state exactly as a top-level row is, so a downgrade that
+/// cannot represent one of its populated fields discards live data just the same.
+/// Recursing here is what keeps the gate honest now that the capture carries the
+/// whole tree: a nested collection the older shape dropped entirely resolves to no
+/// target collection, so every populated field of it fails `kept` and rejects.
+fn representable_rows(
+    active: &CompiledCollection,
+    target: Option<&CompiledCollection>,
+    migration: Option<&CollectionMigration>,
+    name: &str,
+    rows: &[&CapturedRow],
+) -> Result<(), Rejection> {
+    let populated = |member: &str| {
+        rows.iter().any(|row| row.fields().get(member).is_some_and(|value| *value != Value::None))
+    };
+    let reconstructed =
+        |member: &str| migration.is_some_and(|migration| migration.fields.values().any(|f| f.from == member));
+    let dropped = |kind: &str, member: &str| {
+        Rejection::new(
+            RejectionReason::Compatibility,
+            format!(
+                "downgrade drops populated {kind} `{member}` of `{name}`: the older shape cannot \
+                 represent it and no declared downgrade transform preserves it"
+            ),
+        )
+    };
+    for field in &active.fields {
+        if populated(&field.name)
+            && !target.is_some_and(|collection| collection.field(&field.name).is_some())
+            && !reconstructed(&field.name)
+        {
+            return Err(dropped("field", &field.name));
+        }
+    }
+    // §5.3/§20.2: a static struct member is a live value of the row, but it compiles
+    // into `CompiledCollection::structs`, not `fields`, so the field loop above never
+    // inspects it. A downgrade that drops a populated struct the older shape cannot
+    // represent — no same-named target struct or field carries it, no declared mapping
+    // reconstructs it — silently discards live data, exactly the §20.2 loss the field
+    // loop rejects. (A struct kept under the same name is re-decoded against the
+    // target struct type by `coerce_and_require`, which rejects an inner mismatch.)
+    for structure in &active.structs {
+        let kept = target.is_some_and(|collection| {
+            collection.struct_type(&structure.name).is_some() || collection.field(&structure.name).is_some()
+        });
+        if populated(&structure.name) && !kept && !reconstructed(&structure.name) {
+            return Err(dropped("struct", &structure.name));
+        }
+    }
+    for child in &active.children {
+        let child_rows: Vec<&CapturedRow> = rows.iter().flat_map(|row| row.child(&child.name)).collect();
+        representable_rows(
+            child,
+            target.and_then(|collection| collection.child(&child.name)),
+            migration.and_then(|migration| migration.children.get(&child.name)),
+            &child.name,
+            &child_rows,
+        )?;
     }
     Ok(())
 }
@@ -1296,123 +1398,32 @@ fn compile(
     })
 }
 
+/// The address a migrated row's own key determines: the row's key under `parent`
+/// for a nested collection (§5.4), or its top-level key position when `parent` is
+/// `None`. `path` is the collection's declaration path, which resolves the model
+/// collection whose `$key` orders the key components — at any depth, and through a
+/// §5.8 `$types`/`$like` adoption.
 fn key_address(
     schema: Schema<'_>,
-    collection: &CompiledCollection,
+    path: &[String],
     fields: &FieldMap,
+    parent: Option<&RowAddress>,
 ) -> Result<RowAddress, Rejection> {
     let model = schema
-        .top_collection(&collection.name)
+        .collection_at_path(path)
         .ok_or_else(|| Rejection::new(RejectionReason::Malformed, "unknown target collection"))?;
     let key = materialize::row_key(model, fields)
         .ok_or_else(|| Rejection::new(RejectionReason::Malformed, "migrated row is missing a key field"))?;
-    Ok(materialize::top_address(&collection.name, key))
+    let name = path.last().map_or("", String::as_str);
+    Ok(match parent {
+        None => materialize::top_address(name, key),
+        Some(parent) => CollectionPath::nested(parent.steps().cloned(), NameSegment::new(name)).row(key),
+    })
 }
 
 fn scalar(cell: Cell) -> Value {
     match cell {
         Cell::Scalar(value) => value,
         _ => Value::None,
-    }
-}
-
-/// The parsed migration mappings of a target definition (§20.1): per collection,
-/// an optional collection rename and each field's `$from`/`$as`/`$back`, plus the
-/// local mappings on §8.2 root singleton members.
-struct MigrationPlan {
-    collections: BTreeMap<String, CollectionMigration>,
-    /// Local `$from`/`$as`/`$back` mappings on §8.2 root singleton members, keyed
-    /// by the TARGET member name — the singleton analogue of a collection field's
-    /// mapping, applied by the singleton carry loop in [`build_migrated`].
-    singleton_fields: BTreeMap<String, FieldMigration>,
-}
-
-/// One collection's migration: its optional source collection and field mappings.
-#[derive(Default)]
-struct CollectionMigration {
-    from: Option<String>,
-    fields: BTreeMap<String, FieldMigration>,
-}
-
-/// One field's local migration mapping (§20.1).
-struct FieldMigration {
-    from: String,
-    transform: Option<String>,
-    back: Option<String>,
-}
-
-impl MigrationPlan {
-    /// Read the `$from`/`$as`/`$back` mappings out of a target definition's
-    /// `$model`, which the compiled form discards.
-    fn read(definition: &str) -> Result<Self, EngineError> {
-        let mut sources = SourceMap::new();
-        let src = sources.add_file("liasse.json", definition.to_owned());
-        let document =
-            parse_document(src, definition).map_err(|d| EngineError::Invalid(Box::new(d)))?;
-        let mut collections = BTreeMap::new();
-        let mut singleton_fields = BTreeMap::new();
-        let Some(model) = doc::member(document.root(), "$model") else {
-            return Ok(Self { collections, singleton_fields });
-        };
-        let Some(members) = doc::object(model) else {
-            return Ok(Self { collections, singleton_fields });
-        };
-        for member in members {
-            let Some(shape) = doc::object(&member.value) else { continue };
-            // §5.4 vs §8.2: a top-level member declaring `$key` is a keyed
-            // collection — its `$from` is a collection rename and its field members
-            // carry their own mappings. A top-level member with no `$key` but a
-            // `$from` is a §8.2 singleton member rename/transform. Routing the
-            // singleton member here — rather than mis-filing its `{ $type, $from }`
-            // object under `collections`, where the singleton carry never reads it —
-            // is what lets a singleton `$from` copy/transform its value like a
-            // collection field (§20.1).
-            if shape.iter().any(|m| m.name.text == "$key") {
-                let migration = Self::read_collection(shape);
-                if migration.from.is_some() || !migration.fields.is_empty() {
-                    collections.insert(member.name.text.clone(), migration);
-                }
-            } else if let Some(field) = Self::read_field(&member.value) {
-                singleton_fields.insert(member.name.text.clone(), field);
-            }
-        }
-        Ok(Self { collections, singleton_fields })
-    }
-
-    fn read_collection(shape: &[liasse_syntax::DocMember]) -> CollectionMigration {
-        let mut migration = CollectionMigration::default();
-        for member in shape {
-            if member.name.text == "$from" {
-                migration.from = doc::string(&member.value).map(str::to_owned);
-                continue;
-            }
-            if member.name.text.starts_with('$') {
-                continue;
-            }
-            if let Some(field) = Self::read_field(&member.value) {
-                migration.fields.insert(member.name.text.clone(), field);
-            }
-        }
-        migration
-    }
-
-    fn read_field(value: &liasse_syntax::DocValue) -> Option<FieldMigration> {
-        let members = doc::object(value)?;
-        let from = members
-            .iter()
-            .find(|m| m.name.text == "$from")
-            .and_then(|m| doc::string(&m.value))?
-            .to_owned();
-        let transform = members
-            .iter()
-            .find(|m| m.name.text == "$as")
-            .and_then(|m| doc::string(&m.value))
-            .map(str::to_owned);
-        let back = members
-            .iter()
-            .find(|m| m.name.text == "$back")
-            .and_then(|m| doc::string(&m.value))
-            .map(str::to_owned);
-        Some(FieldMigration { from, transform, back })
     }
 }

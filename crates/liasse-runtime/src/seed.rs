@@ -152,10 +152,10 @@ pub(crate) fn admit(
 /// removed from the new bundle is deleted only when its current subtree still equals
 /// the old bundled subtree, otherwise it is retained as local data.
 ///
-/// CORE scope is top-level keyed collections with scalar/struct fields, which the
-/// same [`decode_row`] and [`admit`] machinery already covers. Nested keyed
-/// collections and set-membership reconciliation apply the same rule recursively
-/// (§13.13); they are a documented seam no CORE bundle address reaches.
+/// The rule applies at every depth: a bundled row nested under another (§5.4) is
+/// decoded, inserted, field-merged, and dropped by exactly the same three-way
+/// comparison as a top-level one, because both are identified by row ADDRESS and
+/// the recursion below produces addresses at any depth.
 pub(crate) fn merge_bundle(
     compiled: &Compiled,
     ctx: &EvalCtx<'_>,
@@ -172,11 +172,12 @@ pub(crate) fn merge_bundle(
     for member in new_cols {
         let Some(collection) = compiled.collection(&member.name.text) else { continue };
         let store_path = CollectionPath::top(NameSegment::new(member.name.text.clone()));
-        let new_rows = decode_bundle_rows(ctx, prospective, collection, &store_path, &member.value)?;
-        let old_rows = match old_bundle_collection(old_bundle, &member.name.text) {
-            Some(rows) => decode_bundle_rows(ctx, prospective, collection, &store_path, rows)?,
-            None => BTreeMap::new(),
-        };
+        let mut new_rows = BTreeMap::new();
+        decode_bundle_rows(ctx, prospective, collection, &store_path, &member.value, &mut new_rows)?;
+        let mut old_rows = BTreeMap::new();
+        if let Some(rows) = old_bundle_collection(old_bundle, &member.name.text) {
+            decode_bundle_rows(ctx, prospective, collection, &store_path, rows, &mut old_rows)?;
+        }
         // §13.13: replace each present row's bundled fields under the three-way rule.
         for (address, new_fields) in &new_rows {
             let Some(current) = prospective.get(address) else { continue };
@@ -185,15 +186,30 @@ pub(crate) fn merge_bundle(
             touched.push(address.clone());
         }
         // §13.13: a row the new bundle dropped is deleted only when its current
-        // subtree still equals the old bundled subtree; a locally modified row (or one
-        // the new bundle still carries) is retained.
-        for (address, old_fields) in &old_rows {
-            if !new_rows.contains_key(address) && prospective.get(address) == Some(old_fields) {
+        // SUBTREE still equals the old bundled subtree; a locally modified row (or one
+        // the new bundle still carries) is retained. Deepest-first — the reverse of
+        // Annex B address order, in which a row precedes its descendants — so a
+        // parent is considered only once its droppable children are gone, and a
+        // surviving descendant (locally added, or retained because it was locally
+        // edited) keeps its ancestors alive rather than orphaning them.
+        for (address, old_fields) in old_rows.iter().rev() {
+            let unchanged = prospective.get(address) == Some(old_fields);
+            if !new_rows.contains_key(address) && unchanged && !has_live_descendant(prospective, address) {
                 prospective.remove(address);
             }
         }
     }
     Ok(())
+}
+
+/// Whether any live row in the prospective state is nested under `address` (§5.4).
+/// A row with a surviving descendant cannot be dropped: removing it would strand
+/// the descendant under an address that holds no row.
+fn has_live_descendant(prospective: &Prospective, address: &RowAddress) -> bool {
+    prospective.working().keys().any(|candidate| {
+        candidate.depth() > address.depth()
+            && candidate.steps().zip(address.steps()).all(|(own, ancestor)| own == ancestor)
+    })
 }
 
 /// §13.13 per-field rule: the new bundle value applies where the current value still
@@ -209,28 +225,40 @@ fn merge_row_fields(current: &FieldMap, old: Option<&FieldMap>, new: &FieldMap) 
     merged
 }
 
-/// Decode a bundle collection's rows into their addresses and supplied field maps
-/// (the same decode a seed row uses), for the §13.13 three-way comparison.
+/// Decode a bundle collection's rows into `out`, keyed by address, with the same
+/// decode a seed row uses — and recurse into each row's nested keyed collections
+/// (§5.4), so the §13.13 three-way comparison sees the whole bundled subtree at the
+/// same addresses the prospective state holds it under.
 fn decode_bundle_rows(
     ctx: &EvalCtx<'_>,
     prospective: &Prospective,
     collection: &CompiledCollection,
     store_path: &CollectionPath,
     rows: &DocValue,
-) -> Result<BTreeMap<RowAddress, FieldMap>, Rejection> {
+    out: &mut BTreeMap<RowAddress, FieldMap>,
+) -> Result<(), Rejection> {
     let Some(entries) = doc::object(rows) else {
         return Err(Rejection::new(
             RejectionReason::Malformed,
             format!("`$bundle.{}` must map keys to rows", collection.name),
         ));
     };
-    let mut out = BTreeMap::new();
     for entry in entries {
         let fields = decode_row(ctx, prospective, collection, &entry.name.text, &entry.value)?;
         let key = row_key(collection, &fields)?;
-        out.insert(store_path.row(key), fields);
+        let address = store_path.row(key);
+        for member in doc::object(&entry.value).into_iter().flatten() {
+            if let Some(child) = collection.child(&member.name.text) {
+                let child_path = CollectionPath::nested(
+                    address.steps().cloned(),
+                    NameSegment::new(member.name.text.clone()),
+                );
+                decode_bundle_rows(ctx, prospective, child, &child_path, &member.value, out)?;
+            }
+        }
+        out.insert(address, fields);
     }
-    Ok(out)
+    Ok(())
 }
 
 /// The old package bundle's rows object for the collection named `name`, when the
@@ -265,36 +293,40 @@ fn stage_rows<'a>(
         // known before any default resolves.
         let key = row_key(collection, &decoded)?;
         let address = store_path.row(key);
-        let fields = if prospective.contains(&address) {
-            match mode {
-                // §9.1: two seed rows at one key is a duplicate-key fault.
-                SeedMode::Genesis => {
-                    return Err(Rejection::new(RejectionReason::DuplicateKey, "duplicate seed key")
-                        .at(address.render()));
-                }
-                // §13.13/§4.1 apply-if-absent: the occupied address keeps its
-                // current value — the seed neither overwrites it nor re-stages it,
-                // and its nested initializers are left to the retained row.
-                SeedMode::ApplyIfAbsent => continue,
-                // §13.3 overlay: an occupied address is a three-way merge — the
-                // overlay's writable scalar/struct fields replace the seeded ones,
-                // `$set` fields union, and fields the overlay omits are retained. The
-                // merged row is re-staged so phase two re-resolves its defaults and
-                // normalization and `finalize` re-checks it (ordinary insertion
-                // validation); its nested child collections merge below under this
-                // same mode.
-                SeedMode::Overlay => {
-                    let existing = prospective.get(&address).cloned().unwrap_or_else(FieldMap::new);
-                    overlay_fields(collection, existing, decoded)
-                }
+        let supplied = match (prospective.contains(&address), mode) {
+            // §9.1: two seed rows at one key is a duplicate-key fault.
+            (true, SeedMode::Genesis) => {
+                return Err(Rejection::new(RejectionReason::DuplicateKey, "duplicate seed key")
+                    .at(address.render()));
             }
-        } else {
-            decoded
+            // §13.13/§4.1 apply-if-absent: the occupied address keeps its current
+            // value — the seed neither overwrites it nor re-stages it.
+            (true, SeedMode::ApplyIfAbsent) => None,
+            // §13.3 overlay: an occupied address is a three-way merge — the
+            // overlay's writable scalar/struct fields replace the seeded ones,
+            // `$set` fields union, and fields the overlay omits are retained. The
+            // merged row is re-staged so phase two re-resolves its defaults and
+            // normalization and `finalize` re-checks it (ordinary insertion
+            // validation); its nested child collections merge below under this
+            // same mode.
+            (true, SeedMode::Overlay) => {
+                let existing = prospective.get(&address).cloned().unwrap_or_else(FieldMap::new);
+                Some(overlay_fields(collection, existing, decoded))
+            }
+            (false, _) => Some(decoded),
         };
-        prospective.insert(address.clone(), fields);
-        staged.push(Staged { collection, address: address.clone() });
-        // §5.5: a seed row may carry nested-collection initializers, staged under
-        // the parent address through the same pipeline.
+        if let Some(fields) = supplied {
+            prospective.insert(address.clone(), fields);
+            staged.push(Staged { collection, address: address.clone() });
+        }
+        // §5.5/§5.4: a seed row may carry nested-collection initializers, staged
+        // under the parent address through the same pipeline. The descent runs in
+        // EVERY mode, past a RETAINED parent included: apply-if-absent is a rule
+        // about one address (§13.13), so a child row the release newly declares is
+        // inserted where its own address is absent, while an occupied child address
+        // is retained by the same rule one level down. Skipping the descent instead
+        // would make a bundled/seeded child unreachable forever the moment its
+        // parent existed — which is every instance past its first commit.
         let members = doc::object(&entry.value).into_iter().flatten();
         for member in members {
             if let Some(child) = collection.child(&member.name.text) {

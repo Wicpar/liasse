@@ -1,36 +1,27 @@
 //! Regression (dual-backend): a §20 migration of an instance holding nested
-//! keyed-collection rows (§5.4) MUST fail closed — refuse loudly — rather than
-//! silently drop the nested rows and report `committed`.
+//! keyed-collection rows (§5.4) MUST carry them through — never drop them, and
+//! never refuse the update for holding them.
 //!
-//! # The bug this pins (now fixed, fail-closed)
+//! # The history this pins
 //!
-//! `StateSection::capture` (crates/liasse-runtime/src/portable.rs) captures the
-//! rows of every **top-level** collection and the §8.2 singleton only; it never
-//! carries a nested collection forward. `Engine::update` built the migration's
-//! read-only `$old` from exactly that capture and `build_migrated` staged only
-//! what `$old` carried, so a package that keeps application data in a nested keyed
-//! collection (§5.4 — a first-class LIVE feature: `companies/co/accounts/a1`
-//! addressing, inbound refs, meters) used to lose ALL of that nested data the
-//! moment it was migrated — even by a byte-identical patch bump — while still
-//! reporting `committed` (§9.4). That is silent data loss, violating §20.1 ("the
-//! compatible value is copied"), §22.1 (committed-state integrity), and AGENTS.md's
-//! fail-closed rule.
+//! `StateSection::capture` (crates/liasse-runtime/src/portable.rs) once captured
+//! the rows of every **top-level** collection and the §8.2 singleton only.
+//! `Engine::update` built the migration's read-only `$old` from exactly that
+//! capture and `build_migrated` staged only what `$old` carried, so a package that
+//! keeps application data in a nested keyed collection (§5.4 — a first-class LIVE
+//! feature: `companies/co/accounts/a1` addressing, inbound refs, meters) lost ALL
+//! of that nested data the moment it was migrated — even by a byte-identical patch
+//! bump — while still reporting `committed` (§9.4). That silent loss violated
+//! §20.1 ("the compatible value is copied") and §22.1 (committed-state integrity).
+//! It was first made fail-CLOSED (the migration was refused), and is now genuinely
+//! fixed: the capture carries the whole committed row tree, so the §20.1 copy
+//! reaches every nested row and the update COMMITS with the data intact.
 //!
-//! # The fix (asserted here)
+//! Both backends agree step-for-step (memory == pg), so the carry-through is a
+//! runtime decision, not a store-contract divergence.
 //!
-//! Faithful nested-collection carry-through is a large, separate feature and
-//! remains tracked. The SAFETY fix makes the capture seam **fail-closed**:
-//! `StateSection::capture` now refuses when the instance holds nested rows, so a
-//! migration is **rejected** (never a silent `committed`) and the prior state is
-//! left intact. These tests therefore assert the migration is REFUSED and the
-//! nested data is preserved unchanged — the honest refusal that replaces the
-//! silent drop. Both backends agree step-for-step (memory == pg), so the refusal
-//! is a runtime decision, not a store-contract divergence.
-//!
-//! The `top_level_*` test is the PASSING control proving top-level migration still
-//! preserves every row and commits — the fail-closed guard fires only on actual
-//! nested rows, so it never spuriously rejects the top-level path. The companion
-//! export refusal is pinned by the runtime test
+//! The `top_level_*` test is the control proving the top-level path is unchanged.
+//! The companion export/restore round trip is pinned by the runtime test
 //! `crates/liasse-runtime/tests/redteam_nested_export_dataloss.rs`.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
@@ -128,17 +119,17 @@ fn agree_and_report(memory: &CaseResult, pg: &CaseResult, upto: usize, ctx: &str
     }
 }
 
-/// FAIL-CLOSED REGRESSION (plain nested collection, no meters). `users.notes` is
-/// an ordinary nested keyed collection (§5.4). A parent computed member
-/// `n = count(.notes)` reads it; before migration `n == 1`. A byte-identical
-/// PATCH-bump migration cannot carry the nested `notes` row through this build's
-/// portable capture, so — rather than silently drop it and commit (§20.1/§22.1) —
-/// the migration is now REFUSED (`host_load` observes `rejected`). Because a
-/// rejected migration is atomic and leaves the instance unchanged, the nested row
-/// survives and `n` is still `1`. The prior engine committed the drop and `n`
-/// became `0`; this test now pins the honest refusal. Both backends agree.
+/// REGRESSION (plain nested collection, no meters). `users.notes` is an ordinary
+/// nested keyed collection (§5.4). A parent computed member `n = count(.notes)`
+/// reads it; before migration `n == 1`. A byte-identical PATCH-bump migration
+/// carries the nested `notes` row through the §20.1 compatible same-identity copy,
+/// so the update COMMITS and `n` is still `1` afterwards. The computed is what
+/// makes the assertion sharp: it counts the nested rows the migration staged, so a
+/// dropped child would read `0` even though the parent row survived. The original
+/// engine committed that drop; this test pins the carry-through. Both backends
+/// agree.
 #[test]
-fn nested_collection_migration_is_refused_leaving_rows_intact() {
+fn nested_collection_migration_carries_rows_through() {
     let model = r##"
           users: {
             $key: "id"
@@ -151,7 +142,7 @@ fn nested_collection_migration_is_refused_leaving_rows_intact() {
     let hjson = format!(
         r##"{{
       format: 1
-      name: nested-collection-migration-is-refused-leaving-rows-intact
+      name: nested-collection-migration-carries-rows-through
       suite: scenario
       spec: ["#evolution", "§20.1", "#state-model", "§22.1"]
       package: {{
@@ -163,36 +154,39 @@ fn nested_collection_migration_is_refused_leaving_rows_intact() {
       steps: [
         {{ watch: "public.users", id: "w0",
           expect_init: {{ value: [ {{ id: "u1", n: "1" }} ] }} }}
-        // §20.1/§22.1 fail-closed: the capture cannot carry the nested `notes` row,
-        // so the migration is refused instead of committing with it dropped.
+        // §20.1/§22.1: the capture carries the nested `notes` row, so the migration
+        // commits with the whole row tree copied forward.
         {{ host_load: {{
             package: {{ $liasse: 1, $app: "t.nestnotes@1.0.1", $model: {{ {model} }} }}
           }}
-          expect: {{ outcome: rejected, violates: ["#evolution", "§20.1", "#state-model", "§22.1"] }} }}
-        // The refusal is atomic: the instance is unchanged, so the nested row is
-        // preserved and the count is still `1` (no silent drop).
+          expect: {{ outcome: ok, result: committed }} }}
+        // The nested row went through the migration, so the parent computed still
+        // counts it: `n == 1` (no silent drop).
         {{ watch: "public.users", id: "w1",
           expect_init: {{ value: [ {{ id: "u1", n: "1" }} ] }} }}
       ]
     }}"##
     );
-    let (memory, pg) = run_both("nested-collection-migration-is-refused-leaving-rows-intact", &hjson);
-    agree_and_report(&memory, &pg, 3, "nested collection migration refused, rows intact");
+    let (memory, pg) = run_both("nested-collection-migration-carries-rows-through", &hjson);
+    agree_and_report(&memory, &pg, 3, "nested collection migration carries rows through");
 }
 
-/// FAIL-CLOSED REGRESSION (meter consequence — driving a meter concern through a
-/// migration). `users.topups` is the nested pool source of the `credits` meter;
-/// before migration `.credits.balance == 50`. A migration whose `$as` NEGATES the
-/// pool source (`50 -> -50`) would project a negative pool `$quantity` (§15.1).
-/// The prior engine dropped the nested `topups` entirely, so the pool was empty
-/// (quantity 0, not negative), nothing was rejected, and the poisoning migration
-/// committed `ok` with `balance == 0` — silent data loss that also defeated the
-/// §15.1 guard. Now the capture refuses to carry the nested pool source, so the
-/// whole migration is REFUSED (`rejected`) before any meter re-funding runs; the
-/// broader fail-closed guard (§20.1/§22.1) subsumes the specific §15.1 probe. The
-/// instance is left unchanged. Both backends agree.
+/// REGRESSION (meter consequence — driving a meter concern through a migration).
+/// `users.topups` is the nested pool source of the `credits` meter; before
+/// migration `.credits.balance == 50`. A migration whose `$as` NEGATES the pool
+/// source (`50 -> -50`) projects a negative pool `$quantity`, which §15.1 forbids.
+///
+/// This is the sharpest possible test of the carry-through, because it can only
+/// pass for the right reason. The original engine dropped the nested `topups`
+/// entirely, so the pool was EMPTY (quantity 0, not negative), the §15.1 guard had
+/// nothing to fire on, and the poisoning migration committed `ok` with
+/// `balance == 0`. A later build refused the migration wholesale for holding nested
+/// rows at all — honest, but it never reached the meter. Now the nested pool source
+/// is carried into the prospective migrated state and the §15.1 re-funding runs
+/// over it, so the negation is caught on its own merits and rejected. Both backends
+/// agree.
 #[test]
-fn migration_negating_nested_pool_source_is_refused() {
+fn migration_negating_nested_pool_source_is_rejected_by_the_meter() {
     let src = |amount_decl: &str| {
         format!(
             r##"
@@ -218,7 +212,7 @@ fn migration_negating_nested_pool_source_is_refused() {
     let hjson = format!(
         r##"{{
       format: 1
-      name: migration-negating-nested-pool-source-is-refused
+      name: migration-negating-nested-pool-source-is-rejected-by-the-meter
       suite: scenario
       spec: ["#meters", "§15.1", "#evolution", "§20.1", "#state-model", "§22.1"]
       package: {{
@@ -238,16 +232,15 @@ fn migration_negating_nested_pool_source_is_refused() {
               $model: {{ {v2} }}
             }}
           }}
-          // §20.1/§22.1 fail-closed: the capture refuses to carry the nested pool
-          // source, so the migration is rejected before it could either poison the
-          // meter or silently drop the pool. (The prior engine dropped it and
-          // committed `ok`.)
-          expect: {{ outcome: rejected, violates: ["#evolution", "§20.1", "#state-model", "§22.1"] }} }}
+          // §15.1: the nested pool source is carried into the migrated state, so the
+          // re-funding pass sees the negated `$quantity` and rejects it. (The
+          // original engine dropped the pool and committed `ok` with balance 0.)
+          expect: {{ outcome: rejected, violates: ["#meters", "§15.1"] }} }}
       ]
     }}"##
     );
-    let (memory, pg) = run_both("migration-negating-nested-pool-source-is-refused", &hjson);
-    agree_and_report(&memory, &pg, 2, "migration negating nested pool source refused");
+    let (memory, pg) = run_both("migration-negating-nested-pool-source-is-rejected-by-the-meter", &hjson);
+    agree_and_report(&memory, &pg, 2, "migration negating nested pool source rejected by the meter");
 }
 
 /// PASSING CONTROL: a byte-identical patch-bump migration of a package whose data
