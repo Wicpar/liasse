@@ -59,7 +59,7 @@ impl StateSection {
     ) -> Result<Self, StoreError> {
         let prospective = Prospective::gather(store, schema)?;
         let reserved = crate::singleton::address();
-        let mut forest = CapturedRow::forest(prospective.working(), &reserved)?;
+        let mut forest = CapturedRow::forest(prospective.working(), prospective.created(), &reserved)?;
         // §5.8: a top-level member naming a keyed shape (`companies: "company"`) IS a
         // collection, so it is captured like a directly-declared one — through the
         // same `resolved_collection` identity the gather and compile paths select by.

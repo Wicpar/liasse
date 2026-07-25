@@ -274,6 +274,17 @@ impl Prospective {
         self.working.insert(address, fields);
     }
 
+    /// Record the admission instant a staged row CARRIES FORWARD from an existing
+    /// committed row (§14.1 `$created`, §22.6) — the §20.1 migration copy, which
+    /// re-stages a live row under the target model without re-admitting it. The row
+    /// keeps its identity across the copy, so it keeps its original `$created`, and
+    /// the lifecycle-bucket interval check reads that instant rather than the
+    /// migration's own `now`. A row with no carried instant is genuinely new and
+    /// falls back to `now`, unchanged.
+    pub(crate) fn carry_created(&mut self, address: RowAddress, created: Timestamp) {
+        self.created.insert(address, created);
+    }
+
     /// Replace the fields of the row at `address` (must be live).
     pub(crate) fn replace(&mut self, address: &RowAddress, fields: FieldMap) {
         self.working.insert(address.clone(), fields);

@@ -18,7 +18,7 @@ use std::collections::BTreeMap;
 
 use liasse_ident::NameSegment;
 use liasse_store::{CollectionPath, RowAddress, StoreError};
-use liasse_value::Type;
+use liasse_value::{Timestamp, Type};
 use serde_json::Value as J;
 
 use crate::compiled::CompiledCollection;
@@ -32,6 +32,11 @@ use crate::schema::Schema;
 pub(crate) struct CapturedRow {
     fields: FieldMap,
     children: BTreeMap<String, Vec<CapturedRow>>,
+    /// The row's recorded admission instant (§14.1 `$created`, §22.6) when this
+    /// capture came from a live store. `None` for a row decoded from the §19.5 wire
+    /// form, which records no admission instant: a restored row is admitted at the
+    /// restoring transition's own `now`, exactly as before this member existed.
+    created: Option<Timestamp>,
 }
 
 impl CapturedRow {
@@ -39,6 +44,15 @@ impl CapturedRow {
     /// structs) — everything except its nested child collections.
     pub(crate) fn fields(&self) -> &FieldMap {
         &self.fields
+    }
+
+    /// The row's recorded admission instant (§14.1), when the capture read it from a
+    /// live store. A §20.1 copy carries it onto the migrated row so a lifecycle
+    /// bucket's interval is re-checked against the instant the row was ORIGINALLY
+    /// admitted at, not against the migration's own `now` — which would make every
+    /// already-expired row an invalid interval and refuse the whole update.
+    pub(crate) fn created(&self) -> Option<Timestamp> {
+        self.created
     }
 
     /// The captured rows of the nested keyed collection declared as `name` under
@@ -61,6 +75,7 @@ impl CapturedRow {
     /// reported as such rather than dropped.
     pub(crate) fn forest(
         working: &BTreeMap<RowAddress, FieldMap>,
+        created: &BTreeMap<RowAddress, Timestamp>,
         reserved: &RowAddress,
     ) -> Result<BTreeMap<String, Vec<CapturedRow>>, StoreError> {
         let mut orphans: BTreeMap<RowAddress, BTreeMap<String, Vec<CapturedRow>>> = BTreeMap::new();
@@ -76,7 +91,7 @@ impl CapturedRow {
             for rows in children.values_mut() {
                 rows.reverse();
             }
-            let row = Self { fields: fields.clone(), children };
+            let row = Self { fields: fields.clone(), children, created: created.get(address).copied() };
             match address.parent() {
                 Some(parent) => orphans.entry(parent).or_default().entry(name).or_default().push(row),
                 None => roots.entry(name).or_default().push(row),
@@ -130,7 +145,7 @@ impl CapturedRow {
         let value = Self::row_type(collection).decode(&own).map_err(|error| {
             EngineError::Internal(format!("state row in `{}`: {error}", collection.name))
         })?;
-        Ok(Self { fields: materialize::fields_of(&value), children })
+        Ok(Self { fields: materialize::fields_of(&value), children, created: None })
     }
 
     /// Re-address this row and its whole subtree into `working`, ready to stage.

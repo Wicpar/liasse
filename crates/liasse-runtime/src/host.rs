@@ -186,6 +186,24 @@ impl HostBinding {
         Self::bind(&self.registry, requires, true).map(drop)
     }
 
+    /// The expr-checker signatures a §20 target's own `requires` resolve to against
+    /// the components this binding already holds, WITHOUT rebinding it — the
+    /// signatures a target compilation must be type-checked under so that it and the
+    /// active package are read through ONE typing discipline (§16.2, §13.14).
+    ///
+    /// Resolution is LENIENT on purpose: this method types, it does not gate. A
+    /// requirement that resolves contributes its descriptor's signatures exactly as
+    /// at load; one that does not is omitted, leaving its calls to fault as unknown
+    /// functions precisely as they do today. The strict §16.2 update gate stays where
+    /// it is ([`probe_rebind`](Self::probe_rebind) and [`rebind`](Self::rebind)), so
+    /// no requirement failure moves earlier or later because of this call.
+    pub(crate) fn target_signatures(
+        &self,
+        requires: &[(String, String)],
+    ) -> Result<HostSignatures, EngineError> {
+        Ok(self.signatures_of(&Self::bind(&self.registry, requires, false)?))
+    }
+
     /// Bind each `(local, "name@major")` requirement to its resolved contract
     /// (§16.2). Under `strict`, an unparseable or unresolvable requirement is an
     /// [`EngineError::Requirement`]; otherwise it is deferred (skipped).
@@ -225,12 +243,19 @@ impl HostBinding {
     /// keyring, not as generic value calls, so they are dispatched specially, not
     /// type-checked as host calls (see [`HostDispatch::eval_call`]).
     pub(crate) fn expr_signatures(&self) -> HostSignatures {
+        self.signatures_of(&self.requires)
+    }
+
+    /// [`expr_signatures`](Self::expr_signatures) over an arbitrary resolved
+    /// requirement map, so the active package's own binding and a §20 target's
+    /// ([`target_signatures`](Self::target_signatures)) are read through one body.
+    fn signatures_of(&self, requires: &BTreeMap<String, ContractRef>) -> HostSignatures {
         let mut namespaces = BTreeMap::new();
-        for (local, contract) in &self.requires {
+        for (local, contract) in requires {
             if contract.name().as_str() == COSE_CONTRACT {
                 continue;
             }
-            let Some(namespace) = self.namespace(local) else { continue };
+            let Ok(namespace) = self.registry.resolve_namespace(contract) else { continue };
             // §16.5: a resolved codec contract the engine links is Core (legal in a
             // database-evaluated position); every other application namespace is
             // Registered (legal only inside a mutation program).

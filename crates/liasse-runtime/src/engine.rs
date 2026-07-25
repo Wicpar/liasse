@@ -252,7 +252,7 @@ pub(crate) fn compile_definition(
 /// model — the cheap front step a host-managing load performs before compiling,
 /// so the resolved namespace signatures are available to type-check the package's
 /// host-call views and defaults.
-fn requires_of(definition: &str) -> Result<Vec<(String, String)>, EngineError> {
+pub(crate) fn requires_of(definition: &str) -> Result<Vec<(String, String)>, EngineError> {
     let mut sources = SourceMap::new();
     let src = sources.add_file("liasse.json", definition.to_owned());
     let document = parse_document(src, definition).map_err(|d| EngineError::Invalid(Box::new(d)))?;

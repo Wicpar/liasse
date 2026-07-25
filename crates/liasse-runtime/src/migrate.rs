@@ -44,7 +44,7 @@ use crate::captured::CapturedRow;
 use crate::compiled::{Compiled, CompiledCollection, CompiledMutation, CompiledStmt};
 use crate::contract::BoundaryContract;
 use crate::doc;
-use crate::engine::{compile_definition, Compilation, Engine};
+use crate::engine::{compile_definition, requires_of, Compilation, Engine};
 use crate::error::{EngineError, Rejection, RejectionReason};
 use crate::eval::EvalCtx;
 use crate::host::{HostBinding, HostDispatch, HostSignatures};
@@ -185,12 +185,37 @@ impl<S: InstanceStore> Engine<S> {
         // whole computation ran against.
         let basis = self.update_basis().map_err(UpdateError::Engine)?;
         // §16.2/§20: the target keeps the context's registered components but
-        // declares its own `$requires`, re-resolved by [`stage_migration`]. The
-        // target compilation itself does not re-type its host-call views/defaults
-        // against the live registry here — a target whose views call an unregistered
-        // namespace fails to compile as an unknown function, which is the correct
-        // load rejection (a resolvable host-call view under migration is a seam).
-        let compilation = compile_definition(target, &crate::host::HostSignatures::default(), crate::imports::EMPTY.types())
+        // declares its own `$requires`, re-resolved by [`stage_migration`]. It is
+        // compiled under the SAME host signatures the ACTIVE package's own
+        // compilation was type-checked under — its own `$requires` resolved against
+        // the live registry — because the Annex E boundary comparison below reads one
+        // contract out of each, and two contracts extracted under different typing
+        // disciplines are not comparable.
+        //
+        // §8.3 host-argument inference is what makes the difference observable: a
+        // mutation parameter passed inside a structured host-call argument
+        // (`verify({ message: @message })`) types at the argument struct's declared
+        // field type when the namespace's descriptor is in scope, and gap-fills to
+        // `json` when it is not. Compiling the target blind therefore reported
+        // `narrows the accepted domain of parameter …` for every package whose
+        // verifier takes a struct — on a BYTE-IDENTICAL republish — while the same
+        // package under a `json` descriptor passed. That was a defect of the check,
+        // not a narrowing: nothing about the exposed contract had moved.
+        //
+        // An engine activated through an explicit host registry
+        // (`load_with_hosts`/`reopen_with_hosts`) fed those signatures to the
+        // checker, so the target gets them too; a leniently loaded one
+        // (`load`/`load_with_dispatch`) fed it none, so the target gets none either.
+        // Resolution here is lenient and types only — the strict §16.2 update gate
+        // stays at `probe_rebind` below, unmoved.
+        let signatures = if self.host_binding().strict_components() {
+            self.host_binding()
+                .target_signatures(&requires_of(target).map_err(UpdateError::Engine)?)
+                .map_err(UpdateError::Engine)?
+        } else {
+            crate::host::HostSignatures::default()
+        };
+        let compilation = compile_definition(target, &signatures, crate::imports::EMPTY.types())
             .map_err(UpdateError::Engine)?;
         let decision = compatibility(self.model(), &compilation.model)?;
         // §20.1/§20.3/Annex E.9: an in-place update is compatible only when a
@@ -584,7 +609,7 @@ fn build_migrated<G: crate::generator::Generators>(
     // stages onto the same reserved address), so a deliberate migration of the
     // singleton still wins while every member the program leaves alone keeps its
     // §20.1 compatible copy. Every carried value is re-validated against its target
-    // type in `coerce_and_require` before commit.
+    // type in `coerce_migrated` before commit.
     let singleton_address = crate::singleton::address();
     if let Some(old_singleton) = old_working.get(&singleton_address) {
         let mut migrated_singleton = FieldMap::new();
@@ -648,7 +673,7 @@ fn build_migrated<G: crate::generator::Generators>(
     // run the ordinary rule pipeline over the whole result.
     let addresses: Vec<RowAddress> = prospective.working().keys().cloned().collect();
     for address in &addresses {
-        coerce_and_require(&target.compiled, &mut prospective, address)?;
+        coerce_migrated(&target.compiled, &mut prospective, address)?;
     }
     // §5.9/§5.4/§22.1/B.5: coercion may have re-derived a KEY enum leaf to the
     // target's current declaration-order ordinal, so a row's canonical address no
@@ -693,6 +718,13 @@ fn build_migrated<G: crate::generator::Generators>(
         // A bundle merge inserts, replaces, or removes rows, so the finalize/commit
         // set is exactly the prospective state after it.
         addresses = prospective.working().keys().cloned().collect();
+    }
+    // §5.1/§20.1: every required field must carry a value in the state that
+    // commits. Judged HERE, on the complete prospective target, so a value the
+    // release itself supplies through `$seed`/`$bundle` counts — see
+    // [`require_populated`].
+    for address in &addresses {
+        require_populated(&target.compiled, &prospective, address)?;
     }
     rules::finalize(&target.compiled, &ctx, &prospective, &addresses)?;
     // §20.1: the migrated state runs the SAME eager admission suite an ordinary
@@ -792,6 +824,16 @@ impl CopyPass<'_, '_> {
                 self.migrated.push(address.clone());
             }
             self.prospective.insert(address.clone(), fields);
+            // §14.1/§22.6: the copy carries the row's identity forward, so it carries
+            // its ORIGINAL admission instant with it. Without this the interval check
+            // below would read a `$created`-defaulted `$from` as the migration's own
+            // `now`, and every row whose lifetime has already elapsed — an expired
+            // session, a spent challenge — would present an empty interval and refuse
+            // the whole update. The committed `$created` is preserved on the store
+            // side too: a migrated row is an UPDATE at its existing address.
+            if let Some(created) = old_row.created() {
+                self.prospective.carry_created(address.clone(), created);
+            }
             self.touched.push(address.clone());
             self.children(path, collection, migration, old_collection, old_row, &address)?;
         }
@@ -933,7 +975,7 @@ fn run_program(
 }
 
 /// Re-validate a migrated row against its declared TARGET shape for the §20.1
-/// final check, and enforce population. Every migrated value — the compatible
+/// final check. Every migrated value — the compatible
 /// same-identity copy, a `$from`/`$as` result, or a `$migrations` program write —
 /// is re-decoded against its declared target type through the SAME portable codec
 /// the §19 export/restore path enforces ([`Type::decode`] over the value's
@@ -949,13 +991,15 @@ fn run_program(
 ///   re-derives its declaration-order ordinal (§5.9/§5.4); a dropped label rejects;
 /// - a ref field: a value produced as a plain scalar key (a program's literal
 ///   `team: "ghost"`) decodes to a typed ref so the §5.6 refs check resolves it;
-/// - a required field the migration left unpopulated rejects (§5.1/§20.1).
+///
+/// Population is NOT judged here — [`require_populated`] judges it on the complete
+/// prospective target, once the release's own `$seed`/`$bundle` have applied.
 ///
 /// The rule that a value "is compatible" iff it decodes under the target type is
 /// pinned to §20.1 ("the *compatible* value is copied") and §22.1 (field/shape
 /// types hold in EVERY committed state): the committable states are exactly those
 /// the §19 codec can round-trip, which is the invariant a migration must preserve.
-fn coerce_and_require(
+fn coerce_migrated(
     compiled: &Compiled,
     prospective: &mut Prospective,
     address: &RowAddress,
@@ -1008,13 +1052,12 @@ fn coerce_and_require(
                 changed = true;
             }
         }
-        if is_required(&field.ty) && matches!(fields.get(&field.name), None | Some(Value::None)) {
-            return Err(Rejection::new(
-                RejectionReason::Check,
-                format!("migration left required field `{}` unpopulated", field.name),
-            )
-            .at(address.render()));
-        }
+        // The required-population check is NOT made here: it is made by
+        // [`require_populated`], over the COMPLETE prospective target, after the
+        // §13.13 `$seed`/`$bundle` passes have supplied their values. Judging it at
+        // this point would reject a release that populates the field itself — the
+        // same reason the ref arm above defers to the refs check. Nothing is
+        // relaxed: every row still passes the identical rejection before commit.
     }
     // §5.3/§20.1/§22.1: a migrated static-struct member (§5.3) — including the §8.2
     // singleton's static structs, now compiled into `root_singleton.structs` —
@@ -1043,6 +1086,44 @@ fn coerce_and_require(
     }
     if changed {
         prospective.replace(address, fields);
+    }
+    Ok(())
+}
+
+/// Reject a required field left unpopulated in the prospective target (§5.1/§20.1).
+///
+/// This runs over the COMPLETE prospective state — after the §20.1 copy, the
+/// `$from`/`$as` mappings, the `$migrations` program, the `$seed` apply-if-absent
+/// pass AND the §13.13 `$bundle` merge — because those last two are the release
+/// supplying its own values. A required field the migration itself does not carry
+/// but the release BUNDLES is populated in the state that commits, so judging
+/// population before the bundle ran would refuse a perfectly complete release. It
+/// is the same discipline [`coerce_migrated`] already applies to a required ref,
+/// which it leaves to the refs check for exactly this reason.
+///
+/// The rejection is unchanged in kind, message and coordinate: a field still absent
+/// (or `none`) once the whole release has been applied refuses the update.
+fn require_populated(
+    compiled: &Compiled,
+    prospective: &Prospective,
+    address: &RowAddress,
+) -> Result<(), Rejection> {
+    let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
+    let Some(collection) = compiled.collection_at(&decl) else { return Ok(()) };
+    let Some(fields) = prospective.get(address) else { return Ok(()) };
+    for field in &collection.fields {
+        // A ref is the refs check's business (§5.6): it distinguishes a required
+        // ref with no target from one that is merely absent, with a better message.
+        if field.reference.is_some() || field.element_reference.is_some() {
+            continue;
+        }
+        if is_required(&field.ty) && matches!(fields.get(&field.name), None | Some(Value::None)) {
+            return Err(Rejection::new(
+                RejectionReason::Check,
+                format!("migration left required field `{}` unpopulated", field.name),
+            )
+            .at(address.render()));
+        }
     }
     Ok(())
 }
@@ -1270,7 +1351,7 @@ fn representable_rows(
     // represent — no same-named target struct or field carries it, no declared mapping
     // reconstructs it — silently discards live data, exactly the §20.2 loss the field
     // loop rejects. (A struct kept under the same name is re-decoded against the
-    // target struct type by `coerce_and_require`, which rejects an inner mismatch.)
+    // target struct type by `coerce_migrated`, which rejects an inner mismatch.)
     for structure in &active.structs {
         let kept = target.is_some_and(|collection| {
             collection.struct_type(&structure.name).is_some() || collection.field(&structure.name).is_some()
@@ -1341,7 +1422,7 @@ fn map_row(
     // member (§5.3) compiles into `collection.structs`, not `fields`, so the loop
     // above never touches it. Carry each forward verbatim from the source row, so a
     // struct-nested value is part of the EXPLICIT migrated state — where its enum
-    // leaves are re-validated against the target's closed set in `coerce_and_require`
+    // leaves are re-validated against the target's closed set in `coerce_migrated`
     // — rather than a stale value the store would otherwise silently retain.
     for struct_meta in &collection.structs {
         if let Some(value) = old_row.get(&struct_meta.name) {
@@ -1354,7 +1435,7 @@ fn map_row(
 /// Apply one field's local migration mapping to a source value (§20.1): a `$as`
 /// transform (with an optional `$back` round-trip verification, §20.2) or, without
 /// `$as`, the compatible same-identity copy. `old_ty` types the transform's `.`;
-/// the result is re-validated against `target_ty` by [`coerce_and_require`], so a
+/// the result is re-validated against `target_ty` by [`coerce_migrated`], so a
 /// wrong-typed `$as` result rejects rather than committing. Shared by the keyed-
 /// collection [`map_row`] and the §8.2 singleton carry so a singleton `$from`
 /// rename copies/transforms exactly like a collection field.

@@ -240,11 +240,27 @@ fn divergent_fields<'a>(
 ) -> impl Iterator<Item = String> + 'a {
     new.iter()
         .filter(move |(field, new_value)| {
-            let old_value = old.and_then(|fields| fields.get(*field));
-            let current_value = current.get(*field);
+            let old_value = held(old, field);
+            let current_value = held(Some(current), field);
             current_value != old_value && Some(*new_value) != old_value && current_value != Some(*new_value)
         })
         .map(|(field, _)| field.clone())
+}
+
+/// The value a field map HOLDS at `field`, with the two spellings of *nothing*
+/// normalized to one (§13.13).
+///
+/// A row that carries no value at a field spells it `Value::None` once it has been
+/// through the §5.1 absent-fill, while a bundle document that supplies no value at
+/// that field simply omits the member. The three-way merge compares "what the
+/// instance holds" against "what the release shipped", so those two must compare
+/// equal — otherwise a field a release NEWLY bundles reads as a local edit on every
+/// instance installed before it, and the release's value never reaches the row. A
+/// newly bundled REQUIRED field then makes the release unmigratable outright: the
+/// merge declines to fill it and the §20.1 admission check rejects the update for a
+/// field the package did supply.
+fn held<'a>(fields: Option<&'a FieldMap>, field: &str) -> Option<&'a Value> {
+    fields.and_then(|fields| fields.get(field)).filter(|value| !matches!(value, Value::None))
 }
 
 /// Whether any live row in the prospective state is nested under `address` (§5.4).
@@ -263,7 +279,7 @@ fn has_live_descendant(prospective: &Prospective, address: &RowAddress) -> bool 
 fn merge_row_fields(current: &FieldMap, old: Option<&FieldMap>, new: &FieldMap) -> FieldMap {
     let mut merged = current.clone();
     for (field, new_value) in new {
-        if current.get(field) == old.and_then(|fields| fields.get(field)) {
+        if held(Some(current), field) == held(old, field) {
             merged.insert(field.clone(), new_value.clone());
         }
     }
