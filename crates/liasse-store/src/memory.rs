@@ -26,12 +26,23 @@ use crate::row::StoredRow;
 use crate::snapshot::Snapshot;
 use crate::staging::MemoryTransition;
 
+/// One admitted transition that has not been given a serial position yet — the
+/// *residual* an admission records and history later builds from (§22.1).
+#[derive(Debug)]
+struct Residual {
+    ops: Vec<CommittedRowOp>,
+    created: Timestamp,
+    transaction: Option<TransactionId>,
+}
+
 /// A `BTreeMap`-backed store for one package instance.
 #[derive(Debug)]
 pub struct MemoryStore {
     instance: InstanceId,
-    head: CommitSeq,
     current: BTreeMap<RowAddress, StoredRow>,
+    /// Admitted-but-unpositioned transitions, in admission order — the queue
+    /// [`MemoryStore::build_history`] drains.
+    residuals: Vec<Residual>,
     log: Vec<CommittedTransition>,
     next_incarnation: u64,
     points: BTreeMap<HistoryPoint, CommitSeq>,
@@ -46,14 +57,38 @@ impl MemoryStore {
     pub fn new(instance: InstanceId) -> Self {
         Self {
             instance,
-            head: CommitSeq::GENESIS,
             current: BTreeMap::new(),
+            residuals: Vec::new(),
             log: Vec::new(),
             next_incarnation: 0,
             points: BTreeMap::new(),
             blobs: BTreeMap::new(),
             definition: None,
             composition: None,
+        }
+    }
+
+    /// The built history's tip — the highest position handed out, or
+    /// [`CommitSeq::GENESIS`] before the first. There is no separate head counter:
+    /// the head IS history's tip, exactly as in the durable backend.
+    fn tip(&self) -> CommitSeq {
+        self.log.last().map_or(CommitSeq::GENESIS, CommittedTransition::seq)
+    }
+
+    /// Build history over every settled admission: position each residual, in
+    /// admission order, after the current tip (§22.1).
+    ///
+    /// The durable backend must wait for admissions that are still in flight before
+    /// it may position anything; here an admission *is* settled the moment it
+    /// returns, because the store is in-process and takes `&mut self` for the whole
+    /// of one, so a pass always drains the queue completely. Same rule, no waiting
+    /// to do.
+    fn build_history(&mut self) {
+        let mut seq = self.tip();
+        for residual in std::mem::take(&mut self.residuals) {
+            seq = seq.next();
+            let Residual { ops, created, transaction } = residual;
+            self.log.push(CommittedTransition::new(seq, ops, created, transaction));
         }
     }
 
@@ -67,18 +102,23 @@ impl MemoryStore {
         &self.current
     }
 
-    /// Allocate the next opaque row incarnation (D.1). Tokens are opaque, so
-    /// gaps from aborted transitions are harmless; only serial positions must be
-    /// gapless.
+    /// Allocate the next opaque row incarnation (D.1). Tokens are opaque, so gaps
+    /// from aborted transitions are harmless — which is exactly why the durable
+    /// backend draws them from a `SEQUENCE`.
     pub(crate) fn alloc_incarnation(&mut self) -> RowIncarnation {
         let token = format!("row-{}", self.next_incarnation);
         self.next_incarnation += 1;
         RowIncarnation::new(token)
     }
 
-    /// Atomically admit a staged transition. Empty transitions consume no
-    /// position (§22.2); otherwise the next position is taken, the ops are
-    /// applied to current state, and the transition is appended to the log.
+    /// Atomically admit a staged transition, then build the history it belongs to.
+    /// Empty transitions admit nothing (§22.2); otherwise the ops are applied to
+    /// current state and recorded as a residual, and the history pass gives that
+    /// residual its serial position.
+    ///
+    /// Admission itself assigns no position — the same split the durable backend
+    /// makes (§22.1) — so the two stores agree on *when* a position exists, not just
+    /// on what it is.
     pub(crate) fn commit_transition(
         &mut self,
         ops: Vec<CommittedRowOp>,
@@ -90,7 +130,6 @@ impl MemoryStore {
         if ops.is_empty() && definition.is_none() && composition.is_none() {
             return Ok(CommitOutcome::Unchanged);
         }
-        let seq = self.head.next();
         for op in &ops {
             self.apply_current(op, created);
         }
@@ -100,9 +139,9 @@ impl MemoryStore {
         if let Some(composition) = composition {
             self.composition = Some(composition);
         }
-        self.log.push(CommittedTransition::new(seq, ops, created, transaction));
-        self.head = seq;
-        Ok(CommitOutcome::Committed(seq))
+        self.residuals.push(Residual { ops, created, transaction });
+        self.build_history();
+        Ok(CommitOutcome::Committed(self.tip()))
     }
 
     /// Apply one already-validated op to the current map. Staging established
@@ -158,7 +197,7 @@ impl InstanceStore for MemoryStore {
     }
 
     fn head(&self) -> Result<CommitSeq, StoreError> {
-        Ok(self.head)
+        Ok(self.tip())
     }
 
     fn row(&self, address: &RowAddress) -> Result<Option<StoredRow>, StoreError> {
@@ -194,12 +233,13 @@ impl InstanceStore for MemoryStore {
     }
 
     fn snapshot(&self, frontier: CommitSeq) -> Result<Snapshot, StoreError> {
-        if frontier > self.head {
+        let head = self.tip();
+        if frontier > head {
             return Err(StoreError::Corruption {
                 detail: format!(
                     "snapshot frontier {} is past head {}",
                     frontier.get(),
-                    self.head.get()
+                    head.get()
                 ),
             });
         }
@@ -220,9 +260,10 @@ impl InstanceStore for MemoryStore {
     }
 
     fn record_point(&mut self, at: CommitSeq, point: HistoryPoint) -> Result<(), StoreError> {
-        if at > self.head {
+        let head = self.tip();
+        if at > head {
             return Err(StoreError::Corruption {
-                detail: format!("history point at {} is past head {}", at.get(), self.head.get()),
+                detail: format!("history point at {} is past head {}", at.get(), head.get()),
             });
         }
         self.points.insert(point, at);

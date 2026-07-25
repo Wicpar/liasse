@@ -6,7 +6,7 @@
 //! # What this crate owns
 //!
 //! - The [`InstanceStore`] / [`Transition`] / [`StoreFactory`] contract
-//!   ([`contract`]): atomic commit admission at one gapless serial position
+//!   ([`contract`]): atomic commit admission at one monotone serial position
 //!   ([`CommitSeq`]), frontier [`Snapshot`] reads, a replayable commit log
 //!   ([`CommittedTransition`]), history-point recording (§19), content-addressed
 //!   blob hooks, and durable per-instance metadata ([`DefinitionText`],
@@ -22,7 +22,7 @@
 //! # Semantics-free by design
 //!
 //! The store stores, orders, and retrieves. It enforces structural facts (one
-//! row per address, gapless positions, faithful replay) but never type, ref,
+//! row per address, monotone positions, faithful replay) but never type, ref,
 //! check, or authorization rules — those live in the runtime above (§23).
 //!
 //! # Documented spec-gap choices

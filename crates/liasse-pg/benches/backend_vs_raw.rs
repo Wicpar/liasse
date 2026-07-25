@@ -377,21 +377,20 @@ fn substrate(c: &mut Criterion) {
     }
 }
 
-/// The admission transaction `PgStore::commit_transition` runs — head lock, log
-/// append, node insert (a top-level row under the sentinel), head bump — by hand
-/// against the twin schema `raw_s`.
+/// The admission transaction `PgStore::commit_transition` runs — residual append and
+/// node insert (a top-level row under the sentinel), with no lock and no position —
+/// plus the history pass that positions it afterwards, by hand against the twin
+/// schema `raw_s`. Both halves are timed, because both are what an admission costs.
 fn raw_commit(client: &mut Client, raw_s: &str, seq: i64) {
     let mut txn = client.transaction().expect("begin");
-    txn.execute(&format!("SELECT head FROM {raw_s}.instance_meta WHERE id = 1 FOR UPDATE"), &[])
-        .expect("lock head");
     txn.execute(
         &format!(
-            "INSERT INTO {raw_s}.commit_log (seq, transaction_id, ops, created) \
-             VALUES ($1, NULL, '[]'::jsonb, '{{\"ts\": [\"0\", \"us\"]}}'::jsonb)"
+            "INSERT INTO {raw_s}.commit_log (transaction_id, ops, created) \
+             VALUES (NULL, '[]'::jsonb, '{{\"ts\": [\"0\", \"us\"]}}'::jsonb)"
         ),
-        &[&seq],
+        &[],
     )
-    .expect("append log");
+    .expect("append residual");
     let key_enc = seq.to_be_bytes().to_vec();
     txn.execute(
         &format!(
@@ -401,9 +400,23 @@ fn raw_commit(client: &mut Client, raw_s: &str, seq: i64) {
         &[&key_enc, &format!("row-{seq}"), &serde_json::json!({"s": seq.to_string()})],
     )
     .expect("insert node");
-    txn.execute(&format!("UPDATE {raw_s}.instance_meta SET head = $1 WHERE id = 1"), &[&seq])
-        .expect("bump head");
     txn.commit().expect("commit");
+    let mut pass = client.transaction().expect("begin history pass");
+    pass.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", &[&raw_s]).expect("lock");
+    pass.execute(
+        &format!(
+            "WITH settled AS ( \
+                 SELECT xid, row_number() OVER (ORDER BY xid) AS offset_from_tip \
+                 FROM {raw_s}.commit_log \
+                 WHERE seq IS NULL AND xid < pg_snapshot_xmin(pg_current_snapshot()) \
+             ), tip AS (SELECT coalesce(max(seq), 0) AS at FROM {raw_s}.commit_log) \
+             UPDATE {raw_s}.commit_log AS log SET seq = tip.at + settled.offset_from_tip \
+             FROM settled, tip WHERE log.xid = settled.xid"
+        ),
+        &[],
+    )
+    .expect("position the settled admissions");
+    pass.commit().expect("commit history pass");
 }
 
 criterion_group! {

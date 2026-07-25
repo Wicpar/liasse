@@ -1,5 +1,5 @@
 //! Wire codec for the durable records: [`RowAddress`], [`CommittedRowOp`], the
-//! `commit_log` row, and the `instance_meta` composition/position columns.
+//! `commit_log` row, and the `instance_meta` composition column.
 //!
 //! Addresses and log operations are built from typed [`Value`]s, so they inherit
 //! the same schema-free constraint as [`crate::value_codec`]: they must persist

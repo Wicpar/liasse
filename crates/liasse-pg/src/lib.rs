@@ -22,10 +22,12 @@
 //!   no-op — a reopened [`PgStore`] answers reads straight from the durable tables
 //!   with nothing to rebuild (`PgStoreFactory::reopen`), which is what makes
 //!   durability observable.
-//! - Every mutating contract call maps to exactly one SQL transaction. The serial
-//!   position comes from a per-instance counter row locked `FOR UPDATE`, so it is
-//!   gapless and monotone — a plain PostgreSQL `SEQUENCE` gaps on rollback and is
-//!   deliberately avoided (SPEC §22.3).
+//! - Every mutating contract call maps to exactly one SQL transaction, which writes
+//!   **state only** — it takes no serial position and no instance-wide lock, so two
+//!   admissions to one instance overlap. Serial positions (SPEC §22.3) are stamped
+//!   afterwards by [`history`], over admissions that have *settled*, which is what
+//!   makes them monotone without any writer waiting on another (SPEC §22.1: history
+//!   construction follows committed transitions independently of write admission).
 //!
 //! # Sync driver choice
 //!
@@ -44,8 +46,14 @@
 //! value is as well-formed as one the runtime parsed and a malformed durable
 //! record is a [`liasse_store::StoreError::Corruption`].
 
+// The body of one admission transaction — the crate's only durable write on
+// behalf of a transition.
+mod admit;
 mod backend;
 mod factory;
+// Post-settlement serial-position assignment: the half of admission that §22.1
+// separates from writing.
+mod history;
 mod jsonb_text;
 // The order-preserving `key_enc` BYTEA codec: the `nodes` write path
 // ([`node_write`]) encodes each level key with it for the `key_enc` lookup/scan
@@ -73,7 +81,7 @@ mod key_enc_boundary_test;
 mod key_enc_proptest;
 
 pub use factory::PgStoreFactory;
-pub use schema::{IndexSpec, SCHEMA_VERSION, Schema, TableSpec};
+pub use schema::{IndexSpec, MIN_COMPATIBLE_VERSION, SCHEMA_VERSION, Schema, SequenceSpec, TableSpec};
 pub use sort_enc::encode_sort_tuple;
 pub use store::PgStore;
 pub use transition::PgTransition;

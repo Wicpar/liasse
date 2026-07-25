@@ -1,9 +1,10 @@
 //! [`PgStore`]: one package instance's durable state on PostgreSQL.
 //!
-//! The store owns one writer connection (one writer per instance, so one
-//! connection suffices) and an r2d2 [`ReadPool`] of read connections (§5 of
-//! `DESIGN-pure-pg.md`), built by the factory after `reconcile` succeeds. Every
-//! mutating contract call maps to exactly one SQL transaction on the writer.
+//! The store owns one writer connection and an r2d2 [`ReadPool`] of read
+//! connections (§5 of `DESIGN-pure-pg.md`), built by the factory after `reconcile`
+//! succeeds. Every mutating contract call maps to exactly one SQL transaction on the
+//! writer. One writer per *handle*, not per instance: the factory opens as many
+//! handles onto one instance as asked, and their admissions overlap.
 //!
 //! **Phase 1 (§4.4)** serves the leaf reads — `head`, `log_from`,
 //! `point_position`, `get_blob`, `has_blob`, `definition`, `composition` — from
@@ -14,9 +15,18 @@
 //! materialized directly from the `nodes` tree ([`crate::node_load`]) in O(state)
 //! rather than folding the whole log in O(history). Each read checks a connection
 //! out of `reads`, runs one single-statement autocommit SQL query (consistency case
-//! 1, nothing to pin — §5.4; `snapshot`'s frontier log prefix is immutable, case 2,
-//! and its head fast path is a single `nodes` scan, case 1), decodes it with the
-//! existing codecs, and returns.
+//! 1, nothing to pin — §5.4), decodes it with the existing codecs, and returns.
+//! `snapshot` is the one exception: it needs head, the unpositioned-admission check
+//! and its materialization to agree, so it runs them on one `REPEATABLE READ READ
+//! ONLY` transaction (case 2).
+//!
+//! **Admission writes state, never history.** A commit transaction records the ops
+//! in the `nodes` tree and a residual in `commit_log`, takes no serial position and
+//! no instance-wide lock, and commits. Positions are stamped afterwards, over settled
+//! admissions, by [`crate::history`] (§22.1). So `head`, `log_from` and `snapshot`
+//! all read *built* history, while `row`/`scan` read current state — and current
+//! state can be briefly ahead of history, which is the one gap this decoupling
+//! creates and which every read here answers deliberately.
 //!
 //! The store holds **no in-memory read model of durable state** — the projection is
 //! gone (Phase 3, the "no in-memory projection" mandate). The staging read base a
@@ -31,21 +41,26 @@ use liasse_store::{
     StoredRow,
 };
 use liasse_value::{Sha512, Timestamp};
-use postgres::{Client, NoTls, Transaction};
+use postgres::{Client, NoTls};
 use r2d2::Pool;
 use r2d2_postgres::PostgresConnectionManager;
 use serde_json::Value as J;
 
+use crate::admit::{commit_body, commit_member};
 use crate::backend::{backend, cell, corrupt, pool};
+use crate::history;
 use crate::jsonb_text;
 use crate::node_load;
-use crate::node_write::NodeWriter;
 use crate::read;
-use crate::record_codec::{
-    decode_composition, decode_log_row, encode_composition, encode_op, seq_from,
-};
+use crate::record_codec::{decode_composition, decode_log_row, seq_from};
 use crate::schema::Schema;
 use crate::transition::PgTransition;
+
+/// How long [`PgStore::settle`] waits between history passes while an older
+/// admission is still in flight. Short enough that the common case (nothing else in
+/// flight, positioned on the first pass) never sleeps at all, and the uncommon one
+/// resolves as soon as the straggler ends.
+const SETTLE_POLL: core::time::Duration = core::time::Duration::from_millis(1);
 
 /// The `&self` read-connection pool: r2d2 over the same synchronous `postgres`
 /// client the writer uses (§5.1). A pool is the maintainer-directed answer to
@@ -65,9 +80,9 @@ pub type ReadPool = Pool<PostgresConnectionManager<NoTls>>;
 /// cursor (durable since Phase 2, §6.3). Every contract read is a SQL query; the
 /// projection this struct once carried was deleted in Phase 3.
 pub struct PgStore {
-    /// The single writer connection (one writer per instance, §5.2): the admission
-    /// transaction, `alloc_incarnation`, `put_blob`, `record_point`, and open-time
-    /// reconcile all run on it.
+    /// This handle's writer connection (§5.2): the admission transaction, the
+    /// history pass that follows it, `alloc_incarnation`, `put_blob`, `record_point`,
+    /// and open-time reconcile all run on it.
     writer: Client,
     /// The `&self` read pool (§5), built post-`reconcile` by the factory. Every
     /// contract read checks a connection out of it and serves one indexed SQL
@@ -80,9 +95,9 @@ pub struct PgStore {
 impl core::fmt::Debug for PgStore {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         // `postgres::Client` is not `Debug`; name the instance and schema, which
-        // is what a diagnostic actually wants. The head is no longer a projection
-        // field — it lives only in the durable `instance_meta.head` (§6.2), which a
-        // `&self` non-fallible `Debug` cannot query — so it is not shown here.
+        // is what a diagnostic actually wants. The head is not a field at all — it is
+        // the built history's tip (§6.4), which a `&self` non-fallible `Debug` cannot
+        // query — so it is not shown here.
         f.debug_struct("PgStore")
             .field("instance", &self.instance.as_str())
             .field("schema", &self.schema.name())
@@ -107,37 +122,44 @@ impl PgStore {
     }
 
     /// Allocate the next opaque incarnation token (D.1) during staging — durable
-    /// burn-on-allocate (§6.3). One AUTOCOMMIT statement on the writer advances the
-    /// persisted `instance_meta.next_incarnation` and returns the pre-increment
-    /// value; the token is `row-{that}`. Staging holds no open SQL transaction (the
-    /// overlay is pure in-memory), so this commits by itself, immediately. The
-    /// counter therefore advances whether or not the staging later commits — matching
-    /// [`liasse_store::MemoryStore`]'s abort-visible, no-reuse allocation in-process,
-    /// and (strictly more faithful than the old commit-time persist) never reusing a
-    /// burned token across a reopen.
+    /// burn-on-allocate (§6.3). One `nextval` on the schema's `incarnations`
+    /// sequence returns the token number; the token is `row-{that}`.
+    ///
+    /// A sequence is the exactly-right shape here: `nextval` is non-transactional,
+    /// so the counter advances whether or not the staging later commits (matching
+    /// [`liasse_store::MemoryStore`]'s abort-visible, no-reuse allocation, and never
+    /// reusing a burned token across a reopen), and it takes **no row lock**, so
+    /// allocating a token during staging cannot serialize concurrent admissions.
+    /// Gaps are meaningless for an opaque token, which is why the counter row this
+    /// replaced had no reason to exist.
     pub(crate) fn alloc_incarnation(&mut self) -> Result<RowIncarnation, StoreError> {
-        let s = self.schema.quoted();
+        let [incarnations] = self.schema.sequences();
         let row = self
             .writer
             .query_one(
-                &format!(
-                    "UPDATE {s}.instance_meta SET next_incarnation = next_incarnation + 1 \
-                     WHERE id = 1 RETURNING next_incarnation - 1 AS allocated"
-                ),
+                &format!("SELECT nextval('{}') AS allocated", incarnations.qualified(&self.schema)),
                 &[],
             )
             .map_err(backend)?;
-        let allocated = cell::<i64>(&row, "instance_meta", "allocated")?;
+        let allocated = cell::<i64>(&row, "incarnations", "allocated")?;
         let token = u64::try_from(allocated)
             .map_err(|_| corrupt(format!("incarnation counter is negative ({allocated})")))?;
         Ok(RowIncarnation::new(format!("row-{token}")))
     }
 
-    /// Atomically admit a staged transition in one SQL transaction. Empty
-    /// transitions consume no position (§22.2). The serial position comes from
-    /// the per-instance `instance_meta.head` counter, locked `FOR UPDATE`: it is
-    /// gapless and monotone because it is a value we increment, never a
-    /// PostgreSQL `SEQUENCE` (which gaps on rollback).
+    /// Atomically admit a staged transition in one SQL transaction, then resolve the
+    /// serial position history gives it. Empty transitions admit nothing (§22.2).
+    ///
+    /// The transaction writes **state and a residual only** — no position, no lock,
+    /// nothing another instance-wide writer has to wait for — so two admissions to
+    /// this instance overlap freely. The position is then stamped by a history pass
+    /// over *settled* admissions ([`crate::history`]); the pass runs here, and this
+    /// call returns once it has reached this admission, so the contract's "admission
+    /// at one final serial position" still holds at the call boundary.
+    ///
+    /// The wait is not a lock: it ends when the oldest transaction that was in flight
+    /// when this one committed has ended, and every concurrent admission's *state
+    /// write* has already happened in parallel by then.
     pub(crate) fn commit_transition(
         &mut self,
         ops: Vec<CommittedRowOp>,
@@ -151,7 +173,7 @@ impl PgStore {
         }
         let s = self.schema.quoted();
         let mut txn = self.writer.transaction().map_err(backend)?;
-        let seq = commit_body(
+        let admission = commit_body(
             &mut txn,
             &s,
             &ops,
@@ -165,108 +187,40 @@ impl PgStore {
         // Pure PG: the durable tables the transaction just wrote *are* the committed
         // state. There is no projection to advance — a later read folds the log or
         // hits `nodes` directly (Phase 3).
-        Ok(CommitOutcome::Committed(seq))
+        Ok(CommitOutcome::Committed(self.settle(&admission)?))
     }
-}
 
-/// Admit one instance's already-resolved ops into an OPEN SQL transaction against
-/// its quoted `schema` (`s`), WITHOUT beginning or committing the transaction —
-/// taking that instance's per-instance write lock (`instance_meta.head` `FOR UPDATE`)
-/// and advancing its gapless head, then landing the ops in the `nodes` tree and the
-/// `commit_log`. The caller owns the transaction: a single-engine admission commits
-/// it alone; a folded multi-engine commit (§13.10) runs this once per touched schema
-/// on ONE shared transaction, so every touched instance commits together or the whole
-/// transaction rolls back. Assumes the payload is non-empty (the empty case is
-/// [`CommitOutcome::Unchanged`], filtered before this is reached).
-fn commit_body(
-    txn: &mut Transaction<'_>,
-    s: &str,
-    ops: &[CommittedRowOp],
-    created: Timestamp,
-    transaction: Option<&TransactionId>,
-    definition: Option<&DefinitionText>,
-    composition: Option<&Composition>,
-) -> Result<CommitSeq, StoreError> {
-    // Neither `jsonb` nor a raw `text` column can hold a `U+0000`, which a valid
-    // `text` value/key or an unvalidated D.5 token (transaction id) or D.4 source
-    // may carry; NUL-safe-encode every string leaf before it reaches a column.
-    let transaction_id = transaction.map(|t| jsonb_text::encode_text(t.as_str()));
-    let ops_wire = jsonb_text::to_jsonb(&J::Array(ops.iter().map(encode_op).collect()));
-    // §22.5/§22.6: the commit's fixed `now` — the `$created` every inserted row
-    // records — persisted so a log-fold replay reconstructs it (§14.1).
-    let created_wire = jsonb_text::to_jsonb(&crate::value_codec::encode_created(created));
-    let definition_source = definition.map(|d| jsonb_text::encode_text(d.source()));
-    let definition_id = definition.map(|d| d.identity().to_canonical_text());
-    let composition_wire = composition.map(|c| jsonb_text::to_jsonb(&encode_composition(c)));
-
-    // Take the per-instance write lock and read the authoritative head. Locking
-    // `FOR UPDATE` here is what serializes concurrent writers of THIS instance; a
-    // folded commit acquires every touched instance's lock in a fixed global order
-    // (see `commit_pending_group`), so overlapping multi-engine transitions cannot
-    // deadlock or partial-commit.
-    let locked = txn
-        .query_one(&format!("SELECT head FROM {s}.instance_meta WHERE id = 1 FOR UPDATE"), &[])
-        .map_err(backend)?;
-    // Pure PG: the locked durable head is the sole truth (§6.2); the next serial
-    // position is its immediate successor. There is no second (projection) head
-    // to cross-check any more, so the old divergence guard is gone.
-    let durable_head: i64 = cell(&locked, "instance_meta", "head")?;
-    let seq = seq_from(durable_head, "instance_meta.head")?.next();
-    let seq_num = i64::try_from(seq.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
-    txn.execute(
-        &format!(
-            "INSERT INTO {s}.commit_log (seq, transaction_id, ops, created) VALUES ($1, $2, $3, $4)"
-        ),
-        &[&seq_num, &transaction_id, &ops_wire, &created_wire],
-    )
-    .map_err(backend)?;
-    // Every op lands in the `nodes` adjacency tree — the sole durable row
-    // representation — in this one admission transaction. `NodeWriter` resolves
-    // each address to its surrogate id by an in-transaction SQL point lookup
-    // (§6.1), so nodes inserted earlier in this same admission are visible; there
-    // is no `by_id` projection to advance afterward. It carries the commit's
-    // `now` so a fresh insert stamps the row's `$created` (§14.1, §22.6).
-    let mut node_writer = NodeWriter::new(s, created);
-    for op in ops {
-        node_writer.apply(txn, op)?;
+    /// Drive history construction until `admission` has its position.
+    ///
+    /// The first pass positions it unless an *older* transaction was still in flight
+    /// when it committed; then the wait is for that transaction to end, which is
+    /// exactly the settlement the design is built on. Polling is the honest shape:
+    /// PostgreSQL offers no way to wait on the snapshot horizon advancing, and a
+    /// deadline here would be worse than a wait — it would mean returning an error
+    /// for state that is already durably committed.
+    fn settle(&mut self, admission: &history::AdmissionId) -> Result<CommitSeq, StoreError> {
+        let s = self.schema.quoted();
+        loop {
+            self.build_history()?;
+            if let Some(seq) = history::position_of(&mut self.writer, &s, admission)? {
+                return Ok(seq);
+            }
+            std::thread::sleep(SETTLE_POLL);
+        }
     }
-    // The commit no longer writes `next_incarnation`: the counter is advanced at
-    // allocation time, durably (§6.3). Only the head and any definition/
-    // composition are stamped here.
-    txn.execute(
-        &format!(
-            "UPDATE {s}.instance_meta SET \
-             head = $1, \
-             definition_source = COALESCE($2, definition_source), \
-             definition_id = COALESCE($3, definition_id), \
-             composition = COALESCE($4, composition) WHERE id = 1"
-        ),
-        &[&seq_num, &definition_source, &definition_id, &composition_wire],
-    )
-    .map_err(backend)?;
-    Ok(seq)
-}
 
-/// Admit one participant's payload into an open transaction, mapping an empty
-/// payload to [`CommitOutcome::Unchanged`] without touching the store (§22.2).
-fn commit_member(
-    txn: &mut Transaction<'_>,
-    s: &str,
-    pending: &PendingCommit,
-) -> Result<CommitOutcome, StoreError> {
-    if pending.ops.is_empty() && pending.definition.is_none() && pending.composition.is_none() {
-        return Ok(CommitOutcome::Unchanged);
+    /// Run one history-construction pass over this instance and report how many
+    /// admissions it positioned (`DESIGN-pure-pg.md` §6.4).
+    ///
+    /// Every admission drives this itself, so it is public for the two callers that
+    /// need a pass *without* admitting: a background builder, and a test holding an
+    /// admission in flight to observe what a pass does and does not position.
+    ///
+    /// # Errors
+    /// [`StoreError::Backend`] if the pass cannot reach PostgreSQL.
+    pub fn build_history(&mut self) -> Result<u64, StoreError> {
+        history::build(&mut self.writer, &self.schema)
     }
-    let seq = commit_body(
-        txn,
-        s,
-        &pending.ops,
-        pending.created,
-        pending.transaction.as_ref(),
-        pending.definition.as_ref(),
-        pending.composition.as_ref(),
-    )?;
-    Ok(CommitOutcome::Committed(seq))
 }
 
 impl InstanceStore for PgStore {
@@ -300,69 +254,60 @@ impl InstanceStore for PgStore {
     /// no surviving committed child under a rejected parent and no parent commit with
     /// an uncommitted child.
     ///
-    /// Before writing, each touched instance's `instance_meta.head` is locked
-    /// `FOR UPDATE`, in a FIXED global order — ascending by PostgreSQL schema name,
-    /// which is globally unique and stable per instance. Because every folded commit
-    /// acquires its locks in that same order, two concurrent multi-engine
-    /// transitions touching overlapping instances serialize on the first shared lock
-    /// instead of deadlocking, and neither can lost-update or partial-commit. Outcomes
-    /// are returned in the SAME order the members were given, not lock order.
+    /// The whole group shares ONE admitting transaction, so every participant's
+    /// residual carries the same transaction id and history positions each instance's
+    /// share of the fold together with everything else that settled — the fold is one
+    /// event per instance, at each instance's own next position. Nothing here takes a
+    /// per-instance lock, so two folded commits over overlapping instances neither
+    /// serialize nor deadlock, and the fixed schema ordering the old head-lock
+    /// protocol needed is gone with it. Outcomes are returned in the order the members
+    /// were given.
     fn commit_pending_group(
-        members: Vec<GroupMember<'_, PgStore>>,
+        mut members: Vec<GroupMember<'_, PgStore>>,
     ) -> Result<Vec<CommitOutcome>, StoreError> {
-        if members.is_empty() {
-            return Ok(Vec::new());
-        }
-        // Reorder into the fixed global lock order (ascending schema name), keeping
-        // each member's original input index so outcomes come back in input order.
-        let mut ordered: Vec<(usize, GroupMember<'_, PgStore>)> =
-            members.into_iter().enumerate().collect();
-        ordered.sort_by(|(_, a), (_, b)| a.store.schema.name().cmp(b.store.schema.name()));
-
-        // The first member in lock order lends its writer as the single coordinating
-        // connection; every touched schema is written through it in ONE transaction.
-        // A concurrent folded commit that also touches this instance blocks on the
-        // same `FOR UPDATE` head lock rather than opening a second transaction, so the
-        // one-writer-per-instance invariant still holds across the whole group.
-        let Some((first, rest)) = ordered.split_first_mut() else {
-            return Ok(Vec::new());
+        let admissions = {
+            let Some((first, rest)) = members.split_first_mut() else {
+                return Ok(Vec::new());
+            };
+            // The first member lends its writer as the single coordinating
+            // connection; every touched schema is written through it in ONE
+            // transaction.
+            let first_pending = &first.pending;
+            let PgStore { writer, schema, .. } = &mut *first.store;
+            let first_schema = schema.quoted();
+            let mut txn = writer.transaction().map_err(backend)?;
+            let mut admissions = Vec::with_capacity(rest.len() + 1);
+            admissions.push(commit_member(&mut txn, &first_schema, first_pending)?);
+            for member in rest.iter() {
+                let s = member.store.schema.quoted();
+                admissions.push(commit_member(&mut txn, &s, &member.pending)?);
+            }
+            // ONE commit lands every touched schema atomically; any error above
+            // dropped `txn` uncommitted, so nothing was written.
+            txn.commit().map_err(backend)?;
+            admissions
         };
-        let (first_idx, first_member) = (first.0, &mut first.1);
-        let first_pending = &first_member.pending;
-        let PgStore { writer, schema, .. } = &mut *first_member.store;
-        let first_schema = schema.quoted();
-        let mut txn = writer.transaction().map_err(backend)?;
 
-        // Lock-and-write each participant in ascending schema order, tagging its
-        // outcome with its input position. Interleaving the write with the next lock
-        // does not affect deadlock-freedom: locks are only ever acquired in ascending
-        // order, the textbook ordered-locking condition, so no cycle of waits forms.
-        let mut indexed: Vec<(usize, CommitOutcome)> = Vec::with_capacity(rest.len() + 1);
-        indexed.push((first_idx, commit_member(&mut txn, &first_schema, first_pending)?));
-        for (orig_idx, member) in rest.iter() {
-            let s = member.store.schema.quoted();
-            indexed.push((*orig_idx, commit_member(&mut txn, &s, &member.pending)?));
-        }
-
-        // ONE commit lands every touched schema atomically; any error above dropped
-        // `txn` uncommitted, so nothing was written.
-        txn.commit().map_err(backend)?;
-
-        // Restore input order from the lock order the outcomes were produced in.
-        indexed.sort_by_key(|(index, _)| *index);
-        Ok(indexed.into_iter().map(|(_, outcome)| outcome).collect())
+        // Each participant now settles into its OWN instance's history; the fold is
+        // durable either way, so a participant that has to wait for an unrelated
+        // in-flight writer delays only its reported position, never the commit.
+        members
+            .iter_mut()
+            .zip(admissions)
+            .map(|(member, admission)| match admission {
+                Some(admission) => Ok(CommitOutcome::Committed(member.store.settle(&admission)?)),
+                None => Ok(CommitOutcome::Unchanged),
+            })
+            .collect()
     }
 
     fn head(&self) -> Result<CommitSeq, StoreError> {
-        // §4.4: one single-statement pooled read of the durable head. The
-        // `instance_meta` table is single-row (`CHECK (id = 1)`), so this is
-        // index-gate-exempt (pinned, `meta_tables_are_single_row`).
+        // §4.4: one single-statement pooled read of the built history's tip. There is
+        // no write-side head counter to consult — history IS the head (§22.1), so the
+        // authoritative answer is the highest position a history pass has handed out.
         let s = self.schema.quoted();
         let mut conn = self.reads.get().map_err(pool)?;
-        let row = conn
-            .query_one(&format!("SELECT head FROM {s}.instance_meta WHERE id = 1"), &[])
-            .map_err(backend)?;
-        seq_from(cell::<i64>(&row, "instance_meta", "head")?, "instance_meta.head")
+        history::tip(&mut *conn, &s)
     }
 
     fn row(&self, address: &RowAddress) -> Result<Option<StoredRow>, StoreError> {
@@ -400,13 +345,21 @@ impl InstanceStore for PgStore {
     }
 
     fn snapshot(&self, frontier: CommitSeq) -> Result<Snapshot, StoreError> {
-        // The frontier-past-head check reads the durable head first (§4.3). The
-        // one-writer-per-instance invariant plus Rust exclusivity (a commit needs
-        // `&mut`, a reader holds `&`) means no commit interleaves this `&self` read,
-        // so the head read and the materialization below observe the same state
-        // (§5.4 case 3; the §5.4-case-2 in-statement head recheck is the seam wired
-        // only if that premise is ever relaxed).
-        let head = self.head()?;
+        // Every decision here — is the frontier past the head, is the `nodes` tree
+        // exactly head state, which rows does the fold see — must come from ONE
+        // coherent view, because a concurrent admission can now land between two
+        // statements. So the whole read runs on one `REPEATABLE READ READ ONLY`
+        // snapshot: `DESIGN-pure-pg.md` §5.4's read session, wired now that the
+        // one-writer premise it was conditioned on is gone.
+        let s = self.schema.quoted();
+        let mut conn = self.reads.get().map_err(pool)?;
+        let mut read = conn
+            .build_transaction()
+            .isolation_level(postgres::IsolationLevel::RepeatableRead)
+            .read_only(true)
+            .start()
+            .map_err(backend)?;
+        let head = history::tip(&mut read, &s)?;
         if frontier > head {
             return Err(corrupt(format!(
                 "snapshot frontier {} is past head {}",
@@ -414,33 +367,36 @@ impl InstanceStore for PgStore {
                 head.get()
             )));
         }
-        let s = self.schema.quoted();
-        let mut conn = self.reads.get().map_err(pool)?;
-        if frontier == head {
-            // Phase-6 head fast path (§4.3): the `nodes` tree holds exactly head
-            // state, so materialize the live-row set directly in ONE full read of
-            // `nodes` (O(state)) instead of folding the whole `commit_log`
-            // (O(history)). The reconstructed `Snapshot` is byte-identical to the
-            // log fold at head — the tree-≡-log-fold equivalence — because
-            // `materialize_head` reuses the same value/key codecs the parity-gated
-            // `row`/`scan` reads use and walks the same tombstone-through adjacency
-            // chain (`node_tree_consistency::head_fast_path_equals_log_fold`). That
-            // one statement legitimately scans the whole table (a full-state
+        // Phase-6 head fast path (§4.3): the `nodes` tree holds current state, so at
+        // the head it can be materialized directly in ONE full read (O(state))
+        // instead of folding the whole `commit_log` (O(history)). It is only *equal*
+        // to head state while history has positioned everything committed — an
+        // admission whose state has landed but whose position is still pending would
+        // otherwise show up in a snapshot that claims not to include it. That gap is
+        // real and observable (§22.1 decouples the two), so the fast path is taken
+        // only when this snapshot sees no unpositioned admission, and the log fold —
+        // always exact — serves the rest.
+        if frontier == head && !history::has_unpositioned(&mut read, &s)? {
+            // The reconstructed `Snapshot` is byte-identical to the log fold at head
+            // — the tree-≡-log-fold equivalence — because `materialize_head` reuses
+            // the same value/key codecs the parity-gated `row`/`scan` reads use and
+            // walks the same tombstone-through adjacency chain
+            // (`node_tree_consistency::head_fast_path_equals_log_fold`). That one
+            // statement legitimately scans the whole table (a full-state
             // materialization has no selective plan); it is the pinned no-Seq-Scan
             // exemption (`index_coverage_pg::head_fast_path_is_single_full_scan_exempt`).
-            let rows = node_load::materialize_head(&mut *conn, &s)?;
+            let rows = node_load::materialize_head(&mut read, &s)?;
             return Ok(Snapshot::from_rows(head, rows));
         }
-        // §4.3 log fold for a historical frontier (`frontier < head`): fold the
-        // append-only `commit_log` prefix `≤ frontier`, index-ordered by the PK
-        // (index gate 4), decoded by the shared `record_codec` path and replayed by
-        // the same `Snapshot::replay` MemoryStore uses — so parity is by
-        // construction. The log `≤ frontier` is immutable, so this needs no SQL
-        // transaction for coherence (§5.4 case 2): interleaved commits append *past*
-        // the frontier and are invisible to the `WHERE seq <= $1` filter.
+        // §4.3 log fold: fold the positioned `commit_log` prefix `≤ frontier`,
+        // index-ordered by `seq` (index gate 4), decoded by the shared `record_codec`
+        // path and replayed by the same `Snapshot::replay` MemoryStore uses — so
+        // parity is by construction. Unpositioned residuals carry a NULL `seq` and
+        // are excluded by the comparison itself, which is exactly right: they are not
+        // yet part of history.
         let frontier_num =
             i64::try_from(frontier.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
-        let log = conn
+        let log = read
             .query(
                 &format!(
                     "SELECT seq, transaction_id, ops, created FROM {s}.commit_log \
@@ -456,9 +412,11 @@ impl InstanceStore for PgStore {
     }
 
     fn log_from(&self, from: CommitSeq) -> Result<Vec<CommittedTransition>, StoreError> {
-        // §4.4: pooled range read of the append-only commit log from `from`, in seq
-        // order (index gate 3), each row decoded by the shared `record_codec` path.
-        // The log is immutable, so this single statement needs no pin (§5.4 case 1).
+        // §4.4: pooled range read of built history from `from`, in position order
+        // (index gate 3), each row decoded by the shared `record_codec` path. A
+        // positioned row never changes again, so this single statement needs no pin
+        // (§5.4 case 1); an unpositioned residual carries a NULL `seq` and is excluded
+        // by the comparison, so the stream is history, never a preview of it.
         let s = self.schema.quoted();
         let from = i64::try_from(from.get()).map_err(|_| corrupt("serial position exceeds i64"))?;
         let mut conn = self.reads.get().map_err(pool)?;

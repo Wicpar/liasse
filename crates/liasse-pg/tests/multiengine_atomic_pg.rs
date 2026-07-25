@@ -266,13 +266,21 @@ fn child_reject_rolls_back_parent_durable_writes() {
     assert_eq!(durable_balance(&bank), int(10), "the bank's DURABLE balance is unchanged (10)");
 }
 
-/// §13.10: concurrent folded commits touching the SAME two instances are serialized
-/// by the ordered `FOR UPDATE` head locks. Every thread commits a row into BOTH
+/// §13.10: concurrent folded commits touching the SAME two instances all complete,
+/// with no per-instance lock serializing them. Every thread commits a row into BOTH
 /// instances as one group; the test completing proves no deadlock, and both instances
 /// ending with exactly one row per thread (heads advanced by the thread count) proves
 /// no lost update and no partial commit.
+///
+/// Note what else it exercises, because that is the harder half: each worker is
+/// spawned *inside* the reopen loop, so the earlier threads are admitting while the
+/// main thread is still reconciling the later stores. That makes this a live
+/// DDL-versus-admission race, and the gate on `schema`'s `LOCK_ORDER` — a reconciler
+/// holds a `ShareLock` per table for the whole of its DDL transaction, so any
+/// disagreement between the order it takes them and the order an admission writes
+/// them is a deadlock. It caught exactly that when a second declared index was added.
 #[test]
-fn concurrent_group_commits_serialize_on_ordered_head_locks() {
+fn concurrent_group_commits_all_complete_without_a_per_instance_lock() {
     const THREADS: usize = 8;
 
     let handle = support::acquire();

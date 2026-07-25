@@ -1,12 +1,15 @@
 //! The storage contract the runtime executes against.
 //!
 //! The store is semantics-free: it stores, orders, and retrieves. Every
-//! guarantee here is structural or temporal — atomic admission, one gapless
+//! guarantee here is structural or temporal — atomic admission, one monotone
 //! serial order, frontier snapshots, replayable logs, content-addressed blobs —
 //! and none of it validates types, refs, checks, or authorization, which the
-//! runtime layers above (§23). The traits are synchronous and `&mut`-based:
-//! concurrency is the runtime's concern, with one writer per instance, so a
-//! staged [`Transition`] takes exclusive access for its lifetime.
+//! runtime layers above (§23). The traits are synchronous and `&mut`-based: one
+//! staged [`Transition`] takes exclusive access to its store handle for its
+//! lifetime. That is exclusivity over the *handle*, not over the instance — a
+//! durable backend may hand out several handles onto one instance and admit
+//! through them concurrently, so an implementation must not read `&mut` as a
+//! promise that no other admission is in flight.
 
 use liasse_ident::{HistoryPoint, InstanceId, RowIncarnation, TransactionId};
 use liasse_value::{Sha512, Timestamp, Value};
@@ -70,9 +73,9 @@ pub trait InstanceStore {
     /// single-writer), where once every participant has staged and validated,
     /// committing each in turn is indivisible in practice. A durable multi-instance
     /// backend (PostgreSQL) overrides this with one shared SQL transaction spanning
-    /// every touched instance, taking each instance's head lock in a fixed global
-    /// order so concurrent multi-engine transitions cannot deadlock, lost-update, or
-    /// partial-commit; a store that returns `false` from
+    /// every touched instance, taking no per-instance lock at all, so concurrent
+    /// multi-engine transitions can neither deadlock nor partial-commit; a store that
+    /// returns `false` from
     /// [`InstanceStore::multi_instance_atomic_commit`] must not be driven through
     /// this path.
     fn commit_pending_group(
@@ -181,9 +184,10 @@ pub trait InstanceStore {
 ///
 /// Reads see committed state overlaid with this transition's own staged writes
 /// (read-your-writes). Staging never touches durable state; only
-/// [`Transition::commit`] does, and it does so all-or-nothing, taking the next
-/// serial position. Dropping without committing discards every staged write, so
-/// an aborted transition leaves no trace.
+/// [`Transition::commit`] does, and it does so all-or-nothing. Dropping without
+/// committing discards every staged write, so an aborted transition leaves no
+/// trace — and, because a transition that never commits is never admitted, history
+/// has nothing to position for it.
 pub trait Transition {
     /// Read a row through the transition: staged writes shadow committed state.
     fn row(&self, address: &RowAddress) -> Result<Option<StoredRow>, StoreError>;
@@ -236,9 +240,13 @@ pub trait Transition {
     /// [`CommitOutcome::Unchanged`] (§22.2).
     fn is_empty(&self) -> bool;
 
-    /// Atomically admit every staged write, taking the next serial position.
-    /// All-or-nothing: on any error the prior committed state is intact. An
+    /// Atomically admit every staged write, and report the serial position history
+    /// gives it. All-or-nothing: on any error the prior committed state is intact. An
     /// empty transition returns [`CommitOutcome::Unchanged`] without a commit.
+    ///
+    /// A backend that positions transitions after they settle (§22.1) resolves the
+    /// position before returning, so the position in [`CommitOutcome::Committed`] is
+    /// always final — never a reservation.
     fn commit(self) -> Result<CommitOutcome, StoreError>;
 
     /// Extract this transition's committable payload WITHOUT committing it — the

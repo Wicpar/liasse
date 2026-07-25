@@ -11,6 +11,10 @@
 //!   [`SCHEMA_VERSION`] change, older databases retain the removed secondary
 //!   indexes forever. Reconciliation diffs the live secondary indexes against the
 //!   declared set and drops the difference.
+//! - **Orphan sequences.** A sequence present in the schema but absent from
+//!   [`Schema::sequences`] is dropped. Identity-column sequences (`nodes.id`) are
+//!   intrinsic — they drop with their table — and are excluded from the live set, so
+//!   the reconciler can never drop one.
 //! - **Orphan tables.** A base table present in the instance schema but absent from
 //!   the fixed set ([`Schema::tables`]) is a leftover from an earlier layout and is
 //!   dropped `CASCADE` — but only when empty. A *populated* orphan (a pre-node `rows`
@@ -41,13 +45,18 @@
 //!
 //! Stamping runs before the drop side: a schema stamped newer than this build is
 //! refused *before* any prune, so an older backend can never delete a structure a
-//! newer one legitimately added. Refusing rolls the transaction back untouched.
+//! newer one legitimately added. A schema stamped *below*
+//! [`MIN_COMPATIBLE_VERSION`] is refused for the mirror-image reason: this backend
+//! creates tables idempotently but never `ALTER`s their columns, so a layout change
+//! is a re-create. Refusing names the versions and rolls the transaction back
+//! untouched, rather than letting a missing column surface later as an opaque
+//! mid-query failure.
 
 use liasse_store::StoreError;
 use postgres::{Client, Transaction};
 
 use crate::backend::{backend, cell, refuse};
-use crate::schema::{SCHEMA_VERSION, Schema, TableSpec};
+use crate::schema::{MIN_COMPATIBLE_VERSION, SCHEMA_VERSION, Schema, TableSpec};
 
 /// Bring `schema`'s physical objects into exact correspondence with the model:
 /// create every missing fixed table and derived index, and drop every orphan
@@ -57,39 +66,59 @@ pub(crate) fn reconcile(client: &mut Client, schema: &Schema) -> Result<(), Stor
     let s = schema.quoted();
     let mut txn = client.transaction().map_err(backend)?;
 
-    // CREATE side — idempotent DDL for the fixed tables and every derived index.
-    txn.batch_execute(&schema.create_ddl()).map_err(backend)?;
-
-    // Version gate — stamp forward, then refuse a newer schema before any prune.
+    // Version gate FIRST, over the minimal stamp table alone: the rest of the DDL
+    // assumes the current column layout, so an incompatible stamp must be refused
+    // before it runs.
+    txn.batch_execute(&schema.version_ddl()).map_err(backend)?;
+    let stamped: Option<i32> = txn
+        .query_opt(&format!("SELECT version FROM {s}.schema_version WHERE id = 1"), &[])
+        .map_err(backend)?
+        .map(|row| cell::<i32>(&row, "schema_version", "version"))
+        .transpose()?;
+    if let Some(stamped) = stamped {
+        if stamped > SCHEMA_VERSION {
+            return Err(refuse(format!(
+                "schema `{}` is version {stamped}, newer than this build ({SCHEMA_VERSION}); \
+                 refusing to open",
+                schema.name()
+            )));
+        }
+        if stamped < MIN_COMPATIBLE_VERSION {
+            return Err(refuse(format!(
+                "schema `{}` is version {stamped}; this build needs at least \
+                 {MIN_COMPATIBLE_VERSION} and performs no in-place column migration. \
+                 Export the instance and re-create it, or open it with a backend that \
+                 understands version {stamped}.",
+                schema.name()
+            )));
+        }
+    }
     txn.execute(
         &format!(
             "INSERT INTO {s}.schema_version (id, version) VALUES (1, $1) \
-             ON CONFLICT (id) DO UPDATE \
-             SET version = GREATEST(schema_version.version, EXCLUDED.version)"
+             ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version"
         ),
         &[&SCHEMA_VERSION],
     )
     .map_err(backend)?;
-    let stamped: i32 = cell(
-        &txn.query_one(&format!("SELECT version FROM {s}.schema_version WHERE id = 1"), &[])
-            .map_err(backend)?,
-        "schema_version",
-        "version",
-    )?;
-    if stamped > SCHEMA_VERSION {
-        return Err(refuse(format!(
-            "schema `{}` is version {stamped}, newer than this build ({SCHEMA_VERSION}); \
-             refusing to open",
-            schema.name()
-        )));
-    }
 
-    // DROP side — prune orphan secondary indexes, then orphan tables.
+    // CREATE side — idempotent DDL for the fixed tables, sequences and every
+    // derived index.
+    txn.batch_execute(&schema.create_ddl()).map_err(backend)?;
+
+    // DROP side — prune orphan secondary indexes, then orphan sequences, then
+    // orphan tables.
     let declared_indexes: Vec<String> =
         schema.indexes().iter().map(|index| index.name().to_owned()).collect();
     for live in live_secondary_indexes(&mut txn, schema)? {
         if !declared_indexes.iter().any(|declared| declared == &live) {
             txn.batch_execute(&schema.drop_index_sql(&live)).map_err(backend)?;
+        }
+    }
+    let declared_sequences = schema.sequences();
+    for live in live_sequences(&mut txn, schema)? {
+        if !declared_sequences.iter().any(|declared| declared.name() == live) {
+            txn.batch_execute(&schema.drop_sequence_sql(&live)).map_err(backend)?;
         }
     }
     let fixed_tables = schema.tables();
@@ -135,6 +164,26 @@ fn live_secondary_indexes(
              JOIN pg_namespace n ON n.oid = c.relnamespace \
              WHERE n.nspname = $1 AND c.relkind = 'i' \
                AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = c.oid)",
+            &[&schema.name()],
+        )
+        .map_err(backend)?;
+    rows.iter().map(|row| cell::<String>(row, "pg_class", "relname")).collect()
+}
+
+/// The live standalone sequences in `schema`: every sequence that is not owned by a
+/// column. An identity (`deptype = 'i'`) or `serial` (`deptype = 'a'`) sequence
+/// belongs to its table and drops with it, so excluding both makes it impossible for
+/// the reconciler to drop one out from under a live column.
+fn live_sequences(txn: &mut Transaction<'_>, schema: &Schema) -> Result<Vec<String>, StoreError> {
+    let rows = txn
+        .query(
+            "SELECT c.relname \
+             FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relkind = 'S' \
+               AND NOT EXISTS (SELECT 1 FROM pg_depend d \
+                               WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid \
+                                 AND d.deptype IN ('i', 'a'))",
             &[&schema.name()],
         )
         .map_err(backend)?;

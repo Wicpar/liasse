@@ -1503,8 +1503,8 @@ impl<F: StoreFactory> ModuleHost<F> {
     /// rejection unwinds them all. The extracted payloads commit together as ONE
     /// durable all-or-none transition via [`InstanceStore::commit_pending_group`]
     /// (Phase 2) — on the in-memory reference each in turn (indivisible in practice);
-    /// on PostgreSQL one shared SQL transaction across every touched schema, under
-    /// ordered per-instance head locks. Each participant is then finalized (Phase 3);
+    /// on PostgreSQL one shared SQL transaction across every touched schema, taking
+    /// no per-instance lock at all. Each participant is then finalized (Phase 3);
     /// the primary's outcome, carrying its program's `return`, is the transition's.
     fn commit_folded(
         &mut self,

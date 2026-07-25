@@ -7,11 +7,13 @@
 //! in against the PostgreSQL system catalog, which is the **external oracle**: what
 //! objects physically exist is read from `pg_catalog`/`information_schema`, never
 //! from the crate's own bookkeeping, and compared to an independently-known desired
-//! set (the seven fixed tables and the declared secondary indexes).
+//! set (the six fixed tables, the declared secondary indexes, the declared sequences).
 //!
-//! The three orphan classes the reconciler eliminates each get a gate:
+//! The orphan classes the reconciler eliminates each get a gate:
 //!
 //! - orphan **indexes** — a stray secondary index is dropped, the declared ones kept;
+//! - orphan **sequences** — a stray sequence is dropped, the declared one kept (and
+//!   still usable), while intrinsic identity sequences are never candidates;
 //! - orphan **tables** — a stray (empty) base table is dropped, the six fixed ones
 //!   (incl. the §21-retained `commit_log`/`history_points`/`blobs`) kept;
 //! - orphan **rows** — removing a collection (expressed as row deletes, the only way
@@ -49,8 +51,14 @@ const FIXED_TABLES: [&str; 6] =
 /// The secondary indexes the current model declares — the externally-known desired
 /// index set. Intrinsic primary-key indexes and `UNIQUE` table constraints are not
 /// in this set (they drop with their tables and are never reconciled); a bare
-/// `CREATE UNIQUE INDEX` like `node_key_lookup` is a managed secondary index and is.
-const DECLARED_INDEXES: [&str; 1] = ["node_key_lookup"];
+/// `CREATE [UNIQUE] INDEX` like `node_key_lookup` or the history builder's partial
+/// `commit_log_unpositioned` is a managed secondary index and is.
+const DECLARED_INDEXES: [&str; 2] = ["node_key_lookup", "commit_log_unpositioned"];
+
+/// The sequences the current model declares — the externally-known desired sequence
+/// set. Identity-column sequences (`nodes.id`) are intrinsic: they drop with their
+/// table and are never reconciled, so they are not in this set.
+const DECLARED_SEQUENCES: [&str; 1] = ["incarnations"];
 
 /// The live base tables in `schema`, read straight from `information_schema` — the
 /// oracle for the desired-table diff.
@@ -87,8 +95,33 @@ fn live_secondary_indexes(client: &mut Client, schema: &Schema) -> BTreeSet<Stri
         .collect()
 }
 
+/// The live *standalone* sequences in `schema`: those not owned by a column. An
+/// identity or `serial` sequence belongs to its table and drops with it, so excluding
+/// both gives the reconciler's own reconcilable set — the oracle for the declared
+/// sequence diff.
+fn live_sequences(client: &mut Client, schema: &Schema) -> BTreeSet<String> {
+    client
+        .query(
+            "SELECT c.relname FROM pg_class c \
+             JOIN pg_namespace n ON n.oid = c.relnamespace \
+             WHERE n.nspname = $1 AND c.relkind = 'S' \
+               AND NOT EXISTS (SELECT 1 FROM pg_depend d \
+                               WHERE d.classid = 'pg_class'::regclass AND d.objid = c.oid \
+                                 AND d.deptype IN ('i', 'a'))",
+            &[&schema.name()],
+        )
+        .expect("query live standalone sequences")
+        .iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect()
+}
+
 fn expected_tables() -> BTreeSet<String> {
     FIXED_TABLES.iter().map(|name| (*name).to_owned()).collect()
+}
+
+fn expected_sequences() -> BTreeSet<String> {
+    DECLARED_SEQUENCES.iter().map(|name| (*name).to_owned()).collect()
 }
 
 fn expected_indexes() -> BTreeSet<String> {
@@ -118,6 +151,11 @@ fn fresh_create_materializes_exactly_declared_objects() {
         expected_indexes(),
         "a fresh schema must hold exactly the declared secondary indexes, nothing more"
     );
+    assert_eq!(
+        live_sequences(&mut client, &schema),
+        expected_sequences(),
+        "a fresh schema must hold exactly the declared sequences, nothing more"
+    );
 }
 
 /// Reconciliation is idempotent: a second open neither creates nor drops anything,
@@ -134,16 +172,24 @@ fn reconcile_is_idempotent() {
     let mut client = factory.connect().expect("connect");
     let first_tables = live_tables(&mut client, &schema);
     let first_indexes = live_secondary_indexes(&mut client, &schema);
+    let first_sequences = live_sequences(&mut client, &schema);
 
     // A second open reconciles again; nothing should move.
     drop(factory.reopen(instance).expect("second reconcile via reopen"));
     let second_tables = live_tables(&mut client, &schema);
     let second_indexes = live_secondary_indexes(&mut client, &schema);
+    let second_sequences = live_sequences(&mut client, &schema);
 
     assert_eq!(first_tables, second_tables, "table set drifted across a second reconcile");
     assert_eq!(first_indexes, second_indexes, "index set drifted across a second reconcile");
+    assert_eq!(first_sequences, second_sequences, "sequence set drifted across a second reconcile");
     assert_eq!(second_tables, expected_tables(), "the stable table set must be the declared one");
     assert_eq!(second_indexes, expected_indexes(), "the stable index set must be the declared one");
+    assert_eq!(
+        second_sequences,
+        expected_sequences(),
+        "the stable sequence set must be the declared one"
+    );
 }
 
 /// A secondary index the model no longer declares is an orphan the reconciler must
@@ -177,6 +223,48 @@ fn orphan_index_is_dropped() {
     let live = live_secondary_indexes(&mut client, &schema);
     assert!(!live.contains("stray_orphan_idx"), "orphan index survived reconciliation: {live:?}");
     assert_eq!(live, expected_indexes(), "reconciliation must leave exactly the declared indexes");
+}
+
+/// A sequence the model no longer declares is an orphan the reconciler must drop,
+/// while the declared one — and every intrinsic identity sequence — survives. Dead
+/// schema is pollution exactly as a dead index is.
+#[test]
+fn orphan_sequence_is_dropped() {
+    let handle = support::acquire();
+    let mut factory = handle.factory("orphanseq");
+    let instance = InstanceId::new("orphan-sequence");
+    let _guard = SchemaGuard::new(&factory, instance.clone());
+    let schema = factory.schema_for(&instance);
+
+    drop(factory.create(instance.clone()).expect("create"));
+
+    // Inject a stray sequence the declared set never contains.
+    let mut client = factory.connect().expect("connect");
+    client
+        .batch_execute(&format!("CREATE SEQUENCE {}.stray_orphan_seq;", schema.quoted()))
+        .expect("create a stray sequence");
+    assert!(
+        live_sequences(&mut client, &schema).contains("stray_orphan_seq"),
+        "the stray sequence must exist before reconciliation, or the gate proves nothing"
+    );
+
+    // Opening reconciles: the orphan must go, the declared sequence must stay — and
+    // the incarnation counter must still work, which is what "stay" has to mean.
+    let mut store = factory.reopen(instance).expect("reopen reconciles");
+    let live = live_sequences(&mut client, &schema);
+    assert!(!live.contains("stray_orphan_seq"), "orphan sequence survived reconciliation: {live:?}");
+    assert_eq!(live, expected_sequences(), "reconciliation must leave exactly the declared sequences");
+
+    let mut txn = store.begin();
+    txn.insert(
+        RowAddress::root(AddressStep::new(
+            NameSegment::new("items"),
+            KeyValue::single(Value::Int(Integer::from(1))),
+        )),
+        Value::Text(Text::new("after reconciliation")),
+    )
+    .expect("allocate a token from the surviving sequence");
+    txn.commit().expect("commit");
 }
 
 /// An *empty* base table not in the fixed set is an orphan (a leftover from a prior
