@@ -1,0 +1,38 @@
+{
+  format: 1
+  name: string-search-wrong-arity-rejected-at-load
+  suite: static
+  spec: ["#expressions", "§6.5"]
+  note: '''
+    Attack: call a search predicate with one argument, hoping the engine treats
+    the missing needle as empty (which would make the check vacuously true, since
+    §6.5 makes the empty needle a prefix of everything) or as `none`.
+
+    §6.5: `string.starts_with` takes two `text` arguments, and "a call supplying
+    other than two arguments is a static (load-time) error: the arity is part of
+    the signature package loading validates". §6.5 likewise: "Package loading
+    validates every function name, type, determinism class, and namespace
+    contract." The package must therefore be rejected at load, not accepted with
+    a silently-defaulted argument.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.strarity@1.0.0"
+    $model: {
+      accounts: {
+        $key: "code"
+        code: {
+          $type: "text"
+          $check: ["string.starts_with(.)", "A code needs a prefix"]
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#expressions", "§6.5"]
+    detail: "string.starts_with takes two arguments, but one was supplied"
+  }
+}

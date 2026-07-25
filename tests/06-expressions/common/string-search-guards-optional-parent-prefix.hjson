@@ -1,0 +1,62 @@
+{
+  format: 1
+  name: string-search-guards-optional-parent-prefix
+  suite: scenario
+  spec: ["#expressions", "§6.5", "#mutations", "§8.8", "#annex-a", "§A.6"]
+  note: '''
+    The chart-of-accounts invariant §6.5's search predicates exist to express:
+    "a sub-account's code starts with its parent's". The `$check` is
+
+      !has(.parent) || string.starts_with(.code, .parent)
+
+    which §6.5/Annex A.6 make total over an `optional<text>` parent WITHOUT the
+    predicate inventing an answer: `||` never evaluates an unreached right
+    operand, so a row whose parent is absent short-circuits to true and the
+    predicate is never handed the absent value.
+
+    Deduced expectations:
+      - "512" inserted with no parent member at all: guard true, predicate not
+        evaluated -> admitted.
+      - "512100" with parent "512": "512100" = "512" ++ "100" -> admitted.
+      - "601000" with parent "512": no decomposition "512" ++ r exists, so the
+        check fails and the insert is REJECTED at admission (§8.8).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.chart@1.0.0"
+    $model: {
+      accounts: {
+        $key: "code"
+        code: "text"
+        parent: "text?"
+        $check: [
+          ["!has(.parent) || string.starts_with(.code, .parent)",
+           "Le code d'un sous-compte commence par celui de son parent"]
+        ]
+      }
+      $public: {
+        accounts: {
+          $view: ".accounts { code, parent, $sort: [code] }"
+          $mut: {
+            add_root: ".accounts + { code: @code }"
+            add_child: ".accounts + { code: @code, parent: @parent }"
+          }
+        }
+      }
+    }
+  }
+
+  steps: [
+    { call: "public.accounts.add_root", args: { code: "512" }, expect: { outcome: ok } }
+    { call: "public.accounts.add_child", args: { code: "512100", parent: "512" },
+      expect: { outcome: ok } }
+    { call: "public.accounts.add_child", args: { code: "601000", parent: "512" },
+      expect: { outcome: rejected, violates: ["#mutations", "§8.8"],
+        detail: "Le code d'un sous-compte commence par celui de son parent" } }
+    { watch: "public.accounts", id: "w1", expect_init: { value: [
+      { code: "512", parent: "$absent" }
+      { code: "512100", parent: "512" }
+    ] } }
+  ]
+}
