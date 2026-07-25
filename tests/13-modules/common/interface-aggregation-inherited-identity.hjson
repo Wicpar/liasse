@@ -5,9 +5,11 @@
   spec: ["#modules", "§13.9"]
   note: '''
     §13.9: the parent reads every instance exposing an interface through
-    .modules::templates; inherited identity is module instance identity plus
-    exposed row identity, and the projection exposes both keys. The declared
-    $sort [module, id] fixes the expected order across instances.
+    .modules::templates. That is the ORDINARY §6.4 nested traversal every
+    collection has — `modules` is a map of `module` values, so `modules.$key` is
+    its own map key — and inherited identity falls out of it: module instance
+    identity plus exposed row identity, both keys visible in the projection. The
+    declared $sort [module, id] fixes the expected order across instances.
   '''
 
   packages: {
@@ -20,10 +22,10 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                templates: { $view: { $key: "id", id: "text", label: "text" } }
-              }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: { $view: { $key: "id", id: "text", label: "text" } }
             }
           }
           catalog: {
@@ -53,11 +55,11 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: { $name: "kit_a", $module: "t.tpl@1.0.0"
                    $data: { templates: { a2: { label: "Zeta" }, z1: { label: "Alpha" } } } } }
       expect: { outcome: ok } }
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: { $name: "kit_b", $module: "t.tpl@1.0.0"
                    $data: { templates: { a1: { label: "Mid" } } } } }
       expect: { outcome: ok } }

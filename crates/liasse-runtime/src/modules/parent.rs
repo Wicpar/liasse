@@ -5,8 +5,8 @@
 //! interface `info` binds `rename_company: "#company.rename({ name: @name })"`,
 //! delegating entirely to the `company` parent surface's `rename` mutation. When
 //! a parent routes a call to that exposed mutation (§13.10/§13.11), the effect
-//! lands on the **parent** row the space is scoped to, not on the child — so the
-//! host admits it against its root engine at the module space's containing row.
+//! lands on the **parent** row the collection is scoped to, not on the child — so the
+//! host admits it against its root engine at the module collection's containing row.
 //!
 //! This module parses such a binding into the parts the host needs to build that
 //! root call: the imported handle (`company`), the parent mutation contract name

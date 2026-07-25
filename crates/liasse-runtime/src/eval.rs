@@ -57,7 +57,7 @@ pub(crate) struct EvalCtx<'a> {
     /// that is not a root-engine module-aware read (genesis, mutation admission,
     /// a plain view, a child interface read); the [`ModuleHost`](crate::ModuleHost)
     /// supplies it only when reading a root view over its installed children.
-    pub(crate) modules: Option<&'a crate::modules::ModuleAggregate>,
+    pub(crate) modules: Option<&'a crate::modules::MountedModules>,
     /// The §13.4 parent-surface imports `#name` a module child's `$data` seed
     /// (genesis) and `$expose` interface read resolve against, carrying both the
     /// row value the env answers and the row type the seed-check scope types. The
@@ -213,10 +213,11 @@ impl<'a> EvalCtx<'a> {
         // `.collection.$at`/`.$between` read resolves against the derived rows active
         // at the clock.
         let base = self.expose_source_buckets(base, self.now);
-        // §13.9: fold the installed module instances into the containing rows so a
-        // `.modules::iface` aggregation resolves before computed values and views
-        // read it. Only present for a root-engine module-aware read; every other
-        // evaluation leaves the module spaces empty.
+        // §13.2: materialize each module collection from the host's mounted
+        // instances, before computed values and views read it — `.modules::iface`
+        // there is the §6.4 nested traversal over those entries. Only a root-engine
+        // module-aware read carries the mount set; every other evaluation
+        // materializes the collections empty.
         let base = self.expose_modules(base);
         let base = self.expose_computed(prospective, base);
         // §5.2/§5.3: fold each root static-struct member's own computed values onto
@@ -336,26 +337,31 @@ impl<'a> EvalCtx<'a> {
         Row::new(base.id().clone(), base.key().clone(), cells)
     }
 
-    /// Fold the installed module instances (§13.9) into the containing rows: a
-    /// root-level `$modules` space becomes a keyed instance collection on the root,
-    /// a row-scoped one becomes a keyed instance collection on each row of its
-    /// containing collection (§13.2). Only runs for a root-engine module-aware read;
-    /// every other evaluation carries no aggregate, so the module spaces stay empty
-    /// and a `.modules::iface` read there is an empty stream.
+    /// Materialize each declared module collection (§13.2) from the host's mounted
+    /// instances: one map row per enabled instance, on the row that contains the
+    /// collection, at whatever depth the containing collections put it. The rows are
+    /// derived rather than stored — the same arrangement a §14.4 source-backed
+    /// bucket has — so this is where they enter the read. Only a root-engine
+    /// module-aware read carries the mount set; every other evaluation folds an
+    /// empty one, so a module collection reads as an empty collection there rather
+    /// than faulting.
     fn expose_modules(&self, base: Row) -> Row {
-        let Some(modules) = self.modules else { return base };
-        if self.compiled.module_spaces.is_empty() {
+        if self.compiled.module_collections.is_empty() {
             return base;
         }
-        modules.fold_into(base, self.compiled.module_spaces.iter().map(|space| space.path.as_slice()))
+        let paths = self.compiled.module_collections.iter().map(|c| c.path.as_slice());
+        match self.modules {
+            Some(modules) => modules.fold_into(base, paths),
+            None => crate::modules::MountedModules::default().fold_into(base, paths),
+        }
     }
 
     /// Fold each collection's nested `$view` members (§7.1) into its rows as cells,
     /// evaluated with the row as `.` — the row-scoped analogue of [`expose_views`],
     /// so a `/companies[@c].catalog` read of a `catalog: ".modules::iface { … }"`
-    /// nested view resolves against the row (which already carries its injected
-    /// module spaces). A nested view that faults over a given row is left absent, so
-    /// a reader of it faults exactly as an unmaterialized member would.
+    /// nested view resolves against the row (which already carries its materialized
+    /// module collections). A nested view that faults over a given row is left
+    /// absent, so a reader of it faults exactly as an unmaterialized member would.
     fn expose_nested_views(&self, prospective: &Prospective, base: Row) -> Row {
         if self.compiled.collections.iter().all(|c| c.views.is_empty()) {
             return base;
@@ -1155,7 +1161,7 @@ fn fold_struct_computed(
 /// (its source is not materialized for this row) is left out, so a reader faults
 /// exactly as before. Views are folded in declaration order; a nested view reading
 /// another nested view is a documented seam (declaration order suffices for the
-/// CORE `.modules::iface` aggregation, which reads only the row's module spaces).
+/// CORE `.modules::iface` traversal, which reads only the row's module collections).
 fn fold_views(env: &RuntimeEnv<'_>, views: &[crate::compiled::CompiledView], mut row: Row) -> Row {
     for view in views {
         let current = Cell::Row(Box::new(row.clone()));

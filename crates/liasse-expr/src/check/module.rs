@@ -123,7 +123,29 @@ impl Checker<'_> {
             ModuleOperator::Pack => self.check_pack(expr, args),
             ModuleOperator::UpdateModule => self.check_update_module(expr, args),
             ModuleOperator::Rollback => self.check_rollback_module(expr, args),
+            ModuleOperator::Reinstall => self.check_reinstall_module(expr, args),
         }
+    }
+
+    /// `reinstall_module(m)` (§13.16) — the explicit re-admission form of a `<-`
+    /// move into a different module collection. It takes the instance and nothing
+    /// else: the destination is the move's own destination, and the admission it
+    /// re-runs is that collection's. Yields a `module`, so the only well-formed
+    /// position is a move source.
+    fn check_reinstall_module(&mut self, expr: &Expr, args: &[Arg]) -> Option<TypedExpr> {
+        let (module, rest) = self.module_operand(expr, args, ModuleOperator::Reinstall)?;
+        if !rest.is_empty() {
+            return self.error(
+                expr,
+                "`reinstall_module(m)` takes only the instance — the destination is the `<-` \
+                 destination, and the boundary it re-admits against is that collection's (§13.16)",
+            );
+        }
+        Some(TypedExpr::new(
+            expr.span,
+            ExprType::scalar(Type::Module(ModuleType::Any)),
+            TypedKind::Builtin { func: BuiltinFn::ReinstallModule, args: vec![module] },
+        ))
     }
 
     /// `unpack(blob)` (§13.16): read a `.liasse` blob into a move-only `module`

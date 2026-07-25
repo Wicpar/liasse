@@ -4,9 +4,9 @@
   suite: scenario
   spec: ["#modules", "§13.11"]
   note: '''
-    §13.11: a parent module space MAY expose selected authenticators to
+    §13.11: a parent module collection MAY expose selected authenticators to
     children through its $auth map; unexposed parent authenticators are
-    unavailable to the child. The module space declares no $auth exposure,
+    unavailable to the child. The module collection declares no $auth exposure,
     yet the child aliases "$parent.host_session". That reference cannot
     resolve, so the install fails validation.
   '''
@@ -21,11 +21,11 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              // no $auth map: no parent authenticator is exposed to children
-              $interfaces: {
-                notes: { $view: { $key: "id", id: "text" } }
-              }
+            $key: "text"
+            $value: "module"
+            // no $auth map: no parent authenticator is exposed to children
+            $interfaces: {
+              notes: { $view: { $key: "id", id: "text" } }
             }
           }
         }
@@ -36,7 +36,7 @@
       $liasse: 1
       $module: "t.mem@1.0.0"
       $auth: {
-        // references a parent authenticator the module space never exposed
+        // references a parent authenticator the module collection never exposed
         session: "$parent.host_session"
       }
       $roles: {
@@ -55,8 +55,8 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { $name: "mem", $module: "t.mem@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "mem", $module: "t.mem@1.0.0" } }
       expect: { outcome: invalid, violates: ["§13.11"]
-                detail: "child aliases a parent authenticator that the module space does not expose" } }
+                detail: "child aliases a parent authenticator that the module collection does not expose" } }
   ]
 }

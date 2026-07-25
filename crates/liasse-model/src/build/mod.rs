@@ -88,11 +88,11 @@ pub(crate) struct StateBuild<'a> {
     /// collection object (its `$bucket`, `$key`, and output-field members), typed
     /// into a temporal-collection row by [`crate::bucket::type_source_buckets`].
     pub source_bucket_decls: Vec<RawDecl<'a>>,
-    /// Module spaces (§13.2, §13.8): the model path of each `$modules` node and
-    /// the per-instance shape built from its `$interfaces`. The deferred
-    /// [`crate::module::type_module_spaces`] pass projects each instance shape and
-    /// writes the instance-name-keyed view row onto the placeholder view node.
-    pub module_spaces: Vec<(Vec<String>, Shape)>,
+    /// Absolute paths (`/segment/...`) of module collections (§13.2): the maps
+    /// whose `$value` type is `module`, one mounted instance per entry. Their
+    /// rows are the host's live children, not stored state, so the runtime
+    /// materializes them and refuses an ordinary write to them.
+    pub module_collections: Vec<String>,
     /// A module package's top-level `$config` struct (§13.1), when declared: the
     /// immutable typed struct of installation values built as a static struct
     /// shape. `None` for an application or a module with no `$config`. Resolved to
@@ -118,7 +118,7 @@ pub(crate) struct Builder<'a> {
     blob_storage: Vec<RawDecl<'a>>,
     source_buckets: Vec<String>,
     source_bucket_decls: Vec<RawDecl<'a>>,
-    module_spaces: Vec<(Vec<String>, Shape)>,
+    pub(super) module_collections: Vec<String>,
     /// Model-root paths a `$like: "^"` positional recursion resolves to (§5.8):
     /// the containing shape/collection each inline recursive field adopts. After
     /// the root is built, each target's node is registered in [`Self::types`]
@@ -149,7 +149,7 @@ impl<'a> Builder<'a> {
             blob_storage: Vec::new(),
             source_buckets: Vec::new(),
             source_bucket_decls: Vec::new(),
-            module_spaces: Vec::new(),
+            module_collections: Vec::new(),
             recur_targets: std::collections::BTreeSet::new(),
         };
         if let Some(types_doc) = types_doc {
@@ -183,7 +183,7 @@ impl<'a> Builder<'a> {
             blob_storage: builder.blob_storage,
             source_buckets: builder.source_buckets,
             source_bucket_decls: builder.source_bucket_decls,
-            module_spaces: builder.module_spaces,
+            module_collections: builder.module_collections,
             config,
         }
     }

@@ -25,7 +25,7 @@ with identical semantics:
 | step | semantics |
 |---|---|
 | `host_load` | `{ host_load: { package: { ...definition... } }, expect: {...} }`. The harness builds a `.liasse` artifact from the inline definition and invokes the host `load` operation against the case's root instance (§9.2). It runs outside any client connection and carries no actor, role, or credential. On `expect.outcome: ok`, member `result` states the §9.4 lifecycle outcome and MUST be `committed` or `unchanged`. See `../09-loading-bootstrap/NOTES.md`. |
-| `module_install` | `{ module_install: { space: "<display path>", request: { $name, $module } }, expect }`. §13.3 install into a module space; `$module` resolves against the case's `packages` map by each entry's `$module`. See `../13-modules/NOTES.md`. |
+| `module_install` | `{ module_install: { at: "<display path>", request: { $name, $module } }, expect }`. §13.3 install into one entry of a module collection; `$module` resolves against the case's `packages` map by each entry's `$module`. See `../13-modules/NOTES.md`. |
 | `module_update` | `{ module_update: { instance: "<display path>", to: "name@version" }, expect }`. §13.14/§13.15 single-instance update; `to` resolves against the `packages` map. On success `expect.value` matches the §13.15 update report. See `../13-modules/NOTES.md`. |
 
 ## Outcome mapping for compatibility results

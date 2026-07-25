@@ -21,10 +21,10 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                flags: { $view: { $key: "id", id: "text", billed: "bool" } }
-              }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              flags: { $view: { $key: "id", id: "text", billed: "bool" } }
             }
           }
         }
@@ -57,7 +57,7 @@
 
   steps: [
     // no billing sibling exists; the optional handle stays absent and the install succeeds
-    { module_install: { space: "/companies/acme/modules", request: { $name: "report", $module: "t.report@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "report", $module: "t.report@1.0.0" } }
       expect: { outcome: ok } }
     { watch: "public.flags", id: "w1"
       expect_init: { value: [ { id: "f1", billed: false } ] } }

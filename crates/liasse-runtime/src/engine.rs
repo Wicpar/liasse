@@ -1909,6 +1909,7 @@ impl<S: InstanceStore> Engine<S> {
         overlay: &[Change],
         handles: crate::dispatch::Handles<'_>,
     ) -> Result<StagedAdmission, EngineError> {
+        let modules = handles.modules;
         let Some(mutation) = self.compiled.mutation(request.mutation()) else {
             return Ok(StagedAdmission::Rejected(Rejection::new(
                 RejectionReason::Malformed,
@@ -1959,10 +1960,12 @@ impl<S: InstanceStore> Engine<S> {
             // (`util.double(...)`) or sign a session token (`cose.sign(/ring, …)`);
             // the dispatch resolves the call and routes cose to the live keyring.
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
-            // A mutation admits against this instance's own state; interface-addressed
-            // cross-module dispatch is routed by the parent host (§13.10), not folded
-            // into this engine's evaluation.
-            modules: None,
+            // §13.2: a host/root-scope transition is lent the module-collection
+            // entries the host holds, so its program reads `.modules[@id]` as the
+            // ordinary keyed read it is. Any other admission is lent none, and the
+            // collections materialize empty. Interface-addressed cross-module
+            // dispatch is still routed by the parent host (§13.10), not folded here.
+            modules,
             // §13.4: a child's own mutation resolves no parent-surface import here —
             // the host injects a `#company` binding only into the child's genesis
             // seed and its interface read; a child mutation body reading `#company`
@@ -2315,7 +2318,7 @@ impl<S: InstanceStore> Engine<S> {
         name: &str,
         frontier: CommitSeq,
         query: &ViewQuery,
-        modules: &crate::modules::ModuleAggregate,
+        modules: &crate::modules::MountedModules,
     ) -> Result<Option<ViewResult>, EngineError> {
         self.view_with_impl(name, frontier, query, Some(modules))
     }
@@ -2393,7 +2396,7 @@ impl<S: InstanceStore> Engine<S> {
         name: &str,
         frontier: CommitSeq,
         query: &ViewQuery,
-        modules: Option<&crate::modules::ModuleAggregate>,
+        modules: Option<&crate::modules::MountedModules>,
     ) -> Result<Option<ViewResult>, EngineError> {
         let hydrated = self.hydrate(frontier)?;
         self.view_hydrated_impl(name, &hydrated, query, modules)
@@ -2404,7 +2407,7 @@ impl<S: InstanceStore> Engine<S> {
         name: &str,
         hydrated: &HydratedFrontier,
         query: &ViewQuery,
-        modules: Option<&crate::modules::ModuleAggregate>,
+        modules: Option<&crate::modules::MountedModules>,
     ) -> Result<Option<ViewResult>, EngineError> {
         // A plain top-level view (§7) takes no parameters; a `$public`/role surface
         // view (§10.1) reads `$params`/`$actor`. Resolve the plain view first, then
@@ -2644,7 +2647,7 @@ impl<S: InstanceStore> Engine<S> {
             context: self.base_context(),
             hosts: HostDispatch::new(&self.host, &self.keyrings, self.clock),
             // A child interface read resolves against the child's own state; it
-            // exposes no further module spaces of its own here.
+            // exposes no further module collections of its own here.
             modules: None,
             // §13.4: an `$expose` `$view` that reads a parent surface (`#company`)
             // resolves it against the projection the host re-derives live from the
@@ -2723,30 +2726,80 @@ impl<S: InstanceStore> Engine<S> {
         (identity.name.as_str(), identity.version.major)
     }
 
-    /// The `$interfaces` boundary contracts of the `$modules` space at declaration
+    /// The `$interfaces` boundary contracts of the module collection at declaration
     /// path `path` (§13.8), if this package declares one there — the contract a
     /// child's `$expose` must structurally satisfy at install.
-    pub(crate) fn module_space_interfaces(
+    pub(crate) fn module_collection_interfaces(
         &self,
         path: &[String],
     ) -> Option<&[crate::compiled::CompiledInterfaceContract]> {
-        self.compiled.module_space_interfaces(path)
+        self.compiled.module_collection_interfaces(path)
     }
 
     /// Whether the row addressed by `steps` — a walk of `(collection declaration
     /// name, key display text)` pairs from the package root — is live in committed
-    /// state at head (§13.2 module-space containing row). An empty `steps` is the
+    /// state at head (§13.2 module-collection containing row). An empty `steps` is the
     /// package root itself, which is always live. Each step descends into the named
     /// collection cell of the current row and matches a row whose §D.2 key text
     /// equals the step key; a missing collection or unmatched key means the row is
     /// absent. This is the root-state accessor a [`ModuleHost`](crate::ModuleHost)
-    /// consults to reject an install into a module space whose containing row does
+    /// consults to reject an install into a module collection whose containing row does
     /// not exist (§13.3).
     pub(crate) fn contains_row(&self, steps: &[(String, String)]) -> Result<bool, EngineError> {
         Ok(row_at(&self.source_root()?, steps).is_some())
     }
 
-    /// Resolve the §13.4 parent surface named `surface` for the `$modules` space at
+    /// Resolve a walk of `(collection declaration name, D.2 key text)` pairs from
+    /// the package root into the structured [`RowAddress`] of the row it names
+    /// (§5.4/D.2), or `None` when a step names no live row.
+    ///
+    /// This is the bridge an embedder or a test harness crosses when it holds a
+    /// row's DISPLAY path and the runtime needs its address: the keys are matched
+    /// against live rows and the address is built from those rows' own typed keys,
+    /// never parsed out of the text. A key the store never held therefore cannot be
+    /// invented, and a composite key decomposes into its `$key`-order components
+    /// rather than being wrapped whole.
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if committed state cannot be read.
+    pub fn resolve_row_address(&self, steps: &[(String, String)]) -> Result<Option<RowAddress>, EngineError> {
+        let mut current = self.source_root()?;
+        let mut address: Option<RowAddress> = None;
+        for (collection, key) in steps {
+            let Some(row) = row_in(&current, collection, key) else { return Ok(None) };
+            let step = liasse_store::AddressStep::new(
+                liasse_ident::NameSegment::new(collection),
+                key_value_of(row.key()),
+            );
+            address = Some(match address {
+                None => RowAddress::root(step),
+                Some(parent) => parent.child(step),
+            });
+            current = row;
+        }
+        Ok(address)
+    }
+
+    /// Resolve the collection named `name` under the row `steps` addresses into its
+    /// structured [`CollectionPath`] (§5.4) — the location an install mounts an
+    /// instance into. `None` when a containing step names no live row.
+    ///
+    /// # Errors
+    /// [`EngineError::Store`] if committed state cannot be read.
+    pub fn resolve_collection_path(
+        &self,
+        steps: &[(String, String)],
+        name: &str,
+    ) -> Result<Option<liasse_store::CollectionPath>, EngineError> {
+        let segment = liasse_ident::NameSegment::new(name);
+        if steps.is_empty() {
+            return Ok(Some(liasse_store::CollectionPath::top(segment)));
+        }
+        let Some(address) = self.resolve_row_address(steps)? else { return Ok(None) };
+        Ok(Some(liasse_store::CollectionPath::nested(address.steps().cloned(), segment)))
+    }
+
+    /// Resolve the §13.4 parent surface named `surface` for the module collection at
     /// declaration path `declaration_path`, row-local against the space's
     /// containing row (`containing_steps`, e.g. `[("companies", "acme")]`). The
     /// compiled `$expose` `$view` is evaluated with `.` bound to that live row, so
@@ -2981,25 +3034,41 @@ fn blob_upload_rejection(error: UploadError) -> Rejection {
 }
 
 /// The materialized row addressed by `steps` — a walk of `(collection declaration
-/// name, key display text)` pairs from a package-root `Row` (§13.2 module-space
+/// name, key display text)` pairs from a package-root `Row` (§13.2 module-collection
 /// containing row). An empty `steps` is the root row itself. Each step descends
 /// into the named collection cell and matches the row whose §D.2 key text equals
 /// the step key; `None` when a collection is missing or the key unmatched.
 fn row_at(root: &liasse_expr::Row, steps: &[(String, String)]) -> Option<liasse_expr::Row> {
     let mut current = root.clone();
     for (collection, key) in steps {
-        let next = {
-            let rows = current.cell(collection).and_then(Cell::as_collection)?;
-            rows.iter()
-                .find(|row| {
-                    liasse_ident::KeyText::from_key_values(std::slice::from_ref(row.key()))
-                        .is_ok_and(|text| text.as_str() == key.as_str())
-                })
-                .cloned()?
-        };
-        current = next;
+        current = row_in(&current, collection, key)?;
     }
     Some(current)
+}
+
+/// The row of `parent`'s nested collection `collection` whose D.2 key text is
+/// `key`, if one is live.
+fn row_in(parent: &liasse_expr::Row, collection: &str, key: &str) -> Option<liasse_expr::Row> {
+    let rows = parent.cell(collection).and_then(Cell::as_collection)?;
+    rows.iter()
+        .find(|row| {
+            liasse_ident::KeyText::from_key_values(std::slice::from_ref(row.key()))
+                .is_ok_and(|text| text.as_str() == key)
+        })
+        .cloned()
+}
+
+/// The store [`KeyValue`](liasse_store::KeyValue) of a materialized row key
+/// (§5.4): a composite key decomposes into its `$key`-order components, every
+/// other key is a single component.
+fn key_value_of(key: &Value) -> liasse_store::KeyValue {
+    match key {
+        Value::Composite(components) => match components.split_first() {
+            Some((first, rest)) => liasse_store::KeyValue::composite(first.clone(), rest.to_vec()),
+            None => liasse_store::KeyValue::single(key.clone()),
+        },
+        other => liasse_store::KeyValue::single(other.clone()),
+    }
 }
 
 /// The child root-mutation name a simple `$expose` `$mut` binding names (§13.8):

@@ -13,7 +13,7 @@
     reports success — a module state that is wrong and looks correct.
 
     So this is written as a DISCRIMINATION, not a smoke test. Two company rows
-    each own a `$modules` space of the same declaration path, and the SAME root
+    each own a module collection of the same declaration path, and the SAME root
     mutation installs into each by key, from two different packages seeded 5 and
     9. §13.2 fixes the expected answer independently of the implementation:
     "Installing the same package in each space creates two independent
@@ -47,11 +47,11 @@
           $key: "id"
           id: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                items: {
-                  $view: { $key: "id", id: "text", qty: "int" }
-                }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              items: {
+                $view: { $key: "id", id: "text", qty: "int" }
               }
             }
           }

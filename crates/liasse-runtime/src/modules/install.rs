@@ -11,16 +11,18 @@ use crate::modules::ModuleError;
 /// surface, a resolved sibling path, or an unresolved peer requirement.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UseSpec {
-    /// `$parent`: the module space's projected parent capability under the same
+    /// `$parent`: the module collection's projected parent capability under the same
     /// handle name (§13.4).
     Parent,
     /// `$parent.<name>`: a parent capability imported under a renamed handle
     /// (§13.4 "Renaming the handle").
     ParentSurface(String),
-    /// An absolute sibling path (`/companies/acme/modules/people`), optionally
-    /// `#interface`-qualified — the concrete binding an operator supplies when peer
-    /// resolution is ambiguous (§13.3 `$resolved`).
-    Path(String),
+    /// A sibling instance NAME (`people2`) — the concrete binding an operator
+    /// supplies when peer resolution is ambiguous (§13.3 `$resolved`). §13.5 keeps
+    /// peer lookup within the sibling set, which is the module collection the
+    /// instance is being installed into, so a name is the whole coordinate: there
+    /// is no cross-collection spelling to get wrong.
+    Sibling(String),
     /// A peer requirement `line/interface@major` (§13.5): the package line before
     /// `/`, the exposed interface after `/`, and the compatible major after `@`.
     /// Resolution against the installed sibling set is a documented seam.
@@ -37,8 +39,10 @@ impl UseSpec {
         if let Some(name) = spec.strip_prefix("$parent.") {
             return non_empty(name).map(|n| Self::ParentSurface(n.to_owned()));
         }
-        if spec.starts_with('/') {
-            return non_empty(spec).map(|s| Self::Path(s.to_owned()));
+        // A peer requirement always carries `line/interface@major`; a spec with no
+        // `/` at all therefore names a sibling instance, not a requirement.
+        if !spec.contains('/') {
+            return non_empty(spec).map(|s| Self::Sibling(s.to_owned()));
         }
         parse_peer(spec)
     }
@@ -87,7 +91,7 @@ impl DepSpec {
 
 /// The boundary bindings an admitted instance records (§13.3: "The admitted
 /// instance records the exact package and every resolved choice"). Kept beside the
-/// child engine so disable/enable and aggregation can reason about the boundary
+/// child engine so disable/enable and the boundary reads can reason about it
 /// occurrences (§13.12) without re-parsing the request.
 #[derive(Debug, Clone, Default)]
 pub struct AdmittedBindings {
@@ -105,7 +109,7 @@ pub struct AdmittedBindings {
 
 /// A §13.3 module install request: the instance name, the child package
 /// definition to load, the immutable `$config`, and the explicit `$use`/`$deps`
-/// boundary bindings. Built fluently; the host admits it into a module space,
+/// boundary bindings. Built fluently; the host admits it into a module collection,
 /// recording the bindings on the new instance.
 pub struct InstallRequest {
     name: String,

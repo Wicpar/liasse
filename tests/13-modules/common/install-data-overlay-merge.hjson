@@ -22,16 +22,16 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                templates: {
-                  $view: {
-                    $key: "id"
-                    id: "text"
-                    label: "text"
-                    note: "text"
-                    tags: { $set: "text" }
-                  }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: {
+                $view: {
+                  $key: "id"
+                  id: "text"
+                  label: "text"
+                  note: "text"
+                  tags: { $set: "text" }
                 }
               }
             }
@@ -75,7 +75,7 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: {
           $name: "kit"
           $module: "t.tpls@1.0.0"

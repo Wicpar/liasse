@@ -707,8 +707,8 @@ fn build_migrated<G: crate::generator::Generators>(
     // source). The migration now stages the whole row tree, so a NESTED spend/pool
     // arrangement re-funds here like a top-level one — a migration that would
     // over-draw or negate a nested pool is rejected rather than committed. The
-    // module/interface aggregate enforcement (`EvalCtx.modules` is `None` on this
-    // path) remains a flagged follow-on hole.
+    // module/interface enforcement (`EvalCtx.modules` is `None` on this path)
+    // remains a flagged follow-on hole.
     crate::meter::admit::enforce(&ctx, &target.compiled.meters, &mut prospective, &addresses)?;
     let rows: BTreeMap<RowAddress, FieldMap> = addresses
         .into_iter()

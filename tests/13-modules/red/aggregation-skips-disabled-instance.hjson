@@ -21,10 +21,10 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                templates: { $view: { $key: "id", id: "text", label: "text" } }
-              }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: { $view: { $key: "id", id: "text", label: "text" } }
             }
           }
           catalog: {
@@ -54,11 +54,11 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: { $name: "kit_a", $module: "t.tpl@1.0.0"
                    $data: { templates: { a1: { label: "Alpha" } } } } }
       expect: { outcome: ok } }
-    { module_install: { space: "/companies/acme/modules"
+    { module_install: { at: "/companies/acme/modules"
         request: { $name: "kit_b", $module: "t.tpl@1.0.0"
                    $data: { templates: { b1: { label: "Beta" } } } } }
       expect: { outcome: ok } }

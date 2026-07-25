@@ -22,10 +22,10 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                templates: { $view: { $key: "id", id: "text", label: "text" } }
-              }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: { $view: { $key: "id", id: "text", label: "text" } }
             }
           }
           catalog: {
@@ -60,7 +60,7 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { $name: "kit", $module: "t.tpl@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "kit", $module: "t.tpl@1.0.0" } }
       expect: { outcome: ok } }
     // before rename: both the fixed "kit" view and the aggregation see the row
     { watch: "public.kit_view", id: "wk", expect_init: { value: [ { id: "t1", label: "Alpha" } ] } }

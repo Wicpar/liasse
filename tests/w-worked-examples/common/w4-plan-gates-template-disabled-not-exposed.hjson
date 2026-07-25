@@ -25,13 +25,13 @@
           name: "text"
           plan: "text"
           modules: {
-            $modules: {
-              $expose: {
-                company: { $view: ". { id, name, plan }", $mut: { rename: ".rename" } }
-              }
-              $interfaces: {
-                templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
-              }
+            $key: "text"
+            $value: "module"
+            $expose: {
+              company: { $view: ". { id, name, plan }", $mut: { rename: ".rename" } }
+            }
+            $interfaces: {
+              templates: { $view: { $key: "id", id: "text", label: "text", journal: "text", lines: "json" } }
             }
           }
           $mut: { rename: ".name = @name" }
@@ -75,7 +75,7 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/globex/modules"
+    { module_install: { at: "/companies/globex/modules"
         request: { $name: "fr_sales", $module: "acme.fr_sales_templates@1.0.0" } }
       expect: { outcome: ok } }
     // template seeded disabled (plan != fr-pcg) -> not exposed -> aggregation empty

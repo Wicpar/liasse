@@ -161,7 +161,7 @@ fn is_shape(value: &DocValue) -> bool {
     !members.iter().any(|member| {
         matches!(
             member.name.text.as_str(),
-            "$type" | "$enum" | "$set" | "$ref" | "$view" | "$like" | "$keyring" | "$modules"
+            "$type" | "$enum" | "$set" | "$ref" | "$view" | "$like" | "$keyring"
         )
     })
 }

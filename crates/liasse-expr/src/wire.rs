@@ -203,7 +203,7 @@ pub(crate) enum WireValue {
 /// handle identity; the `Pending` blob descriptor mirrors [`WireValue::Blob`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) enum WireModuleHandle {
-    Mounted { space: String, name: String },
+    Mounted { at: String },
     Pending { sha512: String, bytes: u64, media: String, name: Option<String> },
 }
 
@@ -264,9 +264,7 @@ impl From<&Value> for WireValue {
                 entries.iter().map(|(k, v)| (WireValue::from(k), WireValue::from(v))).collect(),
             ),
             Value::Module(handle) => Self::Module(match handle {
-                ModuleHandle::Mounted { space, name } => {
-                    WireModuleHandle::Mounted { space: space.clone(), name: name.clone() }
-                }
+                ModuleHandle::Mounted(at) => WireModuleHandle::Mounted { at: at.clone() },
                 ModuleHandle::Pending(descriptor) => WireModuleHandle::Pending {
                     sha512: descriptor.sha512().to_canonical_text(),
                     bytes: descriptor.byte_count(),
@@ -329,7 +327,7 @@ impl WireValue {
                     .collect::<Result<_, String>>()?,
             ),
             Self::Module(handle) => Value::Module(match handle {
-                WireModuleHandle::Mounted { space, name } => ModuleHandle::Mounted { space, name },
+                WireModuleHandle::Mounted { at } => ModuleHandle::Mounted(at),
                 WireModuleHandle::Pending { sha512, bytes, media, name } => ModuleHandle::Pending(
                     Box::new(BlobDescriptor::new(Sha512::parse(&sha512).map_err(err)?, bytes, MediaType::new(media), name)),
                 ),
@@ -526,7 +524,7 @@ mod tests {
     #[test]
     fn module_value_round_trips_both_handles() -> Result<(), String> {
         let mounted =
-            Value::Module(ModuleHandle::Mounted { space: "s".to_owned(), name: "a".to_owned() });
+            Value::Module(ModuleHandle::Mounted("/s/\"a\"".to_owned()));
         assert_eq!(WireValue::from(&mounted).into_value()?, mounted, "mounted round-trips");
 
         let sha = Sha512::parse(&"a".repeat(128)).map_err(|e| e.to_string())?;

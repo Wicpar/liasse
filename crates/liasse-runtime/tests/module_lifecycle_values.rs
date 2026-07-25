@@ -14,11 +14,11 @@
 mod support;
 
 use liasse_artifact::{Artifact, ArtifactBuilder};
-use liasse_ident::{HistoryPoint, InstanceId, LineageId, PointId};
+use liasse_ident::{HistoryPoint, InstanceId, LineageId, NameSegment, PointId};
 use liasse_runtime::{
-    CallOutcome, CallRequest, Engine, ImportRelation, ModuleHost, ModuleSpace, Value,
+    CallOutcome, CallRequest, Engine, ImportRelation, ModuleHost, Value,
 };
-use liasse_store::{MemoryStore, MemoryStoreFactory};
+use liasse_store::{AddressStep, CollectionPath, KeyValue, MemoryStore, MemoryStoreFactory, RowAddress};
 use liasse_value::{BlobDescriptor, ModuleHandle, Text, Timestamp};
 use support::generator;
 
@@ -34,12 +34,12 @@ const ROOT: &str = r#"{
     "companies": {
       "$key": "id"
       "id": "text"
-      "modules": { "$modules": {} }
+      "modules": { "$key": "text", "$value": "module" }
     }
     "$mut": {
       "install({ id: text, blob: blob })": [
         "e = .log + { id: @id }"
-        "module.install({ blob: @blob, space: '/companies/acme/modules', name: 'sales' })"
+        "module.install({ blob: @blob, at: .companies['acme'].modules['sales'] })"
         "return e { id }"
       ]
       "snapshot({ id: text, at: module })": [
@@ -109,8 +109,15 @@ const SALES_V2: &str = r#"{
   "$expose": { "items": { "$view": ".items { id, qty }" } }
 }"#;
 
-fn space() -> ModuleSpace {
-    ModuleSpace::new("/companies/acme/modules").expect("a module space")
+/// The module-collection entry `name` is mounted at: `/companies/acme/modules`
+/// keyed by the instance name — an ordinary row address, built from the containing
+/// row's own key.
+fn at(name: &str) -> RowAddress {
+    CollectionPath::nested(
+        [AddressStep::new(NameSegment::new("companies"), KeyValue::single(Value::Text(Text::new("acme"))))],
+        NameSegment::new("modules"),
+    )
+    .row(KeyValue::single(Value::Text(Text::new(name))))
 }
 
 /// The `module` value denoting the installed `sales` instance. The runtime is the
@@ -118,10 +125,7 @@ fn space() -> ModuleSpace {
 /// so this stands for the trusted host handing a submodule its own handle (§13.16
 /// delegation).
 fn sales_handle() -> Value {
-    Value::Module(ModuleHandle::Mounted {
-        space: space().as_str().to_owned(),
-        name: "sales".to_owned(),
-    })
+    Value::Module(ModuleHandle::Mounted(at("sales").render()))
 }
 
 fn package_blob(definition: &str) -> Vec<u8> {
@@ -155,7 +159,7 @@ fn host_with_sales() -> ModuleHost<MemoryStoreFactory> {
 
 /// The `qty` of `sales`'s item `a`, read through its exposed interface.
 fn sales_qty(host: &ModuleHost<MemoryStoreFactory>) -> Option<String> {
-    let view = host.interface_read(&space(), "sales", "items").expect("read")?;
+    let view = host.interface_read(&at("sales"), "items").expect("read")?;
     let row = view.rows().iter().find(|r| matches!(r.field("id"), Some(Value::Text(t)) if t.as_str() == "a"))?;
     match row.field("qty")? {
         Value::Int(v) => Some(v.to_canonical_text()),
@@ -166,7 +170,7 @@ fn sales_qty(host: &ModuleHost<MemoryStoreFactory>) -> Option<String> {
 /// Advance `sales`'s own history by one committed transition.
 fn bump(host: &mut ModuleHost<MemoryStoreFactory>, by: i64) {
     let request = CallRequest::new("bump").arg("by", Value::Int(liasse_value::Integer::from(by)));
-    let outcome = host.child_call(&space(), "sales", &request, &mut generator()).expect("no engine fault");
+    let outcome = host.child_call(&at("sales"), &request, &mut generator()).expect("no engine fault");
     assert!(matches!(outcome, CallOutcome::Committed { .. }), "the bump commits, got {outcome:?}");
 }
 
@@ -195,7 +199,7 @@ fn packed_artifact(host: &ModuleHost<MemoryStoreFactory>, descriptor: &BlobDescr
 /// Built from the host's own §13.16 pack API, so the test addresses exactly the
 /// bytes the in-language operator lands.
 fn sales_descriptor(host: &ModuleHost<MemoryStoreFactory>) -> BlobDescriptor {
-    let bytes = host.pack_instance(&space(), "sales").expect("the instance can be packed");
+    let bytes = host.pack_instance(&at("sales")).expect("the instance can be packed");
     BlobDescriptor::new(
         liasse_value::Sha512::of(&bytes),
         bytes.len() as u64,
@@ -221,7 +225,7 @@ fn pack_produces_a_verifiable_artifact_of_the_instance() {
     let opened = Artifact::open(&bytes).expect("the packed bytes verify as a `.liasse` artifact (§19.8)");
     assert_eq!(
         opened.manifest().instance.as_str(),
-        host.incarnation(&space(), "sales").expect("incarnation").as_str(),
+        host.incarnation(&at("sales")).expect("incarnation").as_str(),
         "a packed module is an artifact of that instance, not of a placeholder"
     );
 }

@@ -63,6 +63,7 @@ impl Evaluator<'_> {
             BuiltinFn::Pack => Self::refuse_lifecycle(ModuleOperator::Pack),
             BuiltinFn::UpdateModule => Self::refuse_lifecycle(ModuleOperator::UpdateModule),
             BuiltinFn::RollbackModule => Self::refuse_lifecycle(ModuleOperator::Rollback),
+            BuiltinFn::ReinstallModule => Self::refuse_lifecycle(ModuleOperator::Reinstall),
         }
     }
 

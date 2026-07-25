@@ -20,10 +20,10 @@
           id: "text"
           name: "text"
           modules: {
-            $modules: {
-              $interfaces: {
-                templates: { $view: { $key: "id", id: "text", label: "text" } }
-              }
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: { $view: { $key: "id", id: "text", label: "text" } }
             }
           }
         }
@@ -44,7 +44,7 @@
   root: host
 
   steps: [
-    { module_install: { space: "/companies/acme/modules", request: { $name: "", $module: "t.tpl@1.0.0" } }
+    { module_install: { at: "/companies/acme/modules", request: { $name: "", $module: "t.tpl@1.0.0" } }
       expect: { outcome: invalid, violates: ["§13.3"]
                 detail: "the instance name must be a non-empty text value" } }
   ]

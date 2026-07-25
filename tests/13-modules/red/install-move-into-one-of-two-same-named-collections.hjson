@@ -1,0 +1,94 @@
+{
+  format: 1
+  name: install-move-into-one-of-two-same-named-collections
+  suite: scenario
+  spec: ["#modules", "§13.16", "§13.2"]
+  note: '''
+    The attack is a package shaped so that a written destination could plausibly
+    name TWO module collections. The root declares a top-level `modules` map of
+    `module` values AND a row-scoped `companies.modules` of the same declaration
+    name — both legal, and §13.2 makes them genuinely distinct ("Installing the
+    same package in each space creates two independent instances").
+
+    A module collection is an ORDINARY collection, so `<-` addresses it through
+    the language's own collection references and nothing about modules is special:
+    `/modules[@name]` is the package-root one and `.companies[@id].modules[@name]`
+    is the row-scoped one. There is no module-space coordinate to translate into,
+    so there is nothing to translate wrongly.
+
+    The check is a discrimination, not a smoke test. Each install must populate
+    EXACTLY ONE of the two and leave the other empty: a resolution that confused
+    them would report the same success while putting the instance somewhere the
+    operator did not ask for, and reading only the collection you expected would
+    look correct. Both are read after each install, and the two packages carry
+    different seeds (5 and 9) so a collision could not hide behind equal values.
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.modinstall.samename@1.0.0"
+      $model: {
+        modules: {
+          $key: "text"
+          $value: "module"
+          $interfaces: { items: { $view: { $key: "id", id: "text", qty: "int" } } }
+        }
+        companies: {
+          $key: "id"
+          id: "text"
+          modules: {
+            $key: "text"
+            $value: "module"
+            $interfaces: { items: { $view: { $key: "id", id: "text", qty: "int" } } }
+          }
+        }
+        $mut: {
+          "provision_root({ name: text, package: blob })": [
+            "/modules[@name] <- unpack(@package)"
+          ]
+          "provision_row({ company: text, name: text, package: blob })": [
+            ".companies[@company].modules[@name] <- unpack(@package)"
+          ]
+        }
+        $public: {
+          root_items: { $view: '/modules["sales"]::items' }
+          acme_items: { $view: '/companies["acme"].modules["sales"]::items' }
+        }
+      }
+      $data: { companies: { acme: {} } }
+    }
+    root_sales: {
+      $liasse: 1
+      $module: "t.modinstall.samename.rootsales@1.0.0"
+      $model: { items: { $key: "id", id: "text", qty: "int" } }
+      $data: { items: { a: { qty: "5" } } }
+      $expose: { items: { $view: ".items { id, qty }" } }
+    }
+    row_sales: {
+      $liasse: 1
+      $module: "t.modinstall.samename.rowsales@1.0.0"
+      $model: { items: { $key: "id", id: "text", qty: "int" } }
+      $data: { items: { a: { qty: "9" } } }
+      $expose: { items: { $view: ".items { id, qty }" } }
+    }
+  }
+  root: host
+
+  steps: [
+    // The package-root spelling populates the package-root collection only.
+    { module_lifecycle_call: { mutation: "provision_root", package: "root_sales"
+        args: { name: "sales" } }
+      expect: { outcome: ok } }
+    { watch: "public.root_items", id: "wr1", expect_init: { value: [ { id: "a", qty: "5" } ] } }
+    { watch: "public.acme_items", id: "wa1", expect_init: { value: [] } }
+
+    // The row-scoped spelling populates the row's collection only, and the seeds
+    // differ, so neither read could be the other's instance.
+    { module_lifecycle_call: { mutation: "provision_row", package: "row_sales"
+        args: { company: "acme", name: "sales" } }
+      expect: { outcome: ok } }
+    { expect_view: { watch: "wa1", value: [ { id: "a", qty: "9" } ] } }
+    { expect_view: { watch: "wr1", value: [ { id: "a", qty: "5" } ] } }
+  ]
+}

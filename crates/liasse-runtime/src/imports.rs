@@ -1,11 +1,11 @@
 //! The §13.4 parent-provided surfaces a child module instance imports.
 //!
-//! A module space MAY project a parent capability to its children through the
-//! `$modules` `$expose` block (§13.4). A child imports one under `$use`
+//! A module collection MAY project a parent capability to its children through the
+//! a module collection's `$expose` block (§13.4). A child imports one under `$use`
 //! (`company: "$parent"`, or renamed `org: "$parent.company"`) and reads or calls
 //! it through `#company`/`#org`. The surface is **row-local**: under Acme's space
 //! it refers to Acme, under Globex to Globex — the projection is evaluated against
-//! the module space's containing row (§13.4).
+//! the module collection's containing row (§13.4).
 //!
 //! Each bound handle carries two faces of the same projection: the row **type**
 //! the child's compile and its `$data` seed check type an import read against
@@ -36,7 +36,7 @@ pub(crate) struct ParentImports {
 /// as it did before parent surfaces existed.
 pub(crate) static EMPTY: ParentImports = ParentImports { values: BTreeMap::new(), types: BTreeMap::new() };
 
-/// One parent surface resolved row-local against a module space's containing row
+/// One parent surface resolved row-local against a module collection's containing row
 /// (§13.4): the row `ty` a child types its imported reads against, the projected
 /// row `value` those reads evaluate against, and the `$mut` bindings a child's
 /// `#handle.mutation(...)` routes to the containing-row mutation through.

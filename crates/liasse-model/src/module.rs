@@ -2,7 +2,8 @@
 //!
 //! Validates the static grammar of the module-composition surface:
 //!
-//! * a `$modules` space carries `$expose?`/`$interfaces?`/`$auth?` (§13.2–13.8);
+//! * a **module collection** — a map whose `$value` type is `module` — carries
+//!   `$interfaces?` (§13.8) and `$expose?` (§13.4) beside the map markers;
 //! * a module package's top-level `$config` is an immutable typed struct
 //!   (§13.1), `$use` maps handles to `$parent`/parent-surface/peer specs with an
 //!   optional `$optional` group (§13.5), `$deps` maps handles to package specs
@@ -15,64 +16,46 @@
 //! set; they are documented seams. Expression members are parsed for syntax but
 //! not typed, since they read `#handle` imports the standalone model lacks.
 
-use liasse_expr::{ExprType, RowType};
 use liasse_syntax::DocValue;
-use liasse_value::Type;
 
-use crate::bucket::node_at_mut;
 use crate::doc::DocValueExt;
 use crate::mutation::parse_name;
 use crate::names::DeclName;
 use crate::report::{code, Reporter};
-use crate::resolve::Resolver;
-use crate::state::{Node, Shape};
 use crate::types::{NamedTypes, TypeParser};
 
-/// Pre-pass (§13.8/§13.9): type each module space's placeholder view node into a
-/// keyed view of instances. Each instance shape's interface members are projected
-/// through the resolver (so a nested-collection `$view` referencing a `$types`
-/// shape resolves), and the row is keyed by the instance name — a non-empty text
-/// value that forms the local component of instance identity (§13.3). This lets
-/// `.modules::iface` interface aggregation (§13.9) and `modules.$key` type-check
-/// against the declared boundary contracts.
-pub(crate) fn type_module_spaces(
-    resolver: &Resolver,
-    root: &mut Shape,
-    spaces: &[(Vec<String>, Shape)],
-) {
-    let mut computed: Vec<(Vec<String>, RowType)> = Vec::new();
-    for (path, instance_shape) in spaces {
-        let fields = resolver.shape_row(instance_shape);
-        let keyed = RowType::new(
-            fields.fields().map(|(name, ty)| (name.clone(), ty.clone())).collect::<Vec<_>>(),
-            Some(ExprType::scalar(Type::Text)),
-        );
-        computed.push((path.clone(), keyed));
+/// The boundary declarations a module collection carries beside its map markers
+/// (§13.4/§13.8). They are a property of the collection that holds the modules,
+/// not of a separate node kind: a module collection IS a map of `module` values.
+const BOUNDARY_MEMBERS: [&str; 2] = ["$interfaces", "$expose"];
+
+/// Validate the boundary declarations of a module collection (a map whose
+/// `$value` is `module`).
+pub(crate) fn check_boundary(reporter: &mut Reporter, value: &DocValue) {
+    if let Some(interfaces) = value.member("$interfaces") {
+        check_interfaces(reporter, &interfaces.value);
     }
-    for (path, row) in computed {
-        if let Some(Node::View(view)) = node_at_mut(root, &path) {
-            view.row = row;
-        }
+    if let Some(expose) = value.member("$expose") {
+        check_expose_object(reporter, &expose.value);
     }
 }
 
-/// Validate a `$modules` space object.
-pub(crate) fn check_space(reporter: &mut Reporter, value: &DocValue) {
-    let Some(members) = value.as_object() else {
-        reporter.reject(value.span, code::MODULE, "`$modules` must be a module-space object");
-        return;
-    };
-    for member in members {
-        match member.name.text.as_str() {
-            "$expose" => check_expose_object(reporter, &member.value),
-            "$interfaces" => check_interfaces(reporter, &member.value),
-            "$auth" => check_space_auth(reporter, &member.value),
-            other => reporter.reject_hint(
+/// Reject a boundary declaration on a collection whose entries are not `module`
+/// values. `$interfaces`/`$expose` declare what a *mounted module* must satisfy
+/// and what it may import, so they name nothing on an ordinary collection —
+/// refused by name rather than silently ignored.
+pub(crate) fn reject_boundary_on_non_module(reporter: &mut Reporter, value: &DocValue) {
+    for name in BOUNDARY_MEMBERS {
+        if let Some(member) = value.member(name) {
+            reporter.reject_hint(
                 member.span,
                 code::MODULE,
-                format!("`{other}` is not a `$modules` member"),
-                "a module space carries `$expose`, `$interfaces`, and `$auth`",
-            ),
+                format!(
+                    "`{name}` declares a module boundary contract, but this collection's entries \
+                     are not `module` values (§13.8)"
+                ),
+                "declare the collection as a map of modules — `{ \"$key\": \"text\", \"$value\": \"module\" }`",
+            );
         }
     }
 }
@@ -214,23 +197,6 @@ fn check_return_shape(reporter: &mut Reporter, value: &DocValue) {
                 member.value.span,
                 code::MODULE,
                 format!("`$return` field `{}` has an invalid type `{}`: {reason}", member.name.text, text.trim()),
-            );
-        }
-    }
-}
-
-/// A module-space `$auth` maps a child-visible name to a parent authenticator.
-fn check_space_auth(reporter: &mut Reporter, value: &DocValue) {
-    let Some(members) = value.as_object() else {
-        reporter.reject(value.span, code::MODULE, "a `$modules` `$auth` maps child names to parent authenticators");
-        return;
-    };
-    for member in members {
-        if member.value.as_string().is_none() {
-            reporter.reject(
-                member.value.span,
-                code::MODULE,
-                format!("`$auth.{}` must name one parent authenticator", member.name.text),
             );
         }
     }

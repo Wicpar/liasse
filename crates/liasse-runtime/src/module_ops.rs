@@ -72,6 +72,22 @@ impl Interp<'_> {
             ModuleOperator::Pack => &[arg::MODULE],
             ModuleOperator::UpdateModule => &[arg::MODULE, arg::ONTO],
             ModuleOperator::Rollback => &[arg::MODULE, arg::POINT],
+            // §13.16: `reinstall_module(m)` names what a `<-` does to `m` at ITS
+            // destination. Standing alone it addresses no destination, so there is
+            // no admission to re-run — refused by name rather than evaluated into
+            // some value that looks like it moved an instance.
+            ModuleOperator::Reinstall => {
+                return Err(Rejection::new(
+                    RejectionReason::Malformed,
+                    format!(
+                        "`{}` is the source of a move into a module collection — write \
+                         `.<collection>[<name>] <- {}(m)` (§13.16). On its own it names no \
+                         destination, so there is no boundary to re-admit against.",
+                        operator.name(),
+                        operator.name(),
+                    ),
+                ));
+            }
         };
         let mut rest = args;
         for name in leading {
@@ -106,13 +122,13 @@ impl Interp<'_> {
                 Arg::Positional(_) => return Err(axis_shape(operator)),
             }
         }
-        lifecycle.perform(operator.op(), values)
+        lifecycle.perform(operator.op(), None, values)
     }
 
     /// Evaluate one operand. A nested §13.16 operator (`update_module(m, unpack(b))`
     /// is the §13.16 delegation example) is not a pure expression, so an operand
     /// that is itself a lifecycle operator routes through the handle first.
-    fn operand_value(&self, expr: &Expr, source: SourceId, current: &Cell) -> Result<Value, Rejection> {
+    pub(crate) fn operand_value(&self, expr: &Expr, source: SourceId, current: &Cell) -> Result<Value, Rejection> {
         if let Some(result) = self.module_operator_call(expr, source) {
             return match result? {
                 Cell::Scalar(value) => Ok(value),

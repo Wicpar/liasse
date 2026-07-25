@@ -13,7 +13,7 @@
       $liasse: 1
       $app: "t.parenthist@1.0.0"
       $model: {
-        mods: { $modules: {} }
+        mods: { $key: "text", $value: "module" }
       }
     }
     child: {
@@ -34,7 +34,7 @@
   root: parent
 
   steps: [
-    { module_install: { space: "mods", request: { "$name": "m1", "$module": "t.childnotes@1.0.0" } },
+    { module_install: { at: "/mods", request: { "$name": "m1", "$module": "t.childnotes@1.0.0" } },
       expect: { outcome: ok } }
     { export: { as: "a1" }, expect: { outcome: ok } }
     { extract_artifact: { from: "a1", entry: "modules/*.liasse", as: "a_embedded" } }
@@ -48,7 +48,7 @@
         }
     } } }
     // Standalone export of the same child instance.
-    { export: { as: "a_child", instance: "mods/m1" }, expect: { outcome: ok } }
+    { export: { as: "a_child", instance: "/mods/m1" }, expect: { outcome: ok } }
     { inspect_artifact: { artifact: "a_child", expect: {
         outcome: ok
         manifest: {
