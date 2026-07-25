@@ -160,6 +160,7 @@ mod lineage;
 mod materialize;
 mod meter;
 mod migrate;
+mod module_install;
 mod module_ops;
 mod modules;
 mod outcome;

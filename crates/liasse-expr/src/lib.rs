@@ -67,7 +67,9 @@ pub use env::{
 };
 pub use error::EvalError;
 pub use host::{DbReadPosition, HostEffect, HostOp, HostOrigin, HostPosition};
-pub use lifecycle::{arg as lifecycle_arg, LifecycleOp, MigrateAxis, ModuleOperator, LIFECYCLE_NAMESPACE};
+pub use lifecycle::{
+    arg as lifecycle_arg, LifecycleOp, MigrateAxis, ModuleOperator, LIFECYCLE_NAMESPACE, MOVE_OPERATOR,
+};
 pub use order::{SortOrder, ViewOrders};
 pub use scope::{InterfaceMut, Scope};
 pub use semantics::DivisionRounding;

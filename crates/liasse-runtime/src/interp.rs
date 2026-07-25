@@ -298,7 +298,7 @@ impl<'a> Interp<'a> {
 
     /// The mutation's scope extended with the current local bindings' types, so a
     /// statement (or a value inside one) may reference a `name = …` binding.
-    fn scope(&self) -> RuntimeScope {
+    pub(crate) fn scope(&self) -> RuntimeScope {
         let (types, _) = local_bindings(&self.locals, self.ctx, self.prospective);
         let mut scope = self.mutation.scope.clone();
         for (name, ty) in types {
@@ -519,14 +519,24 @@ impl<'a> Interp<'a> {
     /// §8.5: the move operator `dest <- source` (and the mirror `source -> dest`,
     /// which the parser normalizes to the same node) transfers the source value
     /// into `dest` and leaves the source binding moved-from. The type checker has
-    /// established that `source` is a local binding, so evaluation binds the
-    /// destination from the source's value exactly as `=` would, then unsets the
-    /// source local — the second half of the transfer, not a guard: a later read of
-    /// the moved-from binding is already a load-time use-after-move rejection, so it
-    /// never reaches here, and if one somehow did it would fail loudly (an unknown
-    /// binding) rather than read a stale value. `dest <- dest` (an identity move)
-    /// leaves the rebound destination in place rather than unsetting it.
+    /// established that `source` is a local binding or a `module` value, so
+    /// evaluation binds the destination from the source's value exactly as `=`
+    /// would, then unsets the source local — the second half of the transfer, not a
+    /// guard: a later read of the moved-from binding is already a load-time
+    /// use-after-move rejection, so it never reaches here, and if one somehow did it
+    /// would fail loudly (an unknown binding) rather than read a stale value.
+    /// `dest <- dest` (an identity move) leaves the rebound destination in place
+    /// rather than unsetting it.
+    ///
+    /// §13.16: a move into a `$modules` slot — or of a `module` value anywhere else
+    /// — is not a binding transfer at all; it carries an instance through the §13.10
+    /// lifecycle. [`Interp::module_move`](crate::module_install) classifies and
+    /// performs it, refusing loudly for every destination it cannot resolve to
+    /// exactly one mount.
     fn exec_move(&mut self, dest: &Expr, source: &Expr, at: SourceId) -> Result<(), Rejection> {
+        if let Some(result) = self.module_move(dest, source, at) {
+            return result;
+        }
         self.exec_assign(dest, source, at)?;
         if let ExprKind::Name(src) = &source.kind {
             let rebinds_source = matches!(&dest.kind, ExprKind::Name(d) if d.text == src.text);
@@ -2266,7 +2276,7 @@ impl<'a> Interp<'a> {
         })
     }
 
-    fn row_target(&self, expr: &Expr, source: SourceId) -> Result<Option<RowTarget>, Rejection> {
+    pub(crate) fn row_target(&self, expr: &Expr, source: SourceId) -> Result<Option<RowTarget>, Rejection> {
         match &expr.kind {
             ExprKind::Current => Ok(self.receiver.clone()),
             // §8.1/§8.6: a local bound to a row (`t = .templates[@id]`) is a live

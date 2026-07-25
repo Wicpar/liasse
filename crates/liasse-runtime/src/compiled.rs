@@ -613,21 +613,38 @@ impl Compiled {
         self.exposed_views.iter().find(|e| e.interface == name).map(|e| &e.expr)
     }
 
+    /// The `$modules` space this package declares at declaration path `path`
+    /// (§13.2), if any. The single point that answers "is this a declared module
+    /// space?" — the §13.16 `<-` install lowering asks it before minting a mount,
+    /// so an undeclared path can never resolve to one.
+    pub(crate) fn module_space(&self, path: &[String]) -> Option<&CompiledModuleSpace> {
+        self.module_spaces.iter().find(|space| space.path == path)
+    }
+
     /// The `$interfaces` boundary contracts of the `$modules` space at declaration
     /// path `path` (§13.8), if the package declares one there. Used at install to
     /// check a child's `$expose` structurally satisfies the space's contract.
     pub(crate) fn module_space_interfaces(&self, path: &[String]) -> Option<&[CompiledInterfaceContract]> {
-        self.module_spaces.iter().find(|space| space.path == path).map(|space| space.interfaces.as_slice())
+        self.module_space(path).map(|space| space.interfaces.as_slice())
     }
 
     /// The parent-surface projection named `surface` declared by the `$modules`
     /// space at declaration path `path` (§13.4), if any — the compiled `$view` and
     /// `$mut` bindings a child importing `#surface` resolves through.
     pub(crate) fn parent_surface(&self, path: &[String], surface: &str) -> Option<&CompiledParentSurface> {
+        self.module_space(path).and_then(|space| space.exposes.iter().find(|e| e.name == surface))
+    }
+
+    /// Every `$modules` declaration path whose trailing declaration name is `name`
+    /// (§13.2). `.modules[@id]` names a slot by that trailing name alone, so this is
+    /// the candidate set a written destination is resolved against — and the reason
+    /// two same-named spaces are reported as an ambiguity rather than silently
+    /// ordered.
+    pub(crate) fn module_spaces_named<'a>(&'a self, name: &'a str) -> impl Iterator<Item = &'a [String]> {
         self.module_spaces
             .iter()
-            .find(|space| space.path == path)
-            .and_then(|space| space.exposes.iter().find(|e| e.name == surface))
+            .filter(move |space| space.path.last().is_some_and(|last| last == name))
+            .map(|space| space.path.as_slice())
     }
 
     /// The compiled bucket bounding collection `name`, if it is bucketed.

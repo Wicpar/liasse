@@ -90,7 +90,7 @@ pub use host::HostDescriptors;
 // here unchanged because the runtime reaches the model, not the expression crate,
 // for its house conventions.
 pub use liasse_expr::{
-    lifecycle_arg, LifecycleOp, MigrateAxis, ModuleOperator, LIFECYCLE_NAMESPACE,
+    lifecycle_arg, LifecycleOp, MigrateAxis, ModuleOperator, LIFECYCLE_NAMESPACE, MOVE_OPERATOR,
 };
 pub use migration::{nondeterministic_call, Migrations};
 pub use model::Model;

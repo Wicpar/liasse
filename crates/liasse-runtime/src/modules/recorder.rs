@@ -50,8 +50,21 @@ pub(super) struct MountedInstance<'a, S: InstanceStore> {
 /// A lifecycle intent recorded during staging (§13.10, §13.16): what to
 /// mount, migrate, remove, move, or land once the shared commit succeeds.
 pub(super) enum LifecycleIntent {
-    /// Install a new instance from the decoded package definition.
-    Install { space: String, name: String, definition: String, package: DecodedPackageId },
+    /// Install a new instance from the decoded package definition. `occupant` is
+    /// §13.16's "Install / override" half: a `<-` move into an occupied slot drops
+    /// the instance already there, where a declarative `module.install` refuses the
+    /// duplicate name (§13.3).
+    Install {
+        space: String,
+        name: String,
+        definition: String,
+        package: DecodedPackageId,
+        occupant: Occupant,
+    },
+    /// Relocate an installed instance to another slot of the SAME space (§13.16
+    /// "Move"): a §13.3 rekey that preserves the incarnation, and therefore the
+    /// durable identity, while emptying the source slot.
+    Relocate { space: String, from: String, to: String, occupant: Occupant },
     /// Update an existing instance to the decoded package definition (§20.1 chain).
     Update { space: String, name: String, definition: String, package: DecodedPackageId },
     /// Remove an existing instance (§13.12).
@@ -66,6 +79,18 @@ pub(super) enum LifecycleIntent {
     /// of `rollback_module`. The classification was established during staging, so a
     /// divergence had already rejected the transition before anything committed.
     Movement { space: String, name: String, artifact: Vec<u8>, relation: ImportRelation },
+}
+
+/// What a write into an already-occupied module slot does to the instance already
+/// there (§13.3 vs §13.16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Occupant {
+    /// §13.3: an instance name is "unique within its module space", so
+    /// `module.install` refuses a name already in use.
+    Refuse,
+    /// §13.16: "Moving a module value into a slot installs it, replacing any
+    /// instance already there … an occupant is dropped and uninstalled."
+    Drop,
 }
 
 /// The host-privileged lifecycle handle lent into the root/host-scope program
@@ -98,6 +123,7 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
         match op {
             LifecycleOp::Install | LifecycleOp::Update => &["space", "name", "blob"],
             LifecycleOp::Remove => &["space", "name"],
+            LifecycleOp::InstallModule => &["space", "name", arg::MODULE],
             LifecycleOp::Pack => &[arg::MODULE, arg::MODEL, arg::DATA, arg::HISTORY],
             LifecycleOp::UpdateModule => &[arg::MODULE, arg::ONTO, arg::MIGRATE],
             LifecycleOp::Rollback => &[arg::MODULE, arg::POINT],
@@ -262,6 +288,73 @@ impl<'a, S: InstanceStore> LifecycleRecorder<'a, S> {
         Ok(Cell::Scalar(Value::Blob(descriptor)))
     }
 
+    /// `.modules[@id] <- m` (§13.16 "Install / override" and "Move") — move a module
+    /// VALUE into a slot the interpreter has already resolved to a mount.
+    ///
+    /// The two operand shapes are the two halves of §13.16's move:
+    ///
+    /// - a **pending** module (`unpack(@package)`) has no instance yet, so it is
+    ///   decoded and mounted through the very same [`LifecycleIntent::Install`] the
+    ///   declarative `module.install` records — one runtime, two spellings;
+    /// - a **mounted** module is already installed somewhere, so the move
+    ///   *relocates* it. Within one space that is the §13.3 rekey
+    ///   ([`ModuleHost::rename`](crate::ModuleHost::rename)), which preserves the
+    ///   incarnation and therefore the durable identity. ACROSS spaces it is not:
+    ///   the destination space has its own §13.4 parent surfaces, §13.5 peer set and
+    ///   §13.8 interface contracts, all of which the instance was neither loaded
+    ///   under nor re-admitted against — so that case is REFUSED by name rather than
+    ///   re-keyed into a space whose boundary it was never checked against.
+    ///
+    /// Either way the slot's occupant is dropped: §13.16 says a move into a slot
+    /// replaces any instance already there.
+    fn install_module(&self, args: &[(String, Value)]) -> Result<Cell, Rejection> {
+        let op = LifecycleOp::InstallModule;
+        let operator = op.member();
+        let (space, name) = Self::mount_args(args, op)?;
+        match ModuleOperand::read(args, arg::MODULE, operator)? {
+            ModuleOperand::Pending(descriptor) => {
+                let (definition, package) = Self::decode_bytes(&blob_bytes(self.blobs, &descriptor)?)?;
+                let identity = Cell::Scalar(Value::Text(Text::new(package.definition.to_canonical_text())));
+                self.intents.borrow_mut().push(LifecycleIntent::Install {
+                    space,
+                    name,
+                    definition,
+                    package,
+                    occupant: Occupant::Drop,
+                });
+                Ok(identity)
+            }
+            ModuleOperand::Mounted { space: from, name: source } => {
+                if from.as_str() != space {
+                    return Err(Rejection::new(
+                        RejectionReason::Unsupported,
+                        format!(
+                            "`{operator}` would relocate `{source}` from `{}` into `{space}`, but a \
+                             module space is a boundary, not a folder: the destination declares its \
+                             own §13.4 parent surfaces, §13.5 peer set and §13.8 interface \
+                             contracts, and this instance was loaded under the source space's and \
+                             re-admitted against none of them. Refused rather than re-keyed into a \
+                             space whose boundary it was never checked against — pack it \
+                             (`pack(m)`) and install the artifact into the destination instead. \
+                             Relocation WITHIN one space (§13.3 rekey) is supported.",
+                            from.as_str(),
+                        ),
+                    ));
+                }
+                let identity = Cell::Scalar(Value::Text(Text::new(name.clone())));
+                if source != name {
+                    self.intents.borrow_mut().push(LifecycleIntent::Relocate {
+                        space,
+                        from: source,
+                        to: name,
+                        occupant: Occupant::Drop,
+                    });
+                }
+                Ok(identity)
+            }
+        }
+    }
+
     /// `update_module(m, u, { migrate })` (§13.16) — apply the module `u` onto the
     /// live instance `m`, keeping `m`'s identity.
     ///
@@ -422,12 +515,15 @@ impl<S: InstanceStore> Lifecycle for LifecycleRecorder<'_, S> {
                 // caller reads it as the call's result (the D.4 identity text).
                 let identity = Cell::Scalar(Value::Text(Text::new(package.definition.to_canonical_text())));
                 let intent = match op {
-                    LifecycleOp::Install => LifecycleIntent::Install { space, name, definition, package },
+                    LifecycleOp::Install => {
+                        LifecycleIntent::Install { space, name, definition, package, occupant: Occupant::Refuse }
+                    }
                     _ => LifecycleIntent::Update { space, name, definition, package },
                 };
                 self.intents.borrow_mut().push(intent);
                 Ok(identity)
             }
+            LifecycleOp::InstallModule => self.install_module(&args),
             LifecycleOp::Remove => {
                 let (space, name) = Self::mount_args(&args, op)?;
                 let identity = Cell::Scalar(Value::Text(Text::new(name.clone())));

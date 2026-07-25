@@ -671,35 +671,7 @@ impl MutPhase<'_, '_> {
                     }
                 }
                 StmtKind::Move { dest, source: src } => {
-                    // §8.5: the move operator transfers a local binding into `dest`
-                    // and leaves the binding moved-from. Only a local binding is an
-                    // owner this stage can leave moved-from, so a stored-state place
-                    // (a field path, parameter, selector) or a computed value as the
-                    // source is refused loudly rather than copied under a move
-                    // spelling. A move is valid for any value affinity — it is
-                    // exactly how a move-only value must be transferred — so there is
-                    // no copyability restriction here.
-                    if !matches!(&src.kind, ExprKind::Name(_)) {
-                        self.reject_at(
-                            *source,
-                            src.span,
-                            "a move source must be a local binding (§8.5)",
-                            "bind the value with `=` first, then move the binding; a stored field or computed value cannot be left moved-from",
-                        );
-                    } else if let Some(local) = local_binding_name(dest) {
-                        // `dest <- source` (both local names): `dest` takes the
-                        // source binding's type.
-                        if references_deferred(src, &deferred) {
-                            deferred.insert(local.to_owned());
-                        } else if let Some(typed) = self.type_value(src, &scope, *source) {
-                            scope = scope.with_binding(local.to_owned(), typed.ty().clone());
-                        }
-                    } else {
-                        // `field <- source`: a field destination type-checks like an
-                        // assignment of the source into that field, but as a move it
-                        // permits a value of any affinity (`copies = false`).
-                        self.check_assign(dest, src, receiver_shape, &scope, *source, false);
-                    }
+                    scope = self.check_move(dest, src, receiver_shape, scope, &mut deferred, *source);
                 }
                 StmtKind::Bare(expr) => self.check_bare(expr, &scope, *source),
                 StmtKind::Clear(target) => self.check_clear(target, receiver_shape, *source),
@@ -707,6 +679,76 @@ impl MutPhase<'_, '_> {
             }
             apply_move_effects(stmt, &mut moved);
         }
+    }
+
+    /// §8.5 `dest <- source`: transfer the source into `dest`, leaving the source
+    /// moved-from. Returns the scope the following statements see — a local
+    /// destination takes the source's type.
+    fn check_move(
+        &mut self,
+        dest: &Expr,
+        src: &Expr,
+        receiver_shape: &Shape,
+        mut scope: ModelScope,
+        deferred: &mut std::collections::BTreeSet<String>,
+        source: SourceId,
+    ) -> ModelScope {
+        if !self.admits_move_source(src, &scope, source) {
+            return scope;
+        }
+        if let Some(local) = local_binding_name(dest) {
+            // `dest <- source`: `dest` takes the source's type.
+            if references_deferred(src, deferred) {
+                deferred.insert(local.to_owned());
+            } else if let Some(typed) = self.type_value(src, &scope, source) {
+                scope = scope.with_binding(local.to_owned(), typed.ty().clone());
+            }
+        } else {
+            // `place <- source`: the destination type-checks like an assignment of
+            // the source into it, but as a move it permits a value of any affinity
+            // (`copies = false`).
+            self.check_assign(dest, src, receiver_shape, &scope, source, false);
+        }
+        scope
+    }
+
+    /// Whether `src` is an owner §8.5 can leave moved-from, reporting the refusal
+    /// when it is not.
+    ///
+    /// A **local binding** is: the move unbinds it, and a later read is the
+    /// use-after-move [`Self::reject_moved_reads`] catches. A **`module`-typed
+    /// value** is too, for the opposite reason — §13.16 makes `module` move-only,
+    /// so `<-` is the *only* way to transfer one (`=` copies, §8.5), and a value
+    /// this phase can type as `module` is either freshly produced (`unpack(@pkg)`,
+    /// which has no prior owner to strand) or a borrowed handle the host lent
+    /// (`@at`, §13.16 delegation). Every other stored place or computed value is a
+    /// copyable type whose owner this stage cannot unbind, so a move out of one is
+    /// refused LOUDLY rather than performed as a silent copy.
+    fn admits_move_source(&mut self, src: &Expr, scope: &ModelScope, source: SourceId) -> bool {
+        if matches!(&src.kind, ExprKind::Name(_)) {
+            return true;
+        }
+        // A mutation-operator form or a program call is never typed here, and never
+        // yields a `module`: refuse without a typing pass that would report nothing.
+        if !uses_mutation_operator(src) && !is_program_call(src) {
+            match self.type_value(src, scope, source) {
+                Some(typed) => {
+                    if matches!(typed.ty().as_scalar(), Some(Type::Module(_))) {
+                        return true;
+                    }
+                }
+                // The typing error is already reported; adding the move rule on top
+                // would double-report one mistake.
+                None => return false,
+            }
+        }
+        self.reject_at(
+            source,
+            src.span,
+            "a move source must be a local binding or a `module` value (§8.5, §13.16)",
+            "bind the value with `<-` first, then move the binding; a stored field or computed value of a copyable type cannot be left moved-from",
+        );
+        false
     }
 
     /// §8.5 use-after-move: reject a read of a moved-from binding in any of `stmt`'s

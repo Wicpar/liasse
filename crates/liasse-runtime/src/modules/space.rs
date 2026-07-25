@@ -1,5 +1,8 @@
 //! The mount point of a module space (§13.2).
 
+use liasse_ident::{CanonicalPath, KeyText, NameSegment, PathSegment};
+use liasse_store::RowAddress;
+
 use crate::modules::ModuleError;
 
 /// The row-scoped location a set of independently configured module instances is
@@ -38,6 +41,48 @@ impl ModuleSpace {
             return Err(ModuleError::InvalidSpace(path));
         }
         Ok(Self { path, components })
+    }
+
+    /// The space a `$modules` node declared as `declaration` mounts at, under the
+    /// row `containing` addresses — `None` for a top-level space, whose container is
+    /// the package root (§13.2 "each containing row"). This is the constructor the
+    /// §13.16 `<-` install lowering uses to turn a written `.modules[@id]` into the
+    /// mount the host addresses, so it is where a wrong space would be *minted*.
+    ///
+    /// It cannot mint one silently, because it never builds the path by string
+    /// concatenation: every segment goes through [`CanonicalPath`], the D.3 display
+    /// path type, which **escapes each segment before joining**. A key holding a `/`
+    /// or a `:` therefore encodes as `%2F`/`%3A` and cannot forge an extra path
+    /// level — `/companies/{acme/x}/modules` renders `/companies/acme%2Fx/modules`,
+    /// whose [`declaration_path`](Self::declaration_path) is still
+    /// `["companies", "modules"]` rather than the `["companies", "x"]` a naive join
+    /// would have produced. The same escaping is what
+    /// [`containing_row_steps`](Self::containing_row_steps) hands
+    /// `Engine::contains_row`, which compares against the row's own D.2 key text, so
+    /// the round trip is exact.
+    ///
+    /// A key value with no D.2 key text (an empty component; a non-key-eligible
+    /// value) yields [`ModuleError::InvalidSpace`] naming the address, rather than a
+    /// path with a guessed segment.
+    pub(crate) fn mounted_at(
+        containing: Option<&RowAddress>,
+        declaration: &str,
+    ) -> Result<Self, ModuleError> {
+        let mut segments = Vec::new();
+        for step in containing.into_iter().flat_map(RowAddress::steps) {
+            let components: Vec<liasse_value::Value> = step.key().components().cloned().collect();
+            let key = KeyText::from_key_values(&components).map_err(|error| {
+                ModuleError::InvalidSpace(format!(
+                    "the row `{}` has no D.2 key text at `{}`: {error}",
+                    containing.map_or_else(String::new, RowAddress::render),
+                    step.name().as_str()
+                ))
+            })?;
+            segments.push(PathSegment::Name(step.name().clone()));
+            segments.push(PathSegment::Key(key));
+        }
+        segments.push(PathSegment::Name(NameSegment::new(declaration)));
+        Self::new(CanonicalPath::new(segments).to_display_string())
     }
 
     /// The canonical absolute mount path (`/companies/acme/modules`).

@@ -13,6 +13,11 @@
 /// position, so a `module.<op>(...)` call is unambiguously a lifecycle builtin.
 pub const LIFECYCLE_NAMESPACE: &str = "module";
 
+/// How §13.16 spells an install / relocate: `.modules[@id] <- unpack(@package)`.
+/// A diagnostic about [`LifecycleOp::InstallModule`] names the operator the author
+/// actually wrote, exactly as the bare-call operators name theirs.
+pub const MOVE_OPERATOR: &str = "<-";
+
 /// A module-lifecycle operation a host-privileged builtin mutation performs
 /// (§13.10, §13.16). The declarative spelling (`module.install(…)`) and the
 /// §13.16 value-surface spelling (`pack(m)`, `update_module(m, u, …)`) name the
@@ -22,6 +27,14 @@ pub const LIFECYCLE_NAMESPACE: &str = "module";
 pub enum LifecycleOp {
     /// Install a new instance from a blob-decoded package (§13.3).
     Install,
+    /// Move a module VALUE into a slot of a `$modules` space (§13.16 `<-`).
+    ///
+    /// Distinct from [`Self::Install`] on both halves of §13.16's "Install /
+    /// override" rule: it addresses the package by module value rather than by a
+    /// `blob` argument, and moving into an **occupied** slot replaces its occupant
+    /// ("an occupant is dropped and uninstalled") where `module.install` refuses a
+    /// duplicate name (§13.3 "unique within its module space").
+    InstallModule,
     /// Update an existing instance to a blob-decoded package, walking the §20.1
     /// migration chain to the target version (§13.14).
     Update,
@@ -63,6 +76,7 @@ impl LifecycleOp {
             Self::Install => "install",
             Self::Update => "update",
             Self::Remove => "remove",
+            Self::InstallModule => MOVE_OPERATOR,
             Self::Pack => ModuleOperator::Pack.name(),
             Self::UpdateModule => ModuleOperator::UpdateModule.name(),
             Self::Rollback => ModuleOperator::Rollback.name(),

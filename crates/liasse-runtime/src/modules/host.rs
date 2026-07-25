@@ -23,7 +23,7 @@ use crate::response::ResponseValue;
 use crate::imports::ParentImports;
 use crate::modules::install::{AdmittedBindings, InstallRequest, UseSpec};
 use crate::modules::peer::{self, ResolvedPeer, SiblingInterface};
-use crate::modules::recorder::{LifecycleIntent, LifecycleRecorder, MountedInstance};
+use crate::modules::recorder::{LifecycleIntent, LifecycleRecorder, MountedInstance, Occupant};
 use crate::modules::{AggregatedInstance, InterfaceRow, ModuleAggregate, ModuleError, ModuleSpace};
 use crate::outcome::CallOutcome;
 use crate::request::{CallRequest, ViewQuery};
@@ -363,6 +363,14 @@ struct PendingMovement {
     index: usize,
     artifact: Vec<u8>,
     relation: ImportRelation,
+}
+
+/// One §13.16 relocation resolved during staging and applied once the shared commit
+/// lands: the instance to rekey and the name it takes (§13.3 rekey — the incarnation,
+/// and therefore the durable identity, is preserved).
+struct PendingRelocation {
+    index: usize,
+    to: String,
 }
 
 impl DecodedPackageId {
@@ -894,11 +902,23 @@ impl<F: StoreFactory> ModuleHost<F> {
         let mut removes: Vec<usize> = Vec::new();
         let mut packs: Vec<Vec<u8>> = Vec::new();
         let mut movements: Vec<PendingMovement> = Vec::new();
+        let mut relocations: Vec<PendingRelocation> = Vec::new();
         for intent in intents {
             match intent {
-                LifecycleIntent::Install { space, name, definition, package } => {
+                LifecycleIntent::Install { space, name, definition, package, occupant } => {
                     let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
+                    removes.extend(self.vacate(&space, &name, occupant)?);
                     installs.push(self.stage_install(&space, &name, &definition, package, &transaction, generator)?);
+                }
+                // §13.16 "Move": relocating within one space is the §13.3 rekey.
+                // Resolve the source now so an unreachable mount rejects before any
+                // commit, and vacate the destination on the same rule an install
+                // does — a move into a slot replaces its occupant.
+                LifecycleIntent::Relocate { space, from, to, occupant } => {
+                    let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
+                    let index = self.enabled_child_index(&space, &from)?;
+                    removes.extend(self.vacate(&space, &to, occupant)?);
+                    relocations.push(PendingRelocation { index, to });
                 }
                 LifecycleIntent::Update { space, name, definition, package } => {
                     let space = ModuleSpace::new(&space).map_err(|_| ModuleError::InvalidSpace(space))?;
@@ -1064,6 +1084,16 @@ impl<F: StoreFactory> ModuleHost<F> {
                 package: Some(package),
             });
         }
+        // §13.16 "Move": rekey each relocated instance before the removes shift any
+        // index. Every index here was resolved during staging against the same array
+        // positions, and mounting an install only APPENDS, so both index sets are
+        // still exact at this point.
+        for relocation in relocations {
+            let child = self.children.get_mut(relocation.index).ok_or_else(|| {
+                ModuleError::Engine(EngineError::Internal("relocated child index out of range".to_owned()))
+            })?;
+            child.name = relocation.to;
+        }
         removes.sort_unstable();
         for index in removes.into_iter().rev() {
             if index < self.children.len() {
@@ -1157,6 +1187,28 @@ impl<F: StoreFactory> ModuleHost<F> {
             .collect()
     }
 
+    /// Make the slot `(space, name)` free for a write, or refuse (§13.3/§13.16).
+    ///
+    /// `Ok(Some(index))` is an occupant the caller must drop once the shared commit
+    /// lands, `Ok(None)` an already-empty slot. Which of the two rules applies is the
+    /// intent's, not this method's: §13.3 makes an instance name "unique within its
+    /// module space", so `module.install` refuses; §13.16's move "replaces any
+    /// instance already there", so `<-` drops. Resolving the occupant HERE — during
+    /// staging, before anything commits — is what keeps a replaced instance from
+    /// being dropped by a transition that later rejects.
+    fn vacate(
+        &self,
+        space: &ModuleSpace,
+        name: &str,
+        occupant: Occupant,
+    ) -> Result<Option<usize>, ModuleError> {
+        match (self.children.iter().position(|child| child.is(space, name)), occupant) {
+            (None, _) => Ok(None),
+            (Some(index), Occupant::Drop) => Ok(Some(index)),
+            (Some(_), Occupant::Refuse) => Err(ModuleError::DuplicateName(name.to_owned())),
+        }
+    }
+
     /// Stage a module install WITHOUT committing (§13.3/§13.10): validate the space
     /// and instance name, resolve peers/imports, mint the incarnation and store, and
     /// STAGE the child genesis as a [`PendingCommit`] tagged with the shared
@@ -1175,9 +1227,6 @@ impl<F: StoreFactory> ModuleHost<F> {
         generator: &mut G,
     ) -> Result<PendingInstall<F::Store>, ModuleError> {
         self.check_containing_row(space)?;
-        if self.find(space, name).is_some() {
-            return Err(ModuleError::DuplicateName(name.to_owned()));
-        }
         let bindings = AdmittedBindings::default();
         let resolved_peers = peer::resolve(space, &bindings, &self.siblings(space))?;
         let imports = self.child_imports(space, &bindings, &resolved_peers)?;
