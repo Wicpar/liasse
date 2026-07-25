@@ -29,6 +29,7 @@ use liasse_runtime::{
     ModuleHost, ModuleSpace, ModuleUpdateReport, ViewQuery, ViewResult,
 };
 use liasse_store::StoreFactory;
+use liasse_value::BlobDescriptor;
 
 use crate::clock::VirtualClock;
 use crate::entropy::Entropy;
@@ -203,6 +204,41 @@ impl<F: StoreFactory> ModuleDeployment<F> {
             Ok(_incarnation) => Ok(ModuleObservation::Applied),
             Err(error) => ModuleObservation::refusal(error),
         }
+    }
+
+    /// Admit a **host/root-scope** transition that carries module instances through
+    /// their lifecycle (§13.10, §13.16): the root program is lent the host-privileged
+    /// handle, so a `module.install`/`update`/`remove` call, a §13.16 operator, or a
+    /// `<-` move into a `$modules` slot stages into the very same atomic transition
+    /// as the root's own change.
+    ///
+    /// This is the host lifecycle entry, not a client one. §13.10 lends the privilege
+    /// by SCOPE, so an external `$public` caller reaching the same mutation through
+    /// [`SurfaceHost`](crate::SurfaceHost) is lent nothing and is refused. Both paths
+    /// exist on purpose; a driver must not substitute one for the other.
+    ///
+    /// # Errors
+    /// [`ModuleError`] on a store/engine fault, or on a lifecycle refusal the host
+    /// reports as an error (an unreachable mount, a duplicate name); a rejected
+    /// transition is a [`CallOutcome`], not an error.
+    pub fn lifecycle_call(&mut self, request: &CallRequest) -> Result<CallOutcome, ModuleError> {
+        let now = self.clock.instant();
+        let mut generators = self.entropy.generators(now);
+        self.host.call_root_lifecycle(request, &mut generators)
+    }
+
+    /// Store a `.liasse` package's bytes in the ROOT's §18.3 blob storage and return
+    /// the descriptor addressing them — what a `blob`-typed argument to a §13.10 /
+    /// §13.16 lifecycle mutation carries (`unpack(@package)`).
+    ///
+    /// # Errors
+    /// [`ModuleError`] on a store fault.
+    pub fn store_package_blob(
+        &mut self,
+        bytes: &[u8],
+        name: Option<String>,
+    ) -> Result<BlobDescriptor, ModuleError> {
+        self.host.store_package_blob(bytes, name)
     }
 
     /// Disable an instance (§13.3, §13.12): remove its active boundary occurrences

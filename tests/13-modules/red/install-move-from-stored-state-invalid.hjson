@@ -1,0 +1,44 @@
+{
+  format: 1
+  name: install-move-from-stored-state-invalid
+  suite: static
+  spec: ["#modules", "§13.16", "§8.5"]
+  note: '''
+    §13.16 makes `<-` the install operator, which means the §8.5 move rule has to
+    admit a source that is not a local binding. It admits exactly one: a value
+    that types as `module`. That narrowness is the guard, and this case is the
+    guard's test.
+
+    The attack is a move out of ORDINARY stored state into a module slot — a row
+    of a plain collection, where the author expected `<-` to "just work" because
+    it works one line above with `unpack(@package)`. Nothing in the language can
+    leave a stored row moved-from (§8.5: the move consumes its source), and a row
+    is not a module, so there is no reading under which this installs anything.
+    Admitting it would mean either copying under a move spelling or staging
+    nothing at all while the program reports success.
+
+    It is a LOAD error, not a runtime one: the source's type is known statically,
+    so the mistake never has to reach a transition.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.modinstall.badsource@1.0.0"
+    $model: {
+      archive: { $key: "id", id: "text" }
+      companies: {
+        $key: "id"
+        id: "text"
+        modules: { $modules: {} }
+      }
+      $mut: {
+        "provision({ company: text, name: text, from: text })": [
+          ".companies[@company].modules[@name] <- .archive[@from]"
+        ]
+      }
+    }
+    $data: { companies: { acme: {} } }
+  }
+
+  expect: { outcome: invalid, violates: ["§8.5"] }
+}

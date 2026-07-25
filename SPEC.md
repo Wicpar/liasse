@@ -2362,6 +2362,10 @@ A module's lifecycle is expressed through ordinary writes plus host-privileged o
 ".modules[@to] <- .modules[@from]"
 ```
 
+A relocation **within** one space is a rekey: the instance keeps its identity (§13.3, D.1). Moving a handle into a **different** space is not, because a space is a boundary and not a folder — the destination declares its own parent surfaces (§13.4), resolves peers against its own sibling set (§13.5), and imposes its own interface contracts (§13.8), and the moved instance was admitted against none of them. An implementation that does not re-admit the instance under the destination's boundary refuses the move rather than re-keying it into a space whose contracts it was never checked against; extracting and reinstalling (`pack`, then install) is the path that does re-admit.
+
+**Addressing a slot.** A written slot names **one** space. Where the spelling admits more than one declared `$modules` space — a bare `.name` reachable both as the package root's space and as the receiving row's, for instance — the write is **refused**, naming each candidate space. An implementation MUST NOT resolve the choice by a precedence rule: §13.2 makes the candidates genuinely distinct ("installing the same package in each space creates two independent instances"), so a default installs into a real, different space while reporting success. The unambiguous spellings are the rooted `/name[…]` and the containing-row path `.collection[key].name[…]`.
+
 **Update.** `update_module(m, u, { migrate })` applies a module value `u` onto the live instance `m`, keeping `m`'s identity and appending a version (§20):
 
 - `migrate: model` migrates `m`'s schema to `u`'s definition and carries `m`'s current data forward (§20.1).

@@ -20,7 +20,7 @@ use liasse_artifact::ArtifactBuilder;
 use liasse_ident::{HistoryPoint, InstanceId, LineageId, PointId};
 use liasse_runtime::{CallOutcome, CallRequest, Engine, ModuleError, ModuleHost, ModuleSpace, Value};
 use liasse_store::{MemoryStore, MemoryStoreFactory};
-use liasse_value::{BlobDescriptor, Text};
+use liasse_value::{BlobDescriptor, ModuleHandle, Text};
 use support::generator;
 
 /// A root host whose lifecycle mutations install a module by MOVING an unpacked
@@ -72,6 +72,19 @@ const ROOT: &str = r#"{
       "provision_into_a_plain_collection({ id: text, name: text, blob: blob })": [
         "e = .log + { id: @id }"
         ".log[@name] <- unpack(@blob)"
+        "return e { id }"
+      ]
+      // §13.16 "Move": the host lends a handle to an instance it owns and the
+      // program relocates it into another slot (§13.16 "Delegation" is how a
+      // `module` parameter is reached at all).
+      "relocate({ id: text, company: text, to: text, at: module })": [
+        "e = .log + { id: @id }"
+        ".companies[@company].modules[@to] <- @at"
+        "return e { id }"
+      ]
+      "relocate_to_division({ id: text, company: text, division: text, to: text, at: module })": [
+        "e = .log + { id: @id }"
+        ".companies[@company].divisions[@division].modules[@to] <- @at"
         "return e { id }"
       ]
     }
@@ -491,5 +504,136 @@ fn a_malformed_package_rolls_back_the_whole_transition() {
     assert!(
         host.root().view_at_head("log_view").expect("view").expect("declared").rows().is_empty(),
         "the program's own change rolled back with it"
+    );
+}
+
+// ---- §13.16 "Move": relocating an installed instance ------------------------
+
+/// The `module` value denoting an installed instance. Only the runtime can mint one
+/// — `Value::Module` is refused by the wire decoder — so this stands for the trusted
+/// host handing a program a handle to an instance it owns (§13.16 delegation).
+fn handle(mount: &str, name: &str) -> Value {
+    Value::Module(ModuleHandle::Mounted { space: mount.to_owned(), name: name.to_owned() })
+}
+
+#[test]
+fn moving_a_mounted_handle_within_its_space_rekeys_the_instance() {
+    let mut host = host();
+    let blob = blob_arg(&mut host, SALES_V1);
+    call(
+        &mut host,
+        &CallRequest::new("provision")
+            .arg("id", text("one"))
+            .arg("company", text("acme"))
+            .arg("name", text("sales"))
+            .arg("blob", blob),
+    );
+    let before = host.incarnation(&space("/companies/acme/modules"), "sales").cloned().expect("installed");
+
+    // §13.16 "Move": "Moving a handle between slots relocates the instance,
+    // emptying the source."
+    let outcome = call(
+        &mut host,
+        &CallRequest::new("relocate")
+            .arg("id", text("two"))
+            .arg("company", text("acme"))
+            .arg("to", text("billing"))
+            .arg("at", handle("/companies/acme/modules", "sales")),
+    );
+    assert!(matches!(outcome, CallOutcome::Committed { .. }), "the relocation commits, got {outcome:?}");
+
+    assert!(mounts_holding(&host, "sales").is_empty(), "the source slot is empty");
+    assert_eq!(mounts_holding(&host, "billing"), vec!["/companies/acme/modules"], "and the destination holds it");
+    assert_eq!(
+        qty_at(&host, "/companies/acme/modules", "billing"),
+        Some("5".to_owned()),
+        "carrying the very same state"
+    );
+    // §13.3: a rekey preserves the incarnation, so the durable identity (D.1) is
+    // the instance's own — this is a relocation, not a reinstall.
+    assert_eq!(
+        host.incarnation(&space("/companies/acme/modules"), "billing"),
+        Some(&before),
+        "the relocated instance keeps its incarnation"
+    );
+}
+
+#[test]
+fn moving_a_mounted_handle_across_spaces_is_refused_by_name() {
+    let mut host = host();
+    let blob = blob_arg(&mut host, SALES_V1);
+    call(
+        &mut host,
+        &CallRequest::new("provision")
+            .arg("id", text("one"))
+            .arg("company", text("acme"))
+            .arg("name", text("sales"))
+            .arg("blob", blob),
+    );
+
+    // The destination space declares its own §13.4 parent surfaces, §13.5 peer set
+    // and §13.8 interface contracts; the instance was admitted against the source
+    // space's and against none of the destination's.
+    let outcome = call(
+        &mut host,
+        &CallRequest::new("relocate_to_division")
+            .arg("id", text("two"))
+            .arg("company", text("acme"))
+            .arg("division", text("eu"))
+            .arg("to", text("sales"))
+            .arg("at", handle("/companies/acme/modules", "sales")),
+    );
+    let CallOutcome::Rejected(rejection) = &outcome else {
+        panic!("a cross-space relocation must be refused, got {outcome:?}");
+    };
+    let detail = rejection.message();
+    assert!(detail.contains("/companies/acme/modules"), "the refusal names the source mount: {detail}");
+    assert!(
+        detail.contains("/companies/acme/divisions/eu/modules"),
+        "and the destination mount: {detail}"
+    );
+
+    // The instance stayed exactly where it was, and the program's own change with it.
+    assert_eq!(mounts_holding(&host, "sales"), vec!["/companies/acme/modules"]);
+    assert_eq!(
+        host.root().view_at_head("log_view").expect("view").expect("declared").rows().len(),
+        1,
+        "only the install's own log row survives; the refused relocation's rolled back"
+    );
+}
+
+#[test]
+fn relocating_onto_an_occupied_slot_replaces_its_occupant() {
+    let mut host = host();
+    let v1 = blob_arg(&mut host, SALES_V1);
+    let v2 = blob_arg(&mut host, SALES_V2);
+    for (id, name, blob) in [("one", "sales", v1), ("two", "billing", v2)] {
+        call(
+            &mut host,
+            &CallRequest::new("provision")
+                .arg("id", text(id))
+                .arg("company", text("acme"))
+                .arg("name", text(name))
+                .arg("blob", blob),
+        );
+    }
+    assert_eq!(qty_at(&host, "/companies/acme/modules", "billing"), Some("9".to_owned()));
+
+    // §13.16: a move into a slot "replaces any instance already there" — the same
+    // rule an install-over follows.
+    let outcome = call(
+        &mut host,
+        &CallRequest::new("relocate")
+            .arg("id", text("three"))
+            .arg("company", text("acme"))
+            .arg("to", text("billing"))
+            .arg("at", handle("/companies/acme/modules", "sales")),
+    );
+    assert!(matches!(outcome, CallOutcome::Committed { .. }), "the relocation commits, got {outcome:?}");
+    assert!(mounts_holding(&host, "sales").is_empty(), "the source slot is empty");
+    assert_eq!(
+        qty_at(&host, "/companies/acme/modules", "billing"),
+        Some("5".to_owned()),
+        "the destination holds the moved instance, not the occupant it replaced"
     );
 }

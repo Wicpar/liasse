@@ -37,6 +37,7 @@ impl<S: InstanceStore> super::ScenarioAdapter<S> {
             StepKind::ModuleUninstall => self.module_state()?.uninstall(&request.target),
             StepKind::ModuleRename => self.module_state()?.rename(&request.target),
             StepKind::ModuleUpdate => self.module_state()?.update(&request.target),
+            StepKind::ModuleLifecycleCall => self.module_state()?.lifecycle_call(&request.target),
             StepKind::BuildArtifact => self.drive_build_artifact(request),
             StepKind::RepackArtifact => self.drive_repack_artifact(request),
             StepKind::LoadArtifact => self.drive_load_artifact(request),

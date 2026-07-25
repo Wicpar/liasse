@@ -1,0 +1,60 @@
+{
+  format: 1
+  name: module-value-install-move-spellings
+  suite: static
+  spec: ["#modules", "§13.16", "§8.5"]
+  note: '''
+    §13.16 gives the move operator three lifecycle spellings, and all three must
+    type at load rather than only at the transition that performs them:
+
+    - "Install / override": `.modules[@id] <- unpack(@package)` — a fresh module
+      value moved into a slot. The destination is written relative to the
+      containing row, so this is also the spelling whose display path must
+      interleave that row's key.
+    - The bound form: `m <- unpack(@package)` then `.modules[@id] <- m`. §8.5
+      makes `=` a copy and §13.16 makes `module` move-only, so `<-` is the ONLY
+      way a module binds to a local at all — `m = unpack(@package)` is a load
+      error.
+    - "Move": `.modules[@to] <- @at`, relocating a module the host lent as a
+      `module` parameter (§13.16 "Delegation"), which empties the source slot.
+
+    An unambiguous destination is spelled either through the containing row
+    (`.companies[@company].modules[@name]`) or rooted (`/modules[@name]`); both
+    appear here so both resolve at load.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.modinstall.spellings@1.0.0"
+    $model: {
+      modules: { $modules: {} }
+      companies: {
+        $key: "id"
+        id: "text"
+        modules: { $modules: {} }
+      }
+      $mut: {
+        // §13.16 "Install / override".
+        "provision({ company: text, name: text, package: blob })": [
+          ".companies[@company].modules[@name] <- unpack(@package)"
+        ]
+        // The bound form: a module binds to a local only through `<-`.
+        "provision_bound({ company: text, name: text, package: blob })": [
+          "m <- unpack(@package)"
+          ".companies[@company].modules[@name] <- m"
+        ]
+        // The package-root space, spelled unambiguously.
+        "provision_root({ name: text, package: blob })": [
+          "/modules[@name] <- unpack(@package)"
+        ]
+        // §13.16 "Move": relocate a module the host lent.
+        "relocate({ company: text, to: text, at: module })": [
+          ".companies[@company].modules[@to] <- @at"
+        ]
+      }
+    }
+    $data: { companies: { acme: {} } }
+  }
+
+  expect: { outcome: ok }
+}

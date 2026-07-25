@@ -1,0 +1,115 @@
+{
+  format: 1
+  name: module-value-install-move-lands-in-its-own-space
+  suite: scenario
+  spec: ["#modules", "§13.16", "§13.2", "§13.9"]
+  note: '''
+    §13.16 "Install / override": "Moving a module value into a slot installs it
+    … `.modules[@id] <- unpack(@package)`". The slot is written relative to a row
+    (`.companies[@company].modules[@name]`), while an instance is MOUNTED at the
+    space's display path (`/companies/acme/modules`), which interleaves the
+    containing-row key. That interleaving is the whole risk of the operator: get
+    it wrong and the module installs into a sibling space while the call still
+    reports success — a module state that is wrong and looks correct.
+
+    So this is written as a DISCRIMINATION, not a smoke test. Two company rows
+    each own a `$modules` space of the same declaration path, and the SAME root
+    mutation installs into each by key, from two different packages seeded 5 and
+    9. §13.2 fixes the expected answer independently of the implementation:
+    "Installing the same package in each space creates two independent
+    instances". So Acme's space must read 5 and Globex's 9.
+
+    A lowering that dropped the containing-row key would mount both at
+    `/modules`; one that used a fixed key would mount both under one company. In
+    either case the two installs collide on ONE slot, §13.16's override drops the
+    first, and both reads answer 9 — which is exactly what the second assertion
+    catches. A run where only the first read is checked would pass.
+
+    The read-back is the §13.9 interface aggregation over each space — the same
+    boundary any parent uses — so what is asserted is that each instance is
+    reachable THROUGH the space it was installed into, not merely that some
+    install happened. The `entries` read closes §13.16 "Provenance and
+    atomicity": each transition also carried the root's own `log` row, and both
+    rows are there.
+
+    The installs run as host/root-scope transitions (§13.10 lends the lifecycle
+    privilege by scope; `red/lifecycle-operator-needs-host-privilege` is the
+    matching refusal for a `$public` caller).
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.modinstall.host@1.0.0"
+      $model: {
+        log: { $key: "id", id: "text" }
+        companies: {
+          $key: "id"
+          id: "text"
+          modules: {
+            $modules: {
+              $interfaces: {
+                items: {
+                  $view: { $key: "id", id: "text", qty: "int" }
+                }
+              }
+            }
+          }
+        }
+        $mut: {
+          // §13.16: the move IS the install. The destination names the space by
+          // its containing row; the source is the unpacked package.
+          "provision({ id: text, company: text, name: text, package: blob })": [
+            "e = .log + { id: @id }"
+            ".companies[@company].modules[@name] <- unpack(@package)"
+            "return e { id }"
+          ]
+        }
+        $public: {
+          entries: { $view: ".log { id }" }
+          acme_items: { $view: '/companies["acme"].modules["sales"]::items' }
+          globex_items: { $view: '/companies["globex"].modules["sales"]::items' }
+        }
+      }
+      $data: { companies: { acme: {}, globex: {} } }
+    }
+    sales_five: {
+      $liasse: 1
+      $module: "t.modinstall.sales@1.0.0"
+      $model: {
+        items: { $key: "id", id: "text", qty: "int" }
+      }
+      $data: { items: { a: { qty: "5" } } }
+      $expose: { items: { $view: ".items { id, qty }" } }
+    }
+    sales_nine: {
+      $liasse: 1
+      $module: "t.modinstall.sales.other@1.0.0"
+      $model: {
+        items: { $key: "id", id: "text", qty: "int" }
+      }
+      $data: { items: { a: { qty: "9" } } }
+      $expose: { items: { $view: ".items { id, qty }" } }
+    }
+  }
+  root: host
+
+  steps: [
+    // Two moves, into two spaces of the SAME declaration path under different rows.
+    { module_lifecycle_call: { mutation: "provision", package: "sales_five"
+        args: { id: "first", company: "acme", name: "sales" } }
+      expect: { outcome: ok, value: { id: "first" } } }
+    { module_lifecycle_call: { mutation: "provision", package: "sales_nine"
+        args: { id: "second", company: "globex", name: "sales" } }
+      expect: { outcome: ok, value: { id: "second" } } }
+
+    // Each instance reads back through the space it was installed into, carrying
+    // its own package's seed — two independent instances (§13.2), not one.
+    { watch: "public.acme_items", id: "wa", expect_init: { value: [ { id: "a", qty: "5" } ] } }
+    { watch: "public.globex_items", id: "wg", expect_init: { value: [ { id: "a", qty: "9" } ] } }
+
+    // §13.16 "Provenance and atomicity": each install carried the root's own
+    // change in the same transition, and both landed.
+    { watch: "public.entries", id: "we", expect_init: { value: [ { id: "first" }, { id: "second" } ] } }
+  ]
+}

@@ -39,8 +39,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use liasse_artifact::ArtifactBuilder;
 use liasse_diag::SourceMap;
-use liasse_ident::InstanceId;
+use liasse_ident::{HistoryPoint, InstanceId, LineageId, PointId};
 use liasse_runtime::{
     CallOutcome, CallRequest, Engine, InstallRequest, ModuleError, ModuleHost, ModuleSpace,
     Precision, ViewQuery,
@@ -51,7 +52,7 @@ use liasse_surface::{
     VirtualClock as SurfaceClock,
 };
 use liasse_syntax::{parse_expression, Expr, ExprKind, Selector, StmtKind};
-use liasse_value::{Json, Text, Type, Value};
+use liasse_value::{BlobDescriptor, Json, Text, Type, Value};
 
 use crate::contract::Observation;
 use crate::outcome::{Completion, Outcome};
@@ -86,6 +87,11 @@ pub(super) struct ModuleState {
     /// so a `call` on such a surface routes here to [`ModuleDeployment::interface_call`]
     /// rather than resolving `denied` on the base host.
     interface_calls: BTreeMap<String, InterfaceRef>,
+    /// The root package's declared `$mut` parameter types (§8.3), keyed by mutation
+    /// name — what a `module_lifecycle_call` decodes its arguments against, since a
+    /// host-scope lifecycle call names a root mutation directly rather than a
+    /// surface the router typed.
+    mutation_params: BTreeMap<String, BTreeMap<String, Type>>,
 }
 
 impl ModuleState {
@@ -114,6 +120,7 @@ impl ModuleState {
             deployment: ModuleDeployment::new(host, clock).with_entropy(Entropy::seeded(seed)),
             packages: packages.clone(),
             interface_calls: interface_call_bindings(package),
+            mutation_params: root_mutation_params(package),
         })
     }
 
@@ -219,6 +226,82 @@ impl ModuleState {
             }
             Err(fault) => Err(AdapterError::Host(format!("module update fault: {fault}"))),
         }
+    }
+
+    /// §13.10/§13.16 `module_lifecycle_call`: admit a HOST/ROOT-SCOPE transition
+    /// that carries module instances through their lifecycle, so a root mutation
+    /// spelling `.modules[@id] <- unpack(@package)` (or a `module.<op>` call, or a
+    /// §13.16 operator) is lent the privileged handle §13.10 gives the host scope
+    /// alone.
+    ///
+    /// The step names the root `mutation`, its `args`, and — when the program needs
+    /// a package — the `packages` label to serialize into a `.liasse` blob and the
+    /// parameter (`as`) that blob descriptor binds to. Building the artifact HERE
+    /// rather than in a separate step keeps the bytes and the descriptor one fact:
+    /// the mutation's `unpack(@package)` reads exactly what was stored.
+    ///
+    /// Deliberately NOT reachable through `call`: §13.10 lends the lifecycle
+    /// privilege by SCOPE, and an external `$public` caller is lent nothing (the
+    /// `red/lifecycle-operator-needs-host-privilege` case is that refusal).
+    pub(super) fn lifecycle_call(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError> {
+        let Some(mutation) = target.get("mutation").and_then(serde_json::Value::as_str) else {
+            return Err(AdapterError::unsupported("`module_lifecycle_call` step names no root `mutation`"));
+        };
+        let args = target.get("args").cloned().unwrap_or(serde_json::Value::Null);
+        // §8.3: the root mutation's declared parameter types decode each argument, so
+        // a `text` argument arrives as `text` rather than shape-inferred.
+        let types = self.mutation_params.get(mutation).cloned().unwrap_or_default();
+        let Ok(decoded) = wire::decode_args(&args, &types) else {
+            return Ok(Observation::outcome(Outcome::Rejected));
+        };
+        let mut request = CallRequest::new(mutation.to_owned());
+        for (name, value) in decoded {
+            request = request.arg(name, value);
+        }
+        if let Some(label) = target.get("package").and_then(serde_json::Value::as_str) {
+            let parameter = target.get("as").and_then(serde_json::Value::as_str).unwrap_or("package");
+            let descriptor = self.package_blob(label)?;
+            request = request.arg(parameter.to_owned(), Value::Blob(Box::new(descriptor)));
+        }
+        // §8.2: a ROW mutation's receiver key, in `$key` order. §13.16's bare
+        // `.modules[@id]` is written relative to a receiver, so a case exercising
+        // that spelling names the row the mutation runs on.
+        for component in target.get("receiver").and_then(serde_json::Value::as_array).into_iter().flatten() {
+            request = request.receiver(wire::decode_value(component, None));
+        }
+        match self.deployment.lifecycle_call(&request) {
+            Ok(outcome) => Ok(observe_call_outcome(&outcome)),
+            // §13.2/§13.3: a mount resolving to no live containing row, or a slot
+            // whose name is already taken, refuses the whole transition before
+            // anything commits — an admission `rejected`, not a store fault.
+            Err(ModuleError::MissingContainingRow(_) | ModuleError::DuplicateName(_) | ModuleError::Unknown(_)) => {
+                Ok(Observation::outcome(Outcome::Rejected))
+            }
+            Err(fault) => Err(AdapterError::Host(format!("module lifecycle call fault: {fault}"))),
+        }
+    }
+
+    /// Serialize the `packages` entry labelled `label` into a `.liasse` package blob
+    /// and store it in the ROOT's §18.3 blob storage, returning the descriptor a
+    /// `blob` argument carries. The definition is the package's own JSON, exactly as
+    /// `module_install` passes it — one package source, two lifecycle spellings.
+    fn package_blob(&mut self, label: &str) -> Result<BlobDescriptor, AdapterError> {
+        let package = self.packages.get(label).cloned().ok_or_else(|| {
+            AdapterError::unsupported(format!("no package labelled `{label}` in the case's packages map"))
+        })?;
+        let definition = serde_json::to_vec(&package).map_err(|err| AdapterError::Host(err.to_string()))?;
+        let bytes = ArtifactBuilder::new(
+            InstanceId::new(format!("{label}#package")),
+            HistoryPoint::new(LineageId::new("genesis"), PointId::new("genesis")),
+            definition,
+            Vec::new(),
+            Vec::new(),
+        )
+        .build()
+        .map_err(|err| AdapterError::Host(format!("package artifact build failed: {err}")))?;
+        self.deployment
+            .store_package_blob(&bytes, Some(format!("{label}.liasse")))
+            .map_err(|err| AdapterError::Host(format!("package blob store failed: {err}")))
     }
 
     /// Evaluate a root package surface view that reads its installed children
@@ -564,6 +647,25 @@ fn collect_surface_interface_calls(
             }
         }
     }
+}
+
+/// The root package's declared `$model.$mut` parameter types, keyed by mutation
+/// name (§8.3). A root `$mut` key carries the same `name({ a: text, b: blob })`
+/// signature an interface contract does, so it parses through the same reader — a
+/// `module_lifecycle_call` names a root mutation directly, so the router's
+/// surface-keyed argument types do not answer for it.
+fn root_mutation_params(package: &serde_json::Value) -> BTreeMap<String, BTreeMap<String, Type>> {
+    let mut out = BTreeMap::new();
+    let Some(muts) =
+        package.get("$model").and_then(|model| model.get("$mut")).and_then(serde_json::Value::as_object)
+    else {
+        return out;
+    };
+    for key in muts.keys() {
+        let (mutation, types) = parse_interface_signature(key);
+        out.insert(mutation, types);
+    }
+    out
 }
 
 /// The declared parameter types of every module-space interface mutation in a root
