@@ -51,12 +51,14 @@ mod merge;
 mod mounted;
 mod parent;
 mod peer;
+mod prepared;
 mod recorder;
 mod value;
 
 pub use host::{DecodedPackageId, ModuleHost};
 pub use install::{AdmittedBindings, DepSpec, InstallRequest, UseSpec};
 pub use merge::SeedMerge;
+pub use prepared::{ModuleUpdateBasis, PreparedModuleUpdate};
 pub(crate) use mounted::MountedModules;
 // §13.16: the structured refusal an `update_module(… { migrate: model+data })`
 // hands an external tool instead of merging a divergent history.
@@ -169,6 +171,22 @@ pub enum ModuleError {
     /// active (E.9).
     #[error("the update withdraws a previously accepted interface binding: {0}")]
     InterfaceBindingWithdrawn(String),
+    /// A [`PreparedModuleUpdate`] was offered for commit after the mount it was
+    /// computed against had moved (§20.4): the instance committed, its history
+    /// moved, the clock advanced, or the address now mounts a different incarnation.
+    /// Nothing was committed — a plan describes one position, and committing it
+    /// against another would commit a computation that no longer holds. Re-prepare
+    /// against the current position.
+    #[error(
+        "stale prepared module update: computed against {prepared}, but the mount is now {current} — \
+         nothing was committed; re-prepare the update against the current state (§20.4)"
+    )]
+    Stale {
+        /// The mount basis the refused plan was computed against.
+        prepared: Box<ModuleUpdateBasis>,
+        /// The mount's basis at the moment the commit was attempted.
+        current: Box<ModuleUpdateBasis>,
+    },
     /// Loading or operating the child instance failed.
     #[error(transparent)]
     Engine(#[from] EngineError),
@@ -183,9 +201,9 @@ impl ModuleError {
     /// may not have. A name already taken, a module collection whose containing row
     /// is not live, an instance that is absent or disabled, a malformed binding
     /// spec, an unresolvable peer, an unsatisfied interface contract and a
-    /// mismatched `$config` are all the caller's input; only an engine/store fault
-    /// and the two §13.14 update-compatibility refusals (which are classified by
-    /// their own path) stay errors here.
+    /// mismatched `$config` are all the caller's input; only an engine/store fault,
+    /// the two §13.14 update-compatibility refusals and the §20.4 stale-plan refusal
+    /// (all classified by their own path) stay errors here.
     pub(crate) fn into_rejection(self) -> Result<Rejection, Self> {
         let reason = match &self {
             Self::EmptyName
@@ -196,7 +214,10 @@ impl ModuleError {
             | Self::InvalidBinding(_)
             | Self::PeerUnresolved(..) => RejectionReason::Malformed,
             Self::InterfaceContract(..) | Self::ConfigMismatch(_) => RejectionReason::TypeError,
-            Self::ExposedNarrowed(_) | Self::InterfaceBindingWithdrawn(_) | Self::Engine(_) => {
+            Self::ExposedNarrowed(_)
+            | Self::InterfaceBindingWithdrawn(_)
+            | Self::Stale { .. }
+            | Self::Engine(_) => {
                 return Err(self);
             }
         };

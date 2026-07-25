@@ -1,0 +1,113 @@
+{
+  format: 1
+  name: dry-run-module-update-reports-the-refusal-it-produces
+  suite: scenario
+  spec: ["#modules", "§20.4", "§13.14"]
+  tags: ["ordering"]
+  note: '''
+    §20.4: "Prepare and apply MUST NOT be separate computations of the update ...
+    an update the runtime would reject is rejected at prepare with that same
+    diagnostic." A module dry run that reported a rosier outcome than the update
+    it models would be worse than no dry run at all — it would certify a module
+    deployment that then fails.
+
+    The attack this case pins is exactly that divergence, on the gate the MODULE
+    path adds over §20: the §13.14 exposed-surface recheck. The 1.1.0 release
+    drops the exposed `create` binding, which a minor release may not do, so
+    package loading refuses it before admission (E.9). The dry run MUST report
+    that refusal, not `ok` — the recheck is inside the prepare, not bolted onto
+    the apply. The effecting update that follows reports the same refusal, and
+    the 1.0.0 instance is still mounted and fully functional after BOTH: §13.14
+    leaves the prior release active on a refused update, and a dry run never had
+    anything to leave.
+
+    Classified `invalid` per this chapter's outcome conventions (see NOTES.md):
+    a definitional narrowing of the exposed surface is a package-loading refusal,
+    not an admission one.
+  '''
+
+  packages: {
+    host: {
+      $liasse: 1
+      $app: "t.mod.dryrun.reject@1.0.0"
+      $model: {
+        companies: {
+          $key: "id"
+          id: "text"
+          name: "text"
+          modules: {
+            $key: "text"
+            $value: "module"
+            $interfaces: {
+              templates: {
+                $view: { $key: "id", id: "text", label: "text" }
+                $mut: {
+                  "create({ id: text, label: text })": {
+                    $return: { id: "text", label: "text" }
+                  }
+                }
+              }
+            }
+          }
+        }
+        $public: {
+          admin: {
+            $mut: { create: '/companies["acme"].modules["kit"]::templates.create' }
+          }
+        }
+      }
+      $data: { companies: { acme: { name: "Acme" } } }
+    }
+    tpldn1: {
+      $liasse: 1
+      $module: "t.tpldn@1.0.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+        $mut: {
+          create_template: [
+            "t = .templates + { id: @id, label: @label }"
+            "return t { id, label }"
+          ]
+        }
+      }
+      $expose: {
+        templates: {
+          $view: ".templates { id, label }"
+          $mut: { create: ".create_template" }
+        }
+      }
+    }
+    tpldn2: {
+      $liasse: 1
+      $module: "t.tpldn@1.1.0"
+      $model: {
+        templates: { $key: "id", id: "text", label: "text" }
+      }
+      $expose: {
+        // narrowing: the create binding is gone in a minor release
+        templates: { $view: ".templates { id, label }" }
+      }
+    }
+  }
+  root: host
+
+  steps: [
+    { module_install: { at: "/companies/acme/modules", request: { $name: "kit", $module: "t.tpldn@1.0.0" } }
+      expect: { outcome: ok } }
+
+    // The dry run runs the §13.14 recheck, so it refuses exactly as the update would.
+    { module_update: { instance: "/companies/acme/modules/kit", to: "t.tpldn@1.1.0", dry_run: true }
+      expect: { outcome: invalid, violates: ["§13.14", "§20.4"]
+                detail: "the dry run reports the narrowing refusal the update produces, because the §13.14 recheck is inside the prepare" } }
+
+    // The same update run for real reports the same refusal.
+    { module_update: { instance: "/companies/acme/modules/kit", to: "t.tpldn@1.1.0" }
+      expect: { outcome: invalid, violates: ["§13.14", "§20.4"]
+                detail: "a minor release narrowing the exposed compatibility surface is rejected by package loading before admission" } }
+
+    // Neither the dry run nor the refused update touched the mounted instance:
+    // 1.0.0 is still active and its exposed `create` still routes.
+    { call: "public.admin.create", args: { id: "t1", label: "Alpha" }
+      expect: { outcome: ok, value: { id: "t1", label: "Alpha" } } }
+  ]
+}

@@ -35,7 +35,7 @@ use crate::view::ViewResult;
 
 /// One installed child module instance, mounted at one entry of a module
 /// collection.
-struct Child<S> {
+pub(super) struct Child<S> {
     /// The address of the module-collection entry this instance is mounted at
     /// (§13.2/§13.3) — an ordinary row address, so the containing rows are
     /// whatever the containing collections give. Mutable: a rename or a relocate
@@ -45,7 +45,7 @@ struct Child<S> {
     incarnation: InstanceId,
     /// The child's own loaded engine over its private store — a wholly separate
     /// instance, so isolation is structural (§13.1).
-    engine: Engine<S>,
+    pub(super) engine: Engine<S>,
     /// The boundary bindings admitted at install (§13.3 `$resolved`).
     bindings: AdmittedBindings,
     /// The §13.5 peer handles resolved against the sibling set at install (§13.3
@@ -613,70 +613,6 @@ impl<F: StoreFactory> ModuleHost<F> {
         }
         self.child_mut(at)?.at = destination;
         Ok(())
-    }
-
-    /// Update a single instance to a target definition (§13.14/§13.15), affecting
-    /// that instance only.
-    ///
-    /// Before the migration commits, the target's exposed compatibility surface is
-    /// rechecked against the active one (§13.14): a minor/patch update that
-    /// definitionally narrows the module's own `$expose` is refused
-    /// ([`ModuleError::ExposedNarrowed`]), and one that withdraws a previously
-    /// accepted interface binding whose implementation remains is refused
-    /// ([`ModuleError::InterfaceBindingWithdrawn`]) — in both the current release
-    /// stays active (E.9). A preserving/widening update runs the §20 migration over
-    /// the child's own engine and returns the assembled §13.15 report.
-    pub fn update<G: Generators>(
-        &mut self,
-        at: &RowAddress,
-        target: &str,
-        generator: &mut G,
-    ) -> Result<crate::modules::ModuleUpdateReport, ModuleError> {
-        // §13.14: read the ACTIVE child definition and version for the exposed-surface
-        // recheck and the §13.15 `$from`, before any migration mutates the child.
-        let child = self.find(at).ok_or_else(|| ModuleError::Unknown(at.render()))?;
-        let active_definition = child.engine.definition_source()?.ok_or_else(|| {
-            ModuleError::Engine(EngineError::Internal("active child definition unavailable for update".to_owned()))
-        })?;
-        let from = version_string(child.engine.model());
-        // §13.14: a minor/patch update MUST preserve or widen the module's exposed
-        // compatibility surface. Refuse a narrowing release before admission (E.9),
-        // classifying a definitional self-narrowing as a static refusal and a
-        // withdrawn-but-implemented binding as an admission refusal.
-        if let Some(narrowing) = super::compat::exposed_narrowing(&active_definition, target) {
-            return Err(match narrowing.class {
-                super::compat::NarrowingClass::Definitional => ModuleError::ExposedNarrowed(narrowing.reason),
-                super::compat::NarrowingClass::BindingWithdrawn => {
-                    ModuleError::InterfaceBindingWithdrawn(narrowing.reason)
-                }
-            });
-        }
-        // §13.15 `$exposed`: group each exposed interface by how its contract moved
-        // across this (non-narrowing) update.
-        let grouping = super::compat::exposed_grouping(&active_definition, target);
-        // §13.14: run the §20 migration over the child's own engine.
-        let child = self.child_mut(at)?;
-        let report = child.engine.update(target, generator).map_err(|error| match error {
-            crate::migrate::UpdateError::Engine(engine) => ModuleError::Engine(engine),
-            other => ModuleError::Engine(EngineError::Internal(other.to_string())),
-        })?;
-        let to = version_string(child.engine.model());
-        Ok(crate::modules::ModuleUpdateReport {
-            from,
-            to,
-            commit: report.commit,
-            migrated: report.migrated,
-            seeded: report.seeded,
-            exposed_unchanged: grouping.unchanged,
-            exposed_changed: grouping.changed,
-            exposed_removed: grouping.removed,
-            // §13.15 `$imports`: an import re-bound by the update is `$rebound`, one
-            // whose source is gone is `$broken`. The CORE module cases carry no
-            // `$use` imports, so both are empty; recomputing per bound parent/peer
-            // source under the migrated model is a follow-on.
-            imports_rebound: Vec::new(),
-            imports_broken: Vec::new(),
-        })
     }
 
     /// Admit a mutation call against an enabled child instance (§13.11 direct
@@ -2093,7 +2029,15 @@ impl<F: StoreFactory> ModuleHost<F> {
         self.children.iter().find(|child| child.is(at))
     }
 
-    fn child_mut(&mut self, at: &RowAddress) -> Result<&mut Child<F::Store>, ModuleError> {
+    /// The instance mounted at `at`, enabled or not (§13.3). The §13.14 update path
+    /// addresses a mount by identity rather than by boundary availability: a
+    /// disabled instance keeps its private state and history, so it is still the
+    /// instance an update migrates.
+    pub(super) fn mounted(&self, at: &RowAddress) -> Result<&Child<F::Store>, ModuleError> {
+        self.find(at).ok_or_else(|| ModuleError::Unknown(at.render()))
+    }
+
+    pub(super) fn child_mut(&mut self, at: &RowAddress) -> Result<&mut Child<F::Store>, ModuleError> {
         self.children
             .iter_mut()
             .find(|child| child.is(at))
@@ -2101,7 +2045,7 @@ impl<F: StoreFactory> ModuleHost<F> {
     }
 
     fn enabled_child(&self, at: &RowAddress) -> Result<&Child<F::Store>, ModuleError> {
-        let child = self.find(at).ok_or_else(|| ModuleError::Unknown(at.render()))?;
+        let child = self.mounted(at)?;
         if child.enabled {
             Ok(child)
         } else {
@@ -2155,10 +2099,4 @@ fn is_inline_child_binding(binding: &str) -> bool {
     let text = binding.trim();
     let text = text.strip_prefix('=').map_or(text, str::trim);
     text.starts_with('.')
-}
-
-/// The `major.minor.patch` version string of a package model (§13.15 `$from`/`$to`).
-fn version_string(model: &liasse_model::Model) -> String {
-    let version = &model.header().identity.version;
-    format!("{}.{}.{}", version.major, version.minor, version.patch)
 }

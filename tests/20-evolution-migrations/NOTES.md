@@ -45,6 +45,9 @@ update and discards it (§20.4):
 - It applies nothing, so every later step asserts against the package and the
   state that were in force before it — which is what makes a paired
   `dry_run` / effecting `host_load` case observable.
+- §13.14 module updates carry the same member on the same terms: `module_update`
+  takes `dry_run: true` (see `tests/13-modules/NOTES.md`), and the §20.4 module
+  cases live in ch. 13 alongside the update path they exercise.
 
 ### Outcome mapping (identical to ch. 9)
 

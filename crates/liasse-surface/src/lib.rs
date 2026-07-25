@@ -80,7 +80,9 @@ pub use address::{AddressError, Authority, SurfaceAddress};
 pub use blobs::{BlobGetOutcome, BlobHost, BlobPutOutcome};
 pub use cose::{CoseKeyring, CoseVerifyError};
 pub use keyring::KeyringAdmin;
-pub use modules::{ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate};
+pub use modules::{
+    ModuleDeployment, ModuleFault, ModuleObservation, ModuleUpdate, ModuleUpdatePreview,
+};
 pub use authn::{
     Actor, AuthContext, Authenticator, Claims, Credential, RowLookup, RowSource, Session,
     SessionAuthenticator, SessionSource, Verifier, VerifyFailure,
