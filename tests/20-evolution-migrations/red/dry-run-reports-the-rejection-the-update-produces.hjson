@@ -1,0 +1,98 @@
+{
+  format: 1
+  name: dry-run-reports-the-rejection-the-update-produces
+  suite: scenario
+  spec: ["#evolution", "§20.4", "§20.1", "#loading", "§9.4"]
+  tags: ["ordering"]
+  note: '''
+    §20.4: "Prepare and apply MUST NOT be separate computations of the update ...
+    an update the runtime would reject is rejected at prepare with that same
+    diagnostic." A dry run that reported a rosier outcome than the update it
+    models would be worse than no dry run at all — it would certify a deployment
+    that then fails.
+
+    The attack this case pins is exactly that divergence. The 2.0.0 target adds a
+    `$check` the live value "Ada" cannot satisfy, so the §20.1 final admission
+    suite refuses the whole migration. The dry run MUST report that refusal, not
+    `ok`: it runs the same admission suite over the same prospective target. The
+    effecting load that follows reports the same refusal, and the 1.0.0 package
+    is still in force after BOTH — §20.3/§9.4/Annex E.9 leave the prior package
+    active on a rejected update, and a dry run never had anything to leave.
+
+    Classified `rejected` per this chapter's ch.-9 outcome mapping: the target is
+    well-formed on its own terms and it is the prospective migrated STATE that
+    violates an admission-class constraint (§9.2 steps 7-8, §20.1 final check).
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.dryrun.reject@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        people: { $view: ".people { id, name }" }
+      }
+    }
+    $data: {
+      people: { p1: { name: "Ada" } }
+    }
+  }
+
+  steps: [
+    // The dry run runs the §20.1 admission suite over the whole prospective
+    // target, so it refuses exactly as the update would.
+    { host_load: {
+        dry_run: true
+        package: {
+          $liasse: 1
+          $app: "t.mig.dryrun.reject@2.0.0"
+          $model: {
+            people: {
+              $key: "id"
+              id: "text"
+              name: { $type: "text", $check: ["size(.) > 20", "name must be long"] }
+            }
+            $public: {
+              people: { $view: ".people { id, name }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.1", "§20.4"]
+        detail: "migrated name 'Ada' (size 3) violates the target $check size(.) > 20 in the prospective state"
+      } }
+
+    // The same load run for real reports the same refusal.
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.dryrun.reject@2.0.0"
+          $model: {
+            people: {
+              $key: "id"
+              id: "text"
+              name: { $type: "text", $check: ["size(.) > 20", "name must be long"] }
+            }
+            $public: {
+              people: { $view: ".people { id, name }" }
+            }
+          }
+        }
+      }
+      expect: {
+        outcome: rejected
+        violates: ["§20.1", "§20.4"]
+        detail: "migrated name 'Ada' (size 3) violates the target $check size(.) > 20 in the prospective state"
+      } }
+
+    // Neither the dry run nor the rejected update touched the instance.
+    { watch: "public.people", id: "w1",
+      expect_init: { value: [ { id: "p1", name: "Ada" } ] } }
+  ]
+}

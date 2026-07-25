@@ -92,6 +92,11 @@ fn offlineage_shape_compatible_update_is_rejected() {
         Err(UpdateError::Engine(other)) => panic!(
             "expected a §20.1 off-lineage rejection, got a load/engine error instead: {other}"
         ),
+        // §20.4: `update` prepares and applies back to back, so its plan's basis
+        // cannot have moved — reaching here would itself be a bug.
+        Err(stale @ UpdateError::Stale { .. }) => panic!(
+            "expected a §20.1 off-lineage rejection, got a stale prepared update instead: {stale}"
+        ),
         Ok(report) => {
             let view = engine.view_at_head("all").expect("view").expect("declared");
             let name = view.rows()[0].field("name").cloned();

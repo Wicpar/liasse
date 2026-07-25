@@ -1360,18 +1360,7 @@ impl<S: InstanceStore> Engine<S> {
     ) -> Result<BTreeMap<String, Keyring<EngineKeyProvider>>, EngineError> {
         // F2: refuse a policy change on any ring the target still declares BEFORE
         // touching provider state, so the engine is untouched on refusal.
-        for ring in &self.keyrings {
-            if let Some(decl) = target.keyrings.iter().find(|decl| decl.name == ring.name())
-                && ring.policy() != &decl.policy
-            {
-                return Err(EngineError::Keyring(format!(
-                    "keyring `{}` changes its policy on a live ring; the version lifecycle cannot \
-                     soundly hot-apply a `$rotate`/`$retain`/`$algorithm`/`$usage` change (§17.6) — \
-                     refusing rather than silently ignoring it",
-                    ring.name()
-                )));
-            }
-        }
+        self.keyring_policy_change(target)?;
         // Provision every NEWLY-declared ring into a local map: this consumes
         // providers, bootstraps, and may refuse (F1a) — self.keyrings stays intact,
         // so a refusal (or a provider fault) leaves the engine wholly unchanged.
@@ -1387,6 +1376,33 @@ impl<S: InstanceStore> Engine<S> {
             }
         }
         Ok(provisioned)
+    }
+
+    /// F2 (§17.6): refuse a `$rotate`/`$retain`/`$algorithm`/`$usage` change on a
+    /// ring the `target` still declares. Pure — it reads the live rings and the
+    /// target's declarations and touches no provider state — so a §20.4 prepared
+    /// update runs the identical gate ahead of the commit and a dry run reports the
+    /// refusal the effecting update would produce.
+    pub(crate) fn keyring_policy_change(&self, target: &Compiled) -> Result<(), EngineError> {
+        for ring in &self.keyrings {
+            if let Some(decl) = target.keyrings.iter().find(|decl| decl.name == ring.name())
+                && ring.policy() != &decl.policy
+            {
+                return Err(EngineError::Keyring(format!(
+                    "keyring `{}` changes its policy on a live ring; the version lifecycle cannot \
+                     soundly hot-apply a `$rotate`/`$retain`/`$algorithm`/`$usage` change (§17.6) — \
+                     refusing rather than silently ignoring it",
+                    ring.name()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// The instance's resolved host binding, for the read-only §16.2 requirement
+    /// probe a §20.4 prepared update runs.
+    pub(crate) fn host_binding(&self) -> &HostBinding {
+        &self.host
     }
 
     /// A read-time snapshot of every live keyring's version view at the current

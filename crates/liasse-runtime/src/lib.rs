@@ -208,7 +208,7 @@ pub use history::{
     ConflictCoordinate, ConflictKind, ImportError, ImportRelation, ImportReport, MergeConflict,
     MergeOutcome,
 };
-pub use migrate::{UpdateError, UpdateReport};
+pub use migrate::{PreparedUpdate, UpdateBasis, UpdateError, UpdateReport};
 pub use modules::{
     AdmittedBindings, AncestryDivergence, DecodedPackageId, DepSpec, InstallRequest, InterfaceRow,
     ModuleError, ModuleHost, ModuleSpace, ModuleUpdateReport, SeedMerge, UseSpec,

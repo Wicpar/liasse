@@ -1,9 +1,10 @@
 # §20 Package evolution and migrations — chapter notes
 
 This directory covers SPEC.md §20 (anchor [`#evolution`](../../SPEC.md#evolution)):
-schema migration (§20.1), reversible transforms and downgrade (§20.2), and
-compatibility / update checking (§20.3), together with the compatibility
-algorithm §20.3 delegates to Annex E and the load-outcome rules of §9.
+schema migration (§20.1), reversible transforms and downgrade (§20.2),
+compatibility / update checking (§20.3), and prepared updates / dry runs
+(§20.4), together with the compatibility algorithm §20.3 delegates to Annex E
+and the load-outcome rules of §9.
 
 ## Reused extension step: `host_load`
 
@@ -25,6 +26,25 @@ step defined and documented in
 - A §9.4 `rejected` lifecycle result is expressed with the FORMAT.md non-ok
   vocabulary plus `violates`; after it the prior active composition is still
   in force (§9.2, §9.4, Annex E.9) and later steps assert against it.
+
+### `dry_run: true` — the §20.4 dry run
+
+The FORMAT.md `dry_run: true` member of `host_load` computes the very same
+update and discards it (§20.4):
+
+```hjson
+{ host_load: { package: { ...new definition... }, dry_run: true },
+  expect: { outcome: ok } }
+```
+
+- The outcome vocabulary and the ch. 9 mapping below are unchanged: a dry run
+  reports the outcome the effecting load would report, because §20.4 fixes it
+  to be the same computation.
+- It carries no `result`: a dry run takes no lifecycle result, having taken no
+  commit.
+- It applies nothing, so every later step asserts against the package and the
+  state that were in force before it — which is what makes a paired
+  `dry_run` / effecting `host_load` case observable.
 
 ### Outcome mapping (identical to ch. 9)
 

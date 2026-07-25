@@ -18,7 +18,7 @@ use liasse_runtime::{CommitSeq, EngineError, ImportError, ImportRelation, Precis
 use liasse_store::InstanceStore;
 use liasse_surface::{
     AuthResult, OperationKey, OperationStatus, SurfaceAddress, SurfaceCall, SurfaceError,
-    SurfaceResume, SurfaceWatch, UpdateOutcome,
+    SurfaceResume, SurfaceWatch, UpdateOutcome, UpdatePreview,
 };
 
 use crate::clock::VirtualClock;
@@ -298,6 +298,9 @@ pub(super) trait Instance {
     fn advance_time(&mut self, duration: &crate::clock::Iso8601Duration) -> Result<Observation, AdapterError>;
     fn restart(&mut self) -> Result<Observation, AdapterError>;
     fn host_load(&mut self, package: &serde_json::Value) -> Result<Observation, AdapterError>;
+    /// §20.4 dry run: compute the `host_load` update in full and discard it,
+    /// reporting the outcome it would have and applying nothing.
+    fn host_load_dry_run(&mut self, package: &serde_json::Value) -> Result<Observation, AdapterError>;
     fn operator(&mut self, target: &serde_json::Value) -> Result<Observation, AdapterError>;
     /// Query the §12.3 retained status of the operation `id` scoped by a prior
     /// call. The identifier is the capability: an id no call recorded maps to no
@@ -567,19 +570,10 @@ impl<S: InstanceStore> Instance for Runtime<S> {
         // block, so its verifier tables are unchanged from the base load. A
         // host-namespace authenticator therefore stays as wired before.
         let plan = AuthPlan::derive(package, None);
+        let mut last = Outcome::Error;
         // Try the richest surface lift first, falling back to fewer synthetic
         // declarations (exactly as the initial load does) until one migrates cleanly.
-        let lift = SurfaceLift::derive(package);
-        let mut attempts = vec![lift.clone()];
-        if !lift.views_only().is_empty() {
-            attempts.push(lift.views_only());
-        }
-        if !lift.is_empty() {
-            attempts.push(SurfaceLift::default());
-        }
-
-        let mut last = Outcome::Error;
-        for attempt in attempts {
+        for attempt in SurfaceLift::load_attempts(package) {
             let Some(definition) = super::prepared_definition(package, &plan, &attempt) else {
                 continue;
             };
@@ -626,6 +620,27 @@ impl<S: InstanceStore> Instance for Runtime<S> {
                 completion: Some(completion),
                 extra: Default::default(),
             });
+        }
+        Ok(Observation::outcome(last))
+    }
+
+    /// §20.4: the same lift-selection walk as [`host_load`](Self::host_load), but
+    /// each attempt runs `dry_run_update` — the update is computed in full and the
+    /// plan dropped, so no attempt can commit and the host keeps its router,
+    /// connections, and subscriptions. The reported outcome is the one the
+    /// effecting `host_load` would report for the same lift.
+    fn host_load_dry_run(&mut self, package: &serde_json::Value) -> Result<Observation, AdapterError> {
+        let plan = AuthPlan::derive(package, None);
+        let mut last = Outcome::Error;
+        for attempt in SurfaceLift::load_attempts(package) {
+            let Some(definition) = super::prepared_definition(package, &plan, &attempt) else {
+                continue;
+            };
+            match self.loaded()?.host.dry_run_update(&definition).map_err(host_fault)? {
+                UpdatePreview::Ready(_) => return Ok(Observation::ok(None)),
+                UpdatePreview::Rejected(_) | UpdatePreview::Incompatible(_) => last = Outcome::Rejected,
+                UpdatePreview::Invalid(_) => last = Outcome::Invalid,
+            }
         }
         Ok(Observation::outcome(last))
     }

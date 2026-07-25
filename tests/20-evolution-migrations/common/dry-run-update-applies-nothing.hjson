@@ -1,0 +1,91 @@
+{
+  format: 1
+  name: dry-run-update-applies-nothing
+  suite: scenario
+  spec: ["#evolution", "§20.4", "§20.1", "#loading", "§9.4"]
+  note: '''
+    §20.4: a dry run is a prepare whose prepared update is discarded — "it
+    applies no part of the update, and the active package remains in force
+    exactly as after a rejected one (§20.3)".
+
+    The 1.0.0 -> 1.1.0 move adds a defaulted `tier` and widens the exposed view
+    (Annex E: a compatible minor). The dry run of it reports `ok`, because the
+    update computes and every §20.1 invariant holds. It must nevertheless leave
+    the instance on 1.0.0: the view read immediately after it still projects the
+    1.0.0 shape, with no `tier`. The identical load run for real then commits,
+    and the same view projects the migrated shape — the two reads bracket
+    exactly what the dry run did not do.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.mig.dryrun@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        name: "text"
+      }
+      $public: {
+        people: { $view: ".people { id, name }" }
+      }
+    }
+    $data: {
+      people: { p1: { name: "Ada" } }
+    }
+  }
+
+  steps: [
+    { watch: "public.people", id: "w0",
+      expect_init: { value: [ { id: "p1", name: "Ada" } ] } }
+
+    // §20.4: computed in full, applied not at all.
+    { host_load: {
+        dry_run: true
+        package: {
+          $liasse: 1
+          $app: "t.mig.dryrun@1.1.0"
+          $model: {
+            people: {
+              $key: "id"
+              id: "text"
+              name: "text"
+              tier: "int = 3"
+            }
+            $public: {
+              people: { $view: ".people { id, name, tier }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok } }
+
+    // Nothing was applied: the 1.0.0 package is still the active one, so its
+    // view — not the target's — is what a fresh subscription resolves.
+    { watch: "public.people", id: "w1",
+      expect_init: { value: [ { id: "p1", name: "Ada" } ] } }
+
+    // The same load, run for real, commits.
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.mig.dryrun@1.1.0"
+          $model: {
+            people: {
+              $key: "id"
+              id: "text"
+              name: "text"
+              tier: "int = 3"
+            }
+            $public: {
+              people: { $view: ".people { id, name, tier }" }
+            }
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+
+    { watch: "public.people", id: "w2",
+      expect_init: { value: [ { id: "p1", name: "Ada", tier: 3 } ] } }
+  ]
+}

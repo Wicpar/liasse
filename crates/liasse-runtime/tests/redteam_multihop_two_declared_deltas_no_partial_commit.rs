@@ -98,6 +98,11 @@ fn multi_hop_two_declared_deltas_update_is_rejected() {
         Err(UpdateError::Engine(other)) => {
             panic!("expected a §20.1 multi-hop rejection, got a load/engine error instead: {other}")
         }
+        // §20.4: `update` prepares and applies back to back, so its plan's basis
+        // cannot have moved — reaching here would itself be a bug.
+        Err(stale @ UpdateError::Stale { .. }) => {
+            panic!("expected a §20.1 multi-hop rejection, got a stale prepared update instead: {stale}")
+        }
         Ok(report) => panic!(
             "BUG (§20.1/§20.3/Annex E.9): a MULTI-HOP 3.0.0 route committed in place ({report:?}). \
              The declared key 2.0.0 sits strictly between the active 1.0.0 and the target 3.0.0, so \
