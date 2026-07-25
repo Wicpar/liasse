@@ -68,7 +68,7 @@ impl ModuleSpace {
         containing: Option<&RowAddress>,
         declaration: &str,
     ) -> Result<Self, ModuleError> {
-        let mut segments = Vec::new();
+        let mut steps = Vec::new();
         for step in containing.into_iter().flat_map(RowAddress::steps) {
             let components: Vec<liasse_value::Value> = step.key().components().cloned().collect();
             let key = KeyText::from_key_values(&components).map_err(|error| {
@@ -78,10 +78,27 @@ impl ModuleSpace {
                     step.name().as_str()
                 ))
             })?;
-            segments.push(PathSegment::Name(step.name().clone()));
-            segments.push(PathSegment::Key(key));
+            steps.push((step.name().clone(), key));
         }
-        segments.push(PathSegment::Name(NameSegment::new(declaration)));
+        Self::under(steps, declaration)
+    }
+
+    /// The same mount, built from the containing row's `(collection, key text)`
+    /// steps directly — what a caller holding a materialized row rather than a
+    /// [`RowAddress`] has ([`ModuleAggregate`](super::aggregate::ModuleAggregate)
+    /// folds one space per containing row this way). Both constructors funnel here
+    /// so the §13.9 aggregation addresses a space by exactly the path the §13.16
+    /// install minted it under; two independent renderings could drift, and a space
+    /// that is installed at one path and read at another is invisible.
+    pub(crate) fn under(
+        steps: impl IntoIterator<Item = (NameSegment, KeyText)>,
+        declaration: &str,
+    ) -> Result<Self, ModuleError> {
+        let node = PathSegment::Name(NameSegment::new(declaration));
+        let segments = steps
+            .into_iter()
+            .flat_map(|(name, key)| [PathSegment::Name(name), PathSegment::Key(key)])
+            .chain(std::iter::once(node));
         Self::new(CanonicalPath::new(segments).to_display_string())
     }
 

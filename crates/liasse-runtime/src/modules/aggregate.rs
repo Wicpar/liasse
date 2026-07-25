@@ -21,10 +21,11 @@
 use std::collections::BTreeMap;
 
 use liasse_expr::{Cell, Row, RowId};
-use liasse_ident::KeyText;
+use liasse_ident::{KeyText, NameSegment};
 use liasse_value::{Text, Value};
 
 use crate::eval::with_cell;
+use crate::modules::ModuleSpace;
 
 /// One enabled child instance in a module space, with the interface rows it
 /// exposes through the boundary (§13.8/§13.9).
@@ -82,10 +83,10 @@ impl ModuleAggregate {
 
     fn inject_space(&self, root: Row, path: &[String]) -> Row {
         match path {
-            [member] => {
-                let display = format!("/{member}");
-                with_cell(root, member, self.space_cell(&display))
-            }
+            [member] => match ModuleSpace::under([], member) {
+                Ok(space) => with_cell(root, member, self.space_cell(space.as_str())),
+                Err(_) => root,
+            },
             [collection, member] => {
                 let Some(Cell::Collection(rows)) = root.cell(collection).cloned() else {
                     return root;
@@ -103,12 +104,19 @@ impl ModuleAggregate {
         }
     }
 
+    /// Inject the space `member` mounts under `row` of `collection`. The mount path
+    /// is built by [`ModuleSpace::under`] — the SAME constructor the §13.16 `<-`
+    /// install mints a mount with — so a space is read back at exactly the path it
+    /// was installed under. Two independent renderings could drift, and a space
+    /// installed at one path and read at another is invisible.
     fn inject_row(&self, row: Row, collection: &str, member: &str) -> Row {
         let Ok(key) = KeyText::from_key_values(std::slice::from_ref(row.key())) else {
             return row;
         };
-        let display = format!("/{collection}/{}/{member}", key.as_str());
-        with_cell(row, member, self.space_cell(&display))
+        let Ok(space) = ModuleSpace::under([(NameSegment::new(collection), key)], member) else {
+            return row;
+        };
+        with_cell(row, member, self.space_cell(space.as_str()))
     }
 
     /// The keyed instance collection cell for the space at `display_path`: one row

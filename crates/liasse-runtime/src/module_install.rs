@@ -135,12 +135,14 @@ impl Interp<'_> {
         if matches!(&dest.kind, ExprKind::Name(_)) {
             return None;
         }
-        let slot = SlotSyntax::parse(dest);
         let moves_a_module = self.source_is_module(src, at);
-        let candidates = match slot.as_ref().map(|slot| self.space_candidates(slot, at)) {
-            Some(Ok(candidates)) => candidates,
-            Some(Err(rejection)) => return Some(Err(rejection)),
-            None => Vec::new(),
+        // A destination that is not a keyed slot at all cannot name a module space.
+        let Some(slot) = SlotSyntax::parse(dest) else {
+            return moves_a_module.then(|| Err(not_a_slot()));
+        };
+        let candidates = match self.space_candidates(&slot, at) {
+            Ok(candidates) => candidates,
+            Err(rejection) => return Some(Err(rejection)),
         };
         match (candidates.as_slice(), moves_a_module) {
             // Neither a module-space write nor a module value: an ordinary move.
@@ -148,13 +150,13 @@ impl Interp<'_> {
             // §13.16: a module is installed by moving it INTO a module space. Any
             // other destination stages nothing at all, so refuse by name rather than
             // commit a transition that silently did nothing.
-            ([], true) => Some(Err(self.no_such_space(slot.as_ref()))),
+            ([], true) => Some(Err(self.no_such_space(&slot))),
             // A declared slot written with something that is not a module value.
-            ([_], false) => Some(Err(not_a_module(slot.as_ref()))),
-            ([candidate], true) => Some(self.install_into(candidate, slot.as_ref(), src, at)),
+            ([_], false) => Some(Err(not_a_module(&slot))),
+            ([candidate], true) => Some(self.install_into(candidate, &slot, src, at)),
             // Two declared spaces of that name are reachable from this destination
             // and the statement does not say which. Refuse; never order them.
-            (_, _) => Some(Err(ambiguous(&candidates, slot.as_ref()))),
+            (_, _) => Some(Err(ambiguous(&candidates, &slot))),
         }
     }
 
@@ -162,13 +164,10 @@ impl Interp<'_> {
     fn install_into(
         &mut self,
         candidate: &Candidate,
-        slot: Option<&SlotSyntax<'_>>,
+        slot: &SlotSyntax<'_>,
         src: &Expr,
         at: SourceId,
     ) -> Result<(), Rejection> {
-        let Some(slot) = slot else {
-            return Err(Rejection::new(RejectionReason::Malformed, "a module move resolves one module space"));
-        };
         let space = candidate.mount()?;
         let current = self.current()?;
         let name = instance_name(self.scalar_value(slot.key, at, &current)?)?;
@@ -239,17 +238,7 @@ impl Interp<'_> {
     /// The refusal for a module value moved somewhere that is not a declared
     /// `$modules` slot. It names the destination as written and every space of that
     /// declaration name the package DOES declare, so the fix is their difference.
-    fn no_such_space(&self, slot: Option<&SlotSyntax<'_>>) -> Rejection {
-        let Some(slot) = slot else {
-            return Rejection::new(
-                RejectionReason::Malformed,
-                format!(
-                    "a `module` value is installed by moving it into a slot of a declared \
-                     `$modules` space — `{MOVE_OPERATOR}` writes `.<space>[<name>]` (§13.16). This \
-                     destination is not a keyed slot, so the move would stage nothing; refused."
-                ),
-            );
-        };
+    fn no_such_space(&self, slot: &SlotSyntax<'_>) -> Rejection {
         let declared: Vec<String> =
             self.compiled.module_spaces_named(slot.declaration).map(|path| path.join(".")).collect();
         let where_declared = if declared.is_empty() {
@@ -285,27 +274,41 @@ fn instance_name(key: Value) -> Result<String, Rejection> {
     }
 }
 
+/// The refusal for a `module` moved into a destination that is not a keyed slot at
+/// all — a bare field, a bound selector, a multi-key selection. None of them names
+/// one instance, so none of them can install one.
+fn not_a_slot() -> Rejection {
+    Rejection::new(
+        RejectionReason::Malformed,
+        format!(
+            "a `module` value is installed by moving it into one slot of a declared `$modules` \
+             space — `{MOVE_OPERATOR}` writes `.<space>[<name>]` (§13.16). This destination names \
+             no single slot, so the move would stage nothing; refused."
+        ),
+    )
+}
+
 /// The refusal for a non-module value written into a module slot.
-fn not_a_module(slot: Option<&SlotSyntax<'_>>) -> Rejection {
+fn not_a_module(slot: &SlotSyntax<'_>) -> Rejection {
     Rejection::new(
         RejectionReason::TypeError,
         format!(
             "`{}` is a `$modules` space, whose members are `module` values (§13.16); the moved \
              source is not one — build one with `unpack(@package)`.",
-            slot.map_or_else(|| ".…[…]".to_owned(), SlotSyntax::render),
+            slot.render(),
         ),
     )
 }
 
 /// The refusal for a destination that names two declared spaces.
-fn ambiguous(candidates: &[Candidate], slot: Option<&SlotSyntax<'_>>) -> Rejection {
+fn ambiguous(candidates: &[Candidate], slot: &SlotSyntax<'_>) -> Rejection {
     let mounts: Vec<String> = candidates
         .iter()
         .map(|candidate| {
             candidate.mount().map_or_else(|_| candidate.declaration_path.join("."), |space| space.as_str().to_owned())
         })
         .collect();
-    let declaration = slot.map_or("…", |slot| slot.declaration);
+    let declaration = slot.declaration;
     Rejection::new(
         RejectionReason::Malformed,
         format!(
@@ -313,7 +316,7 @@ fn ambiguous(candidates: &[Candidate], slot: Option<&SlotSyntax<'_>>) -> Rejecti
              statement says which (§13.2). Refused rather than installed into a guess: address \
              the package-root space as `/{declaration}[…]`, or the row-scoped one through its \
              containing row (`.<collection>[<key>].{declaration}[…]`).",
-            slot.map_or_else(|| ".…[…]".to_owned(), SlotSyntax::render),
+            slot.render(),
             mounts.join(" and "),
         ),
     )
