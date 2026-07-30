@@ -31,6 +31,15 @@ const APP: &str = r#"{
         "$params": { "archived": "bool = false" }
         "$view": ".accounts[:a | a.archived == @archived] { id, name }"
       }
+      "named": {
+        "$view": ".accounts[:a | a.name == @name] { id, name }"
+      }
+      "one": {
+        "$view": ".accounts[@id] { id, name }"
+      }
+      "folded": {
+        "$view": ".accounts[:a | a.id == string.lower(@q)] { id, name }"
+      }
     }
     "$auth": {
       "session": {
@@ -125,6 +134,49 @@ fn surface_view_params_are_exposed_by_name_and_type() {
     );
     assert!(engine.surface_view_params("self.me").is_empty());
     assert!(engine.surface_view_params("public.nope").is_empty());
+}
+
+/// §10.1: "the resulting parameter shape, INFERRED or declared, is part of the
+/// external surface contract, exactly as for mutations." A surface that declares
+/// no `$params` at all still publishes the parameters its `$view` infers — the
+/// filter comparand `a.name == @name` gives `text`, the key selector
+/// `.accounts[@id]` gives the collection's `text` key — so a host decodes a
+/// client's `view` arguments against them exactly as against declared ones.
+#[test]
+fn inferred_surface_view_params_are_exposed_in_the_contract() {
+    let engine = app();
+    assert_eq!(
+        engine.surface_view_params("public.named"),
+        vec![("name".to_owned(), liasse_value::Type::Text)]
+    );
+    assert_eq!(
+        engine.surface_view_params("public.one"),
+        vec![("id".to_owned(), liasse_value::Type::Text)]
+    );
+    // §10.1's third anchor, "a typed function argument": `@q` occurs only inside
+    // `string.lower(@q)`, whose §16.1 signature pins the argument to `text`, so
+    // that is the type the contract publishes.
+    assert_eq!(
+        engine.surface_view_params("public.folded"),
+        vec![("q".to_owned(), liasse_value::Type::Text)]
+    );
+}
+
+/// §10.1: an inferred parameter is a live input, not just a published name — a
+/// surface with no `$params` block reads its argument and filters on it.
+#[test]
+fn inferred_param_is_bound_from_the_query() {
+    let engine = app();
+    let query = ViewQuery::new().param("name", text("Bob"));
+    assert_eq!(ids(&engine, "public.named", &query), vec!["bob".to_owned()]);
+
+    let by_key = ViewQuery::new().param("id", text("alice"));
+    assert_eq!(ids(&engine, "public.one", &by_key), vec!["alice".to_owned()]);
+
+    // A built-in-anchored parameter is bound and evaluated like any other: the
+    // call lowercases the argument before the comparison.
+    let folded = ViewQuery::new().param("q", text("ALICE"));
+    assert_eq!(ids(&engine, "public.folded", &folded), vec!["alice".to_owned()]);
 }
 
 /// A bucketed collection under a parameterized surface `$view` (§14.1, §10.1): a

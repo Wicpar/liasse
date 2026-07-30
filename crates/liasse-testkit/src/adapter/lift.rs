@@ -186,8 +186,8 @@ fn one(key: &str, value: J) -> Map<String, J> {
 /// A plain top-level named view has no binding for the *request scope*: a
 /// surface parameter (`@param`, §10.1 `$params`) or a request-scoped variable
 /// (`$actor`/`$members`/`$proof`/`$config`, §6.2), so a view reading one cannot
-/// be lifted (SPEC-ISSUES item 10; the surface layer leaves scope-parameterized
-/// evaluation to the runtime). A leading-`$` token is not by itself a request
+/// be lifted (§7.1; the surface layer leaves scope-parameterized evaluation to
+/// the runtime). A leading-`$` token is not by itself a request
 /// variable, though: the projection combinators `$sort`/`$skip`/`$limit` and the
 /// synthetic `$key` (§7.2/§7.3) are structural directives on the block, and the
 /// temporal selectors `.$all`/`.$between`/`.$at` (§14.2) are structural *field

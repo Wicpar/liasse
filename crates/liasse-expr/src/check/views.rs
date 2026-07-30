@@ -839,6 +839,52 @@ impl CoreStringFn {
         };
         Some(Self { func, arity, result })
     }
+
+    /// The pinned type of argument `index`, if the signature has that position.
+    ///
+    /// Every core `string` utility is total over text: the arity-1 transforms
+    /// take the subject, and the arity-2 search predicates take `(subject,
+    /// needle)` — both text (§6.5). So the roster's arity alone decides the
+    /// answer, and a name added to [`resolve`](Self::resolve) anchors inference
+    /// at its new positions without a second table to keep in step.
+    fn param(&self, index: usize) -> Option<Type> {
+        (index < self.arity).then_some(Type::Text)
+    }
+}
+
+/// The pinned argument type of a CORE built-in call (§6.5/§16.1) at position
+/// `index`, for §8.3/§10.1 parameter inference.
+///
+/// §10.1 counts "a typed function argument" as a constraint on `@name`. A
+/// database-evaluated position (§16.5) admits only built-ins, whose signatures
+/// are fixed here, so the type a bare `@param` argument must have is decidable
+/// without any host resolution. `namespace` is `None` for a bare-name callee
+/// (`assert(...)`) and `Some(ns)` for a namespaced one (`string.lower(...)`).
+///
+/// Returns `None` — contributing NO constraint — whenever the position does not
+/// pin exactly one type: an unknown or app-registered callee, an argument index
+/// the signature does not have, and every built-in whose slot is generic. `size`
+/// and `has` accept text, bytes, a set, or a collection; an aggregate takes a
+/// view, not a scalar; and `assert`'s message argument is unconstrained (it is
+/// not read by evaluation). Those uses leave the parameter uninferred, which is
+/// §10.1's explicit-declaration error rather than a guess.
+pub fn core_builtin_param(namespace: Option<&str>, function: &str, index: usize) -> Option<Type> {
+    let Some(namespace) = namespace else {
+        // `assert(condition, message)` (§8.8): the condition is `bool`; the
+        // message is unconstrained. `size`/`has` are generic; `now`/`uuid` take
+        // no argument; an aggregate takes a view.
+        return (function == "assert" && index == 0).then_some(Type::Bool);
+    };
+    // The core `string` roster is the one the checker resolves calls with, so an
+    // anchor cannot claim a position the checker would reject (§6.5 arity).
+    if let Some(builtin) = CoreStringFn::resolve(namespace, function) {
+        return builtin.param(index);
+    }
+    if (namespace, function) == ("time", "duration") {
+        // `time.duration(text)` parses an ISO-8601 literal (§16.1).
+        return (index == 0).then_some(Type::Text);
+    }
+    core_codec_op(namespace, function).and_then(|op| op.params().get(index).cloned())
 }
 
 /// The pinned op of a core codec built-in (§16.1) a `namespace.function` names, if

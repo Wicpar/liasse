@@ -1078,7 +1078,9 @@ An explicit prototype resolves ambiguity or declares a structure that the body c
 "set_metadata({ metadata?: { $key: text, $value: json } })": ".metadata = @metadata"
 ```
 
-All uses of the same parameter MUST infer one compatible type. The resulting parameter shape is part of the external surface contract.
+All uses of the same parameter MUST infer one compatible type. A built-in function argument with a single accepted type anchors its parameter; a slot accepting several types contributes no constraint. A parameter no use constrains to a unique type is a static load error whose diagnostic requests an explicit declaration. The resulting parameter shape is part of the external surface contract.
+
+This inference rule is general: surface `$view` and `$recursive` predicate parameters use it too (§10.1).
 
 A mutation with no inferred or explicit parameters is called with `()`:
 
@@ -1421,7 +1423,7 @@ Within a surface, `$params` maps input names to field declarations and defaults,
 
 A surface MUST declare at least one of `$view` or `$mut`. A surface exposing neither — an empty surface, or one carrying only `$params` and/or `$recursive` — is not callable or watchable, and is rejected at load.
 
-A surface `$view` (and a `$recursive` `$where`/`$except` predicate) parameter is not inferred: every `@name` such an expression reads MUST be declared in the surface's `$params`, and an `@name` with no matching `$params` entry is a static error at load. §8.3 parameter inference applies to mutation bodies only, where each `@name` use is an assignment or key selector with a target field to anchor its type; a surface's read positions have no such anchor, and the surface's input shape is its public wire contract, so it is stated explicitly in `$params` rather than derived from an interior expression.
+A surface `$view` (and a `$recursive` `$where`/`$except` predicate) parameter is inferred exactly as a mutation parameter is (§8.3): every typed use of `@name` — a comparison against a typed field, a key-selector position, a typed function argument — contributes a constraint, and all uses MUST agree on one type. A parameter the expression does not constrain to a unique type is a static load error whose diagnostic requests an explicit declaration: declare the parameter in `$params` with its type. An explicit `$params` entry remains authoritative where present — inference must be compatible with its declared type, and it is the only way to give a view parameter a default. The resulting parameter shape, inferred or declared, is part of the external surface contract, exactly as for mutations.
 
 The wire carries the surface name, mutation name, and typed values. It carries no executable expression.
 
@@ -1560,6 +1562,8 @@ At each level:
 5. the same surface projection and mutations apply to included children; recursion descends only into included candidates (one satisfying `$where` and not satisfying `$except`). A candidate excluded by `$where`, or pruned by `$except`, contributes no output slot, and none of its descendants are surfaced or reparented. `$where` is an allow-list (default include) and `$except` a deny-list (default none) that overrides it; both are hereditary.
 
 The output appears under `$field` as a nested keyed view — a keyed tree in which every node's ancestors are all included. The checker verifies descendant shape, acyclicity, identity, and predicate types.
+
+`$where` and `$except` parameters are inferred against the `$bind` candidate row (§10.1, §8.3). A surface's `$view` and its `$recursive` predicates form one shared parameter contract: an anchor in either types the same `@name` in both.
 
 An external request addresses a covered descendant receiver by the role handle — its containing row identity and role name (§10.3) — together with the descendant's key path from that row down through `$field`/`$through`. Admission re-evaluates the recursive relation along the whole path; a path with any step that is not a strict, `$where`-included, non-`$except` descendant is denied. The role-holding row is the empty path, addressed by the role handle alone.
 

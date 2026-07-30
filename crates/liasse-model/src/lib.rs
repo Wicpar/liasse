@@ -94,6 +94,7 @@ pub use liasse_expr::{
 };
 pub use migration::{nondeterministic_call, Migrations};
 pub use model::Model;
+pub use mutation::params::{infer_view_params, ViewParams};
 pub use mutation::Mutation;
 pub use names::{DeclName, PackageId, PackageName, Version};
 pub use report::code;

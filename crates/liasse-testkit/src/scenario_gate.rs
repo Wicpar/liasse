@@ -88,7 +88,8 @@ pub const SKIP: &[(&str, &str)] = &[
     // injection (`connector_set`) run against a real §18 `BlobHost` the driver owns
     // (adapter/blobs.rs), composed from the case's `hosts.connectors` + `$data`
     // stores; the parameterized role/surface `$view` a fetch resolves through is
-    // served by reconstructing its `$params` (adapter/surface_params.rs). The
+    // served by §10.1 parameter inference, with a top-level parameterized view
+    // inlined onto its referencing surfaces (adapter/surface_views.rs). The
     // residuals below are genuine runtime/model/expression seams, not driving gaps:
     //
     // §18.5 placement descriptor members (`.file.$satisfied`/`.file.$stored`/
@@ -345,7 +346,8 @@ pub const SKIP: &[(&str, &str)] = &[
     // survive the §16.5 position move, so it is acknowledged debt pending re-author.
     ("23-host-contract/impure-pure-function-replay-divergence-unspecified", "superseded by §16.5: an app pure function in a database-evaluated `$view` is now a load error, and in a mutation body its result is recorded (§8.12) so replay is deterministic — the recomputation-divergence premise cannot survive the position move; needs re-authoring"),
     // §18 blob views: a parameterized surface/top-level `$view` a case reads now
-    // compiles and serves (adapter/surface_params.rs reconstructs its `$params`),
+    // compiles and serves (§10.1 infers its parameters; adapter/surface_views.rs
+    // inlines a top-level parameterized view onto its referencing surfaces),
     // and the §18.5 placement facts are recorded into the engine before a placement
     // member is read (adapter/blobs.rs + runtime.rs, §18.5). The residuals below are
     // an aggregate-over-projected-member type-check gap or a background reconciler

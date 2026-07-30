@@ -303,7 +303,7 @@ fn inline_view_synthetic_key_combinator_lifts_and_groups() {
 
 #[test]
 fn request_scope_view_is_not_lifted_but_combinator_view_is() {
-    // The lift guard (§10.2, SPEC-ISSUES item 10) separates a plain view's own
+    // The lift guard (§7.1/§10.2) separates a plain view's own
     // evaluation from the request scope. A `$view` reading a request-scoped
     // variable (`$actor`) has no binding a top-level named view can supply, so it
     // must stay unlifted (surface unbound -> its watch resolves `denied`, never

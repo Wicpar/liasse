@@ -8,6 +8,11 @@
 //! `assert` condition (§8.8), and the well-formedness of every value
 //! sub-expression through [`liasse_expr`].
 //!
+//! The inference walk itself lives in [`params`], because §10.1 defines a
+//! surface `$view` (and `$recursive` predicate) parameter as inferred "exactly as
+//! a mutation parameter is (§8.3)" — one walk serves both, so the read and write
+//! contexts cannot drift apart.
+//!
 //! CORE scope: parameter inference covers the `field = @p`, `collection[@p]`,
 //! and `{ field: @p }` contexts §3.2/§8.3 use; deeper cross-call inference and
 //! full insert/replace result typing are documented seams. A statement whose
@@ -16,9 +21,10 @@
 
 mod helpers;
 mod host_args;
+pub(crate) mod params;
 
 use liasse_diag::{ByteSpan, SourceId, SourceMap};
-use liasse_expr::{check_statement, ExprType, MoveTracker, RowType};
+use liasse_expr::{check_statement, ExprType, MoveTracker};
 use liasse_syntax::{parse_expression, Arg, BinaryOp, Expr, ExprKind, Selector, Stmt, StmtKind};
 use liasse_value::Type;
 
@@ -30,14 +36,12 @@ use crate::report::{code, Reporter};
 use crate::resolve::Resolver;
 use crate::scope::ModelScope;
 use crate::state::{Node, Shape};
-use crate::walk::child_exprs;
 
 use helpers::{
-    apply_move_effects, arg_expr, collect_param_refs, is_program_call, is_scalar_binop,
-    local_binding_name, read_exprs, receiver_shape, record, references_deferred, resolve_node,
-    uses_mutation_operator, wrap, write_path, BindEnv, Params,
+    apply_move_effects, collect_param_refs, is_program_call, local_binding_name, read_exprs,
+    receiver_shape, references_deferred, resolve_node, uses_mutation_operator, wrap, write_path,
+    BindEnv, Params,
 };
-use host_args::HostArgInference;
 // Re-exported for the surface phase's inline-program check (§10.1), which walks a
 // statement's expressions to reject a public `$actor`/`$session` reference.
 pub(crate) use helpers::stmt_exprs;
@@ -222,56 +226,22 @@ impl MutPhase<'_, '_> {
         scope
     }
 
-    /// §8.3: infer each `@name` from its use context.
+    /// §8.3: infer each `@name` from its use context, through the shared
+    /// inference walk [`params::Inference`] a surface `$view` and `$recursive`
+    /// predicate reuse for the same rule in a read position (§10.1).
     fn infer_params(
         &self,
         statements: &[(Stmt, SourceId)],
         receiver: &ExprType,
         params: &mut Params,
     ) {
-        let mut binds = BindEnv::new();
-        for (stmt, _) in statements {
-            if let StmtKind::Assign { target, value } = &stmt.kind {
-                if let Some(local) = local_binding_name(target) {
-                    // §8/Annex C.9: a local binding `local = value` is visible to
-                    // later statements, so track its type here — a subsequent
-                    // `local.field = @p` (below) then resolves the local's row and
-                    // infers `@p` from the field. A value the CORE phase cannot type
-                    // (a mutation-operator or host/program-call result) resolves to
-                    // `None` and stays unbound, exactly as the full check phase defers
-                    // it; the param uses on such a value are inferred by the `infer_in`
-                    // walk instead.
-                    if let Some(ty) = self.resolve(value, receiver, &binds) {
-                        binds.insert(local.to_owned(), ty);
-                    }
-                } else if let ExprKind::Param(id) = &value.kind
-                    && let Some(ty) = self.resolve(target, receiver, &binds)
-                    && ty.as_scalar().is_some()
-                {
-                    // A scalar assignment `field = @p` constrains `@p` to the target
-                    // field's type (§8.3) — including a field of a local binding
-                    // (`t.label = @p`), resolved through `binds` above. The general
-                    // expression walk below does not relate the assignment's two
-                    // sides, so it is inferred here.
-                    record(params, &id.text, ty);
-                }
-            }
-            for expr in stmt_exprs(stmt) {
-                self.infer_in(expr, receiver, &binds, params);
-            }
-        }
-        // §8.3/§16.4/§11.5: a *second* pass fills parameters anywhere inside a
-        // host-namespace call argument. Running it after every prototype/state-
-        // anchored use above makes it order independent and strictly gap-filling:
-        // a parameter already pinned by a prototype or state use keeps that stronger
-        // type, and a mismatch against the host signature is enforced at the call
-        // boundary (§16.2/§16.5), not as a load conflict here.
-        let host_args = HostArgInference::new(self.hosts);
-        for (stmt, _) in statements {
-            for expr in stmt_exprs(stmt) {
-                host_args.infer(expr, params);
-            }
-        }
+        let program: Vec<&Stmt> = statements.iter().map(|(stmt, _)| stmt).collect();
+        params::Inference::program(self.root_row.clone(), self.hosts).infer(
+            &program,
+            receiver,
+            &BindEnv::new(),
+            params,
+        );
     }
 
     /// §8.3: every referenced `@name` must resolve to one contract type, whether
@@ -305,319 +275,6 @@ impl MutPhase<'_, '_> {
                     );
                 }
             }
-        }
-    }
-
-    fn infer_in(
-        &self,
-        expr: &Expr,
-        receiver: &ExprType,
-        binds: &BindEnv,
-        params: &mut Params,
-    ) {
-        match &expr.kind {
-            // `collection[@p]` — @p inherits the collection key type. A composite
-            // key is addressed by an object selector `[{ comp: @p, ... }]` (§6.3),
-            // whose members name each key component; each `@p` then inherits that
-            // component's type from the composite key struct, by name and not by
-            // position (Annex A.9).
-            ExprKind::Select { base, selector: Selector::Keys(keys) } => {
-                if let Some(key_ty) = self.select_key_type(base, receiver, binds) {
-                    for key in keys {
-                        match &key.kind {
-                            ExprKind::Param(id) => record(params, &id.text, key_ty.clone()),
-                            ExprKind::Object(members) => {
-                                self.infer_composite_key(members, &key_ty, params);
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            ExprKind::Binary { op, lhs, rhs } => {
-                // `collection + { field: @p }` insert — @p inherits the target
-                // collection's field type, not the receiver's (§8.3).
-                if *op == BinaryOp::Add
-                    && let (Some(row), ExprKind::Object(members)) =
-                        (self.target_row(lhs, receiver, binds), &rhs.kind)
-                {
-                    self.infer_object(members, &ExprType::Row(row), params);
-                }
-                // `collection - key` delete — the operand is the removed row's key,
-                // so a bare `@p` inherits the collection's key type (§8.5). A
-                // composite key is addressed by an object operand `{ comp: @p, ... }`
-                // (§6.3, A.9), mirroring the `[{..}]` selector: each `@p` inherits
-                // its named component's type from the composite key struct.
-                if *op == BinaryOp::Sub
-                    && let Some(key_ty) = self.select_key_type(lhs, receiver, binds)
-                {
-                    match &rhs.kind {
-                        ExprKind::Param(id) => record(params, &id.text, key_ty),
-                        ExprKind::Object(members) => {
-                            self.infer_composite_key(members, &key_ty, params);
-                        }
-                        _ => {}
-                    }
-                }
-                // A scalar comparison or arithmetic relates its two operands to
-                // one type, so a bare `@p` operand inherits the sibling's scalar
-                // type: `assert(.balance >= @amount)`, `.balance - @amount`, and
-                // ref-key comparisons like `x.account == @account` (§8.3).
-                if is_scalar_binop(*op) {
-                    self.infer_scalar_operand(lhs, rhs, receiver, binds, params);
-                    self.infer_scalar_operand(rhs, lhs, receiver, binds, params);
-                }
-            }
-            // `row_source { field = @p }` / `{ field: @p }` patch — @p inherits
-            // the patched row's field type, in both the projection (`field:`)
-            // and assignment (`field =`) member forms (§8.6).
-            ExprKind::Block { base, members } => {
-                if let Some(row) = self.target_row(base, receiver, binds) {
-                    self.infer_object(members, &ExprType::Row(row), params);
-                }
-            }
-            // `{ field: @p }` against the receiver row.
-            ExprKind::Object(members) => {
-                self.infer_object(members, receiver, params);
-            }
-            // A temporal window selector `.base.$at(t)` / `.base.$between(a, b)`
-            // takes `timestamp` instants (§14.1); a bare `@param` argument inherits
-            // `timestamp`. The general checker otherwise ignores call arguments, so
-            // a parameter used *only* here would stay uninferred (§8.3).
-            ExprKind::Call { callee, args } => {
-                if let ExprKind::Field { member, .. } = &callee.kind
-                    && member.structural
-                    && matches!(member.text.as_str(), "at" | "between")
-                {
-                    for arg in args {
-                        if let ExprKind::Param(id) = &arg_expr(arg).kind {
-                            record(params, &id.text, ExprType::scalar(Type::timestamp()));
-                        }
-                    }
-                }
-                // A host-namespace call argument (`ns.fn(@p)`, §16.4) is inferred in
-                // a separate pass ([`Self::infer_host_args`]) that runs after every
-                // state-anchored use, so a prototype- or state-typed parameter keeps
-                // its stronger type and the host signature is enforced at the call
-                // boundary (§16.2/§16.5) rather than becoming a load conflict here.
-            }
-            _ => {}
-        }
-        // Recurse into children, threading a row binding introduced by a
-        // filtered selector `[:x | ...]` so that `x.field == @p` inside the
-        // condition resolves `x` to a row of the selected collection (§6.4).
-        if let ExprKind::Select { base, selector: Selector::Bind { name, condition } } = &expr.kind {
-            self.infer_in(base, receiver, binds, params);
-            if let Some(cond) = condition {
-                let mut inner = binds.clone();
-                if let Some(row) = self.target_row(base, receiver, binds) {
-                    inner.insert(name.text.clone(), ExprType::Row(row));
-                }
-                self.infer_in(cond, receiver, &inner, params);
-            }
-        } else {
-            for child in child_exprs(expr) {
-                self.infer_in(child, receiver, binds, params);
-            }
-        }
-    }
-
-    /// `@p` (`param_side`) inherits `other_side`'s type when the sibling
-    /// operand resolves to a scalar (§8.3).
-    fn infer_scalar_operand(
-        &self,
-        param_side: &Expr,
-        other_side: &Expr,
-        receiver: &ExprType,
-        binds: &BindEnv,
-        params: &mut Params,
-    ) {
-        if let ExprKind::Param(id) = &param_side.kind
-            && let Some(ty) = self.resolve(other_side, receiver, binds)
-            && ty.as_scalar().is_some()
-        {
-            record(params, &id.text, ty);
-        }
-    }
-
-    /// The row type a collection/row source expression addresses, for insert and
-    /// patch parameter inference.
-    fn target_row(&self, expr: &Expr, receiver: &ExprType, binds: &BindEnv) -> Option<RowType> {
-        match self.resolve(expr, receiver, binds)? {
-            ExprType::View(row) | ExprType::Row(row) => Some(row),
-            _ => None,
-        }
-    }
-
-    fn infer_object(
-        &self,
-        members: &[liasse_syntax::BlockMember],
-        receiver: &ExprType,
-        params: &mut Params,
-    ) {
-        use liasse_syntax::BlockMemberKind;
-        let row = receiver.as_row();
-        for member in members {
-            // A member binds a field in the projection (`field: value`),
-            // assignment (`field = value`), or `@name` shorthand form. The
-            // `@name` shorthand means `name = @name` (§8.6): the field is the
-            // parameter's own name, so the parameter inherits that field's type.
-            // §5.4: `$key`/`$value` in a ROW object name a map row's two members
-            // (C.7's projection directives have no meaning in a row), so a
-            // parameter in either position inherits that member's declared type
-            // exactly as a plain `field: @p` does. The member name carries its
-            // marker, matching how the row shape spells it.
-            let map_member;
-            let (field, value): (&str, &Expr) = match &member.kind {
-                BlockMemberKind::Named { name, value: Some(value) } => (&name.text, value),
-                BlockMemberKind::Assign { target, value } => (&target.text, value),
-                BlockMemberKind::Directive { name, value }
-                    if matches!(
-                        name.member_name().as_str(),
-                        liasse_expr::MAP_KEY | liasse_expr::MAP_VALUE
-                    ) =>
-                {
-                    map_member = name.member_name();
-                    (map_member.as_str(), value)
-                }
-                BlockMemberKind::Shorthand(value) => {
-                    if let ExprKind::Param(param) = &value.kind
-                        && let Some(field_ty) = row.and_then(|r| r.field(&param.text))
-                    {
-                        record(params, &param.text, field_ty.clone());
-                    }
-                    continue;
-                }
-                _ => continue,
-            };
-            match &value.kind {
-                // `field: @p` / `field = @p` — @p inherits the field's type.
-                ExprKind::Param(param) => {
-                    if let Some(field_ty) = row.and_then(|r| r.field(field)) {
-                        record(params, &param.text, field_ty.clone());
-                    }
-                }
-                // `field: { ... }` — a nested struct-literal value (§5.3): its
-                // members share the containing row's insertion but infer against
-                // the field's *own* row shape, recursively.
-                ExprKind::Object(inner) => {
-                    if let Some(ExprType::Row(nested) | ExprType::View(nested)) =
-                        row.and_then(|r| r.field(field))
-                    {
-                        self.infer_object(inner, &ExprType::Row(nested.clone()), params);
-                    }
-                }
-                _ => {}
-            }
-        }
-        // §15.4/§15.6: a hypothetical meter-accessor or spend context supplies
-        // the reserved structural members `$time` (timestamp) and `$amount`
-        // (numeric); a parameter in either position inherits that fixed type even
-        // though the surrounding accessor call is an opaque runtime seam.
-        self.infer_context_object(members, params);
-    }
-
-    /// An object key selector `[{ comp: @p, ... }]` (§6.3): each member names a
-    /// key component, so its parameter inherits that component's type — matched by
-    /// component name, not member position (Annex A.9). Both multi-component key
-    /// forms spell a component by name: a composite key by its `$key`-ordered
-    /// components, and a struct `$key` (A.8) by its field-name-ordered members;
-    /// each addressed the same way here.
-    fn infer_composite_key(
-        &self,
-        members: &[liasse_syntax::BlockMember],
-        key_ty: &ExprType,
-        params: &mut Params,
-    ) {
-        use liasse_syntax::BlockMemberKind;
-        let Some(key) = key_ty.as_scalar() else { return };
-        for member in members {
-            let (comp, value) = match &member.kind {
-                BlockMemberKind::Named { name, value: Some(value) } => (&name.text, value),
-                BlockMemberKind::Assign { target, value } => (&target.text, value),
-                _ => continue,
-            };
-            let component = match key {
-                Type::Composite(components) => {
-                    components.iter().find(|(name, _)| name == comp).map(|(_, ty)| ty)
-                }
-                Type::Struct(fields) => fields.field(comp),
-                _ => None,
-            };
-            if let ExprKind::Param(param) = &value.kind
-                && let Some(ty) = component
-            {
-                record(params, &param.text, ExprType::scalar(ty.clone()));
-            }
-        }
-    }
-
-    /// §15 spend/accessor context: infer a parameter used as the reserved
-    /// structural `$time` (timestamp) or `$amount` (numeric decimal) member of a
-    /// context object (Annex §15 grammar: `$time?: timestamp-expression`,
-    /// `$amount?: numeric-expression`).
-    fn infer_context_object(
-        &self,
-        members: &[liasse_syntax::BlockMember],
-        params: &mut Params,
-    ) {
-        use liasse_syntax::BlockMemberKind;
-        for member in members {
-            // A structural context member `$time`/`$amount` parses as a directive
-            // (`$name: expr`).
-            let BlockMemberKind::Directive { name, value } = &member.kind else {
-                continue;
-            };
-            let ty = match name.text.as_str() {
-                "time" => Type::timestamp(),
-                "amount" => Type::Decimal,
-                _ => continue,
-            };
-            if let ExprKind::Param(param) = &value.kind {
-                record(params, &param.text, ExprType::scalar(ty));
-            }
-        }
-    }
-
-    fn select_key_type(&self, base: &Expr, receiver: &ExprType, binds: &BindEnv) -> Option<ExprType> {
-        match self.resolve(base, receiver, binds)? {
-            ExprType::View(row) => row.key().cloned(),
-            _ => None,
-        }
-    }
-
-    /// Resolve a value/row-source expression to its [`ExprType`] against the
-    /// receiver row, the package root, and any in-scope row bindings — enough of
-    /// the expression grammar (`.`, `/`, a bound name, field access, and key or
-    /// filtered selection) to drive §8.3 parameter inference.
-    fn resolve(&self, expr: &Expr, receiver: &ExprType, binds: &BindEnv) -> Option<ExprType> {
-        match &expr.kind {
-            ExprKind::Current => Some(receiver.clone()),
-            ExprKind::Root => Some(self.root_row.clone()),
-            ExprKind::Name(id) => binds.get(&id.text).cloned(),
-            // `.base.$all` (§14.2) is a temporal selector that preserves the
-            // bucketed base view's row shape, so a filtered bind or key selection
-            // over it resolves the same rows the base does.
-            ExprKind::Field { base, member } if member.structural && member.text == "all" => {
-                let base_ty = self.resolve(base, receiver, binds)?;
-                base_ty.as_view().map(|row| ExprType::View(row.clone()))
-            }
-            // A structural name keeps its sigil in a ROW-MEMBER position (§5.4): a
-            // map row's two members are `$key`/`$value`, so `.$value` looks up
-            // `$value`. Reading `member.text` would miss the map member — and could
-            // silently resolve an unrelated field that happens to be named `value`.
-            ExprKind::Field { base, member } => {
-                let base_ty = self.resolve(base, receiver, binds)?;
-                base_ty.as_row().and_then(|r| r.field(&member.member_name())).cloned()
-            }
-            ExprKind::Select { base, selector } => {
-                let row = self.resolve(base, receiver, binds)?.as_view()?.clone();
-                match selector {
-                    Selector::Keys(_) => Some(ExprType::Row(row)),
-                    Selector::Bind { .. } => Some(ExprType::View(row)),
-                }
-            }
-            _ => None,
         }
     }
 

@@ -1,0 +1,68 @@
+{
+  format: 1
+  name: surface-view-parameter-inferred-typing
+  suite: scenario
+  spec: ["#interfaces", "§10.1", "#expressions", "§6.2", "#mutations", "§8.3", "#clients", "§12.1"]
+  tags: ["typing", "boundary"]
+  note: '''
+    §6.2 says `@name` denotes a mutation or view parameter, and §10.1 pins how a
+    surface `$view` parameter gets its type: it "is inferred exactly as a
+    mutation parameter is (§8.3): every typed use of `@name` — a comparison
+    against a typed field, a key-selector position, a typed function argument —
+    contributes a constraint, and all uses MUST agree on one type." Here the
+    PUBLIC surface `by_state` declares no `$params` at all: the filter
+    `t.done == @done` compares `@done` against the `bool` field `tasks.done`, so
+    `@done` is inferred `bool`, the surface loads, and its parameter shape is
+    part of the external contract exactly as a mutation's is.
+
+    The case asserts the inferred typing is LIVE, not merely permitted to load.
+    Attack: having lost the "every `@name` must be declared" gate, a client tries
+    to pass a value the inferred type does not admit, hoping an inferred
+    parameter is weaker than a declared one and gets coerced or widened to
+    `json`. §12.1 step 3 parses arguments "against the inferred or explicit
+    shape", so the JSON string "yes" does not decode as `bool` and the request is
+    malformed — the inferred contract is enforced at the wire boundary with
+    exactly the strength a declared `bool` would have.
+
+    The role-surface path of the same rule is
+    `10/role-view-parameter-inferred-typing`; the fail-to-explicit side is
+    `10/surface-view-parameter-without-anchor-invalid`.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.viewparams@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+      }
+      $public: {
+        by_state: {
+          // No $params: @done is inferred `bool` from `t.done == @done` (§10.1).
+          $view: ".tasks[:t | t.done == @done] { id }"
+        }
+      }
+    }
+    $data: {
+      tasks: {
+        t1: { done: false }
+        t2: { done: true }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // The inferred `bool` parameter is a real, required input of the contract.
+    { watch: "public.by_state", args: { done: true }, on: "c1", id: "w1",
+      expect_init: { value: [ { id: "t2" } ] } }
+    { watch: "public.by_state", args: { done: false }, on: "c1", id: "w2",
+      expect_init: { value: [ { id: "t1" } ] } }
+    // A wrongly-typed argument is refused against the INFERRED type, exactly as
+    // it would be against a declared one (§12.1 step 3).
+    { watch: "public.by_state", args: { done: "yes" }, on: "c1", id: "w3",
+      expect: { outcome: rejected, violates: ["#clients", "§12.1"] } }
+  ]
+}

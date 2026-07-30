@@ -1,0 +1,78 @@
+{
+  format: 1
+  name: role-view-parameter-inferred-typing
+  suite: scenario
+  spec: ["#interfaces", "§10.1", "#mutations", "§8.3", "#clients", "§12.1"]
+  tags: ["typing", "authz", "boundary"]
+  note: '''
+    The ROLE-granted surface path of §10.1's inferred view parameter — the
+    counterpart of `06/surface-view-parameter-inferred-typing`. A surface `$view`
+    parameter "is inferred exactly as a mutation parameter is (§8.3)", and that
+    holds however the surface is exposed: the role surface `by_state` declares no
+    `$params`, the filter `t.done == @done` compares `@done` against the `bool`
+    field `tasks.done`, so `@done` is inferred `bool` and the package loads.
+
+    A role `$view` is the path where a checker may skip full typing (a role view
+    may read `$actor`, whose row type resolves later), so it is the path where an
+    inferred parameter could silently degrade to "anything goes". Attack: an
+    authenticated member passes a value the inferred type does not admit, hoping
+    the unenforced role path accepts it. §12.1 step 3 parses arguments against
+    the inferred shape, so the JSON string "yes" does not decode as `bool` and
+    the request is malformed. The role path and the public path therefore agree:
+    same inference, same enforcement.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.roleviewparam@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        enabled: "bool = true"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts[:a | a.enabled]"
+          by_state: {
+            // No $params: @done is inferred `bool` from `t.done == @done` (§10.1).
+            $view: ".tasks[:t | t.done == @done] { id }"
+          }
+        }
+      }
+    }
+    $data: {
+      accounts: {
+        alice: {}
+      }
+      tasks: {
+        t1: { done: false }
+        t2: { done: true }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1", authenticate: { role: "member", auth: "token", credential: "alice" } }
+    { watch: "member.by_state", args: { done: true }, on: "c1", id: "w1",
+      expect_init: { value: [ { id: "t2" } ] } }
+    { watch: "member.by_state", args: { done: false }, on: "c1", id: "w2",
+      expect_init: { value: [ { id: "t1" } ] } }
+    // The inferred `bool` binds the role path exactly as it binds the public one.
+    { watch: "member.by_state", args: { done: "yes" }, on: "c1", id: "w3",
+      expect: { outcome: rejected, violates: ["#clients", "§12.1"] } }
+  ]
+}

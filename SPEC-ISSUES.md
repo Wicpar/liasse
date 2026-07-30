@@ -75,6 +75,19 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
     the undeclared-parameter rejection to the role `$view` path (which skips
     full typing for the `$actor` seam). Corpus `06/…-invalid` (public) and new
     `10/role-view-undeclared-parameter-invalid` (role) flip to `invalid`.
+    **SUPERSEDED (2026-07-30, merged with the SPEC.md amendment):** reversed
+    by owner decision — surface `$view` and `$recursive` predicate parameters
+    ARE inferred, exactly as §8.3 mutation parameters (a built-in argument
+    with a single accepted type anchors; a multi-type slot does not); a
+    parameter no use constrains is a static error requesting an explicit
+    `$params` declaration, and an explicit `$params` entry stays
+    authoritative (inference must agree with it; defaults come only from it).
+    The two corpus cases above no longer exist under those names; replaced by
+    `06/surface-view-parameter-inferred-typing`,
+    `10/role-view-parameter-inferred-typing`,
+    `06/surface-view-parameter-inferred-from-builtin-argument`, and the
+    fail-closed pins `10/surface-view-parameter-without-anchor-invalid` and
+    `10/role-view-declared-parameter-conflicts-with-use-invalid`.
 11. **Interface addressing edges.** Recursive-descendant mutation addressing;
     `$where`/`$except` excluded-branch representation; empty surface
     declaration. `10/recursive-descendant-mutation-addressing`,
