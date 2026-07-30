@@ -1012,7 +1012,9 @@ An explicit prototype resolves ambiguity or declares a structure that the body c
 "set_metadata({ metadata: optional<map<text, json>> })": ".metadata = @metadata"
 ```
 
-All uses of the same parameter MUST infer one compatible type. The resulting parameter shape is part of the external surface contract.
+All uses of the same parameter MUST infer one compatible type. A built-in function argument with a single accepted type anchors its parameter; a slot accepting several types contributes no constraint. A parameter no use constrains to a unique type is a static load error whose diagnostic requests an explicit declaration. The resulting parameter shape is part of the external surface contract.
+
+This inference rule is general: surface `$view` and `$recursive` predicate parameters use it too (§10.1).
 
 A mutation with no inferred or explicit parameters is called with `()`:
 
@@ -1484,6 +1486,8 @@ At each level:
 5. the same surface projection and mutations apply to included children; recursion descends only into included candidates (one satisfying `$where` and not satisfying `$except`). A candidate excluded by `$where`, or pruned by `$except`, contributes no output slot, and none of its descendants are surfaced or reparented. `$where` is an allow-list (default include) and `$except` a deny-list (default none) that overrides it; both are hereditary.
 
 The output appears under `$field` as a nested keyed view — a keyed tree in which every node's ancestors are all included. The checker verifies descendant shape, acyclicity, identity, and predicate types.
+
+`$where` and `$except` parameters are inferred against the `$bind` candidate row (§10.1, §8.3). A surface's `$view` and its `$recursive` predicates form one shared parameter contract: an anchor in either types the same `@name` in both.
 
 An external request addresses a covered descendant receiver by the role handle — its containing row identity and role name (§10.3) — together with the descendant's key path from that row down through `$field`/`$through`. Admission re-evaluates the recursive relation along the whole path; a path with any step that is not a strict, `$where`-included, non-`$except` descendant is denied. The role-holding row is the empty path, addressed by the role handle alone.
 
