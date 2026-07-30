@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: surface-view-parameter-inferred-from-builtin-argument
+  suite: scenario
+  spec: ["#interfaces", "§10.1", "#host-namespaces", "§16.1", "§16.5", "#clients", "§12.1"]
+  tags: ["typing", "boundary"]
+  note: '''
+    §10.1's third inference anchor: "a typed function argument". A surface `$view`
+    is database-evaluated (§16.5), so the only functions it can call are the
+    built-in ones, whose signatures §16.1/§6.5 pin — `string.lower(text)` here.
+    That makes the argument position decidable with no host resolution.
+
+    `@q`'s only occurrence is inside that call. It is NOT a comparison operand
+    (the operand of `==` is the call result, not the parameter) and not a key
+    selector, so the built-in signature is the sole constraint on it. §10.1
+    therefore types `@q` as `text` and the surface loads with no `$params` block.
+
+    Attack: the anchor is indirect, so a client may hope an indirectly-inferred
+    parameter is weaker than a directly-inferred or declared one and gets widened
+    to `json` at the wire. §12.1 step 3 parses arguments against the inferred
+    shape with no such gradation: the JSON number 5 does not decode as `text` and
+    the request is malformed. (A built-in slot that pins no single type — `size`
+    accepts text, bytes, a set, or a collection — constrains nothing instead, and
+    keeps the explicit-declaration error of
+    `10/surface-view-parameter-without-anchor-invalid`.)
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.viewbuiltin@1.0.0"
+    $model: {
+      people: {
+        $key: "id"
+        id: "text"
+        handle: "text"
+      }
+      $public: {
+        by_handle: {
+          // No $params: @q is inferred `text` from `string.lower(text)` (§16.1).
+          $view: ".people[:p | p.handle == string.lower(@q)] { id, handle }"
+        }
+      }
+    }
+    $data: {
+      people: {
+        p1: { handle: "ada" }
+        p2: { handle: "grace" }
+      }
+    }
+  }
+
+  steps: [
+    { connect: "c1" }
+    // The built-in lowercases the supplied argument before the comparison, so an
+    // uppercase argument matches the stored lowercase handle.
+    { watch: "public.by_handle", args: { q: "ADA" }, on: "c1", id: "w1",
+      expect_init: { value: [ { id: "p1", handle: "ada" } ] } }
+    { watch: "public.by_handle", args: { q: "Grace" }, on: "c1", id: "w2",
+      expect_init: { value: [ { id: "p2", handle: "grace" } ] } }
+    // The inferred `text` binds at the wire boundary exactly as a declared one.
+    { watch: "public.by_handle", args: { q: 5 }, on: "c1", id: "w3",
+      expect: { outcome: rejected, violates: ["#clients", "§12.1"] } }
+  ]
+}

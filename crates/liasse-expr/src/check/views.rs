@@ -674,6 +674,37 @@ fn composite_key_conforms(
     Ok(())
 }
 
+/// The pinned argument type of a CORE built-in call (§6.5/§16.1) at position
+/// `index`, for §8.3/§10.1 parameter inference.
+///
+/// §10.1 counts "a typed function argument" as a constraint on `@name`. A
+/// database-evaluated position (§16.5) admits only built-ins, whose signatures
+/// are fixed here, so the type a bare `@param` argument must have is decidable
+/// without any host resolution. `namespace` is `None` for a bare-name callee
+/// (`assert(...)`) and `Some(ns)` for a namespaced one (`string.lower(...)`).
+///
+/// Returns `None` — contributing NO constraint — whenever the position does not
+/// pin exactly one type: an unknown or app-registered callee, an argument index
+/// the signature does not have, and every built-in whose slot is generic. `size`
+/// and `has` accept text, bytes, a set, or a collection; an aggregate takes a
+/// view, not a scalar; and `assert`'s message argument is unconstrained (it is
+/// not read by evaluation). Those uses leave the parameter uninferred, which is
+/// §10.1's explicit-declaration error rather than a guess.
+pub fn core_builtin_param(namespace: Option<&str>, function: &str, index: usize) -> Option<Type> {
+    let Some(namespace) = namespace else {
+        // `assert(condition, message)` (§8.8): the condition is `bool`; the
+        // message is unconstrained. `size`/`has` are generic; `now`/`uuid` take
+        // no argument; an aggregate takes a view.
+        return (function == "assert" && index == 0).then_some(Type::Bool);
+    };
+    if core_string_fn(namespace, function).is_some() || (namespace, function) == ("time", "duration")
+    {
+        // `string.lower/upper/casefold/trim(text)` and `time.duration(text)`.
+        return (index == 0).then_some(Type::Text);
+    }
+    core_codec_op(namespace, function).and_then(|op| op.params().get(index).cloned())
+}
+
 /// The core `string` utility (§16.1) a `namespace.function` names, if any.
 fn core_string_fn(namespace: &str, function: &str) -> Option<BuiltinFn> {
     match (namespace, function) {

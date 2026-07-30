@@ -57,6 +57,7 @@ pub mod wire;
 
 pub use check::{
     audit_host_position, check_composite_delete_operand, check_expression, check_statement,
+    core_builtin_param,
 };
 pub use env::{
     BlobPlacement, CallSite, Cell, Environment, KeyringSelector, Row, RowId, RowIdPart,

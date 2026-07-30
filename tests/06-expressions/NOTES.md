@@ -59,7 +59,9 @@ None. Every case in this chapter uses only the step vocabulary defined in
 (SPEC-ISSUES #10, surface `$view` parameter typing, is now pinned — §10.1 infers
 a surface-view parameter exactly as §8.3 infers a mutation parameter, and a
 parameter no typed use constrains is a load error asking for an explicit
-`$params` declaration. See `red/surface-view-parameter-inferred-typing` here,
-`10/role-view-parameter-inferred-typing` for the role path, and
+`$params` declaration. See `red/surface-view-parameter-inferred-typing` and
+`red/surface-view-parameter-inferred-from-builtin-argument` here,
+`10/role-view-parameter-inferred-typing` for the role path,
 `10/surface-view-parameter-without-anchor-invalid` for the fail-to-explicit
-side — so it is no longer an `unspecified` gap.)
+side, and `10/role-view-declared-parameter-conflicts-with-use-invalid` for the
+authoritative-`$params` conflict — so it is no longer an `unspecified` gap.)

@@ -37,6 +37,9 @@ const APP: &str = r#"{
       "one": {
         "$view": ".accounts[@id] { id, name }"
       }
+      "folded": {
+        "$view": ".accounts[:a | a.id == string.lower(@q)] { id, name }"
+      }
     }
     "$auth": {
       "session": {
@@ -150,6 +153,13 @@ fn inferred_surface_view_params_are_exposed_in_the_contract() {
         engine.surface_view_params("public.one"),
         vec![("id".to_owned(), liasse_value::Type::Text)]
     );
+    // §10.1's third anchor, "a typed function argument": `@q` occurs only inside
+    // `string.lower(@q)`, whose §16.1 signature pins the argument to `text`, so
+    // that is the type the contract publishes.
+    assert_eq!(
+        engine.surface_view_params("public.folded"),
+        vec![("q".to_owned(), liasse_value::Type::Text)]
+    );
 }
 
 /// §10.1: an inferred parameter is a live input, not just a published name — a
@@ -162,6 +172,11 @@ fn inferred_param_is_bound_from_the_query() {
 
     let by_key = ViewQuery::new().param("id", text("alice"));
     assert_eq!(ids(&engine, "public.one", &by_key), vec!["alice".to_owned()]);
+
+    // A built-in-anchored parameter is bound and evaluated like any other: the
+    // call lowercases the argument before the comparison.
+    let folded = ViewQuery::new().param("q", text("ALICE"));
+    assert_eq!(ids(&engine, "public.folded", &folded), vec!["alice".to_owned()]);
 }
 
 /// A bucketed collection under a parameterized surface `$view` (§14.1, §10.1): a

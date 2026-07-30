@@ -23,7 +23,8 @@
 //!   binds it to the parameter's value, which constrains nothing, so a parameter
 //!   projected straight through is *uninferable* and §10.1 requires an explicit
 //!   `$params` declaration. A read position is database-evaluated (§16.5) and
-//!   therefore has no host-namespace call at all.
+//!   therefore has no host-namespace call at all — only built-ins, whose pinned
+//!   signatures anchor their arguments in both positions.
 
 use std::collections::BTreeSet;
 
@@ -257,6 +258,25 @@ impl<'a> Inference<'a> {
                     for arg in args {
                         if let ExprKind::Param(id) = &arg_expr(arg).kind {
                             record(params, &id.text, ExprType::scalar(Type::timestamp()));
+                        }
+                    }
+                }
+                // §10.1's third anchor, "a typed function argument": a CORE
+                // built-in's signature is pinned (§6.5/§16.1), so a bare `@p`
+                // argument inherits the type that position declares. This is the
+                // ONLY callable kind a database-evaluated position admits (§16.5),
+                // so a view's `string.lower(@q)` anchors `@q` to `text` with no
+                // host resolution needed. A generic slot (`size`/`has`, an
+                // aggregate's view argument, `assert`'s message) pins no single
+                // type, so `core_builtin_param` yields `None` and the use
+                // contributes no constraint — leaving the §10.1
+                // explicit-declaration error rather than a guess.
+                if let Some((namespace, function)) = builtin_call_target(callee) {
+                    for (index, arg) in args.iter().enumerate() {
+                        if let ExprKind::Param(id) = &arg_expr(arg).kind
+                            && let Some(ty) = liasse_expr::core_builtin_param(namespace, function, index)
+                        {
+                            record(params, &id.text, ExprType::scalar(ty));
                         }
                     }
                 }
@@ -539,6 +559,25 @@ pub fn infer_view_params(
     ViewParams { params: params.into_pairs(), unconstrained, conflicting }
 }
 
+/// The `(namespace, function)` a call's callee names, for the core-built-in
+/// signature lookup: `None` namespace for a bare-name callee (`assert(...)`),
+/// `Some(ns)` for a namespaced one (`string.lower(...)`). A structural member
+/// (`.$at`), a selector, or any other callee shape is not a named function call
+/// and yields `None`. Whether the pair names a CORE built-in — as opposed to an
+/// app-registered `$requires` namespace, whose arguments are inferred by
+/// [`Inference::infer_host_args`] instead — is decided by
+/// [`liasse_expr::core_builtin_param`], which pins only the built-in table.
+fn builtin_call_target(callee: &Expr) -> Option<(Option<&str>, &str)> {
+    match &callee.kind {
+        ExprKind::Name(id) => Some((None, id.text.as_str())),
+        ExprKind::Field { base, member } if !member.structural => match &base.kind {
+            ExprKind::Name(namespace) => Some((Some(namespace.text.as_str()), member.text.as_str())),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 /// Collect EVERY `@name` reference of a read expression, paired with the span of
 /// its use.
 ///
@@ -546,11 +585,12 @@ pub fn infer_view_params(
 /// skips a non-host call argument, whose type is deferred to the callee mutation's
 /// own contract (§8.11) — a documented cross-program seam. A read position has no
 /// such seam: a `$view` is database-evaluated (§16.5), so it calls only the
-/// built-in pure functions and never a mutation or a registered namespace. Every
-/// `@name` occurrence there must therefore be constrained by the expression
-/// itself, and one that is not is the §10.1 explicit-declaration error — including
-/// a parameter whose only use is a builtin argument the CORE checker's inference
-/// does not anchor.
+/// built-in pure functions, whose signatures are pinned and therefore anchor a
+/// bare `@p` argument (§10.1's "typed function argument", see [`Inference::infer_in`]).
+/// Every `@name` occurrence there must be constrained by the expression itself,
+/// and one that is not — a projection member, a parameter-to-parameter
+/// comparison, or a built-in slot that pins no single type — is the §10.1
+/// explicit-declaration error.
 fn collect_read_param_refs<'e>(expr: &'e Expr, out: &mut Vec<(&'e str, ByteSpan)>) {
     if let ExprKind::Param(id) = &expr.kind {
         out.push((&id.text, id.span));

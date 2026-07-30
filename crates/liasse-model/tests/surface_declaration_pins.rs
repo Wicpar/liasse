@@ -95,6 +95,47 @@ fn public_view_inferred_parameter_loads() {
     built.expect_ok();
 }
 
+/// #10: §10.1's third anchor, "a typed function argument". `@q`'s ONLY use is the
+/// argument of the core built-in `string.lower` — it is not a direct comparison
+/// operand (the comparison's operand is the call, not the parameter) and not a
+/// key selector — so the built-in's pinned `string.lower(text)` signature is what
+/// types it. A database-evaluated position admits only built-ins (§16.5), so this
+/// is decidable with no host resolution.
+#[test]
+fn public_view_builtin_argument_parameter_loads() {
+    let built = build(&public_surface(
+        r#""$view": ".tasks[:t | t.id == string.lower(@q)] { id }""#,
+    ));
+    built.expect_ok();
+}
+
+/// The role path anchors a built-in argument identically (it skips full typing
+/// for the `$actor` seam, so inference is the only thing that can type `@q`).
+#[test]
+fn role_view_builtin_argument_parameter_loads() {
+    let built = build(&role_surface(
+        r#""$view": ".tasks[:t | t.id == string.lower(@q)] { id }""#,
+    ));
+    built.expect_ok();
+}
+
+/// A built-in slot that pins no single type contributes NO constraint: `size(x)`
+/// accepts text, bytes, a set, or a collection, so a parameter whose only use is
+/// `size(@q)` stays uninferable and keeps the explicit-declaration error.
+#[test]
+fn public_view_generic_builtin_argument_stays_uninferable() {
+    let built = build(&public_surface(r#""$view": ".tasks[:t | size(@q) > 0] { id }""#));
+    assert!(
+        built.result.is_err(),
+        "`size` admits several argument types, so it constrains nothing (§10.1)"
+    );
+    assert!(
+        built.rendered().contains("declare it in `$params` with its type"),
+        "a generic built-in slot must still request an explicit declaration, got: {}",
+        built.rendered()
+    );
+}
+
 /// #10 fail-to-explicit: a parameter no typed position anchors — `@tag` is only
 /// ever a projection member, and `@other` is only ever compared to `@tag` — is a
 /// static load error, and the diagnostic MUST request the explicit declaration
@@ -232,6 +273,15 @@ fn recursive_where(where_pred: &str, params: &str) -> String {
 #[test]
 fn recursive_where_inferred_parameter_loads() {
     let built = build(&recursive_where("child.plan != @plan", ""));
+    built.expect_ok();
+}
+
+/// #10 (third path): a `$recursive` predicate anchors a built-in argument too —
+/// `@plan`'s only use is `string.lower(@plan)`, typed `text` by the pinned
+/// signature (§16.1), so the coverage block loads.
+#[test]
+fn recursive_where_builtin_argument_parameter_loads() {
+    let built = build(&recursive_where("child.plan != string.lower(@plan)", ""));
     built.expect_ok();
 }
 
