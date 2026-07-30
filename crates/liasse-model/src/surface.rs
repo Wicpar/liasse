@@ -5,9 +5,21 @@
 //! `$mut` map whose every reference names a mutation the model actually
 //! declares (§10.1). A role additionally carries `$auth` and `$members`.
 //!
+//! §10.1 makes a surface's parameter shape ONE external contract, inferred from
+//! its read expressions "exactly as a mutation parameter is (§8.3)" and merged
+//! with an explicit `$params` block that stays authoritative. The `$view` and the
+//! `$recursive` `$where`/`$except` predicates are therefore parsed and
+//! purity-gated first, inferred together through [`crate::mutation::params`] —
+//! the same walk the mutation phase drives — and only then typed against the
+//! settled shape. A parameter no typed use anchors is rejected with a diagnostic
+//! that asks for the explicit declaration; a use incompatible with a declared or
+//! inferred type is the §8.3 one-compatible-type conflict.
+//!
 //! CORE scope: a role `$view`/`$members` that reads `$actor` is validated
 //! syntactically rather than fully typed (the `$actor` row type is a later
-//! pass); nested roles on rows are a documented seam. `$recursive` coverage
+//! pass); nested roles on rows are a documented seam. Parameter inference runs
+//! identically on both paths, and an anchor that would need the `$actor` row
+//! type resolves on neither, so the two paths agree. `$recursive` coverage
 //! (§10.5) is validated here: `$field`/`$through`/`$bind` presence, the covered
 //! `$field`, the descendant row-stream shape and identity of `$through`, its
 //! strict-descendant (acyclic) navigation, and `bool` `$where`/`$except`
@@ -24,6 +36,7 @@ use liasse_value::Type;
 
 use crate::build::RawSurface;
 use crate::doc::DocValueExt;
+use crate::mutation::params::{infer_view_params, ViewParams};
 use crate::mutation::{stmt_exprs, Mutation};
 use crate::names::DeclName;
 use crate::report::{code, Reporter};
@@ -31,6 +44,51 @@ use crate::resolve::Resolver;
 use crate::scope::ModelScope;
 use crate::state::Shape;
 use crate::types::{NamedTypes, TypeParser};
+
+/// Which read position of a surface an expression occupies (§10.1): the `$view`
+/// that defines its read result, or a `$recursive` `$where`/`$except` predicate
+/// that decides descendant inclusion (§10.5). The two share one parameter
+/// contract and one purity gate, and differ in their result-type rule and in
+/// whether the role path types them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReadKind {
+    View,
+    Predicate,
+}
+
+impl ReadKind {
+    /// The sub-source label a read's expression text is registered under, so a
+    /// diagnostic names the position it came from.
+    fn label(self) -> &'static str {
+        match self {
+            Self::View => "view",
+            Self::Predicate => "recursive-predicate",
+        }
+    }
+
+    /// How a diagnostic names this position.
+    fn describe(self) -> &'static str {
+        match self {
+            Self::View => "surface `$view`",
+            Self::Predicate => "`$recursive` predicate",
+        }
+    }
+}
+
+/// One parsed, purity-gated read expression of a surface, with the row bindings
+/// in scope for it (a `$recursive` `$bind` candidate, §10.5) and the sub-source
+/// its spans index.
+struct SurfaceRead {
+    kind: ReadKind,
+    parsed: SpannedExpression,
+    sub: liasse_diag::SourceId,
+    bindings: Vec<(String, ExprType)>,
+    /// Whether every `@name` this read uses settled to one type (§10.1). A read
+    /// that did not settle is already rejected, and typing it would only add a
+    /// derived `unknown parameter` diagnostic on top of the actionable one, so it
+    /// is left untyped.
+    settled: bool,
+}
 
 /// A validated surface: its exposed name and whether it is public.
 #[derive(Debug, Clone)]
@@ -160,7 +218,24 @@ impl SurfacePhase<'_, '_> {
             self.reporter.reject(value.span, code::SURFACE, "a surface must be an object");
             return None;
         };
-        let params = self.surface_params(value);
+        let declared = self.surface_params(value);
+        // §10.5: a scoped surface MAY propagate through a checked descendant
+        // relation. Its structural shape is validated first because it yields the
+        // `$bind` candidate row the `$where`/`$except` predicates read — and so
+        // the parameters they infer against (§10.1).
+        let candidate = value
+            .member("$recursive")
+            .and_then(|member| self.check_recursive(&member.value));
+        // §10.1: the surface's parameter shape is ONE external contract shared by
+        // its `$view` and its `$recursive` predicates, so every read expression is
+        // parsed and purity-gated first, their §8.3 constraints are unioned over
+        // the declared `$params`, and only then is each expression typed against
+        // the settled contract.
+        let mut reads = self.surface_reads(value, candidate.as_ref());
+        let params = self.surface_contract(&declared, &mut reads);
+        for read in &reads {
+            self.type_read(read, &params, public);
+        }
         let mut calls = Vec::new();
         // §10.1: a surface exposes callable/watchable access only through `$view`
         // or `$mut`; a surface carrying neither (an empty `{}`, or one holding only
@@ -168,23 +243,14 @@ impl SurfacePhase<'_, '_> {
         let mut exposes = false;
         for member in members {
             match member.name.text.as_str() {
-                "$params" => {}
-                // §8.8: a surface `$view` is a pure read position whether granted
-                // publicly or through a role, so the generated-call gate runs in
-                // both cases; only the public path is additionally fully typed (a
-                // role `$view`'s `$actor` typing stays a documented seam).
-                "$view" => {
-                    exposes = true;
-                    self.check_view(&member.value, &params, public);
-                }
+                // `$params` declares types; `$view` and `$recursive` were parsed,
+                // inferred, and typed above as one contract.
+                "$params" | "$recursive" => {}
+                "$view" => exposes = true,
                 "$mut" => {
                     exposes = true;
                     self.surface_muts(&member.value, public, &mut calls);
                 }
-                // §10.5: a scoped surface MAY propagate through a checked
-                // descendant relation. Its shape and predicate types are
-                // validated here; the runtime performs the actual traversal.
-                "$recursive" => self.check_recursive(&member.value, &params),
                 other if other.starts_with('$') => self.reporter.reject(
                     member.span,
                     code::SURFACE,
@@ -277,20 +343,25 @@ impl SurfacePhase<'_, '_> {
         }
     }
 
-    /// §10.5: validate a `$recursive` descendant-coverage block. `$field`,
-    /// `$through`, and `$bind` are required; `$where`/`$except` are optional bool
-    /// predicates that read the candidate through `$bind`. `$field` and `$through`
-    /// name ONE descendant relation (the coverage output "appears under `$field`
-    /// as a nested keyed view" and a descendant is addressed by "the key path from
-    /// that row down through `$field`/`$through`"), so the checker verifies that
-    /// `$field` is a keyed collection of the covered row, that `$through` resolves
-    /// to a keyed row stream (descendant shape and identity), that `$through`
-    /// descends into the `$field` collection (same relation) and yields `$field`'s
-    /// element shape, and that each predicate is `bool`.
-    fn check_recursive(&mut self, value: &liasse_syntax::DocValue, params: &[(String, ExprType)]) {
+    /// §10.5: validate a `$recursive` descendant-coverage block's structure and
+    /// return the candidate binding its `$where`/`$except` predicates read — the
+    /// `$bind` name paired with the descendant row type. `$field`, `$through`, and
+    /// `$bind` are required. `$field` and `$through` name ONE descendant relation
+    /// (the coverage output "appears under `$field` as a nested keyed view" and a
+    /// descendant is addressed by "the key path from that row down through
+    /// `$field`/`$through`"), so the checker verifies that `$field` is a keyed
+    /// collection of the covered row, that `$through` resolves to a keyed row
+    /// stream (descendant shape and identity), and that `$through` descends into
+    /// the `$field` collection (same relation) and yields `$field`'s element shape.
+    ///
+    /// The predicates themselves are parsed, inferred, and typed with the
+    /// surface's `$view` as one contract (§10.1), so this returns the binding
+    /// rather than checking them here; `None` when the block is malformed (already
+    /// reported), which leaves the predicates unbound and therefore unchecked.
+    fn check_recursive(&mut self, value: &liasse_syntax::DocValue) -> Option<(String, ExprType)> {
         let Some(members) = value.as_object() else {
             self.reporter.reject(value.span, code::SURFACE, "`$recursive` must be an object");
-            return;
+            return None;
         };
         for member in members {
             match member.name.text.as_str() {
@@ -312,7 +383,7 @@ impl SurfacePhase<'_, '_> {
                 "`$recursive` requires `$field`, `$through`, and `$bind` (§10.5)",
                 "e.g. `{ \"$field\": \"children\", \"$through\": \".children\", \"$bind\": \"child\" }`",
             );
-            return;
+            return None;
         };
         // §10.5: the coverage output "appears under `$field` as a nested keyed
         // view — a keyed tree in which every node's ancestors are all included",
@@ -328,7 +399,7 @@ impl SurfacePhase<'_, '_> {
                 format!("`$recursive` `$field` `{field}` is not a field of the covered row (§10.5)"),
                 "name the descendant collection field the coverage nests under",
             );
-            return;
+            return None;
         };
         let Some(field_row) = field_ty.as_view().filter(|row| row.key().is_some()).cloned() else {
             self.reporter.reject_hint(
@@ -341,14 +412,12 @@ impl SurfacePhase<'_, '_> {
                 ),
                 "name a nested keyed collection field the coverage descends into, e.g. `subcompanies`",
             );
-            return;
+            return None;
         };
         // `$through` yields strict descendants: it must resolve to a keyed row
         // stream (descendant shape + identity). `relation` is the collection it
         // descends into off the covered row.
-        let Some((descendant, relation)) = self.recursive_view(&through) else {
-            return;
-        };
+        let (descendant, relation) = self.recursive_view(&through)?;
         let Some(descendant_row) = descendant.as_view().filter(|row| row.key().is_some()) else {
             self.reporter.reject_hint(
                 value.span,
@@ -356,7 +425,7 @@ impl SurfacePhase<'_, '_> {
                 "`$recursive` `$through` must yield keyed descendants (§10.5)",
                 "traverse to a keyed collection so each descendant has identity",
             );
-            return;
+            return None;
         };
         // §10.5 addresses a covered descendant by "the descendant's key path from
         // that row down through `$field`/`$through`" — the two name ONE relation,
@@ -374,7 +443,7 @@ impl SurfacePhase<'_, '_> {
                 "root `$through` at the `$field` collection, e.g. `$field: \"subcompanies\"` with \
                  `$through: \".subcompanies\"`",
             );
-            return;
+            return None;
         }
         // The nested keyed view lives under `$field`, and the recursion re-applies
         // the same surface to `$field`'s rows, so the descendant `$through` yields
@@ -390,15 +459,11 @@ impl SurfacePhase<'_, '_> {
                 ),
                 "make `$through` descend into `$field` so their rows share one descendant shape",
             );
-            return;
+            return None;
         }
-        // `$where`/`$except` are bool predicates over one bound candidate.
-        let candidate = ExprType::Row(descendant_row.clone());
-        for directive in ["$where", "$except"] {
-            if let Some(text) = self.recursive_string(value, directive) {
-                self.check_recursive_predicate(&bind, &candidate, params, &text);
-            }
-        }
+        // The candidate the `$where`/`$except` predicates read through `$bind`;
+        // §10.1 types those predicates against the surface contract, above.
+        Some((bind, ExprType::Row(descendant_row.clone())))
     }
 
     /// A required string member of a `$recursive` block, stripped of surrounding
@@ -464,45 +529,6 @@ impl SurfacePhase<'_, '_> {
         }
     }
 
-    /// Type-check a `$recursive` `$where`/`$except` predicate: the candidate row
-    /// is bound to `$bind`, and the predicate must be `bool` (§10.5).
-    fn check_recursive_predicate(
-        &mut self,
-        bind: &str,
-        candidate: &ExprType,
-        params: &[(String, ExprType)],
-        text: &str,
-    ) {
-        let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
-            .with_optional_structural("config", self.config.as_ref())
-            .with_binding(bind.to_owned(), candidate.clone());
-        for (name, ty) in params {
-            scope = scope.with_param(name.clone(), ty.clone());
-        }
-        let sub = self.sources.add_label("recursive-predicate", text.to_owned());
-        let parsed = match parse_expression(sub, text) {
-            Ok(parsed) => parsed,
-            Err(diags) => {
-                self.reporter.emit_all(diags);
-                return;
-            }
-        };
-        self.reject_generated(&parsed, sub);
-        match liasse_expr::check_statement(&scope, sub, &parsed) {
-            Ok(typed) if typed.ty().as_scalar() == Some(&Type::Bool) => {}
-            Ok(typed) => self.reporter.reject_hint(
-                parsed.statement().span,
-                code::SURFACE,
-                format!(
-                    "a `$recursive` predicate must be `bool`, not `{}` (§10.5)",
-                    typed.ty().describe()
-                ),
-                "compare or test a value to produce a boolean",
-            ),
-            Err(diags) => self.reporter.emit_all(diags),
-        }
-    }
-
     /// §8.8/§16.3: a surface `$view` and every `$recursive` relation/predicate is
     /// a pure read position — a materialized, incrementally maintained view (§7.1,
     /// §10.1) — so a generated function (`now()`/`uuid()`) is unreproducible there.
@@ -527,86 +553,206 @@ impl SurfacePhase<'_, '_> {
         }
     }
 
-    /// Validate a surface `$view`. The §8.8 pure-position gate (an AST walk that
-    /// needs no type information) runs for every `$view` — public or role-granted —
-    /// so a generated `now()`/`uuid()` is rejected in this materialized read
-    /// position regardless of how the surface is exposed. Full type-checking runs
-    /// only for a `public` surface: a role `$view` may read `$actor`, whose row
-    /// type is resolved by a later pass (the documented seam, see the module docs),
-    /// so it is purity-gated but not yet fully typed here.
-    fn check_view(&mut self, value: &liasse_syntax::DocValue, params: &[(String, ExprType)], public: bool) {
-        let Some(text) = value.as_string() else {
-            self.reporter.reject(value.span, code::SURFACE, "`$view` must be an expression string");
-            return;
-        };
-        // The parsed AST's spans index `sub`; the type checker must render its
-        // diagnostics against that same source, so `sub` is reused rather than
-        // re-registered against unrelated text.
-        let sub = self.sources.add_label("view", text.to_owned());
+    /// §10.1: collect the surface's read expressions — its `$view` and each
+    /// declared `$recursive` `$where`/`$except` predicate — parsed and
+    /// purity-gated, ready for one shared parameter inference.
+    ///
+    /// The §8.8 pure-position gate is an AST walk that needs no type information,
+    /// so it runs for every read of every surface, public or role-granted: a
+    /// generated `now()`/`uuid()` is rejected in this materialized read position
+    /// regardless of how the surface is exposed.
+    ///
+    /// `candidate` is the validated `$recursive` `$bind` name and descendant row
+    /// (§10.5); when it is `None` the block is malformed or absent and its
+    /// predicates are not collected — a predicate with no candidate row could
+    /// only be mis-typed.
+    fn surface_reads(
+        &mut self,
+        value: &liasse_syntax::DocValue,
+        candidate: Option<&(String, ExprType)>,
+    ) -> Vec<SurfaceRead> {
+        let mut reads = Vec::new();
+        if let Some(member) = value.member("$view") {
+            match member.value.as_string() {
+                Some(text) => {
+                    if let Some(read) = self.parse_read(ReadKind::View, text, Vec::new()) {
+                        reads.push(read);
+                    }
+                }
+                None => self.reporter.reject(
+                    member.value.span,
+                    code::SURFACE,
+                    "`$view` must be an expression string",
+                ),
+            }
+        }
+        if let Some((bind, row)) = candidate
+            && let Some(recursive) = value.member("$recursive")
+        {
+            for directive in ["$where", "$except"] {
+                let Some(text) = self.recursive_string(&recursive.value, directive) else {
+                    continue;
+                };
+                let bindings = vec![(bind.clone(), row.clone())];
+                if let Some(read) = self.parse_read(ReadKind::Predicate, &text, bindings) {
+                    reads.push(read);
+                }
+            }
+        }
+        reads
+    }
+
+    /// Parse one surface read expression and run the §8.8 purity gate on it. The
+    /// parsed AST's spans index the registered sub-source, and the type checker
+    /// must render its diagnostics against that same source, so the id is carried
+    /// alongside rather than re-registered against unrelated text.
+    fn parse_read(
+        &mut self,
+        kind: ReadKind,
+        text: &str,
+        bindings: Vec<(String, ExprType)>,
+    ) -> Option<SurfaceRead> {
+        let sub = self.sources.add_label(kind.label(), text.to_owned());
         let parsed = match parse_expression(sub, text) {
             Ok(parsed) => parsed,
+            Err(diags) => {
+                self.reporter.emit_all(diags);
+                return None;
+            }
+        };
+        self.reject_generated(&parsed, sub);
+        Some(SurfaceRead { kind, parsed, sub, bindings, settled: true })
+    }
+
+    /// §10.1: settle the surface's external parameter contract — the declared
+    /// `$params` merged with every type its read expressions infer — and reject
+    /// each parameter the expressions leave unpinned.
+    ///
+    /// A surface `$view` parameter "is inferred exactly as a mutation parameter is
+    /// (§8.3)", over the whole surface: the `$view` and the `$recursive`
+    /// predicates are one external contract, so a parameter anchored by any of
+    /// them is anchored for all. A parameter no read expression constrains to a
+    /// unique type is a static load error whose diagnostic REQUESTS the explicit
+    /// declaration §10.1 names, and a use incompatible with the declared type (or
+    /// with another use) is the §8.3 "all uses MUST agree on one type" conflict.
+    fn surface_contract(
+        &mut self,
+        declared: &[(String, ExprType)],
+        reads: &mut [SurfaceRead],
+    ) -> Vec<(String, ExprType)> {
+        if reads.is_empty() {
+            return declared.to_vec();
+        }
+        // Union the constraints: each read contributes what it can anchor, and a
+        // later read is inferred over the contract the earlier ones already
+        // settled, so an anchor found anywhere in the surface types every use.
+        let mut contract = declared.to_vec();
+        for read in reads.iter() {
+            contract = self.infer_read(read, &contract).params().to_vec();
+        }
+        // Re-run against the settled union, so a parameter another read of the same
+        // surface anchored is not falsely reported here.
+        let inferred: Vec<ViewParams> =
+            reads.iter().map(|read| self.infer_read(read, &contract)).collect();
+        for (read, inferred) in reads.iter_mut().zip(&inferred) {
+            read.settled = inferred.unconstrained().is_empty() && inferred.conflicting().is_empty();
+        }
+        for (read, inferred) in reads.iter().zip(&inferred) {
+            for (name, span) in inferred.unconstrained() {
+                self.reject_at(
+                    read.sub,
+                    *span,
+                    format!(
+                        "{} reads `@{name}`, which the expression does not constrain to a single \
+                         type (§10.1)",
+                        read.kind.describe()
+                    ),
+                    format!(
+                        "declare it in `$params` with its type, e.g. \
+                         `\"$params\": {{ \"{name}\": \"<type>\" }}`"
+                    ),
+                );
+            }
+            for (name, span) in inferred.conflicting() {
+                self.reject_at(
+                    read.sub,
+                    *span,
+                    format!(
+                        "{} uses `@{name}` with two incompatible types (§10.1, §8.3)",
+                        read.kind.describe()
+                    ),
+                    format!(
+                        "use the parameter consistently, or declare the type every use agrees on, \
+                         e.g. `\"$params\": {{ \"{name}\": \"<type>\" }}`"
+                    ),
+                );
+            }
+        }
+        contract
+    }
+
+    /// Run §8.3 inference over one read expression against `contract` — the ONE
+    /// walk [`crate::mutation::params`] also drives for a mutation body, so the
+    /// two contexts cannot drift.
+    fn infer_read(&self, read: &SurfaceRead, contract: &[(String, ExprType)]) -> ViewParams {
+        infer_view_params(
+            &self.root_row,
+            &self.receiver_row,
+            &read.bindings,
+            contract,
+            &read.parsed.statement,
+        )
+    }
+
+    /// Type one surface read expression against the settled contract.
+    ///
+    /// A `$recursive` predicate must be `bool` (§10.5) and is typed on both paths.
+    /// A `$view` is fully typed only for a `public` surface: a role `$view` may
+    /// read `$actor`, whose row type is resolved by a later pass (the documented
+    /// seam, see the module docs), so it is purity-gated and parameter-inferred
+    /// but not yet fully typed here.
+    ///
+    /// The two paths therefore agree on parameters: inference is the SAME walk on
+    /// both, and a `@name` whose only anchor would be an `$actor`-typed value is
+    /// unresolvable at inference time on either path — the walk anchors nothing
+    /// there, so both paths reach the §10.1 explicit-declaration error rather than
+    /// one silently accepting what the other rejects.
+    fn type_read(&mut self, read: &SurfaceRead, params: &[(String, ExprType)], public: bool) {
+        if !read.settled || (read.kind == ReadKind::View && !public) {
+            return;
+        }
+        let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
+            .with_optional_structural("config", self.config.as_ref());
+        for (name, ty) in &read.bindings {
+            scope = scope.with_binding(name.clone(), ty.clone());
+        }
+        for (name, ty) in params {
+            scope = scope.with_param(name.clone(), ty.clone());
+        }
+        let typed = match liasse_expr::check_statement(&scope, read.sub, &read.parsed) {
+            Ok(typed) => typed,
             Err(diags) => {
                 self.reporter.emit_all(diags);
                 return;
             }
         };
-        self.reject_generated(&parsed, sub);
-        if !public {
-            // §10.1: a role `$view` is not fully typed here (its `$actor` row type
-            // is resolved by a later pass — the documented seam), but a surface
-            // `$view` parameter is *not* inferred: §8.3 inference applies to
-            // mutation bodies only, where each `@name` use has a write-side field
-            // to anchor its type. Every `@name` a role `$view` reads MUST be
-            // declared in the surface's `$params`; reject an undeclared one here so
-            // the role path agrees with the public path (which reaches the same
-            // rejection through full typing).
-            self.reject_undeclared_view_params(&parsed, sub, params);
-            return;
-        }
-        let mut scope = ModelScope::nested(vec![self.receiver_row.clone()], self.root_row.clone())
-            .with_optional_structural("config", self.config.as_ref());
-        for (name, ty) in params {
-            scope = scope.with_param(name.clone(), ty.clone());
-        }
         // §7.1/§10.1/§12.2: a surface `$view` result may be a row stream, a
         // single row (a root or struct projection like `. { exact_sum }`), or a
         // scalar (an aggregate/computed value); §12.2 delivers a single-row or
         // scalar result as one object. All three are valid external read
-        // results, so only the expression's well-formedness is enforced here.
-        if let Err(diags) = liasse_expr::check_statement(&scope, sub, &parsed) {
-            self.reporter.emit_all(diags);
-        }
-    }
-
-    /// §10.1: reject every `@name` a role `$view` reads that is not declared in the
-    /// surface's `$params`. A surface-view parameter is not inferred (§8.3
-    /// inference is mutation-only), so an undeclared `@name` is a static load
-    /// error. This runs only on the role path, whose full typing is skipped for the
-    /// `$actor` seam; the public path reaches the identical rejection through
-    /// `liasse_expr`'s `unknown parameter` check. Spans index the view sub-source
-    /// `sub`.
-    fn reject_undeclared_view_params(
-        &mut self,
-        parsed: &SpannedExpression,
-        sub: liasse_diag::SourceId,
-        params: &[(String, ExprType)],
-    ) {
-        let mut refs = Vec::new();
-        for expr in stmt_exprs(&parsed.statement) {
-            param_refs(expr, &mut refs);
-        }
-        for (name, span) in refs {
-            if !params.iter().any(|(declared, _)| declared == name) {
-                self.reject_at(
-                    sub,
-                    span,
-                    format!("surface `$view` reads `@{name}`, which is not declared in `$params` (§10.1)"),
-                    format!(
-                        "a surface view parameter is not inferred (§8.3 is mutation-only); declare \
-                         it, e.g. `\"$params\": {{ \"{name}\": \"<type>\" }}`"
-                    ),
-                );
-            }
+        // results, so only the expression's well-formedness is enforced for a
+        // `$view`. A `$recursive` predicate, in contrast, decides inclusion, so
+        // §10.5 pins its result to `bool`.
+        if read.kind == ReadKind::Predicate && typed.ty().as_scalar() != Some(&Type::Bool) {
+            self.reporter.reject_hint(
+                read.parsed.statement().span,
+                code::SURFACE,
+                format!(
+                    "a `$recursive` predicate must be `bool`, not `{}` (§10.5)",
+                    typed.ty().describe()
+                ),
+                "compare or test a value to produce a boolean",
+            );
         }
     }
 
@@ -837,20 +983,6 @@ impl SurfacePhase<'_, '_> {
     }
 }
 
-/// Collect every `@name` parameter reference in `expr`, paired with its span, so a
-/// surface `$view` can reject any not declared in `$params` (§10.1). Unlike the
-/// mutation-side `collect_param_refs`, this descends into call arguments too: a
-/// surface-view parameter is not inferred from a callee signature (§8.3 is
-/// mutation-only), so *every* `@name` use — a comparison, a projection, or a call
-/// argument — must name a declared parameter.
-fn param_refs<'e>(expr: &'e Expr, out: &mut Vec<(&'e str, liasse_diag::ByteSpan)>) {
-    if let ExprKind::Param(id) = &expr.kind {
-        out.push((&id.text, id.span));
-    }
-    for child in crate::walk::child_exprs(expr) {
-        param_refs(child, out);
-    }
-}
 
 /// Whether a `$recursive` `$through` statement navigates strictly downward from
 /// the covered row (§10.5). Only a bare view expression can (a `return`/assign is

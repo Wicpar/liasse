@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: surface-view-parameter-without-anchor-invalid
+  suite: static
+  spec: ["#interfaces", "§10.1", "#mutations", "§8.3"]
+  tags: ["typing"]
+  note: '''
+    The fail-to-explicit half of §10.1's inferred view parameter. Inference is
+    "exactly as a mutation parameter is (§8.3)": a use anchors a type only where
+    the position supplies one — a comparison against a typed field, a
+    key-selector position, a typed function argument. Neither `@tag` nor
+    `@other` occupies such a position here: `tag: @tag` is a PROJECTION member,
+    which names an output and copies the parameter's value without constraining
+    it, and `@other == @tag` relates two parameters to each other and to no typed
+    value, so the pair is satisfied by every type.
+
+    §10.1 pins that as a static load error, and pins what the diagnostic must
+    say: it "requests an explicit declaration: declare the parameter in `$params`
+    with its type." A silently `json`-widened parameter would put an untyped
+    value in the external wire contract, which is exactly what the rule forbids.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.viewanchor@1.0.0"
+    $model: {
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+      }
+      $public: {
+        tagged: {
+          // No $params, and no typed position to infer from: `tag: @tag` is a
+          // projection member and `@other == @tag` compares two parameters.
+          $view: ".tasks[:t | @other == @tag] { id, tag: @tag }"
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces", "§10.1"]
+    detail: "the surface `$view` does not constrain `@tag`/`@other` to a single type; the diagnostic must request an explicit declaration — declare the parameter in `$params` with its type (§10.1)"
+  }
+}

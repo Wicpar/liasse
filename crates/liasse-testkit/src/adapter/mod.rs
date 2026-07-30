@@ -57,7 +57,7 @@ mod rawzip;
 mod router;
 mod runtime;
 mod shape;
-mod surface_params;
+mod surface_views;
 mod wire;
 
 use liasse_ident::InstanceId;
@@ -640,10 +640,12 @@ pub(super) fn prepared_definition(
 ) -> Option<String> {
     let mut definition = package.clone();
     inject_synthetic_views(&mut definition, plan);
-    // §10.1: reconstruct the `$params` a parameterized surface `$view` needs so
-    // the runtime compiles and serves it, rather than dropping the surface view
-    // (SPEC-ISSUES item 10: surface-view parameter inference is undefined).
-    surface_params::inject(&mut definition);
+    // §10.1 infers a surface `$view` parameter from its typed uses, so nothing is
+    // declared for the case here. What is fixed is a shape a top-level `$view`
+    // cannot carry: a parameterized read factored into a top-level declaration and
+    // exposed by reference is inlined onto the referencing surfaces, where `@name`
+    // has a parameter scope to be inferred in (§7.1/§10.1).
+    surface_views::inline_param_views(&mut definition);
     if let Some(model) = definition.get_mut("$model").and_then(serde_json::Value::as_object_mut) {
         lift.inject(model);
     }

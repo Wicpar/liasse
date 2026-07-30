@@ -2270,11 +2270,18 @@ fn compile_one_surface_view(
     else {
         return Ok(());
     };
-    let params = match compile_surface_params(sources, root_ty, surface) {
+    let mut params = match compile_surface_params(sources, root_ty, surface) {
         Some(params) => params,
         None => return Ok(()),
     };
     let current_ty = covered.map_or(root_ty, |(_, row_ty)| row_ty);
+    // §10.1: a surface `$view` parameter is inferred exactly as a mutation
+    // parameter is (§8.3), so the served contract is the declared `$params`
+    // merged with every type the surface's read expressions infer. The load
+    // already validated this through the same `liasse_model` walk — reusing it
+    // here (rather than re-deriving it) is what makes the contract the client is
+    // served identical to the contract the load accepted.
+    extend_with_inferred_params(sources, root_ty, current_ty, surface, &mut params);
     let mut scope = RuntimeScope::new(current_ty.clone(), root_ty.clone())
         .with_host_ops(hosts.clone())
         .with_host_position(HostPosition::DbRead(DbReadPosition::ViewProjection));
@@ -2361,6 +2368,66 @@ fn field_row_type(covered: &ExprType, field: &str) -> Option<ExprType> {
     match covered.as_row()?.field(field)? {
         ExprType::View(row) | ExprType::Row(row) => Some(ExprType::Row(row.clone())),
         _ => None,
+    }
+}
+
+/// §10.1: extend a surface's declared `$params` with every parameter its read
+/// expressions infer, so the contract the runtime serves is the contract §10.1
+/// pins — "the resulting parameter shape, inferred or declared, is part of the
+/// external surface contract, exactly as for mutations".
+///
+/// The `$view` and each `$recursive` `$where`/`$except` predicate are ONE
+/// contract, so they are inferred in sequence over the growing shape, exactly as
+/// the static model settles it. Inference itself is `liasse_model`'s §8.3 walk,
+/// called here rather than reimplemented, so the served shape cannot diverge from
+/// the validated one. A malformed read is skipped: the load already rejected it,
+/// and a surface whose `$view` does not compile is dropped below anyway.
+///
+/// An inferred parameter carries no default — §10.1 keeps `$params` "the only way
+/// to give a view parameter a default" — so an omitted argument for one is a
+/// §12.1 malformed request, as for any defaultless parameter.
+fn extend_with_inferred_params(
+    sources: &mut SourceMap,
+    root_ty: &ExprType,
+    current_ty: &ExprType,
+    surface: &liasse_syntax::DocValue,
+    params: &mut Vec<CompiledParam>,
+) {
+    let mut reads = Vec::new();
+    if let Some(text) = doc::member(surface, "$view").and_then(doc::string) {
+        let src = sources.add_label("surface-view", text.to_owned());
+        if let Ok(parsed) = parse_expression(src, text) {
+            reads.push((parsed, Vec::new()));
+        }
+    }
+    if let Some(recursive) = doc::member(surface, "$recursive")
+        && let Some(field) = doc::member(recursive, "$field").and_then(doc::string)
+        && let Some(bind) = doc::member(recursive, "$bind").and_then(doc::string)
+        && let Some(candidate) = field_row_type(current_ty, field.trim())
+    {
+        for directive in ["$where", "$except"] {
+            let Some(text) = doc::member(recursive, directive).and_then(doc::string) else {
+                continue;
+            };
+            let text = text.trim();
+            let src = sources.add_label("recursive-predicate", text.to_owned());
+            if let Ok(parsed) = parse_expression(src, text) {
+                reads.push((parsed, vec![(bind.trim().to_owned(), candidate.clone())]));
+            }
+        }
+    }
+    let mut contract: Vec<(String, ExprType)> =
+        params.iter().map(|param| (param.name.clone(), param.ty.clone())).collect();
+    for (parsed, bindings) in &reads {
+        contract =
+            liasse_model::infer_view_params(root_ty, current_ty, bindings, &contract, &parsed.statement)
+                .params()
+                .to_vec();
+    }
+    for (name, ty) in contract {
+        if !params.iter().any(|param| param.name == name) {
+            params.push(CompiledParam { name, ty, default: None });
+        }
     }
 }
 

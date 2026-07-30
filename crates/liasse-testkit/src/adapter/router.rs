@@ -347,9 +347,10 @@ fn surface_binding(
         }
     } else if let Some(view) = definition.get("$view").and_then(J::as_str) {
         // An inline `$view` that reads `@param` or `$actor`/`$session` cannot be
-        // lifted to a scope-free top-level view (§10.1, SPEC-ISSUES item 10). The
-        // runtime compiles it as a surface view keyed by this dotted address, with
-        // its `$params` and the package's `$actor`/`$session` in scope, so bind the
+        // lifted to a scope-free top-level view (§7.1: a top-level view has no
+        // request scope). The runtime compiles it as a surface view keyed by this
+        // dotted address, with its declared-or-inferred parameters (§10.1) and the
+        // package's `$actor`/`$session` in scope, so bind the
         // surface view directly and let the param/actor-aware read serve it. A view
         // whose projection spine is the single-row `$actor`/`$session` (§11.1)
         // delivers one object (§12.2), so record it as singular.

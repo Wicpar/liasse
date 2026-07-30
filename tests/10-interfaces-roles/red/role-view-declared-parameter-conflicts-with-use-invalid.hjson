@@ -1,0 +1,64 @@
+{
+  format: 1
+  name: role-view-declared-parameter-conflicts-with-use-invalid
+  suite: static
+  spec: ["#interfaces", "§10.1", "#mutations", "§8.3"]
+  tags: ["typing", "authz"]
+  note: '''
+    §10.1: "An explicit `$params` entry remains authoritative where present —
+    inference must be compatible with its declared type." Here the role surface
+    declares `done` as `text` while its `$view` compares `@done` against the
+    `bool` field `tasks.done`, so the declared type and the inferred use
+    disagree; §8.3's "all uses of the same parameter MUST infer one compatible
+    type" makes that a static load error.
+
+    Pinned on the ROLE path deliberately. A role `$view` may read `$actor`, whose
+    row type resolves in a later pass, so a checker may skip full typing there —
+    which is exactly where a declared-vs-inferred conflict could slip through
+    unchecked while the byte-identical public surface is rejected by typing. The
+    two paths must agree: the conflict is a load error either way, and the
+    surface's published wire contract never carries a type its own view
+    contradicts.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.roleviewconflict@1.0.0"
+    $model: {
+      accounts: {
+        $key: "id"
+        id: "text"
+        enabled: "bool = true"
+      }
+      tasks: {
+        $key: "id"
+        id: "text"
+        done: "bool"
+      }
+      $auth: {
+        token: {
+          $credential: "text"
+          $verify: "$credential"
+          $actor: "/accounts[$proof]"
+        }
+      }
+      $roles: {
+        member: {
+          $auth: "token"
+          $members: ".accounts[:a | a.enabled]"
+          by_state: {
+            // Declared `text`, but the only use compares it to a `bool` field.
+            $params: { done: "text" }
+            $view: ".tasks[:t | t.done == @done] { id }"
+          }
+        }
+      }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#interfaces", "§10.1", "#mutations", "§8.3"]
+    detail: "the surface declares `done` as `text` while its `$view` uses `@done` against the `bool` field `tasks.done`; a declared `$params` type inference is incompatible with is a static load error (§10.1, §8.3)"
+  }
+}

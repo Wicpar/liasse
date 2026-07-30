@@ -76,6 +76,17 @@ impl Params {
         }
     }
 
+    /// Seed the contract from a surface's explicit `$params` declarations
+    /// (§10.1), which stay authoritative: an inferred use must be compatible with
+    /// the declared type, and a use that is not is recorded as a §8.3 conflict by
+    /// [`record`] exactly as two disagreeing uses are.
+    pub(super) fn from_declared(declared: impl IntoIterator<Item = (String, ExprType)>) -> Self {
+        Self {
+            types: declared.into_iter().collect(),
+            conflicts: BTreeSet::new(),
+        }
+    }
+
     /// Whether a settled type exists for `name`.
     pub(super) fn contains(&self, name: &str) -> bool {
         self.types.contains_key(name)
