@@ -362,6 +362,8 @@ Field with a default:
 
 `T = expression` declares a writable field of type `T`. The default supplies its initial value when an insertion omits the field. A supplied value, including `none`, takes precedence.
 
+A non-optional field holds a value in every committed state. An admission that leaves one with neither a supplied value nor a resolved default is rejected — a mutation insertion, a genesis `$seed`/`$bundle` load (§9.1), a §13.3 installation overlay, and the prospective target of an update (§20.1) alike — because `none` is absence, not a value (Annex A.1). A set or map-valued field is exempt: an omitted one starts empty (§5.5).
+
 Expanded form:
 
 ```hjson
@@ -1053,6 +1055,8 @@ A mutation declared on a keyed collection shape is a row mutation. Calling it re
 
 A mutation declared on a static struct uses that struct as `.`. A mutation declared at the model root uses the root object. A mutation declared on a view uses the view's lexical declaring scope and MAY target the underlying model explicitly.
 
+The package root is durable state at every moment of an instance's life: the instance holds exactly one root whether or not any member has been written. A required root member therefore has no admissible state in which it holds nothing, and its population is judged the same way at genesis as in the prospective target of an update (§5.1, §20.1) — no written member yet is not an exemption.
+
 Collection creation usually belongs to the containing struct or root:
 
 ```hjson
@@ -1125,7 +1129,7 @@ assert(condition, message)    require an admission condition
 return view_or_value           define the response; final statement only
 ```
 
-`mutation()` is the compact spelling of `mutation({})`; both forms are exactly equivalent. Set addition is union and set removal is difference: adding an existing member or removing an absent member succeeds without changing that set.
+`mutation()` is the compact spelling of `mutation({})`; both forms are exactly equivalent. Set addition is union and set removal is difference: adding an existing member or removing an absent member succeeds without changing that set. `+` and `-` on a set apply wherever the set is declared — a keyed-collection row field and a writable root member (§8.2) alike.
 
 #### Copy, move, and affine values
 
@@ -2291,11 +2295,13 @@ On first installation, `$seed` (alias `$data`) and `$bundle` apply as ordinary i
 
 On update of any package instance — the root application and module instances alike — the two members reconcile with current instance state under distinct ownership rules.
 
-**`$seed` applies where absent.** A seed value applies only where its address holds no current value: a row newly present in the new seed is inserted when no row exists at that key, and a set member newly present is added when absent. An existing row, field, or member is never modified by `$seed`, and a row or member absent from the new seed is never removed by it — once user data is present at an address, later seed changes and removals do not touch it.
+**`$seed` applies where absent.** A seed value applies only where its address holds no current value: a row newly present in the new seed is inserted when no row exists at that key, and a set member newly present is added when absent. An existing row, field, or member is never modified by `$seed`, and a row or member absent from the new seed is never removed by it — once user data is present at an address, later seed changes and removals do not touch it. The rule is scoped by address, not by container: a `$seed` member naming writable root state (§8.2) applies where that member holds nothing and is left untouched where it holds a value, exactly as a seeded collection field is.
 
-**`$bundle` is package-authoritative.** Changed bundle data uses a three-way merge among the old package bundle, the new package bundle, and the current instance state. For each bundled scalar or struct field, the new bundle replaces the value only when the current value still equals the old bundle value; otherwise the current value is retained. Keyed child collections merge by key and apply the same rule recursively. A row newly present in the new bundle is inserted; a row removed from the new bundle is deleted only when its current subtree still equals the old bundled subtree, otherwise it is retained as local data. Sets add members newly present in the new bundle and remove old bundled members only when application state still reflects the old bundle membership.
+**`$bundle` is package-authoritative.** Changed bundle data uses a three-way merge among the old package bundle, the new package bundle, and the current instance state. For each bundled scalar or struct field, the new bundle replaces the value only when the current value still equals the old bundle value; otherwise the current value is retained. Keyed child collections merge by key and apply the same rule recursively. A row newly present in the new bundle is inserted; a row removed from the new bundle is deleted only when its current subtree still equals the old bundled subtree, otherwise it is retained as local data.
 
-The rule is scoped by address, not by container: a `$bundle` member naming writable root state (§8.2) reconciles by the same comparison as a collection field. Holding nothing compares equal to holding nothing, so a value a release newly bundles at an address that has never held one applies rather than reading as a local edit. A root member the new bundle no longer carries is withdrawn only when the current value still equals the old bundled value; otherwise it is retained as local data — at the root the withdrawable unit is the member, since the instance holds exactly one root and it is never removed.
+Sets reconcile by membership, not as one value. A member in the new bundle but not the old is added; a member in the old bundle but not the new is withdrawn only where the instance still holds it — a member already removed locally stays removed and is never re-added. A member in neither bundle was added locally and is retained; a member in both is neither new nor withdrawn, so the instance's membership stands. A set the new bundle no longer carries is the empty new membership. The merged value is a set, read in the element type's canonical order (Annex B.1); a set merge overrides no value and so never reports a conflict (§19.9).
+
+The rule is scoped by address, not by container: a `$seed` or `$bundle` member naming writable root state (§8.2) obeys its own rule above by the same comparison as a collection field. Holding nothing compares equal to holding nothing, so a value a release newly bundles at an address that has never held one applies rather than reading as a local edit. A root member the new bundle no longer carries is withdrawn only when the current value still equals the old bundled value; otherwise it is retained as local data — at the root the withdrawable unit is the member, since the instance holds exactly one root and it is never removed.
 
 Every inserted, changed, or removed value passes ordinary defaults, refs, uniqueness, delete planning, checks, and migrations. The update report lists added, updated, removed, and locally retained paths (`$seeded`, §13.15).
 

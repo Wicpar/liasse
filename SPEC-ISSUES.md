@@ -250,15 +250,13 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
     model layer accepts it and validates `$seed` disjointness, genesis applies
     it as ordinary inserts, and update three-way merges it at keyed-collection
     rows and §8.2 root-singleton members alike
-    (`13/update-bundle-three-way-merge`, `09/update-bundle-root-singleton-merge`);
-    the residual is the §13.13 SET rule (a bundled `$set` is compared and
-    replaced whole rather than merged by membership, on both containers).
-    Still unbuilt: `$down` deltas, delta-object
+    (`13/update-bundle-three-way-merge`, `09/update-bundle-root-singleton-merge`,
+    `13/update-bundle-set-membership-merge` for the §13.13 set-membership rule,
+    `13/update-seed-root-singleton-applies-if-absent` for `$seed` apply-if-absent
+    at singleton members). Still unbuilt: `$down` deltas, delta-object
     grammar (`$up`/`$down`/`$one_way`), the stash, multi-step chain walking,
     and the full load-action set beyond the current create/update/import
-    surface are unbuilt; `$seed`-on-update apply-if-absent currently holds
-    because update ignores seed data entirely (correct observable outcome,
-    absent-address insertion unbuilt).
+    surface.
 23. **Seed-time semantics.** Seeded-default sibling visibility vs prospective
     state; re-evaluation of a stored field seeded from a cross-instance
     expression; reload with divergent seed data.
