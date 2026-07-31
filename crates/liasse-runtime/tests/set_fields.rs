@@ -98,3 +98,70 @@ fn set_add_and_remove_apply_and_noop() {
     ));
     assert_eq!(tags(&engine), vec![text("b")]);
 }
+
+/// §8.5 union/difference at a §8.2 ROOT-SINGLETON `$set` member. §5.5 makes a root
+/// `$set` durable state at its own address and §8.5 scopes `+`/`-` to a set field,
+/// not to keyed collections — so `.flags + @t` on the package root must add a
+/// member and `.flags - @t` must remove one.
+///
+/// Before the fix the root arm resolved no row target at all: the statement staged
+/// NOTHING while the call still reported a commit, so a declared root-set mutation
+/// silently did nothing. The no-change completions below (§8.9) also prove the
+/// mutation is genuinely reaching the set rather than reporting `Committed` blindly.
+const ROOT_FLAGS: &str = r#"{
+  "$liasse": 1,
+  "$app": "example.rootset@1.0.0",
+  "$model": {
+    "flags": { "$set": "text" },
+    "root_view": { "$view": ". { flags }" },
+    "$mut": { "flag": ".flags + @t", "unflag": ".flags - @t" }
+  }
+}"#;
+
+#[test]
+fn root_singleton_set_add_and_remove_apply_and_noop() {
+    let mut engine = load("rootset", ROOT_FLAGS);
+    let flags = |engine: &Engine<MemoryStore>| {
+        let view = engine.view_at_head("root_view").expect("view").expect("declared");
+        match view.rows()[0].field("flags") {
+            Some(V::Set(members)) => members.iter().cloned().collect::<Vec<Value>>(),
+            // A root `$set` no write has yet touched materializes as `none` rather
+            // than the empty set §5.5 gives an omitted set inside a created row —
+            // a separate, unpinned question about when the §8.2 root counts as
+            // created. This case is about `+`/`-` REACHING the member, so it reads
+            // "nothing held yet" as the empty membership either way.
+            None | Some(V::None) => Vec::new(),
+            other => panic!("a root `$set` member reads as a set, got {other:?}"),
+        }
+    };
+    assert_eq!(flags(&engine), Vec::<Value>::new(), "nothing is held before the first write");
+
+    assert!(matches!(
+        call(&mut engine, &CallRequest::new("flag").arg("t", text("b"))),
+        CallOutcome::Committed { .. }
+    ));
+    assert_eq!(flags(&engine), vec![text("b")], "§8.5: the member is added to the root set");
+
+    // §8.5/§8.9: re-adding an existing member changes nothing → unchanged.
+    assert!(matches!(
+        call(&mut engine, &CallRequest::new("flag").arg("t", text("b"))),
+        CallOutcome::Unchanged { .. }
+    ));
+    // Removing an absent member changes nothing → unchanged.
+    assert!(matches!(
+        call(&mut engine, &CallRequest::new("unflag").arg("t", text("z"))),
+        CallOutcome::Unchanged { .. }
+    ));
+
+    assert!(matches!(
+        call(&mut engine, &CallRequest::new("flag").arg("t", text("a"))),
+        CallOutcome::Committed { .. }
+    ));
+    assert_eq!(flags(&engine), vec![text("a"), text("b")], "§5.5/B.1: canonical read order");
+
+    assert!(matches!(
+        call(&mut engine, &CallRequest::new("unflag").arg("t", text("a"))),
+        CallOutcome::Committed { .. }
+    ));
+    assert_eq!(flags(&engine), vec![text("b")], "§8.5: the member is removed from the root set");
+}

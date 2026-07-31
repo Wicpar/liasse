@@ -256,13 +256,13 @@ pub(crate) fn merge_bundle(
             let Some(current) = prospective.get(address) else { continue };
             let old_fields = old_rows.get(address);
             divergent.extend(
-                divergent_fields(current, old_fields, new_fields)
+                divergent_fields(collection, current, old_fields, new_fields)
                     .map(|field| MergeConflict {
                         coordinate: conflict_coordinate(ctx.schema, address, Some(field)),
                         kind: ConflictKind::IncompatibleValue,
                     }),
             );
-            let merged = merge_row_fields(current, old_fields, new_fields);
+            let merged = merge_row_fields(collection, current, old_fields, new_fields);
             prospective.replace(address, merged);
             touched.push(address.clone());
         }
@@ -294,7 +294,7 @@ pub(crate) fn merge_bundle(
     // §13.13/§8.2: the bundled ROOT-SINGLETON members reconcile by the same rule.
     // Last, so a `= expr` bundle value at a root member observes the whole merged
     // collection state the passes above produced.
-    merge_singleton(ctx, prospective, old_bundle, new_bundle, divergent)
+    merge_singleton(compiled, ctx, prospective, old_bundle, new_bundle, divergent)
 }
 
 /// §13.13 at a §8.2 root-singleton address: the same three-way merge as a keyed
@@ -315,12 +315,14 @@ pub(crate) fn merge_bundle(
 /// is dropped again only when no member is left — the same emptiness invariant
 /// genesis and the §20.1 copy keep.
 fn merge_singleton(
+    compiled: &Compiled,
     ctx: &EvalCtx<'_>,
     prospective: &mut Prospective,
     old_bundle: Option<&DocValue>,
     new_bundle: &DocValue,
     divergent: &mut Vec<MergeConflict>,
 ) -> Result<BTreeSet<String>, Rejection> {
+    let root = &compiled.root_singleton;
     let new = singleton_members(ctx, prospective, Some(new_bundle))?;
     let old = singleton_members(ctx, prospective, old_bundle)?;
     if new.is_empty() && old.is_empty() {
@@ -328,14 +330,16 @@ fn merge_singleton(
     }
     let address = crate::singleton::address();
     let current = prospective.get(&address).cloned().unwrap_or_else(FieldMap::new);
-    divergent.extend(divergent_fields(&current, Some(&old), &new).map(|member| MergeConflict {
+    divergent.extend(divergent_fields(root, &current, Some(&old), &new).map(|member| MergeConflict {
         coordinate: conflict_coordinate(ctx.schema, &address, Some(member)),
         kind: ConflictKind::IncompatibleValue,
     }));
     // The new bundle applies where the current value still equals the old bundle
     // value — including the case where BOTH hold nothing, which is how a member a
-    // release NEWLY bundles reaches an instance installed before it (`held`).
-    let mut merged = merge_row_fields(&current, Some(&old), &new);
+    // release NEWLY bundles reaches an instance installed before it (`held`). A
+    // `$set` member takes §13.13's membership rule inside, at both bundles' set
+    // members, so the member-withdrawal loop below leaves it alone.
+    let mut merged = merge_row_fields(root, &current, Some(&old), &new);
     // §13.13's removal rule at member granularity: the singleton row can never be
     // "removed from the new bundle" (§8.2 gives the instance exactly one, and it
     // holds every root member together), so the removable unit is the MEMBER — the
@@ -343,7 +347,7 @@ fn merge_singleton(
     // is withdrawn only when the instance still holds the old bundled value;
     // otherwise the local edit is retained and reported in the §19.9
     // delete-versus-modify shape, exactly as a locally modified bundled row is.
-    for member in old.keys().filter(|member| !new.contains_key(*member)) {
+    for member in old.keys().filter(|member| !new.contains_key(*member) && !is_set_field(root, member)) {
         let held_now = held(Some(&current), member);
         if held_now == held(Some(&old), member) {
             merged.remove(member);
@@ -402,13 +406,23 @@ fn singleton_member(
 /// different values (§13.13/§19.9): the old bundle held one value, the new bundle
 /// holds another, and the current state holds a third. A field only one side moved
 /// is an accepted one-sided change and is not reported.
+///
+/// A `$set` field is never divergent. §13.13 resolves a set per MEMBER, and every
+/// member's arm has a defined winner with nothing overridden — a release's additions
+/// and withdrawals and the instance's own local adds and removes all survive
+/// together ([`merge_set`]). A conflict report exists to say which package-authored
+/// value a local edit overrides (§20.4); a set merge overrides none.
 fn divergent_fields<'a>(
+    collection: &'a CompiledCollection,
     current: &'a FieldMap,
     old: Option<&'a FieldMap>,
     new: &'a FieldMap,
 ) -> impl Iterator<Item = String> + 'a {
     new.iter()
         .filter(move |(field, new_value)| {
+            if is_set_field(collection, field) {
+                return false;
+            }
             let old_value = held(old, field);
             let current_value = held(Some(current), field);
             current_value != old_value && Some(*new_value) != old_value && current_value != Some(*new_value)
@@ -445,14 +459,94 @@ fn has_live_descendant(prospective: &Prospective, address: &RowAddress) -> bool 
 /// §13.13 per-field rule: the new bundle value applies where the current value still
 /// equals the old bundle value; otherwise the current (locally modified) value is
 /// retained. Fields the new bundle does not mention are kept as-is.
-fn merge_row_fields(current: &FieldMap, old: Option<&FieldMap>, new: &FieldMap) -> FieldMap {
+///
+/// A `$set` field is the documented EXCEPTION and takes [`merge_set`]: §13.13 gives
+/// sets their own membership rule, which is strictly weaker than the whole-value one
+/// this loop applies to a "bundled scalar or struct field".
+fn merge_row_fields(
+    collection: &CompiledCollection,
+    current: &FieldMap,
+    old: Option<&FieldMap>,
+    new: &FieldMap,
+) -> FieldMap {
     let mut merged = current.clone();
     for (field, new_value) in new {
-        if held(Some(current), field) == held(old, field) {
+        if !is_set_field(collection, field) && held(Some(current), field) == held(old, field) {
             merged.insert(field.clone(), new_value.clone());
         }
     }
+    // Every `$set` field EITHER bundle mentions reconciles by membership. The old
+    // bundle's set fields are included because a set the new bundle no longer carries
+    // is an EMPTY new membership, not an untouched field: its old bundled members are
+    // withdrawn where the instance still reflects them, while every locally added
+    // member survives. Comparing the field as one value instead would retain the
+    // whole withdrawn set the moment anything local had touched it.
+    for field in set_fields(collection, old, new) {
+        let value = merge_set(current.get(&field), old.and_then(|old| old.get(&field)), new.get(&field));
+        merged.insert(field, value);
+    }
     merged
+}
+
+/// §13.13's set rule at one bundled `$set` field: "Sets add members newly present in
+/// the new bundle and remove old bundled members only when application state still
+/// reflects the old bundle membership."
+///
+/// Read as a three-way merge over MEMBERS rather than over the set as one value:
+///
+///   * a member in the new bundle but not the old is *newly present*, so it is ADDED;
+///   * a member in the old bundle but not the new is a withdrawal, applied only where
+///     the instance still holds it — a member already removed locally is left removed
+///     and never resurrected;
+///   * a member in NEITHER bundle was added locally and is retained untouched;
+///   * a member in BOTH is neither newly present nor withdrawn, so the instance's own
+///     membership decides — a local removal of a still-bundled member stays removed.
+///
+/// The whole-value comparison this replaces collapsed the rule back into the scalar
+/// one: a single locally added member made the current set differ from the old
+/// bundled set, the field read as "locally modified", and every member the release
+/// newly bundled was silently dropped — a package could never extend a set again once
+/// any instance had touched it.
+///
+/// Annex B: the result is a SET. `BTreeSet<Value>` orders by `Value`'s total order,
+/// which IS the element type's canonical order, so the merged membership reads in
+/// canonical order however the bundle happened to list it.
+fn merge_set(current: Option<&Value>, old: Option<&Value>, new: Option<&Value>) -> Value {
+    let old = set_members(old);
+    let new = set_members(new);
+    let mut merged = set_members(current);
+    merged.extend(new.difference(&old).cloned());
+    for withdrawn in old.difference(&new) {
+        merged.remove(withdrawn);
+    }
+    Value::Set(merged)
+}
+
+/// The members a field map holds at a `$set` field, or the empty set when it holds
+/// nothing (§5.5: "an omitted child set … starts empty", so absent and empty are the
+/// same membership).
+fn set_members(value: Option<&Value>) -> BTreeSet<Value> {
+    match value {
+        Some(Value::Set(members)) => members.clone(),
+        _ => BTreeSet::new(),
+    }
+}
+
+/// Whether `field` is a declared `$set` of `collection` (§5.5).
+fn is_set_field(collection: &CompiledCollection, field: &str) -> bool {
+    collection.field(field).is_some_and(|field| matches!(field.ty, Type::Set(_)))
+}
+
+/// The declared `$set` fields of `collection` that either bundle mentions, in
+/// declaration order.
+fn set_fields(collection: &CompiledCollection, old: Option<&FieldMap>, new: &FieldMap) -> Vec<String> {
+    collection
+        .fields
+        .iter()
+        .filter(|field| matches!(field.ty, Type::Set(_)))
+        .filter(|field| new.contains_key(&field.name) || old.is_some_and(|old| old.contains_key(&field.name)))
+        .map(|field| field.name.clone())
+        .collect()
 }
 
 /// Decode a bundle collection's rows into `out`, keyed by address, with the same
@@ -581,8 +675,7 @@ fn stage_rows<'a>(
 /// [`SeedMode::Overlay`] pipeline (§13.3 "merges keyed child collections by key").
 fn overlay_fields(collection: &CompiledCollection, mut existing: FieldMap, overlay: FieldMap) -> FieldMap {
     for (name, value) in overlay {
-        let is_set = collection.fields.iter().any(|field| field.name == name && matches!(field.ty, Type::Set(_)));
-        let merged = match (is_set, existing.get(&name)) {
+        let merged = match (is_set_field(collection, &name), existing.get(&name)) {
             (true, Some(Value::Set(current))) => match value {
                 Value::Set(incoming) => {
                     let mut union = current.clone();

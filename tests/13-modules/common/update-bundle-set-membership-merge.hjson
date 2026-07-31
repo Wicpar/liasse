@@ -1,0 +1,119 @@
+{
+  format: 1
+  name: update-bundle-set-membership-merge
+  suite: scenario
+  spec: ["#modules", "§13.13", "#state-model", "§5.5", "#state-model", "§8.2", "#annex-b", "§B.1"]
+  note: '''
+    §13.13 gives a bundled `$set` its OWN rule, weaker than the whole-value rule
+    the preceding sentence gives a "bundled scalar or struct field": "Sets add
+    members newly present in the new bundle and remove old bundled members only
+    when application state still reflects the old bundle membership." That is a
+    three-way merge over MEMBERS, so each member resolves on its own:
+      - in the new bundle but not the old -> newly present, so ADDED;
+      - in the old bundle but not the new -> withdrawn, but only where the
+        instance still holds it; a member already removed locally stays removed
+        and is never resurrected;
+      - in NEITHER bundle -> added locally, RETAINED;
+      - in BOTH -> neither newly present nor withdrawn, so the instance's own
+        membership stands.
+
+    Comparing the set as one opaque value collapses this back into the scalar
+    rule: one locally added member makes the current set differ from the old
+    bundled set, the field reads as "locally modified", and every member the
+    release newly bundles is lost — a package could never extend a set again once
+    any instance had touched it.
+
+    §13.13 scopes the rule by address, and §5.5/§8.2 make a `$set` durable state
+    at its own address in a keyed row and at the package root alike, so this case
+    runs the SAME matrix in both containers over one 1.0.0 -> 1.1.0 update
+    (a compatible minor, §9.2/§20.1):
+      old bundle {x, y}; the instance adds "local" and removes "y"; new bundle
+      {x, z}  ->  {local, x, z}.
+    "x" is bundled by both and still held (untouched); "y" was withdrawn by the
+    release and already gone locally (nothing to do, and never re-added); "z" is
+    newly bundled (added); "local" is in neither bundle (retained).
+
+    Annex B.1: the result is a SET, so it reads in the element type's canonical
+    order — "local" < "x" < "z" — never in the order the bundle listed members.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.bundleset@1.0.0"
+    $model: {
+      docs: {
+        $key: "id"
+        id: "text"
+        tags: { $set: "text" }
+        $mut: { tag: ".tags + @t", untag: ".tags - @t" }
+      }
+      flags: { $set: "text" }
+      $mut: { flag: ".flags + @t", unflag: ".flags - @t" }
+      $public: {
+        docs: {
+          $view: ".docs { id, tags }"
+          $mut: { tag: ".docs[@id].tag", untag: ".docs[@id].untag" }
+        }
+        root: {
+          $view: ". { flags }"
+          $mut: { flag: ".flag", unflag: ".unflag" }
+        }
+      }
+    }
+    $bundle: {
+      docs: { d1: { tags: ["x", "y"] } }
+      flags: ["x", "y"]
+    }
+  }
+
+  steps: [
+    // Genesis (§13.13): `$bundle` applies as ordinary inserts, in canonical order.
+    { watch: "public.docs", id: "w0"
+      expect_init: { value: [ { id: "d1", tags: ["x", "y"] } ] } }
+    { watch: "public.root", id: "w0r"
+      expect_init: { value: { flags: ["x", "y"] } } }
+
+    // Local membership edits in BOTH containers: one add, one remove.
+    { call: "public.docs.tag", args: { id: "d1", t: "local" }, expect: { outcome: ok } }
+    { call: "public.docs.untag", args: { id: "d1", t: "y" }, expect: { outcome: ok } }
+    { call: "public.root.flag", args: { t: "local" }, expect: { outcome: ok } }
+    { call: "public.root.unflag", args: { t: "y" }, expect: { outcome: ok } }
+
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.bundleset@1.1.0"
+          $model: {
+            docs: {
+              $key: "id"
+              id: "text"
+              tags: { $set: "text" }
+              $mut: { tag: ".tags + @t", untag: ".tags - @t" }
+            }
+            flags: { $set: "text" }
+            $mut: { flag: ".flags + @t", unflag: ".flags - @t" }
+            $public: {
+              docs: {
+                $view: ".docs { id, tags }"
+                $mut: { tag: ".docs[@id].tag", untag: ".docs[@id].untag" }
+              }
+              root: {
+                $view: ". { flags }"
+                $mut: { flag: ".flag", unflag: ".unflag" }
+              }
+            }
+          }
+          $bundle: {
+            docs: { d1: { tags: ["x", "z"] } }
+            flags: ["x", "z"]
+          }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+
+    { watch: "public.docs", id: "w1"
+      expect_init: { value: [ { id: "d1", tags: ["local", "x", "z"] } ] } }
+    { watch: "public.root", id: "w1r"
+      expect_init: { value: { flags: ["local", "x", "z"] } } }
+  ]
+}

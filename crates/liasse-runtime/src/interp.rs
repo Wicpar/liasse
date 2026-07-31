@@ -595,8 +595,20 @@ impl<'a> Interp<'a> {
             }
             scalar
         };
+        self.stage_singleton_field(field, scalar)
+    }
+
+    /// Stage one value onto the §8.2 reserved singleton row and mark it touched.
+    ///
+    /// The reserved row has no key and a fixed address, so it never rekeys and it
+    /// materializes on first write rather than having to exist already — which is
+    /// exactly what the keyed-row [`Self::write_field`] path cannot assume. Every
+    /// singleton write (an assignment, a `$set` `+`/`-`) funnels through here so all
+    /// of them normalize (§8.2/§8.8) and mark identically.
+    fn stage_singleton_field(&mut self, field: &str, value: Value) -> Result<(), Rejection> {
+        let address = crate::singleton::address();
         let mut fields = self.prospective.get(&address).cloned().unwrap_or_else(FieldMap::new);
-        fields.insert(field.to_owned(), scalar);
+        fields.insert(field.to_owned(), value);
         // §8.2/§8.3: the assigned target applies its own normalization, so a
         // written singleton member is normalized exactly as a collection field is.
         rules::normalize_singleton_field(self.compiled, field, &mut fields, self.ctx, self.prospective)?;
@@ -787,6 +799,12 @@ impl<'a> Interp<'a> {
     /// Write `value` into `field` of the row at `row`, normalizing it, and
     /// rekeying the row if a key field changed (§5.4).
     fn write_field(&mut self, row: &RowTarget, field: &str, value: Value) -> Result<(), Rejection> {
+        // §8.2: the reserved singleton row is not a keyed row — it has no key to
+        // rekey on and materializes on first write — so a write addressed to it
+        // takes the singleton staging path.
+        if row.address == crate::singleton::address() {
+            return self.stage_singleton_field(field, value);
+        }
         let mut fields = self.prospective.get(&row.address).cloned().ok_or_else(|| {
             Rejection::new(RejectionReason::MissingTarget, "the target row does not exist")
                 .at(row.address.render())
@@ -1501,14 +1519,40 @@ impl<'a> Interp<'a> {
     /// Resolve `expr` to `(row, field)` when it addresses a set-typed field of a
     /// row — the target of a `+`/`-` set mutation (§8.5). Any other target is
     /// `None`, leaving the statement a documented no-op.
+    ///
+    /// §8.2/§8.5: `.flags + @t` at the package ROOT (no row receiver) targets the
+    /// reserved singleton row's set member. Without this arm `field_target` resolves
+    /// no row there and the statement silently staged NOTHING while still reporting a
+    /// commit, so a declared root-set mutation quietly did nothing at all — §5.5 makes
+    /// a root `$set` durable state at its own address, and §8.5's union/difference is
+    /// not scoped to keyed collections.
     fn set_field_target(&self, expr: &Expr, source: SourceId) -> Result<Option<(RowTarget, String)>, Rejection> {
-        let Some((row, field)) = self.field_target(expr, source)? else { return Ok(None) };
+        let Some((row, field)) = self.field_target(expr, source)? else {
+            return Ok(self.root_singleton_set_target(expr));
+        };
         let is_set = self
             .compiled
             .collection_at(&row.path)
             .and_then(|c| c.field(&field))
             .is_some_and(|f| matches!(f.ty, liasse_value::Type::Set(_)));
         Ok(is_set.then_some((row, field)))
+    }
+
+    /// The reserved singleton row and member name when `expr` is a bare root member
+    /// (`.flags`) declaring a `$set` and no row receiver is selected (§8.2/§5.5).
+    fn root_singleton_set_target(&self, expr: &Expr) -> Option<(RowTarget, String)> {
+        if self.receiver.is_some() {
+            return None;
+        }
+        let (field, ty) = self.root_singleton_target(expr)?;
+        if !matches!(ty, liasse_value::Type::Set(_)) {
+            return None;
+        }
+        let row = RowTarget {
+            address: crate::singleton::address(),
+            path: vec![crate::singleton::ROOT_NAME.to_owned()],
+        };
+        Some((row, field))
     }
 
     /// Apply a set `+`/`-` mutation to `field` of `row` (§8.5): union in (or
