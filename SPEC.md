@@ -2295,6 +2295,8 @@ On update of any package instance — the root application and module instances 
 
 **`$bundle` is package-authoritative.** Changed bundle data uses a three-way merge among the old package bundle, the new package bundle, and the current instance state. For each bundled scalar or struct field, the new bundle replaces the value only when the current value still equals the old bundle value; otherwise the current value is retained. Keyed child collections merge by key and apply the same rule recursively. A row newly present in the new bundle is inserted; a row removed from the new bundle is deleted only when its current subtree still equals the old bundled subtree, otherwise it is retained as local data. Sets add members newly present in the new bundle and remove old bundled members only when application state still reflects the old bundle membership.
 
+The rule is scoped by address, not by container: a `$bundle` member naming writable root state (§8.2) reconciles by the same comparison as a collection field. Holding nothing compares equal to holding nothing, so a value a release newly bundles at an address that has never held one applies rather than reading as a local edit. A root member the new bundle no longer carries is withdrawn only when the current value still equals the old bundled value; otherwise it is retained as local data — at the root the withdrawable unit is the member, since the instance holds exactly one root and it is never removed.
+
 Every inserted, changed, or removed value passes ordinary defaults, refs, uniqueness, delete planning, checks, and migrations. The update report lists added, updated, removed, and locally retained paths (`$seeded`, §13.15).
 
 ### 13.14 Updates and compatibility
@@ -2331,7 +2333,7 @@ A successful update reports its observable plan and committed result:
 }
 ```
 
-`$migrated` and `$seeded` list per-item reports in canonical path order. `$exposed` and `$imports` group affected names by outcome, with each name array in canonical text order.
+`$migrated` and `$seeded` list per-item reports in canonical path order. A `$bundle` item at a root-singleton address (§8.2) is reported at that member's name-only §D.3 path (`/flag`); the reserved storage row that holds singleton state never appears in a reported path. `$exposed` and `$imports` group affected names by outcome, with each name array in canonical text order.
 
 A rejected update returns the same planning context plus diagnostics and no commit.
 

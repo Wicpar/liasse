@@ -246,9 +246,14 @@ Case references are `area/case-name` under `tests/` (reds unless noted).
     applying as on an upgrade; lossless downgrade commits without transforms
     (`annex-e/downgrade-shape-compatible-no-transform-commits` pinned →
     `committed`).
-    **Implementation holes (explicit):** `$bundle` is rejected loudly by the
-    model layer (accept + genesis insert + update merge unbuilt; the pure
-    §13.13 `SeedMerge` rule exists unwired); `$down` deltas, delta-object
+    **Implementation holes (explicit):** `$bundle` lands end to end — the
+    model layer accepts it and validates `$seed` disjointness, genesis applies
+    it as ordinary inserts, and update three-way merges it at keyed-collection
+    rows and §8.2 root-singleton members alike
+    (`13/update-bundle-three-way-merge`, `09/update-bundle-root-singleton-merge`);
+    the residual is the §13.13 SET rule (a bundled `$set` is compared and
+    replaced whole rather than merged by membership, on both containers).
+    Still unbuilt: `$down` deltas, delta-object
     grammar (`$up`/`$down`/`$one_way`), the stash, multi-step chain walking,
     and the full load-action set beyond the current create/update/import
     surface are unbuilt; `$seed`-on-update apply-if-absent currently holds
