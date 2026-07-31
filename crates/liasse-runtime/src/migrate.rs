@@ -695,13 +695,30 @@ fn build_migrated<G: crate::generator::Generators>(
     // rekeyed row) keeps its migrated value unchanged and is never overwritten.
     // Seeded rows admit through the SAME rule pipeline the migrated rows do:
     // `seed::admit` resolves their defaults/normalization, and the `finalize` /
-    // source-series / meter passes below check them alongside the rest. The §8.2
-    // singleton is carried by the §20.1 copy above, so `ApplyIfAbsent` reconciles
-    // only keyed-collection rows.
+    // source-series / meter passes below check them alongside the rest. §13.13
+    // scopes "applies where absent" by ADDRESS, so the SAME rule runs one container
+    // up over the §8.2 root-singleton members the seed names: the §20.1 copy carries
+    // forward whatever the instance holds there, and a member that carry left EMPTY
+    // takes the newly seeded value. Those members are `$seeded` items reported at
+    // their name-only §D.3 paths, never as the reserved storage row.
     let mut seeded_addrs: Vec<RowAddress> = Vec::new();
+    let mut seeded_members = BTreeSet::new();
     if let Some(data) = &target.data {
-        crate::seed::admit(&target.compiled, &ctx, &mut prospective, &mut seeded_addrs, data, crate::seed::SeedMode::ApplyIfAbsent)?;
+        seeded_members = crate::seed::admit_reporting(
+            &target.compiled,
+            &ctx,
+            &mut prospective,
+            &mut seeded_addrs,
+            data,
+            crate::seed::SeedMode::ApplyIfAbsent,
+        )?;
         addresses.extend(seeded_addrs.iter().cloned());
+        // A filled singleton member may have materialized the reserved row for the
+        // first time; the final rule pass judges it like any other live row.
+        let singleton_address = crate::singleton::address();
+        if !seeded_members.is_empty() && !addresses.contains(&singleton_address) {
+            addresses.push(singleton_address);
+        }
     }
     // §4.1/§13.13: `$bundle` is package-authoritative — three-way merged among the
     // old package bundle, the new package bundle, and the migrated state. It inserts
@@ -715,9 +732,10 @@ fn build_migrated<G: crate::generator::Generators>(
     // rows; a removed row leaves `prospective`, so the final `rows` (and the
     // whole-state migration commit) no longer carries it.
     let mut divergent = Vec::new();
-    let mut seeded_members = BTreeSet::new();
     if let Some(new_bundle) = &target.bundle {
-        seeded_members = crate::seed::merge_bundle(
+        // §4.1 makes a `$seed` address and a `$bundle` address disjoint, so the two
+        // member sets never collide and the union is exactly the §13.15 report.
+        seeded_members.extend(crate::seed::merge_bundle(
             &target.compiled,
             &ctx,
             &mut prospective,
@@ -725,7 +743,7 @@ fn build_migrated<G: crate::generator::Generators>(
             old_bundle,
             new_bundle,
             &mut divergent,
-        )?;
+        )?);
         // A bundle merge inserts, replaces, or removes rows, so the finalize/commit
         // set is exactly the prospective state after it.
         addresses = prospective.working().keys().cloned().collect();

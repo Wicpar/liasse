@@ -38,12 +38,12 @@ pub(crate) enum SeedMode {
     Genesis,
     /// Update apply-if-absent (§13.13/§4.1): a seed applies only where its
     /// address holds no current value — an ABSENT address is inserted, an
-    /// occupied one is RETAINED unchanged (never overwritten). The §8.2 singleton
-    /// is already carried by the §20.1 copy, so a singleton `$seed` member on
-    /// update stays with that carry (a documented seam: apply-if-absent into a
-    /// singleton member the copy left EMPTY does not fire here). A `$bundle`
-    /// singleton member is a different rule and does NOT stop here —
-    /// [`merge_bundle`] three-way merges it under §13.13.
+    /// occupied one is RETAINED unchanged (never overwritten). §13.13 scopes the
+    /// rule by ADDRESS and excludes no container, so a §8.2 root-singleton member
+    /// obeys it exactly as a keyed row does: the §20.1 copy carries forward
+    /// whatever the instance holds, and a `$seed` member the copy left EMPTY is
+    /// filled ([`fill_singleton`]) while an occupied one is untouched. A `$bundle`
+    /// singleton member is the other rule — [`merge_bundle`] three-way merges it.
     ApplyIfAbsent,
     /// Installation `$data` overlay (§13.3): applied onto an instance the package
     /// `$data` seed already loaded. An ABSENT address is inserted like a fresh
@@ -56,7 +56,10 @@ pub(crate) enum SeedMode {
 }
 
 /// Admit every `$data` row into the prospective state, recording touched
-/// addresses for the final rule pass.
+/// addresses for the final rule pass, and return the §8.2 root-singleton members
+/// this seed pass APPLIED (empty unless a member actually took a value) — the
+/// §13.15 `$seeded` items of the singleton pass, reported by the caller at their
+/// name-only §D.3 paths.
 ///
 /// §9.1 admits seed data in two phases so member order carries no meaning: first
 /// every seeded row identity and supplied value is staged into one prospective
@@ -66,8 +69,9 @@ pub(crate) enum SeedMode {
 ///
 /// `mode` selects the collision policy (§9.1 genesis vs §13.13 update
 /// apply-if-absent). On the update path an occupied address is retained rather
-/// than rejected, and the §8.2 singleton — already carried by the §20.1 copy — is
-/// left untouched (a documented seam), so only keyed-collection rows reconcile.
+/// than rejected — at a keyed row address AND at a §8.2 root-singleton member
+/// alike, because §13.13's "`$seed` applies where absent" names an ADDRESS and
+/// excludes no container.
 pub(crate) fn admit(
     compiled: &Compiled,
     ctx: &EvalCtx<'_>,
@@ -76,6 +80,20 @@ pub(crate) fn admit(
     data: &DocValue,
     mode: SeedMode,
 ) -> Result<(), Rejection> {
+    admit_reporting(compiled, ctx, prospective, touched, data, mode).map(|_| ())
+}
+
+/// [`admit`], returning the root-singleton members it applied. Kept separate so
+/// the genesis and §13.3 overlay call sites — which report no `$seeded` items —
+/// need not thread a value they discard.
+pub(crate) fn admit_reporting(
+    compiled: &Compiled,
+    ctx: &EvalCtx<'_>,
+    prospective: &mut Prospective,
+    touched: &mut Vec<RowAddress>,
+    data: &DocValue,
+    mode: SeedMode,
+) -> Result<BTreeSet<String>, Rejection> {
     let Some(collections) = doc::object(data) else {
         return Err(Rejection::new(RejectionReason::Malformed, "`$data` must be an object"));
     };
@@ -91,26 +109,40 @@ pub(crate) fn admit(
         }
         // §8.2/§9.1: a `$data` member naming a singleton root field seeds that
         // field; an unknown or computed member is not seedable. §4.2/C.4: the value
-        // (and each static-struct member) is a literal-or-expression position. On
-        // update the §20.1 singleton copy owns the reserved row, so a singleton
-        // `$data` member is left to that carry (a documented §13.13 seam).
+        // (and each static-struct member) is a literal-or-expression position.
         // Materialized INSIDE this loop, in member order, so a `= expr` singleton
-        // value observes exactly the seed state the members before it staged.
-        if mode == SeedMode::Genesis
+        // value observes exactly the seed state the members before it staged. The
+        // §13.3 overlay stages no root member (see the `Overlay` arm below), so it
+        // does not materialize one either — evaluating a value it would discard
+        // could only turn a discarded member into a rejection.
+        if mode != SeedMode::Overlay
             && let Some(value) = singleton_member(ctx, prospective, &member.name.text, &member.value)?
         {
             singleton.insert(member.name.text.clone(), value);
         }
     }
-    // §8.2 singleton seeding/defaulting/normalization runs only at genesis; on the
-    // update path the §20.1 singleton copy and its `apply_singleton_*` passes in
-    // `build_migrated` already staged the reserved row.
-    if mode == SeedMode::Genesis {
-        if !singleton.is_empty() {
-            prospective.insert(crate::singleton::address(), singleton);
+    let mut applied = BTreeSet::new();
+    match mode {
+        // §9.1 genesis: every supplied member seeds the reserved row outright, then
+        // the singleton defaults and normalizers resolve around it.
+        SeedMode::Genesis => {
+            if !singleton.is_empty() {
+                prospective.insert(crate::singleton::address(), singleton);
+            }
+            apply_singleton_defaults(compiled, ctx, prospective)?;
+            apply_singleton_normalizes(compiled, ctx, prospective)?;
         }
-        apply_singleton_defaults(compiled, ctx, prospective)?;
-        apply_singleton_normalizes(compiled, ctx, prospective)?;
+        // §13.13 apply-if-absent, one container up: the §20.1 copy has already
+        // carried whatever the instance holds at the root, so a seeded member fills
+        // only where that carry left nothing.
+        SeedMode::ApplyIfAbsent => applied = fill_singleton(prospective, singleton),
+        // §13.3 overlay: the installation `$data` overlays a package `$seed` that
+        // has already loaded. A root-singleton member of an installation overlay is
+        // a documented seam — the overlay's row rules are specified for keyed
+        // collections ("merges keyed child collections by key") and §13.3 fixes no
+        // replace-versus-retain rule at the root — so it stages nothing here rather
+        // than picking a side.
+        SeedMode::Overlay => {}
     }
     // Phase two: with the full prospective state in place, resolve each staged
     // row's defaults and normalization against it (§9.1 "defaults are then
@@ -141,7 +173,33 @@ pub(crate) fn admit(
         prospective.replace(&entry.address, fields);
         touched.push(entry.address.clone());
     }
-    Ok(())
+    Ok(applied)
+}
+
+/// §13.13 "`$seed` applies where absent" at a §8.2 root-singleton address: fill
+/// every seeded member the reserved row holds nothing at, leave every occupied one
+/// exactly as it is, and return the names actually filled.
+///
+/// The rule is one-directional by construction — nothing here can overwrite or
+/// remove — which is what distinguishes `$seed` from the `$bundle` three-way merge
+/// ([`merge_singleton`]) at the same addresses. [`held`] supplies the one spelling
+/// of *nothing*: a member the §20.1 copy carried as `Value::None` (the §5.1
+/// absent-fill) holds no more than a member the copy never carried at all, so a
+/// release's newly seeded starting value reaches both.
+fn fill_singleton(prospective: &mut Prospective, seeded: FieldMap) -> BTreeSet<String> {
+    let address = crate::singleton::address();
+    let mut fields = prospective.get(&address).cloned().unwrap_or_else(FieldMap::new);
+    let mut applied = BTreeSet::new();
+    for (name, value) in seeded {
+        if held(Some(&fields), &name).is_none() {
+            fields.insert(name.clone(), value);
+            applied.insert(name);
+        }
+    }
+    if !applied.is_empty() {
+        prospective.insert(address, fields);
+    }
+    applied
 }
 
 /// §13.13: reconcile the target package's `$bundle` against the migrated instance
