@@ -1,0 +1,47 @@
+{
+  format: 1
+  name: genesis-required-singleton-member-unpopulated-rejects
+  suite: static
+  spec: ["#loading", "§9.1", "#state-model", "§5.1", "#mutations", "§8.2", "#runtime", "§22.1"]
+  note: '''
+    §22.1 lists "field and shape types" among the STATE CONSTRAINTS, which "hold
+    in every committed state" — the very first one included. §8.2 makes a writable
+    non-collection root member durable state at its own address, and §5.1 gives a
+    field a value at insertion either from the caller or from a declared default.
+    `none` is absence rather than a value (§5.5, Annex A.1), so a NON-optional
+    root member with no default and no `$seed`/`$bundle` value has no admissible
+    committed state at all: genesis must refuse it.
+
+    §9.1 fixes the discipline: seed data "passes through the same defaults,
+    normalization, checks, key, ref, uniqueness, bucket, and meter rules as
+    mutation inserts", so genesis is judged by the same population rule every
+    later state is. The refusal is FAIL-CLOSED AT CREATION — an instance created
+    with a member that no committed state can satisfy would otherwise be
+    unmigratable, since the same rule refuses it on the first update (§20.1
+    checks the complete prospective target) and blames a migration that changed
+    nothing.
+
+    `theme` is bundled so the instance holds root state and the reserved row
+    exists; `motto` is the required member left unpopulated. The sibling case
+    `genesis-optional-singleton-member-absent-admits` pins the other side: an
+    OPTIONAL member holding nothing is admissible, so the rejection is about the
+    declared shape and not about absence itself.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.reqsing@1.0.0"
+    $model: {
+      motto: "text"
+      theme: "text?"
+      settings: { $view: ". { motto, theme }" }
+    }
+    $bundle: { theme: "T1" }
+  }
+
+  expect: {
+    outcome: rejected
+    violates: ["#runtime", "§22.1", "#state-model", "§5.1", "#loading", "§9.1"]
+    detail: "the root member `motto` is declared `text` (non-optional) with no default and no `$seed`/`$bundle` value, so the genesis state would leave it unpopulated"
+  }
+}

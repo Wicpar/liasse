@@ -505,6 +505,7 @@ pub(crate) fn finalize(
         let Some(name) = decl.last().cloned() else { continue };
         let Some(collection) = compiled.collection_at(&decl) else { continue };
         check_key_components(address)?;
+        require_populated(collection, fields, address)?;
         check_fields(collection, fields, address, ctx, prospective)?;
         // §5.2/§5.4/§5.5: a row or static-struct `$check` reads the COMPLETE
         // prospective row — plain fields, static structs, computed values folded in
@@ -532,7 +533,78 @@ pub(crate) fn finalize(
             crate::bucket::check_interval(bucket, collection, fields, created, ctx.now, &address.render())?;
         }
     }
+    // §8.2/§22.1: the root singleton is judged whether or not its reserved row
+    // exists. Every other row above is judged only because something touched it —
+    // an untouched row's constraints already held when it was admitted — but §8.2
+    // gives the instance exactly ONE root, which is durable state at every moment
+    // of the instance's life, not a row that may or may not have been created. A
+    // required root member left unpopulated is therefore inadmissible even when
+    // nothing wrote the reserved row at all, and there is no touched address to
+    // carry that judgement.
+    require_singleton_populated(compiled, prospective)
+}
+
+/// Reject a required field this row leaves unpopulated (§5.1/§22.1).
+///
+/// §22.1 lists "field and shape types" among the state constraints that hold in
+/// EVERY committed state, and `none` is absence rather than a value (§5.5, A.1):
+/// a non-optional, non-set field holding nothing is a state in which the declared
+/// shape does not hold. This is judged at the one place every admitting path
+/// converges on — genesis (§9.1), an ordinary transition (§8.8), a §13.3 overlay,
+/// and the §20.1 migrated target — so a shape is fail-closed at CREATION and can
+/// never be trapped into an instance that a later update refuses.
+///
+/// A ref is left to [`check_refs`] (§5.6), which distinguishes a required ref with
+/// no target from one that is merely absent and says so with a better message.
+fn require_populated(
+    collection: &CompiledCollection,
+    fields: &FieldMap,
+    address: &RowAddress,
+) -> Result<(), Rejection> {
+    for field in &collection.fields {
+        if field.reference.is_some() || field.element_reference.is_some() {
+            continue;
+        }
+        if is_required(&field.ty) && matches!(fields.get(&field.name), None | Some(Value::None)) {
+            // §D.3: the reserved singleton row is not part of the address space, so
+            // a root member is located by its own name-only path (`/motto`), never
+            // by the storage row that happens to hold it.
+            let at = if address.steps().next().is_some_and(|step| step.name().as_str() == crate::singleton::ROOT_NAME)
+            {
+                format!("/{}", field.name)
+            } else {
+                address.render()
+            };
+            return Err(Rejection::new(
+                RejectionReason::Check,
+                format!("required field `{}` is unpopulated", field.name),
+            )
+            .at(at));
+        }
+    }
     Ok(())
+}
+
+/// Whether a field must carry a value (§5.1): a non-optional, non-set scalar or
+/// struct. An optional field may stay `none`; a set defaults to empty (§5.5).
+fn is_required(ty: &liasse_value::Type) -> bool {
+    !matches!(ty, liasse_value::Type::Optional(_) | liasse_value::Type::Set(_))
+}
+
+/// The §8.2 root singleton's required-member judgement, over the reserved row's
+/// CURRENT contents or an empty row when it does not exist.
+///
+/// The reserved row materializes only once some member is written (§8.2 keeps it
+/// out of the address space, §D.3), so "the row is absent" and "every member holds
+/// nothing" are the same state — and both leave a required root member
+/// unpopulated. Judging the absent row as an empty one is what makes the rule
+/// depend on the declared shape rather than on whether a sibling member happened
+/// to materialize the storage.
+fn require_singleton_populated(compiled: &Compiled, prospective: &Prospective) -> Result<(), Rejection> {
+    let address = crate::singleton::address();
+    let empty = FieldMap::new();
+    let fields = prospective.get(&address).unwrap_or(&empty);
+    require_populated(&compiled.root_singleton, fields, &address)
 }
 
 /// Reject a row whose key flattens to an empty canonical component — an empty

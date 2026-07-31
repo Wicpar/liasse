@@ -1,0 +1,33 @@
+{
+  format: 1
+  name: genesis-optional-singleton-member-absent-admits
+  suite: scenario
+  spec: ["#loading", "§9.1", "#state-model", "§5.1", "#mutations", "§8.2"]
+  note: '''
+    The admissible side of the same rule its sibling
+    `genesis-required-singleton-member-unpopulated-rejects` refuses. §5.1 makes an
+    OPTIONAL field's absence a value of its declared shape ("An omitted optional
+    field is `none`", §9.1), so a §8.2 root member declared `text?` and supplied by
+    neither `$seed`/`$bundle` nor a default is admissible at genesis and simply
+    reads absent. The genesis population rule is therefore about the DECLARED
+    SHAPE, not about absence.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.optsing@1.0.0"
+    $model: {
+      motto: "text?"
+      theme: "text?"
+      $public: {
+        settings: { $view: ". { motto, theme }" }
+      }
+    }
+    $bundle: { theme: "T1" }
+  }
+
+  steps: [
+    { watch: "public.settings", id: "w0"
+      expect_init: { value: { motto: "$absent", theme: "T1" } } }
+  ]
+}

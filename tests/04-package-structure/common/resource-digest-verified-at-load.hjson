@@ -3,7 +3,19 @@
   name: resource-digest-verified-at-load
   suite: scenario
   spec: ["#package-structure", "§4.1", "#history", "§19.5", "#annex-d", "§D.5"]
-  note: "Happy path for §4.1 $resources: descriptor with $path/$media/$sha256, entry bytes matching the declared digest. 'Every declared digest is verified before activation' — here verification succeeds and the artifact activates. Uses the extension steps documented in NOTES.md."
+  note: '''
+    Happy path for §4.1 $resources: descriptor with $path/$media/$sha256, entry
+    bytes matching the declared digest. "Every declared digest is verified before
+    activation" — here verification succeeds and the artifact activates. Uses the
+    extension steps documented in NOTES.md.
+
+    The model is incidental to the rule under test and carries a single OPTIONAL
+    root member. §22.1 makes "field and shape types" hold in every committed
+    state, and `none` is absence rather than a value (§5.5, A.1), so a
+    NON-optional root member with no default and no `$seed`/`$bundle` value has no
+    admissible genesis state (§5.1/§8.2): the load would then be refused for a
+    reason that has nothing to do with `$resources`.
+  '''
   tags: ["artifact"]
 
   package: {
@@ -17,7 +29,7 @@
       }
     }
     $model: {
-      note: "text"
+      note: "text?"
     }
   }
 

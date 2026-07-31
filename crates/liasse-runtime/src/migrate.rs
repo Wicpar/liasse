@@ -730,13 +730,17 @@ fn build_migrated<G: crate::generator::Generators>(
         // set is exactly the prospective state after it.
         addresses = prospective.working().keys().cloned().collect();
     }
-    // §5.1/§20.1: every required field must carry a value in the state that
-    // commits. Judged HERE, on the complete prospective target, so a value the
-    // release itself supplies through `$seed`/`$bundle` counts — see
-    // [`require_populated`].
-    for address in &addresses {
-        require_populated(&target.compiled, &prospective, address)?;
-    }
+    // §5.1/§20.1/§22.1: every required field must carry a value in the state that
+    // commits, and the complete prospective target is checked under ordinary keys,
+    // refs, uniqueness, and checks. Both are the ONE final rule pass
+    // ([`rules::finalize`]), run HERE — after the §20.1 copy, the `$from`/`$as`
+    // mappings, the `$migrations` program, the `$seed` apply-if-absent pass and the
+    // §13.13 `$bundle` merge — because those last two are the release supplying its
+    // own values: a required field the migration itself does not carry but the
+    // release BUNDLES is populated in the state that commits, so judging population
+    // any earlier would refuse a perfectly complete release. It is the same
+    // discipline [`coerce_migrated`] applies to a required ref, which it leaves to
+    // the refs check for exactly this reason.
     rules::finalize(&target.compiled, &ctx, &prospective, &addresses)?;
     // §20.1: the migrated state runs the SAME eager admission suite an ordinary
     // transition does, not just keys/refs/uniqueness/checks. §14.5/§14.7: reject a
@@ -1036,8 +1040,9 @@ fn run_program(
 /// - a ref field: a value produced as a plain scalar key (a program's literal
 ///   `team: "ghost"`) decodes to a typed ref so the §5.6 refs check resolves it;
 ///
-/// Population is NOT judged here — [`require_populated`] judges it on the complete
-/// prospective target, once the release's own `$seed`/`$bundle` have applied.
+/// Population is NOT judged here — the final [`rules::finalize`] pass judges it on
+/// the complete prospective target, once the release's own `$seed`/`$bundle` have
+/// applied.
 ///
 /// The rule that a value "is compatible" iff it decodes under the target type is
 /// pinned to §20.1 ("the *compatible* value is copied") and §22.1 (field/shape
@@ -1096,8 +1101,8 @@ fn coerce_migrated(
                 changed = true;
             }
         }
-        // The required-population check is NOT made here: it is made by
-        // [`require_populated`], over the COMPLETE prospective target, after the
+        // The required-population check is NOT made here: it is made by the final
+        // [`rules::finalize`] pass, over the COMPLETE prospective target, after the
         // §13.13 `$seed`/`$bundle` passes have supplied their values. Judging it at
         // this point would reject a release that populates the field itself — the
         // same reason the ref arm above defers to the refs check. Nothing is
@@ -1132,50 +1137,6 @@ fn coerce_migrated(
         prospective.replace(address, fields);
     }
     Ok(())
-}
-
-/// Reject a required field left unpopulated in the prospective target (§5.1/§20.1).
-///
-/// This runs over the COMPLETE prospective state — after the §20.1 copy, the
-/// `$from`/`$as` mappings, the `$migrations` program, the `$seed` apply-if-absent
-/// pass AND the §13.13 `$bundle` merge — because those last two are the release
-/// supplying its own values. A required field the migration itself does not carry
-/// but the release BUNDLES is populated in the state that commits, so judging
-/// population before the bundle ran would refuse a perfectly complete release. It
-/// is the same discipline [`coerce_migrated`] already applies to a required ref,
-/// which it leaves to the refs check for exactly this reason.
-///
-/// The rejection is unchanged in kind, message and coordinate: a field still absent
-/// (or `none`) once the whole release has been applied refuses the update.
-fn require_populated(
-    compiled: &Compiled,
-    prospective: &Prospective,
-    address: &RowAddress,
-) -> Result<(), Rejection> {
-    let decl: Vec<String> = address.steps().map(|s| s.name().as_str().to_owned()).collect();
-    let Some(collection) = compiled.collection_at(&decl) else { return Ok(()) };
-    let Some(fields) = prospective.get(address) else { return Ok(()) };
-    for field in &collection.fields {
-        // A ref is the refs check's business (§5.6): it distinguishes a required
-        // ref with no target from one that is merely absent, with a better message.
-        if field.reference.is_some() || field.element_reference.is_some() {
-            continue;
-        }
-        if is_required(&field.ty) && matches!(fields.get(&field.name), None | Some(Value::None)) {
-            return Err(Rejection::new(
-                RejectionReason::Check,
-                format!("migration left required field `{}` unpopulated", field.name),
-            )
-            .at(address.render()));
-        }
-    }
-    Ok(())
-}
-
-/// Whether a migrated field must carry a value: a non-optional, non-set scalar or
-/// struct (§5.1). An optional field may stay `none`; a set defaults to empty.
-fn is_required(ty: &Type) -> bool {
-    !matches!(ty, Type::Optional(_) | Type::Set(_))
 }
 
 /// Re-address every migrated row whose COERCED key differs from the address
