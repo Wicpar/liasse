@@ -127,6 +127,12 @@ const SKIP: &[(&str, &str)] = &[
         "composite-key agreement admission over seeded rows (§9.1); load-admission seam",
     ),
     (
+        "09-loading-bootstrap/genesis-required-singleton-member-unpopulated-rejects",
+        "required-field population over the materialized §8.2 genesis state (§5.1/§22.1); \
+         load-admission seam — the rule fires in the runtime's genesis rule pass, covered by \
+         liasse-runtime `genesis_required_singleton`, like the sibling seed-admission cases",
+    ),
+    (
         "09-loading-bootstrap/seed-noncanonical-key-alias-rejected",
         "Annex D canonical key-text check on seed keys (§9/Annex D); load-admission seam",
     ),
