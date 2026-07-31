@@ -1,0 +1,45 @@
+{
+  format: 1
+  name: seed-and-bundle-supply-same-address-rejected
+  suite: static
+  spec: ["#package-structure", "§4.1", "#modules", "§13.13"]
+  note: '''
+    §4.1: "`$data` is an alias of `$seed`; a definition declaring both `$data` and
+    `$seed` is rejected, and an address supplied by both `$seed` (or `$data`) and
+    `$bundle` is a static load error."
+
+    The two members carry DISTINCT OWNERSHIP, which is what makes the overlap
+    undecidable rather than merely redundant. §4.1: `$seed` "is starting data the
+    application's users own once instantiated", applied on a later update "only where
+    the seeded address is then absent", while `$bundle` "is package-authoritative
+    content the package itself maintains across releases", three-way merged on every
+    update. §13.13 gives the same address two contradictory update rules — never
+    overwrite it, and reconcile it against the new bundle — so a package that supplies
+    one address from both has no admissible update semantics, and §4.1 refuses the
+    DEFINITION rather than picking a side at update time.
+
+    Here the collection row `/notes[n1]` is supplied by both. The row's own body
+    differs between the two, but that is incidental: the rule is about the address,
+    not about the values disagreeing.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.dualowner@1.0.0"
+    $model: {
+      notes: {
+        $key: "id"
+        id: "text"
+        body: "text"
+      }
+    }
+    $seed: { notes: { n1: { body: "owned by the instance's users" } } }
+    $bundle: { notes: { n1: { body: "owned by the package" } } }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#package-structure", "§4.1"]
+    detail: "the row `notes.n1` is supplied by both `$seed` and `$bundle`; an address is owned by exactly one of them"
+  }
+}

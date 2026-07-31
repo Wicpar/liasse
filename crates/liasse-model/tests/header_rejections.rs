@@ -137,6 +137,60 @@ fn unsupported_timestamp_precision_rejected() {
     assert!(built.has_code(code::HEADER));
 }
 
+/// §4.1: "an address supplied by both `$seed` (or `$data`) and `$bundle` is a
+/// static load error". The two members carry distinct OWNERSHIP — `$seed` is
+/// starting data the application's users own once instantiated, `$bundle` is
+/// package-authoritative content the package maintains across releases (§13.13
+/// applies apply-if-absent to one and a three-way merge to the other) — so an
+/// address owned by both has two contradictory update rules and no way to pick.
+///
+/// A keyed-collection ROW is such an address: `notes.n1` here is supplied by
+/// `$seed` and by `$bundle`, which the rejection must name.
+#[test]
+fn row_supplied_by_both_seed_and_bundle_rejected() {
+    let built = build(&app(
+        "\"$model\": { \"notes\": { \"$key\": \"id\", \"id\": \"text\", \"body\": \"text\" } }, \
+         \"$seed\": { \"notes\": { \"n1\": { \"body\": \"user\" } } }, \
+         \"$bundle\": { \"notes\": { \"n1\": { \"body\": \"package\" } } }",
+    ));
+    assert!(built.has_code(code::SEED), "the §4.1 overlap is a seed-class rejection: {}", built.rendered());
+    assert!(
+        built.rendered().contains("notes.n1"),
+        "§4.1: the rejection names the shared ADDRESS, not just the member: {}",
+        built.rendered(),
+    );
+    assert!(built.has_hint());
+}
+
+/// The same rule through the `$data` alias (§4.1: "`$data` is an alias of
+/// `$seed`"), at a §8.2 root-singleton member — a whole-address overlap rather
+/// than a shared row key.
+#[test]
+fn root_member_supplied_by_both_data_and_bundle_rejected() {
+    let built = build(&app(
+        "\"$model\": { \"motto\": \"text\" }, \"$data\": { \"motto\": \"user\" }, \
+         \"$bundle\": { \"motto\": \"package\" }",
+    ));
+    assert!(built.has_code(code::SEED), "{}", built.rendered());
+    assert!(built.rendered().contains("motto"), "{}", built.rendered());
+    assert!(built.has_hint());
+}
+
+/// The control that keeps the two rejections above from passing for the wrong
+/// reason: §4.1 forbids a SHARED address, not the coexistence of `$seed` and
+/// `$bundle`. Disjoint rows of the same collection, and disjoint root members,
+/// both load.
+#[test]
+fn disjoint_seed_and_bundle_addresses_accepted() {
+    let built = build(&app(
+        "\"$model\": { \"motto\": \"text\", \"theme\": \"text\", \
+         \"notes\": { \"$key\": \"id\", \"id\": \"text\", \"body\": \"text\" } }, \
+         \"$seed\": { \"motto\": \"user\", \"notes\": { \"n1\": { \"body\": \"user\" } } }, \
+         \"$bundle\": { \"theme\": \"dark\", \"notes\": { \"n2\": { \"body\": \"package\" } } }",
+    ));
+    built.expect_ok();
+}
+
 #[test]
 fn resource_descriptor_missing_member_rejected() {
     let built = build(&app(
