@@ -537,6 +537,8 @@ Set of refs:
 }
 ```
 
+A `$set` declaration object is closed: it carries `$set` and nothing else (§2.5). A `$check` or `$normalize` beside `$set` is a static load error, not a discarded member — a constraint over the membership belongs on the **containing** shape's `$check` (§5.10), which reads the set as an ordinary field.
+
 The value of `$set` is the shape of every member. A member shape is a present value type — `none` is absence, not a value, so it is never a set member, and the member shape of a set is never optional: a set element type spelled `T?` is a **static error** (Annex A.1), rejected at model build, not a silently accepted shape. (A set *of* a struct that merely carries an optional member is fine; only a directly optional element is the error.) Adding `none` to a set is a no-op that leaves the set unchanged, mirroring set membership below. Initial membership comes from data or mutations. Sets have canonical read order from the element type's total order. Membership is mathematical: repeated input values collapse to one member, adding an existing member leaves the set unchanged, and removing an absent member leaves it unchanged.
 
 A map is subject to the same rule on both of its shapes (§5.4, Annex A.2: `{ $key: K, $value: V }`). A map never stores a `none` value — absence is the key not being present — so a map value type is never optional, and a `$value` spelled `V?` is a **static error** (Annex A.1), rejected at model build. From the other side, `none` is absence and never a value, so it can never be carried as a map key: a `$key` type spelled `K?` is likewise a **static error** (Annex A.1), rejected at model build.
@@ -919,7 +921,7 @@ This constraint applies to every projection that declares a synthetic `$key`, wh
 
 A sort defines deterministic row order; bounds select a finite ordered region. Stable order is required for windows, allocation, pagination, and reproducible results.
 
-Collections and views MAY declare `$sort`:
+Collections and views MAY declare `$sort`. A collection declares it as a shape member; a view spells it **inside** its projection expression (§C.7, as every example here does) — a `$view` declaration object is closed and carries no sibling `$sort` (§2.5). The collection member form:
 
 ```hjson
 "$sort": ["name", "id"]
