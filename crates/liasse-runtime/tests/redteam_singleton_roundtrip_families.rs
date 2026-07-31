@@ -213,6 +213,52 @@ fn singleton_merge_combines_and_conflicts_correctly() {
     );
 }
 
+/// §5.5/§8.2/§19.10: a root `$set`/`map` member NO write has ever touched reads as
+/// its empty container, and reads as the SAME empty container after an export/restore
+/// round trip.
+///
+/// This is the round-trip half of the `none`-versus-empty correction (see
+/// `set_fields.rs::root_singleton_containers_start_empty`, which pins the read
+/// itself). It matters here because the empty container is resolved from the DECLARED
+/// SHAPE at materialization, not stored: §8.2 gives the instance exactly one root
+/// whether or not any member has been written, so absence in the reserved row is the
+/// canonical storage of §5.5's empty container. The artifact therefore carries
+/// nothing at these addresses — `StateSection::capture` copies the reserved row's
+/// stored fields, and this instance has no reserved row at all — and the restored
+/// instance re-derives `[]`/`{}` from the same model. `flag` is the control: a member
+/// that IS written must survive as stored state, so the round trip is proved to carry
+/// real singleton state in the same breath.
+const EMPTY_APP: &str = r#"{
+  "$liasse": 1, "$app": "t.empty@1.0.0",
+  "$model": {
+    "tags": { "$set": "text" },
+    "settings": "{ $key: text, $value: text }",
+    "flag": "text",
+    "readout": { "$view": ". { tags, settings, flag }" },
+    "$mut": { "set_flag": ".flag = @v" }
+  },
+  "$data": { "flag": "seed" }
+}"#;
+
+#[test]
+fn unwritten_root_containers_roundtrip_as_empty() {
+    let engine = Engine::load(store("s-empty"), EMPTY_APP, &mut generator()).expect("loads");
+    let empty_set = Value::Set(std::collections::BTreeSet::new());
+    let empty_map = Value::Map(std::collections::BTreeMap::new());
+    assert_eq!(read(&engine, "tags"), Some(empty_set.clone()), "§5.5: an untouched root `$set` is empty");
+    assert_eq!(read(&engine, "settings"), Some(empty_map.clone()), "§5.5: an untouched root `map` is empty");
+
+    let restored = roundtrip("s-empty", &engine);
+    assert_eq!(
+        read(&restored, "tags"),
+        Some(empty_set),
+        "§19.10: the untouched root `$set` reads as the empty set after restore too — the empty \
+         container follows the declared shape, so it neither needs nor gains an artifact entry",
+    );
+    assert_eq!(read(&restored, "settings"), Some(empty_map), "§19.10: the untouched root `map` stays empty");
+    assert_eq!(read(&restored, "flag"), Some(text("seed")), "control: written singleton state still round-trips");
+}
+
 /// §19.10 regression: a collections-only package (no singleton reserved row) still
 /// round-trips, so Fix 3 introduced no spurious `$root` handling that breaks the
 /// singleton-free case.

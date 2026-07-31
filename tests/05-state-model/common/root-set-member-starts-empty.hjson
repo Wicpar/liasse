@@ -1,0 +1,52 @@
+{
+  format: 1
+  name: root-set-member-starts-empty
+  suite: scenario
+  spec: ["#state-model", "§5.5", "§5.1", "#mutations", "§8.2"]
+  note: '''
+    The §8.2 ROOT half of `omitted-child-collections-start-empty`. §5.5: "When a
+    containing row or struct is created, an omitted child set or keyed collection
+    starts empty; an omitted non-optional map-valued field likewise starts as the
+    empty map, never `none` — the set-analogous default, so the field's declared
+    shape holds in every committed state." §8.2 says the root IS such a container at
+    every moment: "The package root is durable state at every moment of an instance's
+    life: the instance holds exactly one root whether or not any member has been
+    written ... no written member yet is not an exemption." So a root `$set` and a
+    root map-valued member that nothing has written hold the EMPTY container, not
+    `none` — `none` is absence rather than a value (§5.1, A.1), and absence would mean
+    the declared shape does not hold in a state §8.2 says the instance is always in.
+
+    §5.5 gives the rule to "a containing row or struct" alike, so `cfg.labels` — a
+    `$set` inside a root static struct whose sibling `name` IS seeded — is empty on
+    the same reading.
+
+    §5.1 is the companion: it exempts "a set or map-valued field" from the
+    required-population rule for exactly this reason, so declaring `settings` without
+    supplying it is admissible rather than an unpopulated required member.
+
+    Wire (A.1/A.2): an empty set is `[]`, and a map is an array of `[key, value]`
+    pairs, so an empty map is `[]` too. Neither is `$absent`.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.rootempty@1.0.0"
+    $model: {
+      flags: { $set: "text" }
+      settings: "{ $key: text, $value: text }"
+      cfg: {
+        name: "text"
+        labels: { $set: "text" }
+      }
+      $public: {
+        readout: { $view: ". { flags, settings, labels: .cfg.labels }" }
+      }
+    }
+    $data: { cfg: { name: "n" } }
+  }
+
+  steps: [
+    { watch: "public.readout", id: "w0"
+      expect_init: { value: { flags: [], settings: [], labels: [] } } }
+  ]
+}

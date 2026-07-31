@@ -93,11 +93,12 @@ fn absent_value(ty: &liasse_value::Type) -> Value {
 /// The §5.5 empty-container default a non-optional `set`/`map` takes when omitted —
 /// an empty set or empty map — or `None` for any other declared type (a scalar, an
 /// `optional`, a `struct`), which carries no container default. This is the single
-/// seam the "row OR struct" empty-container rule flows through: the row field
-/// absent-fill ([`absent_value`], reached from [`apply_defaults`]) and the static
-/// struct member fill ([`complete_struct_containers`]) both resolve their omitted
-/// containers here, so the two paths cannot drift.
-fn empty_container(ty: &liasse_value::Type) -> Option<Value> {
+/// seam the "row OR struct OR §8.2 root" empty-container rule flows through: the row
+/// field absent-fill ([`absent_value`], reached from [`apply_defaults`]), the static
+/// struct member fill ([`complete_struct_containers`]), and the root-singleton read
+/// ([`crate::singleton::member_value`]) all resolve their omitted containers here, so
+/// the paths cannot drift.
+pub(crate) fn empty_container(ty: &liasse_value::Type) -> Option<Value> {
     match ty {
         liasse_value::Type::Set(_) => Some(Value::Set(std::collections::BTreeSet::new())),
         liasse_value::Type::Map(..) => Some(Value::Map(std::collections::BTreeMap::new())),
@@ -585,10 +586,19 @@ fn require_populated(
     Ok(())
 }
 
-/// Whether a field must carry a value (§5.1): a non-optional, non-set scalar or
-/// struct. An optional field may stay `none`; a set defaults to empty (§5.5).
+/// Whether a field must carry a value (§5.1): a non-optional, non-container scalar
+/// or struct. An optional field may stay `none`; §5.1 exempts a "set or map-valued
+/// field" by name, because an omitted one starts EMPTY rather than absent (§5.5) —
+/// the empty container IS the value its declared shape holds. Inside a keyed row the
+/// exemption is invisible ([`apply_defaults`] has already materialized the empty
+/// container before this runs), but at the §8.2 root nothing materializes the
+/// reserved row, so a root `map` member no write has touched reaches here holding
+/// nothing and would otherwise be refused a shape §5.1 declares admissible.
 fn is_required(ty: &liasse_value::Type) -> bool {
-    !matches!(ty, liasse_value::Type::Optional(_) | liasse_value::Type::Set(_))
+    !matches!(
+        ty,
+        liasse_value::Type::Optional(_) | liasse_value::Type::Set(_) | liasse_value::Type::Map(..)
+    )
 }
 
 /// The §8.2 root singleton's required-member judgement, over the reserved row's

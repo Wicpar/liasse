@@ -115,19 +115,47 @@ fn optionalize(ty: &Type) -> Type {
 }
 
 /// Fold every singleton root member of `shape` into read-facing cells over the
-/// stored singleton `fields`. An absent member reads as `none` (a struct member
-/// as an all-`none` sub-row), matching how a collection materializes an
-/// unwritten field.
+/// stored singleton `fields`. A member the storage holds nothing for reads as its
+/// §5.5 empty container when it is a `set`/`map` and as `none` otherwise (a struct
+/// member as a sub-row of the same, applied recursively), matching how a collection
+/// materializes an unwritten field once its insert has filled its containers.
 pub(crate) fn cells(model: &Model, shape: &Shape, fields: &FieldMap) -> Vec<(String, Cell)> {
     shape
         .members
         .iter()
         .filter_map(|member| {
-            member_type(model, &member.node)?;
-            let value = fields.get(member.name.as_str()).cloned().unwrap_or(Value::None);
+            let ty = member_type(model, &member.node)?;
+            let value = member_value(&ty, fields.get(member.name.as_str()));
             Some((member.name.as_str().to_owned(), node_cell(model, &member.node, value)))
         })
         .collect()
+}
+
+/// The read-facing value of one singleton member the storage holds `stored` for
+/// (§5.5/§8.2).
+///
+/// §8.2 makes the package root durable state at every moment of an instance's life:
+/// the instance holds exactly one root whether or not any member has been written,
+/// so "the reserved row is absent", "the member is absent from it" and "the member
+/// holds nothing" are one state — the same reading [`crate::rules`]' required-member
+/// judgement takes over the same row. §5.5 then decides what that state IS for a
+/// container: an omitted `set` (and, by the same rule, an omitted non-optional `map`)
+/// starts EMPTY, "so the field's declared shape holds in every committed state". The
+/// root takes that default exactly as a keyed row does; the difference is only that a
+/// row's insert materializes the container into storage while nothing materializes the
+/// root's, so absence is the root's canonical storage of the empty container and the
+/// read resolves it.
+///
+/// A member carried as `Value::None` — the §5.1 absent-fill a §20.1 compatible copy
+/// writes for a member the instance never held — is the same nothing as an absent one
+/// (A.1: `none` is absence, not a value), so both resolve identically and a set
+/// declared by a later release reads `[]` rather than `none` on the migrated instance.
+/// Every other member keeps `none`, which is what an unwritten optional means.
+fn member_value(ty: &Type, stored: Option<&Value>) -> Value {
+    match stored {
+        Some(value) if !matches!(value, Value::None) => value.clone(),
+        _ => crate::rules::empty_container(ty).unwrap_or(Value::None),
+    }
 }
 
 /// The read-facing cell of one singleton member: a static struct becomes a
@@ -144,15 +172,19 @@ fn node_cell(model: &Model, node: &Node, value: Value) -> Cell {
     }
 }
 
-/// A static struct value as a keyless row of its members' cells.
+/// A static struct value as a keyless row of its members' cells. A member the
+/// struct value holds nothing for takes the same §5.5 reading as a root member
+/// ([`member_value`]) — an omitted `set`/`map` inside a root static struct is the
+/// empty container, since §5.5 gives the rule to "a containing row or struct"
+/// alike — so `.cfg.labels` reads `[]` on a struct seeded without it.
 fn struct_row(model: &Model, shape: &Shape, value: Value) -> Row {
     let members = match value {
         Value::Struct(members) => members,
         _ => liasse_value::Struct::new(Vec::<(Text, Value)>::new()),
     };
     let cells = shape.members.iter().filter_map(|member| {
-        member_type(model, &member.node)?;
-        let field = members.get(member.name.as_str()).cloned().unwrap_or(Value::None);
+        let ty = member_type(model, &member.node)?;
+        let field = member_value(&ty, members.get(member.name.as_str()));
         Some((member.name.as_str().to_owned(), node_cell(model, &member.node, field)))
     });
     Row::new(RowId::leaf(0), Value::None, cells)

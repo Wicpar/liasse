@@ -118,6 +118,49 @@ const ROOT_FLAGS: &str = r#"{
   }
 }"#;
 
+/// §5.5/§8.2: the §8.2 root's omitted CONTAINERS start empty, exactly as an omitted
+/// container inside a created row or static struct does. §8.2 makes the package root
+/// durable state "at every moment of an instance's life ... whether or not any member
+/// has been written", so there is no unwritten-member exemption at the root: a `$set`
+/// no write has touched holds the empty set, a `map`-valued member the empty map, and
+/// a `$set` inside a root static struct the empty set — §5.5 gives its rule to "a
+/// containing row or struct" and §5.1 exempts "a set or map-valued field" from the
+/// required-population rule for exactly this reason.
+///
+/// Before the fix every one of these read `none` (the member was dropped from the
+/// projection entirely), and the root `map` member could not even be declared: genesis
+/// refused the package with "required field `settings` is unpopulated".
+const ROOT_CONTAINERS: &str = r#"{
+  "$liasse": 1,
+  "$app": "example.rootcontainers@1.0.0",
+  "$model": {
+    "flags": { "$set": "text" },
+    "settings": "{ $key: text, $value: text }",
+    "cfg": { "labels": { "$set": "text" }, "name": "text" },
+    "root_view": { "$view": ". { flags, settings, labels: .cfg.labels }" }
+  },
+  "$data": { "cfg": { "name": "n" } }
+}"#;
+
+#[test]
+fn root_singleton_containers_start_empty() {
+    let engine = load("rootcontainers", ROOT_CONTAINERS);
+    let view = engine.view_at_head("root_view").expect("view").expect("declared");
+    let row = &view.rows()[0];
+    match row.field("flags") {
+        Some(V::Set(members)) => assert!(members.is_empty(), "an untouched root `$set` is the EMPTY set"),
+        other => panic!("§5.5/§8.2: an untouched root `$set` reads as the empty set, got {other:?}"),
+    }
+    match row.field("settings") {
+        Some(V::Map(entries)) => assert!(entries.is_empty(), "an untouched root `map` member is the EMPTY map"),
+        other => panic!("§5.5/§8.2: an untouched root `map` member reads as the empty map, got {other:?}"),
+    }
+    match row.field("labels") {
+        Some(V::Set(members)) => assert!(members.is_empty(), "an omitted `$set` in a root struct is EMPTY"),
+        other => panic!("§5.5: an omitted `$set` inside a root static struct reads as the empty set, got {other:?}"),
+    }
+}
+
 #[test]
 fn root_singleton_set_add_and_remove_apply_and_noop() {
     let mut engine = load("rootset", ROOT_FLAGS);
@@ -125,12 +168,10 @@ fn root_singleton_set_add_and_remove_apply_and_noop() {
         let view = engine.view_at_head("root_view").expect("view").expect("declared");
         match view.rows()[0].field("flags") {
             Some(V::Set(members)) => members.iter().cloned().collect::<Vec<Value>>(),
-            // A root `$set` no write has yet touched materializes as `none` rather
-            // than the empty set §5.5 gives an omitted set inside a created row —
-            // a separate, unpinned question about when the §8.2 root counts as
-            // created. This case is about `+`/`-` REACHING the member, so it reads
-            // "nothing held yet" as the empty membership either way.
-            None | Some(V::None) => Vec::new(),
+            // §5.5/§8.2: a root `$set` no write has yet touched is the EMPTY set, so
+            // there is exactly one admissible spelling here — `none` is absence (A.1)
+            // and would mean the declared shape does not hold at a root that §8.2
+            // makes durable state at every moment.
             other => panic!("a root `$set` member reads as a set, got {other:?}"),
         }
     };
