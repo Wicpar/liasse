@@ -13,6 +13,7 @@ use crate::names::DeclName;
 use crate::report::{code, Reporter};
 use crate::state::{ExprSource, Member, Node, Reference, SetField, Shape};
 
+use super::closed::{self, closed_decl};
 use super::{absolute_path, placeholder, Builder};
 
 impl<'a> Builder<'a> {
@@ -40,12 +41,16 @@ impl<'a> Builder<'a> {
         // fails the load.
         let present: Vec<&str> =
             Self::KIND_MARKERS.iter().copied().filter(|m| value.member(m).is_some()).collect();
+        // The members these two guards reject by name, so the per-form §2.5
+        // closed-vocabulary check below does not report the same mistake twice.
+        let mut reported: Vec<&str> = Vec::new();
         // §5.4/C.2: `$value` COMPOSES with `$key` to put a declaration in map
         // form; beside any other kind marker it has no meaning, and beside none
         // at all it names no key type. Both are the same static error the
         // conflicting-marker rule above raises, named the same way, so a `$value`
         // never silently degrades the object to some other kind.
         if value.member("$value").is_some() {
+            reported.push("$value");
             let conflict = present.iter().copied().find(|m| *m != "$key");
             if let Some(other) = conflict {
                 reporter.reject_hint(
@@ -68,6 +73,7 @@ impl<'a> Builder<'a> {
             }
         }
         if present.len() > 1 {
+            reported.extend(present.iter().copied());
             reporter.reject_hint(
                 value.span,
                 code::SHAPE,
@@ -81,6 +87,7 @@ impl<'a> Builder<'a> {
             );
         }
         if value.member("$keyring").is_some() {
+            closed_decl(reporter, value, &reported, &closed::KEYRING);
             return self.keyring_node(reporter, value);
         }
         // §5.3/§14.4/§14.6: a source-backed bucket (its `$bucket` object declares
@@ -95,6 +102,7 @@ impl<'a> Builder<'a> {
         if value.member("$bucket").is_some()
             && (source_backed(value) || value.member("$key").is_none())
         {
+            closed_decl(reporter, value, &reported, &closed::SOURCE_BUCKET);
             return self.source_bucket_node(value, path);
         }
         if value.member("$key").is_some() {
@@ -109,12 +117,15 @@ impl<'a> Builder<'a> {
             }));
         }
         if let Some(set) = value.member("$set") {
+            closed_decl(reporter, value, &reported, &closed::SET);
             return self.set_node(reporter, value, set);
         }
         if let Some(view) = value.member("$view") {
-            return self.view_node(reporter, view);
+            closed_decl(reporter, value, &reported, &closed::VIEW);
+            return self.view_node(view);
         }
         if value.member("$ref").is_some() {
+            closed_decl(reporter, value, &reported, &closed::REF);
             return self.ref_node(reporter, value);
         }
         if let Some(en) = value.member("$enum") {
@@ -127,9 +138,11 @@ impl<'a> Builder<'a> {
             if REFINEMENTS.iter().any(|m| value.member(m).is_some()) {
                 return self.expanded_field(reporter, value);
             }
+            closed_decl(reporter, value, &reported, &closed::ENUM);
             return self.enum_node(reporter, en);
         }
         if value.member("$like").is_some() {
+            closed_decl(reporter, value, &reported, &closed::LIKE);
             return self.like_node(reporter, value, path);
         }
         if value.member("$type").is_some() {
@@ -185,18 +198,12 @@ impl<'a> Builder<'a> {
     /// stand-in expression `.` is never the ring's value — [`crate::resolve`]
     /// takes the view row directly — it only keeps the expression checker's
     /// well-formedness pass satisfied for a synthetic, non-authored view.
+    /// The declaration object's own closed vocabulary (nothing beside
+    /// `$keyring`) is enforced by [`closed_decl`] at the dispatch site, with
+    /// every other object form's.
     fn keyring_node(&self, reporter: &mut Reporter, value: &DocValue) -> Node {
         if let Some(keyring) = value.member("$keyring") {
             crate::keyring::check(reporter, &keyring.value);
-        }
-        for member in value.as_object().unwrap_or(&[]) {
-            if member.name.text != "$keyring" {
-                reporter.reject(
-                    member.span,
-                    code::RESERVED_MEMBER,
-                    format!("`{}` may not accompany a `$keyring` declaration", member.name.text),
-                );
-            }
         }
         Node::View(crate::state::ViewDecl {
             expr: ExprSource {
@@ -264,14 +271,19 @@ impl<'a> Builder<'a> {
         // member exactly like a scalar ref (§5.6), instead of flattening it to a
         // bare element type. Other object element shapes are a documented CORE seam
         // (element must be a scalar type).
-        if set.value.member("$ref").is_some()
-            && let Node::Reference(reference) = self.ref_node(reporter, &set.value)
-        {
-            return Node::Set(SetField {
-                element: Type::Ref(liasse_value::RefTarget::for_key(&reference.key_type)),
-                element_ref: Some(reference),
-                span: value.span,
-            });
+        if set.value.member("$ref").is_some() {
+            // The element object is a `$ref` declaration in its own right, and no
+            // dispatcher judged its shape markers, so its whole §2.5 vocabulary is
+            // checked here — an `$on_delete` element keeps its meaning, a `$check`
+            // element is named rather than dropped.
+            closed_decl(reporter, &set.value, &[], &closed::REF);
+            if let Node::Reference(reference) = self.ref_node(reporter, &set.value) {
+                return Node::Set(SetField {
+                    element: Type::Ref(liasse_value::RefTarget::for_key(&reference.key_type)),
+                    element_ref: Some(reference),
+                    span: value.span,
+                });
+            }
         }
         let element = self.shape_or_type(reporter, &set.value);
         Node::Set(SetField {
@@ -307,7 +319,9 @@ impl<'a> Builder<'a> {
         element
     }
 
-    fn view_node(&mut self, _reporter: &mut Reporter, view: &DocMember) -> Node {
+    /// The declaration object's closed vocabulary (nothing beside `$view`) is
+    /// enforced by [`closed_decl`] at the dispatch site.
+    fn view_node(&mut self, view: &DocMember) -> Node {
         // A `$view` value is an expression; the optional leading `=` marker
         // (§4.2) is accepted and stripped, so a scalar/aggregate view such as
         // `"= size(.docs)"` reads the same as a bare `".docs { ... }"`.

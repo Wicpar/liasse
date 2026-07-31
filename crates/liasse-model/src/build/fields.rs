@@ -121,6 +121,11 @@ impl<'a> Builder<'a> {
             });
         }
         if let Some(en) = value.member("$enum") {
+            // §2.5: the inline-enum object is closed on `$enum`. In a type
+            // position (a `$set` element, an expanded field's `$type`, a map's
+            // `$key`) nothing dispatched its shape markers, so its vocabulary is
+            // checked here rather than dropped.
+            super::closed::closed_decl(reporter, value, &[], &super::closed::ENUM);
             return Some(match self.enum_node(reporter, en) {
                 Node::Scalar(field) => field.ty,
                 _ => Type::Json,

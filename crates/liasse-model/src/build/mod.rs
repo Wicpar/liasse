@@ -12,8 +12,11 @@
 //! (`"T = default"`, `$enum`, expanded fields, `$check`) in [`fields`], keyed
 //! collections (`$key`/`$unique`) in [`keys`], and object-form dispatch with
 //! the non-scalar nodes (structs, sets, views, refs, opaque feature
-//! declarations) in [`shapes`].
+//! declarations) in [`shapes`]. The §2.5 closed-vocabulary rule each object form
+//! is held to — what its builder reads, and therefore what it may not silently
+//! drop — is declared once in [`closed`].
 
+mod closed;
 mod fields;
 mod keys;
 mod shapes;

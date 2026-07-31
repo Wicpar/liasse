@@ -1,0 +1,56 @@
+{
+  format: 1
+  name: set-declaration-rejects-foreign-member
+  suite: static
+  spec: ["#state-model", "§2.5", "§5.5", "§5.10"]
+  note:
+    '''
+    §2.5: "Unknown members in a declaration object are invalid unless that declaration
+    explicitly accepts application-defined member names."
+
+    §5.5 defines the set declaration as `$set` and its element shape — "the value of
+    `$set` is the shape of every member" — and gives it no other member and no
+    application-defined member names. A set node carries an element type and nothing
+    else: there is no place in it for a check, a default, or a normalization.
+
+    So a `$check` written INSIDE a `$set` declaration is an unknown member of a closed
+    declaration object, and §2.5 makes the definition invalid. That is the outcome this
+    case pins, and the reason it matters is that the alternative is silent: an
+    implementation that builds the set from `$set` and ignores what sits beside it loads
+    a package whose declared membership constraint does not exist and is never enforced
+    — no diagnostic at load, no rejection at admission, the constraint simply gone.
+
+    The supported spelling is not in doubt. §5.10 puts a constraint over a row's values
+    on the CONTAINING shape's `$check`, which is evaluated over the complete row and can
+    therefore see the set through `.flags`:
+
+      flags: { $set: "text" }
+      $check: [["size(.flags) <= 3", "at most three flags"]]
+
+    The rejected form here is the same intent written one level too deep. Both positions
+    the defect reaches are covered: `docs.flags` is a set inside a keyed row, and `tags`
+    is a set declared directly at the model root (§8.2).
+    '''
+
+  package: {
+    $liasse: 1
+    $app: "t.setmember@1.0.0"
+    $model: {
+      docs: {
+        $key: "id"
+        id: "text"
+        // Invalid: `$check` is not a member of a `$set` declaration (§2.5, §5.5).
+        // The membership constraint belongs on `docs`'s own `$check` (§5.10).
+        flags: { $set: "text", $check: ["size(.flags) <= 3", "at most three flags"] }
+      }
+      // The same mistake at the model root, where a set is a root singleton member.
+      tags: { $set: "text", $check: ["size(.tags) <= 5", "at most five tags"] }
+    }
+  }
+
+  expect: {
+    outcome: invalid
+    violates: ["#state-model", "§2.5", "§5.5"]
+    detail: "`$check` is an unknown member of a `$set` declaration; a membership constraint belongs on the containing shape's `$check` (§5.10)"
+  }
+}
