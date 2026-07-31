@@ -133,8 +133,9 @@ pub struct PreparedUpdate {
     /// §13.15 `$migrated`: the display paths a declared migration transform
     /// produced, in canonical path order.
     pub(crate) migrated: Vec<String>,
-    /// §13.15 `$seeded`: the display paths the apply-if-absent seed pass inserted,
-    /// in canonical path order.
+    /// §13.15 `$seeded`: the display paths the apply-if-absent seed pass inserted
+    /// and the §13.13 `$bundle` merge applied, in canonical path order — including
+    /// the name-only §D.3 path of every bundled §8.2 root-singleton member.
     pub(crate) seeded: Vec<String>,
 }
 
@@ -189,7 +190,10 @@ impl PreparedUpdate {
 
     /// §13.15 `$seeded`: the canonical display paths of seed rows the §13.13
     /// apply-if-absent pass would insert at an address the instance does not hold,
-    /// in canonical path order.
+    /// plus every address the `$bundle` three-way merge applies at, in canonical
+    /// path order. A bundled §8.2 root-singleton member appears at its name-only
+    /// §D.3 path (`/motto`); the reserved row that stores singleton state is not
+    /// part of the address space and never appears here.
     #[must_use]
     pub fn seeded(&self) -> &[String] {
         &self.seeded

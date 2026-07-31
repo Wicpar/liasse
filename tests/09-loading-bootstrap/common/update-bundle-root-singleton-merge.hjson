@@ -1,0 +1,95 @@
+{
+  format: 1
+  name: update-bundle-root-singleton-merge
+  suite: scenario
+  spec: ["#modules", "§13.13", "#state-model", "§8.2", "#package-structure", "§4.1", "#loading", "§9.2"]
+  note: '''
+    §13.13 scopes the `$bundle` three-way merge by ADDRESS and exempts no part
+    of the state tree: "For each bundled scalar or struct field, the new bundle
+    replaces the value only when the current value still equals the old bundle
+    value; otherwise the current value is retained." §8.2 makes a writable
+    non-collection root member durable state at its own address, and §4.1 lets
+    `$bundle` supply it — so a bundled root-singleton member reconciles on
+    update exactly as a bundled collection field does. The sibling pin
+    `13-modules/update-bundle-three-way-merge` fixes the collection half of the
+    same rule; this case fixes the root-singleton half.
+
+    One `host_load` from 1.0.0 to 1.1.0 (a compatible minor, §9.2/§20.1) covers
+    the whole matrix at once:
+      - motto:  never edited, so the current value still equals the OLD bundle
+                ("M1") and the NEW bundle replaces it ("M2");
+      - theme:  edited locally to "mine" before the update, so it no longer
+                equals the old bundle and the local value is RETAINED;
+      - later:  absent from the old bundle and from the instance — both hold
+                nothing, which compares equal — so the newly bundled value
+                FILLS it ("L2");
+      - legacy: dropped from the new bundle with the old bundled value ("G1")
+                still in place, so the package-authoritative value is
+                WITHDRAWN and the member reads absent.
+
+    Every member is optional (`text?`), so an absent one is admissible state
+    (§5.1) and the case isolates the merge rule rather than required-field
+    admission.
+  '''
+
+  package: {
+    $liasse: 1
+    $app: "t.bundlesing@1.0.0"
+    $model: {
+      motto: "text?"
+      theme: "text?"
+      later: "text?"
+      legacy: "text?"
+      $mut: {
+        set_theme: [
+          ".theme = @v"
+          "return . { theme }"
+        ]
+      }
+      $public: {
+        settings: {
+          $view: ". { motto, theme, later, legacy }"
+          $mut: { set_theme: ".set_theme" }
+        }
+      }
+    }
+    $bundle: { motto: "M1", theme: "T1", legacy: "G1" }
+  }
+
+  steps: [
+    // Genesis (§13.13): `$bundle` applies as ordinary inserts.
+    { watch: "public.settings", id: "w0"
+      expect_init: { value: { motto: "M1", theme: "T1", later: "$absent", legacy: "G1" } } }
+    // A local edit at one bundled singleton address.
+    { call: "public.settings.set_theme", args: { v: "mine" }
+      expect: { outcome: ok, value: { theme: "mine" } } }
+    { host_load: {
+        package: {
+          $liasse: 1
+          $app: "t.bundlesing@1.1.0"
+          $model: {
+            motto: "text?"
+            theme: "text?"
+            later: "text?"
+            legacy: "text?"
+            $mut: {
+              set_theme: [
+                ".theme = @v"
+                "return . { theme }"
+              ]
+            }
+            $public: {
+              settings: {
+                $view: ". { motto, theme, later, legacy }"
+                $mut: { set_theme: ".set_theme" }
+              }
+            }
+          }
+          $bundle: { motto: "M2", theme: "T2", later: "L2" }
+        }
+      }
+      expect: { outcome: ok, result: committed } }
+    { watch: "public.settings", id: "w1"
+      expect_init: { value: { motto: "M2", theme: "mine", later: "L2", legacy: "$absent" } } }
+  ]
+}

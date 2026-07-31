@@ -29,7 +29,7 @@ mod prepared;
 
 pub use prepared::{PreparedUpdate, UpdateBasis};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_artifact::{CompatibilityDecision, PackageIdentity, PackageName, UpdateRelation, Version};
 use liasse_diag::SourceMap;
@@ -102,8 +102,10 @@ pub struct UpdateReport {
     /// empty list.
     pub migrated: Vec<String>,
     /// The canonical display paths of seed rows the §13.13 apply-if-absent pass
-    /// inserted at an address the instance did not already hold (§13.15 `$seeded`),
-    /// in canonical path order.
+    /// inserted at an address the instance did not already hold, and of every
+    /// address the §13.13 `$bundle` three-way merge applied at (§13.15 `$seeded`),
+    /// in canonical path order. A bundled §8.2 root-singleton member appears at its
+    /// name-only §D.3 path (`/motto`), never under the reserved storage row.
     pub seeded: Vec<String>,
 }
 
@@ -323,7 +325,7 @@ impl<S: InstanceStore> Engine<S> {
         // build in canonical (`BTreeMap`/sorted) path order before the rows are
         // consumed by the commit.
         let migrated = staged.migrated.iter().map(RowAddress::render).collect();
-        let seeded = staged.seeded.iter().map(RowAddress::render).collect();
+        let seeded = seeded_paths(&staged.seeded, &staged.seeded_members);
         Ok(PreparedUpdate {
             compilation,
             definition: target.to_owned(),
@@ -488,6 +490,11 @@ struct MigratedState {
     rows: BTreeMap<RowAddress, FieldMap>,
     migrated: Vec<RowAddress>,
     seeded: Vec<RowAddress>,
+    /// The §8.2 root-singleton members the §13.13 `$bundle` merge applied, by name
+    /// and in canonical name order. Reported as `$seeded` items at their name-only
+    /// §D.3 paths (`/motto`), because the reserved row that stores singleton state
+    /// is not part of the address space and never appears in a display path.
+    seeded_members: BTreeSet<String>,
     /// The §13.13 `$bundle` coordinates the release and the instance BOTH moved,
     /// in the §19.9 conflict shape. §13.13 resolves each in the instance's favour,
     /// so they never block the migration; they are what a §20.4 prepared update
@@ -700,13 +707,17 @@ fn build_migrated<G: crate::generator::Generators>(
     // old package bundle, the new package bundle, and the migrated state. It inserts
     // newly bundled rows, replaces a bundled field only where the current value still
     // equals the old bundle value (a local edit is retained), and drops a removed
-    // bundled row only when its subtree still matches the old bundle. Its touched
+    // bundled row only when its subtree still matches the old bundle. The SAME
+    // three-way rule runs one container up, over the §8.2 root-singleton members the
+    // bundle names (§13.13 scopes the rule by address and exempts no part of the
+    // state tree), and returns those members for the §13.15 report. Its touched
     // addresses are checked by the ordinary pipeline below alongside the migrated
     // rows; a removed row leaves `prospective`, so the final `rows` (and the
     // whole-state migration commit) no longer carries it.
     let mut divergent = Vec::new();
+    let mut seeded_members = BTreeSet::new();
     if let Some(new_bundle) = &target.bundle {
-        crate::seed::merge_bundle(
+        seeded_members = crate::seed::merge_bundle(
             &target.compiled,
             &ctx,
             &mut prospective,
@@ -751,7 +762,16 @@ fn build_migrated<G: crate::generator::Generators>(
     // resolves is not a committed migrated row.
     let migrated = report_paths(&migrated_addrs, &rows);
     let seeded = report_paths(&seeded_addrs, &rows);
-    Ok(MigratedState { rows, migrated, seeded, divergent })
+    // §13.15/§D.3: a bundled singleton member is reported under its own name, not
+    // under the reserved row that stores it — that row is not part of the address
+    // space, so it can never appear as a `$seeded` path. Members the final admission
+    // dropped are filtered out the same way `report_paths` filters removed rows.
+    let singleton = prospective.get(&crate::singleton::address());
+    let seeded_members = seeded_members
+        .into_iter()
+        .filter(|member| singleton.is_some_and(|fields| fields.contains_key(member)))
+        .collect();
+    Ok(MigratedState { rows, migrated, seeded, seeded_members, divergent })
 }
 
 /// The §20.1 order-(1/2) copy applied to one collection's source rows and, by the
@@ -871,6 +891,30 @@ impl CopyPass<'_, '_> {
 /// returned in canonical (`BTreeMap`) path order for the §13.15 per-item lists.
 fn report_paths(candidates: &[RowAddress], rows: &BTreeMap<RowAddress, FieldMap>) -> Vec<RowAddress> {
     rows.keys().filter(|address| candidates.contains(address)).cloned().collect()
+}
+
+/// The §13.15 `$seeded` list in canonical path order: the seeded/bundled ROW paths
+/// interleaved with the §8.2 root-singleton members the §13.13 bundle merge applied.
+///
+/// §D.3 gives a singleton member a name-only path (`/motto`) — the reserved storage
+/// row holding it is not part of the address space, so neither its name nor its
+/// placeholder key may appear here. Both inputs already arrive in canonical order,
+/// and a `RowAddress` orders by its LEADING declaration name before anything else,
+/// so merging on that leading name interleaves the two lists without disturbing the
+/// rows' own key order. A singleton member and a collection share one root
+/// namespace, so the two never collide on a name.
+fn seeded_paths(rows: &[RowAddress], members: &BTreeSet<String>) -> Vec<String> {
+    let mut paths = Vec::with_capacity(rows.len() + members.len());
+    let mut members = members.iter().peekable();
+    for row in rows {
+        let leading = row.steps().next().map_or("", |step| step.name().as_str());
+        while let Some(member) = members.next_if(|member| member.as_str() < leading) {
+            paths.push(format!("/{member}"));
+        }
+        paths.push(row.render());
+    }
+    paths.extend(members.map(|member| format!("/{member}")));
+    paths
 }
 
 /// The `$old` root type a §20.1 delta program reads (`$old`, bound as a plain

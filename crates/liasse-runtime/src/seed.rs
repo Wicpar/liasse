@@ -6,7 +6,7 @@
 //! a seed row (§5.4/§5.5), which a meter's pool/spend arrangement (§15) seeds
 //! under an ancestor row. Composite seed keys remain a documented seam.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use liasse_ident::{KeyText, NameSegment};
 use liasse_syntax::DocValue;
@@ -39,9 +39,11 @@ pub(crate) enum SeedMode {
     /// Update apply-if-absent (§13.13/§4.1): a seed applies only where its
     /// address holds no current value — an ABSENT address is inserted, an
     /// occupied one is RETAINED unchanged (never overwritten). The §8.2 singleton
-    /// is already carried by the §20.1 copy, so singleton `$data` on update stays
-    /// with that carry (a documented seam); only keyed-collection rows reconcile
-    /// here.
+    /// is already carried by the §20.1 copy, so a singleton `$seed` member on
+    /// update stays with that carry (a documented seam: apply-if-absent into a
+    /// singleton member the copy left EMPTY does not fire here). A `$bundle`
+    /// singleton member is a different rule and does NOT stop here —
+    /// [`merge_bundle`] three-way merges it under §13.13.
     ApplyIfAbsent,
     /// Installation `$data` overlay (§13.3): applied onto an instance the package
     /// `$data` seed already loaded. An ABSENT address is inserted like a fresh
@@ -77,7 +79,6 @@ pub(crate) fn admit(
     let Some(collections) = doc::object(data) else {
         return Err(Rejection::new(RejectionReason::Malformed, "`$data` must be an object"));
     };
-    let model = ctx.schema.model();
     let mut singleton = FieldMap::new();
     let mut staged: Vec<Staged<'_>> = Vec::new();
     // Phase one: stage every seed row's identity and supplied values (no defaults
@@ -93,13 +94,11 @@ pub(crate) fn admit(
         // (and each static-struct member) is a literal-or-expression position. On
         // update the §20.1 singleton copy owns the reserved row, so a singleton
         // `$data` member is left to that carry (a documented §13.13 seam).
+        // Materialized INSIDE this loop, in member order, so a `= expr` singleton
+        // value observes exactly the seed state the members before it staged.
         if mode == SeedMode::Genesis
-            && let Some(node) = model.root().member(&member.name.text).map(|m| &m.node)
-            && crate::singleton::member_type(model, node).is_some()
+            && let Some(value) = singleton_member(ctx, prospective, &member.name.text, &member.value)?
         {
-            let value = crate::seed_value::materialize_singleton(
-                model, node, &member.name.text, &member.value, ctx, prospective,
-            )?;
             singleton.insert(member.name.text.clone(), value);
         }
     }
@@ -153,16 +152,24 @@ pub(crate) fn admit(
 /// removed from the new bundle is deleted only when its current subtree still equals
 /// the old bundled subtree, otherwise it is retained as local data.
 ///
-/// The rule applies at every depth: a bundled row nested under another (§5.4) is
-/// decoded, inserted, field-merged, and dropped by exactly the same three-way
-/// comparison as a top-level one, because both are identified by row ADDRESS and
-/// the recursion below produces addresses at any depth.
+/// The rule applies at every depth AND at every container: a bundled row nested
+/// under another (§5.4) is decoded, inserted, field-merged, and dropped by exactly
+/// the same three-way comparison as a top-level one, because both are identified by
+/// row ADDRESS and the recursion below produces addresses at any depth; and a
+/// bundled §8.2 root-singleton member reconciles by the same rule one container up
+/// ([`merge_singleton`]), because §13.13 scopes the rule by address and exempts no
+/// part of the state tree.
 ///
 /// `divergent` collects the §19.9-shaped coordinates where BOTH sides moved the
 /// same bundled value — the release changed it and the instance changed it too, to
 /// something else. §13.13 resolves each by keeping the instance's value, so these
 /// never block the update; they are reported so a §20.4 prepared update can tell a
 /// host exactly which package-authored values its own edits will override.
+///
+/// Returns the §8.2 root-singleton members the new bundle carries — the §13.15
+/// `$seeded` items of the singleton pass, which the caller reports at their
+/// name-only §D.3 paths (the reserved storage row that holds them is not part of
+/// the address space, so it is never itself a reported path, §D.3).
 pub(crate) fn merge_bundle(
     compiled: &Compiled,
     ctx: &EvalCtx<'_>,
@@ -171,12 +178,12 @@ pub(crate) fn merge_bundle(
     old_bundle: Option<&DocValue>,
     new_bundle: &DocValue,
     divergent: &mut Vec<MergeConflict>,
-) -> Result<(), Rejection> {
+) -> Result<BTreeSet<String>, Rejection> {
     // A row newly present in the new bundle is inserted; a row already present is
     // left in place here and reconciled field-by-field below (never overwritten
     // wholesale, so a locally modified row keeps its edits).
     admit(compiled, ctx, prospective, touched, new_bundle, SeedMode::ApplyIfAbsent)?;
-    let Some(new_cols) = doc::object(new_bundle) else { return Ok(()) };
+    let Some(new_cols) = doc::object(new_bundle) else { return Ok(BTreeSet::new()) };
     for member in new_cols {
         let Some(collection) = compiled.collection(&member.name.text) else { continue };
         let store_path = CollectionPath::top(NameSegment::new(member.name.text.clone()));
@@ -226,7 +233,111 @@ pub(crate) fn merge_bundle(
             }
         }
     }
-    Ok(())
+    // §13.13/§8.2: the bundled ROOT-SINGLETON members reconcile by the same rule.
+    // Last, so a `= expr` bundle value at a root member observes the whole merged
+    // collection state the passes above produced.
+    merge_singleton(ctx, prospective, old_bundle, new_bundle, divergent)
+}
+
+/// §13.13 at a §8.2 root-singleton address: the same three-way merge as a keyed
+/// row's fields, one container up.
+///
+/// §13.13 scopes the rule by ADDRESS — "for each bundled scalar or struct field,
+/// the new bundle replaces the value only when the current value still equals the
+/// old bundle value" — and exempts no part of the state tree, so a `$bundle` member
+/// naming writable root state (§8.2) is a bundled value like any other. Without
+/// this pass such a member applies at GENESIS and is silently skipped on every
+/// later update: the §20.1 compatible copy carries the genesis value forward and no
+/// release can ever move it, so the package quietly diverges from what it declares
+/// it maintains.
+///
+/// The reserved storage row is not itself a merge participant: §8.2 gives the
+/// instance exactly one of it and §D.3 keeps it out of the address space, so only
+/// its MEMBERS reconcile. It materializes when the merge first writes a member and
+/// is dropped again only when no member is left — the same emptiness invariant
+/// genesis and the §20.1 copy keep.
+fn merge_singleton(
+    ctx: &EvalCtx<'_>,
+    prospective: &mut Prospective,
+    old_bundle: Option<&DocValue>,
+    new_bundle: &DocValue,
+    divergent: &mut Vec<MergeConflict>,
+) -> Result<BTreeSet<String>, Rejection> {
+    let new = singleton_members(ctx, prospective, Some(new_bundle))?;
+    let old = singleton_members(ctx, prospective, old_bundle)?;
+    if new.is_empty() && old.is_empty() {
+        return Ok(BTreeSet::new());
+    }
+    let address = crate::singleton::address();
+    let current = prospective.get(&address).cloned().unwrap_or_else(FieldMap::new);
+    divergent.extend(divergent_fields(&current, Some(&old), &new).map(|member| MergeConflict {
+        coordinate: conflict_coordinate(ctx.schema, &address, Some(member)),
+        kind: ConflictKind::IncompatibleValue,
+    }));
+    // The new bundle applies where the current value still equals the old bundle
+    // value — including the case where BOTH hold nothing, which is how a member a
+    // release NEWLY bundles reaches an instance installed before it (`held`).
+    let mut merged = merge_row_fields(&current, Some(&old), &new);
+    // §13.13's removal rule at member granularity: the singleton row can never be
+    // "removed from the new bundle" (§8.2 gives the instance exactly one, and it
+    // holds every root member together), so the removable unit is the MEMBER — the
+    // finest address the bundle names at the root. A member the new bundle dropped
+    // is withdrawn only when the instance still holds the old bundled value;
+    // otherwise the local edit is retained and reported in the §19.9
+    // delete-versus-modify shape, exactly as a locally modified bundled row is.
+    for member in old.keys().filter(|member| !new.contains_key(*member)) {
+        let held_now = held(Some(&current), member);
+        if held_now == held(Some(&old), member) {
+            merged.remove(member);
+        } else if held_now.is_some() {
+            divergent.push(MergeConflict {
+                coordinate: conflict_coordinate(ctx.schema, &address, Some(member.clone())),
+                kind: ConflictKind::DeleteVsModify,
+            });
+        }
+    }
+    if merged.is_empty() {
+        prospective.remove(&address);
+    } else {
+        prospective.insert(address, merged);
+    }
+    Ok(new.into_keys().collect())
+}
+
+/// Materialize every §8.2 root-singleton member a `$seed`/`$bundle` object supplies,
+/// keyed by member name. A member naming a keyed collection, a computed value, a
+/// view, or nothing declared is not durable root state and is skipped — the caller
+/// stages those as rows. An absent document (no `$bundle` on the prior release)
+/// yields no members.
+fn singleton_members(
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+    data: Option<&DocValue>,
+) -> Result<FieldMap, Rejection> {
+    let mut fields = FieldMap::new();
+    for member in data.and_then(doc::object).into_iter().flatten() {
+        if let Some(value) = singleton_member(ctx, prospective, &member.name.text, &member.value)? {
+            fields.insert(member.name.text.clone(), value);
+        }
+    }
+    Ok(fields)
+}
+
+/// The §8.2 singleton value one `$seed`/`$bundle` member supplies (§4.2/C.4: the
+/// value, and each static-struct member inside it, is a literal-or-expression
+/// position), or `None` when the member names no durable root state.
+fn singleton_member(
+    ctx: &EvalCtx<'_>,
+    prospective: &Prospective,
+    name: &str,
+    value: &DocValue,
+) -> Result<Option<Value>, Rejection> {
+    let model = ctx.schema.model();
+    let Some(node) = model.root().member(name).map(|member| &member.node) else { return Ok(None) };
+    if crate::singleton::member_type(model, node).is_none() {
+        return Ok(None);
+    }
+    crate::seed_value::materialize_singleton(model, node, name, value, ctx, prospective).map(Some)
 }
 
 /// The bundled fields of one row where the release and the instance BOTH moved to
