@@ -4,7 +4,7 @@ The builtins of `liasse 0.0.1`: the declarations of the host libraries that the
 implementation of that version provides, which the host injects into every
 module written in that version (LANGUAGE 16). A builtin is an opaque, which the
 implementation of `liasse 0.0.1` implements, or a definition written in Liasse,
-as the templates of section 6 are (SPEC §3.7).
+as the templates of section 6 are (SPEC §3.6).
 [LANGUAGE.md](LANGUAGE.md) defines the syntax, and [SPEC.md](SPEC.md) the
 runtime semantics.
 
@@ -28,10 +28,11 @@ Each builtin is given by its signature, written as the signature of an opaque
 | `Date` | the dates of the proleptic Gregorian calendar | texts in the RFC 3339 full-date form: `"2026-09-25"` |
 | `Timestamp` | the instants, as signed counts of microseconds since `1970-01-01T00:00:00Z` | texts in the RFC 3339 date-time form, with `Z` or an offset |
 | `Duration` | the elapsed times, as signed counts of microseconds | texts in the ISO 8601 form with day and time components: `"P1DT2H"` |
-| `Blob(storage: Text = "default")` | the descriptors of blobs (SPEC §12.1) | |
+| `Blob(storage: Text = "default")` | the descriptors of blobs (SPEC chapter 12) | |
 
 `Bool`, `Int`, `Decimal`, `Text`, `Bytes`, `Uuid`, `Date`, `Timestamp`, and
-`Duration` are key-eligible (SPEC Annex A.3).
+`Duration` are **key-eligible**, and so are a refinement of a key-eligible type
+and an object whose members are all required and key-eligible.
 
 - `Text`: its scalar values are the code points U+0000 to U+D7FF and U+E000 to
   U+10FFFF, U+0000 included. A text is kept exactly as written: a precomposed
@@ -43,13 +44,17 @@ Each builtin is given by its signature, written as the signature of an opaque
   minimal-scale positional form: every digit written out, trailing fractional
   zeros and a trailing decimal point removed, a leading `-` for a negative
   value, and `0` for zero.
-- `Blob`: a descriptor's members are `digest: Bytes`, `size: Int`,
-  `media: Text`, and `name: Text?` (SPEC §12.1). `storage` is the member's
-  storage name, which the host binds to a storage class (SPEC §12.3).
+- `Blob`: a descriptor's members are `digest: Bytes` and `size: Int`
+  (SPEC chapter 12), and a negative size makes a descriptor malformed. `storage`
+  is the member's storage name, which the host binds to a storage class
+  (SPEC §12.2).
 
 ### 1.1 Order
 
-The values of each type are in this order (SPEC Annex B):
+The values of each type have one total order, which depends on the values alone.
+Values of different types compare where the language compares them: a refined
+value with its base type, and two sets of one element type, whatever their
+cardinalities.
 
 | Type | Order |
 | --- | --- |
@@ -62,7 +67,10 @@ The values of each type are in this order (SPEC Annex B):
 | `Date` | chronological order |
 | `Timestamp` | chronological order |
 | `Duration` | signed length: negative durations, then zero, then positive durations |
-| `Blob` | `digest`, then `size`, then `media`, then `name` |
+| `Blob` | `digest`, then `size` |
+| a set | its elements in ascending order, compared pair by pair: the first pair that differs decides, and a set whose elements run out first comes first, as `none` comes before every other set |
+| a record, an object | lexicographic over its members, in the ASCII order of their names |
+| a tuple | lexicographic over its places, in position order |
 
 Texts compare by their scalar values as written: `"Zeta"` comes before
 `"alpha"`, and `"10"` before `"9"`.
@@ -70,7 +78,7 @@ Texts compare by their scalar values as written: `"Zeta"` comes before
 ### 1.2 Limits
 
 These limits hold for every value, wherever it is written, computed, or received
-(SPEC Annex A.2):
+(SPEC chapter 7):
 
 | Value | Limit |
 | --- | --- |
@@ -98,7 +106,7 @@ These are the operator declarations (LANGUAGE 5.3):
 | `fn Timestamp - Timestamp: Duration` | The time elapsed since the right operand. |
 | `fn Duration + Duration: Duration`, `fn Duration - Duration: Duration` | The sum and the difference. |
 | `fn<V> V == V: Bool`, `fn<V> V != V: Bool` | Equality by value (LANGUAGE 5.4). |
-| `fn<V> V < V: Bool`, `fn<V> V <= V: Bool`, `fn<V> V > V: Bool`, `fn<V> V >= V: Bool` | The order of SPEC Annex B. |
+| `fn<V> V < V: Bool`, `fn<V> V <= V: Bool`, `fn<V> V > V: Bool`, `fn<V> V >= V: Bool` | The order of 1.1. |
 | `fn<V> V in V*: Bool` | The right operand has an element equal to the left one (LANGUAGE 5.4). |
 
 `+`, `-`, and `*` on `Int` and `Decimal` give the exact result.
@@ -132,13 +140,14 @@ These are the operator declarations (LANGUAGE 5.3):
 | Signature | Description |
 | --- | --- |
 | `assert(condition: Bool, message: Text? = none)` | In a body, a constraint (SPEC §4.4): `condition` holds of every committed state, `.` being the body's current value. In a program, an assertion: `condition` holds when the statement runs. In an input type, a constraint of the argument. An omitted message is generated from the condition. |
-| `unique<V, K>(key: V -> K = .)` | At a set level (LANGUAGE 4.5), a unique key (SPEC §4.4): no two rows of one owner, or two elements of one argument, give equal values of `key`, `V` being their type. |
+| `unique<V, K>(key: V -> K = .)` | At a set level (LANGUAGE 4.5), a constraint (SPEC §4.4), a **unique key**: no two rows of one owner, or two elements of one argument, give equal values of `key`, `V` being their type. Breaking it rejects with the code `uniqueness` in place of `constraint`, and the diagnostic names the stored set, the key, and the value. In a replacement (SPEC §6.2), the row that gives the value of `key` of an element that comes from no row of the stored set takes that element's values, and an element whose values of two unique keys are given by two different rows rejects the transaction. |
 
 - A body `assert` reads what a view reads.
-- `key` reads the data members of the row or the element alone, and gives a
-  value of cardinality one or `?`: of a key-eligible type (SPEC Annex A.3), or a
-  record or a tuple of such values. `unique` judges each row or element whose
-  key holds an element, each part of a record or a tuple included.
+- `key` reads the data members of the row or the element alone, makes immutable
+  calls (SPEC §6.3), and gives a value of cardinality one or `?`: of a
+  key-eligible type (§1), or a record or a tuple of such values.
+  `unique` judges each row or element whose key holds an element, each part of a
+  record or a tuple included.
 - A selection of a stored set read from its owner has the cardinality `?`
   (LANGUAGE 6.2) when its equalities cover the `key` of one `unique` of that
   stored set, and that key is a member of the row, a record or a tuple of
@@ -156,7 +165,7 @@ These are the operator declarations (LANGUAGE 5.3):
 | `trunc(x: Decimal, digits: Int = 0): Decimal` | Rounded toward zero to `digits` fractional digits. |
 | `floor(x: Decimal): Decimal` | The greatest integer at most `x`. |
 | `ceil(x: Decimal): Decimal` | The least integer at least `x`. |
-| `now(): Timestamp` | The instant of the transaction or the read (SPEC §6.7). |
+| `now(): Timestamp` | The instant of the transaction or the read (SPEC §6.6). |
 | `mut uuid(): Uuid` | A fresh UUID at each call. |
 
 A negative `digits` rounds left of the decimal point. `round(2.5)` is `3`,
@@ -172,8 +181,22 @@ A negative `digits` rounds left of the decimal point. `round(2.5)` is `3`,
 | `sha` | Cryptographic hashes: `sha.sha256(data: Bytes): Bytes`, `sha.sha384(data: Bytes): Bytes`, and `sha.sha512(data: Bytes): Bytes`, the SHA-2 digests of `data` (FIPS 180-4). |
 | `random` | `mut random.bytes(n: Int): Bytes`: `n` fresh bytes at each call, from a cryptographically secure source. A negative `n` rejects the evaluation. |
 | `crypto` | Signatures: Ed25519, and ECDSA over P-256 and P-384 (4.2). |
-| `history` | `mut history.at<V>(source: V*, instant: Timestamp): { row: V; history: { created_at: Timestamp; updated_at: Timestamp } }*`: the rows of `source` as they stood at `instant`, loaded from the store, each with its row history (SPEC §14.4). |
+| `history` | `mut history.at<V>(source: V*, instant: Timestamp): { row: V; history: { created_at: Timestamp; updated_at: Timestamp } }*`: the **past rows** of `source` at `instant`, loaded from the store, each with its row history (SPEC §14.3). |
 | `modules` | `mut modules.init(artifact: Blob): Module`: a new instance of the current version of the package that `artifact` holds, which an assignment mounts (SPEC §11.2). `mut modules.update(m: Module?, artifact: Blob)`: gives the instance at `m` the package that `artifact` holds (SPEC §13.1). |
+
+- `history.at` takes as `source` a stored set of the calling instance, or a
+  selection of its rows. It reads the state at `instant` among the commits of
+  its transaction's snapshot (SPEC §14.2), carried to the instance's active
+  version as an update carries a state (SPEC §13.3), and yields the rows of
+  `source` there: for a stored set, every row that it held, the rows removed
+  since included; for a selection, the rows that it selects, as they stood then.
+- Each past row comes from its row, and holds the row's stored members and row
+  history then. `history.at` yields the rows whose carried values hold every
+  required member, and the past rows are values.
+- `mut rewind_tasks(at: Timestamp) { .tasks = history.at(.tasks, at).row }`
+  makes the task list what it was at `at` (SPEC §6.2): each task that still
+  exists takes its past values, each task removed since is inserted again, after
+  the others, and each task added since is removed.
 
 ### 4.1 Text and conversions
 

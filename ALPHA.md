@@ -93,20 +93,20 @@ The crates, and the web client's TypeScript shell, stand in bands from the appli
 | --- | --- |
 | `liasse` | SPEC chapters 8 and 9 |
 | `liasse-surface` | SPEC chapter 10, CONNECT chapter 2 |
-| `liasse-runtime` | SPEC §3.7, the host calls of §6.4, chapter 9, §11.2, chapter 13, §14.2, §14.5 |
+| `liasse-runtime` | SPEC §3.6, the host calls of §6.3, chapter 9, §11.2, chapter 13, §14.2, §14.4 |
 | `liasse-keys` | the keyring library (below) |
 | `liasse-blob` | SPEC chapter 12 |
 | `liasse-store` | the store contract, and the declarations of the backend functions (below) |
-| `liasse-host` | SPEC §3.7, §6.4, §12.3 |
+| `liasse-host` | SPEC §3.6, §6.3, §12.2 |
 | `liasse-wire` | the messages of CONNECT chapter 2 |
-| `liasse-eval` | LANGUAGE chapters 5 to 10 and 15, SPEC chapters 4 to 6, §11.3, §11.4, §13.4, §14.4 |
-| `liasse-model` | LANGUAGE chapters 2 to 4 and 9 to 16, SPEC §3.6, §3.7, §6.4 |
+| `liasse-eval` | LANGUAGE chapters 5 to 10 and 15, SPEC chapters 4 to 6, §11.3, §11.4, §13.3, BUILTINS §4 |
+| `liasse-model` | LANGUAGE chapters 2 to 4 and 9 to 16, SPEC §3.5, §3.6, §6.3 |
 | `liasse-std` | BUILTINS, and the further host libraries (below) |
 | `liasse-syntax` | LANGUAGE Annex A |
-| `liasse-artifact` | SPEC §3.5, §14.5, Annex D |
+| `liasse-artifact` | SPEC §3.4, §14.4 |
 | `liasse-cbor` | the CBOR encoding (below) |
-| `liasse-value` | SPEC Annex A and B, BUILTINS §1 |
-| `liasse-path` | SPEC Annex C |
+| `liasse-value` | BUILTINS §1 |
+| `liasse-path` | the position paths of SPEC §14.4, and the declaration and display paths (below) |
 | `liasse-diag` | SPEC chapter 7 |
 
 ## Core
@@ -114,19 +114,20 @@ The crates, and the web client's TypeScript shell, stand in bands from the appli
 Requirements:
 
 - Every observable behavior follows SPEC, LANGUAGE, and BUILTINS, and the conformance corpus passes on every backend.
-- The parser is built on `pest`, and every build error (SPEC §3.6) is a rustc-like diagnostic that also says why.
+- The parser is built on `pest`, and every build error (SPEC §3.5) is a rustc-like diagnostic that names the file and the span, says what is wrong and why, and says how to fix it.
+- A diagnostic (SPEC chapter 7) also carries `path`, the display path (below) of the state, or the declaration path (below) of the declaration, at fault, and `trace`, the path of the failure across the transaction, outermost first: the request, with the index of the mutation in a call's list; each mutation call, host call, and migration program on the way, calls through mount points included; and the failing statement, constraint, or expression. Each frame carries its declaration path and its source span, and a frame that a template or a mixin brought names the applications that it was inlined through: the build keeps, for each elaborated declaration, the definition, the application, and the slot that it comes from.
 - The alpha's encoding is CBOR (below): the records of a dehydrated application and the messages of `liasse-connect` are CBOR.
 - The build derives the **footprint** of every mutation, view, constraint, and unique key: the places that it reads and writes, as paths from its receiver, its arguments, and the values it reads. In SPEC §1.2, `complete()` changes `done` of its receiver; `add(title)` inserts one row into `/tasks`; and `member(session)` reads the `/sessions` row by `public_key` and the `.accounts` row that it names. Backends use footprints to derive their access paths and indexes, to track conflicts at key precision, and to advance only the live views that a commit touches.
-- The alpha declares `history.at`, `modules.init`, and `modules.update` asynchronous, and the other builtins synchronous (SPEC §6.4).
-- The build infers the class of each call of a `fn` and of a `mut` (SPEC §6.4), and checks that each call stands where its class does. A call placed elsewhere is a build error that names the call inside the `fn` or the `mut` that gives it its class, and so is a migration program's call of a mutation of its own module that reaches an effect.
-- The runtime searches for the update that holds each instance whose active version differs from its target (SPEC §13.1), and starts the updates in parallel: an update whose checks read an instance that an update nearer the root moves starts after that one. For an instance that no update moves to its target, it searches the versions of its route from the target back toward its active version, and moves it to the first that passes. It judges first the checks that read versions alone: builds, routes, host dependencies, shapes, provided contexts, and the graph of calls. A check between two instances that fails with one of them at its target adds the other, when the other's target differs from the package of its active version. The set that these checks close runs its routes and judges its result once. A failing check that reads further instances adds those whose targets differ; a member whose failing checks read it alone leaves the set, with the members that need it; and a set that passes is reduced, one member at a time, to the members that it needs. When these steps end on a failing set, the runtime judges the subsets of the instances that its failing checks read, smallest first, up to the host's bound on the search.
-- The core computes the results that the language version fixes (SPEC §6.4) with its own Unicode 16.0.0 tables (BUILTINS §4.1) and its own decimal arithmetic (BUILTINS §1.3) alone.
-- A commit that changes state writes its changes (SPEC §14.1) with its places, in one transaction. Restore and a past-row load apply the changes of history in the order of the commits' identities (SPEC §14.2), and a past-row load evaluates the routes that carry the past state to the instance's active version alone (SPEC §14.4).
-- Programs run by their dependencies. The build derives, from footprints and bindings, which statements of a program depend on which: one reads a binding or a result that the other gives, reads a place that the other writes, or writes a place that the other reads or writes. A run starts each host call once its arguments are evaluated, runs every statement whose dependencies have run, and waits only where a pending result is needed, so the independent host calls of one run are performed together, in one round (SPEC §6.4). When several statements fail, the run reports the first in statement order, as a run in order does.
+- The runtime performs the reads of `history.at`, `modules.init`, and `modules.update` outside a run's evaluation, as it performs the host calls (SPEC §6.3), and the other builtins evaluate within the run.
+- The build infers the class of each call of a `fn` and of a `mut` (SPEC §6.3), and checks that each call stands where its class does. A call placed elsewhere is a build error that names the call inside the `fn` or the `mut` that gives it its class, and so is a migration program's call of a mutation of its own module that reaches an effect.
+- The runtime searches for the update that holds each instance whose active version differs from its target (SPEC §13.1), and starts the updates in parallel: an update whose checks read an instance that an update nearer the root moves starts after that one. For an instance that no update moves to its target, it searches the versions of its route from the target back toward its active version, and moves it to the first that passes. It judges first the checks that read versions alone: builds, routes, host dependencies, shapes, provided contexts, and the graph of calls. A check between two instances that fails with one of them at its target adds the other, when the other's target differs from the package of its active version. The set that these checks close runs its routes and judges its result once. A failing check that reads further instances adds those whose targets differ; a member whose failing checks read it alone leaves the set, with the members that need it; and a set that passes is reduced, one member at a time, to the members that it needs. When these steps end on a failing set, the runtime judges the subsets of the instances that its failing checks read, smallest first, up to the host's bound on the search. It searches again for a blocked target at each commit that changes what its failing checks read, or the target of an instance that they read, at `open()`, and when `update` gives its module's target again.
+- The core computes the results that the language version fixes (SPEC §6.3) with its own Unicode 16.0.0 tables (BUILTINS §4.1) and its own decimal arithmetic (BUILTINS §1.3) alone.
+- A commit that changes state writes its changes (SPEC §14.1) with its places, in one transaction. Restore and a past-row load apply the changes of history in commit order (SPEC §6.5), and a past-row load evaluates the routes that carry the past state to the instance's active version alone (BUILTINS §4).
+- Programs run by their dependencies. The build derives, from footprints and bindings, which statements of a program depend on which: one reads a binding or a result that the other gives, reads a place that the other writes, or writes a place that the other reads or writes. A run starts each host call once its arguments are evaluated, runs every statement whose dependencies have run, and waits only where a pending result is needed, so the independent host calls of one run are performed together, in one round (SPEC §6.3). When several statements fail, the run reports the first in statement order, as a run in order does.
 - The build warns when a constraint's condition reads nothing through `.` or `^`, and names the body that it belongs in.
-- A backend receives the elaborated declarations (SPEC §3.6). Elaboration composes typed declarations: `factor = 1 + 2` substituted into `10 * factor` is 30. A template's documentation stays distinct from an application's, and shapes are compared after elaboration.
-- The host builds one context: it picks one backend, registers the blob connectors and its own host libraries, each with what it serves and one implementation of each of its opaque mutations, whose opaque functions the store implements, defines storage classes, and binds them (SPEC §3.7, §8.1, §12.3). It sets the expiry of the access data in blob plans, the bytes that the upload plans of one connection place ([CONNECT.md](CONNECT.md) 2.5), and the bound on the work of each read of a view that a client writes (SPEC §10.2).
-- A blob's digest (SPEC §12.1) is the 64-byte SHA-512 digest of its content; a digest of another length makes the descriptor malformed.
+- A backend receives the elaborated declarations (SPEC §3.5). Elaboration composes typed declarations: `factor = 1 + 2` substituted into `10 * factor` is 30. A template's documentation stays distinct from an application's, and shapes are compared after elaboration.
+- The host builds one context: it picks one backend, registers the blob connectors and its own host libraries, each with what it serves and one implementation of each of its opaque mutations, whose opaque functions the store implements, defines storage classes, and binds them (SPEC §3.6, §8.1, §12.2). It sets the expiry of the access data in blob plans, the bytes that the upload plans of one connection place ([CONNECT.md](CONNECT.md) 2.5), and the bound on the work of each read of a view that a client writes (SPEC §10.2).
+- A blob's digest (SPEC chapter 12) is the 64-byte SHA-512 digest of its content; a digest of another length makes the descriptor malformed.
 
 ### The host in Rust
 
@@ -157,50 +158,55 @@ tokio::try_join!(
 
 `authorize` is the host's own function: it sees each request that opens a connection, and returns the views of the root instance, each through a shape of the module, that the connection starts with, as `Guest` for a client of SPEC §1.2 (SPEC §10.1). A native transaction (SPEC §8.2) is a closure, which the host runs once for each run of the transaction. It calls an effect of its host libraries with `tx.effect(name, arguments)`, which keeps the effect with the run; the effect is committed with the run that commits, and dropped with every other run.
 
+**Display paths.** The host addresses instances, rows, and mount points by **display paths**, written as position paths (SPEC §14.4) with each row named by the text of its **row identifier**, the store's name for the row, in place of its position: `/companies/k7Qx2m/offices/p2Rt8n`. That text is one or more characters of the unreserved set of RFC 3986, ASCII letters, digits, `-`, `.`, `_`, and `~`, other than `.` and `..` alone, opaque, and distinct from that of every other row of the same stored set declaration in the same instance. A display path that a host operation receives starts with `/`, and every segment after it is non-empty: `//` and a trailing `/` are malformed. Its segments resolve one at a time from the root, and a path that fails to resolve is rejected with a diagnostic that names the segment. A **declaration path** names one member declaration of a version, after elaboration: `/`, then the names of the declarations that hold it, from the root, then its own name, separated by `/`, such as `/companies/offices`; the root is `/`, and a declaration of `public` has the path of the root's members.
+
+**Reflection** (SPEC §8.3) also gives each module's migration chain and target, and each instance's members with their contracts, its state, and the instances mounted in it, with the display path of every row and mount point and the copy status of blob content.
+
+**Storage bindings.** `storage_class(name, class)` defines the class `name`, and `bind_storage(address, class)` and `bind_storage(address, name, class)` bind the storage name `default`, or `name`, at an address to a class: the display path of the root, of a row, or of a mount point. A stored blob resolves its storage name (SPEC §12.2) through the binding at the nearest address that holds it: its own row, then each owner outward to its instance's root, then through the mount point into the parent, up to the application's root. When the class that a member's content resolves to changes, through a binding, a change of a class, or an update that changes the storage name, the host moves the content in the background: state and history stay as they are, and reads keep working.
+
 ### Backend functions
 
-The store evaluates every function, and implements the opaque functions of the host's own libraries (SPEC §3.7). `liasse-pg` and `liasse-store-memory` implement the **backend functions**, which `liasse-store` declares as a host library that serves every module and clients, each with its signature:
+The store evaluates every function, and implements the opaque functions of the host's own libraries (SPEC §3.6). `liasse-pg` and `liasse-store-memory` implement the **backend functions**, which `liasse-store` declares as a host library that serves every module and clients, each with its signature:
 
 | Signature | Description |
 | --- | --- |
 | `fn filter<V>(items: V*, keep: V -> Bool): items?!` | The elements for which `keep` holds: the selection `items[keep(.)]`. |
-| `fn group<V, K, R>(items: V*, key: V -> K, each: { key: K; items: V+ } -> R): items \|> R` | One element for each distinct `key`: the value of `each` for the record of that key and its elements, with the key as identity: `group(.customer) { customer: .key, total: sum(.items.total) }`. |
-| `fn distinct<V, A>(items: V*, by: V -> A = .): items` | One element of each group of elements of equal `by`, the first in the order of the `sort` before it, else in insertion order: `distinct(.id)`. |
-| `fn union<V, A>(items: V*, other: V*, by: V -> A = .): V*` | The elements, and the elements of `other` whose `by` equals that of none of them. |
+| `fn group<V, K, R>(items: V*, key: V -> K, each: { key: K; items: V+ } -> R): items \|> R` | One element for each distinct `key`, in the order of the first element with that key: the value of `each` for the record of that key and its elements: `group(.customer) { customer: .key, total: sum(.items.total) }`. |
+| `fn distinct<V, A>(items: V*, by: V -> A = .): items` | One element of each group of elements of equal `by`, the first: `distinct(.id)`. |
+| `fn union<V, A>(items: V*, other: V*, by: V -> A = .): V*` | The elements, then the elements of `other` whose `by` equals that of none of them. |
 | `fn intersection<V, A>(items: V*, other: V*, by: V -> A = .): items?!` | The elements whose `by` equals that of an element of `other`. |
 | `fn difference<V, A>(items: V*, other: V*, by: V -> A = .): items?!` | The elements whose `by` equals that of no element of `other`. |
 | `fn count<V>(items: V*): Int` | The number of elements. |
-| `fn sum<A + A: A>(items: A+): A`, `fn sum(none): none` | The elements added with `+`, in the order of the `sort` before it, else in insertion order: `sum(.lines.amount) ?? 0.0` is zero for no lines. |
+| `fn sum<A + A: A>(items: A+): A`, `fn sum(none): none` | The elements added with `+`, in their order: `sum(.lines.amount) ?? 0.0` is zero for no lines. |
 | `fn avg(items: Decimal+): Decimal`, `fn avg(none): none` | The mean: the sum of the elements divided by their number as BUILTINS §1.3 divides a `Decimal`. |
 | `fn min<V>(items: V+): V`, `fn min(none): none` | The least element. |
 | `fn max<V>(items: V+): V`, `fn max(none): none` | The greatest element. |
 | `fn one<V>(items: V*): V` | The one element of `items`; any other number of elements rejects the evaluation with the code `evaluation` (SPEC chapter 7). |
-| `fn sort<V, A>(items: V*, key: V -> A = .): items` | The elements, ordered by their `key` in the order of its type (SPEC Annex B), and elements of equal keys in insertion order. Several keys form one tuple key (SPEC Annex B.2): `sort((desc(.created_at), .id))`. |
+| `fn sort<V, A>(items: V*, key: V -> A = .): items` | The elements, ordered by their `key` in the order of its type (BUILTINS §1.1), and elements of equal keys in their order. Several keys form one tuple key (BUILTINS §1.1): `sort((desc(.created_at), .id))`. |
 | `fn desc<V>(x: V): V` | `x`, as a `sort` key, or a place of a tuple key, that orders in reverse. |
-| `fn skip<V>(items: V*, n: Int): items?!` | The elements after the first `n`, in the order of the `sort` before it, else in insertion order. |
-| `fn take<V>(items: V*, n: Int): items?!` | The first `n` elements, in the order of the `sort` before it, else in insertion order. |
+| `fn skip<V>(items: V*, n: Int): items?!` | The elements after the first `n`. |
+| `fn take<V>(items: V*, n: Int): items?!` | The first `n` elements. |
 
 - `filter`, `distinct`, `union`, `intersection`, `difference`, `skip`, and `take` keep every element as it is.
-- A `group` key is of a key-eligible type (SPEC Annex A.3), or a record or a tuple of them: `.customer`, `{ day: time.date(.at), .kind }`.
+- A `group` key is of a key-eligible type (BUILTINS §1), or a record or a tuple of them: `.customer`, `{ day: time.timestamp_to_date(.at), .kind }`.
 - `by` is written at the level of each element of the operands, which share what it reads.
-- A call after a `sort` that keeps every element as it is keeps its order, and a read gives the elements of its result in that order.
-- **Insertion order** (SPEC §4.3) orders elements by the rows that they come from, oldest first, and the elements that come from no row by their values (SPEC Annex B).
+- Each function keeps the order of the elements that it reads (SPEC §4.3), save `sort`, and a read gives the elements of its result in their order.
 
 ### Further host libraries
 
-`liasse-std` also provides these host libraries, which the host injects into every module and which serve clients (SPEC §3.7). Each signature reads as in BUILTINS, and a time zone is an IANA name that the host's time zone database holds; another name rejects the evaluation with the code `evaluation`.
+`liasse-std` also provides these host libraries, which the host injects into every module and which serve clients (SPEC §3.6). Each signature reads as in BUILTINS, and a time zone is an IANA name that the host's time zone database holds; another name rejects the evaluation with the code `evaluation`.
 
 | Signature | Description |
 | --- | --- |
-| `time.unix(t: Timestamp): Int` | The whole seconds from `1970-01-01T00:00:00Z` to `t`, rounded toward negative infinity. |
-| `time.from_unix(seconds: Int): Timestamp` | The instant `seconds` after `1970-01-01T00:00:00Z`. |
-| `time.date(t: Timestamp): Date` | The date of `t` in UTC. |
-| `time.start(date: Date): Timestamp` | The instant at which `date` starts in UTC. |
-| `time.add_days(date: Date, days: Int): Date` | The date `days` days after `date`, or before it for a negative `days`. |
-| `time.seconds(d: Duration): Int` | The whole seconds of `d`, rounded toward zero. |
-| `time.from_seconds(seconds: Int): Duration` | The duration of `seconds` seconds. |
-| `mut time.local_date(t: Timestamp, zone: Text): Date` | The date of `t` in the time zone `zone`, read from the host's time zone database. |
-| `mut time.local_start(date: Date, zone: Text): Timestamp` | The instant at which `date` starts in the time zone `zone`, read from the host's time zone database. |
+| `time.timestamp_to_unix(t: Timestamp): Int` | The whole seconds from `1970-01-01T00:00:00Z` to `t`, rounded toward negative infinity. |
+| `time.unix_to_timestamp(seconds: Int): Timestamp` | The instant `seconds` after `1970-01-01T00:00:00Z`. |
+| `time.timestamp_to_date(t: Timestamp): Date` | The date of `t` in UTC. |
+| `time.date_to_timestamp(date: Date): Timestamp` | The instant at which `date` starts in UTC. |
+| `time.date_add_days(date: Date, days: Int): Date` | The date `days` days after `date`, or before it for a negative `days`. |
+| `time.duration_to_seconds(d: Duration): Int` | The whole seconds of `d`, rounded toward zero. |
+| `time.seconds_to_duration(seconds: Int): Duration` | The duration of `seconds` seconds. |
+| `mut time.timestamp_to_local_date(t: Timestamp, zone: Text): Date` | The date of `t` in the time zone `zone`, read from the host's time zone database. |
+| `mut time.local_date_to_timestamp(date: Date, zone: Text): Timestamp` | The instant at which `date` starts in the time zone `zone`, read from the host's time zone database. |
 | `hex.encode(data: Bytes): Text` | The two lower-case hexadecimal digits of each byte of `data`. |
 | `hex.decode(text: Text): Bytes?` | The bytes that `text` spells with two hexadecimal digits of either case for each byte; `none` for any other text. |
 | `base64.encode(data: Bytes): Text` | `data` in base64 with padding (RFC 4648 §4). |
@@ -227,7 +233,7 @@ Every verification gives `false`, or `none` for WebAuthn, for every invalid sign
 
 ### Host libraries
 
-The host gives the builder its own host libraries (SPEC §3.7), each with what it serves and one implementation of each opaque mutation that it declares:
+The host gives the builder its own host libraries (SPEC §3.6), each with what it serves and one implementation of each opaque mutation that it declares:
 
 ```rust
 let liasse = Liasse::builder()
@@ -247,7 +253,7 @@ let liasse = Liasse::builder()
     .await?;
 ```
 
-An opaque mutation whose signature has a result type is drawn, and its implementation is a `HostCall`; one whose signature ends with its parameters is an effect, and its implementation is an `EffectPerformer` (SPEC §6.4). Both are `liasse-host` traits:
+An opaque mutation whose signature has a result type is drawn, and its implementation is a `HostCall`; one whose signature ends with its parameters is an effect, and its implementation is an `EffectPerformer` (SPEC §6.3). Both are `liasse-host` traits:
 
 ```rust
 #[async_trait]
@@ -264,11 +270,11 @@ pub trait EffectPerformer: Send + Sync {
 - `Serves::modules()` makes a library serve every module of the application, `Serves::modules_and_clients()` every module and clients, and `Serves::matching(selectors)` the modules that one of its selectors names: `acme.invoices` at every version, `acme.invoices@1.2.0` at one version, and `acme.billing@>=2.1.0, <3.0.0` at the versions that every comparator of the list accepts, among `>`, `>=`, `<`, and `<=`.
 - `build()` checks that each library parses, that each of its opaque mutations has one implementation of its kind, that each implementation names an opaque mutation of that library, and that the store implements each of its opaque functions with its signature, and reports each failed check as a diagnostic.
 - `arguments` is the record of a call's arguments, by parameter name. `call` gives a value of the mutation's result type; any other result, and an error, reject the transaction with the code `host`.
-- `open()` and each activation check the host dependencies of every version that they build (SPEC §3.7), and the diagnostic of a failed check gives the recorded declaration. The check compares a recorded definition with the library's by their syntax trees, and leaves documentation comments out of the comparison.
+- `open()` and each activation check the host dependencies of every version that they build (SPEC §3.6), and the diagnostic of a failed check gives the recorded declaration. The check compares a recorded definition with the library's by their syntax trees, and leaves documentation comments out of the comparison.
 - `id` is the same at each attempt of one effect and distinct from every other effect's. A performer passes it to its receiver as the receiver's idempotency key, such as an HTTP `Idempotency-Key` header, so that the receiver acts once.
 - An error fails the attempt, and the host attempts again after a backoff, up to the bound that `.effect_attempts(n)` sets. An effect past the bound on attempts is reported on `liasse.failed_effects()`, a stream of each effect's identifier, mutation name, arguments, and last error, and leaves the store.
 
-A blob connector (SPEC §12.3) stores content under its digest, delivers it whole or by byte range, gives access data with which a client reads or writes content directly, copies, deletes, and reports what a location holds, through the `liasse-host` trait:
+A blob connector (SPEC §12.2) stores content under its digest, delivers it whole or by byte range, gives access data with which a client reads or writes content directly, copies, deletes, and reports what a location holds, through the `liasse-host` trait:
 
 ```rust
 #[async_trait]
@@ -276,8 +282,8 @@ pub trait BlobConnector: Send + Sync {
     async fn put(&self, at: &Location, digest: &Digest, content: ContentStream) -> Result<()>;
     async fn get(&self, at: &Location, key: &Key, range: Option<ByteRange>)
         -> Result<ContentStream>;
-    async fn read_access(&self, at: &Location, digest: &Digest, served: &Served,
-        expires_in: Duration) -> Result<Option<AccessData>>;
+    async fn read_access(&self, at: &Location, digest: &Digest, expires_in: Duration)
+        -> Result<Option<AccessData>>;
     async fn write_access(&self, at: &Location, place: &Place, size: u64,
         expires_in: Duration) -> Result<Option<AccessData>>;
     async fn keep(&self, at: &Location, place: &Place, digest: &Digest) -> Result<()>;
@@ -287,17 +293,16 @@ pub trait BlobConnector: Send + Sync {
 }
 
 pub enum Key { Content(Digest), Place(Place) }
-pub struct Served { pub media: String, pub name: Option<String> }
 pub struct AccessData { pub url: Url, pub headers: Vec<(String, String)>, pub expires: Timestamp }
 ```
 
 - A **place** is 16 random bytes that the server draws for one entry of an upload plan. `write_access` returns access data for one `PUT` of exactly `size` bytes to that place, and `None` for a size beyond what the location takes in one write. A place is written once: a second `PUT` answers 412 and leaves the place as it is. Write access reaches its own place only.
-- `read_access` returns access data for `GET`s of the content until its expiry, served with the descriptor's media type and, with its file name, as an attachment.
+- `read_access` returns access data for `GET`s of the content until its expiry, served as an `application/octet-stream` attachment.
 - The server verifies a place by reading it back through `get` and computing its size and SHA-512 digest, before the call that names it runs. Once verified, `keep` stores the place's content under its digest, unless the location holds a verified copy already, and the place is deleted after its access data expires.
 
 ### The keyring library
 
-`liasse-keys` gives the host `keyring`, a host library (SPEC §3.7) whose mutations hide private keys under the system keyring and sign with them:
+`liasse-keys` gives the host `keyring`, a host library (SPEC §3.6) whose mutations hide private keys under the system keyring and sign with them:
 
 ```liasse
 //! Private keys hidden under the system keyring.
@@ -340,11 +345,11 @@ pub trait HostKey: Send + Sync {
 }
 ```
 
-- A keyring holds an instance's keys, each 32 random bytes with a 16-byte identifier, the last one current. It is wrapped whole, with the instance's incarnation as the context, so a wrapped keyring opens for its own instance only. An instance's keyring starts with its first sealed key.
+- A keyring holds an instance's keys, each 32 random bytes with a 16-byte identifier, the last one current. It is wrapped whole, with the store's identifier of the instance as the context, which the store gives no other instance, so a wrapped keyring opens for its own instance only. An instance's keyring starts with its first sealed key.
 - A sealed key is the identifier of an instance key (16 bytes), a 24-byte random nonce, and the XChaCha20-Poly1305 ciphertext of the private key, with the key identifier as associated data. A signature looks the identifier up in the keyring of the calling instance alone, and a sealed key that it fails to open rejects the transaction with the code `host`.
 - Instance keys and opened private keys stay in the host's process memory, zeroed after use, and reach no SQL text, parameter, or log.
 - `keys.rotate_host_key()` wraps every keyring under the provider's current host key, and reports how many keyrings each earlier host key still wraps; an earlier host key leaves the configuration once that count is zero.
-- `liasse-keys` holds an X25519 transfer key pair, whose private key it wraps under the host key. `keys.transfer_key()` gives the public key. `keys.export_keys(&app, recipient, instances)` seals, at one snapshot, the keyrings of the named instances and of the instances mounted in them, or of every instance, to the recipient's transfer key with HPKE (RFC 9180, base mode: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305), each keyring with its instance's position path at that snapshot (SPEC Annex C.5) as associated data, and names the snapshot by the identity of its newest commit and the identities of the older commits that it lacks. `keys.import_keys(&app, bundle)` opens a bundle, finds each keyring's instance at its position path in the state of that snapshot, and wraps the keyring under the host key for that instance.
+- `liasse-keys` holds an X25519 transfer key pair, whose private key it wraps under the host key. `keys.transfer_key()` gives the public key. `keys.export_keys(&app, recipient, instances)` exports the application (SPEC §14.4), and seals, at the snapshot of that export, the keyrings of the named instances and of the instances mounted in them, or of every instance, to the recipient's transfer key with HPKE (RFC 9180, base mode: DHKEM(X25519, HKDF-SHA256), HKDF-SHA256, ChaCha20-Poly1305), each keyring with its instance's position path there (SPEC §14.4) as associated data. It gives the dehydrated application and the bundle, which names the snapshot by `n`, the number of the export's commits, and by the instant of the last of them. `keys.import_keys(&app, bundle)` checks that the `n`-th commit of `app`, in commit order, holds that instant, as it does when `app` was restored from that dehydrated application, then opens the bundle, finds each keyring's instance at its position path in the state of the first `n` commits, and wraps the keyring under the host key for that instance.
 
 ## Outside the core
 
@@ -366,11 +371,11 @@ host process                           the host, which embeds liasse
 ### Host implementations
 
 - **`liasse-key-file`** is a host-key provider of `liasse-keys`. It reads the host keys from a file, or from a systemd credential (`LoadCredentialEncrypted=`, which `systemd-creds` seals with the host's TPM2 when present), and holds them in the process's memory only. Each host key is 32 random bytes with a 16-byte identifier; the configuration names the current key and lists the earlier ones that still wrap a keyring. A wrap is the host key's identifier, a 24-byte random nonce, and the XChaCha20-Poly1305 ciphertext, with the identifier and the context as associated data.
-- **`liasse-blob-fs`** is a blob connector over a local filesystem, usable as a location of a storage class (SPEC §12.3). It keeps content under its digest's hexadecimal name and places under their own, and it serves presigned requests itself, on an origin of its own that the host sets:
-  - a presigned URL carries its expiry and an HMAC-SHA-256 over the method, the digest or place, the size, the expiry, and the served media type and name, under a 32-byte signing key from the host's configuration;
+- **`liasse-blob-fs`** is a blob connector over a local filesystem, usable as a location of a storage class (SPEC §12.2). It keeps content under its digest's hexadecimal name and places under their own, and it serves presigned requests itself, on an origin of its own that the host sets:
+  - a presigned URL carries its expiry and an HMAC-SHA-256 over the method, the digest or place, the size, and the expiry, under a 32-byte signing key from the host's configuration;
   - a `PUT` whose body differs from the signed size leaves the place empty; a complete body lands in a temporary file that `link(2)` then names as the place, so a second write finds the name taken and answers 412;
   - `keep` links the place's file under the digest;
-  - a `GET` answers with the signed media type, `Content-Disposition: attachment` with the file name when there is one, `X-Content-Type-Options: nosniff`, and `Content-Security-Policy: sandbox`;
+  - a `GET` answers with `Content-Type: application/octet-stream`, `Content-Disposition: attachment`, `X-Content-Type-Options: nosniff`, and `Content-Security-Policy: sandbox`;
   - it answers CORS requests from the application origins that the host lists.
 
 ### Client bindings
@@ -381,7 +386,7 @@ host process                           the host, which embeds liasse
 ### Tools
 
 - **`liasse-cli`** is the `liasse` command, built so that agentic tools can drive it:
-  - `liasse build <folder>` builds a source folder into a `.liasse.zip` (SPEC §3.4, §3.5): the current version with its library files, each immediate submodule under `submodules/` as a package, and every earlier version and every migration under `migrations/`, and reports every build error as a diagnostic.
+  - `liasse build <folder>` builds a source folder into a `.liasse.zip` (SPEC §3.3, §3.4): the current version with its library files, each immediate submodule under `submodules/` as a package, and every earlier version and every migration under `migrations/`, and reports every build error as a diagnostic.
   - `liasse migrate apply <module.liasse> <migration.liasse>`:
     1. checks that the migration's `name` is the module's `meta.name`, that its `from` is the module's `meta.version`, and that every entry applies to the current version (LANGUAGE 15.2, 15.4); a failed check leaves every file as it is;
     2. copies the current module file and its library files to `migrations/<from>/`, and the migration to `migrations/<from>-<to>.migration.liasse`;
@@ -402,7 +407,7 @@ host process                           the host, which embeds liasse
 
 ## CBOR encoding
 
-The alpha's encoding (SPEC Annex A.4) is CBOR (RFC 8949): each value in a record of a dehydrated application and in a message of `liasse-connect` is one CBOR data item. A writer encodes each value in the form that the table gives. A reader decodes every well-formed item of that form to its value, whatever the widths of its integers, lengths, and tag arguments, the order of its map keys and of the elements of a set, and the scale of its decimals.
+The alpha's encoding (SPEC §14.4) is CBOR (RFC 8949): each value in a record of a dehydrated application and in a message of `liasse-connect` is one CBOR data item. A writer encodes each value in the form that the table gives. A reader decodes every well-formed item of that form to its value, whatever the widths of its integers, lengths, and tag arguments, the order of its map keys, and the scale of its decimals.
 
 The items are integers, byte strings, text strings, arrays, maps with text keys, the simple values `false`, `true`, and `null` where the table places it, and the tags 2, 3, 4, 37, and 1004 where the table places them.
 
@@ -420,19 +425,19 @@ The items are integers, byte strings, text strings, arrays, maps with text keys,
 | `Enum` label | text string |
 | record, object, row | map with text keys, one member per member that holds an element |
 | tuple | array of its places in position order; an empty place is `null` |
-| set of cardinality `*` or `+`, and set of sets of cardinality `?` | array of its elements, each with its occurrence token where a message carries one |
-| `Blob` | map `{ "digest": <64-byte byte string>, "media": <text>, "name": <text>, "size": <unsigned integer> }`, `name` omitted when empty |
+| set of cardinality `*` or `+`, and set of sets of cardinality `?` | array of its elements, in their order, each with its occurrence token where a message carries one |
+| `Blob` | map `{ "digest": <64-byte byte string>, "size": <unsigned integer> }` |
 | opaque token (entry point handle, frontier, commit, occurrence token) | byte string |
 | `none` in a place that cannot be omitted, such as one result of a call list | `null` |
 
-A received item that decodes to no value of its type is malformed (SPEC Annex A.4). In CBOR, these items decode to no value: a CBOR map with two equal keys, a floating-point number, a simple value or tag outside the list, a tag 37 over a byte string whose length differs from 16, a tag 1004 over an invalid date, and a text string that is not valid UTF-8.
+A received item that decodes to no value of its type is malformed (SPEC §14.4). In CBOR, these items decode to no value: a CBOR map with two equal keys, a floating-point number, a simple value or tag outside the list, a tag 37 over a byte string whose length differs from 16, a tag 1004 over an invalid date, and a text string that is not valid UTF-8.
 
 The decimal `2.5` is `4([-1, 25])`; the `Uuid` `3f2c7a1e-0b4d-4c6e-9a8f-1d2e3f405162` is `37(h'3f2c7a1e0b4d4c6e9a8f1d2e3f405162')`; the `Date` `2026-09-22` is `1004("2026-09-22")`; the instant `2026-09-22T10:00:00.250Z` is `1790071200250000`; the `Map<Text, Int>` holding `daily` with 100 is `[{"key": "daily", "value": 100}]`; and `(none, 5)` of the type `(Text?, Int)` is `[null, 5]`.
 
 ## Open scope decisions
 
 - A QUIC and WebTransport binding: SPEC chapter 10 allows it. In the alpha, or SSE + HTTPS only?
-- A blob connector for S3-compatible object storage: in the alpha, or the filesystem connector only? It would presign SigV4 `PUT`s that sign `content-length` and `if-none-match: *` (a place written once), presign `GET`s with `response-content-type` and `response-content-disposition`, and implement `keep` as a server-side copy.
+- A blob connector for S3-compatible object storage: in the alpha, or the filesystem connector only? It would presign SigV4 `PUT`s that sign `content-length` and `if-none-match: *` (a place written once), presign `GET`s that answer as `application/octet-stream` attachments, and implement `keep` as a server-side copy.
 - A host-key provider backed by a KMS or a PKCS#11 HSM: in the alpha, or key file and systemd credential only?
 - The format of a corpus case file.
 - Ordered live views: `liasse-connect` and the backends add an order key to each occurrence of a sorted view, by which a client keeps its order. In the alpha, or later?

@@ -77,6 +77,8 @@ and its specifics stay in the documents.
 
 - State each rule once, where it belongs. A consequence of the stated rules gets
   no term, no section, and no rule of its own.
+- A section holds a first-class aspect of its subject. A detail of another
+  section's aspect goes into that section, whatever its length.
 - An example MAY show a consequence, when the reader gains from seeing it.
 - A general rule covers its cases, and a case restates none of it.
 - Before adding a sentence, search the documents for its key nouns. A fact
@@ -91,6 +93,8 @@ and its specifics stay in the documents.
   thing of another kind takes a term with another head.
 - A case of a defined thing takes that thing's term, and gets no term of its
   own.
+- A function's name says the types that it is for, and a conversion's name says
+  both of its types.
 - A generic word names things of one kind, and each use says which one it
   names.
 - A concept keeps its term, distinct from the name of the builtin that

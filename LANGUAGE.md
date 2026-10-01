@@ -174,9 +174,10 @@ limits: Int* = [10, 20, 50]                 // a set of three elements
 limit = 10                                  // a set of one element
 ```
 
-Every value is a **set**: zero or more **elements**. A literal, a record, and
-a tuple are one element. `[a, b, …]` is the set of the elements of each
-expression, of the type that its position gives, and `[]` is `none`.
+Every value is a **set**: zero or more **elements**. A literal, a record, and a
+tuple are one element. `[a, b, …]` is the set of the elements of each
+expression, in that order, of the type that its position gives, and `[]` is
+`none`.
 
 ---
 
@@ -281,8 +282,8 @@ labels: Text* { set { unique() } }      // no label twice
 
 A data member of cardinality `*` or `+` is a **stored set**, and its elements
 are **rows**: each row of `tasks` has the members that its body declares, and
-each row of `labels` is a text. Each row has an **identity** that stays the
-same while the row exists.
+each row of `labels` is a text. By default, the rows of a stored set are in the
+order of their insertion, and reading them keeps that order.
 
 A block `set { … }` in the body of a definition of cardinality `*` or `+` holds
 mixin applications at its **set level**, where they apply to its elements
@@ -403,7 +404,7 @@ value of `title` to the first parameter. Outside a pipeline (6.3), the
 parentheses are always written.
 
 After `:`, `Name<…>(…)` applies a template (4.4). `path.name(arguments)` reads
-the view `name` of the value at `path` with those arguments (8.3), or, in a
+the view `name` of the value at `path` with those arguments (8.2), or, in a
 mutation, calls its mutation `name` (10.2).
 
 ### 5.3 Operators
@@ -460,7 +461,7 @@ Values compare by value: two values are equal when they have the same structure
 and equal data. Records and objects are equal when they have the same members,
 each equal; tuples when they hold equal values in the same order; sets when
 their elements pair one to one, each equal to its pair; rows when their values,
-the records of their data members, are equal, whatever their identities.
+the records of their data members, are equal.
 
 ---
 
@@ -477,9 +478,9 @@ usage: {
 
 A member read through a set maps over its elements: `.usage.amount` is the set
 of the amounts, and `.usage.funding` the set of every funding row of every usage
-row, each keeping the identity of its owners. A path's cardinality allows zero
-when a step's cardinality does, and several when a step's does: `.usage.amount`
-has the cardinality `*`, and `.billing_address.city` (4.3) the cardinality `?`.
+row. A path's cardinality allows zero when a step's cardinality does, and
+several when a step's does: `.usage.amount` has the cardinality `*`, and
+`.billing_address.city` (4.3) the cardinality `?`.
 
 ### 6.2 Selection
 
@@ -526,9 +527,9 @@ equality of `.x` with it: `.x == x`, `.x == task.x`, `.x == ^.x`, `.x == /x`.
 of the first parameter, and the parentheses give the others; `x |> f` is the
 call `f(x)`. What follows `|>` is a **stage**. A stage that starts with a name
 is such a call, and any other stage is a function of one element: `x |> . -> e`
-is the set of the values of `e` for the elements of `x`, each with the identity
-of its element. A chain of stages is a **pipeline**: each stage reads the set
-that the one before it yields.
+is the set of the values of `e`, one for each element of `x`, in their order. A
+chain of stages is a **pipeline**: each stage reads the set that the one before
+it yields.
 
 A function of one element, as a stage or as the argument of a parameter of kind
 `V -> T` (9.2), such as the condition of `filter`, is written `. -> e`: `.` is
@@ -586,12 +587,12 @@ elements are sets of that type: a `Text*?` is `none` or one set of texts, which
 MAY be empty, so `labels` keeps an empty set that it is given and takes the
 default for `none`.
 
-`x!` **flattens** `x`: it is the set of the elements of each set of `x`, each
-keeping its identity, and over a set whose element type has cardinality one, it
-is `x`. The cardinality of `x!` allows zero when that of `x` or of its sets
-does, and several when either does, as a path's does (6.1): `given!` is a
-`Text*`. `T!` is the type of `x!` for an `x` of type `T`, and a path reads
-through a set of sets as through the set that `!` gives: `x.name` is `x!.name`.
+`x!` **flattens** `x`: it is the set of the elements of each set of `x`, and
+over a set whose element type has cardinality one, it is `x`. The cardinality of
+`x!` allows zero when that of `x` or of its sets does, and several when either
+does, as a path's does (6.1): `given!` is a `Text*`. `T!` is the type of `x!`
+for an `x` of type `T`, and a path reads through a set of sets as through the
+set that `!` gives: `x.name` is `x!.name`.
 
 `S |> U` is the type of `x |> . -> e` for an `x` of type `S` and an `e` of type
 `U`: `U` when `S` has cardinality one, and else `U` marked with the cardinality
@@ -660,10 +661,6 @@ and an annotation such as `: Text` states it. Its expression calls functions,
 and views read each other along an acyclic graph. A record and a row's value
 hold data members only.
 
-A view that yields rows keeps the identities of its source rows.
-
-### 8.2 Constants
-
 ```liasse
 view labels = { open: "Open", complete: "Complete" }
 view limit = 100
@@ -674,7 +671,7 @@ A view whose expression reads only literals and other constants is a
 path. A constant stands wherever a build-time value is required, such as a
 template argument.
 
-### 8.3 Parameters
+### 8.2 Parameters
 
 ```liasse
 view by_owner(owner: Text) = .tasks[.owner == owner]
@@ -875,9 +872,10 @@ mut untag(id: Uuid, tag: Text) { .tasks[id].tags -= tag }
 ```
 
 **Put.** `rows[conditions] = r` inserts or replaces. Its conditions are
-equalities `.m == v`, or their shorthands, on distinct stored members, or
-`. == v` on rows that are scalars; `r` is the value of a row, and repeats a
-condition member only with an equal value.
+equalities `.m == v`, or their shorthands, on distinct stored members, each `v`
+of its member's type, or `. == v` on rows that are scalars, `v` of the row's
+type; `r` is the value of one row, and repeats a condition member only with an
+equal value.
 
 ```liasse
 mut tag_once(id: Uuid, tag: Text) { .tasks[id].tags[. == tag] = tag }       // adds `tag` when it is missing
@@ -923,7 +921,7 @@ mut rename(title) { .title = title }           // declared, type from the body
 
 All three declare one required `Text` input named `title`. Inputs are values:
 each argument is evaluated once, where the mutation is called. They are declared
-as a view's parameters are (8.3), and a program adds typed positions:
+as a view's parameters are (8.2), and a program adds typed positions:
 
 | Position | Gives |
 | --- | --- |
@@ -1154,6 +1152,16 @@ application's path. A template is declared where a mixin is, and its
 definition's body is an object or row body. In the type of a parameter or of a
 result, a template names a shape (11.1).
 
+```liasse
+template Company: {
+    name: Text
+    subcompanies: Company*
+}
+```
+
+A template refers to itself by name. Its values are finite: an empty set ends
+the recursion, and its applications form a finite graph.
+
 ### 13.2 Parameters
 
 ```liasse
@@ -1240,6 +1248,21 @@ payments: Ledger {
   body where they land, the template's checks hold, and the template's
   parameters stay inside its definition.
 
+```liasse
+mixin priced(currency: Text) {
+    amount: Decimal
+    currency = currency
+    slot
+}
+
+orders: {
+    priced(currency: "EUR") { tax: Decimal }
+}*
+```
+
+A mixin declares slots as a template does, and the body of its application fills
+them.
+
 ### 13.4 Offered templates and mixins
 
 ```liasse
@@ -1274,35 +1297,6 @@ declares it through `^`, as a declaration at the root reaches the root through
 
 What each slot binds, and the templates and mixins that it offers, are part of
 the template's contract.
-
-### 13.5 Mixins with slots
-
-```liasse
-mixin priced(currency: Text) {
-    amount: Decimal
-    currency = currency
-    slot
-}
-
-orders: {
-    priced(currency: "EUR") { tax: Decimal }
-}*
-```
-
-A mixin declares slots as a template does, and the body of its application fills
-them.
-
-### 13.6 Recursion
-
-```liasse
-template Company: {
-    name: Text
-    subcompanies: Company*
-}
-```
-
-A template refers to itself by name. Its values are finite: an empty set ends
-the recursion, and its applications form a finite graph.
 
 ---
 

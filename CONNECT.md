@@ -55,10 +55,11 @@ text keys. A message that fails to parse as one operation is a transport fault.
 
 The server mints the **opaque tokens**: frontiers, stream positions, commits,
 the handles of entry points, and occurrence tokens, each a byte string. The
-client stores them, compares them for equality, and sends them back unchanged.
-The server refuses, before anything runs, a token that it did not mint for that
-use on that connection: a frontier as a released range (2.4), and every other
-token with the denial (SPEC §10.2). The client chooses subscription names.
+client stores them, compares them for equality, orders occurrence tokens (2.4),
+and sends them back unchanged. The server refuses, before anything runs, a token
+that it did not mint for that use on that connection: a frontier as a released
+range (2.4), and every other token with the denial (SPEC §10.2). The client
+chooses subscription names.
 
 ### 2.1 Targets
 
@@ -101,7 +102,7 @@ functions of the host libraries that serve clients, before anything runs. A
   text or its shape. It describes the instance's active version.
 - A **type text** is a type's definition after elaboration, with every argument
   written out, such as `Text?`, `Text*`, or `{ title: Text; done: Bool }*`. A
-  storage name belongs to its member (SPEC §12.3), and the type text of the
+  storage name belongs to its member (SPEC §12.2), and the type text of the
   member's type leaves it out.
 
 ### 2.3 Replies
@@ -131,7 +132,7 @@ functions of the host libraries that serve clients, before anything runs. A
   show the commit once the client has applied the frames through it.
 - `index` names the failing mutation of a list. `message` comes when a module
   wrote it, and a generated `message`, `path`, and `trace` in development mode
-  (SPEC chapter 7).
+  (SPEC chapter 7, ALPHA.md).
 
 ### 2.4 Subscriptions
 
@@ -143,15 +144,29 @@ connection received as `committed` before the `watch`.
 
 Each element of a result of cardinality `*` or `+` is an **occurrence**,
 identified by the view declaration that yields the result and by its **path**:
-the identities of the rows that it was reached through, from the outermost, then
-the identity of its own row, each row of a mounted instance with the instance's
-incarnation, as a task of `.accounts.tasks` is reached through its account. Two
-occurrences of one result have different paths, and an occurrence keeps its
-identity at every read. Each occurrence is named in the stream by an
-**occurrence token**. Within one stream, from an `init` to the next `init` or
-the `close`, an occurrence keeps one token, and a token names one occurrence,
-also after the occurrence leaves the result and comes back. Across the streams
-of one connection, a token names one occurrence.
+the rows that it was reached through, from the outermost, then the row that it
+comes from, the key of its `group` (ALPHA.md), or else its value and its rank
+among the equal elements of the result, as a task of `.accounts.tasks` is
+reached through its account. Two occurrences of one result have different paths,
+and an occurrence keeps its path at every read. Each occurrence is named in the
+stream by an **occurrence token**. Within one stream, from an `init` to the next
+`init` or the `close`, an occurrence keeps one token, and a token names one
+occurrence, also after the occurrence leaves the result and comes back. Across
+the streams of one connection, a token names one occurrence.
+
+The occurrence token of an occurrence that comes from a row is ordered. For each
+row of its path, outermost first, it holds the instant of the commit that
+inserted the row, in microseconds since the Unix epoch, as 8 bytes; the first 8
+bytes of HMAC-SHA-256, under a 32-byte key that the store draws when it creates
+the application, of the store's identifier of that commit; and the row's index
+among the insertions of that commit, as 4 bytes; each big-endian. These tokens
+sort, byte by byte, in the order of the instants at which their rows were
+inserted: insertion order (SPEC §4.3), save between rows that concurrent commits
+insert, or that commits insert as the clock moves back (SPEC §6.6). A token so
+shows the instants at which the rows of its path were inserted. The server mints
+the token of every other occurrence, such as an element of the set that `group`
+creates, when it first gives it, and these tokens sort in the order in which it
+first gave them.
 
 ```text
 { frame: "init",  name, frontier, occurrences: [ [token, value], … ] }
@@ -229,13 +244,14 @@ to at least the returned frontier.
 
 ### 2.5 Blobs
 
-`upload` resolves, reads, and judges its calls as steps 1 to 3 of a call do
-(SPEC §10.3), with the same denials and rejections, and then gives the plan.
+`upload` resolves its calls, and reads and judges their arguments, as a call is
+before its blob content arrives (SPEC §10.3), with the same denials and
+rejections, and then gives the plan.
 
 - The plan names, for each distinct descriptor, the locations whose connector
   gives write access for its size, in the order of the class that the input's
   storage name resolves to from the row or the root that holds the mutation, as
-  a stored member's does (SPEC §12.3).
+  a stored member's does (SPEC §12.2).
 - The content that a connection's plans place serves the calls of that
   connection, and is kept while the connection lasts. The host limits the bytes
   that the plans of one connection place: an upload past the limit, and one with
@@ -249,11 +265,12 @@ shows the whole descriptor, and gives the plan.
 ## 3. The web client
 
 - **The WASM core**, `liasse-connect-wasm`, decodes and encodes CBOR, keeps a
-  replica of each subscription's result, applies patches and checks their
-  consistency (2.4), tracks frontiers and stream positions, computes the SHA-512
-  digests of blob content (ALPHA.md) in chunks, derives account keys from
-  passwords and credential outputs and signs with them (chapter 4), and erases
-  passwords, outputs, and seeds from its memory once used.
+  replica of each subscription's result, in the order of its occurrence tokens,
+  applies patches and checks their consistency (2.4), tracks frontiers and
+  stream positions, computes the SHA-512 digests of blob content (ALPHA.md) in
+  chunks, derives account keys from passwords and credential outputs and signs
+  with them (chapter 4), and erases passwords, outputs, and seeds from its
+  memory once used.
 - **The TypeScript shell**, `clients/connect`, reads the stream with a
   streaming `fetch`, which carries the `Liasse-Connection` header, sends
   requests and the presigned requests of blob plans, calls WebAuthn (4.1, 4.3),
