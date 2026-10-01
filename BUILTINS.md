@@ -1,68 +1,118 @@
 # Liasse Builtins
 
-The builtins of `liasse 0.0.1`, predeclared in every module.
+The builtins of `liasse 0.0.1`: the declarations of the host libraries that the
+implementation of that version provides, which the host injects into every
+module written in that version (LANGUAGE 16). A builtin is an opaque, which the
+implementation of `liasse 0.0.1` implements, or a definition written in Liasse,
+as the templates of section 6 are (SPEC §3.7).
 [LANGUAGE.md](LANGUAGE.md) defines the syntax, and [SPEC.md](SPEC.md) the
 runtime semantics.
 
-Each builtin is given by its signature. `T` stands for any type, and `…` after
-a parameter takes one or more arguments. `fn op for A(b: B): R` is the operator
-`op` with a left operand of type `A` and a right operand of type `B`, and
-`fn op for A(): R` the prefix operator `op` on `A`.
+Each builtin is given by its signature, written as the signature of an opaque
+(LANGUAGE 16). A signature that starts with `mut` declares a mutation (LANGUAGE
+5.2), the other signatures of section 4 declare functions, and those of section
+1.3 declare operators (LANGUAGE 5.3).
 
 ---
 
-## 1. Types
+## 1. Host types
 
-| Type | Values | Text literal |
+| Type | Values | Literals |
 | --- | --- | --- |
-| `Bool` | `true`, `false` | |
-| `Int` | arbitrary-precision integers | |
-| `Decimal` | exact decimals (SPEC Annex A.3) | |
-| `Text` | sequences of Unicode scalar values | |
-| `Bytes` | small binary values | two hexadecimal digits per byte: `"0aff"` |
-| `Uuid` | 128-bit UUIDs | the 8-4-4-4-12 hexadecimal form of RFC 9562 |
-| `Date` | Gregorian calendar dates | RFC 3339 full-date: `"2026-09-25"` |
-| `Timestamp` | instants, in microseconds since `1970-01-01T00:00:00Z` | RFC 3339 date-time with `Z` or an offset |
-| `Duration` | elapsed times, in microseconds | ISO 8601 with day and time components: `"P1DT2H"` |
-| `Object` | dynamic values over the CBOR data model | |
-| `Blob(storage: Text = "default")` | descriptors of binary content held out of band | |
+| `Bool` | `false` and `true` | `true`, `false` |
+| `Int` | the integers, of any size | integers: `-7` |
+| `Decimal` | the exact decimal numbers | decimals and integers: `3.50`, `3` |
+| `Text` | the sequences of Unicode scalar values | texts: `"Paris"` |
+| `Bytes` | the byte strings | texts of two hexadecimal digits per byte: `"0aff"` |
+| `Uuid` | the 128-bit UUIDs of RFC 9562 | texts in the 8-4-4-4-12 hexadecimal form of RFC 9562 |
+| `Date` | the dates of the proleptic Gregorian calendar | texts in the RFC 3339 full-date form: `"2026-09-25"` |
+| `Timestamp` | the instants, as signed counts of microseconds since `1970-01-01T00:00:00Z` | texts in the RFC 3339 date-time form, with `Z` or an offset |
+| `Duration` | the elapsed times, as signed counts of microseconds | texts in the ISO 8601 form with day and time components: `"P1DT2H"` |
+| `Blob(storage: Text = "default")` | the descriptors of blobs (SPEC §12.1) | |
 
-SPEC Annex A.4 gives each type's CBOR encoding, and Annex B its order.
+`Bool`, `Int`, `Decimal`, `Text`, `Bytes`, `Uuid`, `Date`, `Timestamp`, and
+`Duration` are key-eligible (SPEC Annex A.3).
 
-- `Object`: a literal, record, or array in an `Object` position builds one;
-  `x.name` is an `Object?`; the namespace `object` reads typed values.
-- `Blob`: the members `digest`, `size`, `media`, and `name` (SPEC §15.1).
-  `storage` is a storage name, which the root client binds to a storage class
-  (SPEC §15.3).
-- **Key-eligible** (SPEC Annex A.5): every type above except `Object` and
-  `Blob`, their refinements, and objects of required key-eligible members.
+- `Text`: its scalar values are the code points U+0000 to U+D7FF and U+E000 to
+  U+10FFFF, U+0000 included. A text is kept exactly as written: a precomposed
+  character and its combining sequence are two different texts.
+- `Decimal`: a decimal is its numeric value: `1.5` and `1.50` are one value. Its
+  **minimal-scale form** is the pair `[e, m]` of an exponent and a mantissa not
+  divisible by 10 whose value is `m × 10^e`, with zero as `[0, 0]`: `1.5` is
+  `[-1, 15]`, and one hundred is `[2, 1]`. Its text, in diagnostics, is its
+  minimal-scale positional form: every digit written out, trailing fractional
+  zeros and a trailing decimal point removed, a leading `-` for a negative
+  value, and `0` for zero.
+- `Blob`: a descriptor's members are `digest: Bytes`, `size: Int`,
+  `media: Text`, and `name: Text?` (SPEC §12.1). `storage` is the member's
+  storage name, which the host binds to a storage class (SPEC §12.3).
 
-### 1.1 Operators
+### 1.1 Order
 
-Each operator has one overload for each type that it accepts. An `Int` operand
-beside a `Decimal` one is converted to `Decimal`.
+The values of each type are in this order (SPEC Annex B):
 
-| Overload | Description |
+| Type | Order |
 | --- | --- |
-| `fn + for Int(b: Int): Int`, `fn + for Decimal(b: Decimal): Decimal` | The sum. |
-| `fn - for Int(b: Int): Int`, `fn - for Decimal(b: Decimal): Decimal` | The difference. |
-| `fn * for Int(b: Int): Int`, `fn * for Decimal(b: Decimal): Decimal` | The product. |
-| `fn / for Int(b: Int): Int` | The quotient, truncated toward zero (SPEC Annex A.3). |
-| `fn / for Decimal(b: Decimal): Decimal` | The quotient (SPEC Annex A.3). |
-| `fn % for Int(b: Int): Int`, `fn % for Decimal(b: Decimal): Decimal` | The remainder. |
-| `fn - for Int(): Int`, `fn - for Decimal(): Decimal`, `fn - for Duration(): Duration` | The negation. |
-| `fn ! for Bool(): Bool` | The negation. |
-| `fn + for Text(b: Text): Text` | The concatenation. |
-| `fn + for Timestamp(b: Duration): Timestamp`, `fn - for Timestamp(b: Duration): Timestamp` | The instant `b` later or earlier, exact in microseconds. |
-| `fn - for Timestamp(b: Timestamp): Duration` | The time elapsed since `b`. |
-| `fn + for Duration(b: Duration): Duration`, `fn - for Duration(b: Duration): Duration` | The sum and the difference. |
-| `fn == for T(b: T): Bool`, `fn != for T(b: T): Bool` | Equality by value (LANGUAGE 6.3). |
-| `fn < for T(b: T): Bool`, `fn <= for T(b: T): Bool`, `fn > for T(b: T): Bool`, `fn >= for T(b: T): Bool` | The order of SPEC Annex B. |
-| `fn in for T(b: Table): Bool` | `b` has a row or an element equal to the value (LANGUAGE 6.3): `false` over an empty `b`, and `none` for an absent value over a non-empty `b`. |
-| `fn + for Table(b: Table): Table` | `a + b`: the rows of `a` and a new row for each record or element of `b`. |
-| `fn - for Table(b: Table): Table` | `a - b` is `difference(a, b)` (§4). |
-| `fn \| for Table(b: Table): Table` | `a \| b` is `union(a, b)` (§4). |
-| `fn & for Table(b: Table): Table` | `a & b` is `intersection(a, b)` (§4). |
+| `Bool` | `false`, then `true` |
+| `Int` | the order of the integers |
+| `Decimal` | the order of the numbers; numerically equal values are equal |
+| `Text` | lexicographic order of the scalar values, which is the bytewise order of their UTF-8 encodings; a proper prefix first |
+| `Bytes` | lexicographic order of the unsigned bytes; a proper prefix first |
+| `Uuid` | lexicographic order of its 16 bytes, unsigned |
+| `Date` | chronological order |
+| `Timestamp` | chronological order |
+| `Duration` | signed length: negative durations, then zero, then positive durations |
+| `Blob` | `digest`, then `size`, then `media`, then `name` |
+
+Texts compare by their scalar values as written: `"Zeta"` comes before
+`"alpha"`, and `"10"` before `"9"`.
+
+### 1.2 Limits
+
+These limits hold for every value, wherever it is written, computed, or received
+(SPEC Annex A.2):
+
+| Value | Limit |
+| --- | --- |
+| `Decimal` | the exponent of its minimal-scale form lies between −16383 and 16383 |
+| `Date` | from `0000-01-01` to `9999-12-31` |
+| `Timestamp` | from `0000-01-01T00:00:00Z` up to `10000-01-01T00:00:00Z`, excluded |
+| `Duration` | a magnitude below 3 652 425 days |
+
+### 1.3 Operators
+
+These are the operator declarations (LANGUAGE 5.3):
+
+| Declaration | Description |
+| --- | --- |
+| `fn Int + Int: Int`, `fn Decimal + Decimal: Decimal` | The sum. |
+| `fn Int - Int: Int`, `fn Decimal - Decimal: Decimal` | The difference. |
+| `fn Int * Int: Int`, `fn Decimal * Decimal: Decimal` | The product. |
+| `fn Int / Int: Int` | The quotient, truncated toward zero. |
+| `fn Decimal / Decimal: Decimal` | The quotient. |
+| `fn Int % Int: Int`, `fn Decimal % Decimal: Decimal` | The remainder. |
+| `fn -Int: Int`, `fn -Decimal: Decimal`, `fn -Duration: Duration` | The negation. |
+| `fn !Bool: Bool` | The negation. |
+| `fn Text + Text: Text`, `fn Bytes + Bytes: Bytes` | The concatenation. |
+| `fn Timestamp + Duration: Timestamp`, `fn Timestamp - Duration: Timestamp` | The instant later or earlier by the right operand, exact in microseconds. |
+| `fn Timestamp - Timestamp: Duration` | The time elapsed since the right operand. |
+| `fn Duration + Duration: Duration`, `fn Duration - Duration: Duration` | The sum and the difference. |
+| `fn<V> V == V: Bool`, `fn<V> V != V: Bool` | Equality by value (LANGUAGE 5.4). |
+| `fn<V> V < V: Bool`, `fn<V> V <= V: Bool`, `fn<V> V > V: Bool`, `fn<V> V >= V: Bool` | The order of SPEC Annex B. |
+| `fn<V> V in V*: Bool` | The right operand has an element equal to the left one (LANGUAGE 5.4). |
+
+`+`, `-`, and `*` on `Int` and `Decimal` give the exact result.
+
+- `Int / Int` truncates toward zero: `7 / 2` is `3`, and `-7 / 2` is `-3`.
+- `Decimal / Decimal` gives a terminating quotient exactly: `10.0 / 4` is `2.5`.
+  A non-terminating quotient is rounded half away from zero to 20 fractional
+  digits, or to 16 significant digits when that keeps more fractional digits:
+  `1 / 3.0` is `0.33333333333333333333`, `2 / 3.0` is `0.66666666666666666667`,
+  and `1 / 300000.0` is `0.000003333333333333333`.
+- `a % b` is `a − trunc(a ÷ b) × b`, with `a ÷ b` the exact quotient, and takes
+  the sign of `a`: `-7 % 2` is `-1`, `7 % -2` is `1`, and `5.5 % 2` is `1.5`.
+- A zero divisor of `/` or `%` rejects the evaluation with the code
+  `evaluation` (SPEC chapter 7).
 
 ---
 
@@ -70,42 +120,10 @@ beside a `Decimal` one is converted to `Decimal`.
 
 | Signature | Description |
 | --- | --- |
-| `Table(element = none) { row }` | A stored collection of rows, each owner having its own table (SPEC §4.2). |
-| `Set(of: type)` | Unique present values. |
-| `Map(key: type, value: type)` | Unique present keys, each with one present value. |
-| `Enum(labels: Set(of: Text))` | A `Text` restricted to `labels`. |
-| `Module(interface: I)` | A mount point: a member that holds one child module satisfying `I` (SPEC §12.3). |
-
-### 2.1 `Table`
-
-- The body declares the members of each row, and every row has an identity
-  (SPEC §4.2).
-- `element:` is one member or a tuple of members that cover every stored
-  member. A row is then also its **element**, the member's value or the tuple
-  of values, and the table is a value: the collection of its elements.
-- The slot `table { … }` holds views and mutations of the whole table: `.` is
-  the table, `^` its owner. They are read and called through the table:
-  `.tasks.total`, `.tasks.add(title: "x")`.
-- Offers `unique` to the row body.
-- `T?` on a table: absent is distinct from empty. `= none` removes every row
-  and leaves it absent.
-- An initializer or an inserted record supplies every required member that has
-  no initializer; an omitted nested table starts empty. A table's initializer is
-  **seed data** (SPEC §8.1).
-- In the type of a parameter, a result, or an interface signature,
-  `Table { … }` is a **shape**: the members of each row (LANGUAGE 12.3).
-  `Table` alone takes any collection.
-
-### 2.2 `Module`
-
-- Holds a **module value**, owned by one place. `?` allows the mount point to
-  be empty. A mount point that genesis would fill is optional.
-- The body holds at most one `provide(…)`.
-- `.m.v` reads the interface view `v`, and `.m.f(args)` calls the interface
-  mutation `f` (SPEC §12.6). A path through a mount point is read-only.
-- `has(.m)` and `modules.update(.m, …)` take the mount point as a place.
-- Assigning `none` to the mount point, or removing the row that holds it,
-  unmounts the module (SPEC §18.2).
+| `Map<K, V>` | A stored set of keys, each unique, with one value each (§6). |
+| `Enum(labels: Text*)` | A `Text` restricted to `labels`, in the order of `Text`, whatever the order of `labels`. |
+| `Module(target: Text? = none)` | A mount point: an instance of a module that conforms to the shape that its body lists (SPEC §11.1). |
+| `Parent` | The context that a module needs from the instance that mounts it (SPEC §11.3). |
 
 ---
 
@@ -113,132 +131,124 @@ beside a `Decimal` one is converted to `Decimal`.
 
 | Signature | Description |
 | --- | --- |
-| `assert(condition: Bool, message: Text? = none)` | In a body: `condition` holds of every committed state, `.` being the body's current value. In a program: `condition` holds when the statement runs. In an input type: `condition` holds of the argument. `none` passes. An omitted message is generated from the condition. |
-| `unique(members)` | In a table's row body: no two rows of one owner hold equal values of `members`, a member of the row or a tuple of members (SPEC §4.3). A row with an absent member takes no part. |
-| `provide({ view name = e … })` | In a mount point's body: the views that the child reads as `#name` (LANGUAGE 12.7). `.` is the mount point, `^` its owner. |
+| `assert(condition: Bool, message: Text? = none)` | In a body, a constraint (SPEC §4.4): `condition` holds of every committed state, `.` being the body's current value. In a program, an assertion: `condition` holds when the statement runs. In an input type, a constraint of the argument. An omitted message is generated from the condition. |
+| `unique<V, K>(key: V -> K = .)` | At a set level (LANGUAGE 4.5), a unique key (SPEC §4.4): no two rows of one owner, or two elements of one argument, give equal values of `key`, `V` being their type. |
 
-- A failing `assert` rejects the transaction with the code `constraint` in a
-  body or an input type, and `assertion` in a program; a violated `unique` with
-  `uniqueness` (SPEC §20.3).
-- A body `assert` is judged on the complete result of the transaction. It reads
-  what a view reads.
-- **Placement.** An implementation SHOULD warn when a body `assert`'s condition
-  reads nothing through `.` or `^`, and name the body it belongs in.
-- A selection whose equalities cover the members of one `unique` of a table
-  read from its owner holds at most one row, and reads as an optional value
-  where one value is expected: `.attributes[.key == "color"].value ?? "plain"`.
-- `unique` members are stored fields or objects of a key-eligible type, or the
-  optional type of one.
+- A body `assert` reads what a view reads.
+- `key` reads the data members of the row or the element alone, and gives a
+  value of cardinality one or `?`: of a key-eligible type (SPEC Annex A.3), or a
+  record or a tuple of such values. `unique` judges each row or element whose
+  key holds an element, each part of a record or a tuple included.
+- A selection of a stored set read from its owner has the cardinality `?`
+  (LANGUAGE 6.2) when its equalities cover the `key` of one `unique` of that
+  stored set, and that key is a member of the row, a record or a tuple of
+  members, or `.` for rows that are scalars:
+  `.attributes[.key == "color"].value ?? "plain"`.
 
 ---
 
-## 4. Mappings
-
-A mapping takes the collection on the left of `|>` as its first argument
-(LANGUAGE 7.4).
+## 4. Functions and mutations
 
 | Signature | Description |
 | --- | --- |
-| `filter(rows: Table, conditions: . -> Bool…): Table` | The rows for which every condition holds: the selection `rows[conditions…]`. |
-| `sort(rows: Table, terms: . -> T…): Table` | The rows ordered by the terms, lexicographically. Absent values sort last; identity breaks ties. Replaces any earlier order. |
-| `skip(rows: Table, n: Int): Table` | The rows after the first `n`, in the order of the `sort` before it. |
-| `take(rows: Table, n: Int): Table` | The first `n` rows, in the order of the `sort` before it. |
-| `map(rows: Table, f: . -> T): Table` | One row for each row: the value of `f`, with the row's identity. |
-| `group(rows: Table, keys: . -> T…, f: . -> T): Table` | One row per distinct key, holding the keys and the members of the record `f`, with the key as identity. In `f`, `.` is the group: the rows of one key. |
-| `union(rows: Table, other: Table, by: . -> T = .): Table` | The rows, and the rows of `other` whose `by` equals that of none of them. |
-| `intersection(rows: Table, other: Table, by: . -> T = .): Table` | The rows whose `by` equals that of a row of `other`. |
-| `difference(rows: Table, other: Table, by: . -> T = .): Table` | The rows whose `by` equals that of no row of `other`. |
+| `size(x: Text): Int` | The length in Unicode scalar values. |
+| `round(x: Decimal, digits: Int = 0): Decimal` | Rounded to `digits` fractional digits, a halfway value away from zero. |
+| `trunc(x: Decimal, digits: Int = 0): Decimal` | Rounded toward zero to `digits` fractional digits. |
+| `floor(x: Decimal): Decimal` | The greatest integer at most `x`. |
+| `ceil(x: Decimal): Decimal` | The least integer at least `x`. |
+| `now(): Timestamp` | The instant of the transaction or the read (SPEC §6.7). |
+| `mut uuid(): Uuid` | A fresh UUID at each call. |
 
-- `filter`, `sort`, `skip`, `take`, `union`, `intersection`, and `difference`
-  keep every row as it is.
-- `n` is evaluated once, at the level of the call. A negative `n` rejects the
-  evaluation.
-- `group` keys are key-eligible, and a computed key is named:
-  `group(.customer)`, `group(day: time.date(.at))`. Each member of `f`
-  aggregates the group or reads a key.
-- `by` is written at the level of each row of both operands, which share what
-  it reads. It defaults to the whole row, so `a | b`, `a & b`, and `a - b` are
-  `union(a, b)`, `intersection(a, b)`, and `difference(a, b)`.
+A negative `digits` rounds left of the decimal point. `round(2.5)` is `3`,
+`round(-2.5)` is `-3`, `round(1.245, 2)` is `1.25`, and `round(1250, -2)` is
+`1300`. `trunc(-2.7)` is `-2`, and `trunc(2.789, 1)` is `2.7`. `floor(-2.5)` is
+`-3`, and `ceil(-2.5)` is `-2`.
 
----
+| Namespace | Publishes |
+| --- | --- |
+| `string` | Unicode text functions (4.1). |
+| `convert` | Checked conversions (4.1). |
+| `bytes` | `bytes.size(x: Bytes): Int`: the length in bytes. |
+| `sha` | Cryptographic hashes: `sha.sha256(data: Bytes): Bytes`, `sha.sha384(data: Bytes): Bytes`, and `sha.sha512(data: Bytes): Bytes`, the SHA-2 digests of `data` (FIPS 180-4). |
+| `random` | `mut random.bytes(n: Int): Bytes`: `n` fresh bytes at each call, from a cryptographically secure source. A negative `n` rejects the evaluation. |
+| `crypto` | Signatures: Ed25519, and ECDSA over P-256 and P-384 (4.2). |
+| `history` | `mut history.at<V>(source: V*, instant: Timestamp): { row: V; history: { created_at: Timestamp; updated_at: Timestamp } }*`: the rows of `source` as they stood at `instant`, loaded from the store, each with its row history (SPEC §14.4). |
+| `modules` | `mut modules.init(artifact: Blob): Module`: a new instance of the current version of the package that `artifact` holds, which an assignment mounts (SPEC §11.2). `mut modules.update(m: Module?, artifact: Blob)`: gives the instance at `m` the package that `artifact` holds (SPEC §13.1). |
 
-## 5. Aggregates
+### 4.1 Text and conversions
+
+`liasse 0.0.1` follows Unicode 16.0.0: each `string` function gives the result
+that the character properties and case mappings of that version define.
 
 | Signature | Description |
 | --- | --- |
-| `count(rows: Table): Int` | The number of rows. |
-| `sum(values: Table): T` | The sum; `0` of `T` when empty. |
-| `avg(values: Table): Decimal?` | The mean, by `numeric` division (SPEC Annex A.3); `none` when empty. |
-| `min(values: Table): T?` | The least value; `none` when empty. |
-| `max(values: Table): T?` | The greatest value; `none` when empty. |
-| `distinct(values: Table): Set(of: T)` | The distinct values, key-eligible. |
+| `string.trim(value: Text): Text` | `value` with its leading and trailing scalar values of the property `White_Space` removed. |
+| `string.lower(value: Text): Text` | The default case conversion `toLowercase` (Unicode §3.13). |
+| `string.upper(value: Text): Text` | The default case conversion `toUppercase` (Unicode §3.13). |
+| `string.casefold(value: Text): Text` | The default case folding `toCasefold` (Unicode §3.13). |
+| `string.starts_with(value: Text, prefix: Text): Bool` | `value` begins with the scalar values of `prefix`. |
+| `convert.int_text(value: Int): Text` | The base-10 text of `value`: `0` for zero, the digits from the first nonzero digit otherwise, after one `-` for a negative value. |
+| `convert.int_decimal(value: Int): Decimal` | The `Decimal` equal to `value`. |
+| `convert.uuid_text(value: Uuid): Text` | The 32 lower-case hexadecimal digits of the 16 bytes of `value`, in the 8-4-4-4-12 grouping of RFC 9562, separated by `-`. |
 
-Absent values are skipped. Over rows whose records have one member, an
-aggregate reads that member: `sum(.invoices |> map { .total })` is
-`sum(.invoices.total)`.
+### 4.2 Signatures
+
+Every verification gives `false` for every invalid signature, a malformed key or
+signature included. A signature under a malformed private key rejects the
+evaluation with the code `evaluation`.
+
+| Signature | Description |
+| --- | --- |
+| `crypto.ed25519_verify(public_key: Bytes, message: Bytes, signature: Bytes): Bool` | `signature` is an Ed25519 signature (RFC 8032) of `message` under `public_key`, by the verification of RFC 8032 §5.1.7 with these checks: `S` below the group order, and `public_key` and `R` in canonical encoding and not of small order. |
+| `mut crypto.ed25519_generate(): { public_key: Bytes; private_key: Bytes }` | A new Ed25519 key pair, from a cryptographically secure source: the 32-byte public key and the 32-byte private key. |
+| `crypto.ed25519_sign(private_key: Bytes, message: Bytes): Bytes` | The 64-byte Ed25519 signature of `message` under `private_key` (RFC 8032 §5.1.6). |
+| `crypto.p256_verify(public_key: Bytes, message: Bytes, signature: Bytes): Bool` | `signature` is an ECDSA signature (FIPS 186-5 §6.4.2) over the curve P-256 of the SHA-256 digest of `message` under `public_key`. |
+| `mut crypto.p256_generate(): { public_key: Bytes; private_key: Bytes }` | A new P-256 key pair, from a cryptographically secure source: the 65-byte uncompressed public key and the 32-byte private key. |
+| `crypto.p256_sign(private_key: Bytes, message: Bytes): Bytes` | The 64-byte ECDSA P-256 signature of the SHA-256 digest of `message` under `private_key`, with the nonce of RFC 6979. |
+| `crypto.p384_verify(public_key: Bytes, message: Bytes, signature: Bytes): Bool` | `signature` is an ECDSA signature (FIPS 186-5 §6.4.2) over the curve P-384 of the SHA-384 digest of `message` under `public_key`. |
+| `mut crypto.p384_generate(): { public_key: Bytes; private_key: Bytes }` | A new P-384 key pair, from a cryptographically secure source: the 97-byte uncompressed public key and the 48-byte private key. |
+| `crypto.p384_sign(private_key: Bytes, message: Bytes): Bytes` | The 96-byte ECDSA P-384 signature of the SHA-384 digest of `message` under `private_key`, with the nonce of RFC 6979. |
+
+- **Private keys**: an Ed25519 private key is its 32-byte seed (RFC 8032
+  §5.1.5), and an ECDSA private key its scalar, big-endian in 32 bytes for P-256
+  and 48 bytes for P-384, from 1 to the group order minus 1.
+- **ECDSA public keys** are points in the encoding of SEC 1 §2.3.3:
+  uncompressed, as `0x04` then the two coordinates, or compressed, as `0x02` or
+  `0x03` then the first coordinate, each coordinate big-endian in 32 bytes for
+  P-256 and 48 bytes for P-384. A verification takes both forms, and a key off
+  the curve is malformed. A generation gives the uncompressed form.
+- **ECDSA signatures** are `r` then `s`, each big-endian in 32 bytes for P-256
+  and 48 bytes for P-384, both from 1 to the group order minus 1: the form of
+  IEEE P1363, WebCrypto, JOSE, and COSE. Whenever `r ‖ s` verifies, so does
+  `r ‖ (n − s)`, with `n` the group order: two signature values sign one
+  message.
 
 ---
 
-## 6. Functions and Mutations
-
-| Signature | Class | Description |
-| --- | --- | --- |
-| `has(x: T): Bool` | immutable | `x` is present; a collection holds a row; a mount point holds a module. |
-| `size(x: Text): Int`, `size(x: Bytes): Int` | immutable | The length in Unicode scalar values, or in bytes. |
-| `round(x: Int, digits: Int = 0): Int`, `round(x: Decimal, digits: Int = 0): Decimal` | immutable | Rounded to `digits` fractional digits, halfway away from zero (SPEC Annex A.3). |
-| `trunc(x: Int, digits: Int = 0): Int`, `trunc(x: Decimal, digits: Int = 0): Decimal` | immutable | Rounded toward zero to `digits` fractional digits. |
-| `floor(x: Int)`, `floor(x: Decimal)` | immutable | The greatest integer at most `x`. |
-| `ceil(x: Int)`, `ceil(x: Decimal)` | immutable | The least integer at least `x`. |
-| `desc(x: T): T` | immutable | `x` in reverse order, as a `sort` term. |
-| `now(): Timestamp` | stable | The instant of the transaction or reading operation (SPEC §19.2). |
-| `uuid(): Uuid` | mutation | A fresh UUID. |
-
-| Namespace | Class | Publishes |
-| --- | --- | --- |
-| `string` | immutable | Unicode text functions (SPEC §13.1). |
-| `convert` | immutable | Checked conversions. |
-| `hex`, `base64` | immutable | Conversions between `Bytes` and `Text`. |
-| `sha` | immutable | Cryptographic hashes. |
-| `object` | immutable | Typed reads of `Object` values. |
-| `time` | immutable | Unix time, dates, durations, and time zones. |
-| `random` | mutation | Random bytes. |
-| `history` | mutation | `history.at(source, instant: Timestamp)`: rows of `source` as they stood at `instant`, as records `{ row, history }` (SPEC §16.12). |
-| `modules` | mutation | `modules.mount(artifact: Blob)`: a module value from a package, assigned to a mount point. `modules.update(m, artifact: Blob)`: moves the module at `m` along its migration chain (SPEC §12.4). |
-
----
-
-## 7. Metaproperties
+## 5. Metaproperties
 
 | Metaproperty | Type | Description |
 | --- | --- | --- |
-| `$history` | `{ created_at: Timestamp; updated_at: Timestamp }` | Of every stored row: the commit instants of its insertion and of the latest change of its own stored fields (SPEC §16.12). |
+| `$history` | `{ created_at: Timestamp; updated_at: Timestamp }` | The row history of every stored row: its creation and its last change (SPEC §14.3). |
 
 ---
 
-## 8. Prelude
+## 6. Template definitions
 
-The prelude is a library, found last by name (LANGUAGE 12.5):
+`Map` and `Enum` are these templates:
 
 ```liasse
-public {
-    /// Unique present values.
-    template Set(of: type): Table(element: .value) {
-        value: of
-        unique(.value)
-    }
+/// Keys, each unique, with one value each.
+template Map<K, V>: {
+    key: K
+    value: V
+    set { unique(.key) }
+}*
 
-    /// Unique present keys, each with one present value.
-    template Map(key: type, value: type): Table(element: (.key, .value)) {
-        key: key
-        value: value
-        unique(.key)
-    }
-
-    /// A `Text` restricted to `labels`.
-    template Enum(labels: Set(of: Text)): Text {
-        assert(. in labels, "Unknown label")
-    }
+/// A `Text` restricted to `labels`.
+template Enum(labels: Text*): Text {
+    assert(. in labels, "Unknown label")
 }
 ```
 
-`x in s` tests membership in a set, and `has(m[.key == k])` a key of a map.
+`x in s` tests membership in a set, and `k in m.key` a key of a map.
