@@ -156,17 +156,16 @@ the streams of one connection, a token names one occurrence.
 
 The occurrence token of an occurrence that comes from a row is ordered. For each
 row of its path, outermost first, it holds the instant of the commit that
-inserted the row, in microseconds since the Unix epoch, as 8 bytes; the first 8
-bytes of HMAC-SHA-256, under a 32-byte key that the store draws when it creates
-the application, of the store's identifier of that commit; and the row's index
-among the insertions of that commit, as 4 bytes; each big-endian. These tokens
-sort, byte by byte, in the order of the instants at which their rows were
-inserted: insertion order (SPEC §4.3), save between rows that concurrent commits
-insert, or that commits insert as the clock moves back (SPEC §6.6). A token so
-shows the instants at which the rows of its path were inserted. The server mints
-the token of every other occurrence, such as an element of the set that `group`
-creates, when it first gives it, and these tokens sort in the order in which it
-first gave them.
+inserted the row, in microseconds since the Unix epoch, as 8 bytes, and the
+row's index among the insertions of that commit, as 4 bytes, both big-endian,
+then the row's identity (SPEC §4.3), as one byte of its length and its
+characters. These tokens sort, byte by byte, in the order of the instants at
+which their rows were inserted: insertion order (SPEC §4.3), save between rows
+that concurrent commits insert, or that commits insert as the clock moves back
+(SPEC §6.6). A token so shows the identities of the rows of its path and the
+instants at which they were inserted. The server mints the token of every other
+occurrence, such as an element of the set that `group` creates, when it first
+gives it, and these tokens sort in the order in which it first gave them.
 
 ```text
 { frame: "init",  name, frontier, occurrences: [ [token, value], … ] }

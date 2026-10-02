@@ -370,6 +370,20 @@ its instance, a stored set in a row body to each row, and a stored set in an
 object's body to each owner of the object. A row belongs to one owner for its
 life.
 
+Each row has an **identity**, which the store gives it when it inserts it: a
+text of one to 255 characters of the unreserved set of RFC 3986, ASCII letters,
+digits, `-`, `.`, `_`, and `~`, other than `.` and `..` alone. An identity is
+unique among the rows of its owner's stored set while its row exists, and once
+the row is removed, the store MAY give it to another row. Stores and clients
+take an identity as it is given, whatever its form.
+
+A **state path** names a row, a member, or a mount point: `/`, then the names of
+the declarations that lead to it from the root, each stored set followed by the
+identity of one of its rows, as `/companies/k7Qx2m/offices/p2Rt8n`. A mount
+point's state path is its member's, as `/companies/k7Qx2m/billing`, and the
+state paths of its instance continue after it. The root instance's state path is
+`/`.
+
 ### 4.4 Constraints and assertions
 
 A **constraint** is a condition on values, and an **assertion** a condition on
@@ -741,9 +755,9 @@ The connection ends when the client or the binding closes it, and its entry
 points end with it.
 
 The host holds every authority: every check runs in the host, and a client holds
-what the host sent it. The store's own identifiers and the module's source stay
-in the host, and they reach a client through the diagnostics of development mode
-alone (chapter 7).
+what the host sent it. Apart from row identities, the store's own identifiers
+and the module's source stay in the host, and they reach a client through the
+diagnostics of development mode alone (chapter 7).
 
 ### 10.2 Reads
 
@@ -1048,12 +1062,13 @@ it names, a `remove` restores what it restates, a `rename` renames back, and a
 `retype` maps through its `down`. Within a step:
 
 1. **Structure.** A renamed declaration continues the previous one: it keeps its
-   rows, with their values and row histories (§14.3), and a renamed mount point
-   keeps its instance. A removed member's values and a removed stored set's rows
-   leave live state. A member of unchanged type keeps its values; a value
-   changes type only through a `retype`, whose mapping gives the new value at
-   each place, with `old` the previous value. A mapping that fails, or yields no
-   value of its `to` type, rejects the update, naming the path and the place.
+   rows, with their identities, values, and row histories (§14.3), and a renamed
+   mount point keeps its instance. A removed member's values and a removed
+   stored set's rows leave live state. A member of unchanged type keeps its
+   values; a value changes type only through a `retype`, whose mapping gives the
+   new value at each place, with `old` the previous value. A mapping that fails,
+   or yields no value of its `to` type, rejects the update, naming the path and
+   the place.
 2. **Values that enter.** An added stored set starts empty. At each place that
    enters live state, an added member takes its initializer, or `none` when its
    cardinality allows zero, and the program writes every other member.
@@ -1097,10 +1112,21 @@ Reads run alongside an update, each under the versions of its snapshot.
 ### 14.1 What history holds
 
 History holds each commit that changes state, whose complete result differs from
-its snapshot, in commit order (§6.5): its instant (§6.6) and its **changes**, in
-the order in which the commit applies them:
+its snapshot, in commit order (§6.5): its instant (§6.6), its request (§6.1),
+and its **changes**.
 
-- each row that it inserts, with its values, and each row that it removes;
+The request is, for a call of a client (§10.3), each mutation that the call
+names, in list order, by the state path of what declares the mutation (§4.3) and
+the mutation's name, and for a request of the host, its kind: a native
+transaction (§8.2), `create` (§9.1), or an update (§13.1). History names a
+mutation alone, and the mutation stays a black box: its arguments, its result,
+and the calls that it makes, into its own module or another, stay inside it.
+
+The changes are the complete result's differences from the snapshot, in the
+order in which the commit applies them:
+
+- each row that it inserts, with its identity and its values, and each row that
+  it removes;
 - each value that it writes;
 - each instance that it initializes and mounts, with the package whose current
   version it initializes, and each instance that it unmounts;
@@ -1108,8 +1134,9 @@ the order in which the commit applies them:
 - for an update, each instance that it moves, with the version that it moves it
   to, before the changes that its route makes.
 
-The commit of `issue_token` holds one change, the row that it inserts, with the
-digest and the account; the token reaches its caller in the reply alone:
+The commit of `issue_token` holds its request, `issue_token` of `/`, and one
+change, the row that it inserts, with its identity, the digest, and the account;
+the token reaches its caller in the reply alone:
 
 ```liasse
 tokens: {
@@ -1126,7 +1153,7 @@ mut issue_token(account: Text): Bytes {
 ```
 
 The packages and the blob content that changes name are kept as blobs (§12.2).
-History keeps the changes of every commit for the life of the application.
+History keeps every commit for the life of the application.
 
 ### 14.2 Recomputing a state
 
@@ -1134,7 +1161,8 @@ The state of the commits of a snapshot is their changes applied in commit order,
 each change to the state that the changes before it leave. A move carries its
 instance's state along its route as the structure of each step carries it
 (§13.3). The recomputed state is the state that the application committed: the
-same rows, in the same order, with the same values and row histories.
+same rows, with the same identities, in the same order, with the same values and
+row histories.
 
 The **state at an instant**, among the commits of a snapshot, is the state of
 those commits before the first of them, in commit order, whose instant is later.
@@ -1168,25 +1196,10 @@ effects that the host has yet to perform (§6.3) belong to the store that holds
 them, and a restored application starts with zero of them.
 
 Reading a dehydrated application rejects it, naming the entry, when its package
-fails to read (§3.4), a value of its history record is malformed, a blob entry's
+fails to read (§3.4), a value of its history record is malformed, an insert
+gives a row an identity that a row of its stored set holds, a blob entry's
 content has a digest that differs from its name, or its history names a blob or
 a package absent from it.
-
-A **position path** names one row, one member, or one mount point in the state
-that a change of history applies to (§14.1). It alternates the names of
-declarations and the **positions** of rows, a row's position being its index
-among its owner's rows of the stored set, counted from 0 in their order (§4.3):
-
-```text
-/companies/4/offices/0
-/companies/4/billing/invoices/12
-```
-
-- After a stored set, the next segment names one of its rows by its position. A
-  mount point's path is its member's path, such as `/companies/4/billing`, and a
-  path into its instance continues after it.
-- A member of the root, or of an object at the root, is named by its names
-  alone, such as `/settings/page_size`. A member ends the path.
 
 The **history record** holds:
 
@@ -1194,16 +1207,23 @@ The **history record** holds:
 history
   commits         in commit order, each commit that changes state:
     instant       the commit's instant
+    request       one of:
+      calls       in list order, each the state path of what declares a mutation, and the
+                  mutation's name
+      native      a native transaction of the host
+      create      the creation of the application
+      update      an update
     changes       in order, each one of:
-      insert      the position path of a stored set, and the row that it inserts
-      remove      the position path of a row
-      write       the position path of a member, and its value
-      mount       the position path of a mount point, or / for the root instance, and the
+      insert      the state path of a stored set, the identity of the row, and the row that
+                  it inserts
+      remove      the state path of a row
+      write       the state path of a member, and its value
+      mount       the state path of a mount point, or / for the root instance, and the
                   digest of the package whose current version it initializes
-      unmount     the position path of a mount point
-      give        the position path of a mount point, or the name of a module, and the
+      unmount     the state path of a mount point
+      give        the state path of a mount point, or the name of a module, and the
                   digest of the package that it gives
-      move        the position path of an instance, and the version that it moves it to
+      move        the state path of an instance, and the version that it moves it to
 ```
 
 Values are typed values under the version of the instance that holds them, in

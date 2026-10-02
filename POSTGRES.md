@@ -27,7 +27,7 @@ follows those documents, and the conformance corpus checks it against
   each upload place that it verifies. A view read is one statement.
 - **A decoupled physical representation.** Surrogate keys that stay in
   PostgreSQL, one table per stored set lineage, owners by reference, and
-  row identifiers translated by index.
+  row identities translated by index.
 - **Own synchronization primitives.** Liasse transactions run under
   `READ COMMITTED` and synchronize through primitives built for the mutation
   model (chapter 5).
@@ -60,7 +60,6 @@ An application lives in one PostgreSQL schema.
 
 | Table | Holds |
 | --- | --- |
-| `application` | one row: the 32-byte key of occurrence tokens (CONNECT.md 2.4), drawn when the application is created |
 | `module` | each module: its name, its target, and the packages of its migration chain |
 | `instance` | each instance: its identifier, module, active version, the package that activated it, the target that `modules.update` gave it, and mount point (the owner's table and row, and the mount point's declaration), with `ver`, and the diagnostics of a blocked target |
 | `member` | each member of an instance's root that holds a value, an object, or an instance: `(instance, member)`, `ver`, `struct`, `value` |
@@ -87,8 +86,9 @@ instance of the module shares:
 id        bigint   the surrogate key, from a sequence with CACHE
 instance  bigint   the instance, referencing instance(id)
 owner     bigint   the owner row of a nested stored set, referencing its table ON DELETE CASCADE; null at the root
-commit    xid8     the inserting commit                          } the row identifier
-ordinal   int      the row's place among that commit's insertions }
+ident     text     the row's identity (SPEC §4.3)
+commit    xid8     the inserting commit
+ordinal   int      the row's place among that commit's insertions
 ver       xid8     the last commit that changed the row's own stored members
 struct    int      the layout that value is encoded in
 value     bytea    the row's own stored members and objects, or the row itself when it is a scalar, in the record encoding (chapter 12)
@@ -96,8 +96,10 @@ value     bytea    the row's own stored members and objects, or the row itself w
 
 - A nested row references its owner row, and ancestry is a join: each row
   holds its own members alone, so keys stay small and a rename touches one row.
-- `(instance, commit, ordinal)` is unique: it is the **row identifier**, which
-  history names a row by, and it translates to `id`.
+- `ident` is the unpadded base64url text of `commit` and `ordinal` for a row
+  that the store inserts, and the identity that the history record gives for a
+  row that a restore inserts. `(instance, owner, ident)` is unique,
+  `NULLS NOT DISTINCT`, and translates an identity to `id`.
 - `ver` and `struct` are Liasse's own. A physical rewrite of a row, such as
   mapping it to a newer layout, keeps `ver`: the row's stored members stay as
   they were.
@@ -368,17 +370,19 @@ The `history` row of a commit that changes state holds exactly SPEC §14.1:
 
 ```text
 commit    xid8          its place in commit order
+request   bytea         its request
 instant   timestamptz   its instant, to the microsecond
-changes   bytea         its changes, each naming its rows by their row identifiers
+changes   bytea         its changes, each naming its rows by their state paths
 ```
 
 - A run collects its changes as it writes its places (5.2), from its
-  intermediate state, and `liasse_commit` inserts them with the places.
+  intermediate state, and `liasse_commit` inserts them with the places and the
+  request.
 - An update's changes continue in `update_change`, which holds the changes of
   its per-owner parts (chapter 9).
 - Recomputation (SPEC §14.2) applies the changes of the `history` rows in commit
-  order. Export writes each change with the position paths of its rows
-  (SPEC §14.4), and restore gives each inserted row a new row identifier.
+  order. Export writes the requests and the changes as they are, and restore
+  gives each inserted row the identity that its insert names.
 - **Checkpoints**, the recomputed state of the commits before one commit, MAY be
   kept at an interval that the host sets, to speed past-row reads, export, and
   restore. They are derived: dropping them leaves every result as it is.
@@ -665,7 +669,7 @@ Each gate is a count or an invariant, exact under any load.
 | Targets | A blocked target whose failing check reads one row searches again after the first notification of the commit that changes that row, and zero searches run for commits whose touches match none of its marks. |
 | Joint updates | A joint update of a parent and 1 000 children, with a transaction workload on every member: zero deadlocks, zero summarizations, and the versions of all 1 001 instances change in one commit. |
 | Notifications | The statement log of a workload holds zero `NOTIFY` statements inside a transaction that writes state. |
-| History | The state recomputed from history at the final point hashes equal to the live state, row and instance identifiers included; export then restore gives the same hash over rows, insertion order, values, and row histories. |
+| History | The state recomputed from history at the final point hashes equal to the live state, row identities and instance identifiers included; export then restore gives the same hash over rows, their identities, insertion order, values, and row histories. |
 | Schema | After migrations that remove a stored set, a selection, and a unique key, the catalog holds exactly the desired schema: zero orphan tables, indexes, or claims. |
 | Parity | Every corpus case gives the same result on `liasse-pg` and `liasse-store-memory`, and the SQL diff's patches equal the memory store's results. |
 | Key encoding | Over 1 000 000 generated pairs, bytewise order equals the order of BUILTINS §1.1 and equal bytes equal values: zero counterexamples. |
