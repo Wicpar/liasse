@@ -2,7 +2,7 @@
 
 The alpha's client binding, `liasse-connect`, and its web client,
 `liasse-connect-wasm` with `clients/connect` ([ALPHA.md](ALPHA.md)).
-SPEC chapter 10 states what a client reads and calls, and what it can rely on;
+SPEC chapter 1 states the transaction and access guarantees;
 this document states how the alpha's client does it: how the binding carries
 connections over HTTPS, its operations and their messages, and how the web
 client behaves, its key functions included.
@@ -35,7 +35,7 @@ The host serves the binding under a base URL over HTTPS.
   fault**, a message that the server fails to process, is an HTTP error with an
   empty body: 400 for a message that fails to parse, 413 for one past the host's
   size limit, and 410 for a closed connection.
-- **Calls.** A call is open while its request is (SPEC §10.3): the server
+- **Calls.** A call is open while its request is: the server
   cancels a call whose request or connection closes before its commit, and sends
   the reply of a call on its request alone.
 - **Blob content** travels between the client and the storage locations through
@@ -58,12 +58,23 @@ the handles of entry points, and occurrence tokens, each a byte string. The
 client stores them, compares them for equality, orders occurrence tokens (2.4),
 and sends them back unchanged. The server refuses, before anything runs, a token
 that it did not mint for that use on that connection: a frontier as a released
-range (2.4), and every other token with the denial (SPEC §10.2). The client
+range (2.4), and every other token with the denial (2.1). The client
 chooses subscription names.
 
 ### 2.1 Targets
 
-A **target** names what a read or a call names, in the steps of SPEC §10.2:
+A connection holds the views returned by the host's `authorize` and by mutation
+calls as its **entry points**. Each exposes its declared interface: views,
+mutations, and the members exposed by returned rows and mounted modules. Entry
+points last until released or the connection ends.
+
+The server resolves reach over each read's or transaction run's snapshot. A row
+is reachable only while the view through which it was received yields it.
+Anything out of reach gives the fixed denial in 2.3, including a function from
+a library that does not serve clients. The host bounds client-written views;
+exceeding the bound gives `evaluation`.
+
+A **target** locates a view or mutation by steps from an authorized entry point:
 
 ```text
 { entry: <handle>, steps: [ step, … ], stages? }
@@ -76,7 +87,7 @@ alone. `challenge` is `{ entry: h'…', steps: ["challenge"] }`, and
 `me / tasks / t1 / complete` is
 `{ entry: h'…', steps: ["tasks", h'…', "complete"] }`. `stages`, source text
 such as `filter(!.done) |> take(20)`, makes the target a view that the client
-writes over the view that the steps reach (SPEC §10.2): the server parses it as
+writes over the view that the steps reach: the server parses it as
 hostile input, and checks that it reads what the client reaches and calls the
 functions of the host libraries that serve clients, before anything runs. A
 `stages` text that fails to parse rejects the read with the code `malformed`.
@@ -89,7 +100,7 @@ functions of the host libraries that serve clients, before anything runs. A
 | `watch` | `{ op: "watch", name, target, frontier? }` | reads a view live, as the subscription `name` (2.4); `frontier` resumes it |
 | `read` | `{ op: "read", target }` | reads a view once |
 | `unwatch` | `{ op: "unwatch", name }` | ends the subscription `name` |
-| `call` | `{ op: "call", target, args }`, or `{ op: "call", list: [ { target, args }, … ] }` | calls a mutation, or a list of them (SPEC §10.3) |
+| `call` | `{ op: "call", target, args }`, or `{ op: "call", list: [ { target, args }, … ] }` | calls a mutation, or a list of them |
 | `upload` | `{ op: "upload", target, args }`, or `{ op: "upload", list: [ { target, args }, … ] }` | plans the blob content of the call that the client makes next (2.5) |
 | `fetch` | `{ op: "fetch", target, members: [ … ] }`: `target` reaches the row, and `members` is the path down to the blob | plans the read of a blob (2.5) |
 | `release` | `{ op: "release", view: <handle> }` | releases an entry point, and ends its subscriptions |
@@ -101,9 +112,16 @@ functions of the host libraries that serve clients, before anything runs. A
   optional, or defaulted; and its result, a snapshot or a view, with its type
   text or its shape. It describes the instance's active version.
 - A **type text** is a type's definition after elaboration, with every argument
-  written out, such as `Text?`, `Text*`, or `{ title: Text; done: Bool }*`. A
-  storage name belongs to its member (SPEC §12.2), and the type text of the
-  member's type leaves it out.
+  written out, such as `Text?`, `Text*`, or `{ title: Text, done: Bool }*`. A
+  storage name belongs to its member (BUILTINS §1.4, ALPHA.md), and its type
+  text leaves it out.
+
+A call list runs in list order in one transaction. The server resolves every
+target before reading arguments, then checks input types and receives blob
+content before starting. It resolves targets again on each transaction run.
+Unknown arguments, missing required arguments, or invalid values give
+`malformed`; defaults are evaluated according to LANGUAGE 4.1. A failure rejects
+the whole list and identifies its index. Diagnostics omit argument values.
 
 ### 2.3 Replies
 
@@ -129,17 +147,20 @@ functions of the host libraries that serve clients, before anything runs. A
   `expires`; with no source, the reply is `failed` with the code `unavailable`.
 - `expires` is a `Timestamp`.
 - `frontier` in an outcome is a stream position: the connection's live views
-  show the commit once the client has applied the frames through it.
+  include the call's snapshot and, for `committed`, its commit once the client
+  has applied the frames through it. Later results keep these observations.
+  The server sends one outcome per open call, and `committed` only after the
+  commit is durable.
 - `index` names the failing mutation of a list. `message` comes when a module
   wrote it, and a generated `message`, `path`, and `trace` in development mode
-  (SPEC chapter 7, ALPHA.md).
+  (SPEC §1.5, ALPHA.md).
 
 ### 2.4 Subscriptions
 
 A `watch` opens a **subscription** to a view, under the name that the client
 gives: the view's result at a frontier, then its advances. A **frontier** is an
 opaque position in one subscription's stream, which covers commits and instants
-(SPEC §5.2). The first frontier of a subscription includes every commit that the
+(SPEC §1.1). The first frontier of a subscription includes every commit that the
 connection received as `committed` before the `watch`.
 
 Each element of a result of cardinality `*` or `+` is an **occurrence**,
@@ -158,11 +179,11 @@ The occurrence token of an occurrence that comes from a row is ordered. For each
 row of its path, outermost first, it holds the instant of the commit that
 inserted the row, in microseconds since the Unix epoch, as 8 bytes, and the
 row's index among the insertions of that commit, as 4 bytes, both big-endian,
-then the row's identity (SPEC §4.3), as one byte of its length and its
+then the row's identity (SPEC §1.3), as one byte of its length and its
 characters. These tokens sort, byte by byte, in the order of the instants at
-which their rows were inserted: insertion order (SPEC §4.3), save between rows
+which their rows were inserted: insertion order (LANGUAGE 2.4), save between rows
 that concurrent commits insert, or that commits insert as the clock moves back
-(SPEC §6.6). A token so shows the identities of the rows of its path and the
+(SPEC §1.1). A token so shows the identities of the rows of its path and the
 instants at which they were inserted. The server mints the token of every other
 occurrence, such as an element of the set that `group` creates, when it first
 gives it, and these tokens sort in the order in which it first gave them.
@@ -210,7 +231,7 @@ a fresh `init` when it has released them. After a fresh `init`, the client
 replaces the result that it held, and its tokens can differ.
 
 At each frontier, the server resolves each subscription's target again
-(SPEC §10.2). When the view is out of reach, the frame at that frontier is a
+(2.1). When the view is out of reach, the frame at that frontier is a
 `close` for `unreachable`, and the client drops the result that it holds.
 
 | Reason | When |
@@ -244,19 +265,19 @@ to at least the returned frontier.
 ### 2.5 Blobs
 
 `upload` resolves its calls, and reads and judges their arguments, as a call is
-before its blob content arrives (SPEC §10.3), with the same denials and
+before its blob content arrives (2.2), with the same denials and
 rejections, and then gives the plan.
 
 - The plan names, for each distinct descriptor, the locations whose connector
   gives write access for its size, in the order of the class that the input's
   storage name resolves to from the row or the root that holds the mutation, as
-  a stored member's does (SPEC §12.2).
+  a stored member's does (BUILTINS §1.4, ALPHA.md).
 - The content that a connection's plans place serves the calls of that
   connection, and is kept while the connection lasts. The host limits the bytes
   that the plans of one connection place: an upload past the limit, and one with
   a descriptor that no location accepts, fail with the code `unavailable`.
 
-`fetch` resolves its target as a read does (SPEC §10.2), checks that the view
+`fetch` resolves its target as a read does (2.1), checks that the view
 shows the whole descriptor, and gives the plan.
 
 ---
@@ -266,8 +287,8 @@ shows the whole descriptor, and gives the plan.
 - **The WASM core**, `liasse-connect-wasm`, decodes and encodes CBOR, keeps a
   replica of each subscription's result, in the order of its occurrence tokens,
   applies patches and checks their consistency (2.4), tracks frontiers and
-  stream positions, computes the SHA-512 digests of blob content (ALPHA.md) in
-  chunks, derives account keys from passwords and credential outputs and signs
+  stream positions, computes blob digests (BUILTINS §1.4) in chunks, derives
+  account keys from passwords and credential outputs and signs
   with them (chapter 4), and erases passwords, outputs, and seeds from its
   memory once used.
 - **The TypeScript shell**, `clients/connect`, reads the stream with a
@@ -305,7 +326,7 @@ shows the whole descriptor, and gives the plan.
 ## 4. Keys
 
 A call's arguments reach the server, and what a module stores of them reaches
-state, history, and exports (SPEC §14.1). The web client derives key pairs from
+state, history, and exports (SPEC §3.3). The web client derives key pairs from
 what a person knows or holds, and signs with them: the password, the
 credential's output, the seed, and the private key stay in the web client, and a
 call carries public keys, nonces, and signatures.
@@ -370,7 +391,7 @@ the assertion and the PRF output of 4.1. A module verifies them with the
 
 ### 4.4 Example: signing in
 
-The module of SPEC §1.2 signs its clients in with these keys:
+An application can expose the following calls to sign clients in with these keys:
 
 - **Sign-up.** The client derives the account key pair and calls
   `sign_up(email, name, public_key)`.

@@ -61,18 +61,18 @@ An application lives in one PostgreSQL schema.
 | Table | Holds |
 | --- | --- |
 | `module` | each module: its name, its target, and the packages of its migration chain |
-| `instance` | each instance: its identifier, module, active version, the package that activated it, the target that `modules.update` gave it, and mount point (the owner's table and row, and the mount point's declaration), with `ver`, and the diagnostics of a blocked target |
+| `instance` | each instance: its local identifier, unique portable UUID (SPEC §1.3), module, active version, the package that activated it, the target that `modules.update` gave it, and mount point (the owner's table and row, and the mount point's declaration), with `ver`, and the diagnostics of a blocked target |
 | `member` | each member of an instance's root that holds a value, an object, or an instance: `(instance, member)`, `ver`, `struct`, `value` |
 | `c<n>` | one table for each stored set lineage of a module (3.1) |
 | `claim` | each key that a row gives to a unique key: `(uniq, owner, key)`, and the row that gives it (3.3) |
-| `history` | the changes of each commit that changes state (chapter 7) |
+| `history` | each instance's history, grouped physically by commit (chapter 7) |
 | `touch` | the write marks of each commit (6.2) |
 | `subscription`, `occurrence`, `sub_mark`, `frame` | live views (chapter 8) |
 | `effect` | the effects of commits, until the process performs them (chapter 11) |
 | `keyring` | each instance's keyring of the keyring library, wrapped under the host key (chapter 10) |
 | `blob`, `blob_copy`, `blob_use`, `blob_upload` | blob content, its verified copies, its uses in live state, and the places of upload plans (chapter 10) |
 | `struct` | each record layout: module, version, declaration, and members |
-| `host_dependency` | the host dependencies of each version that an instance holds: module, version, declaration name, and the signature of an opaque or the definition written in Liasse (SPEC §3.6) |
+| `host_dependency` | the host dependencies of each version that an instance holds: module, version, declaration name, and the signature of an opaque or the definition written in Liasse (ALPHA.md, host libraries) |
 | `update_change` | the changes of each update's per-owner parts, by place (chapter 9) |
 | `target_mark` | the read marks of the checks that fail each blocked target, indexed by key (chapter 9) |
 
@@ -86,26 +86,31 @@ instance of the module shares:
 id        bigint   the surrogate key, from a sequence with CACHE
 instance  bigint   the instance, referencing instance(id)
 owner     bigint   the owner row of a nested stored set, referencing its table ON DELETE CASCADE; null at the root
-ident     text     the row's identity (SPEC §4.3)
+ident     text     the row's identity (SPEC §1.3)
 commit    xid8     the inserting commit
 ordinal   int      the row's place among that commit's insertions
 ver       xid8     the last commit that changed the row's own stored members
 struct    int      the layout that value is encoded in
+created_at bigint  creation instant in microseconds (BUILTINS §5)
+updated_at bigint  last-change instant in microseconds (BUILTINS §5)
 value     bytea    the row's own stored members and objects, or the row itself when it is a scalar, in the record encoding (chapter 12)
 ```
 
 - A nested row references its owner row, and ancestry is a join: each row
   holds its own members alone, so keys stay small and a rename touches one row.
 - `ident` is the unpadded base64url text of `commit` and `ordinal` for a row
-  that the store inserts, and the identity that the history record gives for a
-  row that a restore inserts. `(instance, owner, ident)` is unique,
-  `NULLS NOT DISTINCT`, and translates an identity to `id`.
+  that the store inserts, and the identity in the instance file for a
+  row that an import inserts. `(instance, owner, ident)` is unique,
+  `NULLS NOT DISTINCT`, and translates an identity to `id`. Generation skips
+  identities already live in that set, including imported identities.
 - `ver` and `struct` are Liasse's own. A physical rewrite of a row, such as
   mapping it to a newer layout, keeps `ver`: the row's stored members stay as
   they were.
 - Removing a row removes its nested rows by cascade, and the transaction
-  unmounts the instances mounted in them (SPEC §11.2).
-- A stored mount point holds the id of its instance in `value`.
+  unmounts the instances mounted in them (BUILTINS §2.1).
+- A stored mount point holds the local id of its instance in `value`; export
+  places the child ZIP under its mount path. Import assigns local ids and keeps
+  the UUIDs, row identities, timestamps, and array order from the archive.
 
 ### 3.2 Descriptors and indexes
 
@@ -123,7 +128,7 @@ CREATE INDEX CONCURRENTLY c7_d3
 `liasse_key` is the order-preserving key encoding (12.2) of the descriptor's
 members, read from `value` through the layout `struct`. A layout is fixed once
 it is written, so `liasse_key` is deterministic and declared `IMMUTABLE`.
-`commit` and `ordinal` end the index in insertion order (SPEC §4.3), so rows of
+`commit` and `ordinal` end the index in insertion order (LANGUAGE 2.4), so rows of
 equal keys read oldest first. The index on `(instance, owner, commit, ordinal)`
 reads the rows of one owner in insertion order.
 
@@ -133,7 +138,7 @@ reads the rows of one owner in insertion order.
 primary key `(uniq, owner, key)`, where `owner` is the owner row, or the
 instance for a stored set of the root, and `key` is the key encoding of the
 value that the unique key gives the row. A row gives a key when that value holds
-an element, each part of a record or a tuple included. Claims, and no unique
+an element, each part of a record included. Claims, and no unique
 index of a stored set table, enforce unique keys:
 
 - a unique key holds of the complete result of a transaction, and a unique index
@@ -145,8 +150,8 @@ index of a stored set table, enforce unique keys:
 
 ### 3.4 Places
 
-A row of a stored set table and a row of `member` are each one **place** (SPEC
-§6.5), the members of their objects included, and each carries its `ver`. Two
+A row of a stored set table and a row of `member` are each one **place**, the
+members of their objects included, and each carries its `ver`. Two
 rows of one owner's stored set are two places, and the rows of different owners
 share no row, page, or lock that a Liasse transaction waits on.
 
@@ -169,8 +174,8 @@ share no row, page, or lock that a Liasse transaction waits on.
   reads.
 - **Backend functions.** The extension implements the backend functions of
   ALPHA.md over the descriptors (3.2): `sort` reads its elements through the
-  descriptor of its key, in index order, `desc` reads a key or a place of a
-  tuple key in reverse, and `skip` and `take` bound that scan.
+  descriptor of its key, in index order, `desc` reads a key or a field of a
+  record key in reverse, and `skip` and `take` bound that scan.
 - **The intermediate state.** A run's writes are held in the backend's memory,
   and every read of the run sees the snapshot overlaid with them. They reach the
   tables at commit (5.1).
@@ -181,7 +186,8 @@ share no row, page, or lock that a Liasse transaction waits on.
   PostgreSQL, which this document calls a host call: the package reads of
   initializations and updates, the history reads of a past-row load whose
   commits lie in cold storage (7), and the drawn opaque mutations of the host's
-  own libraries (SPEC §3.6), those of the keyring library (10) among them.
+  own libraries (ALPHA.md, host libraries), those of the keyring library (10)
+  among them.
 - **Rounds.** The extension runs a program by the dependencies between its
   statements, which the build derives from footprints and bindings (ALPHA.md): a
   statement runs once the statements that it depends on have run, so a host call
@@ -209,10 +215,10 @@ share no row, page, or lock that a Liasse transaction waits on.
 
 ## 5. Transactions and synchronization
 
-The backend detects each ground of SPEC §6.5 on which a transaction waits for
-another or runs again, one place and a cycle, at the precision that the module
-gives, and on these grounds alone. Two transactions that give one key to a
-`unique` (BUILTINS §3) meet through its claims (5.3).
+This backend waits or retries for two conflicts: writes to one place, and
+cycles in read/write dependencies. It tracks them at the precision that the
+module gives, to meet SPEC §1.1 with minimal contention. Two transactions that
+give one key to a `unique` (BUILTINS §3) meet through its claims (5.3).
 
 ### 5.1 A run
 
@@ -221,7 +227,7 @@ Each run of a Liasse transaction is one PostgreSQL transaction at
 
 1. `liasse_begin()` takes and registers the run's snapshot, then takes the
    commit's xid8 `pg_current_xact_id()`, which follows the xid8 of every commit
-   in the snapshot, so that xid8 order is commit order (SPEC §6.5), then takes
+   in the snapshot, so that xid8 order is commit order (SPEC §1.1), then takes
    the instant, and registers the run in the conflict tracker.
 2. `liasse_call(…)` runs the transaction (chapter 4), recording read marks as
    it reads.
@@ -233,7 +239,7 @@ Each run of a Liasse transaction is one PostgreSQL transaction at
 The three steps travel in one pipelined flight. A run that must run again rolls
 back, and the next run is a new PostgreSQL transaction, with a new snapshot and
 a new xid8. A transaction that reaches the host's bound on runs is rejected
-with the code `contention`. A call that closes before its commit (SPEC §10.3)
+with the code `contention`. A call that closes before its commit (CONNECT §2.2)
 rolls its run back, and its transaction ends there.
 
 ### 5.2 One place
@@ -250,9 +256,8 @@ At `READ COMMITTED`, a write to a row that a concurrent transaction is changing
 waits for that transaction to end, then evaluates its condition again on the
 newest version (EvalPlanQual). When the other committed a logical change, `ver`
 differs, the statement writes zero rows, and the run runs again. When the other
-rolled back, or only rewrote the row physically, the write proceeds. This is
-SPEC's "MAY wait for the other to end" and "runs again", at the precision of
-one place.
+rolled back, or only rewrote the row physically, the write proceeds. This
+implements waiting and retrying at the precision of one place.
 
 - An insert takes a new `id`, a place of its own.
 - An insert into a nested stored set whose owner a concurrent transaction
@@ -318,13 +323,13 @@ O'Neil, O'Neil, ICDE 2011), over marks at the precision of the module:
   summarization is counted, and the gates require zero at the configured size.
 
 A view read runs over a snapshot, alongside every transaction, and takes zero
-marks (SPEC §5.1). A native transaction records the same precise marks as a
+marks. A native transaction records the same precise marks as a
 call.
 
 ### 5.5 Why these primitives
 
 PostgreSQL's `SERIALIZABLE` level gives serializability, and reruns
-transactions that SPEC §6.5 lets commit:
+transactions that this backend aims to commit without retries:
 
 - its predicate locks cover B-tree pages and whole relations: two runs that
   read and insert disjoint keys of one leaf page conflict, a sequential scan
@@ -352,8 +357,9 @@ primitives use it:
 
 ### 6.1 History record
 
-Each commit that changes state inserts its `history` row in the PostgreSQL
-transaction that commits it (chapter 7), so a commit and its changes are atomic.
+Each successful transaction that changes an instance or calls into one inserts
+a physical `history` row grouping those instances' records (chapter 7). Their
+histories and state changes commit atomically in the same PostgreSQL transaction.
 
 ### 6.2 Touches
 
@@ -366,31 +372,42 @@ pattern: the record of a change commits with the change.
 
 ## 7. History
 
-The `history` row of a commit that changes state holds exactly SPEC §14.1:
+The backend groups instance histories into physical commit rows. Export writes
+each instance's records separately, as SPEC §3.3 specifies:
 
 ```text
 commit    xid8          its place in commit order
-request   bytea         its request
-instant   timestamptz   its instant, to the microsecond
-changes   bytea         its changes, each naming its rows by their state paths
+request   bytea         its request kind
+instant   bigint        its instant, in Unix microseconds
+calls     bytea         incoming mutation calls, grouped by instance UUID, in execution order
+changes   bytea         its changes, identified by owning instance UUID and local state path
 ```
 
-- A run collects its changes as it writes its places (5.2), from its
-  intermediate state, and `liasse_commit` inserts them with the places and the
-  request.
+- A run collects incoming calls and changes as it writes its places (5.2), from
+  its intermediate state. `liasse_commit` inserts them with the places and the
+  request kind. Calls within one instance stay internal; an incoming call with
+  empty changes still contributes an instance record.
 - An update's changes continue in `update_change`, which holds the changes of
   its per-owner parts (chapter 9).
-- Recomputation (SPEC §14.2) applies the changes of the `history` rows in commit
-  order. Export writes the requests and the changes as they are, and restore
-  gives each inserted row the identity that its insert names.
+- Recomputation applies the changes of the `history` rows in commit order.
+  Export selects the requested instance hierarchy at one snapshot, writes its
+  current state as named objects and set tables in `instances/<uuid>/data.cbor`,
+  and optionally writes `history.cbor` beside it. Export groups compatible
+  changes into the named transaction and operation maps of SPEC §3.3, with
+  bulk rows under `columns` and `rows`, preserving dependencies and order.
+  Each instance folder also carries its blobs and child ZIPs (SPEC §2).
+  Import loads data directly and mounts children at their ZIP paths, preserving
+  included history and recording edited composition or a current-state import
+  as SPEC §3.3 specifies.
 - **Checkpoints**, the recomputed state of the commits before one commit, MAY be
   kept at an interval that the host sets, to speed past-row reads, export, and
   restore. They are derived: dropping them leaves every result as it is.
 - Old history MAY move to cold storage and be read back on demand; a read of an
   old state then waits for it.
-- A past-row read of `history.at` (BUILTINS §4) starts from the nearest
-  checkpoint before its instant and applies the changes of its snapshot's
-  commits after it, in commit order, up to the first whose instant is later.
+- A past-row read of `history.at` (BUILTINS §4.3) selects the calling instance's
+  records, starts from its nearest checkpoint before the instant, and applies
+  its subsequent records within the snapshot, up to the first whose instant is
+  later.
 
 ---
 
@@ -400,7 +417,7 @@ changes   bytea         its changes, each naming its rows by their state paths
 
 | Table | Holds |
 | --- | --- |
-| `subscription` | each subscription: its connection, name, target, frontier (a snapshot and an instant), and `next_instant`, the earliest instant at which the clock alone changes its result (SPEC §5.2) |
+| `subscription` | each subscription: its connection, name, target, frontier (a snapshot and an instant), and `next_instant`, the earliest instant at which the clock alone changes its result (SPEC §1.1) |
 | `occurrence` | the retained result: each occurrence's token, path, and value |
 | `sub_mark` | the read marks of the subscription's last evaluation, indexed by key |
 | `frame` | the frames sent, kept for the host's resumption grace period |
@@ -454,8 +471,9 @@ process's tick, whose period the host sets.
 
 ## 9. Updates in parallel
 
-An update (SPEC §13.4) never takes a lock that waits for or blocks the
-transactions of its instances, and never runs `ALTER TABLE` on a table in use:
+This backend runs updates alongside transactions. An update never takes a lock
+that waits for or blocks the transactions of its instances, and never runs
+`ALTER TABLE` on a table in use:
 its `ACCESS EXCLUSIVE` lock queues behind every running transaction and blocks
 every new one.
 
@@ -495,8 +513,8 @@ every new one.
   instance's version takes the row's new values from `update_change`, and a
   write stores the new layout. The update's commit stays one statement however
   many rows it maps: the rows of `update_change` are the changes of its history
-  record, which export writes after its moves (SPEC §14.4), and restore
-  applies.
+  record, which history export writes after its moves (SPEC §3.3), and history
+  reconstruction applies.
 - **Compaction.** A background worker rewrites the rows of older layouts in
   small batches with `FOR UPDATE SKIP LOCKED` and `synchronous_commit = off`,
   keeping `ver`, so it conflicts with no transaction (5.2).
@@ -536,7 +554,7 @@ every new one.
   its plans live in PostgreSQL. Issuing a plan is one statement, which takes a
   transaction-level advisory lock on the connection's identifier, checks the
   sum of its entries' sizes against the host's limit, and inserts the entries.
-- **Verification.** Receiving a call's blob content (SPEC §10.3) finds its
+- **Verification.** Receiving a call's blob content (CONNECT §2.2) finds its
   connection's entries by `(connection, digest, size)`. For each unverified one,
   the process reads the place back through the connector and hashes it, outside
   any PostgreSQL transaction; on a match, it calls `keep` and records the copy
@@ -546,9 +564,14 @@ every new one.
 - A background worker keeps each descriptor's class satisfied, moves content
   when its class changes, and deletes the copies beyond what live state
   requires, keeping at least one verified copy of everything that history
-  reaches (SPEC §12.2). It deletes each place once its access data has
-  expired, the entries of each closed connection, and the copies that only
-  those entries reached.
+  reaches (BUILTINS §1.4) and keeping content needed by active exports. It deletes
+  each place once its access data has expired, the entries of each closed
+  connection, and the copies that only those entries reached.
+- **Archive content.** Export reads through the connectors and verifies each
+  digest and recorded size, writing content into the referencing instance's
+  `blobs/`. Shared content is copied into each instance folder that needs it.
+  Import verifies and installs these bytes through the destination's connectors
+  before activating state. Missing or corrupt required content fails the transfer.
 - **Keyrings.** `keyring` holds each instance's keyring of the keyring library
   (ALPHA.md), wrapped under the host key, keyed by the instance. It stays
   outside every module's table, history record, and export. The run that seals
@@ -566,7 +589,7 @@ every new one.
 ## 11. Effects
 
 `effect` holds each effect of a commit until the process has performed it (SPEC
-§6.3): its identifier, the commit's xid8 with the effect's ordinal in that
+§1.2): its identifier, the commit's xid8 with the effect's ordinal in that
 commit; the name of its mutation; the arguments, in the alpha's encoding; the
 number of attempts; and `lease`, the instant from which any process takes it:
 the commit's instant, then the end of the hold of the process that takes it,
@@ -609,8 +632,9 @@ it), and `Blob` and composite values by their members.
 
 `liasse_key` writes values so that the unsigned bytewise order of the encodings
 is the order of BUILTINS §1.1, and two values have equal encodings exactly when
-they are equal: the memcomparable encoding of the FoundationDB tuple layer,
-CockroachDB, and MyRocks.
+they are equal under their common fitted type. Compared values are fitted to
+that type before encoding: the memcomparable encoding of the FoundationDB
+tuple layer, CockroachDB, and MyRocks.
 
 - `Int` and `Decimal`: a sign, the position of the leading digit, then the
   digits, so that numerically equal values have one encoding.
@@ -619,19 +643,21 @@ CockroachDB, and MyRocks.
   is scalar-value order.
 - `Uuid`: its 16 bytes. `Date`, `Timestamp`, and `Duration`: big-endian
   integers with the sign bit flipped.
-- A set of cardinality `?`, `*`, or `+`: for each element in ascending order,
-  the marker `0x02` and the element, then `0x01`, so that `none` is `0x01` and
-  a proper prefix sorts first.
+- An optional value: `0x01` for missing, or `0x02` followed by the inner
+  encoding for present. A present empty set therefore differs from missing.
+- A set of cardinality `*` or `+`: for each element in its existing order,
+  the marker `0x02` and the element, then `0x01`. The empty set is `0x01`,
+  and a proper prefix sorts first.
 - A descending key: every byte of its encoding complemented.
-- Records, objects, and tuples: their members in the order of BUILTINS §1.1, one
+- Records and objects: their members in the order of BUILTINS §1.1, one
   after the other.
 
 Where PostgreSQL compares `text` itself, it uses the `C` collation.
 
 ### 12.3 Messages and history
 
-`changes` in `history` and in `update_change`, the arguments in `effect`, and
-the frames in `frame` are in the alpha's encoding (ALPHA.md).
+`calls` and `changes` in `history`, changes in `update_change`, arguments in
+`effect`, and frames in `frame` are in the alpha's encoding (ALPHA.md).
 
 ---
 
@@ -669,11 +695,13 @@ Each gate is a count or an invariant, exact under any load.
 | Targets | A blocked target whose failing check reads one row searches again after the first notification of the commit that changes that row, and zero searches run for commits whose touches match none of its marks. |
 | Joint updates | A joint update of a parent and 1 000 children, with a transaction workload on every member: zero deadlocks, zero summarizations, and the versions of all 1 001 instances change in one commit. |
 | Notifications | The statement log of a workload holds zero `NOTIFY` statements inside a transaction that writes state. |
-| History | The state recomputed from history at the final point hashes equal to the live state, row identities and instance identifiers included; export then restore gives the same hash over rows, their identities, insertion order, values, and row histories. |
+| History | Recomputed state equals live state, including portable instance UUIDs and row identities. Bulk inserts, writes, and removals preserve dependencies and order. Each instance logs its incoming calls, including calls with empty changes; internal calls add zero call records. Both export modes round-trip selected instances and descendants, order, duplicates, typed empty values, timestamps, and mounts; history mode preserves past reads. Exports omit unrelated instances, and imports reject collisions. |
+| Archive composition | Instance folders split and combine beside matching sources. A child ZIP imports independently; moving, adding, or deleting it changes mounts without editing CBOR. Import records composition changes and rejects missing required mounts or incompatible interfaces. |
+| Archive blobs | Live blobs survive both export modes; history-only blobs survive history mode. Siblings sharing content each carry the bytes. Imports succeed with the source storage unavailable. Missing or corrupt required bytes reject the transfer before activation. |
 | Schema | After migrations that remove a stored set, a selection, and a unique key, the catalog holds exactly the desired schema: zero orphan tables, indexes, or claims. |
 | Parity | Every corpus case gives the same result on `liasse-pg` and `liasse-store-memory`, and the SQL diff's patches equal the memory store's results. |
 | Key encoding | Over 1 000 000 generated pairs, bytewise order equals the order of BUILTINS §1.1 and equal bytes equal values: zero counterexamples. |
-| Changes | A mutation that stores the SHA-256 digest of 32 drawn bytes and returns the bytes, called 10 000 times: zero occurrences of any returned byte string in `history` and in the export. An update that adds a member initialized to such a digest over 100 000 rows: `update_change` holds exactly 100 000 changes, each equal to the digest that its row reads. A call that calls an effect and changes no state, 10 000 times: zero `history` rows. In each, the recomputed state hashes equal to the live state. |
+| Changes | A mutation that stores the SHA-256 digest of 32 drawn bytes and returns the bytes, called 10 000 times: zero occurrences of any returned byte string in `history` and in the export. An update that adds a member initialized to such a digest over 100 000 rows: `update_change` holds exactly 100 000 changes, each equal to the digest that its row reads. A mutation that calls an effect and changes no state, 10 000 times: 10 000 history records with its incoming call and empty changes. In each, the recomputed state hashes equal to the live state. |
 | Effects | A transaction that calls one effect and runs again 3 times before it commits leaves exactly 1 `effect` row, and its performer sees 1 identifier; a rejected one leaves 0 rows; a process killed after the commit and before the attempt has the effect performed after restart, under the same identifier; `effect` holds 0 rows once every effect succeeded. |
 | Host call rounds | A call whose runs sign 100 rows with sealed keys, each run independent of the others' writes, takes exactly 1 `liasse_resume` exchange. |
 | Overhead | Each path is timed against the equivalent hand-written SQL as matched pairs on a quiet machine, and the ratio is reported. |
@@ -695,6 +723,6 @@ Each gate is a count or an invariant, exact under any load.
 | Targets and joint updates (chapter 9) | apt's `upgrade`, which moves every package that moves alone and keeps back the rest, and `full-upgrade`, which moves co-dependent packages together; Kubernetes' level-triggered reconciliation, which acts again at each change of what it watches and reports why an object differs from its desired state; package installability, NP-complete in general (Mancinelli et al., ASE 2006), which the host's bound on the search answers |
 | Ordered update flags (chapter 9) | ordered resource acquisition, which rules out deadlock (Havender, IBM Systems Journal, 1968) |
 | Host call rounds (4) | the implicit batching and concurrency of independent fetches in Haxl (Marlow, Brandy, Coens, Purdy, "There is no fork: an implicitly concurrent abstraction for efficient data access", ICFP 2014) |
-| History (chapter 7) | row-based change logs: MySQL's row-based binary log and PostgreSQL's logical decoding, which record the changed rows of each committed transaction and nothing for a transaction that changes none |
+| History (chapter 7) | row-based change logs: MySQL's row-based binary log and PostgreSQL's logical decoding, with Liasse's incoming mutation calls recorded alongside the changes |
 | Effects (chapter 11) | the transactional outbox, drained by `FOR UPDATE SKIP LOCKED` workers; at-least-once delivery made once by an idempotency key, as Stripe's `Idempotency-Key` header; Convex's scheduled functions, which a mutation schedules when it commits |
 | Key encoding (12.2) | the memcomparable format of the FoundationDB tuple layer, CockroachDB, and MyRocks |
