@@ -55,6 +55,17 @@ language shares.
 | 6 | Conformance: the outcomes that every implementation produces. |
 | Annex A | The history schema. |
 
+Then read [LIBRARIES.md](LIBRARIES.md), the host libraries that the alpha
+supplies to every module, beyond the builtins of SPEC chapter 2.
+
+| LIBRARIES | Defines |
+| --- | --- |
+| 1 | Host types: bytes, UUIDs, dates, instants, and durations, with their order, limits, and operators. |
+| 2 | The templates `Map` and `Enum`, and the calls that initialize and update instances. |
+| 3 | Functions and mutations: text, conversions, signatures, past rows, time, sets, encodings, and the keyring. |
+| 4 | The metaproperty `$history`: when a row was inserted and last changed. |
+| 5 | The definitions of `Map` and `Enum`. |
+
 ## License
 
 MIT OR Apache-2.0, at your option: [LICENSE-MIT](LICENSE-MIT),
